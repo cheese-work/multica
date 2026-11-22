@@ -75,6 +75,28 @@ export function agentDetailOptions(wsId: string, agentId: string) {
   });
 }
 
+const BACKGROUND_USE_JOBS: string[] = ["dm_title", "quick_actions", "compact", "routing"];
+
+/**
+ * The agent's background uses (CHE-5439). Own key under the detail key: the
+ * list and update responses omit `background_use`, so it must not share the
+ * detail entry that `cacheAgentResponse` overwrites.
+ */
+export function agentBackgroundUseOptions(wsId: string, agentId: string) {
+  return queryOptions({
+    queryKey: [...workspaceKeys.agent(wsId, agentId), "background-use"],
+    // A newer server may add jobs or scopes; drop what this client cannot name.
+    queryFn: async () =>
+      ((await api.getAgent(agentId)).background_use ?? []).filter(
+        (u) =>
+          (u.scope === "workspace" || u.scope === "personal") &&
+          BACKGROUND_USE_JOBS.includes(u.job),
+      ),
+    enabled: !!wsId && !!agentId,
+    retry: false,
+  });
+}
+
 /**
  * Makes an authoritative agent response immediately visible to both agent
  * detail and list consumers. A cold list stays cold so one agent is never
@@ -133,6 +155,30 @@ export function skillDetailOptions(wsId: string, skillId: string) {
     queryKey: [...workspaceKeys.skills(wsId), skillId] as const,
     queryFn: () => api.getSkill(skillId),
     enabled: !!skillId,
+  });
+}
+
+// Nested under the skill detail key so skill realtime events, which
+// invalidate the workspace skills prefix, refresh history too.
+export function skillVersionsOptions(wsId: string, skillId: string) {
+  return queryOptions({
+    queryKey: [...workspaceKeys.skills(wsId), skillId, "versions"] as const,
+    queryFn: () => api.listSkillVersions(skillId),
+    enabled: !!skillId,
+  });
+}
+
+// A version never changes once written.
+export function skillVersionDetailOptions(
+  wsId: string,
+  skillId: string,
+  version: number | null,
+) {
+  return queryOptions({
+    queryKey: [...workspaceKeys.skills(wsId), skillId, "versions", version] as const,
+    queryFn: () => api.getSkillVersion(skillId, version as number),
+    enabled: !!skillId && version !== null,
+    staleTime: Infinity,
   });
 }
 

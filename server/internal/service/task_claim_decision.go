@@ -42,6 +42,7 @@ const (
 	claimOutcomeClaimed                = "claimed"
 	claimOutcomeNoTasks                = "no_tasks"
 	claimOutcomeNoCapacity             = "no_capacity"
+	claimOutcomeRuntimeNoCapacity      = "runtime_no_capacity"
 	claimOutcomeNoRuntime              = "no_runtime"
 	claimOutcomeRuntimeMismatch        = "runtime_mismatch"
 	claimOutcomeErrorGetAgent          = "error_get_agent"
@@ -72,16 +73,17 @@ const (
 // this attempt (cause unknown — fence or lost race), the latter says the
 // candidate query itself saw nothing claimable.
 const (
-	claimReasonClaimed              = "claimed"
-	claimReasonNoVisibleCandidates  = "no_visible_candidates"
-	claimReasonCandidatesUnclaimed  = "candidates_unclaimed"
-	claimReasonUnknownCandidates    = "unknown_candidates"
-	claimReasonAgentConcurrencyCap  = "agent_concurrency_cap"
-	claimReasonAgentUnbound         = "agent_unbound"
-	claimReasonAgentRebound         = "agent_rebound"
-	claimReasonEmptyCache           = "empty_cache"
-	claimReasonStaleDispatchRecover = "stale_dispatch_recovered"
-	claimReasonError                = "error"
+	claimReasonClaimed               = "claimed"
+	claimReasonNoVisibleCandidates   = "no_visible_candidates"
+	claimReasonCandidatesUnclaimed   = "candidates_unclaimed"
+	claimReasonUnknownCandidates     = "unknown_candidates"
+	claimReasonAgentConcurrencyCap   = "agent_concurrency_cap"
+	claimReasonRuntimeConcurrencyCap = "runtime_concurrency_cap"
+	claimReasonAgentUnbound          = "agent_unbound"
+	claimReasonAgentRebound          = "agent_rebound"
+	claimReasonEmptyCache            = "empty_cache"
+	claimReasonStaleDispatchRecover  = "stale_dispatch_recovered"
+	claimReasonError                 = "error"
 )
 
 // Claim poll paths, as seen by the counter's claim_path label. Distinct from
@@ -102,10 +104,15 @@ const (
 type claimScope struct {
 	claimPath  string
 	candidates int
+	// tally, when set, hears every claimTask outcome of the poll this call belongs to.
+	tally *claimPollTally
+	// chatOnly restricts the claim to DM tasks (not issue or group channel
+	// tasks): the daemon's non-DM budget under reserved_chat_slots is spent.
+	chatOnly bool
 }
 
-// claimDecisionDetail carries the capacity numbers behind a no_capacity
-// decision. Left zero for every other outcome.
+// claimDecisionDetail carries the capacity numbers behind a no_capacity or
+// runtime_no_capacity decision. Left zero for every other outcome.
 type claimDecisionDetail struct {
 	running       int64
 	maxConcurrent int64
@@ -126,6 +133,8 @@ func claimReasonFor(outcome string, scope claimScope) string {
 		return claimReasonNoVisibleCandidates
 	case claimOutcomeNoCapacity:
 		return claimReasonAgentConcurrencyCap
+	case claimOutcomeRuntimeNoCapacity:
+		return claimReasonRuntimeConcurrencyCap
 	case claimOutcomeRuntimeMismatch:
 		return claimReasonAgentRebound
 	case claimOutcomeNoRuntime:
@@ -180,7 +189,7 @@ func (s *TaskService) recordClaimDecision(agentID, runtimeID pgtype.UUID, outcom
 		"runtime_id", util.UUIDToString(runtimeID),
 		"candidates", scope.candidates,
 	}
-	if outcome == claimOutcomeNoCapacity {
+	if outcome == claimOutcomeNoCapacity || outcome == claimOutcomeRuntimeNoCapacity {
 		attrs = append(attrs, "running", detail.running, "max", detail.maxConcurrent)
 	}
 	slog.Debug("task claim decision", attrs...)

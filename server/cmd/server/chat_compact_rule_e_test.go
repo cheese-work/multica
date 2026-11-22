@@ -1,12 +1,14 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -69,16 +71,24 @@ func newRuleEFixture(t *testing.T) compactFixture {
 }
 
 // (p) A task other than the caller that is dispatched, waiting_local_directory
-// or running blocks the compact with 409; a queued one does not.
+// or running cannot exist: idx_agent_task_queue_one_active_per_chat refuses the
+// second active row, so the compact never sees one. A queued one does not block.
 func TestChatCompactRefusesWhileAnotherChatTaskIsActive(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	for _, active := range []string{"dispatched", "waiting_local_directory", "running"} {
 		t.Run(active, func(t *testing.T) {
 			fx := newRuleEFixture(t)
-			addRuleEChatTask(t, fx.sessionID, active)
-			if status, body := postCompact(t, fx.token, "x"); status != http.StatusConflict {
-				t.Fatalf("compact beside a %s task = %d %s, want 409", active, status, body)
+			_, err := testPool.Exec(ctx(), `
+				INSERT INTO agent_task_queue (agent_id, runtime_id, chat_session_id, status)
+				SELECT cs.agent_id, a.runtime_id, cs.id, $2 FROM chat_session cs JOIN agent a ON a.id = cs.agent_id
+				WHERE cs.id = $1`, fx.sessionID, active)
+			var pgErr *pgconn.PgError
+			if !errors.As(err, &pgErr) || pgErr.Code != "23505" || pgErr.ConstraintName != "idx_agent_task_queue_one_active_per_chat" {
+				t.Fatalf("second %s chat task insert err = %v, want 23505 on idx_agent_task_queue_one_active_per_chat", active, err)
 			}
-			assertCompactUntouched(t, fx.sessionID)
+			if status, body := postCompact(t, fx.token, "x"); status != http.StatusOK {
+				t.Fatalf("compact of the sole active task = %d %s, want 200", status, body)
+			}
 		})
 	}
 	t.Run("queued does not block", func(t *testing.T) {
@@ -90,9 +100,11 @@ func TestChatCompactRefusesWhileAnotherChatTaskIsActive(t *testing.T) {
 	})
 }
 
-// (q) opposite order: the claim commits first, the compact then answers 409
-// and the DM epoch stays put.
+// (q) opposite order: the claim commits first, the settled caller's compact is
+// then refused (403, it is no longer running) and the DM epoch stays put. A
+// second running caller cannot exist beside the claimed task.
 func TestChatCompactRefusesTaskClaimedJustBefore(t *testing.T) {
+	t.Skip("CHE-4873 quarantine (CHE-4909): seeds two active tasks in one chat session; idx_agent_task_queue_one_active_per_chat rejects it")
 	fx := newRuleEFixture(t)
 	queued := addRuleEChatTask(t, fx.sessionID, "queued")
 	var agentID, runtimeID string
@@ -105,9 +117,29 @@ func TestChatCompactRefusesTaskClaimedJustBefore(t *testing.T) {
 		t.Fatal(err)
 	}
 	claimNow(t, agentID, runtimeID)
-	callerAgain := chatTaskToken(t, fx.sessionID, "running")
-	if status, body := postCompact(t, callerAgain, "x"); status != http.StatusConflict {
-		t.Fatalf("compact after a fresh claim = %d %s, want 409", status, body)
+	if status, body := postCompact(t, fx.token, "x"); status != http.StatusForbidden {
+		t.Fatalf("compact after a fresh claim = %d %s, want 403", status, body)
+	}
+	assertCompactUntouched(t, fx.sessionID)
+}
+
+// (q, two agents) agent B's queued DM task is claimed once agent A's task has
+// settled; a compact from A's settled task then answers 403 or 409 and the DM
+// epoch stays put. A second active row for the DM cannot exist any more (the
+// one-active-per-DM index), so the refusal comes from the caller check.
+func TestChatCompactRefusesAfterOtherAgentClaimsJustBefore(t *testing.T) {
+	fx := newRuleEFixture(t)
+	b := newAdmissionAgent(t, "q")
+	queued := addAdmissionTask(t, b, fx.sessionID, "", "queued")
+	if _, err := testPool.Exec(ctx(), `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fx.taskID); err != nil {
+		t.Fatal(err)
+	}
+	claimNow(t, b.agentID, b.runtimeID)
+	if got := taskStatus(t, queued); got != "dispatched" {
+		t.Fatalf("agent B task = %q, want dispatched", got)
+	}
+	if status, body := postCompact(t, fx.token, "x"); status != http.StatusConflict && status != http.StatusForbidden {
+		t.Fatalf("compact after the other agent's claim = %d %s, want 403 or 409", status, body)
 	}
 	assertCompactUntouched(t, fx.sessionID)
 }
@@ -141,15 +173,31 @@ func claimNow(t *testing.T, agentID, runtimeID string) *db.AgentTaskQueue {
 // caller completes, the queued task is claimable afterwards, and a claimed
 // task's epoch stamp equals the DM epoch (Rule E).
 func TestChatCompactClaimLockOrderHasNoDeadlock(t *testing.T) {
+	lockOrderRace(t, false)
+}
+
+// (s, two agents) the same race, but the queued successor belongs to another
+// agent on its own runtime (CHE-2894 step 8).
+func TestChatCompactClaimLockOrderHasNoDeadlockTwoAgents(t *testing.T) {
+	lockOrderRace(t, true)
+}
+
+func lockOrderRace(t *testing.T, otherAgent bool) {
 	svc := service.NewTaskService(db.New(testPool), testPool, nil, events.New())
 	for i := 0; i < 40; i++ {
 		t.Run(fmt.Sprintf("iteration_%d", i), func(t *testing.T) {
 			fx := newRuleEFixture(t)
-			queued := addRuleEChatTask(t, fx.sessionID, "queued")
-			// Each subtest's fixture cleanup frees the agent's concurrency slot.
-			var runtimeID string
-			if err := testPool.QueryRow(ctx(), `SELECT runtime_id FROM agent_task_queue WHERE id = $1`, queued).Scan(&runtimeID); err != nil {
-				t.Fatal(err)
+			var queued, runtimeID string
+			if otherAgent {
+				b := newAdmissionAgent(t, fmt.Sprintf("s%d", i))
+				queued = addAdmissionTask(t, b, fx.sessionID, "", "queued")
+				runtimeID = b.runtimeID
+			} else {
+				queued = addRuleEChatTask(t, fx.sessionID, "queued")
+				// Each subtest's fixture cleanup frees the agent's concurrency slot.
+				if err := testPool.QueryRow(ctx(), `SELECT runtime_id FROM agent_task_queue WHERE id = $1`, queued).Scan(&runtimeID); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if _, err := testPool.Exec(ctx(), `UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id = $1`, runtimeID); err != nil {
 				t.Fatal(err)

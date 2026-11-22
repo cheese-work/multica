@@ -151,13 +151,14 @@ INSERT INTO github_pull_request (
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
     head_sha, mergeable_state, head_repo_same,
-    additions, deletions, changed_files
+    additions, deletions, changed_files, merge_commit_sha, base_ref, default_branch
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, sqlc.narg('branch'), sqlc.narg('author_login'), sqlc.narg('author_avatar_url'),
     sqlc.narg('merged_at'), sqlc.narg('closed_at'), $9, $10,
     $11, sqlc.narg('mergeable_state'), sqlc.arg('head_repo_same'),
-    $12, $13, $14
+    $12, $13, $14, sqlc.arg('merge_commit_sha')::text,
+    sqlc.arg('base_ref')::text, sqlc.arg('default_branch')::text
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
@@ -248,6 +249,11 @@ ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     additions     = EXCLUDED.additions,
     deletions     = EXCLUDED.deletions,
     changed_files = EXCLUDED.changed_files,
+    -- Only a merged delivery carries the commit; a later one without it keeps it.
+    merge_commit_sha = COALESCE(NULLIF(EXCLUDED.merge_commit_sha, ''), github_pull_request.merge_commit_sha),
+    -- Kept like the commit: a delivery that does not state them never blanks them.
+    base_ref = COALESCE(NULLIF(EXCLUDED.base_ref, ''), github_pull_request.base_ref),
+    default_branch = COALESCE(NULLIF(EXCLUDED.default_branch, ''), github_pull_request.default_branch),
     updated_at = now()
 WHERE EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at
 RETURNING *;
@@ -287,19 +293,32 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND review_id = sqlc.arg(review_id)::bigint;
 
 -- name: ListGitHubReviewAuthorCandidates :many
-SELECT DISTINCT task.agent_id
-FROM agent_task_queue task
-JOIN agent author ON author.id = task.agent_id
+-- Agents that authored the PR: the task whose key ends the head branch, or a
+-- task on a linked issue that ran on that branch before the PR was opened. The
+-- two matches are separate UNION arms so each can use an index (CHE-6888): as
+-- one OR, the task-key expression forced a scan of agent_task_queue. The key arm
+-- reads idx_agent_task_queue_task_key; the branch arm starts from the PR's links
+-- and reads the linked issue's tasks through idx_agent_task_queue_issue_id.
+-- The caller needs exactly one candidate, so LIMIT 2 is enough to see a tie.
+SELECT DISTINCT candidate.agent_id
+FROM (
+    SELECT task.agent_id
+    FROM agent_task_queue task
+    WHERE sqlc.arg(task_key)::text <> ''
+      AND right(replace(task.id::text, '-', ''), 12) = sqlc.arg(task_key)::text
+    UNION
+    SELECT task.agent_id
+    FROM issue_pull_request link
+    JOIN github_pull_request linked_pr ON linked_pr.id = link.pull_request_id
+    JOIN agent_task_queue task ON task.issue_id = link.issue_id
+    WHERE link.pull_request_id = sqlc.arg(pull_request_id)
+      AND task.branch_name = linked_pr.branch
+      AND task.created_at <= linked_pr.pr_created_at
+) candidate
+JOIN agent author ON author.id = candidate.agent_id
 JOIN github_pull_request pr ON pr.id = sqlc.arg(pull_request_id)
 WHERE pr.workspace_id = sqlc.arg(workspace_id)
   AND author.workspace_id = pr.workspace_id
-  AND (
-    (sqlc.arg(task_key)::text <> '' AND right(replace(task.id::text, '-', ''), 12) = sqlc.arg(task_key)::text)
-    OR (task.branch_name = pr.branch AND task.created_at <= pr.pr_created_at AND EXISTS (
-        SELECT 1 FROM issue_pull_request link
-        WHERE link.pull_request_id = pr.id AND link.issue_id = task.issue_id
-    ))
-  )
 LIMIT 2;
 
 -- name: MarkGitHubReviewWakeup :exec
@@ -474,3 +493,35 @@ FROM github_pull_request
 WHERE NOT head_repo_same AND pr_updated_at >= '2026-10-27T12:00:00Z'
 GROUP BY installation_id, repo_owner, repo_name, pr_number
 ORDER BY max(pr_updated_at) DESC, installation_id, repo_owner, repo_name, pr_number;
+
+-- name: ListIssueOpenPullRequestHeads :many
+-- Head SHAs of the issue's linked PRs that are still open or draft, GitHub and
+-- self-hosted alike. The review-head guard (CHE-4649) acts only on exactly one.
+SELECT head_sha FROM (
+    SELECT pr.head_sha AS head_sha
+    FROM github_pull_request pr
+    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft')
+    UNION ALL
+    SELECT pr.head_sha AS head_sha
+    FROM vcs_pull_request pr
+    JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
+    WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft')
+) open_prs;
+
+-- name: HasAgentVerdictForHead :one
+-- Whether the agent already commented its verdict on the issue for this PR
+-- head: a line that opens with "Verdict:" and PASS, FAIL or CHANGES REQUESTED
+-- (or a line that opens with BLOCKED or NOT-RUN), plus a "Candidate:" or
+-- "Head:" line that names the head by its first seven characters at least.
+-- Anchoring on line starts keeps a status report ("CI PASS on <head>") and a
+-- verdict for another head from counting. The markers are upper case on
+-- purpose, so prose such as "this may fail" is not a verdict. A comment in
+-- another shape does not match, and the run starts as before.
+SELECT EXISTS (
+    SELECT 1 FROM comment
+    WHERE issue_id = sqlc.arg('issue_id') AND author_type = 'agent' AND author_id = sqlc.arg('agent_id')
+      AND deleted_at IS NULL
+      AND content ~ '(?n)^[*_ ]*(Verdict[*_]*:[*_ \t]*(PASS|FAIL|CHANGES REQUESTED|BLOCKED|NOT-RUN)|(BLOCKED|NOT-RUN))\M'
+      AND content ~* ('(?n)^[*_ ]*(Candidate|Head)\M[^\n]*' || left(sqlc.arg('head_sha')::text, 7))
+);

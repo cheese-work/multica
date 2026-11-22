@@ -9,7 +9,7 @@ import test from "node:test";
 const read = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
 const runsOn = (text) => text.split("\n").filter((line) => /^\s+runs-on:/.test(line));
 
-for (const name of ["ci.yml", "main-build.yml", "pr-changelog-check.yml", "pr-close-target-check.yml"]) {
+for (const name of ["ci.yml", "main-build.yml", "pr-guards.yml", "pr-guard-rules.yml"]) {
   test(`${name} runs every job on GitHub-hosted runners`, () => {
     const lines = runsOn(read(name));
     assert.ok(lines.length > 0);
@@ -20,9 +20,9 @@ for (const name of ["ci.yml", "main-build.yml", "pr-changelog-check.yml", "pr-cl
   });
 }
 
-test("PR close target validates edited events using trusted code without an edited-event skip", () => {
-  const workflow = read("pr-close-target-check.yml");
-  assert.match(workflow, /types: \[opened, edited, synchronize, reopened\]/);
+test("PR guards run trusted code on every PR event they start on, with no `edited` trigger (CHE-4385)", () => {
+  const workflow = read("pr-guards.yml");
+  assert.match(workflow, /types: \[opened, synchronize, reopened, ready_for_review\]/);
   assert.match(workflow, /ref: \$\{\{ github\.workflow_sha \}\}/);
   assert.doesNotMatch(workflow, /if:.*(action|edited)/);
 });
@@ -45,11 +45,11 @@ test("release.yml leaves the Go cache to the disk on a self-hosted runner", () =
 
 // CHE-3604: the gate is a light job (median 1.5 min), so it runs on a GitHub-hosted runner, free
 // for this public repository. CHE-3128 had moved it to a dedicated X99 lane. The trust boundary
-// is unchanged: the job runs the default-branch definition and the `if:` filter still applies.
+// is unchanged: the job runs the default-branch definition.
 test("security-gate.yml runs on a GitHub-hosted runner", () => {
-  // Three hosted jobs: the gate, the secret-free queue-handoff (CHE-4251) and the mechanical-tier refresh (CHE-4250).
+  // Two hosted jobs: the gate and the secret-free queue-handoff (CHE-4251). mechanical-tier (CHE-4385) is a reusable-workflow call with no runner of its own.
   const lines = runsOn(read("security-gate.yml"));
-  assert.equal(lines.length, 3);
+  assert.equal(lines.length, 2);
   for (const line of lines) {
     assert.match(line, /runs-on: ubuntu-latest\s*(#.*)?$/);
     assert.doesNotMatch(line, /cheese-x99|self-hosted/);
@@ -61,4 +61,24 @@ test("security-gate-queue.yml runs on a GitHub-hosted runner", () => {
   const lines = runsOn(read("security-gate-queue.yml"));
   assert.equal(lines.length, 1);
   assert.match(lines[0], /runs-on: ubuntu-latest\s*(#.*)?$/);
+});
+
+// CHE-7067: dispatch CI runs (agents chain them) shared the 60-job hosted pool; 8 parallel
+// runs held 42 slots. One shared group, never cancelled, queues them. PR/merge_group/schedule
+// keep the per-PR group with cancel-in-progress (CI standard R2). warning-budget makes ~84
+// GitHub API calls per run, so it stays off merge_group (nightly and PR runs still cover it).
+test("ci.yml runs one workflow_dispatch CI at a time and keeps cancel for other events (CHE-7067)", () => {
+  const ci = read("ci.yml");
+  const block = ci.match(/^concurrency:\n((?:[ \t]+.*\n)+)/m)?.[1] ?? "";
+  const group = block.match(/group: \$\{\{ (.*) \}\}/)?.[1] ?? "";
+  // dispatch branch of the group expression is a constant string
+  assert.match(group, /^github\.event_name == 'workflow_dispatch' && '[a-z-]+' \|\| /);
+  // every other event keeps the per-PR/ref group
+  assert.match(group, /github\.workflow.*github\.event_name.*github\.event\.pull_request\.number \|\| github\.ref/);
+  assert.match(block, /cancel-in-progress: \$\{\{ github\.event_name != 'workflow_dispatch' \}\}/);
+});
+
+test("warning-budget does not run on merge_group (CHE-7067)", () => {
+  const job = read("ci.yml").match(/^  warning-budget:\n(?:(?!^  \S).*\n)+/m)?.[0] ?? "";
+  assert.match(job, /^    if: .*github\.event_name != 'merge_group'/m);
 });

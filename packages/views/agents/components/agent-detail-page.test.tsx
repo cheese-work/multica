@@ -28,10 +28,12 @@ vi.mock("./agent-properties-panel", () => ({
     agent,
     onUpdate,
     onEditAccess,
+    onOpenSettings,
   }: {
     agent: Agent;
     onUpdate: (id: string, data: Record<string, unknown>) => Promise<void>;
     onEditAccess: () => void;
+    onOpenSettings: () => void;
   }) => (
     <div>
       <span>model:{agent.model}</span>
@@ -43,6 +45,9 @@ vi.mock("./agent-properties-panel", () => ({
       </button>
       <button type="button" onClick={onEditAccess}>
         edit access
+      </button>
+      <button type="button" onClick={onOpenSettings}>
+        all settings
       </button>
     </div>
   ),
@@ -128,6 +133,7 @@ const mockToastError = vi.hoisted(() => vi.fn());
 const mockToastSuccess = vi.hoisted(() => vi.fn());
 const mockModalOpen = vi.hoisted(() => vi.fn());
 const mockGetAgent = vi.hoisted(() => vi.fn());
+const mockGetBackgroundUse = vi.hoisted(() => vi.fn());
 const mockUpdateAgent = vi.hoisted(() => vi.fn());
 const mockArchiveAgent = vi.hoisted(() => vi.fn());
 const mockCancelAgentTasks = vi.hoisted(() => vi.fn());
@@ -151,6 +157,10 @@ vi.mock("@multica/core/workspace/queries", () => ({
     queryFn: () => mockGetAgent(agentId),
     enabled: !!wsId && !!agentId,
     retry: false,
+  }),
+  agentBackgroundUseOptions: (wsId: string, agentId: string) => ({
+    queryKey: ["agents", wsId, "detail", agentId, "background-use"],
+    queryFn: () => mockGetBackgroundUse(agentId),
   }),
   cacheAgentResponse: (
     queryClient: QueryClient,
@@ -213,6 +223,7 @@ vi.mock("@multica/core/paths", () => ({
     agentDetail: (id: string) => `/acme/agents/${id}`,
     newAgentManual: () => "/acme/agents/new/manual",
     chat: () => "/acme/chat",
+    settings: () => "/acme/settings",
   }),
 }));
 vi.mock("@multica/core/api", () => {
@@ -309,6 +320,7 @@ beforeEach(() => {
   runtimesRef.current = [];
   agentsRef.current = [baseAgent];
   mockGetAgent.mockRejectedValue(new ApiError("not found", 404, "Not Found"));
+  mockGetBackgroundUse.mockResolvedValue([]);
   mockUpdateAgent.mockResolvedValue({ ...baseAgent, model: "new-model" });
   mockArchiveAgent.mockResolvedValue(undefined);
   mockCancelAgentTasks.mockResolvedValue({ cancelled: 2 });
@@ -552,7 +564,7 @@ describe("AgentDetailPage layout", () => {
 });
 
 describe("AgentDetailPage deep links", () => {
-  it("opens Advanced settings at the section named by ?view=", async () => {
+  it("opens Settings at the section named by ?view=", async () => {
     renderPage("view=general&focus=conversation_starters");
     expect(await screen.findByTestId("advanced-settings")).toHaveTextContent(
       "advanced:general",
@@ -606,6 +618,15 @@ describe("AgentDetailPage deep links", () => {
     expect(screen.getByTestId("advanced-settings")).toHaveTextContent(
       "advanced:access",
     );
+  });
+
+  it("opens Settings at General from the properties panel", async () => {
+    const { replace } = renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "all settings" }));
+    expect(screen.getByTestId("advanced-settings")).toHaveTextContent(
+      "advanced:general",
+    );
+    expect(replace).toHaveBeenLastCalledWith("/acme/agents/agent-1?view=general");
   });
 
   it("opens the work list from View all", async () => {
@@ -699,7 +720,7 @@ describe("AgentDetailPage DM button", () => {
 });
 
 describe("AgentDetailPage more actions", () => {
-  it("keeps Advanced settings and copy actions but no Archive for a system agent", async () => {
+  it("keeps Settings and copy actions but no Archive for a system agent", async () => {
     // An admin passes `canEditAgent`, so only the system key keeps Archive
     // out of the menu.
     agentsRef.current = [{ ...baseAgent, system_key: "mika" }];
@@ -709,7 +730,7 @@ describe("AgentDetailPage more actions", () => {
     await screen.findByRole("button", { name: "Assign work" });
     const menu = openMoreActions();
     expect(
-      within(menu).getByRole("menuitem", { name: "Advanced settings" }),
+      within(menu).getByRole("menuitem", { name: "Settings" }),
     ).toBeInTheDocument();
     expect(
       within(menu).getByRole("menuitem", { name: "Copy link" }),
@@ -733,15 +754,31 @@ describe("AgentDetailPage more actions", () => {
     expect(push).toHaveBeenCalledWith("/acme/agents");
   });
 
-  it("opens Advanced settings at General", async () => {
+  it("opens Settings at General", async () => {
     renderPage();
     await screen.findByRole("button", { name: "Assign work" });
     fireEvent.click(
-      within(openMoreActions()).getByRole("menuitem", { name: "Advanced settings" }),
+      within(openMoreActions()).getByRole("menuitem", { name: "Settings" }),
     );
     expect(screen.getByTestId("advanced-settings")).toHaveTextContent(
       "advanced:general",
     );
+  });
+
+  it("opens Settings at General from the header button", async () => {
+    const { replace } = renderPage();
+    fireEvent.click(await screen.findByRole("button", { name: "Settings" }));
+    expect(screen.getByTestId("advanced-settings")).toHaveTextContent(
+      "advanced:general",
+    );
+    expect(replace).toHaveBeenLastCalledWith("/acme/agents/agent-1?view=general");
+  });
+
+  it("keeps the header Settings button on an archived agent", async () => {
+    agentsRef.current = [{ ...baseAgent, archived_at: "2026-06-01T00:00:00Z" }];
+    renderPage();
+    await screen.findByText(/This agent is archived/);
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
   });
 
   it("copies the shareable link and the agent ID", async () => {
@@ -795,5 +832,59 @@ describe("AgentDetailPage more actions", () => {
     expect(
       within(openMoreActions()).queryByRole("menuitem", { name: /Cancel all/ }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("AgentDetailPage background agent notice (CHE-5439)", () => {
+  const uses = [
+    { scope: "workspace", job: "dm_title" },
+    { scope: "workspace", job: "quick_actions" },
+    { scope: "personal", job: "quick_actions" },
+  ];
+
+  it("lists each job with its scope and links it to its settings tab", async () => {
+    membersRef.current = [{ user_id: "user-1", role: "admin" }];
+    mockGetBackgroundUse.mockResolvedValue(uses);
+    renderPage();
+
+    const banner = (await screen.findByText("Background agent")).closest(
+      "[role='status']",
+    ) as HTMLElement;
+    const rows = within(banner).getAllByRole("listitem");
+    expect(rows.map((r) => r.textContent)).toEqual([
+      expect.stringContaining("DM title"),
+      expect.stringContaining("Quick actions"),
+      expect.stringContaining("Quick actions"),
+    ]);
+    expect(within(rows[0]!).getByText("Workspace")).toBeInTheDocument();
+    expect(within(rows[2]!).getByText("Personal · yours")).toBeInTheDocument();
+    expect(
+      within(rows[0]!).getByRole("link", { name: "Workspace → Background agents" }),
+    ).toHaveAttribute("href", "/acme/settings?tab=background-agents");
+    expect(
+      within(rows[2]!).getByRole("link", { name: "Personal → Background agents" }),
+    ).toHaveAttribute("href", "/acme/settings?tab=personal-background-agents");
+  });
+
+  it("gives a plain member no link for workspace jobs, only for their own personal job", async () => {
+    mockGetBackgroundUse.mockResolvedValue(uses);
+    renderPage();
+
+    const banner = (await screen.findByText("Background agent")).closest(
+      "[role='status']",
+    ) as HTMLElement;
+    expect(
+      within(banner).queryByRole("link", { name: "Workspace → Background agents" }),
+    ).toBeNull();
+    expect(
+      within(banner).getByRole("link", { name: "Personal → Background agents" }),
+    ).toBeInTheDocument();
+  });
+
+  it("shows no notice for an agent that serves no background job", async () => {
+    renderPage();
+    await screen.findByRole("button", { name: "Assign work" });
+    await waitFor(() => expect(mockGetBackgroundUse).toHaveBeenCalled());
+    expect(screen.queryByText("Background agent")).toBeNull();
   });
 });

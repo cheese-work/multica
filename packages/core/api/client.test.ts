@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuthStore } from "../auth";
+import { setCurrentWorkspace } from "../platform/workspace-storage";
 import { configStore } from "../config";
 import type { StorageAdapter, User } from "../types";
 import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage } from "./client";
@@ -294,6 +295,25 @@ describe("ApiClient edit guards", () => {
   });
 });
 
+describe("ApiClient requested_by_id list param", () => {
+  it("sends requested_by_id on both list calls", async () => {
+    const fetchMock = vi.fn().mockImplementation(async () =>
+      new Response(JSON.stringify({ issues: [], total: 0, groups: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    await client.listIssues({ requested_by_id: "u1" });
+    await client.listGroupedIssues({ group_by: "assignee", requested_by_id: "u1" });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("requested_by_id=u1");
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("requested_by_id=u1");
+  });
+});
+
 describe("ApiClient pull-request response schema", () => {
   const validPR = {
     id: "pr-1",
@@ -334,6 +354,32 @@ describe("ApiClient pull-request response schema", () => {
       failed_check_names: ["backend"],
       checks_total: 0,
     });
+  });
+
+  it("keeps snapshot_paused_until and tolerates its absence (CHE-8795)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            pull_requests: [
+              { ...validPR, snapshot_paused_until: "2026-11-20T12:05:00Z" },
+              { ...validPR, id: "pr-2", snapshot_paused_until: null },
+              { ...validPR, id: "pr-3" },
+              { ...validPR, id: "pr-4", snapshot_paused_until: 12345 },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
+    );
+
+    const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
+    expect(result.pull_requests[0]?.snapshot_paused_until).toBe("2026-11-20T12:05:00Z");
+    expect(result.pull_requests[1]?.snapshot_paused_until).toBeNull();
+    expect(result.pull_requests[2]?.snapshot_paused_until).toBeUndefined();
+    // A malformed value degrades to absent instead of reaching the card.
+    expect(result.pull_requests[3]?.snapshot_paused_until).toBeUndefined();
   });
 
   it("falls back safely when failed_check_names is malformed", async () => {
@@ -1674,6 +1720,7 @@ describe("ApiClient", () => {
           parent_id: "parent-1",
           attachment_ids: ["attachment-1"],
           suppress_agent_ids: ["agent-1"],
+          steer: false,
         }),
       },
       {
@@ -2312,6 +2359,30 @@ describe("ApiClient", () => {
       expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "> C. CHE-2162\n\n1", decision_request_id: "request-2" });
     });
 
+    it("CHE-4153 sendChatMessage sends client_message_id and ask_ids when given", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-11-12T02:50:00Z" }), { status: 201 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await new ApiClient("https://api.example.test").sendChatMessage("session-1", "hi", [], undefined, { clientMessageId: "c-1", askIds: ["a-1"] });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "hi", client_message_id: "c-1", ask_ids: ["a-1"] });
+    });
+
+    it("CHE-4153 attention actions post the exact displayed keys", async () => {
+      const ok = () => Promise.resolve(new Response(JSON.stringify({ attention: [], batch_id: "b1" }), { status: 200 }));
+      const fetchMock = vi.fn().mockImplementation(ok);
+      vi.stubGlobal("fetch", fetchMock);
+      const client = new ApiClient("https://api.example.test");
+      await client.chatAttentionXong("s1", ["item:1"]);
+      await client.chatAttentionLater("s1", ["item:1"], { durationSeconds: 7200, requestId: "r1" });
+      await client.chatAttentionXongAll(["item:1", "turn:2"]);
+      await client.chatAttentionUndoXongAll("b1");
+      const calls = fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method, init?.body ? JSON.parse(init.body as string) : undefined]);
+      expect(calls[0]).toEqual(["https://api.example.test/api/chat/sessions/s1/attention/xong", "POST", { subject_keys: ["item:1"] }]);
+      expect(calls[1]).toEqual(["https://api.example.test/api/chat/sessions/s1/attention/later", "POST", { subject_keys: ["item:1"], duration_seconds: 7200, request_id: "r1" }]);
+      expect(calls[2]).toEqual(["https://api.example.test/api/chat/attention/xong-all", "POST", { subject_keys: ["item:1", "turn:2"] }]);
+      expect(calls[3]![0]).toBe("https://api.example.test/api/chat/attention/xong-all/b1/undo");
+      expect(calls[3]![1]).toBe("POST");
+    });
+
     it("sendChatMessage serialises attachment_ids onto the JSON body when present", async () => {
       const fetchMock = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z" }), {
@@ -2451,7 +2522,7 @@ describe("ApiClient model discovery response schema", () => {
   function stubJSON(body: unknown) {
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue(
+      vi.fn().mockImplementation(() =>
         new Response(JSON.stringify(body), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -2459,6 +2530,39 @@ describe("ApiClient model discovery response schema", () => {
       ),
     );
   }
+
+  it.each([null, "other-workspace"])(
+    "targets onboarding workspace for discovery and polling with active route %s",
+    async (activeSlug) => {
+      setCurrentWorkspace(activeSlug, null);
+      try {
+        stubJSON(completed);
+        const client = new ApiClient("https://api.example.test");
+        await client.initiateListModels("rt-1", { force: true }, "new-workspace");
+        await client.getListModelsResult("rt-1", "req-1", "new-workspace");
+        for (const [, init] of vi.mocked(fetch).mock.calls) {
+          expect(new Headers(init?.headers).get("X-Workspace-Slug")).toBe("new-workspace");
+        }
+      } finally {
+        setCurrentWorkspace(null, null);
+      }
+    },
+  );
+
+  it("keeps the active workspace header when no override is supplied", async () => {
+    setCurrentWorkspace("existing-workspace", null);
+    try {
+      stubJSON(completed);
+      const client = new ApiClient("https://api.example.test");
+      await client.initiateListModels("rt-1");
+      await client.getListModelsResult("rt-1", "req-1");
+      for (const [, init] of vi.mocked(fetch).mock.calls) {
+        expect(new Headers(init?.headers).get("X-Workspace-Slug")).toBe("existing-workspace");
+      }
+    } finally {
+      setCurrentWorkspace(null, null);
+    }
+  });
 
   it("parses a live completed discovery", async () => {
     stubJSON(completed);
@@ -2742,6 +2846,66 @@ describe("ApiClient refreshSkill response schema", () => {
       content: "",
       files: [],
     });
+  });
+});
+
+describe("ApiClient skill version response schemas", () => {
+  function stubJSON(body: unknown) {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  const summary = {
+    id: "ver-2",
+    skill_id: "skill-1",
+    version: 2,
+    name: "review-helper",
+    source: "restore",
+    restored_from_version: 1,
+    created_by: "user-1",
+    created_at: "2026-01-02T00:00:00Z",
+  };
+
+  it("parses the version list and maps unknown sources to update", async () => {
+    stubJSON([summary, { ...summary, id: "ver-1", version: 1, source: "future-kind" }]);
+    const result = await new ApiClient("https://api.example.test").listSkillVersions("skill-1");
+    expect(result.map((v) => [v.version, v.source])).toEqual([
+      [2, "restore"],
+      [1, "update"],
+    ]);
+  });
+
+  it("falls back to an empty list when the response is malformed", async () => {
+    stubJSON({ versions: 42 });
+    const result = await new ApiClient("https://api.example.test").listSkillVersions("skill-1");
+    expect(result).toEqual([]);
+  });
+
+  it("parses a version snapshot and defaults omitted fields", async () => {
+    const fetchMock = stubJSON({ ...summary, content: "# v2", files: [{ path: "a.md" }] });
+    const result = await new ApiClient("https://api.example.test").getSkillVersion("skill-1", 2);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/api/skills/skill-1/versions/2");
+    expect(result).toMatchObject({
+      version: 2,
+      description: "",
+      content: "# v2",
+      files: [{ path: "a.md", content: "" }],
+    });
+  });
+
+  it("restores through POST and falls back to the empty skill on a malformed body", async () => {
+    const fetchMock = stubJSON({ skill: 42 });
+    const result = await new ApiClient("https://api.example.test").restoreSkillVersion("skill-1", 1);
+    const [url, init] = fetchMock.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/api/skills/skill-1/versions/1/restore");
+    expect((init as RequestInit | undefined)?.method).toBe("POST");
+    expect(result).toMatchObject({ id: "", files: [] });
   });
 });
 
@@ -3473,5 +3637,45 @@ describe("ApiClient getIssue schema failure", () => {
     expect((err as SchemaValidationError).paths).toContain("number");
     expect(String(warn.mock.calls[0]?.[0])).toContain("number");
     setSchemaLogger(noopLogger);
+  });
+});
+
+describe("workspace scheduling pause", () => {
+  it.each([
+    ["pauseWorkspace", "pause"],
+    ["resumeWorkspace", "resume"],
+  ] as const)("%s POSTs /api/workspaces/:id/%s", async (method, verb) => {
+    const body = { id: "ws-1", scheduling_paused_at: verb === "pause" ? "2026-11-13T00:00:00Z" : null };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ApiClient("https://api.example.test")[method]("ws-1");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`https://api.example.test/api/workspaces/ws-1/${verb}`);
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
+    expect(result.scheduling_paused_at).toBe(body.scheduling_paused_at);
+  });
+});
+
+describe("personal background agents", () => {
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+
+  it("reads the caller's picks and treats an unset slot as empty", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json({ dm_title: { agent_id: "a1", fallback_agent_id: null } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await new ApiClient("https://api.example.test").getMyBackgroundAgents("ws-1");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/workspaces/ws-1/me/background-agents");
+    expect(result).toEqual({ dm_title: { agent_id: "a1", fallback_agent_id: "" } });
+  });
+
+  it("PUTs the patch as is and resolves null on a malformed response", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(json("nope"));
+    vi.stubGlobal("fetch", fetchMock);
+    const patch = { quick_actions: { agent_id: null, fallback_agent_id: null } };
+    const result = await new ApiClient("https://api.example.test").updateMyBackgroundAgents("ws-1", patch);
+    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PUT");
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(patch);
+    expect(result).toBeNull();
   });
 });

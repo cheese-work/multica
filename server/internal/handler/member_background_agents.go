@@ -11,14 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/bgagents"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // A member's own background-agent chains live in member_setting under this
 // key (CHE-4111). Every read is keyed by the caller's identity: no route takes
-// a user id, so one member cannot read another's row. Writes arrive in a later
-// step.
-const memberBackgroundAgentsKey = "background_agents"
+// a user id, so one member cannot read another's row. Writes are in
+// member_background_agents_write.go.
+const memberBackgroundAgentsKey = service.MemberBackgroundAgentsKey
 
 // GetMyBackgroundAgents returns the caller's own value, or {} when unset.
 // ?job= validates against the user-scoped catalog first: routing is
@@ -66,7 +67,11 @@ func userScopedJob(job bgagents.Job) *bgagents.Error {
 
 // memberBackgroundAgents returns the caller's stored value, nil when unset.
 func (h *Handler) memberBackgroundAgents(ctx context.Context, ws, user pgtype.UUID) ([]byte, error) {
-	row, err := h.Queries.GetMemberSetting(ctx, db.GetMemberSettingParams{WorkspaceID: ws, UserID: user, Key: memberBackgroundAgentsKey})
+	return h.memberBackgroundAgentsWith(ctx, h.Queries, ws, user)
+}
+
+func (h *Handler) memberBackgroundAgentsWith(ctx context.Context, q *db.Queries, ws, user pgtype.UUID) ([]byte, error) {
+	row, err := q.GetMemberSetting(ctx, db.GetMemberSettingParams{WorkspaceID: ws, UserID: user, Key: memberBackgroundAgentsKey})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -123,4 +128,51 @@ func parseStoredBackgroundAgents(raw []byte, scope bgagents.Scope, ws pgtype.UUI
 		return nil
 	}
 	return cfg
+}
+
+// BackgroundUse is one background job an agent serves. Scope is "workspace" or
+// "personal" (the CLI words), never the internal "user".
+type BackgroundUse struct {
+	Scope string `json:"scope"`
+	Job   string `json:"job"`
+}
+
+// backgroundUseJobs fixes the order of the list: catalog order.
+var backgroundUseJobs = []bgagents.Job{bgagents.DMTitle, bgagents.QuickActions, bgagents.Compact, bgagents.Routing}
+
+// agentBackgroundUse lists the jobs where the agent is a primary or fallback
+// slot: the workspace chain for every viewer, the personal chain only for the
+// calling member's own member_setting row (CHE-5439). Agent actors have no
+// personal chain.
+func (h *Handler) agentBackgroundUse(ctx context.Context, agent db.Agent, wsSettings []byte, actorType, viewerID string) ([]BackgroundUse, error) {
+	var settings map[string]json.RawMessage
+	_ = json.Unmarshal(wsSettings, &settings)
+	chains := []struct {
+		scope string
+		cfg   bgagents.Config
+	}{{"workspace", parseStoredBackgroundAgents(settings[backgroundAgentsKey], bgagents.WorkspaceScope, agent.WorkspaceID)}}
+	if actorType == "member" {
+		viewer, err := parseUUIDStrict(viewerID)
+		if err != nil {
+			return nil, err
+		}
+		raw, err := h.memberBackgroundAgents(ctx, agent.WorkspaceID, viewer)
+		if err != nil {
+			return nil, err
+		}
+		chains = append(chains, struct {
+			scope string
+			cfg   bgagents.Config
+		}{"personal", parseStoredBackgroundAgents(raw, bgagents.UserScope, agent.WorkspaceID)})
+	}
+	id := uuidToString(agent.ID)
+	var out []BackgroundUse
+	for _, job := range backgroundUseJobs {
+		for _, c := range chains {
+			if ch := c.cfg[job]; ch.AgentID == id || ch.FallbackAgentID == id {
+				out = append(out, BackgroundUse{Scope: c.scope, Job: string(job)})
+			}
+		}
+	}
+	return out, nil
 }

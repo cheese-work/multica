@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -26,6 +27,7 @@ func structuredAskFixture() map[string]any {
 		"default_if_no_reply": "Do not deploy.",
 		"source_issue_id":     "11111111-1111-4111-8111-111111111111",
 		"source_comment_id":   "44444444-4444-4444-8444-444444444444",
+		"state_claims":        []map[string]any{{"claim": "The release is ready.", "readback_command": "gh release view v1", "observed_at": time.Now().Format(time.RFC3339)}},
 	}
 }
 
@@ -110,6 +112,53 @@ func TestDecisionWithdrawCommand(test *testing.T) {
 	}
 }
 
+func TestDecisionRevokeCommand(test *testing.T) {
+	command, _, err := rootCmd.Find([]string{"decision", "revoke"})
+	if err != nil || command.Name() != "revoke" {
+		test.Fatal("decision revoke is unavailable")
+	}
+	const requestID = "33333333-3333-4333-8333-333333333333"
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests++
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			test.Error(err)
+		}
+		if request.Method != http.MethodPost || request.URL.Path != "/api/decision-requests/"+requestID+"/revoke" || body["reason"] != "Paused the wrong agent." {
+			test.Errorf("wrong revoke: %s %s %+v", request.Method, request.URL, body)
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"outcome": "revoked"})
+	}))
+	defer server.Close()
+	test.Setenv("MULTICA_SERVER_URL", server.URL)
+	test.Setenv("MULTICA_TOKEN", "mat_test-token")
+	test.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	_ = command.Flags().Set("why", " ")
+	if err := command.RunE(command, []string{requestID}); err == nil || requests != 0 {
+		test.Fatal("empty --why reached the API")
+	}
+	_ = command.Flags().Set("why", "Paused the wrong agent.")
+	if _, err := captureStdout(test, func() error { return command.RunE(command, []string{requestID}) }); err != nil || requests != 1 {
+		test.Fatalf("revoke: error=%v requests=%d", err, requests)
+	}
+}
+
+func TestDecisionGetTableShowsTheRevokeRecord(test *testing.T) {
+	command, _, _ := rootCmd.Find([]string{"decision", "get"})
+	_ = command.Flags().Set("output", "table")
+	test.Cleanup(func() { _ = command.Flags().Set("output", "json") })
+	out, err := captureStdout(test, func() error {
+		return printDecisions(command, []map[string]any{{
+			"id": "r1", "status": "answered", "escalation_class": "reversible", "ask": "Pause?",
+			"revoke": map[string]any{"at": "2026-11-13T05:00:00Z", "by": "u1", "reason": "wrong agent"},
+		}}, false)
+	})
+	if err != nil || !strings.Contains(out, "wrong agent") || !strings.Contains(out, "12:00 ICT") {
+		test.Fatalf("table lacks the revoke record in ICT: err=%v out=%q", err, out)
+	}
+}
+
 func TestPrintAskHintsDedupesAndKeepsStdoutShape(test *testing.T) {
 	var stderr bytes.Buffer
 	command := &cobra.Command{}
@@ -135,7 +184,7 @@ func TestAskFileHelpNamesBlockingAndAdvisoryRules(test *testing.T) {
 
 func TestDecisionRequestAskFileHelpListsHumanSteps(test *testing.T) {
 	usage := decisionRequestCmd.Flags().Lookup("ask-file").Usage
-	for _, field := range []string{"human_steps[{action, command, values[{name, value, source}], verify_done}]", "probes[]", "after_done"} {
+	for _, field := range []string{"human_steps[{action, command, values[{name, value, source}], verify_done, observed, files[{path, repo, sha, attachment_id}], dry_run{host, result}}]", "probes[]", "after_done"} {
 		if !strings.Contains(usage, field) {
 			test.Fatalf("--ask-file help is missing %q: %s", field, usage)
 		}

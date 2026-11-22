@@ -1,0 +1,61 @@
+name: pr-guard-rules
+
+# CHE-5208 (CHE-5194 T5b): the blocking backstop for the merge-method tag and the review policy. The in-run shim fixes a
+# PR before it is published; this check fails one that bypassed the shim (an absolute path to gh, the web UI, a runtime
+# with no shim). Reusable workflow: called from pr-guards.yml (every PR push), pr-guard-rules-edit.yml (a title, body
+# or base edit, a removed reviewer) and pr-guard-rules-queue.yml (every merge-queue build), so a green result cannot
+# outlive the change that invalidates it: the queue build re-judges the PR at merge time against the then-current
+# variables and base tip. A call adds a job, not a run. It builds the CLI from the trusted commit (the workflow commit,
+# or the queue's base commit, because the queue ref holds PR code) and runs `multica guard check-pr`, which reads the PR
+# back and the repository's `.github/agent-rules.yml` from the current tip of the protected base branch. Nothing is
+# edited. The review policy comes from the repository variables GUARD_POLICY_JSON and GUARD_POLICY_SHA256
+# (digest of the JSON; the CLI verifies it). Both unset (no stored policy, CHE-5934): the compiled default policy judges
+# the PR. Only one set: the check is red.
+# CHE-5752: the one secret is the read-only GUARD_POLICY_READ_TOKEN; with it the check reads the live stored policy and
+# fails closed on a stale variable copy (scripts/pr-guard-rules.sh). Never add another secret or a write permission.
+
+on:
+  workflow_call:
+    secrets:
+      GUARD_POLICY_READ_TOKEN:
+        required: false
+
+permissions: {}
+
+jobs:
+  guard-check:
+    name: PR guard rules
+    runs-on: ${{ vars.RUNNER_PR_GUARD_CHECK || 'ubuntu-24.04' }}
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout trusted workflow commit
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.merge_group.base_sha || github.workflow_sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "~1.27.3"
+          cache-dependency-path: server/go.sum
+      - name: Build the guard CLI
+        working-directory: server
+        run: go build -o "$RUNNER_TEMP/multica" ./cmd/multica
+      - name: Check the PR against the guard rules
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          REPO: ${{ github.repository }}
+          # CHE-7066: a queue build reads the rules file through Git, not REST, so the installation rate limit cannot
+          # eject a PR. Set only for merge_group; the CLI also checks the event and the queue ref. Remove to return to REST.
+          GUARD_RULES_VIA_GIT: ${{ github.event_name == 'merge_group' && '1' || '' }}
+          GUARD_POLICY_JSON: ${{ vars.GUARD_POLICY_JSON }}
+          GUARD_POLICY_SHA256: ${{ vars.GUARD_POLICY_SHA256 }}
+          GUARD_POLICY_READ_TOKEN: ${{ secrets.GUARD_POLICY_READ_TOKEN }}
+          GUARD_POLICY_LIVE_REQUIRED: ${{ vars.GUARD_POLICY_LIVE_REQUIRED }}
+          MULTICA_SERVER_URL: ${{ vars.GUARD_POLICY_SERVER_URL }}
+          MULTICA_WORKSPACE_ID: ${{ vars.GUARD_POLICY_WORKSPACE_ID }}
+        run: bash scripts/pr-guard-rules.sh

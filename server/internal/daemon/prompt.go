@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
@@ -64,7 +65,7 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	var b strings.Builder
 	b.WriteString(buildSharedLocalDirectoryBlock(opts.sharedLocalDirectory))
 	b.WriteString(buildWorktreeReplayConflictBlock(opts.worktreeReplayConflicts))
-	b.WriteString(buildWorktreeBranchBlock(opts.worktreeBranch, opts.worktreeBase))
+	b.WriteString(buildWorktreeBranchBlock(opts.worktreeBranch, opts.worktreeBase, opts.worktreeCommitsAllLeftovers))
 	if task.PriorSessionResumeUnavailable {
 		b.WriteString(sessionContinuityNoticeFor(task))
 	}
@@ -79,6 +80,40 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	}
 	b.WriteString(buildJoinedWakeupsBlock(task.WakeupJoined))
 	b.WriteString(buildProjectWorkflowBlock(task))
+	b.WriteString(buildParentIssueBlock(task))
+	if opts.taskBrief != "" {
+		b.WriteString("\n" + strings.TrimRight(opts.taskBrief, "\n") + "\n")
+	}
+	return b.String()
+}
+
+// buildParentIssueBlock points a sub-issue's run at its parent. The sub-issue's
+// description is only what its author handed down; the decisions behind it stay
+// on the parent. A resumed session may already have read the parent, so it gets
+// the pointer without the full instruction. It still names the commands,
+// because a session resumed from before this block existed never saw them.
+func buildParentIssueBlock(task Task) string {
+	p := task.ParentIssue
+	if p == nil || p.ID == "" || task.IssueID == "" || task.ChatSessionID != "" {
+		return ""
+	}
+	name := p.ID
+	if p.Identifier != "" {
+		name = p.Identifier
+	}
+	getCmd := fmt.Sprintf("`multica issue get %s --output json`", p.ID)
+	scanCmd := fmt.Sprintf("`multica issue comment list %s --roots-only --summary --compact --output json`", p.ID)
+
+	var b strings.Builder
+	b.WriteString("[Parent issue]\n")
+	fmt.Fprintf(&b, "This issue is a sub-issue of %s \"%s\" (status: %s).", name, p.Title, p.Status)
+	if task.PriorSessionID != "" && !task.PriorSessionResumeUnavailable {
+		fmt.Fprintf(&b, " If you have not read the parent in this session, read it before starting work: %s, then %s.\n\n", getCmd, scanCmd)
+		return b.String()
+	}
+	b.WriteString(" The discussion that produced this sub-issue — decisions, trade-offs, mockups — lives on the parent; this issue's description is only the part handed to you.\n")
+	fmt.Fprintf(&b, "Before starting work, read the parent: %s, then scan its threads with %s and expand the ones that shaped this sub-issue. `multica issue children %s --output json` shows what your sibling sub-issues cover.\n", getCmd, scanCmd, p.ID)
+	b.WriteString("This issue's description defines your scope; the parent is context. If they conflict, ask on this issue instead of picking one.\n\n")
 	return b.String()
 }
 
@@ -110,14 +145,22 @@ func buildJoinedWakeupsBlock(notes string) string {
 // daemon's own execution context can answer. Kept behind PromptOption so the
 // common BuildPrompt(task, provider) call sites stay unchanged.
 type promptOpts struct {
-	sharedLocalDirectory    bool
-	worktreeReplayConflicts []string
-	worktreeBranch          string
-	worktreeBase            string
+	sharedLocalDirectory        bool
+	worktreeReplayConflicts     []string
+	worktreeBranch              string
+	worktreeBase                string
+	worktreeCommitsAllLeftovers bool
+	taskBrief                   string
 }
 
 // PromptOption tunes per-turn prompt copy with run-scoped context.
 type PromptOption func(*promptOpts)
+
+// WithTaskBrief appends the per-task part of a split runtime brief
+// (execenv.SplitRuntimeBrief) to the turn, after the cached prefix (CHE-6540).
+func WithTaskBrief(s string) PromptOption {
+	return func(o *promptOpts) { o.taskBrief = s }
+}
 
 // WithSharedLocalDirectory marks a turn that runs inside the user's own
 // directory WITHOUT holding its path mutex — today, a chat turn on an in_place
@@ -151,10 +194,26 @@ func WithWorktreeBranch(branch, base string) PromptOption {
 	}
 }
 
+// WithWorktreeCommitsAllLeftovers marks a worktree turn whose uncommitted
+// files will all be committed onto the branch at the end, even after the
+// agent's own commits — execenv.LocalWorktree.CommitsAllLeftovers. The task
+// branch block then states that instead of the usual rule, so the agent knows
+// to clear out what it does not want delivered (#9788 review).
+func WithWorktreeCommitsAllLeftovers() PromptOption {
+	return func(o *promptOpts) { o.worktreeCommitsAllLeftovers = true }
+}
+
 // buildWorktreeBranchBlock states the delivery contract of a worktree turn.
+// That includes what happens to uncommitted files: Finalize commits them for
+// an agent that made no commit and keeps them off the branch for one that did
+// (#9788), and an agent that is not told so cannot choose which side it lands
+// on — it leaves scratch output behind assuming it will not be delivered. A
+// turn that started on an unresolved merge of the user's edits is the
+// exception (commitsAllLeftovers): there everything is committed either way,
+// and the block says so rather than promising what Finalize will not do.
 // Branch names come from the daemon's own sanitised naming and the base is a
 // hex object id, so both are safe to render in code spans.
-func buildWorktreeBranchBlock(branch, base string) string {
+func buildWorktreeBranchBlock(branch, base string, commitsAllLeftovers bool) string {
 	if branch == "" || base == "" {
 		return ""
 	}
@@ -163,6 +222,12 @@ func buildWorktreeBranchBlock(branch, base string) string {
 	fmt.Fprintf(&b, "This run works in a private git worktree on branch `%s`, starting from commit `%s`. What that branch holds when you finish is what gets delivered, and the next turn continues from it.\n\n", branch, base)
 	fmt.Fprintf(&b, "- Keep HEAD on `%s` and only add commits on top of `%s`. Do not squash, amend, rebase or reset past `%s`, and do not check out another branch or a detached HEAD to do the work.\n", branch, base, base)
 	b.WriteString("- To publish the work under another name (for a pull request), push it without switching: `git push origin HEAD:<name>`.\n")
+	if commitsAllLeftovers {
+		b.WriteString("- This run starts by finishing a merge of the user's edits, so when it ends everything you leave that is not gitignored is committed onto the branch for you — even if you have made commits of your own — without running the repository's commit hooks. That keeps the user's edits from being dropped. Delete scratch files and generated output you do not want delivered before you finish.\n")
+	} else {
+		b.WriteString("- If you commit, only your commits are delivered. Whatever you leave uncommitted after committing — generated output, scratch files, edits you did not commit — is saved aside for the user and does not reach the branch, so commit everything that belongs to the work.\n")
+		b.WriteString("- If you make no commit, everything you leave that is not gitignored is committed onto the branch for you when the run ends, without running the repository's commit hooks. Delete scratch files and generated output you do not want delivered before you finish.\n")
+	}
 	b.WriteString("- A delivery that is not on this branch, or no longer contains its starting commit, cannot be recorded: the task fails even though the work is done.\n\n")
 	return b.String()
 }
@@ -176,7 +241,11 @@ func BuildWorktreeDeliveryRepairPrompt(problem *execenv.DeliveryProblem) string 
 	b.WriteString("Your previous turn in this git worktree finished, but its work cannot be delivered yet.\n\n")
 	fmt.Fprintf(&b, "Problem: %s.\n\n", problem.Reason)
 	fmt.Fprintf(&b, "The work has to end on branch `%s`, in commits on top of `%s` (the commit this turn started from), with HEAD on that branch. Your files are intact; only where they are committed is wrong.\n\n", problem.Branch, problem.BaseCommit)
-	b.WriteString("Fix it in this worktree. This sequence keeps every file exactly as it is now and puts it on the branch as one commit:\n\n```sh\n")
+	if problem.CommittedOnly {
+		b.WriteString("Fix it in this worktree. This sequence puts exactly what your commits contain on the branch as one commit, and leaves your files as they are; its last line stages everything you left uncommitted, so none of it is lost. Uncommitted changes still do not reach the branch: like any change left uncommitted after you commit, they are saved aside rather than delivered:\n\n```sh\n")
+	} else {
+		b.WriteString("Fix it in this worktree. This sequence keeps every file exactly as it is now and puts it on the branch as one commit:\n\n```sh\n")
+	}
 	for _, step := range problem.RepairSteps() {
 		b.WriteString("git")
 		for _, arg := range step {
@@ -188,7 +257,7 @@ func BuildWorktreeDeliveryRepairPrompt(problem *execenv.DeliveryProblem) string 
 		b.WriteString("\n")
 	}
 	b.WriteString("```\n\n")
-	fmt.Fprintf(&b, "Before the final commit, check `git diff --cached %s`: it should show only the changes you meant to make. If it undoes something `%s` contains that you did not intend to remove, restore it first. You may keep separate commits instead (for example by rebasing them onto `%s`), as long as the end state is the same.\n\n", problem.BaseCommit, problem.BaseCommit, problem.BaseCommit)
+	fmt.Fprintf(&b, "Before the `git commit` line, check `git diff --cached %s`: it should show only the changes you meant to make. If it undoes something `%s` contains that you did not intend to remove, restore it first. You may keep separate commits instead (for example by rebasing them onto `%s`), as long as the end state is the same.\n\n", problem.BaseCommit, problem.BaseCommit, problem.BaseCommit)
 	b.WriteString("Do only this — no other changes, no new comments or status updates. Reply with one line saying what you did.\n")
 	return b.String()
 }
@@ -276,6 +345,11 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 		apply(&opts)
 	}
 	body := buildPromptBody(task, provider)
+	// A background job prompt is the bounded input only (CHE-4100): none of the
+	// run-scoped blocks below, which carry the originator's name and email.
+	if task.BackgroundJob != "" {
+		return body
+	}
 	// Run-scoped context is appended, never prepended: everything ahead of it
 	// is stable across runs of a resumed session, and appending keeps it after
 	// the cached prefix (MUL-5377).
@@ -289,6 +363,9 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 }
 
 func buildPromptBody(task Task, provider string) string {
+	if task.BackgroundJob != "" {
+		return buildBackgroundPrompt(task)
+	}
 	if task.WakeupID != "" {
 		var b strings.Builder
 		fmt.Fprintf(&b, "You are running as a local coding agent for a Multica workspace.\n\nYour assigned issue ID is: %s\n\n[WAKEUP]\n%s\n\n", task.IssueID, task.HandoffNote)
@@ -308,7 +385,7 @@ func buildPromptBody(task Task, provider string) string {
 	if task.ChatSessionID != "" {
 		return buildChatPrompt(task)
 	}
-	if task.TriggerCommentID != "" {
+	if task.TriggerCommentID != "" && !task.isStatusHandoff() {
 		return buildCommentPrompt(task, provider)
 	}
 	if task.AutopilotRunID != "" {
@@ -329,12 +406,46 @@ func buildPromptBody(task Task, provider string) string {
 		}
 		b.WriteString("\n")
 	}
+	// CHE-5485: the comment a status move linked is context for the step, not a
+	// comment to answer, so it is labelled and carries no reply instructions.
+	if task.isStatusHandoff() && task.TriggerCommentContent != "" {
+		b.WriteString("Handoff context: the issue was moved to your step with the comment below. Treat it as the step brief for this run; do not reply to it as if it were a new comment:\n\n")
+		for _, line := range strings.Split(strings.TrimSpace(task.TriggerCommentContent), "\n") {
+			fmt.Fprintf(&b, "> %s\n", line)
+		}
+		b.WriteString("\n")
+	}
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
 	// Workflow step 2 owns the catch-up rule for every issue turn; this line
 	// only hands over the commands. It used to add "(assignment-triggered tasks
 	// treat the read as mandatory)", which read as if comment-triggered turns
 	// did not (MUL-6984).
 	fmt.Fprintf(&b, "For comment history, workflow step 2 applies. Scan the threads first with `multica issue comment list %s --roots-only --summary --compact --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. For `--since` incremental polling, pagination, and folding, see `multica issue comment list --help`.\n", task.IssueID)
+	return b.String()
+}
+
+// taskRunTimeout is the agent timeout for a task: the daemon default, tightened
+// to the job's run deadline for a background task (CHE-4100). The server does
+// not enforce that deadline, so the daemon does.
+func taskRunTimeout(def time.Duration, task Task) time.Duration {
+	job := time.Duration(task.BackgroundRunSeconds) * time.Second
+	if task.BackgroundJob == "" || job <= 0 || (def > 0 && def <= job) {
+		return def
+	}
+	return job
+}
+
+// buildBackgroundPrompt is the whole prompt of an output_only background task
+// (CHE-4100): a read-only brief and the bounded input the server stored in the
+// task context. It names no issue and no multica command: the run has neither,
+// and its output comes back as the task result.
+func buildBackgroundPrompt(task Task) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are running a read-only background job (%s). Use no tools and change nothing: no files, no commands, no network. Reply with the job output only, no preamble.\n\n", task.BackgroundJob)
+	b.WriteString("Input:\n")
+	for _, line := range strings.Split(task.BackgroundInput, "\n") {
+		fmt.Fprintf(&b, "> %s\n", line)
+	}
 	return b.String()
 }
 
@@ -361,56 +472,66 @@ func buildQuickCreatePrompt(task Task) string {
 		fmt.Fprintf(&b, "User input:\n> %s\n\n", task.QuickCreatePrompt)
 	}
 
+	fill := task.QuickCreateFill // CHE-6090: workspace setting quick_create_fill
 	b.WriteString("Field rules:\n\n")
+	if fill {
+		b.WriteString("Fill every field the quick-create modal left empty, so the new issue passes the workspace's ready check on the first try. A value the modal picked always wins and is never re-inferred. Read-only lookups before the create (`multica project list`, `multica property list`, member/agent/squad list) are allowed; still run exactly one `issue create`, no retry.\n\n")
+	}
 
 	// title
 	b.WriteString("- **title**: required. A concise but semantically rich summary. If the input references external resources (PRs, issues, URLs), use your judgment on whether fetching the resource would produce a meaningfully better title — e.g. \"review PR #123\" → \"Review PR #123: Refactor auth module to OAuth2\". Strip filler words but preserve key semantic information.\n\n")
 
+	if fill && len(task.QuickCreateTitleTypes) > 0 {
+		types := make([]string, len(task.QuickCreateTitleTypes))
+		for i, t := range task.QuickCreateTitleTypes {
+			types[i] = "`" + t + "`"
+		}
+		fmt.Fprintf(&b, "- **title type**: this workspace routes by Conventional-Commit type. Start the title with one of %s as `<type>(<scope>): <summary>`, choosing the type that fits the request.\n\n", strings.Join(types, ", "))
+	}
+
 	// description — the core optimization
-	b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use a two-section structure:\n\n")
+	if fill {
+		b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use this structure:\n\n")
+	} else {
+		b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use a two-section structure:\n\n")
+	}
 	b.WriteString("  1. **User request** — Faithfully restate what the user wants in their own words. Preserve specific names, identifiers, file paths, code snippets, and technical terms verbatim. Strip non-spec material before writing it (this is removal, not paraphrasing): verbal routing wrappers about creating the issue or routing it (e.g. \"create an issue\", \"分配给 X\", \"让 @X 处理\") and pure conversational fillers (e.g. \"对吧？\"). When in doubt, keep it.\n\n")
 	b.WriteString("     CC exception: `multica issue create` has no `--subscriber` flag, and the platform auto-subscribes members whose `[@Name](mention://member/<uuid>)` link appears in the description. When the user wrote \"cc @Y\", strip the verbal \"cc\" wrapper from the User request body and append a final `CC: <mention link(s)>` line to the description so the cc routing still fires.\n\n")
 	b.WriteString("  2. **Context** — include ONLY when the input cited external resources AND you successfully fetched them AND they produced verifiable facts worth recording. Summarize facts only (e.g. \"PR #45 changes auth to JWT\"), not interpretation or unsolicited reference implementations. If you have nothing factual to add, omit the section entirely — never use it as an apology log for resources you could not fetch.\n\n")
-	b.WriteString("  Hard rules: never invent requirements, implementation details, or acceptance criteria the user did not express; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
+	if fill {
+		b.WriteString("  3. **Acceptance criteria** — checkable items derived from the request. Label the section \"derived by <your agent name>\" so a reader can tell the user's words from yours.\n\n")
+		b.WriteString("  4. **Estimate** — one line `Estimate: <hours>`, labelled \"derived by <your agent name>\". It sets the due date below.\n\n")
+		b.WriteString("  Hard rules: keep the User request section verbatim apart from the routing wrappers stripped above; never invent implementation details; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
+	} else {
+		b.WriteString("  Hard rules: never invent requirements, implementation details, or acceptance criteria the user did not express; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
+	}
 
 	// priority
 	if task.QuickCreatePriority != "" {
 		fmt.Fprintf(&b, "- **priority**: required for this run. Pass `--priority %s`; the quick-create selection is authoritative.\n\n", task.QuickCreatePriority)
+	} else if fill {
+		b.WriteString("- **priority**: infer from the request: P0/P1, \"asap\", \"blocks\", \"broken\" → `urgent` or `high`. With no signal, pass `--priority medium`. Never omit it.\n\n")
 	} else {
 		b.WriteString("- **priority**: one of `urgent`, `high`, `medium`, `low`, or omit. Map P0/P1 → urgent/high; \"asap\" → urgent. If unspecified, omit.\n\n")
 	}
 
 	// assignee
 	b.WriteString("- **assignee**:\n")
-	b.WriteString("    - When the user names someone (\"assign to X\" / \"@X\"), call `multica workspace member list --output json`, `multica agent list --output json`, and `multica squad list --output json` and find the matching entity by display name. Squads are first-class assignees too — a squad name (e.g. \"Super Human\") routes work to the squad leader, who then delegates. On a clean unambiguous match, prefer `--assignee-id <uuid>` using the `user_id` (member) or `id` (agent or squad) from that JSON — UUID matching is exact and robust to name collisions in workspaces with overlapping names. `--assignee <name>` (fuzzy) is acceptable as a fallback when names are unambiguous. On no match or ambiguous match, do NOT pass either flag — instead append a final line to the description: `Unrecognized assignee: X`.\n")
+	b.WriteString("    - When the user names someone (\"assign to X\" / \"@X\"), call `multica workspace member list --output json`, `multica agent list --output json`, and `multica squad list --output json` and find the matching entity by display name. Squads are first-class assignees too — a squad name (e.g. \"Super Human\") routes work to the squad leader, who then delegates. On a clean unambiguous match, prefer `--assignee-id <uuid>` using the `user_id` (member) or `id` (agent or squad) from that JSON — UUID matching is exact and robust to name collisions in workspaces with overlapping names. `--assignee <name>` (fuzzy) is acceptable as a fallback when names are unambiguous. On no match or ambiguous match, do NOT pass `--assignee`, `--assignee-id`, or `--assignee-picker` — instead append a final line to the description: `Unrecognized assignee: X`.\n")
 	b.WriteString("    - Treat bare @-routing as an assignee directive even when the user did not write the English word \"assign\". This includes Chinese imperatives like `让 @独立团 review 这个 PR`, `给 @X 处理`, or `交给 @X`; strip the leading `@`/`＠` before matching display names. Do not keep that routing wrapper or `@Name` in the description unless it is a true CC-style notification rather than ownership. If the matched entity is a squad, pass the squad's `id` as `--assignee-id`, not the leader agent's id.\n")
-	agentID := ""
-	agentName := ""
-	if task.Agent != nil {
-		agentID = task.Agent.ID
-		agentName = task.Agent.Name
-	}
-	switch {
-	case task.SquadID != "":
-		// The user opened quick-create with a SQUAD selected. The task
-		// runs on the squad's leader agent, but the squad is the expected
-		// owner — assigning to the leader would mask the squad's
-		// delegation flow. Always point the default at the squad UUID.
-		if task.SquadName != "" {
-			fmt.Fprintf(&b, "    - When the user did NOT name an assignee, default to the picker SQUAD %q: pass `--assignee-id %q` (the squad's UUID). The user opened quick-create with the squad selected; you (the leader agent) are running on the squad's behalf, so the squad — not you — is the expected owner. Never leave the issue unassigned, and do not assign it to your own agent UUID.\n\n", task.SquadName, task.SquadID)
-		} else {
-			fmt.Fprintf(&b, "    - When the user did NOT name an assignee, default to the picker SQUAD: pass `--assignee-id %q` (the squad's UUID). The user opened quick-create with the squad selected; you (the leader agent) are running on the squad's behalf, so the squad — not you — is the expected owner. Never leave the issue unassigned, and do not assign it to your own agent UUID.\n\n", task.SquadID)
-		}
-	case agentID != "":
-		fmt.Fprintf(&b, "    - When the user did NOT name an assignee, default to YOURSELF: pass `--assignee-id %q` (your agent UUID). The picker agent is the expected owner because the user opened quick-create with you selected — never leave the issue unassigned. Use the UUID flag, not `--assignee <name>`, so the assignment is unambiguous even when other agents share part of your name.\n\n", agentID)
-	case agentName != "":
-		fmt.Fprintf(&b, "    - When the user did NOT name an assignee, default to YOURSELF: pass `--assignee %q`. The picker agent is the expected owner because the user opened quick-create with you selected — never leave the issue unassigned.\n\n", agentName)
-	default:
-		b.WriteString("    - When the user did NOT name an assignee, default to YOURSELF (the picker agent): pass `--assignee-id <your agent UUID>` (preferred) or `--assignee <your agent name>`. Never leave the issue unassigned.\n\n")
+	b.WriteString("    - When the user did NOT name an assignee, pass `--assignee-picker`. The CLI assigns the issue to the agent or squad selected in the quick-create modal using task context. Do not pass `--assignee` or `--assignee-id` for this default, and do not copy any picker UUID into the command. Never leave the issue unassigned in this case.\n\n")
+	if task.SquadID != "" {
+		b.WriteString("    - You are the leader agent running on behalf of the selected squad. For default assignment, use `--assignee-picker` to preserve squad ownership; do not substitute your own agent identity.\n\n")
 	}
 
 	if task.QuickCreateDueDate != "" {
 		fmt.Fprintf(&b, "- **due-date**: required for this run. Pass `--due-date %s`; the quick-create selection is authoritative.\n\n", task.QuickCreateDueDate)
+	} else if fill {
+		b.WriteString("- **due-date**: pass `--due-date YYYY-MM-DD` = the start date plus your estimate rounded up to whole days, at least 1 day.\n\n")
+	}
+	if fill {
+		b.WriteString("- **start-date**: pass `--start-date YYYY-MM-DD` = today's calendar date in ICT (UTC+7).\n\n")
+		b.WriteString("- **properties**: run `multica property list --output json`. Set each property your own instructions require at creation (for example `Readiness`) with `--property \"Name=Value\"`, one flag per property. Use only option values that exist in that list.\n\n")
 	}
 
 	// project — pinned by the modal when the user picked one, otherwise
@@ -423,6 +544,8 @@ func buildQuickCreatePrompt(task Task) string {
 		} else {
 			fmt.Fprintf(&b, "- **project**: required for this run. Pass `--project %q` so the new issue lands in the project the user picked in the quick-create modal. Do not infer a different project from the prompt text — the modal selection is authoritative.\n", task.ProjectID)
 		}
+	} else if fill {
+		b.WriteString("- **project**: run `multica project list --output json` and pass `--project <id>` for the project whose description matches the request. With no clear match, omit it.\n")
 	} else {
 		b.WriteString("- **project**: omit. The platform will route the issue to the workspace default.\n")
 	}
@@ -666,7 +789,7 @@ func buildCommentPrompt(task Task, provider string) string {
 // case. Returns nil when there is no trigger or only a single distinct thread —
 // the caller then keeps the existing single-parent reply path unchanged.
 func commentReplyThreads(task Task) []execenv.ThreadReplyTarget {
-	if task.TriggerCommentID == "" {
+	if task.TriggerCommentID == "" || task.isStatusHandoff() {
 		return nil
 	}
 	// A comment with no explicit thread id is a root comment: it is its own

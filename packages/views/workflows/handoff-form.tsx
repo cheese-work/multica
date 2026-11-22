@@ -56,7 +56,7 @@ function modeOf(handler: IssueWorkflowStep["handler"]): HandoffMode {
  * The parts of a handoff that are saved. Instructions and next/back statuses
  * only reach an agent's brief, so they are kept for agent handoffs alone.
  */
-export function savedHandoff<T extends Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green">>(
+export function savedHandoff<T extends Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green" | "keep_other_assignee">>(
   step: T,
 ): T {
   if (step.handler.type === "agent") return step;
@@ -70,7 +70,8 @@ function sameStep(a: IssueWorkflowStep, b: IssueWorkflowStep): boolean {
     a.instructions === b.instructions &&
     (a.next_status_key ?? "") === (b.next_status_key ?? "") &&
     (a.back_status_key ?? "") === (b.back_status_key ?? "") &&
-    !!a.advance_on_ci_green === !!b.advance_on_ci_green
+    !!a.advance_on_ci_green === !!b.advance_on_ci_green &&
+    !!a.keep_other_assignee === !!b.keep_other_assignee
   );
 }
 
@@ -215,6 +216,7 @@ export function WorkflowHandoffForm({
         next_status_key: out.next_status_key,
         back_status_key: out.back_status_key,
         advance_on_ci_green: out.advance_on_ci_green,
+        keep_other_assignee: out.keep_other_assignee,
         copyForProjectId: copyFor?.id,
       });
       toast.success(

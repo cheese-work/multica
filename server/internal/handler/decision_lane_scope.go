@@ -59,14 +59,14 @@ func rowIdentity(stored, ask string) string {
 
 // requireNoRecentReask refuses the same unanswered ask from the same agent to
 // the same person on the same issue within decisionReaskWindow of the earlier
-// one. Asks are compared by the caller's own text, without the source link.
-func requireNoRecentReask(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID, ask string) error {
+// one. Asks are compared by identity: the caller's own text, without the source link or the time its state was read.
+func requireNoRecentReask(ctx context.Context, queries *db.Queries, issue db.Issue, agentID, humanID pgtype.UUID, identity string) error {
 	earlier, err := queries.OpenDecisionAsksSince(ctx, db.OpenDecisionAsksSinceParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: agentID, HumanUserID: humanID})
 	if err != nil {
 		return err
 	}
 	for _, row := range earlier {
-		if rowIdentity(row.AskIdentity, row.Ask) != decisiontx.Identity(ask) {
+		if rowIdentity(row.AskIdentity, row.Ask) != identity {
 			continue
 		}
 		const layout = "2006-01-02 15:04 ICT"

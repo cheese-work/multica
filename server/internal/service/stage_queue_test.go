@@ -475,3 +475,105 @@ func TestStageQueueCommentTriggeredRefusalStaysOnRecordAndReleases(t *testing.T)
 		t.Fatalf("released run originator %q taint %v, want the requester %q with [ext-1]", originator, taint, actor)
 	}
 }
+
+// CHE-3613: a full stage lists its waiting PRs, next first, and shows whether
+// a queued-PR push task (a run of an agent other than the owner) is open.
+func TestLoadFullStagesListsQueuedPRsAndOpenPushTask(t *testing.T) {
+	f := newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 1})
+	a := f.reviewIssue(t, "PR A", 3*time.Hour)
+	b := f.reviewIssue(t, "PR B", 2*time.Hour)
+	c := f.reviewIssue(t, "PR C", 1*time.Hour)
+	f.run(t, a, "running")
+	for _, id := range []string{b, c} {
+		if err := f.guard(id); !errors.Is(err, ErrStageQueueFull) {
+			t.Fatalf("%s while A runs: err = %v, want ErrStageQueueFull", id, err)
+		}
+	}
+	ws := util.MustParseUUID(f.WorkspaceID)
+	load := func() []FullStage {
+		got, err := LoadFullStages(context.Background(), f.q, ws)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	got := load()
+	if len(got) != 1 || got[0].Stage != "review" || got[0].AgentID != f.agentID || got[0].Limit != 1 {
+		t.Fatalf("full stages = %+v, want one review stage owned by the lane owner, limit 1", got)
+	}
+	if q := got[0].Queued; len(q) != 2 || q[0] != (QueuedPR{b, false}) || q[1] != (QueuedPR{c, false}) {
+		t.Fatalf("queued = %+v, want B then C, no push task", q)
+	}
+
+	// An author's run on queued PR B is its open push task. The owner's own run does not count.
+	rt := f.Runtime(t, "Author runtime")
+	author := f.Agent(t, "Author", rt)
+	f.Task(t, author, testutil.Cols{"issue_id": b, "status": "running", "runtime_id": rt})
+	if q := load()[0].Queued; !q[0].PushOpen || q[1].PushOpen {
+		t.Fatalf("queued = %+v, want push task open on B only", q)
+	}
+
+	// Another workspace sees nothing.
+	other, err := LoadFullStages(context.Background(), f.q, util.MustParseUUID(f.Fixture.Workspace(t, "Other", fmt.Sprintf("other-%d", time.Now().UnixNano()))))
+	if err != nil || len(other) != 0 {
+		t.Fatalf("other workspace: %+v, %v; want none", other, err)
+	}
+}
+
+// A paused project's issue can never run (project_inactive). It must not hold
+// the reviewer's slot: the active project's PR is admitted, the paused one is
+// not listed, and when the project is active again it returns in its old order.
+func TestStageQueueSkipsIssuesOfInactiveProjects(t *testing.T) {
+	f := newStageFixture(t, stagequeue.Limits{stagequeue.StageReview: 1})
+	paused := f.Project(t, "Paused", testutil.Cols{"status": "paused"})
+	oldPaused := f.reviewIssue(t, "old PR, paused project", 9*time.Hour)
+	f.Exec(t, `UPDATE issue SET project_id = $1 WHERE id = $2`, paused, oldPaused)
+	f.Exec(t, `INSERT INTO stage_queue_waiting (issue_id, agent_id) VALUES ($1, $2)`, oldPaused, f.agentID)
+	live := f.reviewIssue(t, "new PR, active project", 1*time.Hour)
+
+	// Release: the live PR is refused and waiting; the paused one must not take the slot.
+	if err := f.guard(live); err != nil {
+		t.Fatalf("live PR refused because of a paused project's issue: %v", err)
+	}
+	var released []string
+	enqueue := func(_ context.Context, issue db.Issue, _, _ pgtype.UUID) error {
+		released = append(released, util.UUIDToString(issue.ID))
+		return nil
+	}
+	f.Exec(t, `INSERT INTO stage_queue_waiting (issue_id, agent_id) VALUES ($1, $2)`, live, f.agentID)
+	if err := releaseStageQueues(context.Background(), f.q, enqueue); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if len(released) != 1 || released[0] != live {
+		t.Fatalf("released %v, want only the active project's PR %s", released, live)
+	}
+
+	// Resumed: old PR is first again (older PR, same gates) and takes the one slot.
+	f.Exec(t, `UPDATE project SET status = 'in_progress' WHERE id = $1`, paused)
+	released = nil
+	if err := releaseStageQueues(context.Background(), f.q, enqueue); err != nil {
+		t.Fatalf("release after resume: %v", err)
+	}
+	if len(released) != 1 || released[0] != oldPaused {
+		t.Fatalf("released %v after resume, want the older PR %s first", released, oldPaused)
+	}
+}
+
+// A paused project's gate sub-issue is skipped too.
+func TestStageQueueGateSkipsIssuesOfInactiveProjects(t *testing.T) {
+	f := newStageFixture(t, stagequeue.Limits{stagequeue.StageDevice: 1})
+	paused := f.Project(t, "Paused", testutil.Cols{"status": "paused"})
+	pa := f.Issue(t, "paused parent", testutil.Cols{"project_id": paused})
+	f.link(t, pa, 9*time.Hour)
+	pausedGate := f.gateIssue(t, "device", pa)
+	f.Exec(t, `UPDATE issue SET project_id = $1 WHERE id = $2`, paused, pausedGate)
+	f.Exec(t, `INSERT INTO stage_queue_waiting (issue_id, agent_id) VALUES ($1, $2)`, pausedGate, f.agentID)
+	pb := f.Issue(t, "live parent")
+	f.link(t, pb, 1*time.Hour)
+	liveGate := f.gateIssue(t, "device", pb)
+
+	if err := f.guard(liveGate); err != nil {
+		t.Fatalf("live gate refused because of a paused project's gate: %v", err)
+	}
+}

@@ -1,0 +1,46 @@
+package execenv
+
+// Copied into a checkout by scripts/brief-replay.sh as zz_brief_replay_render_test.go
+// (CHE-4574). Renders the generated brief for fixed task shapes into
+// $BRIEF_REPLAY_OUT, one file per shape. Uses only API that exists on both sides
+// of a brief-shrink PR; extend the shapes when a section depends on a new field.
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestBriefReplayRender(t *testing.T) {
+	out := os.Getenv("BRIEF_REPLAY_OUT")
+	if out == "" {
+		t.Skip("BRIEF_REPLAY_OUT not set")
+	}
+	platform := []SkillContextForEnv{{Name: platformSkillName}}
+	issue := TaskContextForEnv{IssueID: "issue-1", AgentID: "a-1", AgentName: "Eve",
+		ProjectID: "p-1", ProjectTitle: "Project", ProjectDescription: "Durable context.",
+		Repos: []RepoContextForEnv{{URL: "https://example.invalid/r.git"}}}
+	withSkill := issue
+	withSkill.AgentSkills = platform
+	comment := withSkill
+	comment.TriggerCommentID, comment.TriggerThreadID = "c-1", "c-0"
+	chat := TaskContextForEnv{ChatSessionID: "chat-1", AgentID: "a-1", AgentName: "Eve", AgentSkills: platform}
+	autopilot := TaskContextForEnv{AutopilotRunID: "run-1", AgentID: "a-1", AgentName: "Eve", AgentSkills: platform}
+	quick := TaskContextForEnv{QuickCreatePrompt: "make an issue", AgentID: "a-1", AgentName: "Eve", AgentSkills: platform}
+	for name, c := range map[string]struct {
+		provider string
+		ctx      TaskContextForEnv
+	}{
+		"issue-claude-noskill": {"claude", issue},
+		"issue-claude":         {"claude", withSkill},
+		"issue-codex":          {"codex", withSkill},
+		"comment-claude":       {"claude", comment},
+		"chat-claude":          {"claude", chat},
+		"autopilot-claude":     {"claude", autopilot},
+		"quickcreate-claude":   {"claude", quick},
+	} {
+		if err := os.WriteFile(filepath.Join(out, name+".md"), []byte(buildMetaSkillContent(c.provider, c.ctx)), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}

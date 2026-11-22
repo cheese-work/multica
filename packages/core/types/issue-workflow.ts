@@ -18,7 +18,9 @@ export type IssueWorkflowHandlerType =
   | "project_lead"
   | "creator"
   | "human_by_role"
-  | "human_in_charge";
+  | "human_in_charge"
+  | "author"
+  | "reviewer";
 
 export interface IssueWorkflowHandler {
   type: IssueWorkflowHandlerType;
@@ -37,6 +39,12 @@ export interface IssueWorkflowStep {
   back_status_key?: string;
   /** Move an issue on this step to its next status when a linked PR's checks pass. */
   advance_on_ci_green?: boolean;
+  /**
+   * Entering the step leaves an assignee chosen on purpose in place. TEMPORARY:
+   * CHE-5024 (per-issue workflows) replaces it. Set through the API/CLI; the
+   * editor only preserves it.
+   */
+  keep_other_assignee?: boolean;
   /** Guarded exits; the first whose guard holds is taken. */
   edges?: IssueWorkflowEdge[];
   /** Conditions a status write must meet to put an issue into this step (CHE-2531). */
@@ -58,6 +66,10 @@ export interface IssueWorkflowEntryGate {
   mode: IssueWorkflowEntryMode;
   /** Whether a person may pass a failed block gate with a reason. Default true. */
   member_override?: boolean;
+  /** Guard parameter, e.g. an estimate limit. Kept so a save does not drop it. */
+  param?: string;
+  /** Scopes `upstream_checked` to these project ids (CHE-5583). */
+  projects?: string[];
 }
 
 /** One exit of a step, e.g. `{ to: "done", guard: "pr.merged", timeout: "72h" }`. */
@@ -91,6 +103,21 @@ export interface IssueWorkflow {
   updated_at: string;
   /** Full-precision updated_at; empty from a server that predates it. */
   version?: string;
+  /** Why the last save went through lint errors; null when it was clean. */
+  lint_override_reason?: string | null;
+  lint_overridden_at?: string | null;
+  /** Findings of the last save (warnings, info, waived errors); stored and returned on every read. */
+  lint_findings?: IssueWorkflowLintFinding[];
+}
+
+export interface IssueWorkflowLintFinding {
+  rule: string;
+  level: "error" | "warning" | "info";
+  step?: string;
+  message: string;
+  hint?: string;
+  waived?: boolean;
+  waive_reason?: string;
 }
 
 export interface ListIssueWorkflowsResponse {
@@ -121,6 +148,8 @@ export interface IssueWorkflowWriteRequest {
   /** 1 to 1000 sets the run budget, 0 restores the default; omit to keep it. */
   max_runs_per_issue?: number;
   include_child_prs?: boolean;
+  /** A save with unwaived lint errors is refused (422) unless it carries a reason here. */
+  lint_override?: string;
   /** Destination for issues on statuses an edit removes, keyed by removed status. */
   status_mapping?: Record<string, string>;
   dry_run?: boolean;
@@ -197,5 +226,7 @@ export interface SetWorkflowHandoffRequest {
   next_status_key?: string;
   back_status_key?: string;
   advance_on_ci_green?: boolean;
+  /** TEMPORARY, CHE-5024: see IssueWorkflowStep. */
+  keep_other_assignee?: boolean;
   edges?: IssueWorkflowEdge[];
 }

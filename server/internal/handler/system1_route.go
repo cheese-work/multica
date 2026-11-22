@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -29,7 +30,11 @@ type routeCapture struct {
 	RunStep        string // the run's workflow_step when the request started
 	OwnerExplicit  bool
 	Confidence     pgtype.Float4
-	used           bool
+	// Fallback marks the status-only capture on UpdateIssue: it runs in a
+	// savepoint, labels only a routing exit, and a capture error drops the label
+	// without failing the write.
+	Fallback bool
+	used     bool
 }
 
 func withRouteCapture(ctx context.Context, hook *routeCapture) context.Context {
@@ -106,8 +111,11 @@ func buildRouteObservation(in routeRowInput, precedents []string) db.CreateSyste
 // row is locked and before the write lands. It needs a statusRecord (no record,
 // no label) and uses its hook once. A status-changing write gets a fresh UUIDv7
 // that the status_changed row reuses; an owner-only route keeps event_id NULL.
-// Strict: an error fails the write. (The fallback that tolerates a failed
-// capture belongs to the later slice that arms the hook.)
+// Strict by default: an error fails the write. The status-only fallback
+// (hook.Fallback) runs the rest in a savepoint instead and labels only a
+// routing exit (decision 14): a capture error drops the label, logs a warning
+// and the write continues. The issue row lock is taken before the savepoint,
+// because ROLLBACK TO would release a lock taken inside it.
 func captureRouteLabel(ctx context.Context, q *db.Queries, params db.UpdateIssueParams) error {
 	hook, rec := routeCaptureFrom(ctx), statusRecordFrom(ctx)
 	if hook == nil || hook.used || rec == nil {
@@ -126,7 +134,27 @@ func captureRouteLabel(ctx context.Context, q *db.Queries, params db.UpdateIssue
 		return nil
 	}
 	hook.used = true
+	if !hook.Fallback {
+		return recordRouteLabel(ctx, q, params, hook, rec, prior, to)
+	}
+	if err := q.RouteCaptureSavepoint(ctx); err != nil {
+		return fmt.Errorf("open route label savepoint: %w", err)
+	}
+	if err := recordRouteLabel(ctx, q, params, hook, rec, prior, to); err != nil {
+		slog.Warn("route label capture failed; the status write continues without a label", "issue_id", util.UUIDToString(prior.ID), "error", err)
+		if rbErr := q.RouteCaptureRollbackToSavepoint(ctx); rbErr != nil {
+			return fmt.Errorf("roll back route label savepoint: %w", rbErr)
+		}
+	}
+	if err := q.RouteCaptureReleaseSavepoint(ctx); err != nil {
+		return fmt.Errorf("release route label savepoint: %w", err)
+	}
+	return nil
+}
 
+// recordRouteLabel stores the label for the locked prior row moving to `to`.
+func recordRouteLabel(ctx context.Context, q *db.Queries, params db.UpdateIssueParams, hook *routeCapture, rec *statusRecord, prior db.Issue, to string) error {
+	statusChanges := to != prior.Status
 	var def *issueworkflow.Definition
 	var scope string
 	if prior.ProjectID.Valid {
@@ -144,6 +172,9 @@ func captureRouteLabel(ctx context.Context, q *db.Queries, params db.UpdateIssue
 		return fmt.Errorf("read routing agent for route label: %w", err)
 	}
 	exit := routingExit(cfg, scope, routingExitInput{AgentRun: hook.Caller.agent && hook.Caller.run != nil, RunStep: hook.RunStep, From: prior.Status, To: to})
+	if hook.Fallback && !exit {
+		return nil
+	}
 
 	// The owner is who holds the issue after the write: the one in params, else the current one.
 	ownerType, ownerID := prior.AssigneeType.String, prior.AssigneeID

@@ -54,7 +54,7 @@ func Reply(ctx context.Context, q *db.Queries, sessionID pgtype.UUID, message db
 	if err != nil || (!switches.InApp && !switches.Push) {
 		return nil, err
 	}
-	allowed, err := inbox.AllowsDelivery(ctx, q, session.WorkspaceID, session.CreatorID, pgtype.UUID{}, false)
+	allowed, err := inbox.AllowsDelivery(ctx, q, session.WorkspaceID, session.CreatorID, pgtype.UUID{}, "dm_reply", false)
 	if err != nil || !allowed {
 		return nil, err
 	}

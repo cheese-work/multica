@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { InboxItem, InboxWorkspaceUnread } from "../types";
-import { EMPTY_INBOX_FILTERS, type InboxFilters } from "./filter-store";
+import { EMPTY_INBOX_FILTERS, filterInboxItems, type InboxFilters } from "./filter-store";
 import {
   archivedInboxFacetsOptions,
   archivedInboxPagesOptions,
@@ -89,6 +89,56 @@ describe("deduplicateInboxItems", () => {
     ]);
 
     expect(merged.map((i) => i.id)).toEqual(["active"]);
+  });
+});
+
+describe("deduplicateInboxItems mentions", () => {
+  const mention = (id: string, created_at: string, source?: string) =>
+    item({
+      id,
+      type: "mentioned",
+      created_at,
+      details: source ? { mention_source: source } : null,
+    });
+  const comment = (id: string, created_at: string) =>
+    item({ id, type: "new_comment", created_at });
+  const matches = (rows: InboxItem[]) =>
+    filterInboxItems(deduplicateInboxItems(rows), { ...EMPTY_INBOX_FILTERS, mentionsOnly: true });
+
+  it("keeps a mention discoverable after a later comment on the same issue", () => {
+    const rows = [mention("mention", "2026-06-15T08:00:00Z", "direct"), comment("later", "2026-06-15T08:05:00Z")];
+    const [row] = matches(rows);
+
+    expect(row).toMatchObject({ id: "later", type: "new_comment" });
+  });
+
+  it("does not let a squad-only mention survive a later comment", () => {
+    expect(matches([mention("squad", "2026-06-15T08:00:00Z", "squad"), comment("later", "2026-06-15T08:05:00Z")])).toEqual([]);
+  });
+
+  it("lets an older direct mention outrank a newer squad mention", () => {
+    const rows = [mention("direct", "2026-06-15T08:00:00Z", "direct"), mention("squad", "2026-06-15T08:05:00Z", "squad")];
+
+    expect(matches(rows).map((row) => row.id)).toEqual(["squad"]);
+  });
+
+  it("shows the mention, not the later run_budget notice, in the mentions view (CHE-7473)", () => {
+    const budget = (id: string, issue_id: string, created_at: string) =>
+      item({ id, type: "run_budget" as InboxItem["type"], issue_id, created_at });
+    const rows = [
+      mention("direct", "2026-06-15T08:00:00Z", "direct"),
+      budget("budget-after-mention", "issue-1", "2026-06-15T08:05:00Z"),
+      budget("budget-alone", "issue-2", "2026-06-15T08:06:00Z"),
+      { ...mention("all", "2026-06-15T08:07:00Z", "all"), issue_id: "issue-3" },
+    ];
+
+    expect(matches(rows).map((row) => row.id)).toEqual(["all", "direct"]);
+    // The unfiltered list still shows the newest row, the budget notice.
+    expect(deduplicateInboxItems(rows).map((row) => row.id)).toContain("budget-after-mention");
+  });
+
+  it("does not match an older mention without provenance", () => {
+    expect(matches([mention("legacy", "2026-06-15T08:00:00Z"), comment("later", "2026-06-15T08:05:00Z")])).toEqual([]);
   });
 });
 

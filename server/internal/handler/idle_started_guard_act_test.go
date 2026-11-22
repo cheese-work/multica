@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/internal/util"
 )
 
 type idleActFixture struct {
@@ -21,6 +23,11 @@ func newIdleActFixture(test *testing.T, hours float64) idleActFixture {
 	for _, status := range []struct{ key, name string }{{"need_decision", "Need Decision"}, {"blocked", "Blocked"}} {
 		if dbfx.Count(test, `SELECT count(*) FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, status.key) == 0 {
 			dbfx.Insert(test, "issue_status", testutil.Cols{"workspace_id": testWorkspaceID, "key": status.key, "name": status.name, "category": "started", "color": "#112233"})
+		}
+		// The API lists a new status in a stored Default; a raw insert must too,
+		// or an earlier test's Default would refuse the move. (MUL-8250)
+		if err := issueworkflow.AddToDefault(context.Background(), testHandler.Queries, util.MustParseUUID(testWorkspaceID), status.key); err != nil {
+			test.Fatal(err)
 		}
 	}
 	leader := createHandlerTestAgent(test, "idle leader "+test.Name(), []byte("[]"))
@@ -68,21 +75,24 @@ func (fixture idleActFixture) leaderTasks(test *testing.T) int {
 	return dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND is_leader_task AND status = 'queued'`, fixture.issue, fixture.leader)
 }
 
-func TestIdleStartedGuardActWaitsOnHumanMovesToNeedDecision(test *testing.T) {
+func TestIdleStartedGuardActHumanWaitMovesToBlockedNamingTheWait(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
 	fixture.wakeup(test, testutil.Cols{"event_types": testutil.Raw(`ARRAY['comment.created']`), "filter_actor_type": "member", "filter_actor_id": testUserID})
 	fixture.sweep(test)
-	if got := fixture.status(test); got != "need_decision" {
-		test.Fatalf("status = %q, want need_decision", got)
+	if got := fixture.status(test); got != "blocked" {
+		test.Fatalf("status = %q, want blocked", got)
+	}
+	if got := dbfx.Count(test, `SELECT count(*) FROM comment WHERE issue_id = $1 AND author_type = 'system' AND content LIKE '%member-filtered wakeup%'`, fixture.issue); got != 1 {
+		test.Fatal("guard comment does not name the member-filtered wakeup")
+	}
+	if got := dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ->> 'blocked_reason' LIKE '%member-filtered wakeup%'`, fixture.issue); got != 1 {
+		test.Fatal("blocked_reason does not name the member-filtered wakeup")
 	}
 	if got := fixture.receipt(test, "state"); got != "notified" {
 		test.Fatalf("receipt state = %q, want notified", got)
 	}
 	if fixture.systemComments(test) != 1 || fixture.leaderTasks(test) != 1 {
 		test.Fatalf("system comments = %d, leader tasks = %d, want 1 and 1", fixture.systemComments(test), fixture.leaderTasks(test))
-	}
-	if got := dbfx.Count(test, `SELECT count(*) FROM issue i JOIN agent_task_queue t ON t.id::text = i.metadata ->> 'decision_wait_alert_id' WHERE i.id = $1 AND t.agent_id = $2`, fixture.issue, fixture.leader); got != 1 {
-		test.Fatal("decision wait guard was not told the leader is already alerted")
 	}
 }
 
@@ -141,15 +151,15 @@ func TestIdleStartedGuardActRechecksUnderLock(test *testing.T) {
 
 func TestIdleStartedGuardActRetriesLeaderRoute(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	fixture.sweepFailing(test)
-	if fixture.status(test) != "need_decision" || fixture.receipt(test, "state") != "moved" {
-		test.Fatalf("status = %q, state = %q, want need_decision and moved", fixture.status(test), fixture.receipt(test, "state"))
+	if fixture.status(test) != "blocked" || fixture.receipt(test, "state") != "moved" {
+		test.Fatalf("status = %q, state = %q, want blocked and moved", fixture.status(test), fixture.receipt(test, "state"))
 	}
 	if fixture.leaderTasks(test) != 0 {
 		test.Fatal("a leader task was admitted without a route")
 	}
-	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	fixture.fixRoute(test)
 	fixture.sweep(test)
 	if fixture.receipt(test, "state") != "notified" || fixture.leaderTasks(test) != 1 || fixture.systemComments(test) != 1 {
 		test.Fatalf("state = %q, tasks = %d, comments = %d, want notified, 1, 1", fixture.receipt(test, "state"), fixture.leaderTasks(test), fixture.systemComments(test))
@@ -158,7 +168,7 @@ func TestIdleStartedGuardActRetriesLeaderRoute(test *testing.T) {
 
 func TestIdleStartedGuardActGivesUpAfterThreeNotifyFailures(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	for range 5 {
 		// Errors are the counted failures; the receipt state is the assertion.
 		_ = testHandler.SweepIdleStartedIssues(context.Background())
@@ -226,12 +236,12 @@ func (fixture idleActFixture) notifiedTo(test *testing.T) string {
 
 func TestIdleStartedGuardNotifiedSignalFollowsReceipt(test *testing.T) {
 	fixture := newIdleActFixture(test, 5)
-	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	fixture.breakRoute(test)
 	fixture.sweepFailing(test)
 	if fixture.receipt(test, "state") != "moved" || fixture.notifiedTo(test) != "" {
 		test.Fatalf("state = %q, signal = %q, want moved and no signal", fixture.receipt(test, "state"), fixture.notifiedTo(test))
 	}
-	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	fixture.fixRoute(test)
 	fixture.sweep(test)
 	if got, want := fixture.notifiedTo(test), fixture.status(test); got != want || want == "" {
 		test.Fatalf("signal = %q, want the status %q the guard notified at", got, want)
@@ -271,5 +281,34 @@ func TestIdleStartedGuardEndEpisodeKeepsReceiptWhenSignalClearFails(test *testin
 	}
 	if dbfx.Count(test, `SELECT count(*) FROM issue_idle_guard WHERE issue_id = $1`, fixture.issue) != 1 {
 		test.Fatal("the receipt row was deleted although the signal clear failed; no later scan can retry")
+	}
+}
+
+// breakRoute makes the alert unroutable: an archived squad now falls back to
+// the assignee (CHE-6101), so the assignee is archived too.
+func (fixture idleActFixture) breakRoute(test *testing.T) {
+	test.Helper()
+	dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+	dbfx.Exec(test, `UPDATE agent SET archived_at = clock_timestamp() WHERE id = $1`, fixture.agent)
+}
+
+func (fixture idleActFixture) fixRoute(test *testing.T) {
+	test.Helper()
+	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	dbfx.Exec(test, `UPDATE agent SET archived_at = NULL WHERE id = $1`, fixture.agent)
+}
+
+// CHE-5716 case B: no squad owns the issue, a person is the wait. It ends
+// blocked with the wait named, never need_decision without a decision request.
+func TestIdleStartedGuardActNoSquadHumanWaitIsBlockedNotNeedDecision(test *testing.T) {
+	fixture := newIdleActFixture(test, 5)
+	dbfx.Exec(test, `DELETE FROM squad_member WHERE squad_id = $1`, fixture.squad)
+	fixture.wakeup(test, testutil.Cols{"event_types": testutil.Raw(`ARRAY['comment.created']`), "filter_actor_type": "member", "filter_actor_id": testUserID})
+	_ = testHandler.SweepIdleStartedIssues(context.Background()) // the leader notice has no route; the move still stands
+	if got := fixture.status(test); got != "blocked" {
+		test.Fatalf("status = %q, want blocked", got)
+	}
+	if got := dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ->> 'blocked_reason' LIKE 'idle-human-wait: member-filtered wakeup %'`, fixture.issue); got != 1 {
+		test.Fatal("blocked_reason does not name the member-filtered wakeup")
 	}
 }

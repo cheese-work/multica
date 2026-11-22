@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,7 +16,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // The workflow edge engine (CHE-2152). A trigger on issue.status keeps one
@@ -113,6 +113,43 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 		}
 		return h.Queries.ScheduleWorkflowEdges(ctx, db.ScheduleWorkflowEdgesParams{ID: w.ID, NextFireAt: pgtype.Timestamptz{Time: next, Valid: true}})
 	}
+	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge && decision.To == "done" {
+		if exit, predicates, rejected := h.rejectedMergeExit(ctx, issue, edges, decision); rejected {
+			// The merge matched but the close check rejects, also for an issue
+			// that was pending its merge: take the edge's on_timeout exit now,
+			// once. A move that is refused retries the same exit; the watch never
+			// waits for the deadline (CHE-7672).
+			moved, _ := h.moveIssueOnEdge(ctx, issue, exit, "workflow_edge", map[string]any{"guard": decision.Guard, "reason": reasonCloseRejected, "predicates": predicates}, true)
+			if !moved {
+				h.watchAgainIn(ctx, w, edgeRetryDelay)
+			}
+			return nil
+		}
+	}
+	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge && decision.To == "done" {
+		handled, err := h.settlePendingMerge(ctx, issue, w.ID)
+		if err != nil {
+			h.watchAgainIn(ctx, w, edgeRetryDelay)
+			return err
+		}
+		if handled {
+			h.watchAgainIn(ctx, w, issueworkflow.EdgePollInterval)
+			return nil
+		}
+	}
+	if move && decision.Guard == issueworkflow.GuardPRMerged && decision.Reason == issueworkflow.ReasonEdge {
+		bridged, err := h.bridgePRMergedEdge(ctx, issue)
+		if err != nil {
+			h.watchAgainIn(ctx, w, edgeRetryDelay)
+			return err
+		}
+		if bridged {
+			// The decision moved the issue, which removes this watch, or left
+			// it where it is; look again later either way.
+			h.watchAgainIn(ctx, w, issueworkflow.EdgePollInterval)
+			return nil
+		}
+	}
 	moved, _ := h.moveIssueOnEdge(ctx, issue, decision.To, "workflow_edge", map[string]any{"guard": decision.Guard, "reason": decision.Reason}, true)
 	if !moved {
 		if claimed != "" {
@@ -125,6 +162,87 @@ func (h *Handler) evaluateWorkflowEdges(ctx context.Context, w db.IssueWakeup) e
 	return nil
 }
 
+// reasonCloseRejected is the reason of a move that a matched pr.merged edge
+// made through its on_timeout exit because the close check rejected.
+const reasonCloseRejected = "close_rejected"
+
+// rejectedMergeExit decides whether a matched pr.merged -> done edge takes its
+// on_timeout exit instead (CHE-7672). It does only on an auto-close step whose
+// own auto_close mode is block, with the workspace not off, when the edge has an
+// on_timeout and the close check rejects. Every other case keeps the edge's move.
+func (h *Handler) rejectedMergeExit(ctx context.Context, issue db.Issue, edges []issueworkflow.Edge, decision issueworkflow.Decision) (exit, predicates string, rejected bool) {
+	if !entersAutoCloseStep(issue.Status) || h.stepAutoClose(ctx, issue) == nil {
+		return "", "", false
+	}
+	if mode, _ := h.autoCloseSettings(ctx, issue); mode != "block" {
+		return "", "", false
+	}
+	i := slices.IndexFunc(edges, func(e issueworkflow.Edge) bool { return e.Guard == decision.Guard && e.To == decision.To })
+	if i < 0 || edges[i].OnTimeout == "" {
+		return "", "", false
+	}
+	d := h.closeOrDispatch(ctx, issue)
+	if d.Outcome != closeOutcomeDispatch {
+		return "", "", false
+	}
+	return edges[i].OnTimeout, d.Predicates, true
+}
+
+// bridgePRMergedEdge hands a holding pr.merged edge to the PR merge decision
+// while the workspace has chosen a status in Settings → Code (CHE-5245). The
+// decision is then the one writer of a merge move, so the edge never moves the
+// issue itself. It reports false when the setting is none and the edge moves
+// the issue as before.
+func (h *Handler) bridgePRMergedEdge(ctx context.Context, issue db.Issue) (bool, error) {
+	ws, err := h.Queries.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return false, err
+	}
+	if prMergeStatusSetting(ws) == prMergeStatusNone {
+		return false, nil
+	}
+	// On an auto-close step the close check comes first: a clean issue takes its
+	// done edge, with this watcher left out of no_live_wakeup (CHE-7671).
+	if entersAutoCloseStep(issue.Status) {
+		if d := h.closeOrDispatch(ctx, issue); d.Outcome == closeOutcomeClosed && h.closeIssue(ctx, issue, d.Predicates) {
+			return true, nil
+		}
+	}
+	return true, h.autoCompleteIssue(ctx, issue.WorkspaceID, issue.ID, nil)
+}
+
+// refuseNewPRMergedEdge returns the refusal for a save that adds a pr.merged
+// edge while the workspace has chosen a status in Settings → Code. An edge the
+// stored workflow already has stays, so a stored workflow keeps loading and
+// saving. stored is nil for a new workflow.
+func (h *Handler) refuseNewPRMergedEdge(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, stored, steps []issueworkflow.Step) (string, error) {
+	added := false
+	for _, step := range steps {
+		for _, e := range step.Edges {
+			if g, err := issueworkflow.ParseGuard(e.Guard); err != nil || g.Kind != issueworkflow.GuardPRMerged {
+				continue
+			}
+			had := slices.ContainsFunc(stored, func(old issueworkflow.Step) bool {
+				return old.StatusKey == step.StatusKey && slices.ContainsFunc(old.Edges, func(oe issueworkflow.Edge) bool {
+					return oe.Guard == e.Guard && oe.To == e.To
+				})
+			})
+			added = added || !had
+		}
+	}
+	if !added {
+		return "", nil
+	}
+	ws, err := q.GetWorkspace(ctx, workspaceID)
+	if err != nil {
+		return "", err
+	}
+	if prMergeStatusSetting(ws) == prMergeStatusNone {
+		return "", nil
+	}
+	return `a new "pr.merged" edge is not allowed while a merge status is chosen: PR merges move issues through the "After PRs merge, move the issue to" setting in Settings → Code. Set it to none to add the edge.`, nil
+}
+
 func (h *Handler) watchAgainIn(ctx context.Context, w db.IssueWakeup, d time.Duration) {
 	err := h.Queries.ScheduleWorkflowEdges(ctx, db.ScheduleWorkflowEdgesParams{ID: w.ID, NextFireAt: pgtype.Timestamptz{Time: time.Now().Add(d), Valid: true}})
 	if err != nil {
@@ -135,7 +253,7 @@ func (h *Handler) watchAgainIn(ctx context.Context, w db.IssueWakeup, d time.Dur
 // greenHead is the head of the first PR whose checks pass on its newest head.
 func greenHead(f issueworkflow.Facts) string {
 	for _, p := range f.PRs {
-		if (p.State == "open" || p.State == "draft") && p.HeadFresh && p.ChecksRollup == "SUCCESS" {
+		if f.ChecksGreen(p) {
 			return p.HeadSHA
 		}
 	}
@@ -162,7 +280,7 @@ func spendHead(f issueworkflow.Facts, head string) issueworkflow.Facts {
 // success event since the issue entered the step.
 func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Issue, edges []issueworkflow.Edge, def *issueworkflow.Definition, entered time.Time, sub *issueworkflow.SubWorkflow) (issueworkflow.Facts, error) {
 	includeChildren := def.IncludeChildPRs
-	var facts issueworkflow.Facts
+	facts := issueworkflow.Facts{ReadyForReview: issueReadyForReview(issue)}
 	children, err := q.ListChildIssues(ctx, issue.ID)
 	if err != nil {
 		return facts, err
@@ -183,19 +301,39 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Iss
 			facts.ChildrenDone = cat == issuestatus.CategoryDone || cat == issuestatus.CategoryClosed
 		}
 	}
+	// OpenChildren looks at every direct child, whatever the sub-workflow stage.
+	for _, c := range children {
+		if cat := issuestatus.Category(ctx, q, c.WorkspaceID, c.Status); cat != issuestatus.CategoryDone && cat != issuestatus.CategoryClosed {
+			facts.OpenChildren = true
+			break
+		}
+	}
 	facts.ChildrenDone = facts.ChildrenDone && joined > 0
+	facts.HasParent = issue.ParentIssueID.Valid
 	prs, err := q.ListEdgePullRequests(ctx, ids)
 	if err != nil {
 		return facts, err
 	}
 	for _, p := range prs {
-		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha, PRHead: p.PrHeadSha, Review: p.Review, RedCause: p.RedCause})
+		facts.PRs = append(facts.PRs, issueworkflow.PRFact{State: p.State, ChecksRollup: p.ChecksRollupState, HeadFresh: p.HeadFresh, HeadSHA: p.HeadSha, PRHead: p.PrHeadSha, Review: p.Review, RedCause: p.RedCause, Ref: fmt.Sprintf("%s/%s#%d", p.RepoOwner, p.RepoName, p.PrNumber)})
 	}
 	if facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, q, issue.WorkspaceID, edges); err != nil {
 		return facts, err
 	}
+	if hasGuard(edges, issueworkflow.GuardAdoptionLinked) {
+		facts.Adoption = h.loadAdoptionFacts(ctx, q, issue)
+	}
 	facts.Webhooks, err = h.guardedWebhooks(ctx, issue, def.ID, edges, entered)
 	return facts, err
+}
+
+func hasGuard(edges []issueworkflow.Edge, kind string) bool {
+	for _, e := range edges {
+		if g, err := issueworkflow.ParseGuard(e.Guard); err == nil && g.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // guardedIssueStatuses resolves the identifiers named by issue_status guards
@@ -234,54 +372,23 @@ func (h *Handler) guardedIssueStatuses(ctx context.Context, q *db.Queries, works
 	return out, nil
 }
 
-// onRunBudgetExhausted blocks an issue whose workflow run budget is spent, so
-// a person sees why nothing more runs, and writes the run-budget notice (one
-// comment and inbox item per budget window). It leaves an issue that is already
-// blocked (something else parked it) and one whose workflow has no blocked
-// status where they are, with the notice alone, and skips both when the issue is
-// no longer in the status the refused run was for: the hook runs after the
-// refusal, and a finish written in between (CHE-2226) must stay. An issue in a
-// review status is blocked only by a refusal of its reviewer.
+// onRunBudgetExhausted is the exhaustion hook: three idempotent transactions
+// over one refusal row (run_budget_refusal_hook.go). R records the refusal, B
+// blocks the issue, N writes the run-budget notice (one comment and inbox item
+// per budget window) and the recovery run. B and N each re-check that the refusal
+// still applies and retire the hook if not, so a finish written in between
+// (CHE-2226) or a person's move stays. An issue that is already blocked and one
+// whose workflow has no blocked status get the notice alone, and an issue in a
+// review status is blocked only by a refusal of its reviewer. A restart sweep
+// finishes a hook this callback did not.
 func (h *Handler) onRunBudgetExhausted(ctx context.Context, e service.RunBudgetExhausted) {
-	var issue db.Issue
-	var refused string
-	moved := false
-	// Another writer (the 80% warning's comment, a person) can bump the issue's
-	// revision between the read and the block. The block then loses, so it
-	// reads the issue again and retries while the revision keeps moving.
-	for try := 0; try < runBudgetBlockTries; try++ {
-		var ok bool
-		if issue, ok = h.exhaustedIssue(ctx, e); !ok {
-			return
-		}
-		refused = h.runBudgetRefusedRun(ctx, e)
-		var lifted bool
-		if moved, lifted = h.blockExhaustedIssue(ctx, issue, e, refused); lifted {
-			return
-		}
-		if moved || issue.Status == issuestatus.Blocked {
-			break
-		}
-		if latest, err := h.Queries.GetIssue(ctx, e.IssueID); err != nil || latest.Revision == issue.Revision {
-			break
-		}
+	// The auto-approver settles a window that made progress before the issue
+	// stops: the top-up resumes the refused run, and nothing is blocked.
+	if h.autoApproveExhausted(ctx, e) {
+		return
 	}
-	// The recovery run debits the ledger, so it commits with the notice that
-	// states the balance, in the notice's transaction: whichever callback
-	// writes the notice also gives the run, and a callback that exits after the
-	// block leaves both for the next one. The target is priced under the
-	// budget lock that transaction takes.
-	if moved {
-		runBudgetBeforeRecovery()
-	}
-	h.writeRunBudgetNoticeFrom(ctx, service.RunBudgetEvent{IssueID: e.IssueID, Kind: service.RunBudgetKindExhausted, Runs: e.Runs, Max: e.Max, Since: e.Since},
-		h.prepareBudgetRecovery(ctx, e),
-		func(ctx context.Context, q *db.Queries) string {
-			raise := runBudgetRaiseTarget(ctx, q, issue.ID, e)
-			return exhaustedNoticeText(refused, raise.target, raise.leaves, e, moved)
-		})
-	if moved {
-		h.recordBudgetBlock(ctx, issue, e, refused)
+	if id, generation, ok := h.recordRefusalIntent(ctx, e); ok {
+		h.advanceRefusalHook(ctx, id, generation, e)
 	}
 }
 
@@ -330,33 +437,6 @@ func (h *Handler) blockedAgentHandler(ctx context.Context, issue db.Issue) (stri
 // runBudgetBlockTries bounds the block's re-reads after losing a revision race.
 const runBudgetBlockTries = 3
 
-// exhaustedIssue reads the issue a refusal is about and reports whether the
-// refusal still applies: not finished, its window still current and still
-// spent, and still in the status that was refused unless it is already blocked.
-func (h *Handler) exhaustedIssue(ctx context.Context, e service.RunBudgetExhausted) (db.Issue, bool) {
-	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
-	if err != nil || service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
-		return issue, false
-	}
-	// Read after the issue, so a top-up that commits after this point moves the
-	// revision the block is conditional on, and the retry reads it again.
-	if refuses, err := service.RunBudgetStillRefuses(ctx, h.Queries, e.IssueID, e.Since); err != nil || !refuses {
-		return issue, false
-	}
-	if issue.Status == issuestatus.Blocked {
-		return issue, true
-	}
-	if issue.Status != e.Status {
-		return issue, false
-	}
-	// A refused run for anyone but the reviewer must not block the review: the
-	// reviewer's own first run on a head is still admitted.
-	if service.IsReviewStatus(issue.Status) && issue.AssigneeID != e.Target.AgentID {
-		return issue, false
-	}
-	return issue, true
-}
-
 // runBudgetBeforeRecovery runs after the block commits and before the recovery
 // run is claimed, which happens in the notice transaction. Tests use it to land
 // a budget write in that window.
@@ -370,81 +450,39 @@ var runBudgetBeforeBlock = func() {}
 // refusal no longer holds: a top-up or a progress grant landed first.
 var errRefusalLifted = fmt.Errorf("run budget: the refusal no longer applies: %w", pgx.ErrNoRows)
 
-// blockExhaustedIssue moves the issue to blocked and records why. It reports
-// whether this call moved the issue, and whether the budget was restored
-// before the move so the refusal no longer applies.
-//
-// The check runs in the status write's transaction under the budget lock that
-// every grant, top-up and admission takes. A balance-restoring write either
-// commits before the check and the block is dropped, or waits for the block's
-// commit and is judged on the blocked issue. A write that changes no issue
-// field (a head grant) cannot be caught by the expected revision alone.
-func (h *Handler) blockExhaustedIssue(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused string) (moved, lifted bool) {
-	if issue.Status == issuestatus.Blocked {
-		return false, false
-	}
-	runBudgetBeforeBlock()
-	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
-	if err != nil || def == nil || !def.Has(issuestatus.Blocked) {
-		slog.Warn("run budget: cannot block issue", "err", err, "issue_id", uuidToString(issue.ID))
-		return false, false
-	}
-	details := map[string]any{
-		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs,
-		"refused_run": refused,
-	}
-	stillRefused := func(ctx context.Context, q *db.Queries, _ *db.UpdateIssueParams) error {
-		if _, err := q.LockIssueRunBudget(ctx, issue.ID); err != nil {
-			return err
-		}
-		if still, err := service.RunBudgetStillRefuses(ctx, q, issue.ID, e.Since); err != nil || !still {
-			if err == nil {
-				err = errRefusalLifted
-			}
-			return err
-		}
-		// Committed with the move: the budget parked this issue in this window.
-		_, err := q.ClaimRunBudgetNotice(ctx, db.ClaimRunBudgetNoticeParams{
-			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
-			WindowID: e.Since.UTC().Format(time.RFC3339Nano), Kind: service.RunBudgetKindBlocked,
-		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		return err
-	}
-	moved, _, err = h.tryMoveIssueOnEdge(withIssueMoveGuard(ctx, stillRefused), issue, issuestatus.Blocked, "run_budget", details, false)
-	if errors.Is(err, errRefusalLifted) {
-		return false, true
-	}
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		slog.Warn("run budget: block failed", "err", err, "issue_id", uuidToString(issue.ID))
-	}
-	if !moved {
-		return false, false
-	}
-	reason, _ := json.Marshal(issueworkflow.BlockedReasonRunBudget)
-	if _, err := h.Queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{Key: "blocked_reason", Value: reason, ID: issue.ID, WorkspaceID: issue.WorkspaceID}); err != nil {
-		slog.Warn("run budget: set blocked_reason failed", "err", err, "issue_id", uuidToString(issue.ID))
-	}
-	return true, false
-}
-
 // recordBudgetBlock logs the exhaustion block with the cap a raise would set.
 // It runs after the recovery run is enqueued, so the target counts that run.
 func (h *Handler) recordBudgetBlock(ctx context.Context, issue db.Issue, e service.RunBudgetExhausted, refused string) {
-	details := map[string]any{
-		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs, "refused_run": refused, "raise_target": 0,
-	}
-	if !e.TokensSpent {
-		details["raise_target"] = runBudgetRaiseTarget(ctx, h.Queries, issue.ID, e).target
-	}
-	body, _ := json.Marshal(details)
+	body, _ := json.Marshal(map[string]any{
+		"reason": issueworkflow.BlockedReasonRunBudget, "max_runs": e.Max, "runs": e.Runs, "refused_run": refused,
+		"raise_target": runBudgetRaiseTarget(ctx, h.Queries, issue.ID, e).target,
+	})
 	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
 		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: "system", Valid: true},
 		Action: "run_budget_exhausted", Details: body,
 	}); err != nil {
 		slog.Warn("run budget: activity failed", "err", err, "issue_id", uuidToString(issue.ID))
+	}
+}
+
+// onReviewRunSkipped records a reviewer run the review-head guard refused
+// (CHE-4649) on the issue's activity, which is where the skip is read. The
+// skipped run is no task row, so nothing else would show it.
+func (h *Handler) onReviewRunSkipped(ctx context.Context, e service.ReviewRunSkipped) {
+	issue, err := h.Queries.GetIssue(ctx, e.IssueID)
+	if err != nil {
+		slog.Warn("review run skipped: load issue failed", "err", err, "issue_id", uuidToString(e.IssueID))
+		return
+	}
+	body, _ := json.Marshal(map[string]any{
+		"reason": string(ReasonReviewHeadAnswered), "agent_id": uuidToString(e.Target.AgentID),
+		"head_sha": e.Head, "trigger": e.Target.Trigger,
+	})
+	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
+		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: "system", Valid: true},
+		Action: "run_skipped", Details: body,
+	}); err != nil {
+		slog.Warn("review run skipped: activity failed", "err", err, "issue_id", uuidToString(issue.ID))
 	}
 }
 
@@ -454,11 +492,6 @@ func exhaustedNoticeText(refused string, raise, leaves int, e service.RunBudgetE
 	lead := "Run budget used up"
 	if blocked {
 		lead = "Blocked"
-	}
-	if e.TokensSpent {
-		return fmt.Sprintf(
-			"%s: %s was refused because the issue's token allowance is spent (balance %d). No command raises it. A person moves the issue's status to open a new window with a new allowance.",
-			lead, refused, e.Tokens)
 	}
 	return runBudgetNoticeMessage(lead, refused, int(e.Runs), e.Max, raise, leaves)
 }

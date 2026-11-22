@@ -1,0 +1,42 @@
+name: Merge queue stale cancel
+
+# A merge_group CI run keeps holding hosted runner slots after the queue replaced its entry and deleted
+# its branch. Each dequeue starts one sweep that cancels those runs (CHE-7065, plan CHE-7033 S1).
+# Rollback: `gh workflow disable merge-queue-stale-cancel.yml`.
+#
+# Trust boundary: this job holds an `actions: write` token. It uses `pull_request_target` so it always runs
+# the workflow and script from the default branch (never PR code). Never check out or run anything from the
+# PR head here. The `delete` event is not used: it fires only for a workflow file already on the default branch.
+on:
+  pull_request_target:
+    types: [dequeued]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List the runs that would be cancelled instead of cancelling them
+        type: boolean
+        default: true
+
+permissions:
+  actions: write
+  contents: read
+
+# Every run is a full sweep, so a pending run replaced by a newer one loses nothing.
+concurrency:
+  group: merge-queue-stale-cancel
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Cancel merge_group runs whose queue branch is gone
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '--dry-run' || '' }}
+        run: node scripts/merge-queue-stale-cancel.mjs --repo "$GITHUB_REPOSITORY" $DRY_RUN

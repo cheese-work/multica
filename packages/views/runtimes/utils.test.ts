@@ -10,7 +10,10 @@ import {
   aggregateCostByModel,
   cacheHitRatePercent,
   computeCostInWindow,
+  formatCredits,
+  formatSpend,
   formatTokens,
+  hasTokenFigure,
   isSelfHealingRuntime,
   sliceWindow,
   summarizeTaskUsage,
@@ -1312,6 +1315,151 @@ describe("estimateCost", () => {
   });
 });
 
+// 1-hour cache writes bill at 2x input, the 5-minute rest at 1.25x. These
+// cases mirror server/internal/metrics/pricing_cache_write_1h_test.go so the
+// usage page prices the same rows as the Go estimate (CHE-6532 / CHE-6534).
+describe("1-hour cache-write pricing", () => {
+  // Real run from an X99 Claude Code transcript (claude-sonnet-5-5): every
+  // written token carried the 1-hour TTL. Transcript price at vendor rates:
+  // (20*2 + 369925*0.10 + 42685*4 + 5024*10) / 1e6 = 0.2580125.
+  const sample = {
+    model: "claude-sonnet-5-5",
+    input_tokens: 20,
+    output_tokens: 5024,
+    cache_read_tokens: 369_925,
+    cache_write_tokens: 42_685,
+  };
+
+  it("prices a per-run row with a 1-hour split at the transcript price", () => {
+    const cost = estimateCost({ ...sample, cache_write_1h_tokens: 42_685 });
+    expect(Math.abs(cost - 0.2580125)).toBeLessThanOrEqual(0.2580125 * 0.02);
+    expect(cost).toBeCloseTo(0.2580125, 9);
+  });
+
+  it("prices an aggregate row's uncosted 1-hour part at the 1-hour rate", () => {
+    const cost = estimateCost({
+      ...sample,
+      uncosted_input_tokens: 20,
+      uncosted_output_tokens: 5024,
+      uncosted_cache_read_tokens: 369_925,
+      uncosted_cache_write_tokens: 42_685,
+      uncosted_cache_write_1h_tokens: 42_685,
+    });
+    expect(cost).toBeCloseTo(0.2580125, 9);
+  });
+
+  it("prices a NULL 1-hour value exactly as before the field existed", () => {
+    const today =
+      (20 * 2 + 5024 * 10 + 369_925 * 0.1 + 42_685 * 2.5) / 1_000_000;
+    expect(estimateCost(sample)).toBeCloseTo(today, 12);
+    expect(
+      estimateCost({
+        ...sample,
+        uncosted_input_tokens: 20,
+        uncosted_output_tokens: 5024,
+        uncosted_cache_read_tokens: 369_925,
+        uncosted_cache_write_tokens: 42_685,
+      }),
+    ).toBeCloseTo(today, 12);
+  });
+
+  it("splits a mixed write between the 1-hour and 5-minute rates", () => {
+    // Opus 5.5: 5-minute $5, 1-hour $8.
+    const write = (oneHour: number | undefined) =>
+      estimateCost({
+        ...zeroUsage,
+        model: "claude-opus-5-5",
+        cache_write_tokens: 1_000_000,
+        cache_write_1h_tokens: oneHour,
+      });
+    expect(write(400_000)).toBeCloseTo(0.4 * 8 + 0.6 * 5, 9);
+    // 0 is a real "all 5-minute", not NULL-like, and prices the same as NULL.
+    expect(write(0)).toBeCloseTo(5, 9);
+    expect(write(undefined)).toBeCloseTo(5, 9);
+    // Bad data clamps into [0, total].
+    expect(write(2_000_000)).toBeCloseTo(8, 9);
+    expect(write(-5)).toBeCloseTo(5, 9);
+  });
+
+  it("puts the 1-hour part in the cache-write slice of the breakdown", () => {
+    const breakdown = estimateCostBreakdown({
+      ...zeroUsage,
+      model: "claude-opus-5-5",
+      cache_write_tokens: 1_000_000,
+      cache_write_1h_tokens: 400_000,
+    });
+    expect(breakdown.cacheWrite).toBeCloseTo(0.4 * 8 + 0.6 * 5, 9);
+    expect(breakdown.input + breakdown.output + breakdown.cacheRead).toBe(0);
+  });
+
+  it("does not split a SKU with no 1-hour rate", () => {
+    const cost = estimateCost({
+      ...zeroUsage,
+      model: "gpt-5.6-terra",
+      cache_write_tokens: 1_000_000,
+      cache_write_1h_tokens: 1_000_000,
+    });
+    expect(cost).toBeCloseTo(2.5, 9);
+  });
+
+  it("carries 2x input as the 1-hour rate on every Anthropic row", () => {
+    const rows: Array<[string, number]> = [
+      ["claude-sonnet-5", 2],
+      ["claude-sonnet-5-5", 2],
+      ["claude-haiku-5-5", 0.1],
+      ["claude-fable-5-2", 8],
+      ["claude-fable-5-1", 10],
+      ["claude-fable-5", 10],
+      ["claude-opus-5-5", 4],
+      ["claude-opus-5", 5],
+      ["claude-opus-4-8", 5],
+      ["claude-opus-4-7", 5],
+      ["claude-opus-4-6", 5],
+      ["claude-opus-4-5", 5],
+      ["claude-sonnet-4-6", 3],
+      ["claude-sonnet-4-5", 3],
+      ["claude-haiku-4-5", 1],
+    ];
+    for (const [model, input] of rows) {
+      const cost = estimateCost({
+        ...zeroUsage,
+        model,
+        cache_write_tokens: 1_000_000,
+        cache_write_1h_tokens: 1_000_000,
+      });
+      expect(cost, model).toBeCloseTo(2 * input, 9);
+    }
+  });
+
+  it("prices Claude Fable 5.2 on its own row ($8 / $40, write $10, 1-hour $16, read $0.20)", () => {
+    const cost = (model: string, oneHour?: number) =>
+      estimateCost({
+        ...zeroUsage,
+        model,
+        input_tokens: 1_000_000,
+        output_tokens: 1_000_000,
+        cache_read_tokens: 1_000_000,
+        cache_write_tokens: 1_000_000,
+        cache_write_1h_tokens: oneHour,
+      });
+    expect(cost("claude-fable-5-2")).toBeCloseTo(8 + 40 + 0.2 + 10, 9);
+    expect(cost("claude-fable-5-2", 1_000_000)).toBeCloseTo(8 + 40 + 0.2 + 16, 9);
+    for (const id of [
+      "claude-fable-5.2",
+      "claude-fable-5-2[1m]",
+      "anthropic/claude-fable-5-2",
+      "claude-fable-5-2-20261101",
+      "claude-fable-5-2-latest",
+    ]) {
+      expect(isModelPriced(id), id).toBe(true);
+      expect(cost(id), id).toBeCloseTo(8 + 40 + 0.2 + 10, 9);
+    }
+    // Neighbours keep their own rows; unknown minors stay unmapped.
+    expect(cost("claude-fable-5-1")).toBeCloseTo(10 + 50 + 0.25 + 12.5, 9);
+    expect(isModelPriced("claude-fable-5-3")).toBe(false);
+  });
+});
+
 describe("isModelPriced", () => {
   it("recognises both Claude and Codex/GPT families", () => {
     expect(isModelPriced("claude-sonnet-5")).toBe(true);
@@ -2077,5 +2225,55 @@ describe("formatTokens", () => {
     expect(formatTokens(999_949)).toBe("999.9K");
     expect(formatTokens(999_950)).toBe("1M");
     expect(formatTokens(999_999_999)).toBe("1B");
+  });
+});
+
+describe("credits usage", () => {
+  const qoder = {
+    provider: "qoder_cloud",
+    model: "",
+    input_tokens: 0,
+    output_tokens: 0,
+    cache_read_tokens: 0,
+    cache_write_tokens: 0,
+    credits_micros: 1_250_000,
+  };
+  const label = (credits: string, provider: string) => `${credits} ${provider} credits`;
+
+  it("sums credits across slices and leaves token cost at zero", () => {
+    const s = summarizeTaskUsage([qoder, { ...qoder, credits_micros: 500_000 }]);
+    expect(s?.credits).toEqual(new Map([["qoder_cloud", 1.75]]));
+    expect(s?.cost).toBe(0);
+    expect(s?.models).toEqual([]);
+  });
+
+  it("reports no credits when no slice was billed in credits", () => {
+    const { credits_micros: _, ...tokensOnly } = qoder;
+    expect(summarizeTaskUsage([tokensOnly])?.credits.size).toBe(0);
+  });
+
+  it("keeps different providers' credit units separate", () => {
+    const s = summarizeTaskUsage([qoder, { ...qoder, provider: "other", credits_micros: 500_000 }]);
+    expect(s?.credits).toEqual(new Map([["qoder_cloud", 1.25], ["other", 0.5]]));
+    expect(formatSpend(s!, label)).toBe("1.25 qoder_cloud credits + 0.5 other credits");
+  });
+
+  it("shows credits alone, USD alone, or both", () => {
+    expect(formatSpend({ cost: 0, credits: new Map([["qoder_cloud", 1.75]]) }, label)).toBe("1.75 qoder_cloud credits");
+    expect(formatSpend({ cost: 1.5, credits: new Map() }, label)).toBe("$1.50");
+    expect(formatSpend({ cost: 1.5, credits: new Map([["qoder_cloud", 2]]) }, label)).toBe("$1.50 + 2 qoder_cloud credits");
+    expect(formatSpend({ cost: 0, credits: new Map([["qoder_cloud", 0]]) }, label)).toBe("0 qoder_cloud credits");
+  });
+
+  it("formats credits by magnitude", () => {
+    expect(formatCredits(0.125)).toBe("0.13");
+    expect(formatCredits(250.4)).toBe("250");
+    expect(formatCredits(12_500)).toBe(formatTokens(12_500));
+  });
+
+  it("hides the token figure only for credits-only usage", () => {
+    expect(hasTokenFigure({ tokens: 0, credits: new Map([["qoder_cloud", 1]]) })).toBe(false);
+    expect(hasTokenFigure({ tokens: 10, credits: new Map([["qoder_cloud", 1]]) })).toBe(true);
+    expect(hasTokenFigure({ tokens: 0, credits: new Map() })).toBe(true);
   });
 });

@@ -8,6 +8,8 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/intakehold"
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -23,11 +25,32 @@ type statusRecord struct {
 	// handoffWorkflow names the workflow whose handoff step this write enters;
 	// the writer adds who the issue went to from the row it writes.
 	handoffWorkflow string
-	activity        *db.ActivityLog
+	// override and stepHandler record a handoff move that named its own
+	// assignee, and who the step alone would have handed the issue to.
+	override    bool
+	kept        bool
+	stepHandler issueworkflow.StepAssignee
+	activity    *db.ActivityLog
 	// eventID is the pre-assigned id of the status_changed row (CHE-4439); the
 	// route label shares it. routingExit marks the row as a routing agent leaving its step.
 	eventID     pgtype.UUID
 	routingExit bool
+	// blockedOn is the validated blocked_on ref of a move to blocked (CHE-6972).
+	blockedOn string
+	// intakeRelease is the intake-hold entry source that a person's write
+	// releases the issue from. The write sets it under the issue lock (CHE-7072).
+	intakeRelease string
+	// intent, when armed, makes the write record a handoff dispatch intent in
+	// its own transaction; intentID is the row it wrote (CHE-5486).
+	intent   *handoffIntentSeed
+	intentID pgtype.UUID
+	// comment, when set, is created in the write's transaction after the status
+	// change; created is the row it wrote (CHE-5489).
+	comment *handoffCommentSeed
+	created *db.CreateCommentRow
+	// attach is the existing comments the move carries; the transaction checks
+	// them again under the issue lock.
+	attach *attachedComments
 }
 
 func withStatusRecord(ctx context.Context, rec *statusRecord) context.Context {
@@ -74,11 +97,25 @@ func (rec *statusRecord) recordedHandoff(issue db.Issue) map[string]string {
 	if rec.handoffWorkflow == "" {
 		return nil
 	}
-	return map[string]string{
+	out := map[string]string{
 		"workflow": rec.handoffWorkflow,
 		"to_type":  issue.AssigneeType.String,
 		"to_id":    uuidToString(issue.AssigneeID),
 	}
+	if rec.override {
+		out["override"] = "true"
+		out["step_handler"] = rec.stepHandler.Type + ":" + uuidToString(rec.stepHandler.ID)
+		if rec.kept {
+			out["kept_for_step"] = "true"
+		}
+	}
+	return out
+}
+
+// enterHandoff records the handoff this write makes.
+func (rec *statusRecord) enterHandoff(hand *workflowHandoff) {
+	rec.handoffWorkflow = hand.def.Name
+	rec.override, rec.stepHandler, rec.kept = hand.override, hand.stepHandler, hand.kept
 }
 
 // finishRecordedHandoff adds what only the commit settles, whether the handoff
@@ -139,4 +176,27 @@ func (h *Handler) publishSystemStatusChange(workspaceID string, recorded *db.Act
 	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, "system", "", payload)
 	h.publishRecordedStatusActivity(&statusRecord{activity: recorded}, "system", "")
+}
+
+// intakeReleaseKey is the value of details.intake_release for a status move
+// to `to`: the entry source when a person makes the move and an open intake-hold
+// entry covers the issue, else "". Callers run it under the issue lock, so the
+// scope is read from the row the move replaces and the key is stored with the
+// move itself, whatever the order of the park and the person's request (CHE-7072).
+func intakeReleaseKey(ctx context.Context, q *db.Queries, rec *statusRecord, issueID pgtype.UUID, to string) (string, error) {
+	authSource := ""
+	if rec.trigger.AuthSource != nil {
+		authSource = *rec.trigger.AuthSource
+	}
+	if to == "backlog" || !intakehold.PersonWrite(rec.trigger.Cause.By.Type, rec.trigger.Cause.Kind, authSource) {
+		return "", nil
+	}
+	loaded, err := intakehold.Load(ctx, q.Conn(), uuidToString(issueID))
+	if err != nil {
+		return "", fmt.Errorf("read intake hold for release: %w", err)
+	}
+	if loaded.Entry == nil || !intakehold.InScope(loaded.Issue, loaded.Entry, loaded.Now) {
+		return "", nil
+	}
+	return loaded.Entry.Source, nil
 }

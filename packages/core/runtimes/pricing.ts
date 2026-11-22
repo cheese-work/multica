@@ -12,9 +12,13 @@ import { getCustomPricing } from "./custom-pricing-store";
 //   Zhipu:     https://docs.z.ai/guides/overview/pricing
 //   xAI:       https://docs.x.ai/developers/pricing
 //
-// Anthropic's cacheWrite reflects the 5-minute cache TTL (1.25× input); the
-// daemon reports cache_creation_input_tokens without TTL metadata, so 5m is
-// the safest / cheapest assumption (matches the API default). DeepSeek,
+// Anthropic's cacheWrite reflects the 5-minute cache TTL (1.25× input) and
+// cacheWrite1h the 1-hour TTL (2× input). The 1-hour part of the written
+// tokens is reported separately (`cache_write_1h_tokens`, or
+// `uncosted_cache_write_1h_tokens` on aggregates); without it every written
+// token prices at the 5-minute rate, matching the API default. Mirror
+// server/internal/metrics/pricing.go (CacheWrite1hPerM, CacheWriteCostUSD).
+// DeepSeek,
 // Moonshot, Zhipu and xAI do not bill cache writes separately (cached input
 // is just discounted on subsequent reads), so cacheWrite mirrors input there.
 // OpenAI historically did the same, but its GPT-5.6+ generation bills cache
@@ -39,7 +43,14 @@ import { getCustomPricing } from "./custom-pricing-store";
 // stay unqualified and still resolve.
 const MODEL_PRICING: Record<
   string,
-  { input: number; output: number; cacheRead: number; cacheWrite: number }
+  {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    /** 1-hour-TTL write rate. Absent: the SKU has none, all writes bill at `cacheWrite`. */
+    cacheWrite1h?: number;
+  }
 > = {
   // -- Anthropic: current generation. Sonnet 5 uses Anthropic's published
   //    intro launch rate ($2 / $10 through 2026-08-31). This static map has
@@ -48,35 +59,40 @@ const MODEL_PRICING: Record<
   //    SKUs at 10/50 (5.1 prices cache reads at 0.025x input, a quarter of the
   //    usual 0.1x); Opus 4.5 through Opus 5 stay on the lower 5/25 Opus tier,
   //    and Opus 5.5 drops to 4/20 (cache reads at 0.05x input). --
-  "claude-sonnet-5":     { input: 2,    output: 10,   cacheRead: 0.20, cacheWrite: 2.50 },
+  "claude-sonnet-5":     { input: 2,    output: 10,   cacheRead: 0.20, cacheWrite: 2.50, cacheWrite1h: 4 },
   // Sonnet 5.5 keeps the 2/10 tier but halves the cache-read rate.
-  "claude-sonnet-5-5":   { input: 2,    output: 10,   cacheRead: 0.10, cacheWrite: 2.50 },
+  "claude-sonnet-5-5":   { input: 2,    output: 10,   cacheRead: 0.10, cacheWrite: 2.50, cacheWrite1h: 4 },
   // Haiku 5.5 uses the <=100K prompt tier. Above 100K (including cache
   // reads/writes), all four rates are 5x higher. Rollups lack per-request
   // prompt sizes, so long requests are underestimated. Mirror the backend
   // estimate in server/internal/metrics/pricing.go.
-  "claude-haiku-5-5":    { input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125 },
-  "claude-fable-5-1":   { input: 10,   output: 50,   cacheRead: 0.25, cacheWrite: 12.50 },
-  "claude-fable-5":     { input: 10,   output: 50,   cacheRead: 1.00, cacheWrite: 12.50 },
-  "claude-opus-5-5":    { input: 4,    output: 20,   cacheRead: 0.20, cacheWrite: 5.00 },
-  "claude-opus-5":      { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
-  "claude-haiku-4-5":   { input: 1,    output: 5,    cacheRead: 0.10, cacheWrite: 1.25 },
-  "claude-sonnet-4-5":  { input: 3,    output: 15,   cacheRead: 0.30, cacheWrite: 3.75 },
-  "claude-sonnet-4-6":  { input: 3,    output: 15,   cacheRead: 0.30, cacheWrite: 3.75 },
-  "claude-opus-4-5":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
-  "claude-opus-4-6":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
-  "claude-opus-4-7":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
-  "claude-opus-4-8":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25 },
+  "claude-haiku-5-5":    { input: 0.10, output: 0.50, cacheRead: 0.01, cacheWrite: 0.125, cacheWrite1h: 0.2 },
+  // Fable 5.2: $8 / $40, 5-minute write $10, 1-hour write $16, cache hits
+  // 0.025x input ($0.20); platform.claude.com/docs/en/about-claude/pricing
+  // (accessed 2026-11-20). Every Anthropic row below lists a 1-hour write at
+  // 2x base input.
+  "claude-fable-5-2":   { input: 8,    output: 40,   cacheRead: 0.20, cacheWrite: 10.00, cacheWrite1h: 16 },
+  "claude-fable-5-1":   { input: 10,   output: 50,   cacheRead: 0.25, cacheWrite: 12.50, cacheWrite1h: 20 },
+  "claude-fable-5":     { input: 10,   output: 50,   cacheRead: 1.00, cacheWrite: 12.50, cacheWrite1h: 20 },
+  "claude-opus-5-5":    { input: 4,    output: 20,   cacheRead: 0.20, cacheWrite: 5.00, cacheWrite1h: 8 },
+  "claude-opus-5":      { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25, cacheWrite1h: 10 },
+  "claude-haiku-4-5":   { input: 1,    output: 5,    cacheRead: 0.10, cacheWrite: 1.25, cacheWrite1h: 2 },
+  "claude-sonnet-4-5":  { input: 3,    output: 15,   cacheRead: 0.30, cacheWrite: 3.75, cacheWrite1h: 6 },
+  "claude-sonnet-4-6":  { input: 3,    output: 15,   cacheRead: 0.30, cacheWrite: 3.75, cacheWrite1h: 6 },
+  "claude-opus-4-5":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25, cacheWrite1h: 10 },
+  "claude-opus-4-6":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25, cacheWrite1h: 10 },
+  "claude-opus-4-7":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25, cacheWrite1h: 10 },
+  "claude-opus-4-8":    { input: 5,    output: 25,   cacheRead: 0.50, cacheWrite: 6.25, cacheWrite1h: 10 },
 
   // -- Anthropic: pre-4.5 Opus (legacy, still served at original price tier) --
-  "claude-opus-4-1":    { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75 },
-  "claude-opus-4":      { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75 },
+  "claude-opus-4-1":    { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75, cacheWrite1h: 30 },
+  "claude-opus-4":      { input: 15,   output: 75,   cacheRead: 1.50, cacheWrite: 18.75, cacheWrite1h: 30 },
 
   // -- Anthropic: Sonnet 4.0 (deprecated; same price as the 4.x family) --
-  "claude-sonnet-4":    { input: 3,    output: 15,   cacheRead: 0.30, cacheWrite: 3.75 },
+  "claude-sonnet-4":    { input: 3,    output: 15,   cacheRead: 0.30, cacheWrite: 3.75, cacheWrite1h: 6 },
 
   // -- Anthropic: older Haiku tier (defensive entry for the rare runtime still on it) --
-  "claude-haiku-3-5":   { input: 0.80, output: 4,    cacheRead: 0.08, cacheWrite: 1.00 },
+  "claude-haiku-3-5":   { input: 0.80, output: 4,    cacheRead: 0.08, cacheWrite: 1.00, cacheWrite1h: 1.6 },
 
   // -- OpenAI: dotted-minor Codex catalog SKUs. Each generation is priced
   //    independently — no fallback to `gpt-5`. Entries track
@@ -660,10 +676,15 @@ export type Priceable = Pick<
 > & {
   provider?: string;
   cost_usd_ticks?: number;
+  credits_micros?: number;
   uncosted_input_tokens?: number;
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  /** Per-run rows: the 1-hour-TTL part of `cache_write_tokens`. Absent = no split reported. */
+  cache_write_1h_tokens?: number;
+  /** Aggregate rows: the 1-hour-TTL part of `uncosted_cache_write_tokens`. Absent = no split. */
+  uncosted_cache_write_1h_tokens?: number;
 };
 
 // Providers report cost in ticks of 1e-10 USD (xAI's unit), which keeps
@@ -685,16 +706,19 @@ function uncostedTokens(usage: Priceable): {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** undefined = no TTL split reported: every written token bills at the 5-minute rate. */
+  cacheWrite1h: number | undefined;
 } {
   if (usage.uncosted_input_tokens === undefined) {
     if ((usage.cost_usd_ticks ?? 0) > 0) {
-      return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheWrite1h: undefined };
     }
     return {
       input: usage.input_tokens,
       output: usage.output_tokens,
       cacheRead: usage.cache_read_tokens,
       cacheWrite: usage.cache_write_tokens,
+      cacheWrite1h: usage.cache_write_1h_tokens,
     };
   }
   return {
@@ -702,7 +726,24 @@ function uncostedTokens(usage: Priceable): {
     output: usage.uncosted_output_tokens ?? 0,
     cacheRead: usage.uncosted_cache_read_tokens ?? 0,
     cacheWrite: usage.uncosted_cache_write_tokens ?? 0,
+    cacheWrite1h: usage.uncosted_cache_write_1h_tokens,
   };
+}
+
+// USD for `total` written tokens, of which `oneHour` carry the 1-hour TTL.
+// Mirrors ModelPrice.CacheWriteCostUSD in server/internal/metrics/pricing.go:
+// no split or no 1-hour rate bills everything at the 5-minute rate; a count
+// outside [0, total] is clamped so bad data cannot bill more than was written.
+function cacheWriteCost(
+  total: number,
+  oneHour: number | undefined,
+  pricing: { cacheWrite: number; cacheWrite1h?: number },
+): number {
+  if (oneHour === undefined || !pricing.cacheWrite1h) {
+    return (total * pricing.cacheWrite) / 1_000_000;
+  }
+  const h = Math.min(Math.max(oneHour, 0), Math.max(total, 0));
+  return (h * pricing.cacheWrite1h + (total - h) * pricing.cacheWrite) / 1_000_000;
 }
 
 // Cost of a usage row: what the provider actually charged, plus a rate-table
@@ -728,9 +769,9 @@ export function estimateCost(usage: Priceable): number {
     authoritative +
     (uncosted.input * pricing.input +
       uncosted.output * pricing.output +
-      uncosted.cacheRead * pricing.cacheRead +
-      uncosted.cacheWrite * pricing.cacheWrite) /
-      1_000_000
+      uncosted.cacheRead * pricing.cacheRead) /
+      1_000_000 +
+    cacheWriteCost(uncosted.cacheWrite, uncosted.cacheWrite1h, pricing)
   );
 }
 
@@ -766,7 +807,7 @@ export function estimateCostBreakdown(usage: Priceable): CostBreakdown {
     input: (uncosted.input * pricing.input) / 1_000_000,
     output: (uncosted.output * pricing.output) / 1_000_000,
     cacheRead: (uncosted.cacheRead * pricing.cacheRead) / 1_000_000,
-    cacheWrite: (uncosted.cacheWrite * pricing.cacheWrite) / 1_000_000,
+    cacheWrite: cacheWriteCost(uncosted.cacheWrite, uncosted.cacheWrite1h, pricing),
   };
 
   const authoritative = (usage.cost_usd_ticks ?? 0) / COST_USD_TICKS_PER_USD;

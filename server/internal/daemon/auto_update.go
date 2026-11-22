@@ -157,37 +157,48 @@ func (d *Daemon) autoUpdateLoop(ctx context.Context) {
 	if err := sleepWithContext(ctx, autoUpdateInitialDelay); err != nil {
 		return
 	}
+	// The reload half runs on its own goroutine. tryAutoUpdate does a network
+	// lookup; sharing one loop would let a stalled lookup hold the kick past the
+	// idle instant (CHE-5881). The two halves stay safe together: both take
+	// update ownership with the same CAS on d.updating, and both restart only
+	// through the strict claim barrier.
+	if reloadEnabled {
+		reloadDone := make(chan struct{})
+		go func() { defer close(reloadDone); d.selfReloadLoop(ctx) }()
+		defer func() { <-reloadDone }() // return only once both halves have stopped
+	}
 	if pullEnabled {
 		d.tryAutoUpdate(ctx)
-	}
-	if reloadEnabled {
-		d.trySelfReload(ctx)
-	}
-
-	// Tickers start only now, after the first check. Starting them before the
-	// delay would let an interval shorter than autoUpdateInitialDelay buffer a
-	// tick and fire a second check immediately after the first.
-	//
-	// A disabled half leaves its channel nil, which never fires in a select.
-	var pullTick, reloadTick <-chan time.Time
-	if pullEnabled {
 		ticker := time.NewTicker(pullInterval)
 		defer ticker.Stop()
-		pullTick = ticker.C
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				d.tryAutoUpdate(ctx)
+			}
+		}
 	}
-	if reloadEnabled {
-		ticker := time.NewTicker(selfReloadCheckInterval)
-		defer ticker.Stop()
-		reloadTick = ticker.C
-	}
+	<-ctx.Done()
+}
 
+// selfReloadLoop checks the on-disk binary at startup, every
+// selfReloadCheckInterval, and whenever a pending reload finds the daemon idle
+// (reloadKick). The ticker starts after the first check, so an interval shorter
+// than autoUpdateInitialDelay cannot buffer a tick and fire a second check
+// immediately after the first.
+func (d *Daemon) selfReloadLoop(ctx context.Context) {
+	d.trySelfReload(ctx)
+	ticker := time.NewTicker(selfReloadCheckInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-pullTick:
-			d.tryAutoUpdate(ctx)
-		case <-reloadTick:
+		case <-ticker.C:
+			d.trySelfReload(ctx)
+		case <-d.reloadKick: // reload pending and just went idle: reload now, not at the next tick
 			d.trySelfReload(ctx)
 		}
 	}
@@ -234,7 +245,9 @@ func (d *Daemon) tryAutoUpdate(ctx context.Context) {
 	d.logger.Info("auto-update: newer release available, upgrading",
 		"current", d.cfg.CLIVersion, "target", target)
 
-	output, err := d.runUpdateFn(target)
+	installCtx, cancel := context.WithTimeout(context.Background(), manualUpdateBound)
+	defer cancel()
+	output, err := d.runUpdateFn(installCtx, target)
 	if err != nil {
 		d.logger.Warn("auto-update: upgrade failed — will retry", "error", err, "output", output)
 		return
@@ -325,11 +338,11 @@ func (d *Daemon) autoUpdateTarget(ctx context.Context) (string, bool) {
 //
 // Restart mechanics are shared with tryAutoUpdate rather than reinvented:
 // the same trySetClaimBarrier keeps a running task from being interrupted, and
-// the same triggerRestart performs the handoff. There is deliberately no
-// pending-restart state machine and no drain hook — a busy daemon just defers
-// to the next tick, so the check cannot leave claiming paused while waiting for
-// something to wake it. The deferral is recorded in reloadPendingReason purely
-// so /health can explain why the daemon is still on the old version.
+// the same triggerRestart performs the handoff. A busy daemon keeps
+// claiming (CHE-5881): the reload only restarts at an idle instant, and the
+// last task or claim to end kicks this check (kickReloadIfIdle) so the restart
+// happens at once. Claims are never paused for a pending reload;
+// reloadPendingReason explains the stale version on /health.
 //
 // A failed probe is never treated as a version change. The binary is most
 // likely to be unreadable during the few hundred milliseconds of the very
@@ -461,12 +474,14 @@ func (d *Daemon) updateServer() (serverURL, token string) {
 	return d.client.BaseURL(), d.client.Token()
 }
 
+// manualUpdateBound bounds an update that carries no server deadline (the
+// Update button, the auto-update poller).
+const manualUpdateBound = cli.DefaultUpdateDownloadTimeout + time.Minute
+
 // runForkUpdate installs the daemon build the daemon's own server carries.
 // Every failure leaves the installed binary intact and is returned as-is;
 // nothing falls back to GitHub, upstream releases or Homebrew.
-func (d *Daemon) runForkUpdate() (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), cli.DefaultUpdateDownloadTimeout+time.Minute)
-	defer cancel()
+func (d *Daemon) runForkUpdate(ctx context.Context) (string, error) {
 	serverURL, token := d.updateServer()
 	u, err := resolveForkUpdate(ctx, serverURL, token, runtime.GOOS, runtime.GOARCH, currentCommit())
 	if err != nil {
@@ -481,4 +496,26 @@ func (d *Daemon) runForkUpdate() (string, error) {
 		return out, fmt.Errorf("fork update failed, installed daemon unchanged: %w", err)
 	}
 	return out, nil
+}
+
+// taskDone ends one task's activeTasks hold and, with a reload pending, wakes
+// the reload check once the daemon is idle.
+func (d *Daemon) taskDone() {
+	d.activeTasks.Add(-1)
+	d.kickReloadIfIdle()
+}
+
+// kickReloadIfIdle wakes autoUpdateLoop when a reload is pending and nothing is
+// running or being claimed. A kick that finds the daemon busy again just defers.
+func (d *Daemon) kickReloadIfIdle() {
+	d.claimMu.Lock()
+	idle := d.reloadPending() != "" && d.claimsInFlight == 0 && d.activeTasks.Load() == 0
+	d.claimMu.Unlock()
+	if !idle {
+		return
+	}
+	select {
+	case d.reloadKick <- struct{}{}:
+	default:
+	}
 }

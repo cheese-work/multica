@@ -108,6 +108,68 @@ func (q *Queries) InsertIssuePREvent(ctx context.Context, arg InsertIssuePREvent
 	return result.RowsAffected(), nil
 }
 
+const lastWorkingAgentOnIssue = `-- name: LastWorkingAgentOnIssue :one
+SELECT a.id, a.workspace_id, a.name, a.avatar_url, a.runtime_mode, a.runtime_config, a.visibility, a.status, a.max_concurrent_tasks, a.owner_id, a.created_at, a.updated_at, a.description, a.runtime_id, a.instructions, a.archived_at, a.archived_by, a.custom_env, a.custom_args, a.mcp_config, a.model, a.thinking_level, a.composio_toolkit_allowlist, a.permission_mode, a.kind, a.system_key, a.disabled_runtime_skills, a.service_tier, a.conversation_starters, a.custom_env_version, a.scheduling_paused_at, a.scheduling_paused_by, a.scheduling_paused_reason
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE t.issue_id = $1
+  AND t.started_at IS NOT NULL
+  AND a.workspace_id = $2
+  AND a.archived_at IS NULL
+  AND a.runtime_id IS NOT NULL
+ORDER BY t.started_at DESC
+LIMIT 1
+`
+
+type LastWorkingAgentOnIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The agent that most recently ran on an issue and can still run: the PR-action
+// fallback when a member holds the issue and no PR author resolves, so the
+// notice reaches an agent rather than the member (CHE-5837).
+func (q *Queries) LastWorkingAgentOnIssue(ctx context.Context, arg LastWorkingAgentOnIssueParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, lastWorkingAgentOnIssue, arg.IssueID, arg.WorkspaceID)
+	var i Agent
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.AvatarUrl,
+		&i.RuntimeMode,
+		&i.RuntimeConfig,
+		&i.Visibility,
+		&i.Status,
+		&i.MaxConcurrentTasks,
+		&i.OwnerID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Description,
+		&i.RuntimeID,
+		&i.Instructions,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.CustomEnv,
+		&i.CustomArgs,
+		&i.McpConfig,
+		&i.Model,
+		&i.ThinkingLevel,
+		&i.ComposioToolkitAllowlist,
+		&i.PermissionMode,
+		&i.Kind,
+		&i.SystemKey,
+		&i.DisabledRuntimeSkills,
+		&i.ServiceTier,
+		&i.ConversationStarters,
+		&i.CustomEnvVersion,
+		&i.SchedulingPausedAt,
+		&i.SchedulingPausedBy,
+		&i.SchedulingPausedReason,
+	)
+	return i, err
+}
+
 const latestPRConflictBase = `-- name: LatestPRConflictBase :one
 SELECT e.base_sha
 FROM issue_pr_event e
@@ -192,9 +254,13 @@ SELECT e.id, e.workspace_id, e.issue_id, e.kind, e.head_sha, e.base_sha, e.obser
        ), '')::text AS check_name
 FROM issue_pr_event e
 JOIN github_pull_request pr ON pr.id = e.pull_request_id
-WHERE e.kind NOT IN ('draft', 'ready')
+WHERE e.kind NOT IN ('draft', 'ready', 'merged')
   AND NOT (e.kind IN ('conflict', 'head_changed', 'checks_failed') AND pr.state IN ('merged', 'closed'))
   AND (e.status = 'next_turn'
+       -- A member was told once (notified); an agent or squad holding the issue
+       -- takes the event now (CHE-5901).
+       OR (e.status = 'notified'
+           AND EXISTS (SELECT 1 FROM issue i WHERE i.id = e.issue_id AND i.assignee_type IN ('agent', 'squad')))
        OR (e.status = 'accepted'
            AND NOT EXISTS (
                SELECT 1 FROM agent_task_queue t
@@ -266,6 +332,8 @@ type ListNextTurnPREventsRow struct {
 // take now must not hold every later batch back.
 // Action-required kinds of a merged or closed PR are never selected: the
 // lifecycle stop already ran, and a reopen raises its own events.
+// Lifecycle kinds draft, ready and merged are never selected: they report
+// state only, and the pr_merged rule already wakes the issue (CHE-4972). closed has no rule, so it stays.
 func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREventsParams) ([]ListNextTurnPREventsRow, error) {
 	rows, err := q.db.Query(ctx, listNextTurnPREvents,
 		arg.WorkspaceIds,
@@ -363,41 +431,79 @@ func (q *Queries) MarkPREventNextTurn(ctx context.Context, id pgtype.UUID) error
 	return err
 }
 
+const markPREventsNotified = `-- name: MarkPREventsNotified :execrows
+UPDATE issue_pr_event SET status = 'notified' WHERE id = ANY($1::uuid[]) AND status = 'next_turn'
+`
+
+// A member was told about these events once: the bridge selects them again only
+// when an agent or squad holds the issue (CHE-5901).
+func (q *Queries) MarkPREventsNotified(ctx context.Context, ids []pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, markPREventsNotified, ids)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markStartedPREventsDelivered = `-- name: MarkStartedPREventsDelivered :execrows
 UPDATE issue_pr_event e
 SET status = 'delivered'
-FROM github_pull_request pr
-WHERE pr.id = e.pull_request_id
-  AND e.status IN ('accepted', 'next_turn')
-  AND ($1::uuid[] IS NULL OR e.workspace_id = ANY($1::uuid[]))
-  AND (EXISTS (
-      SELECT 1
-      FROM issue_wakeup w
-      JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id
-      JOIN agent_task_queue t ON t.id = r.task_id
-      WHERE w.issue_id = e.issue_id
-        AND w.system_rule = 'pr_needs_attention'
-        AND r.event_type = 'pr.event'
-        AND r.payload->>'event_id' = e.id::text
-        AND t.started_at IS NOT NULL)
-   OR EXISTS (
-      SELECT 1
-      FROM issue_wakeup lw
-      JOIN issue_wakeup_receipt lr ON lr.wakeup_id = lw.id
-      JOIN agent_task_queue lt ON lt.id = lr.task_id
-      WHERE lw.issue_id = e.issue_id
-        AND lr.payload->>'head_sha' = e.head_sha
-        AND lr.payload->>'repo_owner' = pr.repo_owner
-        AND lr.payload->>'repo_name' = pr.repo_name
-        AND lr.payload->>'pr_number' = pr.pr_number::text
-        AND ((e.kind = 'checks_failed' AND lw.system_rule = 'pr_checks_failed' AND lr.event_type = 'pr.checks_failed')
-             OR (e.kind = 'conflict' AND lw.system_rule = 'pr_needs_attention' AND lr.event_type = 'pr.mergeability'
-                 AND lr.payload->>'merge_state' = 'DIRTY' AND COALESCE(lr.payload->>'base_sha', '') = e.base_sha))
-        AND lt.started_at IS NOT NULL))
+FROM (
+    -- A next-turn pr.event receipt names the event.
+    SELECT ce.id
+    FROM issue_pr_event ce
+    JOIN github_pull_request cpr ON cpr.id = ce.pull_request_id
+    JOIN issue_wakeup w ON w.issue_id = ce.issue_id AND w.system_rule = 'pr_needs_attention'
+    JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id AND r.event_type = 'pr.event' AND r.task_id IS NOT NULL
+        AND r.payload->>'event_id' = ce.id::text
+    JOIN agent_task_queue t ON t.id = r.task_id
+    WHERE ce.status IN ('accepted', 'next_turn', 'notified')
+      AND ($1::uuid[] IS NULL OR ce.workspace_id = ANY($1::uuid[]))
+      AND t.started_at IS NOT NULL
+    UNION
+    -- The legacy checks-failed rule's receipt for the same head.
+    SELECT ce.id
+    FROM issue_pr_event ce
+    JOIN github_pull_request cpr ON cpr.id = ce.pull_request_id
+    JOIN issue_wakeup lw ON lw.issue_id = ce.issue_id AND lw.system_rule = 'pr_checks_failed'
+    JOIN issue_wakeup_receipt lr ON lr.wakeup_id = lw.id AND lr.event_type = 'pr.checks_failed'
+        AND lr.payload->>'head_sha' = ce.head_sha
+        AND lr.payload->>'repo_owner' = cpr.repo_owner
+        AND lr.payload->>'repo_name' = cpr.repo_name
+        AND lr.payload->>'pr_number' = cpr.pr_number::text
+    JOIN agent_task_queue lt ON lt.id = lr.task_id
+    WHERE ce.kind = 'checks_failed'
+      AND ce.status IN ('accepted', 'next_turn', 'notified')
+      AND ($1::uuid[] IS NULL OR ce.workspace_id = ANY($1::uuid[]))
+      AND lt.started_at IS NOT NULL
+    UNION
+    -- The legacy mergeability rule's DIRTY receipt for the same head and base.
+    SELECT ce.id
+    FROM issue_pr_event ce
+    JOIN github_pull_request cpr ON cpr.id = ce.pull_request_id
+    JOIN issue_wakeup lw ON lw.issue_id = ce.issue_id AND lw.system_rule = 'pr_needs_attention'
+    JOIN issue_wakeup_receipt lr ON lr.wakeup_id = lw.id AND lr.event_type = 'pr.mergeability'
+        AND lr.payload->>'head_sha' = ce.head_sha
+        AND lr.payload->>'repo_owner' = cpr.repo_owner
+        AND lr.payload->>'repo_name' = cpr.repo_name
+        AND lr.payload->>'pr_number' = cpr.pr_number::text
+        AND lr.payload->>'merge_state' = 'DIRTY'
+        AND COALESCE(lr.payload->>'base_sha', '') = ce.base_sha
+    JOIN agent_task_queue lt ON lt.id = lr.task_id
+    WHERE ce.kind = 'conflict'
+      AND ce.status IN ('accepted', 'next_turn', 'notified')
+      AND ($1::uuid[] IS NULL OR ce.workspace_id = ANY($1::uuid[]))
+      AND lt.started_at IS NOT NULL
+) carried
+WHERE e.id = carried.id
+  AND e.status IN ('accepted', 'next_turn', 'notified')
 `
 
 // A wake that started carries its receipts' events: a next-turn pr.event
-// receipt's, or the legacy rule's receipt for the same cause (CHE-2540).
+// receipt's, or the legacy rule's receipt for the same cause (CHE-2540). One
+// UNION arm per receipt kind: an OR of EXISTS cannot be a semi-join, so it plans
+// as a SubPlan per event, or a hashed one that reads every pr.event receipt on
+// each tick (CHE-8956). The outer status check stays for rows changed meanwhile.
 func (q *Queries) MarkStartedPREventsDelivered(ctx context.Context, workspaceIds []pgtype.UUID) (int64, error) {
 	result, err := q.db.Exec(ctx, markStartedPREventsDelivered, workspaceIds)
 	if err != nil {

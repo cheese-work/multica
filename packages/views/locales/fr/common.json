@@ -142,8 +142,8 @@
     "reject_error": "Le refus n'a pas abouti. Réessayez.",
     "waiting": "En attente de votre clé d'accès…",
     "state": {
-      "executed": "Exécutée",
-      "failed": "Échec",
+      "executed": "Appliquée",
+      "failed": "Non appliquée",
       "rejected": "Rejetée",
       "expired": "Expirée",
       "cancelled": "Annulée"
@@ -155,18 +155,61 @@
       "other": "Échec : {{code}}",
       "stale_base": "La cible a changé après la demande. Redemandez."
     },
+    "refusal": {
+      "class_needs_owner": "Seul le propriétaire de l’espace de travail peut approuver ce changement.",
+      "payload_mismatch": "Le changement approuvé n’est pas celui qui a été demandé. Demandez à nouveau.",
+      "preview_required": "Approuvez l’aperçu qui vous a été montré. Rechargez la carte.",
+      "precondition_drift": "La cible a changé depuis la demande. Demandez à nouveau.",
+      "busy_retry": "Un autre changement est en cours. Réessayez.",
+      "not_permitted": "Vous n’avez pas le droit de faire ce changement.",
+      "action_not_executable": "Ce type de changement ne peut pas encore être approuvé.",
+      "approval_proof_unavailable": "Ce serveur ne peut pas encore vérifier une approbation par clé d’accès.",
+      "other": "Refusé : {{code}}"
+    },
+    "owner_only": "Seul le propriétaire de l’espace de travail peut approuver ce changement.",
     "no_passkey": "Ajoutez une clé d'accès avant d'approuver.",
     "add_passkey": "Ajouter une clé d'accès",
     "error": "L'approbation par clé d'accès n'a pas abouti. Réessayez.",
     "lost": "La réponse a été perdue. L'action n'est pas approuvée une seconde fois. Vérifiez le résultat.",
     "check": "Vérifier le résultat",
-    "outcome": { "cap_applied": "Plafond appliqué", "run_queued": "Exécution en file d’attente", "still_blocked": "Toujours bloqué : {{reason}}" },
+    "outcome": {
+      "cap_applied": "Plafond appliqué",
+      "run_queued": "Exécution en file d’attente",
+      "still_blocked": "Toujours bloqué : {{reason}}"
+    },
     "panel": {
       "title": "Demande de budget d'exécutions",
       "raise_cap": "Porter le plafond d'exécutions de {{issue}} à {{cap}} pour cette fenêtre.",
       "top_up": "Recharger le budget d'exécutions de {{issue}} pour cette fenêtre.",
-      "mismatch": "Cette approbation n'est pas une demande de budget d'exécutions pour cette tâche ; elle ne peut pas être approuvée ici.",
-      "unreadable": "Cette approbation ne vous est pas accessible, ou elle n'existe plus."
+      "settled": "Cette approbation est déjà : {{state}}. Si vous en avez encore besoin, demandez à l'agent de la proposer à nouveau.",
+      "mismatch": "Cette approbation n'est pas une demande de budget d'exécutions pour cette tâche. Ouvrez la carte dans votre DM ou votre boîte de réception pour en décider.",
+      "open_card": "Ouvrir la carte",
+      "unreadable": "Cette approbation n'est pas disponible pour vous ou n'existe plus. Demandez à l'agent de la proposer à nouveau."
+    }
+  },
+  "budget_receipt": {
+    "applied_runs": "Appliqué. À l'application, {{issue}} affichait {{used}} exécutions sur {{limit}}.",
+    "runs_used": "Exécutions utilisées",
+    "change": "{{used}} sur {{limit}} → {{usedAfter}} sur {{limitAfter}}",
+    "change_new_window": "{{used}} sur {{limit}} → {{usedAfter}} sur {{limitAfter}} (nouvelle fenêtre)",
+    "outcome": {
+      "run_queued": "Exécution en file d'attente.",
+      "run_started": "Exécution démarrée.",
+      "status_restored": "Statut rétabli.",
+      "still_blocked_runs": "Toujours bloqué : plus d'exécutions disponibles.",
+      "still_blocked_tokens": "Toujours bloqué : budget de jetons épuisé.",
+      "still_blocked": "Toujours bloqué.",
+      "later_window": "Non repris : une fenêtre de budget plus récente a remplacé celle-ci.",
+      "status_moved": "Non repris : la tâche a changé de statut.",
+      "window_changed": "Non repris : la fenêtre de budget a changé.",
+      "issue_closed": "Non repris : la tâche est fermée.",
+      "agent_archived": "Non repris : l'agent est archivé.",
+      "restore_refused": "Non repris : le statut n'a pas pu être rétabli.",
+      "unknown_origin": "Non repris : le statut avant le blocage est inconnu. Changez le statut à la main.",
+      "assignee_changed": "Non repris : l'assigné a changé.",
+      "source_unknown": "Non repris : le déclencheur d'origine est inconnu.",
+      "source_not_delivered": "Non repris : le déclencheur d'origine n'a plus de travail à faire.",
+      "superseded": "Non repris."
     }
   }
 }

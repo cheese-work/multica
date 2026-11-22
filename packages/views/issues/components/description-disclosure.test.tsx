@@ -114,6 +114,33 @@ describe("DescriptionDisclosure", () => {
     expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
   });
 
+  it("does not expand from a touch pointerdown (scroll gesture start); only the Show more button expands", () => {
+    // Regression (iOS Safari): a scroll starts with `pointerdown`; the browser
+    // sends `pointercancel` only after it decides to scroll, so expanding on
+    // touch pointerdown expanded the description on every scroll.
+    render(<DisclosureHarness />);
+
+    const editor = screen.getByTestId("real-editor").parentElement!;
+    const section = editor.parentElement!;
+
+    fireEvent.pointerDown(section, { pointerType: "touch" });
+
+    expect(editor).toHaveAttribute("inert");
+    expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Show more/ }));
+    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+  });
+
+  it("expands from a mouse pointerdown on the collapsed preview", () => {
+    render(<DisclosureHarness />);
+
+    const editor = screen.getByTestId("real-editor").parentElement!;
+    fireEvent.pointerDown(editor.parentElement!, { pointerType: "mouse" });
+
+    expect(screen.getByRole("button", { name: "Show less" })).toBeInTheDocument();
+  });
+
   it("redirects Tab from Show less into the editor, since the editor comes first in DOM order", () => {
     // Regression: the editor is BEFORE its own disclosure button in DOM
     // order (content, then the control that reveals it), so native forward
@@ -183,5 +210,18 @@ describe("DescriptionDisclosure", () => {
 
     act(() => queuedFrame?.(0));
     expect(screen.queryByRole("button", { name: /Show more|Show less/ })).not.toBeInTheDocument();
+  });
+
+  it("keeps the Show more label unchanged right after a child mutation (CHE-1830 H5)", () => {
+    render(<DisclosureHarness />);
+    const label = "Show more 1 more line";
+    expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+
+    // A child mutation schedules a re-measure; the frame has not run yet.
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    act(() => TestResizeObserver.callback?.([], {} as ResizeObserver));
+
+    expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
   });
 });

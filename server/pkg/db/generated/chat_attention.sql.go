@@ -136,10 +136,11 @@ func (q *Queries) ListChatAttentionAsksOfAgent(ctx context.Context, arg ListChat
 
 const listChatAttentionChains = `-- name: ListChatAttentionChains :many
 
-SELECT id AS canonical_id, chain_root_session_id AS root_id, (status = 'archived')::boolean AS archived
-FROM chat_session
-WHERE workspace_id = $1 AND creator_id = $2 AND continued_into_session_id IS NULL
-  AND chain_root_session_id IS NOT NULL
+SELECT cs.id AS canonical_id, cs.chain_root_session_id AS root_id, (cs.status = 'archived')::boolean AS archived
+FROM chat_session cs
+WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.continued_into_session_id IS NULL
+  AND cs.chain_root_session_id IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = cs.id)
 `
 
 type ListChatAttentionChainsParams struct {
@@ -179,9 +180,9 @@ func (q *Queries) ListChatAttentionChains(ctx context.Context, arg ListChatAtten
 const listChatAttentionDecisions = `-- name: ListChatAttentionDecisions :many
 SELECT d.id, s.chain_root_session_id, d.answer_revision, d.created_at
 FROM decision_request d
-JOIN chat_session s ON s.id = d.chat_session_id
-WHERE d.human_user_id = $1 AND d.workspace_id = $2 AND d.status = 'open'
-  AND s.chain_root_session_id IS NOT NULL
+LEFT JOIN chat_session s ON s.id = d.chat_session_id
+WHERE d.human_user_id = $1 AND d.workspace_id = $2 AND d.status = 'open' AND d.authority = 'human'
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = d.chat_session_id)
 `
 
 type ListChatAttentionDecisionsParams struct {
@@ -196,7 +197,8 @@ type ListChatAttentionDecisionsRow struct {
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 }
 
-// Open decision requests, addressed by the chain of the DM they were asked in.
+// Every open human decision request of the viewer. The chat join is a left join (CHE-5670 D6): a
+// request whose chat row is missing is kept, with a NULL chain root.
 func (q *Queries) ListChatAttentionDecisions(ctx context.Context, arg ListChatAttentionDecisionsParams) ([]ListChatAttentionDecisionsRow, error) {
 	rows, err := q.db.Query(ctx, listChatAttentionDecisions, arg.HumanUserID, arg.WorkspaceID)
 	if err != nil {

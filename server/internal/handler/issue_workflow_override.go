@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -25,6 +27,9 @@ type SetIssueWorkflowRequest struct {
 	WorkflowID *string `json:"workflow_id"`
 	// ExpectedRevision, when set, refuses the switch if the issue moved on.
 	ExpectedRevision *int64 `json:"expected_revision,omitempty"`
+	// DecisionBindingFields carry an owner-approved issue.workflow decision for
+	// an agent's widening switch (CHE-5228).
+	DecisionBindingFields
 }
 
 // UnmarshalJSON tells an omitted workflow_id from an explicit null, which
@@ -141,19 +146,55 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to set workflow")
 		return
 	}
+	openCard := false
 	if !isInteractiveRequest(r) {
 		before, err := issueBinding(ctx, qtx, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID, issue.MaxRunsOverride)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to set workflow")
 			return
 		}
-		if budgetWidens(before, workflowBinding(next, issue.MaxRunsOverride)) {
-			writeBudgetRebindingRefused(w)
+		// An agent move into Quick is a de-escalation the owners confirm
+		// (CHE-7682), whatever the budget does; escalating out of Quick is the
+		// agent's own call.
+		workspace, err := qtx.GetWorkspace(ctx, issue.WorkspaceID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to set workflow")
 			return
+		}
+		intoQuick := issueworkflow.IsQuick(next, issueworkflow.DecodeQuickFirst(workspace.Settings))
+		if intoQuick || budgetWidens(before, workflowBinding(next, issue.MaxRunsOverride)) {
+			// A task token with no decision asks the owners (CHE-5505); one that
+			// names a decision spends it.
+			if r.Header.Get("X-Actor-Source") == "task_token" && strings.TrimSpace(req.DecisionID) == "" {
+				openCard = true
+			} else if err := h.verifyBoundRebinding(ctx, qtx, r, issue.WorkspaceID, req.DecisionBindingFields, issue.ID, issue.ProjectID, issue.WorkflowID, target); err != nil {
+				writeBoundRebindingError(w, err)
+				return
+			}
 		}
 	}
 	if err := issueworkflow.CheckStatus(next, issue.Status); err != nil {
 		writeIssueWorkflowError(w, err)
+		return
+	}
+	if openCard {
+		// The live-task check waits for the approval: the asking run is itself
+		// live. Release the issue locks before the card takes its own.
+		params, err := issueWorkflowSetParams(ctx, qtx, issue, target)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to set workflow")
+			return
+		}
+		if err := tx.Rollback(ctx); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to set workflow")
+			return
+		}
+		opened, err := h.openIssueWorkflowSetCard(ctx, issue, params)
+		if err != nil {
+			writeDecisionError(w, err, "issue workflow request")
+			return
+		}
+		writeJSON(w, http.StatusAccepted, opened)
 		return
 	}
 	live, err := qtx.HasLiveTaskForIssue(ctx, issue.ID)
@@ -173,10 +214,37 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to set workflow")
 		return
 	}
+	if err := recordQuickEntryOnBind(ctx, qtx, issue, next, "member", member.UserID); err != nil {
+		slog.Warn("set issue workflow: record quick_entry", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to set workflow")
+		return
+	}
 	if err := tx.Commit(ctx); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to set workflow")
 		return
 	}
 	h.publishIssueSnapshots(ctx, []db.Issue{updated}, "member", uuidToString(member.UserID))
 	writeJSON(w, http.StatusOK, h.issueResponseWithCategory(ctx, updated))
+}
+
+// recordQuickEntryOnBind writes the quick_entry evidence (CHE-7681) when issue
+// has just been bound to next and next is the Quick workflow. issue is the row
+// as it was before the bind, so its override, title and project give the
+// binding the issue had.
+func recordQuickEntryOnBind(ctx context.Context, q issueworkflow.EntryQuerier, issue db.Issue, next *issueworkflow.Definition, actorType string, actorID pgtype.UUID) error {
+	workspace, err := q.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return err
+	}
+	if !issueworkflow.IsQuick(next, issueworkflow.DecodeQuickFirst(workspace.Settings)) {
+		return nil
+	}
+	prior, err := issueworkflow.PriorRoute(ctx, q, issue)
+	if err != nil {
+		return err
+	}
+	if prior == next.ID {
+		prior = pgtype.UUID{} // Quick is not a route out of Quick
+	}
+	return issueworkflow.RecordQuickEntry(ctx, q, issue.WorkspaceID, issue.ID, "", prior, actorType, actorID)
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -83,6 +84,7 @@ type issueTableDateFilterRequest struct {
 type issueTableFiltersRequest struct {
 	Statuses          []string             `json:"statuses,omitempty"`
 	Priorities        []string             `json:"priorities,omitempty"`
+	CreatedVia        []string             `json:"created_via,omitempty"`
 	Assignees         []issueTableActorRef `json:"assignees,omitempty"`
 	IncludeNoAssignee bool                 `json:"include_no_assignee,omitempty"`
 	Creators          []issueTableActorRef `json:"creators,omitempty"`
@@ -112,11 +114,15 @@ type issueTableFiltersRequest struct {
 	Advanced *issueTableFilterNode `json:"advanced,omitempty"`
 	// Members are raw JSON so operator objects ({op, value}) and plain
 	// strings both survive the round-trip into parsePropertiesFilterParam.
-	Properties       map[string][]json.RawMessage `json:"properties,omitempty"`
-	Date             *issueTableDateFilterRequest `json:"date,omitempty"`
-	WorkingOnly      bool                         `json:"working_only,omitempty"`
-	WorkingIssueIDs  []string                     `json:"working_issue_ids,omitempty"`
-	IncludeSubIssues *bool                        `json:"include_sub_issues,omitempty"`
+	Properties      map[string][]json.RawMessage `json:"properties,omitempty"`
+	Date            *issueTableDateFilterRequest `json:"date,omitempty"`
+	WorkingOnly     bool                         `json:"working_only,omitempty"`
+	WorkingIssueIDs []string                     `json:"working_issue_ids,omitempty"`
+	// UnreadIssueIDs is the viewer's unread issues as the client holds them
+	// (`/api/issues/unread`, plus any it keeps on screen after reading). An
+	// explicit empty list matches nothing.
+	UnreadIssueIDs   []string `json:"unread_issue_ids,omitempty"`
+	IncludeSubIssues *bool    `json:"include_sub_issues,omitempty"`
 }
 
 type issueTableSortRequest struct {
@@ -273,11 +279,14 @@ func canonicalIssueTableFingerprint(workspaceID string, spec issueTableQuerySpec
 		spec.Filters.Assignees != nil && len(spec.Filters.Assignees) == 0
 	explicitEmptyWorkingIssues :=
 		spec.Filters.WorkingIssueIDs != nil && len(spec.Filters.WorkingIssueIDs) == 0
+	explicitEmptyUnreadIssues :=
+		spec.Filters.UnreadIssueIDs != nil && len(spec.Filters.UnreadIssueIDs) == 0
 	normalized := spec
 	normalized.Search = strings.TrimSpace(normalized.Search)
 	normalized.Scope.AssigneeTypes = sortedUniqueStrings(normalized.Scope.AssigneeTypes)
 	normalized.Filters.Statuses = sortedUniqueStrings(normalized.Filters.Statuses)
 	normalized.Filters.Priorities = sortedUniqueStrings(normalized.Filters.Priorities)
+	normalized.Filters.CreatedVia = sortedUniqueStrings(normalized.Filters.CreatedVia)
 	normalized.Filters.ProjectIDs = sortedUniqueStrings(normalized.Filters.ProjectIDs)
 	normalized.Filters.ProjectStatuses = sortedUniqueStrings(normalized.Filters.ProjectStatuses)
 	normalized.Filters.WorkflowIDs = sortedUniqueStrings(normalized.Filters.WorkflowIDs)
@@ -288,6 +297,7 @@ func canonicalIssueTableFingerprint(workspaceID string, spec issueTableQuerySpec
 	normalized.Filters.Advanced = canonicalIssueTableFilterNode(normalized.Filters.Advanced)
 	normalized.Filters.Assignees = sortedUniqueActors(normalized.Filters.Assignees)
 	normalized.Filters.WorkingIssueIDs = sortedUniqueStrings(normalized.Filters.WorkingIssueIDs)
+	normalized.Filters.UnreadIssueIDs = sortedUniqueStrings(normalized.Filters.UnreadIssueIDs)
 	normalized.Filters.Creators = sortedUniqueActors(normalized.Filters.Creators)
 	for key, values := range normalized.Filters.Properties {
 		normalized.Filters.Properties[key] = sortedUniqueRawJSON(values)
@@ -297,11 +307,13 @@ func canonicalIssueTableFingerprint(workspaceID string, spec issueTableQuerySpec
 		Query                      issueTableQuerySpec `json:"query"`
 		ExplicitEmptyAssignees     bool                `json:"explicit_empty_assignees,omitempty"`
 		ExplicitEmptyWorkingIssues bool                `json:"explicit_empty_working_issues,omitempty"`
+		ExplicitEmptyUnreadIssues  bool                `json:"explicit_empty_unread_issues,omitempty"`
 	}{
 		WorkspaceID:                workspaceID,
 		Query:                      normalized,
 		ExplicitEmptyAssignees:     explicitEmptyAssignees,
 		ExplicitEmptyWorkingIssues: explicitEmptyWorkingIssues,
+		ExplicitEmptyUnreadIssues:  explicitEmptyUnreadIssues,
 	})
 	if err != nil {
 		return "", err
@@ -417,12 +429,44 @@ func parseIssueTableActor(w http.ResponseWriter, actor issueTableActorRef, field
 }
 
 // issueTableRelations are the viewer relations `filters.relations` accepts.
-var issueTableRelations = []string{"assigned", "created", "my_agents"}
+var issueTableRelations = []string{"assigned", "created", "my_agents", "subscribed"}
 
 // issueTableNegatableFilters are the `filters` fields `filters.negate` may name.
 var issueTableNegatableFilters = []string{
 	"statuses", "priorities", "assignees", "creators",
 	"project_ids", "project_statuses", "label_ids", "relations", "due_dates",
+	"created_via",
+}
+
+// issueTableCreatedViaUnknown is the filter value for issues whose
+// `created_via` is NULL: made before the column existed, or by an
+// integration channel (CHE-6376 rule 7).
+const issueTableCreatedViaUnknown = "unknown"
+
+// issueTableCreatedVia are the values `filters.created_via` and advanced
+// `created_via` conditions accept: every classifier value plus `unknown`.
+var issueTableCreatedVia = []string{
+	issuecreatedvia.Dialog, issuecreatedvia.DM, issuecreatedvia.Comment,
+	issuecreatedvia.Agent, issuecreatedvia.Autopilot, issuecreatedvia.CLI,
+	issuecreatedvia.Form, issueTableCreatedViaUnknown,
+}
+
+// issueTableCreatedViaPredicate matches an issue whose created_via is one of
+// values (already validated and deduplicated), `unknown` meaning NULL.
+func issueTableCreatedViaPredicate(values []string, addArg func(any) string) string {
+	var stored []string
+	var ors []string
+	for _, value := range values {
+		if value == issueTableCreatedViaUnknown {
+			ors = append(ors, "i.created_via IS NULL")
+		} else {
+			stored = append(stored, value)
+		}
+	}
+	if len(stored) > 0 {
+		ors = append([]string{fmt.Sprintf("i.created_via = ANY(%s::text[])", addArg(stored))}, ors...)
+	}
+	return "(" + strings.Join(ors, " OR ") + ")"
 }
 
 // issueTableRelationPredicate matches issues related to the user one way.
@@ -432,6 +476,14 @@ func issueTableRelationPredicate(relation string, userRef string) string {
 		return fmt.Sprintf("(i.assignee_type = 'member' AND i.assignee_id = %s::uuid)", userRef)
 	case "created":
 		return fmt.Sprintf("(i.creator_type = 'member' AND i.creator_id = %s::uuid)", userRef)
+	case "subscribed":
+		return fmt.Sprintf(`EXISTS (
+    SELECT 1 FROM issue_subscriber isub
+     WHERE isub.issue_id  = i.id
+       AND isub.user_type = 'member'
+       AND isub.user_id   = %s::uuid
+       AND isub.unsubscribed_at IS NULL
+  )`, userRef)
 	default: // my_agents
 		return fmt.Sprintf(`(i.assignee_type = 'agent' AND i.assignee_id IN (
        SELECT a.id FROM agent a
@@ -539,6 +591,16 @@ func (h *Handler) compileIssueTableQuery(w http.ResponseWriter, r *http.Request,
 		appendFilter("priorities", fmt.Sprintf("i.priority = ANY(%s::text[])", addArg(sortedUniqueStrings(spec.Filters.Priorities))))
 	}
 
+	for _, value := range spec.Filters.CreatedVia {
+		if !issueTableContainsString(issueTableCreatedVia, value) {
+			writeError(w, http.StatusBadRequest, "invalid filters.created_via")
+			return issueTableSQL{}, false
+		}
+	}
+	if len(spec.Filters.CreatedVia) > 0 {
+		appendFilter("created_via", issueTableCreatedViaPredicate(sortedUniqueStrings(spec.Filters.CreatedVia), addArg))
+	}
+
 	// Workspace and project scopes share the optional assignee-type
 	// narrowing (the Members/Agents tabs above both surfaces).
 	appendAssigneeTypes := func() bool {
@@ -607,13 +669,16 @@ func (h *Handler) compileIssueTableQuery(w http.ResponseWriter, r *http.Request,
 			where = append(where, fmt.Sprintf("i.assignee_type = 'member' AND i.assignee_id = %s::uuid", addArg(userUUID)))
 		case "created":
 			where = append(where, fmt.Sprintf("i.creator_type = 'member' AND i.creator_id = %s::uuid", addArg(userUUID)))
+		case "requested":
+			where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(userUUID)))
 		case "involved":
 			where = appendIssueTableInvolvedPredicate(where, addArg, userUUID)
 		case "any":
 			assignedRef := addArg(userUUID)
 			createdRef := addArg(userUUID)
+			requestedRef := addArg(userUUID)
 			involved := appendIssueTableInvolvedPredicate(nil, addArg, userUUID)[0]
-			where = append(where, fmt.Sprintf("((i.assignee_type = 'member' AND i.assignee_id = %s::uuid) OR (i.creator_type = 'member' AND i.creator_id = %s::uuid) OR %s)", assignedRef, createdRef, involved))
+			where = append(where, fmt.Sprintf("((i.assignee_type = 'member' AND i.assignee_id = %s::uuid) OR (i.creator_type = 'member' AND i.creator_id = %s::uuid) OR i.requested_by_id = %s::uuid OR %s)", assignedRef, createdRef, requestedRef, involved))
 		default:
 			writeError(w, http.StatusBadRequest, "invalid scope.relation")
 			return issueTableSQL{}, false
@@ -841,6 +906,20 @@ func (h *Handler) compileIssueTableQuery(w http.ResponseWriter, r *http.Request,
 			where = append(where, fmt.Sprintf(
 				"i.id = ANY(%s::uuid[])",
 				addArg(workingIssueIDs),
+			))
+		}
+	}
+	unreadIssueIDs, ok := parseIssueTableUUIDList(w, spec.Filters.UnreadIssueIDs, "filters.unread_issue_ids")
+	if !ok {
+		return issueTableSQL{}, false
+	}
+	if spec.Filters.UnreadIssueIDs != nil {
+		if len(unreadIssueIDs) == 0 {
+			where = append(where, "FALSE")
+		} else {
+			where = append(where, fmt.Sprintf(
+				"i.id = ANY(%s::uuid[])",
+				addArg(unreadIssueIDs),
 			))
 		}
 	}

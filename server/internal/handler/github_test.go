@@ -24,6 +24,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -301,6 +302,46 @@ func TestIssuePullRequestResponseHidesUnavailableSnapshot(t *testing.T) {
 	}
 	if resp.Mergeable == nil || *resp.Mergeable != "conflicting" || resp.ChecksFailed != 1 {
 		t.Fatalf("current snapshot was not exposed: %+v", resp)
+	}
+}
+
+// TestSnapshotPausedUntilNamesTheInstallationRateLimit (CHE-8795): a stalled
+// snapshot names its reason on the PR read. The field is the pause deadline for
+// that PR's installation (RFC3339 UTC) and null when no pause is active.
+func TestSnapshotPausedUntilNamesTheInstallationRateLimit(t *testing.T) {
+	manager := ghsnapshot.NewManager(nil, nil, nil, nil)
+
+	if got := snapshotPausedUntil(manager, 1); got != nil {
+		t.Fatalf("no pause: snapshot_paused_until = %q, want null", *got)
+	}
+	if got := snapshotPausedUntil(nil, 1); got != nil {
+		t.Fatalf("nil manager: snapshot_paused_until = %q, want null", *got)
+	}
+
+	manager.ExtendRateLimit(1, 30*time.Minute)
+	got := snapshotPausedUntil(manager, 1)
+	if got == nil {
+		t.Fatal("paused installation: snapshot_paused_until is null")
+	}
+	until, err := time.Parse(time.RFC3339, *got)
+	if err != nil {
+		t.Fatalf("snapshot_paused_until %q is not RFC3339: %v", *got, err)
+	}
+	if d := time.Until(until); d < 29*time.Minute || d > 31*time.Minute {
+		t.Fatalf("snapshot_paused_until in %v, want about 30m", d)
+	}
+	if other := snapshotPausedUntil(manager, 2); other != nil {
+		t.Fatalf("a pause on installation 1 leaks to installation 2: %q", *other)
+	}
+
+	// The wire key is always present: null when no pause, so a reader never
+	// has to tell "absent" from "no pause".
+	body, err := json.Marshal(GitHubPullRequestResponse{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"snapshot_paused_until":null`) {
+		t.Fatalf("response JSON lacks snapshot_paused_until:null: %s", body)
 	}
 }
 
@@ -1406,6 +1447,14 @@ func TestWebhook_TitleBranchAndKeywordLinksAllMove(t *testing.T) {
 // merge / edited after merge).
 func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber int32, title, body, branch, lifecycle string) {
 	t.Helper()
+	if code, resp := postPRWebhook(t, testHandler, secret, installationID, prNumber, title, body, branch, lifecycle); code != http.StatusAccepted {
+		t.Fatalf("webhook pr=%d (%s): expected 202, got %d (%s)", prNumber, lifecycle, code, resp)
+	}
+}
+
+// postPRWebhook delivers one PR webhook to h and returns the status and body.
+func postPRWebhook(t *testing.T, h *Handler, secret string, installationID int64, prNumber int32, title, body, branch, lifecycle string) (int, string) {
+	t.Helper()
 	var action, state string
 	var merged bool
 	var mergedAt, closedAt any
@@ -1428,26 +1477,34 @@ func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber i
 	default:
 		t.Fatalf("firePRWebhook: unknown lifecycle %q", lifecycle)
 	}
+	// GitHub sends the merge commit only for a merged PR.
+	var mergeSHA any
+	if merged {
+		mergeSHA = fmt.Sprintf("merge%d", prNumber)
+	}
 	payload := map[string]any{
 		"action": action,
 		"pull_request": map[string]any{
-			"number":     prNumber,
-			"html_url":   fmt.Sprintf("https://github.com/acme/widget/pull/%d", prNumber),
-			"title":      title,
-			"body":       body,
-			"state":      state,
-			"draft":      false,
-			"merged":     merged,
-			"merged_at":  mergedAt,
-			"closed_at":  closedAt,
-			"created_at": "2026-04-28T00:00:00Z",
-			"updated_at": "2026-04-29T00:00:00Z",
-			"head":       map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
-			"user":       map[string]any{"login": "octocat"},
+			"number":           prNumber,
+			"html_url":         fmt.Sprintf("https://github.com/acme/widget/pull/%d", prNumber),
+			"title":            title,
+			"body":             body,
+			"state":            state,
+			"draft":            false,
+			"merged":           merged,
+			"merged_at":        mergedAt,
+			"closed_at":        closedAt,
+			"merge_commit_sha": mergeSHA,
+			"created_at":       "2026-04-28T00:00:00Z",
+			"updated_at":       "2026-04-29T00:00:00Z",
+			"head":             map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
+			"base":             map[string]any{"ref": "main"},
+			"user":             map[string]any{"login": "octocat"},
 		},
 		"repository":   githubRepositoryForTest("acme", "widget"),
 		"installation": map[string]any{"id": installationID},
 	}
+	payload["repository"].(map[string]any)["default_branch"] = "main"
 	raw, _ := json.Marshal(payload)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(raw)
@@ -1456,10 +1513,8 @@ func firePRWebhook(t *testing.T, secret string, installationID int64, prNumber i
 	req := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(raw))
 	req.Header.Set("X-GitHub-Event", "pull_request")
 	req.Header.Set("X-Hub-Signature-256", sig)
-	rec := testutil.Call(t, testHandler.HandleGitHubWebhook, req)
-	if rec.Code != http.StatusAccepted {
-		t.Fatalf("webhook pr=%d (%s): expected 202, got %d (%s)", prNumber, lifecycle, rec.Code, rec.Body.String())
-	}
+	rec := testutil.Call(t, h.HandleGitHubWebhook, req)
+	return rec.Code, rec.Body.String()
 }
 
 // TestWebhook_IdentifierRemovedBeforeMergeUnlinks: automatic links follow the

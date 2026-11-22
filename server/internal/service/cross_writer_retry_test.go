@@ -436,8 +436,20 @@ func TestCrossWriterGenericWritersMintNothingForRecoveryReason(t *testing.T) {
 		t.Run(w.name, func(t *testing.T) {
 			id := o.runningTask(t, testutil.Cols{"max_attempts": 3})
 			w.run(t, o, id, providerFailureRecoveryReason)
-			if n := o.retryChildren(t, id); n != 0 {
-				t.Fatalf("%s minted %d successors for %s", w.name, n, providerFailureRecoveryReason)
+			// CHE-1736 M1.2: failTask owns the one held retry for this reason;
+			// every other generic writer still mints nothing.
+			want := 0
+			if w.name == "failTask" {
+				want = 1
+			}
+			if n := o.retryChildren(t, id); n != want {
+				t.Fatalf("%s minted %d successors for %s, want %d", w.name, n, providerFailureRecoveryReason, want)
+			}
+			if want == 1 {
+				var held bool
+				if err := o.Pool.QueryRow(context.Background(), `SELECT context ? 'provider_hold' FROM agent_task_queue WHERE retry_of_task_id=$1 OR parent_task_id=$1`, id).Scan(&held); err != nil || !held {
+					t.Fatalf("%s successor is not stamped with the provider_hold marker", w.name)
+				}
 			}
 		})
 	}

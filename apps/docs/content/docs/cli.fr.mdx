@@ -141,7 +141,43 @@ multica issue comment add MUL-123 --content-file note.md --steer <task-id>
 multica issue comment add MUL-123 --content-file note.md --steer-active
 ```
 
+Un commentaire d'une tâche d'agent qui mentionne un membre (`[@Nom](mention://member/<id>)`) n'est accepté que comme demande de décision, comme commentaire `--decision-intent`, `--decision-record` ou `--decision-veto`, ou avec `--notify-only`. Utilisez `--notify-only` pour une simple information qui n'attend pas de réponse. Il n'ouvre jamais d'attente et ne compte jamais comme demande de décision. Il ne se combine pas avec les options de décision. Le contrôle lit le lien de mention, pas le texte, et un lien dans du code compte. Le réglage d'espace de travail `ask_guard_mode` (`off`, `warn`, `block`) décide si un commentaire refusé est seulement journalisé ou renvoie 422. Les tâches de chat et les appels sans tâche sont seulement journalisés. Une modification qui ajoute une mention de membre suit la même règle.
+
+```bash
+multica issue comment add MUL-123 --content-file fyi.md --notify-only
+```
+
+Un commentaire d'un agent sur une tâche en `in_review`, `blocked` ou `need_decision` doit nommer qui agit ensuite : `--ask <member-id>` si une personne agit, ou `--no-ask` si personne n'agit. Une mention de membre, `--notify-only` ou une demande de décision compte aussi. Les deux options ne se combinent ni entre elles, ni avec `--notify-only`, ni avec les options de décision. Le même passage exige `--waiting-on member:<member-id>` ou `--waiting-on none` sur `multica issue status`, accepté seulement avec `in_review`, `blocked` ou `need_decision`. Les paramètres d'espace `waiting_audience_guard` et `waiting_on_guard` décident si un public manquant est autorisé, compté ou refusé.
+
+`multica decision request` accepte `--recovers <event-id>` : la demande répond à un événement du garde de demandes, par exemple celui cité dans une opération refusée ou dans un avis de récupération. Le serveur lève cet événement dans la même transaction que la demande, mais seulement s'il porte sur cette tâche et a été émis pour la personne que la demande interroge. Une demande pour une personne ne lève jamais l'événement d'une autre, et une demande sans `--recovers` ne lève rien. Un événement d'une autre tâche ou d'une autre personne est refusé avec `400`. Une requête ne récupère qu’un seul événement : une nouvelle tentative de la même requête qui en nomme un second est refusée avec `400`.
+
 Si une tâche ouverte portant le même titre (sans tenir compte de la casse ni des espaces en trop) existe déjà sous le même projet et le même parent, `issue create` refuse et indique cette tâche. Pour en créer une autre malgré tout, ajoutez `--allow-duplicate`. Pour marquer une tâche comme doublon d'une autre, utilisez `multica issue status MUL-124 cancelled --duplicate-of MUL-123`.
+
+Pour consigner ce qu'attend une tâche bloquée, ajoutez `--blocked-on <ref>` au changement : `multica issue status MUL-124 blocked --blocked-on pr:merged`. L'option n'est acceptée qu'avec `blocked`. La référence est enregistrée dans l'activité `status_changed` et dans la clé de métadonnées `blocked_on` de la tâche, puis supprimée quand la tâche quitte `blocked`. Un passage à `blocked` sans l'option fonctionne comme avant. Chaque forme de référence correspond à une option de condition de réveil :
+
+| Réf. | Équivalent |
+| --- | --- |
+| `issue:<id>[@done\|ended\|in_review\|blocked]` | `--until-issue`, `--until-issue-state` |
+| `pr:<checks\|merged\|conflicts\|dequeued>` | `--until-pr` |
+| `children[@<stage>]` | `--until-children-done`, `--stage` |
+| `gh-run:<owner>/<repo>:<run-id>` | `--until-gh-run` |
+| `decision:<request-id>` | un réveil lié avec `--decision` |
+
+La référence est validée dans l'espace de travail : une tâche ou une demande de décision d'un autre espace est refusée, ainsi que toute autre forme. Une personne n'est pas une forme de référence. La ligne `Blockers:` de la description reste l'endroit pour le responsable et l'événement de fin ; indiquez-y la référence sous la forme `--blocked-on <ref>`.
+
+### Router une tâche
+
+`issue route` change le statut d'une tâche et enregistre pourquoi, en un seul appel. Une étape de routage s'en sert pour décider où la tâche va ensuite. `--status`, `--reason` (1 à 500 caractères) et `--confidence` (0 à 1) sont obligatoires :
+
+```bash
+multica issue route MUL-123 --status in_review --reason "Les tests passent, relecture nécessaire" --confidence 0.8
+multica issue route MUL-123 --status in_progress --owner "Backend Agent" --reason "Correctif backend nécessaire" --confidence 0.6
+multica issue route MUL-123 --status in_review --owner-id <agent-id> --no-start --reason "Le relecteur la prendra plus tard" --confidence 0.9
+```
+
+Sans `--owner`, le workflow du projet choisit le responsable, comme avec `issue status`. Un `--owner` explicite (un membre, un agent ou une squad ; `--owner-id` prend un UUID au lieu d'un nom) remplace le responsable du workflow. Une route qui garde le statut actuel et ne change que le responsable est autorisée. Une route avec le même statut et le même responsable est refusée avec un HTTP 409 et n'écrit rien. `--no-start` ne lance aucune exécution d'agent, comme pour `issue update`. `--expected-revision` refuse la route si la tâche a changé entre-temps.
+
+`multica issue workflow escalate <id> --reason "..."` fait passer un ticket qui suit Quick au workflow complet qu'il suivait auparavant. `--reason` est obligatoire, et `rollback` ne demande pas de ligne `Estimate:` depuis `todo` ou `investigating`. La commande n'accepte aucun workflow : le serveur lit la cible dans la ligne `quick_entry` la plus récente du ticket. Elle affiche `applied` quand le ticket est entré dans le workflow complet, ou `pending` quand une tâche active le garde sur Quick jusqu'à la fin de la dernière tâche ; `--output json` affiche `state` et `workflow_id`. Les codes de refus sont décrits dans [Workflows](/workflows).
 
 ### Chronologie
 
@@ -154,6 +190,13 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 ```
 
 `--activity-only` retire les commentaires et garde tous les enregistrements d'activité ; `--action` ne renvoie que les actions indiquées, peut être répété et implique `--activity-only`. Le serveur limite l'historique qu'il lit ; si le résultat est tronqué, un avertissement s'affiche sur stderr, et il ne faut pas en déduire de durée.
+
+```bash
+multica issue description history MUL-123
+multica issue description diff MUL-123 --from 30 --to 35
+```
+
+`issue description history` liste les révisions enregistrées de la description d'une tâche, de la plus ancienne à la plus récente, avec le numéro de révision, l'heure (ICT) et l'auteur. `issue description diff` affiche un diff unifié entre deux d'entre elles. Le numéro de révision est le compteur de révision de la tâche. Seules existent les révisions enregistrées après la mise en service de l'historique ; pour chaque tâche, la première entrée est un état de référence de la description à ce moment-là. Une révision qui n'a pas modifié la description renvoie le dernier texte antérieur. Une révision inconnue renvoie 404. `--output json` est disponible pour les deux.
 
 ### Lire de longs fils de commentaires
 
@@ -190,6 +233,27 @@ multica issue wakeup runs MUL-123 <wakeup-id>
 
 Créer un réveil depuis un terminal en tant que membre demande `--agent-id` ; un agent qui en crée un pendant sa propre exécution se réveille lui-même par défaut.
 
+Une règle qu'une personne peut déclencher est une règle d'événement sur un commentaire, un changement de tâche, une réaction ou une pièce jointe, dont le filtre d'acteur n'exclut pas les membres. Quand le paramètre d'espace `ask_guard_mode` vaut `warn` ou `block`, un agent ne peut pas enregistrer seul une telle règle, sauf dans l'un de ces cas :
+
+- `--decision <request-id>` lie la règle à une demande de décision de cette tâche. La demande doit être posée ou répondue, et concerner le membre de `--filter-actor-id` s'il est donné. Une demande lie une seule règle active à la fois.
+- `--purpose observe` marque une règle qui n'attend pas une personne. Chaque déclenchement causé par un membre est enregistré comme événement d'audit.
+- `--filter-actor-type agent` sans `--filter-actor-id` correspond à n'importe quel agent et à aucun membre.
+
+En mode `block`, le refus est un 422 dont le message donne la commande de correction. En mode `warn`, la règle est créée et un événement est enregistré.
+
+### Règles de réveil
+
+Les règles de réveil d'espace de travail et de projet (voir [Réveils de ticket](/issue-wakeups)) ont leur propre commande, avec `create` et `get` à côté de celles-ci :
+
+```bash
+multica wakeup-definition list [--project <project>] [--output json|table]
+multica wakeup-definition preview [--project <project>] [--rule <rule>] [--output json|table] --config-file rule.json
+multica wakeup-definition update <rule> [--project <project>] --revision <n> --config-file rule.json
+multica wakeup-definition delete <rule> [--project <project>] --revision <n>
+```
+
+`--revision` est la révision que `list` affiche ; `update` avec `--revision 0` crée une surcharge. `preview` n'enregistre rien : il affiche la règle résolue. Pour une règle de condition, `already_satisfied` compte les tickets qui correspondraient immédiatement et `issues` les nomme (`--output table` les affiche en liste). L'aperçu examine les 200 premiers tickets du périmètre et évalue ceux qui sont ouverts et hors backlog ; si le périmètre en contient davantage, `truncated` vaut `true` et d'autres tickets peuvent correspondre. Une règle d'événement n'a pas de prédicat : son aperçu n'a pas de `already_satisfied` et ne correspond à aucun ticket existant. Seul un propriétaire ou un administrateur peut modifier ou supprimer une règle. Tout membre humain peut la prévisualiser ; un agent ou une autre identité machine reçoit `403`, et une règle créée par un agent reste désactivée jusqu'à ce qu'un humain l'active.
+
 ### Suivre la progression dans un DM
 
 Un DM suit les tickets que son agent crée pour vous. Les membres gèrent les suivis uniquement dans un DM qu'ils ont créé, avec `--chat`. Un agent exécute `multica issue follow <issue>` sans `--chat` : le DM vient de sa propre tâche, et une tâche sans DM est refusée. Les sous-tickets héritent du suivi actif de leur parent.
@@ -219,6 +283,8 @@ multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
 ```
 
+`multica agent get <agent-id> --output json` renvoie aussi `background_use` : les tâches d'arrière-plan que l'agent assure, sous forme de liste `{scope, job}` (`scope` vaut `workspace` ou `personal`). Vous voyez toutes les tâches de l'espace de travail et uniquement vos propres choix personnels.
+
 Lorsqu'un import rencontre un skill du même nom, le comportement par défaut est de s'arrêter sans modifier le contenu existant. Choisissez selon votre intention :
 
 ```bash
@@ -241,7 +307,7 @@ multica agent env set <agent-id> --custom-env-stdin < agent-env.json
 multica agent update <agent-id> --mcp-config-file ./mcp.json
 ```
 
-- Les options `--custom-env` n'existent que sur `agent create`. Pour modifier les variables ensuite, utilisez `agent env set`, qui remplace l'ensemble ; les clés dont la valeur est `****` gardent leur valeur actuelle.
+- Les options `--custom-env` n'existent que sur `agent create`. Pour modifier les variables ensuite, utilisez `agent env set`, qui remplace l'ensemble ; les clés dont la valeur est `****` gardent leur valeur actuelle. Un `****` pour une clé non stockée (par exemple une clé renommée) est refusé avec 400 et rien ne change.
 - `agent update --mcp-config null` efface la configuration MCP.
 - `--custom-args` est un tableau JSON placé à la fin des arguments de lancement. Choisissez le modèle avec `--model` ; certains outils refusent un `--model` dans les arguments personnalisés.
 - `--permission-mode` détermine qui peut invoquer l'agent : `private` pour le propriétaire seul, ou `public_to` avec `--public-to-workspace` ou `--public-to-member <user-id>`. `--visibility private|workspace` est l'ancienne forme, convertie en `--permission-mode` ; si les deux sont fournis, `--permission-mode` l'emporte.
@@ -261,8 +327,13 @@ multica runtime usage <runtime-id>
 multica runtime activity <runtime-id>
 ```
 
+`daemon restart` conserve le service utilisateur systemd Linux existant, y compris une unité personnalisée et ses paramètres de lancement. Avant l’arrêt, la commande vérifie le PID du daemon auprès du gestionnaire de services. Elle utilise l’arrêt natif (avec `--maintenance-token` si une fenêtre de maintenance est active), puis attend le redémarrage automatique ou démarre le même service inactif. Le succès exige un nouveau PID de service et un profil sain correspondant sous 90 secondes. Une incohérence de propriétaire ou un arrêt non confirmé renvoie une erreur sans arrêt forcé ni lancement d’un processus enfant séparé. Les tâches gérées ne peuvent toujours pas redémarrer le daemon.
+
+`multica config set reserved_chat_slots <n>` garde `n` emplacements du daemon aux exécutions de chat (DM) : les exécutions d'issue en utilisent au plus `max_concurrent_tasks - n`, les exécutions de chat peuvent tous les utiliser, et la valeur par défaut `0` ne change rien. Les conversations de canal de groupe comptent avec les exécutions d'issue ; seuls les chats directs utilisent les emplacements réservés. Une valeur inférieure à `0`, ou supérieure ou égale à `max_concurrent_tasks`, est refusée avec une erreur qui nomme les deux valeurs. La valeur est vérifiée par rapport au plafond avec lequel le daemon démarre : `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` s'il est défini, sinon le `max_concurrent_tasks` enregistré, sinon 20. L'option `--max-concurrent-tasks` donnée au démarrage n'est pas connue de `config set` ; le daemon refuse de démarrer si la réservation ne tient pas. `daemon status --output json` indique `reserved_chat_slots` et `reserved_chat_slots_free` (emplacements réservés qu'aucune exécution de chat n'occupe).
+
 ```bash
 multica daemon autostart enable
+multica daemon update-schedule set --runtime-id <runtime-id> --cron '0 2 * * *'
 multica runtime usage <runtime-id> --days 30
 multica runtime update <runtime-id> --target-version <version> --wait
 multica runtime profile create --display-name "Wrapper Claude interne" \
@@ -270,6 +341,8 @@ multica runtime profile create --display-name "Wrapper Claude interne" \
 ```
 
 `daemon autostart` enregistre le profil courant pour qu'il démarre à l'ouverture de session ; les différences entre plateformes sont décrites dans [Démarrage à l'ouverture de session](/daemon-runtimes#autostart). `runtime usage` couvre 90 jours par défaut, et `--days` va jusqu'à 365. `runtime update` demande au daemon de cette machine de mettre sa CLI à jour vers la version indiquée ; `--wait` attend la fin de la mise à jour. `runtime profile create` indique l'outil compatible avec `--runtime-type` (l'ancien `--protocol-family` fonctionne encore) ; les arguments fixes ne se définissent pour l'instant que dans l'application web.
+
+`daemon update-schedule get|set|clear --runtime-id <id>` lit ou modifie le calendrier de mise à jour de la machine sur laquelle tourne ce runtime (voir [Mise à jour planifiée](/daemon-runtimes#update-schedule)). `set` accepte `--cron` (cinq champs, obligatoire), `--timezone` (nom IANA, `Asia/Ho_Chi_Minh` par défaut), `--window-minutes` (de 10 à 30, 30 par défaut) et `--enabled=false` pour enregistrer le calendrier en pause. `get` affiche aussi les 3 prochaines exécutions. Seuls le propriétaire de la machine et celui de l'espace de travail peuvent le modifier.
 
 La suppression d'un runtime auquel des agents actifs sont encore liés est refusée par défaut. `multica runtime delete <id> --cascade` dissocie ces agents, préserve leur configuration et leur historique, et annule leurs exécutions actives.
 
@@ -293,10 +366,80 @@ multica autopilot create --title "Rapport de ventes hebdomadaire" --agent "Assis
 multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europe/Paris
 ```
 
+`multica project create --priority <urgent|high|medium|low|none>` et `multica project update <project> --priority <valeur>` définissent la priorité du projet. Elle est seulement enregistrée jusqu'à ce que le chemin de prise en charge la lise dans une version ultérieure ; `project_rank` ne l'utilise pas encore.
+
 - `--lead` prend le nom d'un membre ou d'un agent. `--default-branch-hint` indique seulement à l'agent la branche par défaut du dépôt ; il ne change pas de branche.
 - Le `--context` d'un espace de travail est fourni à tous ses agents. `--slug` ne peut plus être modifié après la création. `--issue-prefix` est mis en majuscules ; le changer renumérote toutes les tâches existantes, et les anciens identifiants cités ailleurs ne mènent plus nulle part.
-- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` désigne l'agent qui prend les étapes de workflow de simple routage (par défaut `todo`, `blocked`, `merged`, `need_decision` ; modifiable avec `--routing-statuses`, et `--routing-overrides todo=<agent-id>` envoie un statut à un autre agent). L'agent de repli prend le relais quand cet agent est archivé ou quand son exécution échoue à cause du fournisseur. Une clé de remplacement `<workflow-id>:<status>` limite ce remplacement à un seul workflow. `none` désactive un champ. Seul un propriétaire ou administrateur humain peut le modifier, et chaque changement est consigné dans le journal d'activité.
+- `multica workspace update --routing-agent <agent-id> [--routing-fallback-agent <agent-id>]` désigne l'agent qui prend les étapes de workflow de simple routage (par défaut `todo`, `blocked`, `merged`, `need_decision` ; modifiable avec `--routing-statuses`, et `--routing-overrides todo=<agent-id>` envoie un statut à un autre agent). L'agent de repli prend le relais quand cet agent est archivé ou quand son exécution échoue à cause du fournisseur. Une clé de remplacement `<workflow-id>:<status>` limite ce remplacement à un seul workflow. `none` désactive un champ. Seul un propriétaire ou administrateur humain peut le modifier, et chaque changement est consigné dans le journal d'activité. Le réglage est stocké comme tâche `routing` de `background_agents`. Ces options sont un alias de `multica workspace background-agents set routing`, et l'ancienne route d'API `/routing-agent` reste un alias pendant une version.
+- `multica workspace update --time-wakeup-skip-mode off|warn|block` définit le mode de saut des réveils horaires de l'espace de travail (`settings.time_wakeup_skip.mode`). Il ne modifie que cette clé, ne change aucun autre réglage et ne peut pas être combiné avec d'autres options de mise à jour. Seul le propriétaire peut le modifier, et chaque changement est consigné dans le journal d'activité. `off` désactive la vérification et exécute tous les réveils horaires différés ; `warn` consigne ce que `block` ferait et exécute quand même le déclenchement ; `block` diffère un déclenchement déclaré inchangé et impose aux agents de passer `--watch <inputs>` ou `--watch always` sur un réveil horaire.
+- `multica workspace update --auto-close-mode off|warn|block` définit le mode de fermeture automatique (`settings.auto_close.mode`). Elle modifie cette clé seule, ne change aucun autre paramètre et ne se combine pas avec d'autres options de mise à jour. Seul le propriétaire peut la modifier. Voir [Espaces de travail](/docs/workspaces) pour les contrôles qu'exige une fermeture. L'auteur d'une tâche enregistre `multica issue metadata set <issue> --key post_close_work --value none --type string` quand il ne reste rien à faire après la revue.
+- `multica workspace update --blocked-run-skip-mode off|warn|block` définit le mode de saut de l'exécution à l'entrée en blocage (`settings.blocked_run_skip.mode`). Il modifie cette clé seule, ne change aucun autre paramètre et ne peut pas être combiné avec d'autres options de mise à jour. Seul le propriétaire peut le modifier. Voir [Espaces de travail](/docs/workspaces) pour savoir quand une exécution d'entrée est sautée.
+- `multica workspace update --ask-guard-mode off|warn|block` définit le mode de la garde des questions (`settings.ask_guard_mode`). Il ne modifie que cette clé, ne change aucun autre réglage et ne peut pas être combiné avec d'autres options de mise à jour. Seul le propriétaire peut le modifier. La commande affiche l'espace de travail enregistré, et `multica workspace get` montre le mode sous `settings`. `off` désactive la garde ; `warn` compte les manquements et les laisse passer ; `block` les refuse.
+- `multica workspace update --merge-queue-routing off|warn`, `--merge-queue-bindings '<json>'` et `--merge-queue-watch-issue <issue-id|none>` définissent les paramètres de la file de fusion (`settings.merge_queue_dequeue_routing`, `settings.merge_queue_actor_bindings`, `settings.merge_queue_watch_issue`). Ils se combinent entre eux, mais pas avec d'autres options de mise à jour. Seul le propriétaire peut les modifier. `--merge-queue-routing block` est refusé avec `routing-not-available`, de même qu'un identifiant présent dans les deux listes.
 - `--issue-title-template` ne remplace que `{{date}}` (UTC, `YYYY-MM-DD`) et refuse tout autre `{{...}}`. Le `--timezone` d'un déclencheur planifié vaut UTC par défaut.
+- `--mode script --script <name> [--arg <value>]...` exécute un script autorisé sous le jeton de tâche de l'agent, sans session de modèle. `--script` et `--arg` exigent `--mode script`, et `--mode script` exige `--script`. `--description` n'est jamais exécuté. Sans liste d'autorisation du démon, toute tâche de script échoue de façon sûre. `--output json` affiche le nom du script et ses arguments dans `script_config`. `autopilot update --mode <autre>` efface le script. Le serveur supprime le jeton de tâche à la fin de la tâche, au mieux. Si la suppression échoue, le jeton reste valide jusqu'à son expiration ; rien ne le révoque plus tôt. Le résultat de l'exécution consigne sous `script` le nom du script, un SHA-256 de la liste d'arguments, le code de sortie et la durée, et définit `token_revoke_failed` lorsqu'une suppression a échoué.
+
+### Propositions de changement de configuration
+
+`multica config propose` construit le fichier d'action pour un changement de configuration de l'espace de travail. Il lit la valeur en vigueur, calcule `before_sha256` et `after_sha256` avec les mêmes recettes que le serveur, et écrit le fichier que prend `multica decision request --action-file`. Il n'envoie rien et n'écrit aucun secret. Une personne approuve toujours avec une passkey.
+
+Champs : `agent.instructions <agent-id>`, `squad.instructions <squad-id>`, `workspace.context`, `workflow.steps <workflow-id>`, `workflow.step.instructions <workflow-id> --status-key <key>`, `workflow.budget <workflow-id>` et `workspace.settings --set clé=valeur|clé:=<json>`. Les champs texte prennent `--file` (UTF-8, sans octet NUL). `workflow.steps` prend le tableau d'étapes tel que le renvoie le GET du workflow ; modifiez cette sortie, car le serveur refuse la demande (`after_digest_mismatch`) s'il normalise vos étapes autrement. Pour `workflow.step.instructions`, le serveur calcule l'empreinte « after » : le fichier n'a pas de `after_sha256`, et l'empreinte affichée sert seulement de comparaison. `--out <chemin>` écrit le fichier ; `--dry-run` affiche les deux empreintes et l'action sans rien écrire. `--expires-in <secondes>` fixe l'expiration.
+
+`workflow.budget <workflow-id>` prend `--max-runs <n>` (de 1 à 1000 ; 0 efface le plafond) et `--include-child-prs=<true|false>` à la place de `--file` ; indiquez-en au moins un, et un champ omis garde sa valeur enregistrée. Un agent ne peut pas écrire ces deux champs directement sur un workflow (`budget_requires_decision`) : proposez la modification, demandez la décision, et le serveur l'applique à l'approbation si le workflow correspond encore à l'empreinte lue par la CLI.
+
+Un agent avec un jeton de tâche ouvre la carte en un seul appel : `multica workflow update <workflow-id> --max-runs-per-issue 40 --issue <issue> --for <user-id>` lit le workflow en direct, propose `workflow.budget.set` avec seulement les options de budget indiquées, affiche l’URL de la carte et n’écrit rien avant l’approbation du propriétaire. Répéter l’appel renvoie la même carte. Un appel de budget n’accepte ni `--name`, `--description`, `--steps-file`, `--start-status`, `--map` ni `--dry-run` ; la commande les refuse avant toute requête, lancez donc deux commandes. `--print-hash` affiche `before_sha256` et `after_sha256` de la modification de budget. `multica config propose workflow.budget` nomme la même option `--max-runs`. `multica issue update <issue> --workflow <workflow-id>` et `multica issue create --workflow <workflow-id>` acceptent les mêmes `--print-hash` et `--decision-id` (champ `issue.workflow`) quand le workflow a un budget plus large ; les deux commandes suivent une seule règle, et la session interactive d’un propriétaire n’exige aucune décision. Depuis une exécution d'agent, `multica issue update <id> --workflow <workflow-id>` avec un budget plus large n'a pas besoin de décision : la commande ouvre une carte d'approbation pour les propriétaires de l'espace de travail, affiche son identifiant d'action et son URL, et laisse le ticket inchangé jusqu'à ce qu'un propriétaire l'approuve avec une clé d'accès. L'approbation échoue avec `stale_base` si le workflow du ticket, celui de son projet ou son budget a changé après l'ouverture de la carte.
+
+Tout autre champ est refusé avec `denylisted` avant toute lecture : `project.description`, passkeys et porte de décision, membres et rôles, transfert de propriété, secrets d'authentification et d'intégration, suppression de l'espace de travail, registre des actions et `delegated_governed_writes`. Une clé de réglages hors de la table autorisée du serveur est refusée de la même façon, et un patch qui mêle clés autorisées et refusées est refusé en entier. Le serveur revérifie à la demande et à l'approbation.
+
+```bash
+multica config propose workspace.context --file ./context.md --out ./action.json
+multica config propose agent.instructions <agent-id> --file ./instructions.md --dry-run
+multica config propose workflow.step.instructions <workflow-id> --status-key review --file ./step.md --out ./action.json
+multica config propose workflow.budget <workflow-id> --max-runs 40 --include-child-prs=false --out ./action.json
+multica config propose workspace.settings --set compact_prompt="..." --set wakeups_paused:=false --out ./action.json
+multica decision request --issue MUL-123 --for <user-id> --class reversible --ask-file ./ask.md --action-file ./action.json
+```
+
+Chaque option d'une carte `decision` peut dire qui agit une fois l'option choisie. Renseignez `after_choice` avec `agent_run`, `human_steps` ou `record_only`. Une option `agent_run` liste `agent_commands` : un ou plusieurs tableaux argv, par exemple `["$MULTICA_CLI_PATH", "daemon", "restart"]`. Une commande donnée en une seule chaîne est refusée avec le nom du champ, car le serveur n'analyse aucun texte shell. Une option qui utilise une surface réservée à une console renseigne `agent_surface` avec une clé du catalogue. La vérification lit ces champs typés uniquement, jamais `what_happens`. Elle compare chaque commande, réduite à un outil et à ses premiers mots (le chemin, `.exe` et les options globales `--profile`, `--server-url`, `--workspace-id` et `--debug` sont retirés), avec le paramètre d'espace de travail `agent_cannot_do` : une liste d'entrées `{key, tool, subcommand, human_step}` de ce qu'une exécution d'agent ne peut pas faire. Sans ce paramètre, les entrées sont `daemon restart` et `daemon stop` de `multica`. Un enrobage comme `env`, `sudo`, `nohup`, `timeout`, `xargs`, `bash`, `sh` ou `zsh` masque la vraie commande : donnez la commande elle-même en argv. Le paramètre `agent_cannot_do_mode` (`off`, `warn`, `block` ; `off` par défaut) décide du résultat. En `warn`, la carte est créée et la réponse porte un conseil. En `block`, le serveur répond `400` avec le libellé de l'option, la clé du catalogue et l'étape humaine à placer dans `human_steps`, et ne crée aucune carte. En `warn` et `block`, une option sans `after_choice` ajoute un conseil ou est refusée avec le nom du champ. Les cartes d'action et les cartes de sujet de dérogation ne sont pas vérifiées. Un enregistrement des paramètres de l’espace de travail, ou un patch de paramètres approuvé par passkey, qui laisserait `agent_cannot_do_mode` sur `warn` ou `block` sans liste `agent_cannot_do` est refusé avec `400` : définissez d’abord la liste, ou passez le mode sur `off`. Un espace de travail déjà dans cet état reste modifiable.
+
+En `warn` et `block`, deux refus de plus lisent les mêmes champs typés. Une option dont les `agent_commands` ne font que `multica issue status` ou `multica issue assign` est refusée avec la correction typée : envoyez `after_choice` `server_action` avec `options[].action` `issue.status.set` ou `issue.assign` au lieu d'une exécution qui répète le changement. Une option qui lance `multica decision propose` ou `multica issue budget raise|top-up` est refusée avec « attach the action with --action-file; the passkey goes on this card », car une seconde carte demanderait une seconde passkey. `multica issue get` et les autres lectures sont acceptés. Une entrée du catalogue peut aussi définir `allowed_agents` (liste d'identifiants d'agents de l'espace de travail) : une commande `agent_run` qui correspond à l'entrée est refusée sauf si l'agent demandeur figure dans la liste ; le refus nomme le `human_step` de l'entrée ou `issue.assign` vers un agent listé. Les entrées intégrées `c00_restart` (`docker container restart`) et `c00_compose_restart` (`docker compose restart`) listent l'agent C00. Une carte CI n'a pas d'agent demandeur : une entrée avec `allowed_agents` la refuse. Une écriture des paramètres qui nomme dans `allowed_agents` un agent hors de l'espace de travail est refusée avec `400`.
+
+Une quatrième valeur, `server_action`, fait agir le serveur au nom de la personne qui choisit l'option. Donnez à l'option `action {type, params}` : `issue.status.set` avec `params.status` (une clé de statut comme `in_review`), ou `issue.assign` avec `params.assignee_type` (`member` ou `agent`) et `params.assignee_id` (un UUID). Le serveur met ces valeurs en minuscules et les rogne, les enregistre et ajoute à `what_happens` une ligne telle que « On pick: the server moves CHE-123 to in_review as you. ». Une option `after_choice` `human_steps` peut ajouter `after_wait`, qui nomme l'unique événement attendu par l'agent : `until_pr {url, state}` (`checks`, `merged`, `conflicts` ou `dequeued`), `until_status {status}` ou `until_issue {issue, state}` (`done`, `ended`, `in_review` ou `blocked`). Le paramètre d'espace de travail `decision_server_actions` (`off` ou `on` ; `off` par défaut) autorise une carte à porter `server_action`. Tant qu'il est à `off`, ou contient autre chose, le serveur renvoie `400` avec le code `server_actions_off` et le chemin du champ. Une demande de sujet, une requête `--action-file`, une carte `--kind action`, une carte groupée `--covers` et une carte CI refusent une option typée et nomment son chemin de champ. Le paramètre `standing_answers` (par défaut `{"review_cap":"off"}` ; `review_cap` vaut `off` ou `split`) se lit comme `off` s'il est mal formé. Seul un propriétaire de l'espace de travail peut modifier `decision_server_actions` et `standing_answers`.
+
+Le paramètre d'espace de travail `decision_card_lint_mode` (`off`, `warn`, `block` ; `off` par défaut) vérifie la formulation d'une carte à options. En `warn`, la carte est créée et la réponse porte un conseil par constat. En `block`, le serveur répond `400` avec un code de motif et le chemin du champ, et ne crée aucune carte. Les codes sont : `weak_cons`, chaque inconvénient d'une option se limite à votre temps (« takes 1 minute of your time ») ou à une vérification ou revue de plus ; `option_markdown`, un tableau, un titre, une image, du HTML, un bloc de code ou un bloc Mermaid dans `label`, `what_happens`, `pros` ou `cons` (gras, italique, code en ligne, listes et liens sont permis) ; `option_leak`, un texte d'option qui désigne la recommandation (« recommended », « (rec) », ou du gras sur un seul libellé) ; `default_leak`, pour la classe `spend`, `deploy`, `publish`, `irreversible` ou `product_direction`, un `default_if_no_reply` qui nomme une option (écrivez « No action until you pick. »). Les formulations en anglais et en vietnamien sont reconnues. Les cartes d'action et les cartes de sujet de dérogation ne sont pas vérifiées. Lorsque le commentaire d'une carte sur l'issue ne mentionne pas la personne interrogée, le serveur ajoute la mention et journalise `mention_missing`; ce n'est jamais un refus.
+
+Le paramètre d'espace de travail `design_card_guard` est un objet avec `mode`, `doop_origin`, `design_url_property_id` et `design_workflow_id`. `mode` vaut `off`, `warn` ou `block` ; une clé absente ou un `mode` manquant vaut `off`. Avec `warn` ou `block`, `doop_origin` (une origine `https` sans chemin) et `design_url_property_id` (un UUID) sont obligatoires ; `design_workflow_id` (un UUID) est facultatif. Le serveur refuse avec `400` tout autre champ, une valeur `null` ou un mauvais type. Un changement de paramètres par action de décision peut nommer cette clé. Pour l'instant, le paramètre est seulement lu et vérifié : il n'avertit ni ne refuse encore aucune carte.
+
+## Agents en arrière-plan
+
+Chaque tâche d’arrière-plan (`dm_title`, `quick_actions`, `compact`, `routing`) s’exécute comme une tâche d’un agent principal, puis d’un agent de secours. Affichez ou définissez la valeur par défaut de l’espace de travail, ou votre propre chaîne :
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica me background-agents set dm_title --agent none   # retour à la valeur par défaut de l’espace de travail
+```
+
+`--agent` et `--fallback` acceptent un identifiant ou un nom d’agent ; `none` efface le champ. `multica me` couvre `dm_title`, `quick_actions` et `compact` ; `routing` est réservé à l’espace de travail. Écrire dans l’espace de travail exige un propriétaire ou un administrateur, et les deux commandes refusent les jetons de tâche. Pour le comportement sans agent et les échéances, voir [Agents en arrière-plan](/background-agents).
+
+`multica workspace capability-routing [workspace]` affiche le paramètre `capability_routing` (type de ticket vers agents auteur et relecteurs) en JSON, ou `{}` s’il est vide. Elle ne fait que lire ; modifiez le paramètre avec `multica config propose workspace.settings --set 'capability_routing:=<json>'`. Voir [Workflows](/docs/workflows).
+
+`multica workspace queue-order show [workspace]` affiche en JSON les valeurs effectives de `queue_order` (`priority` ou `project_rank`) et de `queue_aging_minutes` (5 à 720). `multica workspace queue-order set [workspace] --order <mode> --aging-minutes <n>` modifie l’une ou les deux (propriétaire ou admin uniquement ; chaque changement est journalisé avec l’auteur, l’ancienne valeur, la nouvelle valeur et l’heure). `priority`, la valeur par défaut, garde l’ordre actuel de la file. `project_rank` classe les exécutions en file par priorité du projet, puis du ticket parent, puis par la leur, et chaque période d’attente les fait monter d’un cran ; le chemin de prise en charge lira ce réglage dans une version ultérieure, donc pour l’instant il est seulement enregistré et journalisé. Une valeur refusée nomme les valeurs autorisées. Utilisez `--order priority` pour revenir en arrière.
+
+## Baux de navigateur
+
+Dans une tâche du daemon, louez le navigateur distant partagé. La commande passe par le daemon local, qui détient l'identifiant daemon de la tâche ; l'agent ne le détient jamais. Un bail accordé affiche l'URL de la passerelle et un jeton de courte durée sur stdout uniquement ; rien n'est journalisé. Un bail en file affiche sa position et aucun jeton.
+
+```bash
+multica browser lease --profile <profile-id> [--decision <decision-id>] [--output json]
+multica browser renew <lease-id>
+multica browser release <lease-id>
+multica browser status <lease-id>
+```
+
+`status` n'affiche jamais de jeton. `renew` en affiche un nouveau. Un profil avec connexion exige `--decision`, l'id d'une demande de décision répondue sur le ticket.
+
+Le serveur renvoie l'URL de la passerelle depuis `MULTICA_BROWSER_GATEWAY_URLS`, un objet JSON qui associe chaque hôte à l'URL de sa passerelle (par exemple `{"c00":"https://c00.example.ts.net:35443"}`). Sans entrée pour l'hôte du bail, la CLI affiche un avertissement et aucune URL.
 
 ## Vue d'ensemble des commandes
 
@@ -305,6 +448,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 | `issue` | Créer, mettre à jour, assigner et rechercher des tâches ; gérer les commentaires, les abonnés, les étiquettes, les propriétés, les réveils, la chronologie et les exécutions |
 | `project` | Gérer les projets et leurs ressources |
 | `label`, `property` | Gérer les étiquettes et les propriétés personnalisées de l'espace de travail |
+| `view` | Lire les vues enregistrées et lister les tâches qu'une vue affiche |
 | `agent`, `skill`, `squad` | Gérer les agents, les skills et les squads |
 | `autopilot` | Gérer les automatisations, les déclencheurs et l'historique des exécutions |
 | `workspace` | Créer, consulter et changer d'espace de travail, et inviter des membres |
@@ -315,8 +459,40 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 | `auth`, `login`, `setup` | Se connecter, vérifier l'état de l'authentification et initialiser une connexion |
 | `config` | Consulter ou modifier la configuration locale du profil CLI actuel |
 | `update`, `version` | Mettre à jour le CLI ou afficher la version |
+| `guard` | Vérifier les appels d'outils des agents selon la politique de l'espace de travail |
 
 `multica chat` lit **la session de messagerie externe qu'un agent traite actuellement** ; elle sert surtout aux agents des intégrations de messagerie et n'est pas une commande générale pour parcourir n'importe quelle discussion de l'espace de travail.
+
+### Rapport shadow
+
+Tout membre de l'espace de travail lit le rapport shadow de System 1 :
+
+```bash
+multica decision shadow-report [--since <RFC 3339>] [--until <RFC 3339>] --output json
+```
+
+Les blocs `decision` et `routing` couvrent toute la période. Le bloc `route` couvre la fenêtre `[since, until)` : `--since` et `--until` prennent des dates RFC 3339, `--until` vaut par défaut maintenant et `--since` 24 heures avant `--until`. Le serveur refuse une date invalide ou un `--since` postérieur à `--until` avec un 400.
+
+Le bloc `route` compte une seule population d'événements : les changements de statut d'un agent marqués comme sortie d'une étape de routage (`eligible_exits`) et les étiquettes de route qui portent le même identifiant d'événement (`matched_labels`). `label_coverage` vaut `matched_labels / eligible_exits` et ne dépasse jamais 1. `via_route_share` est la part des événements appariés dont la première étiquette vient de `issue route`, et non du repli sur le statut. `duplicate_labels` compte les étiquettes qui partagent un événement avec une étiquette plus ancienne (cible 0). `labels_total`, `owner_only_labels` (une route qui a gardé le statut, donc sans événement) et `non_routing_labels` (une route depuis une étape sans agent de routage) restent hors de la couverture. `overridden` compte les étiquettes d'agent qu'une personne a inversées en moins d'une heure, et `override_rate` vaut `overridden / labels_total`. Le bloc contient aussi `decided`, `predicted`, `agreed`, `coverage` et `precision` par classe.
+
+### Étiquetage System 1
+
+L'agent étiqueteur System 1 désigné lit sa file aveugle et écrit les étiquettes depuis sa propre tâche d'agent. Le serveur tire l'agent et la tâche du jeton de tâche ; une session de membre ou un PAT reçoit 403.
+
+```bash
+multica system1 label-queue --scope <scope> --kind burn_in|eval --output json
+multica system1 label submit --observation <observation-id> --kind burn_in|eval --label <value> [--supersedes <label-id>] --output json
+```
+
+La file contient des identifiants d'observation et des caractéristiques typées, jamais de prédiction. Elle contient au plus 20 observations du périmètre sans étiquette valide de ce type. Le serveur enregistre les identifiants échantillonnés et la graine lorsqu'il sert la file, et une tâche qui la redemande reçoit le même échantillon. `--supersedes` prend l'identifiant de l'étiquette valide à corriger ; sans lui, une deuxième étiquette pour la même observation reçoit 409.
+
+Tout membre de l'espace de travail lit l'état de qualification System 1 de chaque périmètre et version de prédicteur :
+
+```bash
+multica system1 report [--scope <scope>] --output json
+```
+
+`--scope` vaut `test_first_waiver` ou `ci:<repo>:<protocol>`. Chaque ligne couvre la dernière époque d'une version de prédicteur. Seules comptent les observations créées à partir du début de l'époque, et une nouvelle version ouvre sa propre époque. Un cas est une prédiction avec une étiquette de référence (la plus récente non remplacée). `denominator` compte les cas avec une prédiction non abstentionniste et une étiquette reconnue, `agreed` ceux où elles concordent, `abstained` les cas étiquetés que le prédicteur a laissés de côté, et `unmapped` les réponses en texte libre. `status` vaut `qualified` à 7 jours, avec au moins 20 cas et 90 % d'accord. Il vaut `insufficient_data` après 4 semaines avec moins de 20 cas comptés, `demoted` pour une époque rétrogradée, et `collecting` sinon.
 
 ## ID et formats de sortie
 
@@ -377,7 +553,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | | `create` | Créer une tâche | `--title` (obligatoire), `--description` / `--description-stdin` / `--description-file`, `--status`, `--priority`, `--assignee`, `--parent`, `--stage`, `--project`, `--start-date`, `--due-date`, `--attachment` (répétable), `--property` (répétable), `--allow-duplicate` (crée même si une tâche ouverte porte le même titre) |
 | | `update <id>` | Mettre à jour les champs d'une tâche | Mêmes champs que `create`, plus `--position`, `--no-start`, `--duplicate-of` |
 | | `assign <id>` | Assigner ou désassigner | `--to` (correspondance approximative sur le nom parmi les membres, les agents et les squads), `--to-id`, `--unassign`, `--no-start` |
-| | `status <id> <status>` | Changer le statut | `--no-start`, `--duplicate-of` |
+| | `status <id> <status>` | Changer le statut | `--no-start`, `--duplicate-of`, `--blocked-on`, `--waiting-on` |
 | | `reorder <id>` | Déplacer au sein d'une colonne | |
 | | `search <query>` | Rechercher des tâches | `--limit`, `--include-closed` |
 | | `children <id>` | Lister les sous-tâches regroupées par étape | |
@@ -394,23 +570,25 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | | `usage <issue-id>` | Afficher la consommation de tokens agrégée | |
 | | `rerun-task <run-id>` | Relancer une exécution précise avec son agent et son contexte de déclenchement d’origine | `--issue`, `--fresh` |
 | | `cancel-task <task-id>` | Annuler une exécution en cours ou en file d'attente | `--issue` |
-| `project` | `list/get/create/update/delete` | Gérer les projets | `create` : `--title` (obligatoire), `--lead`, `--status`, `--icon`, `--start-date`, `--due-date`, `--repo` (répétable) |
+| `project` | `list/get/create/update/delete` | Gérer les projets | `create` : `--title` (obligatoire), `--lead`, `--status`, `--icon`, `--start-date`, `--due-date`, `--repo` (répétable); `update` split A/B (propriétaire, admin ou responsable du projet) : `--split-arm-b` (ID du workflow), `--split-start`, `--split-end` (RFC 3339), `--split-exclude-assignee` / `--split-exclude-squad` (répétables), `--clear-split` |
 | | `status <id> <status>` | Changer le statut d'un projet | |
 | | `resource list/add/update/remove` | Gérer les ressources d'un projet | `--type`, `--url`, `--default-branch-hint`, `--ref`, `--local-path`, `--daemon-id`, `--execution-mode` (`in_place` / `worktree` pour un répertoire local) |
 | `label` | `list/get/create/update/delete` | Gérer les étiquettes de l'espace de travail | `list` : `--resource-type` (`issue` ou `skill`), `--full-id` ; `create` : `--name`, `--color`, `--resource-type` (`issue` ou `skill`), `--description` |
 | `property` | `list/get/create/update/archive/unarchive` | Gérer les propriétés personnalisées de l'espace de travail | `create` : `--name`, `--type` (`text`, `number`, `select`, `multi_select`, `date`, `checkbox`, `url`, `actor`, `multi_actor`), `--option` (répétable, types select uniquement) ; `list` : `--include-archived` ; le type ne peut plus être modifié après la création |
+| `view` | `list/get/issues` | Lire les vues que vous pouvez ouvrir (les vôtres et celles partagées avec l'espace de travail) ; `issues` liste les tâches qu'une vue affiche, dans son ordre enregistré, avec tous ses filtres appliqués par le serveur. Pendant l'exécution d'un agent, les vues et les conditions « moi » sont celles du propriétaire du runtime | `<view>` accepte un ID, un préfixe d'ID ou le nom exact ; `list` : `--scope` (`workspace`, `my`, `project`), `--project`, `--full-id` ; `issues` : `--limit` (100 au maximum), `--cursor` (le `next_cursor` de la page précédente), `--today` (le jour de référence des filtres d'échéance relatifs ; aujourd'hui par défaut), `--fields` (JSON uniquement), `--full-id` |
 | `agent` | `list/get/create/update/archive/restore` | Gérer les agents | `--name`, `--runtime-id` (obligatoire pour `create`), `--instructions`, `--conversation-starters`, `--model`, `--thinking-level`, `--custom-env` / `--custom-env-file` / `--custom-env-stdin` (`create` uniquement), `--custom-args`, `--mcp-config` / `--mcp-config-file` / `--mcp-config-stdin`, `--permission-mode`, `--visibility` (ancienne forme), `--max-concurrent-tasks` |
 | | `copy <agent-id>` | Copier dans un nouvel agent ; l'original reste intact | `--name` (par défaut, le nom d'origine suivi de ` (copy)`), `--runtime-id` (copier vers un autre runtime exige aussi `--model`), `--no-skills` ; la configuration secrète comme `custom_env`, `mcp_config` et `runtime_config` n'est pas copiée — fournissez-la à nouveau avec les mêmes options que pour `create` |
 | | `tasks <id>` | Afficher les exécutions d'un agent | |
 | | `avatar <id>` | Envoyer un avatar | |
-| | `env get/set <agent-id>` | Lire et écrire les variables d'environnement personnalisées (propriétaire de l'agent ou owner/admin de l'espace de travail ; chaque lecture est enregistrée) | `set` : `--custom-env` / `--custom-env-file` / `--custom-env-stdin` ; remplace l'ensemble, et les clés dont la valeur est `****` gardent leur valeur |
+| | `env get/set <agent-id>` | Écrire les variables d'environnement personnalisées et lister leurs clés (propriétaire de l'agent ou owner/admin de l'espace de travail). Aucune valeur n'est renvoyée : `get` affiche chaque clé et sa source, et les réponses de `set`/`patch` masquent toutes les valeurs | `set` : `--custom-env` / `--custom-env-file` / `--custom-env-stdin` ; remplace l'ensemble, et les clés dont la valeur est `****` gardent leur valeur |
 | | `skills list/set/add <agent-id>` | Gérer les skills rattachés | `--skill-ids` (`set` remplace toute la liste, `add` ajoute à la suite) |
 | | `mcp list/add/enable/disable/remove <agent-id>` | Assigner des serveurs MCP de l'espace de travail à cet agent | Récupérez l'ID du serveur avec `workspace mcp list`. Une entrée de la bibliothèque n'a aucun effet tant qu'elle n'est pas ajoutée ici ; `disable` cesse de l'envoyer sans supprimer l'assignation |
-| `autopilot` | `list/get/create/update/delete` | Gérer les automatisations | `create` : `--title`, `--agent`, `--mode` (tous obligatoires), `--description`, `--issue-title-template`, `--project`, `--subscriber` (répétable) |
+| `autopilot` | `list/get/create/update/delete` | Gérer les automatisations | `create` : `--title`, `--agent`, `--mode` (tous obligatoires), `--description`, `--issue-title-template`, `--project`, `--subscriber` (répétable), `--script`, `--arg` |
 | | `trigger <id>` | Déclencher une exécution manuellement | |
 | | `runs <id>` | Afficher l'historique des exécutions | |
 | | `trigger-add/trigger-update/trigger-delete/trigger-rotate-url` | Gérer les déclencheurs de planification et webhook | `trigger-add` : `--kind` (`schedule` ou `webhook`), `--cron`, `--timezone` (UTC par défaut), `--label` |
 | `workflow` | `lint [<id>]` | Vérifier les workflows : étapes, transitions, gestionnaires et instructions. Affiche un tableau, ou du JSON avec `--output json`. Code de sortie non nul si une erreur n'est pas écartée par une dérogation | `--all` (tous les workflows de l'espace de travail ; utilisez-le ou un id, pas les deux), `--output` (`table` ou `json`) |
+| `workflow` | `update <id>` | Remplacer les étapes ou les règles d'exécution d'un workflow. La sauvegarde est d'abord vérifiée : une erreur non écartée la refuse et liste chaque erreur avec son correctif. Les avertissements et infos ne bloquent jamais | `--steps-file`, `--max-runs-per-issue`, `--include-child-prs`, `--lint-override "<raison>"` (sauvegarder malgré les erreurs ; la raison est stockée avec le workflow) |
 | `workspace` | `list/get/create/update/switch` | Gérer les espaces de travail ; `switch` définit l'espace de travail par défaut du profil actuel | `create` : `--name`, `--slug` (tous deux obligatoires), `--issue-prefix`, `--description`, `--context` / `--context-stdin` ; `update` modifie les mêmes champs, sauf le slug |
 | | `mcp list/add/update/remove` | Gérer la bibliothèque de serveurs MCP de l'espace de travail | Les écritures sont réservées aux propriétaires et administrateurs. Un serveur ajouté ici n'est assigné à aucun agent — attribuez-le à un agent avec `multica agent mcp add`. `list` n'affiche que les noms et les transports ; l'entrée enregistrée est en écriture seule et n'est jamais renvoyée. `--server-config-file` / `--server-config-stdin` gardent les jetons hors de l'historique du shell |
 | | `member list/invite <email>` | Consulter les membres, envoyer des invitations | `invite` : `--role` (member ou admin, member par défaut) |
@@ -447,10 +625,16 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `user` | `profile get/update` | Consulter ou mettre à jour le profil de l'utilisateur actuel | |
 | `login` | — | Se connecter via le navigateur et configurer automatiquement tous les espaces de travail | `--token` (demande la saisie de façon interactive dans le terminal lorsque l'option est passée sans valeur) |
 | `setup` | `cloud` (par défaut), `self-host` | Enregistrer l'adresse du serveur, finaliser la connexion et démarrer le daemon | `self-host` : `--server-url`, `--app-url`, `--port`, `--frontend-port` |
-| `attachment` | `download <attachment-id>`, `upload <path>` | Télécharger ou envoyer des pièces jointes | `download` : `--output-dir` ; `upload` : `--task` |
+| `attachment` | `download <attachment-id>`, `upload <path>`, `history <attachment-id>`, `diff <attachment-id>` | Télécharger ou envoyer des pièces jointes ; lister les révisions d'un fichier ; comparer deux révisions | `download` : `--output-dir` ; `upload` : `--task`, `--issue`, `--replaces <attachment-id>` (le nouveau fichier devient la révision suivante de cette pièce jointe) ; `diff` : `--from`, `--to` (numéros de révision) |
 | `config` | `show`, `set <key> <value>` | Consulter ou modifier la configuration locale du profil actuel | Priorité : options de ligne de commande > variables d'environnement > `config.json` > valeurs par défaut intégrées ; définissez une chaîne vide pour effacer une valeur |
 | `update` | — | Mettre à jour le CLI vers la dernière version | |
 | `version` | — | Afficher les informations de version | `--output` (`text` ou `json`) |
+| `guard` | `exec <tool> -- <args>` | Exécuter un appel d'outil via le garde : `gh pr create`, `edit` et `ready` sont forcés en brouillon, étiquetés et relus ; les écritures sur les pull requests via `gh api` (mutations GraphQL comprises) sont refusées ; les attentes de CI (`gh pr checks --watch`, `gh run watch`, `sleep` de 20 s ou plus) sont refusées avec la commande wakeup à utiliser à la place | Code de sortie : celui de l'outil, 2 si le garde refuse. Env : `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
+| `guard` | `check-pr <pr-url\|number\|branch>` | Vérifier une pull request par rapport à la politique et au fichier `.github/agent-rules.yml` du dépôt, sans la modifier. Le fichier est lu comme donnée à la pointe actuelle de la branche de base protégée de la PR, jamais depuis la branche de la PR ; un fichier absent n'ajoute aucune règle, un fichier mal formé ou une base illisible fait échouer la vérification. À utiliser comme contrôle CI | Code de sortie : 0 conforme, 1 règle enfreinte, 2 refusé. `-R owner/name` désigne le dépôt |
+| `guard` | `plugin list\|get\|set` | Lire la politique du garde enregistrée (`list`, `get <name>`) ou écrire le fichier d'action de décision qui la remplace (`set --file <policy.json> --out <action.json>`, ou `--dry-run`). La politique contient les plugins et règles de revue de l'espace de travail, plus des couches org, dépôt et chemin ; une couche plus profonde remplace une couche moins profonde clé par clé, et une couche ou l'espace de travail marqué `locked` fige ses clés face aux couches plus profondes. `set` n'envoie rien : une personne approuve le `workspace.settings.patch` avec une passkey. Le daemon transmet la politique approuvée à chaque exécution via `MULTICA_GUARD_POLICY` (un fichier hors de l'arbre de travail) avec `MULTICA_GUARD_POLICY_SHA256` | Sortie : lignes JSON (`--output table` pour un tableau) ; `set` affiche `before_sha256` et `after_sha256` |
+
+`repository_allowlist` associe chaque propriétaire limité aux noms exacts des dépôts autorisés, sans distinction de casse. Un propriétaire présent refuse par défaut ; un propriétaire absent reste libre. Avant les plugins et les couches, `gh pr create`, `gh pr comment`, `git push` et `repo checkout` authentifié refusent les dépôts non autorisés. Git vérifie les URL effectives, pushurl et réécritures comprises ; une destination indéterminée est refusée. Mettez le daemon à jour avant l’approbation. Source canonique Cheese Work : `config/tevo-prod1-guard.json`.
+
 
 ### Propositions de décision
 
@@ -462,7 +646,21 @@ multica decision propose issue.run_budget.raise --version 1 --issue MUL-123 \
 multica decision propose <action-type> --version 1 --issue MUL-123 --params-file ./params.json
 ```
 
-`--version` et `--issue` sont obligatoires. `--param k=v` envoie une chaîne et `--param k:=<json>` envoie du JSON brut ; `--params-file` prend un objet JSON et ne se combine pas avec `--param`. La commande affiche le lien de la carte d'approbation. Un refus affiche le statut et le code d'erreur du serveur. `multica issue budget raise` et `multica issue budget top-up` utilisent la même route avec un jeton de tâche (ajoutez `--for <user-id>`) ; avec un jeton d'accès personnel, ils ouvrent la demande de dépense comme avant.
+`--version` et `--issue` sont obligatoires. `--param k=v` envoie une chaîne et `--param k:=<json>` envoie du JSON brut ; `--params-file` prend un objet JSON et ne se combine pas avec `--param`. La commande affiche le lien de la carte d'approbation. Pour une action de budget d'exécutions, ce lien ouvre l'approbation sur la tâche ; pour toute autre action, il mène à la carte dans le chat, où la personne l'approuve. Une carte à options simple (`multica decision request` sans `--action-file`) ne peut pas appliquer un changement : Approuver n'enregistre que la réponse. Le serveur ne peut pas lire l'intention : il ne refuse pas une telle carte, mais ajoute un conseil quand la décision ou une option ressemble à un changement de workflow, d'agent, d'équipe, d'espace de travail ou de budget (ou nomme un type d'action autorisé). Envoyez ce changement avec `multica decision propose`. Un refus affiche le statut et le code d'erreur du serveur. `multica issue budget raise` et `multica issue budget top-up` utilisent la même route avec un jeton de tâche (ajoutez `--for <user-id>`) ; avec un jeton d'accès personnel, ils ouvrent la demande de dépense comme avant. Les deux commandes acceptent un ou plusieurs ID d'issue : `multica issue budget top-up CHE-1 CHE-2 CHE-3 --for <user-id> --goal "<objectif>"`. Un seul ID garde la proposition unique. Avec un jeton de tâche, plusieurs ID appellent une seule fois la route de lot et affichent un seul lien de carte ; `--goal` nomme le lot (par défaut : l'action et le nombre d'issues) et `--output json` renvoie l'id du lot et un id de proposition par issue. Avec un jeton d'accès personnel, chaque ID ouvre sa propre demande. La route de lot exige une tâche de chat et accepte 25 issues au plus ; le serveur approuve un lot de raises avec une seule clé d'accès mais refuse un lot de top-ups à l'approbation : approuvez les top-ups un par un.
+
+Prochaine étape du budget d'exécutions : la notice à 80 % sur une issue porte les chiffres et une commande prête à l'emploi, par exemple `Run budget: 20 of 25 runs used on CHE-1234 (workflow Default, cap 25). Ask for more: multica issue budget raise CHE-1234 --runs 40`. Une exécution refusée par le budget renvoie le code d'erreur `run_budget_exhausted` avec `runs_used`, `runs_limit`, `workflow_id`, `window_id`, `open_card` et `next_command`. `multica issue budget get <issue> --output json` renvoie aussi `open_card` et `next_command`. Tant qu'une carte de relèvement ou de rechargement est ouverte pour la fenêtre courante de l'issue, `next_command` dit d'attendre cette carte, et un nouvel appel à `multica issue budget raise` renvoie la même carte au lieu d'en ouvrir une autre. Avec un jeton de tâche, `--for` désigne par défaut un propriétaire de l'espace de travail sur une tâche d'issue, et l'aide ne liste que `raise` ; `top-up` reste disponible pour les membres. Une tâche sur n'importe quelle issue de l'espace de travail peut ouvrir une carte `raise` pour une autre issue, par exemple une issue hors budget qui ne peut pas lancer de tâche. La carte exige toujours l'approbation d'une personne par passkey et rien n'est appliqué avant. Chaque carte ouverte par le serveur, un membre ou un agent ajoute une ligne d'activité `run_budget_ask` qui enregistre le type d'acteur, l'acteur et le type d'action.
+
+Une personne peut révoquer une action appliquée tant qu'elle est révocable. Exécutez `multica decision revoke <request-id> --why "<raison>"`. Une action n'est révocable que si elle a été appliquée, si son type a un inverse exact et si personne ne l'a déjà révoquée. Dans cette version, seul `agent.pause` a un inverse (`agent.resume`), et seulement si l'approbation a mis l'agent en pause et que personne n'a modifié cette pause depuis. Tous les autres types d'action restent non révocables. Seule la personne concernée par la demande peut révoquer, avec la même règle de rôle que l'approbation ; une action qui exige une passkey se révoque dans l'application. Le serveur enregistre qui a révoqué, quand et pourquoi, exécute l'inverse et réveille l'agent demandeur avec le résultat `revoked`. La révocation est refusée pour une décision rejetée, expirée, non appliquée, limitée à la discussion ou déjà révoquée. `multica decision get <request-id>` affiche `revocable` et, après une révocation, l'enregistrement `revoke` (`at`, `by`, `reason`). Pour une décision répondue, elle affiche aussi `answer.woken_at` et `answer.wake_outcome` (quand et comment la réponse a atteint l'agent, null tant qu'elle ne l'a pas atteint) et `receipt_state` (`recorded`, `delivered`, `picked_up` ou `disclaimed`). `receipt_state` est l'état de réception de la réponse, pas l'état affiché par la carte : pour une décision avec réponse, sans action, retrait ni désaveu, la carte ne se replie qu'à `picked_up` ; à `recorded` ou `delivered`, elle affiche cet état jusqu'à deux minutes après la réponse, puis « Not picked up », et reste dépliée.
+
+`issue.project.set` déplace le ticket vers un autre projet : `multica decision propose issue.project.set --version 1 --issue MUL-123 --param project_id=<project-id>`. La carte montre le projet, le workflow, le plafond d'exécutions et les exécutions utilisées avant et après, et indique si le déplacement élargit le budget d'exécutions. Un déplacement qui l'élargit est une carte `spend` ; tout autre déplacement est `reversible`. Seul le propriétaire de l'espace de travail peut l'approuver. La carte est refusée si le ticket a quitté son projet, ou si le budget du workflow cible a augmenté, après la demande.
+
+`issue.project.quick_set` et `project.workflow.quick_set` sont ouvertes par le serveur, non proposées : un agent muni d'un jeton de tâche qui déplace un ticket vers un projet qui suit Quick, ou qui fait passer un projet à Quick, obtient une carte pour le propriétaire au lieu d'un refus, et le changement n'a lieu qu'après son approbation par passkey (classe `spend`). La carte montre le workflow, le plafond d'exécutions et, pour un changement de projet, le nombre de tickets qui passent à un autre statut. Elle se termine en `stale_base` si le ticket, le projet ou le budget d'exécutions a changé depuis la demande.
+
+Approbateur automatique du budget de runs : quand une issue épuise son budget de runs, le serveur approuve lui-même la fenêtre suivante si la dernière fenêtre a progressé, ne montre aucune anomalie et si l'enveloppe quotidienne de l'espace de travail a encore de la marge. Le commentaire d'audit sur l'issue nomme la règle (`auto-approver v1`) et l'interrupteur. Une fenêtre approuvée relance aussi le run refusé par le serveur : l'issue n'est jamais mise en `blocked`. Il y a progrès quand un run a changé le statut de l'issue, modifié la tête ou l'état d'une PR liée (un commentaire sur la PR ne compte pas), ou fait un commit ; un commentaire ne compte jamais, quoi qu'il dise, donc un run sans rien de cela est sans effet. Une boucle (le même contrôle en échec, le même workflow CI en échec ou la même erreur de run dans au moins 3 runs ; les commentaires ne sont pas lus), une fenêtre sans effet (au moins 80 % des runs ne livrent rien), un pic de jetons (jetons par run supérieurs à 3 fois la médiane de l'espace), un va-et-vient (au moins 3 rallonges sur une issue en 24 h) ou un agent du pool OpenAI pendant la restriction OpenAI n'est jamais approuvé automatiquement : les propriétaires reçoivent au plus une carte groupée par jour ; les anomalies suivantes du même jour arrivent comme messages dans le chat de cette carte, et le brief liste les issues retenues. Tout autre cas, y compris une issue déjà `blocked` ou un run refusé qui ne vise pas l'agent assigné de l'issue, retombe sur la carte par issue. Paramètre d'espace de travail `run_budget_auto` : `enabled` (par défaut `false` : l'auto-approbation est livrée désactivée) et `daily_envelope` (runs supplémentaires par jour ICT, par défaut `300`) et `expected_checks` (chaque entrée est `name@appid@workflow-path` : le nom du check, l'id numérique de la GitHub App qui le produit et, pour GitHub Actions (app `15368`), le fichier de workflow qui l'exécute, par exemple `go-test@15368@.github/workflows/ci.yml` ; l'entrée d'une autre App peut être `name@appid` ; chaque head poussé doit avoir chacune, terminée, pour que sa CI compte comme connue ; vide par défaut, ce qui retient toute fenêtre ayant poussé un head). Un snapshot où seule une partie des checks attendus est terminée ne compte pas comme connu. Une entrée ne compte que comme un run terminé de l'API Checks de ce nom produit par cette App et, si elle nomme un workflow, issu de ce workflow (le run doit appartenir à un run de workflow enregistré par le serveur pour ce head) : le même nom d'une autre App ou d'un autre workflow, un statut de commit, une entrée GitHub Actions sans workflow, ou une entrée sans id d'app valide, retient la fenêtre. Un run de même nom d'un autre workflow encore en cours la retient aussi. Activez-le (ou désactivez-le avec `"enabled":false`) avec `multica config propose workspace.settings --set 'run_budget_auto:={"enabled":true}'` ou une proposition de config `workspace.settings`.
+
+### Les champs couverts exigent une action par passkey
+
+Un jeton de tâche ou un jeton de nœud cloud ne peut pas écrire ces champs par les anciennes routes : `agent.instructions`, `squad.instructions`, `workspace.context`, les étapes de workflow et leurs instructions, et les clés de réglages d'espace de travail de la liste autorisée des actions de décision (`compact_prompt`, `auto_compact`, `idle_started_guard`, `wakeups_paused`, `mermaid_orientation` et les autres clés opérationnelles simples). Le serveur répond 403 avec `code: passkey_action_required` et un `action_type` qui nomme l'action à proposer à la place (`agent.instructions.set`, `squad.instructions.set`, `workspace.context.set`, `workflow.steps.set`, `workspace.settings.patch`). La valeur stockée ne change pas. Un reçu de vote, une liaison de décision, un reçu PASS et l'exception Hermes ne lèvent plus ce refus. Proposez l'action avec `multica decision propose <action-type>` ; une personne l'approuve avec une passkey. Les écritures faites par une personne et `project.description` fonctionnent comme avant.
 
 ## Piloter Multica depuis un autre agent de codage
 

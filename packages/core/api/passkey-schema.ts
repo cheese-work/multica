@@ -12,7 +12,7 @@ export const PasskeyAnswerChallengeSchema = PasskeyChallengeSchema.extend({
   answer_revision: z.number().int(), policy_revision: z.number().int(),
 });
 export const PasskeyEnrollStartSchema = z.object({
-  ceremony_id: z.string(), options: OptionsSchema, expires_at: z.string(), assertion: PasskeyChallengeSchema.optional(),
+  ceremony_id: z.string(), tag: z.string().optional(), options: OptionsSchema, expires_at: z.string(), assertion: PasskeyChallengeSchema.optional(),
 });
 export const PasskeyListSchema = z.object({
   passkeys: z.array(z.object({
@@ -21,7 +21,7 @@ export const PasskeyListSchema = z.object({
   })),
 });
 export const PasskeyEnrolledSchema = z.object({ enrolled: z.literal(true) });
-export const PasskeyRevokeCodeStartSchema = z.object({ ceremony_id: z.string(), expires_at: z.string() });
+export const PasskeyRevokeCodeStartSchema = z.object({ ceremony_id: z.string(), tag: z.string().optional(), expires_at: z.string() });
 export const PasskeyRevokedSchema = z.object({ revoked: z.literal(true) });
 /** The non-secret card view of one action; `payload_sha256` is what an approve must repeat. */
 export const DecisionActionViewSchema = z.object({
@@ -30,14 +30,34 @@ export const DecisionActionViewSchema = z.object({
   params: z.record(z.string(), z.unknown()),
   payload_sha256: z.string(),
   state: z.string(),
+  /** The chat that holds the action's card; older servers omit it. */
+  chat_session_id: z.string().optional(),
 });
+/**
+ * What a decided run-budget action did (CHE-6943 §3). `outcome` is an open set of tokens; each number
+ * drops alone, and a receipt without its two required fields drops whole, so a bad one never hides the action.
+ */
+const optionalNumber = z.number().optional().catch(undefined);
+export const BudgetReceiptSchema = z.object({
+  outcome: z.string(),
+  applied_at: z.string(),
+  runs_used: optionalNumber,
+  runs_limit: optionalNumber,
+  runs_limit_after: optionalNumber,
+  new_window: z.boolean().optional().catch(undefined),
+}).optional().catch(undefined);
+export type BudgetReceipt = NonNullable<z.infer<typeof BudgetReceiptSchema>>;
 export const PasskeyDecisionOutcomeSchema = z.object({
   id: z.string(),
   state: z.string(),
   result: z.unknown().optional(),
+  receipt: BudgetReceiptSchema,
   error_code: z.string().optional(),
   error_message: z.string().optional(),
 });
+/** The batch card's read after approve: one outcome per item. */
+export const PasskeyBatchOutcomeSchema = z.object({ batch_id: z.string(), items: z.array(PasskeyDecisionOutcomeSchema) });
+export type PasskeyBatchOutcome = z.infer<typeof PasskeyBatchOutcomeSchema>;
 
 /** What the server verifies for revoke and approve: the challenge it answers plus the WebAuthn credential. */
 export type PasskeyAssertionEnvelope = { challenge_id: string; credential: unknown };

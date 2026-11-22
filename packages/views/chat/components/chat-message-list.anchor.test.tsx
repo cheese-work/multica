@@ -64,12 +64,25 @@ const messagesFor = (sessionId: string, ids = IDS) =>
   ids.map((id, i) => message(id, i, sessionId));
 
 let store: Map<string, string>;
+let writes: number;
+// The route a write is filed under. A write through the unbound setViewState is
+// filed under the route current when it ARRIVES (like the desktop adapter); a
+// bound writer is filed under the route current when it was bound.
+let route: string;
+let writeRoutes: string[];
+const putEntry = (at: string, key: string, value: string | undefined) => {
+  writes += 1;
+  writeRoutes.push(at);
+  if (value === undefined) store.delete(key);
+  else store.set(key, value);
+};
 const adapter: ScrollRestorationAdapter = {
   get: () => undefined,
   getViewState: (key) => store.get(key),
-  setViewState: (key, value) => {
-    if (value === undefined) store.delete(key);
-    else store.set(key, value);
+  setViewState: (key, value) => putEntry(route, key, value),
+  bindViewStateWriter: () => {
+    const bound = route;
+    return (key, value) => putEntry(bound, key, value);
   },
 };
 
@@ -101,6 +114,9 @@ const savedAnchor = (sessionId: string) => {
 
 beforeEach(() => {
   store = new Map();
+  writes = 0;
+  route = "/chat";
+  writeRoutes = [];
   virtuosoProps = {};
   vi.stubGlobal(
     "ResizeObserver",
@@ -125,7 +141,7 @@ describe("ChatMessageList reading-position restore", () => {
     expect(virtuosoProps.initialTopMostItemIndex).toEqual({
       index: 2,
       align: "start",
-      offset: -20,
+      offset: 20,
     });
     // Shown straight away: there is no live end to wait for.
     const root = view.container.querySelector("[data-tab-scroll-root]");
@@ -180,6 +196,7 @@ describe("ChatMessageList reading-position restore", () => {
   });
 
   it("keeps the offset current while the reader scrolls inside a tall reply", () => {
+    vi.useFakeTimers();
     saveAnchor("s1", { itemId: "m3", offsetInItemPx: 0, atLiveEnd: false });
     const view = mount("s1", messagesFor("s1"));
     const root = view.container.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
@@ -194,6 +211,7 @@ describe("ChatMessageList reading-position restore", () => {
     row.getBoundingClientRect = () => ({ top: -620, bottom: 800 }) as DOMRect;
     act(() => {
       root.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(600);
     });
 
     expect(savedAnchor("s1")).toEqual({ itemId: "m5", offsetInItemPx: 720, atLiveEnd: false });
@@ -219,5 +237,128 @@ describe("ChatMessageList reading-position restore", () => {
     act(() => virtuosoProps.rangeChanged?.({ startIndex: CHAT_FIRST_ITEM_INDEX_BASE + 0, endIndex: CHAT_FIRST_ITEM_INDEX_BASE + 1 }));
 
     expect(savedAnchor("s3")).toBeUndefined();
+  });
+});
+
+describe("ChatMessageList anchor persistence under scroll (CHE-3234)", () => {
+  function mountScrolling() {
+    vi.useFakeTimers();
+    saveAnchor("s1", { itemId: "m3", offsetInItemPx: 0, atLiveEnd: false });
+    const view = mount("s1", messagesFor("s1"));
+    const root = view.container.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+    const row = view.container.querySelector<HTMLElement>('[data-message-id="m5"]')!;
+    root.getBoundingClientRect = () => ({ top: 100, bottom: 700 }) as DOMRect;
+    let rowTop = 80;
+    row.getBoundingClientRect = () => ({ top: rowTop, bottom: rowTop + 1400 }) as DOMRect;
+    act(() => virtuosoProps.rangeChanged?.({ startIndex: CHAT_FIRST_ITEM_INDEX_BASE + 4, endIndex: CHAT_FIRST_ITEM_INDEX_BASE + 5 }));
+    writes = 0;
+    return { view, root, scrollTo: (top: number) => (rowTop = top) };
+  }
+
+  it("persists at most 3 times for 100 scroll events in 1 s", () => {
+    const { root, scrollTo } = mountScrolling();
+
+    act(() => {
+      for (let i = 0; i < 100; i++) {
+        scrollTo(80 - i * 5);
+        root.dispatchEvent(new Event("scroll"));
+        vi.advanceTimersByTime(10);
+      }
+    });
+
+    expect(writes).toBeLessThanOrEqual(3);
+  });
+
+  it("persists the last anchor when the list unmounts mid-throttle", () => {
+    const { view, root, scrollTo } = mountScrolling();
+
+    act(() => {
+      scrollTo(-900);
+      root.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(20); // one frame: measured, not yet persisted
+    });
+    view.unmount();
+
+    expect(savedAnchor("s1")).toEqual({ itemId: "m5", offsetInItemPx: 1000, atLiveEnd: false });
+  });
+
+  it("persists the pending anchor on pagehide", () => {
+    const { root, scrollTo } = mountScrolling();
+
+    act(() => {
+      root.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(20);
+      scrollTo(-400);
+      root.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(20);
+      window.dispatchEvent(new Event("pagehide"));
+    });
+
+    expect(savedAnchor("s1")?.offsetInItemPx).toBe(500);
+  });
+
+  // jsdom has no layout: the rows only measure while they are still attached,
+  // as in a browser. A drain that runs after React removed the DOM reads zeros.
+  function measureWhileConnected(root: HTMLElement, row: HTMLElement, rowTop: () => number) {
+    row.getBoundingClientRect = () =>
+      (row.isConnected ? { top: rowTop(), bottom: rowTop() + 1400 } : { top: 0, bottom: 0 }) as DOMRect;
+    root.getBoundingClientRect = () => (root.isConnected ? { top: 100, bottom: 700 } : { top: 0, bottom: 0 }) as DOMRect;
+  }
+
+  it("persists the offset of a scroll whose frame has not run when the list unmounts", () => {
+    const { view, root, scrollTo } = mountScrolling();
+    const row = view.container.querySelector<HTMLElement>('[data-message-id="m5"]')!;
+    const top = -900;
+    measureWhileConnected(root, row, () => top);
+    scrollTo(top);
+
+    act(() => {
+      root.dispatchEvent(new Event("scroll")); // frame queued, never run
+    });
+    view.unmount();
+
+    expect(savedAnchor("s1")).toEqual({ itemId: "m5", offsetInItemPx: 1000, atLiveEnd: false });
+  });
+
+  it("persists the offset of a scroll whose frame has not run on pagehide", () => {
+    const { view, root } = mountScrolling();
+    const row = view.container.querySelector<HTMLElement>('[data-message-id="m5"]')!;
+    measureWhileConnected(root, row, () => -400);
+
+    act(() => {
+      root.dispatchEvent(new Event("scroll"));
+      window.dispatchEvent(new Event("pagehide")); // same tick, frame not run
+    });
+
+    expect(savedAnchor("s1")?.offsetInItemPx).toBe(500);
+  });
+
+  it("files the unmount flush under the route the list was scrolled on", () => {
+    const { view, root, scrollTo } = mountScrolling();
+    act(() => {
+      scrollTo(-900);
+      root.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(20);
+    });
+    writeRoutes = [];
+
+    route = "/issues"; // navigation commits before the old view unmounts
+    view.unmount();
+
+    expect(writeRoutes).toEqual(["/chat"]);
+  });
+  it("files a frame drained at unmount under the route the scroll happened on", () => {
+    const { view, root } = mountScrolling();
+    const row = view.container.querySelector<HTMLElement>('[data-message-id="m5"]')!;
+    measureWhileConnected(root, row, () => -900);
+    writeRoutes = [];
+
+    act(() => {
+      root.dispatchEvent(new Event("scroll")); // frame queued on /chat, never run
+    });
+    route = "/issues"; // navigation commits before the frame or the unmount
+    view.unmount();
+
+    expect(writeRoutes).toEqual(["/chat"]);
   });
 });

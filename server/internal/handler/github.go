@@ -142,6 +142,11 @@ type GitHubPullRequestResponse struct {
 	SnapshotStale bool `json:"snapshot_stale"`
 	// SnapshotFetchedAt is when the snapshot was last fetched (RFC3339), or null.
 	SnapshotFetchedAt *string `json:"snapshot_fetched_at"`
+	// SnapshotPausedUntil is the deadline (RFC3339 UTC) of the installation's
+	// refresh rate-limit pause, or null when none is active (CHE-8795). While it
+	// is set, refreshes for this PR wait, so a missing snapshot has a named
+	// reason. The pause is in memory per server process.
+	SnapshotPausedUntil *string `json:"snapshot_paused_until"`
 	// Diff stats (lines added/removed and file count) sourced from the
 	// `pull_request` webhook payload. Legacy rows that pre-date this
 	// field default to 0; the frontend treats total == 0 as "unknown"
@@ -231,6 +236,17 @@ func githubPullRequestToResponse(p db.GithubPullRequest, snapshotEnabled bool) G
 		Deletions:        p.Deletions,
 		ChangedFiles:     p.ChangedFiles,
 	}
+}
+
+// snapshotPausedUntil formats the installation's refresh rate-limit deadline for
+// the PR read, nil when no pause is active (CHE-8795).
+func snapshotPausedUntil(manager *ghsnapshot.Manager, installationID int64) *string {
+	until, paused := manager.RateLimitUntil(installationID)
+	if !paused {
+		return nil
+	}
+	formatted := until.UTC().Format(time.RFC3339)
+	return &formatted
 }
 
 // prSnapshotStaleThreshold is how old an open PR's last successful fetch may be
@@ -1172,55 +1188,61 @@ func parseGitHubPageParam(
 	return value, true
 }
 
-func fetchGitHubInstallationRepositories(
-	ctx context.Context,
-	installationID int64,
-	page, perPage int,
-) (GitHubRepositoriesResponse, error) {
+// mintGitHubInstallationToken exchanges the App JWT for a short-lived
+// installation token carrying exactly the permissions in permissionsJSON. The
+// caller revokes the token with revokeGitHubInstallationToken. Errors never
+// include the JWT, the token or the response body.
+func mintGitHubInstallationToken(ctx context.Context, client *http.Client, installationID int64, permissionsJSON string) (string, error) {
 	appJWT, err := signGitHubAppJWT(time.Now())
 	if err != nil {
-		return GitHubRepositoriesResponse{}, err
+		return "", err
 	}
 	if appJWT == "" {
-		return GitHubRepositoriesResponse{}, errors.New("github App JWT credentials unavailable")
+		return "", errors.New("github App JWT credentials unavailable")
 	}
-
-	client := &http.Client{Timeout: 15 * time.Second}
 	tokenEndpoint := fmt.Sprintf(
 		"%s/app/installations/%d/access_tokens",
 		strings.TrimRight(githubAPIBase, "/"),
 		installationID,
 	)
-	tokenReq, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		tokenEndpoint,
-		strings.NewReader(`{"permissions":{"metadata":"read"}}`),
-	)
+	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(permissionsJSON))
 	if err != nil {
-		return GitHubRepositoriesResponse{}, err
+		return "", err
 	}
 	setGitHubAPIHeaders(tokenReq, appJWT)
 	tokenReq.Header.Set("Content-Type", "application/json")
 	tokenResp, err := client.Do(tokenReq)
 	if err != nil {
-		return GitHubRepositoriesResponse{}, fmt.Errorf("create installation token: %w", err)
+		return "", fmt.Errorf("create installation token: %w", err)
 	}
 	defer tokenResp.Body.Close()
 	if tokenResp.StatusCode != http.StatusCreated {
 		_, _ = io.Copy(io.Discard, io.LimitReader(tokenResp.Body, githubAPIResponseLimit))
-		return GitHubRepositoriesResponse{}, fmt.Errorf("create installation token: github status %d", tokenResp.StatusCode)
+		return "", fmt.Errorf("create installation token: github status %d", tokenResp.StatusCode)
 	}
 	var tokenBody struct {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(tokenResp.Body, githubAPIResponseLimit)).Decode(&tokenBody); err != nil {
-		return GitHubRepositoriesResponse{}, fmt.Errorf("decode installation token: %w", err)
+		return "", fmt.Errorf("decode installation token: %w", err)
 	}
 	if tokenBody.Token == "" {
-		return GitHubRepositoriesResponse{}, errors.New("github returned an empty installation token")
+		return "", errors.New("github returned an empty installation token")
 	}
-	defer revokeGitHubInstallationToken(client, tokenBody.Token)
+	return tokenBody.Token, nil
+}
+
+func fetchGitHubInstallationRepositories(
+	ctx context.Context,
+	installationID int64,
+	page, perPage int,
+) (GitHubRepositoriesResponse, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	token, err := mintGitHubInstallationToken(ctx, client, installationID, `{"permissions":{"metadata":"read"}}`)
+	if err != nil {
+		return GitHubRepositoriesResponse{}, err
+	}
+	defer revokeGitHubInstallationToken(client, token)
 
 	repositoriesEndpoint := fmt.Sprintf(
 		"%s/installation/repositories?page=%d&per_page=%d",
@@ -1232,7 +1254,7 @@ func fetchGitHubInstallationRepositories(
 	if err != nil {
 		return GitHubRepositoriesResponse{}, err
 	}
-	setGitHubAPIHeaders(repositoriesReq, tokenBody.Token)
+	setGitHubAPIHeaders(repositoriesReq, token)
 	repositoriesResp, err := client.Do(repositoriesReq)
 	if err != nil {
 		return GitHubRepositoriesResponse{}, fmt.Errorf("list installation repositories: %w", err)
@@ -1306,10 +1328,33 @@ func (h *Handler) DeleteGitHubInstallation(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	if err := h.Queries.DeleteGitHubInstallation(r.Context(), db.DeleteGitHubInstallationParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove installation")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	// A missing row is an idempotent no-op: nothing changed, so nothing to audit.
+	if existing, err := qtx.GetGitHubInstallationByID(r.Context(), idUUID); err == nil && existing.WorkspaceID == wsUUID {
+		if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+			Kind:        "github.installation.delete",
+			WorkspaceID: wsUUID,
+			TargetID:    existing.ID,
+			Before:      githubInstallationAuditFields(existing),
+		}); err != nil {
+			writeAuditFailure(w, r, err, "github.installation.delete")
+			return
+		}
+	}
+	if err := qtx.DeleteGitHubInstallation(r.Context(), db.DeleteGitHubInstallationParams{
 		ID:          idUUID,
 		WorkspaceID: wsUUID,
 	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to remove installation")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to remove installation")
 		return
 	}
@@ -1340,6 +1385,7 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	out := make([]GitHubPullRequestResponse, 0, len(rows))
 	for _, row := range rows {
 		resp := issuePullRequestRowToResponse(row, h.PRRefresh.Enabled())
+		resp.SnapshotPausedUntil = snapshotPausedUntil(h.PRRefresh, row.InstallationID)
 		resp.LinkSource = prLinkSource(row.LinkedByType, identifier, row.Title, row.Branch.String)
 		if row.LinkKind == "reference" {
 			resp.LinkSource = "reference"
@@ -1416,6 +1462,12 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 	if halted, err := h.Queries.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: pr.WorkspaceID, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName}); err != nil || halted {
 		issueIDs = nil
 	}
+	// A deferred reviewer run starts once the new head is admissible (CHE-4651).
+	if len(issueIDs) > 0 {
+		if err := h.TaskService.ReleaseAdmissionDeferrals(ctx, issueIDs); err != nil {
+			slog.Warn("github: failed to release deferred reviewer runs", "err", err, "pr_id", uuidToString(prID))
+		}
+	}
 	// CHE-1665: a conflict wakes the owner on a draft too; a draft that is only
 	// behind does not. GitHub may report a conflicting draft as DRAFT, so
 	// mergeable=CONFLICTING counts as DIRTY.
@@ -1453,17 +1505,28 @@ func (h *Handler) broadcastPRSnapshotApplied(ctx context.Context, prID pgtype.UU
 			}
 		}
 	}
-	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && pr.ChecksRollupState.String == "SUCCESS" &&
+	// A rollup held PENDING only by the security-gate verdict is green for the
+	// wake (CHE-4938); the workflow move below still waits for a real SUCCESS.
+	checksGreen := pr.ChecksRollupState.String == "SUCCESS"
+	verdictPending := false
+	if pr.ChecksRollupState.String == "PENDING" {
+		rollup, err := service.PRChecksRollupIgnoringVerdict(ctx, h.DB, pr.ID)
+		if err != nil {
+			slog.Warn("github: failed to read verdict-pending checks rollup", "err", err, "pr_id", uuidToString(pr.ID))
+		}
+		verdictPending = rollup == "SUCCESS"
+	}
+	if pr.HeadRepoSame && pr.SnapshotHeadSha != "" && pr.SnapshotHeadSha == pr.HeadSha && (checksGreen || verdictPending) &&
 		(pr.State == "open" || pr.State == "draft") {
 		wakeup := service.IssueWakeupService{Tasks: h.TaskService}
 		for _, issueID := range issueIDs {
 			// A move that already started the next handler is the wake.
-			if h.advanceIssueOnCIGreenUnlessHalted(ctx, pr, issueID) {
+			if checksGreen && h.advanceIssueOnCIGreenUnlessHalted(ctx, pr, issueID) {
 				continue
 			}
 			if err := wakeup.TriggerPullRequestWakeup(ctx, issueID, service.PullRequestWakeupInput{
 				Rule: service.SystemRulePRChecksPassed, RepoOwner: pr.RepoOwner, RepoName: pr.RepoName,
-				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: pr.ChecksRollupState.String,
+				Number: pr.PrNumber, URL: pr.HtmlUrl, HeadSHA: pr.SnapshotHeadSha, Conclusion: "SUCCESS",
 				HeadBranch: pr.Branch.String,
 			}); err != nil {
 				slog.Warn("github: failed to dispatch pull request green checks wakeup", "err", err, "pr_id", uuidToString(pr.ID), "issue_id", uuidToString(issueID))
@@ -1734,7 +1797,9 @@ func (repo *ghPRHeadRepository) sameOwnerHead(baseID, baseOwnerID int64, baseOwn
 }
 
 type ghPullRequestPayload struct {
-	Action      string `json:"action"`
+	Action string `json:"action"`
+	// Reason is GitHub's cause of a dequeued action (e.g. MERGE_CONFLICT).
+	Reason      string `json:"reason"`
 	PullRequest struct {
 		Number         int32  `json:"number"`
 		HTMLURL        string `json:"html_url"`
@@ -1862,6 +1927,7 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) error
 		}
 	}
 	h.PRRefresh.Enqueue(p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
+	h.enqueueStackLink(&p)
 	if p.Action == "closed" && p.PullRequest.Merged {
 		h.PRRefresh.RefreshConflictWatchers(ctx, p.Installation.ID, p.Repository.Owner.Login, p.Repository.Name, p.PullRequest.Number)
 	}
@@ -2145,7 +2211,8 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		AuthorAvatarUrl: ptrToText(strPtrOrNil(p.PullRequest.User.AvatarURL)),
 		MergedAt:        parseGHTime(p.PullRequest.MergedAt), ClosedAt: parseGHTime(p.PullRequest.ClosedAt),
 		PrCreatedAt: parseGHTimeRequired(p.PullRequest.CreatedAt), PrUpdatedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt),
-		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable,
+		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable, MergeCommitSha: p.PullRequest.MergeCommitSHA,
+		BaseRef: p.PullRequest.Base.Ref, DefaultBranch: p.Repository.DefaultBranch,
 		HeadRepoSame:        p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name),
 		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
 		Additions:           p.PullRequest.Additions, Deletions: p.PullRequest.Deletions,
@@ -2213,6 +2280,28 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	if err != nil {
 		return fmt.Errorf("github: list closing links: %w", err)
 	}
+	// The completion decision this event owes is recorded in the same
+	// transaction, so a crash or a failed write after the commit cannot lose it
+	// (CHE-5244). A failure here rolls the mirror back and the delivery returns
+	// 5xx for GitHub to redeliver.
+	var owed []pgtype.UUID
+	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
+		// An owed closed-PR replay runs after an earlier attempt may have failed
+		// past the commit: the links are unchanged but the auto-completion they
+		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
+		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
+			for _, issueID := range closingIssueIDs {
+				touched[issueID] = struct{}{}
+			}
+		}
+		ids := make([]pgtype.UUID, 0, len(touched))
+		for issueID := range touched {
+			ids = append(ids, issueID)
+		}
+		if owed, err = h.owePRMergeWithLinked(ctx, qtx, wsID, ids, issueIDs); err != nil {
+			return fmt.Errorf("github: record pr_merge_owed: %w", err)
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("github: commit mirror transaction: %w", err)
 	}
@@ -2228,26 +2317,19 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		}
 	}
 	var autoCompleteErrs []error
-	if githubFeaturesEnabled(ws) && pr.HeadRepoSame && !linkPolicy.indeterminate {
-		// An owed closed-PR replay runs after an earlier attempt may have failed
-		// past the commit: the links are unchanged but the auto-completion they
-		// owe may not have run (CHE-3402). A plain redelivery stays a no-op.
-		if state == "merged" && (prevState != "merged" || isOwedClosedReplay(ctx)) {
-			for _, issueID := range closingIssueIDs {
-				touched[issueID] = struct{}{}
-			}
-		}
-		resolver := issuestatus.NewResolver(wsID)
-		for issueID := range touched {
-			err := h.autoCompleteIssue(ctx, wsID, issueID, resolver)
-			switch {
-			case err == nil:
-			case isOwedClosedReplay(ctx):
-				// Fail the replay so its marker stays and the sweep retries.
-				autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: auto-complete issue %s: %w", uuidToString(issueID), err))
-			default:
-				slog.Warn("pr auto-complete failed", "err", err, "issue_id", uuidToString(issueID))
-			}
+	if state == "merged" {
+		ctx = withMergedPRInput(ctx, service.PullRequestWakeupInput{
+			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,
+			RepoOwner: p.Repository.Owner.Login, RepoName: p.Repository.Name, Number: p.PullRequest.Number, URL: p.PullRequest.HTMLURL,
+			HeadSHA: p.PullRequest.Head.SHA, BaseBranch: p.PullRequest.Base.Ref, HeadBranch: p.PullRequest.Head.Ref,
+		})
+	}
+	for _, err := range h.attemptPRMergeOwed(ctx, wsID, owed, issuestatus.NewResolver(wsID)) {
+		if isOwedClosedReplay(ctx) {
+			// Fail the replay so its marker stays and the sweep retries.
+			autoCompleteErrs = append(autoCompleteErrs, fmt.Errorf("github: auto-complete: %w", err))
+		} else {
+			slog.Warn("pr auto-complete failed", "err", err)
 		}
 	}
 	// A PR sent back to draft (CHE-1417): the rule itself decides whether the
@@ -2256,6 +2338,10 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 	// reaches the rule; EventAt separates it from a later conversion.
 	var attention service.PullRequestWakeupInput
 	switch {
+	case p.Action == "dequeued":
+		// Facts only (CHE-4231): GitHub's reason, never a re-queue. EventAt is
+		// the signed updated_at, which keys the wake (not the unsigned header).
+		attention = service.PullRequestWakeupInput{Rule: service.SystemRulePRDequeued, Reason: p.Reason, EventAt: p.PullRequest.UpdatedAt}
 	case state == "merged":
 		attention = service.PullRequestWakeupInput{
 			Rule: service.SystemRulePRMerged, MergeCommit: p.PullRequest.MergeCommitSHA, DefaultBranch: p.Repository.DefaultBranch,
@@ -2306,6 +2392,8 @@ func (h *Handler) refreshOpenPRsOnBase(ctx context.Context, p *ghPullRequestPayl
 	}
 	for _, r := range rows {
 		h.PRRefresh.Enqueue(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
+		// CHE-4143: the layers above the merge are re-evaluated for stack linking.
+		h.enqueueStackLinkNumber(r.InstallationID, r.RepoOwner, r.RepoName, r.PrNumber)
 	}
 	return nil
 }

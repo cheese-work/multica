@@ -75,26 +75,6 @@ func runBudgetAsker(ctx context.Context, q *db.Queries, issue db.Issue) (agent d
 	return agents[0], true, nil
 }
 
-// runBudgetDecisionAsk is the structured ask: reopen the budget by a status
-// move or a top-up, or do nothing. A top-up is approved in the web app.
-func runBudgetDecisionAsk(issue db.Issue, notice db.Comment) decisiontx.Ask {
-	return decisiontx.Ask{
-		ContextELI10:  "This issue used up its run budget. The platform refused the next run, so nothing derived from this issue runs until a person opens a new run window.",
-		AgentDid:      "The platform refused a new run on this issue because its run budget for the current window is spent. No agent is running on it.",
-		Decision:      "Do you want to open a new run window for this issue?",
-		StakesIfWrong: "If you do nothing, the issue stays stopped. If you reopen it while the work loops, it can spend a full new window of runs and tokens.",
-		Options: []decisiontx.AskOption{
-			{Label: "Move the status", WhatHappens: "You move the issue to another status on the board. That opens a new run window and the workflow runs again.", Pros: []string{"No command needed"}, Cons: []string{"Runs start at once"}, CostOrTime: "One click, then a new window of runs"},
-			{Label: "Top up the window", WhatHappens: "You approve a top-up in the web app. That opens a new run window and leaves the status where it is. Until then, move the status in the web app.", Pros: []string{"The status stays as it is"}, Cons: []string{"Needs the web app"}, CostOrTime: "One approval, then a new window of runs"},
-			{Label: "No action", WhatHappens: "Nothing changes. The issue stays stopped.", Pros: []string{"No new spend"}, Cons: []string{"The work stays stopped"}, CostOrTime: "Free"},
-		},
-		Recommendation:   "Read the issue's last comments first. Reopen it only when the earlier runs made progress.",
-		DefaultIfNoReply: "No action. The issue stays stopped and nothing runs on it.",
-		SourceIssueID:    uuidToString(issue.ID),
-		SourceCommentID:  uuidToString(notice.ID),
-	}
-}
-
 // runBudgetDecisionPlan is what the exhausted notice locks before it writes its
 // comment, so its locks follow the order every decision transaction uses:
 // workspace, topic lane and session, then the issue the comment locks.
@@ -115,15 +95,22 @@ type runBudgetLane struct {
 // still a member. It returns an empty plan when the workspace has no agent to
 // ask as; the notice's comment and inbox item still reach the recipients.
 func (h *Handler) planRunBudgetDecisions(ctx context.Context, q *db.Queries, issue db.Issue, recipients []pgtype.UUID) (runBudgetDecisionPlan, error) {
-	plan := runBudgetDecisionPlan{}
 	asker, ok, err := runBudgetAsker(ctx, q, issue)
 	if err != nil {
-		return plan, err
+		return runBudgetDecisionPlan{}, err
 	}
 	if !ok {
 		slog.Warn("run budget: no agent to ask the decision as", "issue_id", uuidToString(issue.ID))
-		return plan, nil
+		return runBudgetDecisionPlan{}, nil
 	}
+	return h.planRunBudgetDecisionsAs(ctx, q, issue, asker, recipients)
+}
+
+// planRunBudgetDecisionsAs is planRunBudgetDecisions with the asking agent named. A decision
+// that a later check ties to one agent (the browser lease, CHE-4739) is asked as that agent.
+func (h *Handler) planRunBudgetDecisionsAs(ctx context.Context, q *db.Queries, issue db.Issue, asker db.Agent, recipients []pgtype.UUID) (runBudgetDecisionPlan, error) {
+	plan := runBudgetDecisionPlan{}
+	var err error
 	if _, err := q.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
 		return plan, err
 	}
@@ -146,13 +133,8 @@ func (h *Handler) planRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 	return plan, nil
 }
 
-// openRunBudgetDecisions opens one decision request per planned recipient inside
-// the exhausted notice's transaction, after the notice comment exists. The
-// notice's claim row is the idempotency key: only the transaction that inserted
-// it gets here, so a concurrent refusal, a retried hook and a re-delivered event
-// open nothing more, and the next window's new claim re-arms it. The request is
-// asked as an agent but has no task behind it.
-func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, issue db.Issue, e service.RunBudgetEvent, notice db.Comment, plan runBudgetDecisionPlan) ([]decisionRequestResult, error) {
+// openRunBudgetAsk opens ask for every planned recipient under one fingerprint.
+func (h *Handler) openRunBudgetAsk(ctx context.Context, q *db.Queries, issue db.Issue, ask decisiontx.Ask, fingerprint string, plan runBudgetDecisionPlan) ([]decisionRequestResult, error) {
 	if len(plan.lanes) == 0 {
 		return nil, nil
 	}
@@ -160,7 +142,6 @@ func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 	if err != nil {
 		return nil, err
 	}
-	ask := runBudgetDecisionAsk(issue, notice)
 	if err := ask.Validate(); err != nil {
 		return nil, fmt.Errorf("budget ask: %w", err)
 	}
@@ -171,7 +152,7 @@ func (h *Handler) openRunBudgetDecisions(ctx context.Context, q *db.Queries, iss
 	ask.AskedBy = plan.asker.Name
 	input := decisionRequestInput{
 		Ask: ask.Content(workspace.Slug), Options: ask.Options, AskJSON: askJSON, EscalationClass: "reversible",
-		Fingerprint: serverDecisionFingerprint + "run_budget:" + e.Since.UTC().Format(time.RFC3339Nano),
+		Fingerprint: fingerprint,
 	}
 	var results []decisionRequestResult
 	for _, lane := range plan.lanes {
@@ -252,4 +233,31 @@ func (h *Handler) publishRunBudgetDecisions(issue db.Issue, results []decisionRe
 	if len(results) > 0 {
 		h.DecisionWorker.Notify()
 	}
+}
+
+// runBudgetCardHolds reports whether an open top-up card still stands for a
+// refusal: the window it names is the issue's current window and still refuses
+// a run. A status move or top-up opens a new window and leaves the card behind;
+// a card that no longer holds blocks neither a decision ask nor done (CHE-5303).
+// ok is false for a request that is not a platform top-up card.
+func runBudgetCardHolds(ctx context.Context, q *db.Queries, request db.DecisionRequest) (holds, ok bool, err error) {
+	if request.Status != "open" || !strings.HasPrefix(request.RequestFingerprint, serverDecisionFingerprint+"run_budget_action:") {
+		return false, false, nil
+	}
+	action, err := q.GetDecisionActionByRequest(ctx, db.GetDecisionActionByRequestParams{DecisionRequestID: request.ID, WorkspaceID: request.WorkspaceID})
+	if err != nil {
+		return false, true, err
+	}
+	var params struct {
+		WindowID string `json:"window_id"`
+	}
+	if err := json.Unmarshal(action.Params, &params); err != nil {
+		return false, true, err
+	}
+	since, err := time.Parse(time.RFC3339Nano, params.WindowID)
+	if err != nil {
+		return false, true, nil
+	}
+	holds, err = service.RunBudgetStillRefuses(ctx, q, request.IssueID, since)
+	return holds, true, err
 }

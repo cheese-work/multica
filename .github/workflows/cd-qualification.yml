@@ -23,6 +23,7 @@ jobs:
     timeout-minutes: 6
     continue-on-error: true
     permissions:
+      actions: read
       contents: read
       deployments: read
       pull-requests: read
@@ -65,6 +66,53 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 30
+
+  # Fixture suites are pure script/YAML checks: run them once on a hosted runner
+  # (public repo, free) so they neither add ~80 s to each X99 image leg nor
+  # take an X99 queue slot (CHE-3983). Images may push before this finishes;
+  # cd-qualification needs both, so no evidence manifest exists unless it passes.
+  d1-fixtures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install the PyYAML the fixture suites import
+        run: bash deploy/cd/ensure-pyyaml.sh
+
+      - name: Run D1 fixture checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash deploy/cd/test-release-manifest.sh
+          bash deploy/cd/test-admission.sh
+          bash deploy/cd/test-record-checks.sh
+          bash deploy/cd/test-resolve-candidate.sh
+          bash deploy/cd/test-resolve-scheduled.sh
+          python3 deploy/cd/test-github-api-retry.py
+          python3 deploy/cd/test-build-cache.py
+          python3 .github/scripts/test_cache_policy.py
+          python3 deploy/cd/test-candidate-preflight.py
+          python3 deploy/cd/test-deploy-approval.py
+          python3 deploy/cd/test-authorize-c00.py
+          python3 deploy/cd/test-deploy-job-guard.py
+          python3 deploy/cd/test-deploy-schedule.py
+          python3 deploy/cd/test-post-deploy-readback.py
+          python3 deploy/cd/test-post-deploy-confirm.py
+          python3 deploy/cd/test-health-window.py
+          python3 deploy/cd/test-install-health-observer.py
+          python3 .github/scripts/test_ci_wait_policy.py
+          python3 .github/scripts/ci-wait-policy.py
+          python3 deploy/cd/test-rollback-failed-readback.py
+          python3 deploy/cd/test-c00-image-gc.py
+          bash deploy/cd/test-workflow-path-filters.sh
+          bash deploy/cd/test-isolated-qualification.sh
+          bash deploy/cd/test-tuple-snapshot.sh
 
   build-images:
     needs: fork-changelog
@@ -126,23 +174,44 @@ jobs:
           rm -f apps/web/.fork-changelog/entries.json
           echo 'Fork entries unavailable for this build.' >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Run D1 fixture checks
+      # CHE-7209: the backend binaries compile here, on the runner, with job-scoped
+      # empty Go caches, instead of cold inside the 4 GiB dind. Dockerfile.cd-backend
+      # only packages and verifies them.
+      - name: Compile backend binaries on the runner
+        if: matrix.image == 'backend'
+        timeout-minutes: 25
+        env:
+          GOCACHE: ${{ runner.temp }}/cd-go/build
+          GOMODCACHE: ${{ runner.temp }}/cd-go/mod
+          CD_BACKEND_OUT: ${{ runner.temp }}/cd-go/out
         shell: bash
         run: |
           set -euo pipefail
-          bash deploy/cd/test-release-manifest.sh
-          bash deploy/cd/test-admission.sh
-          bash deploy/cd/test-record-checks.sh
-          python3 deploy/cd/test-build-cache.py
-          python3 .github/scripts/test_cache_policy.py
-          python3 deploy/cd/test-candidate-preflight.py
-          python3 deploy/cd/test-deploy-approval.py
-          bash deploy/cd/test-workflow-path-filters.sh
-          bash deploy/cd/test-isolated-qualification.sh
-          bash deploy/cd/test-tuple-snapshot.sh
+          upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
+          if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
+            exit 1
+          fi
+          build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
+          build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
+          VERSION="$upstream_version" BUILD="$build_stamp" bash scripts/build-cd-backend-binaries.sh
+
+      - name: Check backend payloads against the source commit
+        if: matrix.image == 'backend'
+        env:
+          CD_BACKEND_OUT: ${{ runner.temp }}/cd-go/out
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/cd-go/stamp.env"
+          PATH="$RUNNER_TEMP/cd-go/toolchain/go/bin:$PATH" GO=go GOFLAGS=-buildvcs=true GOTOOLCHAIN=local \
+            python3 deploy/cd/check-backend-payloads.py --dir "$CD_BACKEND_OUT" --commit "$GITHUB_SHA" --version "$VERSION" --build "$BUILD"
 
       # The Docker driver on X99 cannot emit provenance or SBOM attestations.
-      # Keep those release requirements and use an isolated BuildKit container.
+      # Keep those release requirements and use a named BuildKit container that
+      # survives the job: a fresh container per run emptied the Go, pnpm and
+      # .next cache mounts every time (CHE-3983, CHE-6218).
       - name: Remove a broken persistent Buildx builder
         timeout-minutes: 3
         env:
@@ -165,13 +234,14 @@ jobs:
         uses: docker/setup-buildx-action@v4
         with:
           driver: docker-container
-          cleanup: true
+          name: multica-cd-${{ matrix.image }}-v1
+          cleanup: false
           buildkitd-config-inline: |
             [worker.oci]
               max-parallelism = 2
               gc = true
               reservedSpace = "1GB"
-              maxUsedSpace = "4GB"
+              maxUsedSpace = "8GB"
               minFreeSpace = "10GB"
 
       - name: Log in to GHCR
@@ -195,9 +265,13 @@ jobs:
         if: matrix.image == 'backend'
         env:
           BUILDX_BUILDER: ${{ steps.buildx.outputs.name }}
+          CD_BACKEND_OUT: ${{ runner.temp }}/cd-go/out
         shell: bash
         run: |
           set -euo pipefail
+          # A builder that fails to boot must fail the build, never fall back to
+          # the docker driver, which cannot emit provenance or SBOM.
+          test -n "$BUILDX_BUILDER"
           upstream_version="$(tr -d '[:space:]' < UPSTREAM_VERSION)"
           if [[ ! "$upstream_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::Invalid UPSTREAM_VERSION: '$upstream_version'."
@@ -205,21 +279,29 @@ jobs:
           fi
           build_date="$(git show -s --format=%cI "$GITHUB_SHA")"
           build_stamp="$(sh scripts/release-stamp.sh "$build_date")"
+          # The compile step stamped the binaries with the same values.
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/cd-go/stamp.env"
+          test "$VERSION" = "$upstream_version"
+          test "$BUILD" = "$build_stamp"
+          cd_binaries_sha256="$(sha256sum "$CD_BACKEND_OUT/SHA256SUMS" | cut -d' ' -f1)"
+          echo "CD_BINARIES_SHA256=${cd_binaries_sha256}"
           docker buildx build \
+            --builder "$BUILDX_BUILDER" \
             --platform linux/amd64 \
-            --cache-from type=gha,scope=cd-${{ matrix.image }},version=2 \
-            --cache-to type=gha,mode=max,scope=cd-${{ matrix.image }},version=2 \
             --provenance=mode=max \
             --sbom=true \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.source=https://github.com/${GITHUB_REPOSITORY}" \
+            --build-context cdbin="${CD_BACKEND_OUT}" \
+            --build-arg "CD_BINARIES_SHA256=${cd_binaries_sha256}" \
             --build-arg "VERSION=${upstream_version}" \
             --build-arg "BUILD=${build_stamp}" \
             --build-arg "COMMIT=${GITHUB_SHA}" \
             --metadata-file backend-metadata.json \
             --push \
             --tag "${BACKEND_IMAGE}:sha-${GITHUB_SHA}" \
-            --file Dockerfile .
+            --file Dockerfile.cd-backend .
           node -e 'const m=require("./backend-metadata.json"); const d=m["containerimage.digest"]; if (!/^sha256:[a-f0-9]{64}$/.test(d ?? "")) process.exit(1); process.stdout.write(d)' > backend.digest
 
       - name: Build and publish immutable amd64 web
@@ -283,9 +365,20 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      # Job-scoped Go toolchain, caches and binaries (CHE-7209, CHE-2557). Runs on
+      # failure too, so a cancelled or red job leaves nothing on X99.
+      - name: Remove the job-scoped Go caches
+        if: ${{ always() && matrix.image == 'backend' }}
+        shell: bash
+        run: |
+          chmod -R u+w "$RUNNER_TEMP/cd-go" 2>/dev/null || true
+          rm -rf "$RUNNER_TEMP/cd-go"
+
   cd-qualification:
-    needs: build-images
-    runs-on: [self-hosted, linux, x64, cheese-x99]
+    needs: [build-images, d1-fixtures]
+    # Manifest assembly is hash and JSON work: hosted, so a busy X99 queue
+    # cannot delay it (CHE-3983).
+    runs-on: ubuntu-24.04
     timeout-minutes: 6
     env:
       BACKEND_IMAGE: ghcr.io/${{ github.repository_owner }}/multica-backend
@@ -303,9 +396,11 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Use disposable build caches
-        shell: bash
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/build-cache-env.sh"
+      - name: Set up Node for the manifest scripts
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          package-manager-cache: false
 
       - name: Download both immutable image results
         uses: actions/download-artifact@v8

@@ -118,10 +118,10 @@ SELECT request.id AS request_id, message.id AS message_id, request.issue_id,
     (request.ask_json IS NOT NULL)::boolean AS has_ask_json, COALESCE(request.ask_json->>'recommendation', '')::text AS recommendation,
     COALESCE(request.withdrawn_at, request.cancel_notice_posted_at) AS withdrawn_at,
     record.issue_comment_id AS record_comment_id,
-    request.covers_request_ids, request.answered_by_batch_request_id,
+    request.covers_request_ids, request.answered_by_batch_request_id, request.batch_id,
     last_answer.id AS answer_id, last_answer.created_at AS answer_created_at, last_answer.woken_at AS answer_woken_at,
     last_answer.wake_outcome AS answer_wake_outcome, last_answer.disclaimed_at AS answer_disclaimed_at,
-    last_answer.chosen_option_index AS answer_chosen_option_index,
+    last_answer.chosen_option_index AS answer_chosen_option_index, last_answer.undo_until AS answer_undo_until,
     COALESCE(asker.name, '')::text AS asking_agent_name,
     pickup.id AS pickup_task_id, COALESCE(pickup.agent_name, '')::text AS pickup_agent_name
 FROM decision_request request
@@ -135,7 +135,7 @@ LEFT JOIN comment source ON source.id = request.source_comment_id
 LEFT JOIN decision_answer record ON record.decision_request_id = request.id AND request.status = 'answered'
     AND record.disclaimed_at IS NULL
 LEFT JOIN LATERAL (
-    SELECT answer.id, answer.created_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at, answer.chosen_option_index, answer.issue_comment_id
+    SELECT answer.id, answer.created_at, answer.woken_at, answer.wake_outcome, answer.disclaimed_at, answer.chosen_option_index, answer.undo_until, answer.issue_comment_id
     FROM decision_answer answer WHERE answer.decision_request_id = request.id
     ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1
 ) last_answer ON true
@@ -181,12 +181,14 @@ type ListDecisionRequestCardsRow struct {
 	RecordCommentID          pgtype.UUID        `json:"record_comment_id"`
 	CoversRequestIds         []pgtype.UUID      `json:"covers_request_ids"`
 	AnsweredByBatchRequestID pgtype.UUID        `json:"answered_by_batch_request_id"`
+	BatchID                  pgtype.UUID        `json:"batch_id"`
 	AnswerID                 pgtype.UUID        `json:"answer_id"`
 	AnswerCreatedAt          pgtype.Timestamptz `json:"answer_created_at"`
 	AnswerWokenAt            pgtype.Timestamptz `json:"answer_woken_at"`
 	AnswerWakeOutcome        pgtype.Text        `json:"answer_wake_outcome"`
 	AnswerDisclaimedAt       pgtype.Timestamptz `json:"answer_disclaimed_at"`
 	AnswerChosenOptionIndex  pgtype.Int4        `json:"answer_chosen_option_index"`
+	AnswerUndoUntil          pgtype.Timestamptz `json:"answer_undo_until"`
 	AskingAgentName          string             `json:"asking_agent_name"`
 	PickupTaskID             pgtype.UUID        `json:"pickup_task_id"`
 	PickupAgentName          string             `json:"pickup_agent_name"`
@@ -222,12 +224,14 @@ func (q *Queries) ListDecisionRequestCards(ctx context.Context, arg ListDecision
 			&i.RecordCommentID,
 			&i.CoversRequestIds,
 			&i.AnsweredByBatchRequestID,
+			&i.BatchID,
 			&i.AnswerID,
 			&i.AnswerCreatedAt,
 			&i.AnswerWokenAt,
 			&i.AnswerWakeOutcome,
 			&i.AnswerDisclaimedAt,
 			&i.AnswerChosenOptionIndex,
+			&i.AnswerUndoUntil,
 			&i.AskingAgentName,
 			&i.PickupTaskID,
 			&i.PickupAgentName,
@@ -323,6 +327,8 @@ LEFT JOIN agent ON agent.id = request.asking_agent_id AND agent.workspace_id = r
 WHERE request.authority = 'human' AND request.workspace_id = $1
     AND request.human_user_id = $2
     AND request.status = 'open'
+    -- The pill and the DM badge count visible DMs only; the decisions screen reads by member (plan r4 3.7).
+    AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = request.chat_session_id)
 ORDER BY request.created_at, request.id
 `
 

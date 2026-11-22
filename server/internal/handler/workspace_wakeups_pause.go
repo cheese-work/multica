@@ -6,8 +6,10 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"reflect"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -80,6 +82,32 @@ func (e settingsRejectedError) Error() string { return e.msg }
 // cannot be audited does not happen. A write that cannot read the stored
 // settings fails instead of guessing that they hold no pause.
 func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string, machine bool) (db.Workspace, string, db.ActivityLog, error) {
+	fenced := false
+	if settings != nil {
+		// A plain read before the transaction: a write that changes a key a typed send reads takes
+		// the typed settings fence as its first lock, so it waits holding nothing.
+		current, err := h.Queries.GetWorkspace(r.Context(), params.ID)
+		if err != nil {
+			return db.Workspace{}, "", db.ActivityLog{}, err
+		}
+		fenced = typedWriteChanges(current.Settings, settings)
+	}
+	ws, action, activity, err := h.saveWorkspaceIn(r, params, settings, pause, userID, actorType, actorID, machine, fenced)
+	if errors.Is(err, errTypedFenceNeeded) {
+		// The settings changed between the read and the row lock: run again with the fence held.
+		return h.saveWorkspaceIn(r, params, settings, pause, userID, actorType, actorID, machine, true)
+	}
+	return ws, action, activity, err
+}
+
+// typedWriteChanges reports whether a direct write of settings changes a fenced key.
+// A body that is not an object replaces every key.
+func typedWriteChanges(stored []byte, settings any) bool {
+	incoming, _ := settings.(map[string]any)
+	return typedFenceKeysChange(stored, incoming, true)
+}
+
+func (h *Handler) saveWorkspaceIn(r *http.Request, params db.UpdateWorkspaceParams, settings any, pause *bool, userID, actorType, actorID string, machine, fenced bool) (db.Workspace, string, db.ActivityLog, error) {
 	ctx := r.Context()
 	var activity db.ActivityLog
 	tx, err := h.TxStarter.Begin(ctx)
@@ -88,11 +116,22 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 	}
 	defer tx.Rollback(ctx)
 	q := h.Queries.WithTx(tx)
+	settingsWriteHook("before_fence")
+	if fenced {
+		if err := q.LockTypedSettingsFence(ctx, params.ID); err != nil {
+			return db.Workspace{}, "", activity, err
+		}
+	}
+	settingsWriteHook("after_fence")
 	// Every update takes the row lock and reads the row it replaces, so the
 	// audit row records the true before-state (CHE-2774).
+	settingsWriteHook("before_settings_lock")
 	storedJSON, err := q.LockWorkspaceSettings(ctx, params.ID)
 	if err != nil {
 		return db.Workspace{}, "", activity, err
+	}
+	if settings != nil && !fenced && typedWriteChanges(storedJSON, settings) {
+		return db.Workspace{}, "", activity, errTypedFenceNeeded
 	}
 	before, err := q.GetWorkspace(ctx, params.ID)
 	if err != nil {
@@ -120,19 +159,33 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 			reconcileDelegatedWrites(stored, incoming)
 			reconcileAgentDecisionJev(stored, incoming)
 			reconcileRoutingAgent(stored, incoming)
+			reconcileCapabilityRouting(stored, incoming)
+			reconcileSystem1Labellers(stored, incoming)
 			if err := reconcileBackgroundAgents(stored, incoming, machine); err != nil {
 				return db.Workspace{}, "", activity, err
 			}
 			if action, err = reconcileWakeupsPause(stored, incoming, userID, time.Now()); err != nil {
 				return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
 			}
+			if machine && settingsAllowKeyMoved(stored, incoming) {
+				return db.Workspace{}, "", activity, errSettingsPasskeyRequired
+			}
+			if err := requireOwnerForCannotDo(ctx, q, params.ID, userID, stored, incoming); err != nil {
+				return db.Workspace{}, "", activity, err
+			}
+			if err := refuseNewCannotDoGap(stored, incoming); err != nil {
+				return db.Workspace{}, "", activity, settingsRejectedError{err.Error()}
+			}
+		} else if machine && settingsAllowKeyMoved(stored, nil) {
+			// A non-object body drops every key, allow-table keys included.
+			return db.Workspace{}, "", activity, errSettingsPasskeyRequired
 		} else if machine && stored[backgroundAgentsKey] != nil {
 			// A non-object body would clear the key: a key-omitting replacement.
 			return db.Workspace{}, "", activity, errBackgroundAgentsHumanOnly
-		} else if stored[wakeupsPausedKey] == true || stored[backgroundAgentsKey] != nil || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil {
+		} else if stored[wakeupsPausedKey] == true || stored[backgroundAgentsKey] != nil || stored[delegatedWritesKey] != nil || stored[agentDecisionJevKey] != nil || stored[routingAgentKey] != nil || stored[capabilityRoutingKey] != nil || stored[system1LabellersKey] != nil {
 			// A non-object body would replace the whole blob and clear the pause, the
 			// delegated-writes setting or the Jev registration with no record. Other callers may still store one.
-			return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused, delegated writes are set, a Jev agent is registered, a routing agent is set or background agents are set"}
+			return db.Workspace{}, "", activity, settingsRejectedError{"settings must be an object while wakeups are paused, delegated writes are set, a Jev agent is registered, a routing agent or capability routing is set or background agents are set"}
 		}
 		params.Settings, _ = json.Marshal(settings)
 	}
@@ -158,6 +211,9 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 			return ws, "", activity, err
 		}
 	}
+	if err := h.auditQueueOrderChange(ctx, q, r, before, ws); err != nil {
+		return ws, "", activity, auditWriteError{err}
+	}
 	if err := h.writeAudit(ctx, q, r, auditInput{
 		Kind: "workspace.update", WorkspaceID: ws.ID, TargetID: ws.ID,
 		Before: workspaceAuditFields(before), After: workspaceAuditFields(ws),
@@ -165,6 +221,19 @@ func (h *Handler) saveWorkspace(r *http.Request, params db.UpdateWorkspaceParams
 		return ws, "", activity, auditWriteError{err}
 	}
 	return ws, action, activity, tx.Commit(ctx)
+}
+
+// settingsAllowKeyMoved reports whether the incoming blob adds, drops or
+// changes any key on the settings allow table (CHE-3482).
+func settingsAllowKeyMoved(stored, incoming map[string]any) bool {
+	for _, key := range decisionaction.SettingsKeys() {
+		sv, sok := stored[key]
+		iv, iok := incoming[key]
+		if sok != iok || !reflect.DeepEqual(sv, iv) {
+			return true
+		}
+	}
+	return false
 }
 
 // publishWakeupsPauseActivity announces a flip's committed audit record.

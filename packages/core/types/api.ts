@@ -87,7 +87,7 @@ export interface UpdateIssueRequest {
    *  Control field — strip from optimistic cache patches. */
   stop_previous_assignee_runs?: boolean;
   /** What the handoff confirmation showed: the issue's assignee and the handler
-   *  the workflow resolved. The server answers 409 `handoff_preview_stale` when
+   *  the workflow resolved. The server answers 409 `stale_preview` when
    *  the write would hand off and either no longer matches. A preview that
    *  found no handoff is sent with a null handler, which refuses a handler that
    *  became resolvable since. Control field — strip from optimistic cache
@@ -226,6 +226,8 @@ export interface ListIssuesParams {
    */
   assignee_types?: IssueAssigneeType[];
   creator_id?: string;
+  /** Issues an agent created on this member's behalf (`issue.requested_by_id`). */
+  requested_by_id?: string;
   project_id?: string;
   /** Actor-aware table facets. OR within each field. */
   assignee_filters?: IssueActorRef[];
@@ -299,6 +301,8 @@ export interface ListGroupedIssuesParams {
   assignee_id?: string;
   assignee_ids?: string[];
   creator_id?: string;
+  /** See `ListIssuesParams.requested_by_id`. */
+  requested_by_id?: string;
   project_id?: string;
   /** See `ListIssuesParams.involves_user_id` — same semantics. */
   involves_user_id?: string;
@@ -360,9 +364,9 @@ export type IssueTableScope =
   | { kind: "project"; project_id: string; assignee_types?: IssueAssigneeType[] }
   | { kind: "assignee"; actor: IssueActorRef }
   | { kind: "creator"; actor: IssueActorRef }
-  | { kind: "my"; relation: "assigned" | "created" | "involved" | "any" };
+  | { kind: "my"; relation: "assigned" | "created" | "requested" | "involved" | "any" };
 
-export type IssueTableRelation = "assigned" | "created" | "my_agents";
+export type IssueTableRelation = "assigned" | "created" | "my_agents" | "subscribed";
 
 export type IssueTableNegatableFilter =
   | "statuses"
@@ -434,6 +438,9 @@ export interface IssueTableFilters {
   /** Match the running-task issue projection returned by
    *  `/api/working-agents`. An explicit empty list matches nothing. */
   working_issue_ids?: string[];
+  /** Match the viewer's unread issues as the client holds them
+   *  (`/api/issues/unread`). An explicit empty list matches nothing. */
+  unread_issue_ids?: string[];
   include_sub_issues?: boolean;
 }
 

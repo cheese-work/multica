@@ -76,12 +76,12 @@ func (tx *prConditionTx) Exec(_ context.Context, sql string, args ...any) (pgcon
 
 func TestWakeupConditionPREvaluation(t *testing.T) {
 	row := func(state, head, checks string) []any {
-		return []any{int32(1), state, head, checks, head, "", "p1", "acme", "widget"}
+		return []any{int32(1), state, head, checks, head, "", "p1", "acme", "widget", false}
 	}
 	// conflictRow describes a PR whose snapshot was fetched for snapshotHead
 	// while the PR's current head is "head".
 	conflictRow := func(state, snapshotHead, mergeable string) []any {
-		return []any{int32(1), state, snapshotHead, "", "head", mergeable, "p1", "acme", "widget"}
+		return []any{int32(1), state, snapshotHead, "", "head", mergeable, "p1", "acme", "widget", false}
 	}
 	for _, tc := range []struct {
 		name, event string
@@ -162,7 +162,7 @@ func TestWakeupConditionPRConflictsAcrossRecompute(t *testing.T) {
 	tx := &prConditionTx{issue: w.IssueID}
 	q := db.New(tx)
 	snapshot := func(head, mergeable string) [][]any {
-		return [][]any{{int32(1), "open", head, "", head, mergeable, "p1", "acme", "widget"}}
+		return [][]any{{int32(1), "open", head, "", head, mergeable, "p1", "acme", "widget", false}}
 	}
 	for _, step := range []struct {
 		name, previous string
@@ -192,9 +192,9 @@ func TestWakeupConditionPRConflictsAcrossRecompute(t *testing.T) {
 // checks_finished rule. Only a result for a replaced head is baselined, even
 // when another linked PR has a current result.
 func TestBaselineChecksFinishedOnCurrentHead(t *testing.T) {
-	current := []any{int32(1), "open", "head", "SUCCESS", "head", "", "p1", "acme", "widget"}
-	replaced := []any{int32(2), "open", "old", "SUCCESS", "head", "", "p2", "acme", "widget"}
-	running := []any{int32(1), "open", "head", "PENDING", "head", "", "p1", "acme", "widget"}
+	current := []any{int32(1), "open", "head", "SUCCESS", "head", "", "p1", "acme", "widget", false}
+	replaced := []any{int32(2), "open", "old", "SUCCESS", "head", "", "p2", "acme", "widget", false}
+	running := []any{int32(1), "open", "head", "PENDING", "head", "", "p1", "acme", "widget", false}
 	for _, tc := range []struct {
 		name      string
 		rows      [][]any
@@ -240,12 +240,12 @@ func TestWakeupConditionPRDiagnosticPolling(t *testing.T) {
 		want error
 	}{
 		{nil, errPRNotLinked},
-		{[][]any{{int32(1), "open", "", "", "head", "", "p1", "acme", "widget"}}, errPRSnapshotPending},
-		{[][]any{{int32(1), "open", "head", "PENDING", "head", "MERGEABLE", "p1", "acme", "widget"}}, nil},
+		{[][]any{{int32(1), "open", "", "", "head", "", "p1", "acme", "widget", false}}, errPRSnapshotPending},
+		{[][]any{{int32(1), "open", "head", "PENDING", "head", "MERGEABLE", "p1", "acme", "widget", false}}, nil},
 	} {
 		tx.prs = step.prs
 		w.LastError = tx.lastError
-		next, err := s.pollCondition(ctx, tx, q, w, now)
+		next, _, err := s.pollCondition(ctx, tx, q, w, now)
 		if err != nil || !next.Valid || !next.Time.Equal(now.Add(conditionPollInterval)) {
 			t.Fatalf("poll must remain scheduled: next=%+v err=%v", next, err)
 		}
@@ -259,7 +259,7 @@ func TestWakeupConditionPRDiagnosticPolling(t *testing.T) {
 	}
 	// Real query failures still propagate; they are never treated as unmet facts.
 	tx.queryErr = errors.New("database offline")
-	if _, err := s.pollCondition(ctx, tx, q, w, now); !errors.Is(err, tx.queryErr) {
+	if _, _, err := s.pollCondition(ctx, tx, q, w, now); !errors.Is(err, tx.queryErr) {
 		t.Fatalf("database error swallowed: %v", err)
 	}
 }

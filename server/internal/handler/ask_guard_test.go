@@ -260,12 +260,12 @@ func TestAskGuardMetric(t *testing.T) {
 }
 
 func TestValidateAskGuardSetting(t *testing.T) {
-	for _, v := range []any{nil, map[string]any{}, map[string]any{"ask_guard_mode": "off"}, map[string]any{"ask_guard_mode": "warn"}, map[string]any{"ask_guard_mode": "block"}} {
+	for _, v := range []any{nil, map[string]any{}, map[string]any{"ask_guard_mode": "off"}, map[string]any{"ask_guard_mode": "warn"}, map[string]any{"ask_guard_mode": "block"}, map[string]any{"reversible_ask_guard": "block"}, map[string]any{"owner_script_guard": "off"}, map[string]any{"owner_script_guard": "warn"}, map[string]any{"owner_script_guard": "block"}, map[string]any{"waiting_audience_guard": "warn"}} {
 		if err := validateAskGuardSetting(v); err != nil {
 			t.Errorf("%v rejected: %v", v, err)
 		}
 	}
-	for _, v := range []any{map[string]any{"ask_guard_mode": "strict"}, map[string]any{"ask_guard_mode": 1}, map[string]any{"ask_guard_mode": nil}} {
+	for _, v := range []any{map[string]any{"ask_guard_mode": "strict"}, map[string]any{"reversible_ask_guard": "strict"}, map[string]any{"reversible_ask_guard": nil}, map[string]any{"ask_guard_mode": 1}, map[string]any{"ask_guard_mode": nil}, map[string]any{"owner_script_guard": "strict"}, map[string]any{"waiting_audience_guard": "strict"}, map[string]any{"owner_script_guard": nil}, map[string]any{"owner_script_guard": true}} {
 		if err := validateAskGuardSetting(v); err == nil {
 			t.Errorf("%v accepted", v)
 		}

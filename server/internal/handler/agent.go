@@ -146,8 +146,15 @@ type AgentResponse struct {
 	ArchivedBy                       *string                `json:"archived_by"`
 	// SchedulingPausedAt / SchedulingPausedBy are set while an owner or admin
 	// holds this agent's claims. Both null when scheduling runs.
+	// BackgroundUse lists the background jobs this agent serves (CHE-5439),
+	// set on GET only. Workspace entries plus the viewer's own personal
+	// entries; never another member's. Omitted when the agent serves none.
+	BackgroundUse []BackgroundUse `json:"background_use,omitempty"`
+
 	SchedulingPausedAt *string `json:"scheduling_paused_at"`
 	SchedulingPausedBy *string `json:"scheduling_paused_by"`
+	// SchedulingPausedReason is the optional note given when the agent was paused.
+	SchedulingPausedReason *string `json:"scheduling_paused_reason"`
 }
 
 // runtimeConfigGatewayTokenMask is the placeholder the API substitutes for
@@ -251,6 +258,7 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		ArchivedBy:               uuidToPtr(a.ArchivedBy),
 		SchedulingPausedAt:       timestampToPtr(a.SchedulingPausedAt),
 		SchedulingPausedBy:       uuidToPtr(a.SchedulingPausedBy),
+		SchedulingPausedReason:   textToPtr(a.SchedulingPausedReason),
 	}
 }
 
@@ -385,6 +393,16 @@ type TaskProjectWorkflowData struct {
 	Brief string `json:"brief"`
 }
 
+// ClaimParentIssue points a sub-issue's run at its parent issue, where the
+// discussion that produced the sub-issue lives. Identifier is empty when the
+// workspace prefix could not be loaded; the daemon then names the parent by ID.
+type ClaimParentIssue struct {
+	ID         string `json:"id"`
+	Identifier string `json:"identifier,omitempty"`
+	Title      string `json:"title"`
+	Status     string `json:"status"`
+}
+
 // TaskCancellationActor is the point-in-time actor snapshot attached to a
 // cancelled run. Type stays open for forward compatibility; current producers
 // emit member, agent, or system.
@@ -448,6 +466,7 @@ type AgentTaskResponse struct {
 	WorkspaceID          string                 `json:"workspace_id"`
 	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
 	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
+	RootIssueIdentifier  string                 `json:"root_issue_identifier,omitempty"` // root of this issue's parent chain; the cost-trial arm key (CHE-6498 S6a)
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// PluginHookTools are the workspace's agent-trigger plugin hooks, which the
 	// daemon renders as MCP tools for this task. Resolved at claim time so
@@ -458,6 +477,10 @@ type AgentTaskResponse struct {
 	// credential used only by the local daemon's write-only Remote MCP broker.
 	// It is never injected into the agent process.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`
+	// DoopTaskAssertion is the signed, short-lived task identity doop verifies
+	// (CHE-7064 D1.6). Minted at claim, never stored; absent when
+	// MULTICA_TASK_ASSERTION_SIGNING_KEY is unset or malformed.
+	DoopTaskAssertion string `json:"doop_task_assertion,omitempty"`
 	// CancelAckProof is minted at claim time and echoed in the daemon's
 	// cancel-ack. It is what lets the stop gate trust an ack: the runtime
 	// owner's credential alone cannot (CHE-2309).
@@ -554,6 +577,7 @@ type AgentTaskResponse struct {
 	// partial work, and that is when the pointer matters most.
 	BranchName            string                 `json:"branch_name,omitempty"`
 	TriggerCommentID      *string                `json:"trigger_comment_id,omitempty"`    // comment that triggered this task
+	TriggerKind           string                 `json:"trigger_kind,omitempty"`          // CHE-5485: "status_handoff" marks trigger_comment_id as handoff context, not a comment to answer
 	CoalescedCommentIDs   []string               `json:"coalesced_comment_ids,omitempty"` // MUL-4195: earlier comments folded into this run when it had not yet started, so a single run still covers every deliberate comment; trigger_comment_id is the newest. Surfaced so the UI can show which comments a run covered. omitempty so old clients ignore it
 	CoalescedComments     []CoalescedCommentData `json:"coalesced_comments,omitempty"`    // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
 	DeliveredCommentIDs   []string               `json:"delivered_comment_ids"`           // always present: [] is an authoritative empty receipt, while field absence identifies responses from legacy servers
@@ -607,6 +631,7 @@ type AgentTaskResponse struct {
 	ChatOpenAskIDs           []string             `json:"chat_open_ask_ids,omitempty"`           // the DM agent's unresolved asks, oldest first; the chat prompt lists them for `multica chat reply-state`
 	ChatChannelDeliversFiles bool                 `json:"chat_channel_delivers_files,omitempty"` // server capability: THIS deployment can put a file the agent produced into THIS conversation — the adapter goes back for the bound attachment AND object storage exists to go back to. Absent/false on a server predating it, which is the safe reading: the agent is told to describe its file in words. Never inferred daemon-side from chat_channel_type; see handler.Handler.channelDeliversFiles
 	ChatType                 string               `json:"chat_type,omitempty"`                   // channel_chat_session_binding.chat_type — "group" for a shared room, "p2p" for a 1:1 with the bot. Lets the per-turn prompt tell the agent who else can read its replies; empty for a web-only chat
+	ChatNoticeLocale         string               `json:"chat_notice_locale,omitempty"`          // locale for bridge-generated delivery notices; optional and ignored by installed daemons
 	ChatInThread             bool                 `json:"chat_in_thread,omitempty"`              // true when the latest @mention was a thread reply; tells the agent to start with `multica chat thread` vs `multica chat history`
 	ChatMessage              string               `json:"chat_message,omitempty"`                // user message for chat tasks
 	ChatDecisionContext      string               `json:"chat_decision_context,omitempty"`       // open decision request(s) this DM reply may answer
@@ -618,11 +643,17 @@ type AgentTaskResponse struct {
 	AutopilotDescription     string               `json:"autopilot_description,omitempty"`       // autopilot description used as task prompt
 	AutopilotSource          string               `json:"autopilot_source,omitempty"`            // manual, schedule, webhook, or api
 	AutopilotTriggerPayload  json.RawMessage      `json:"autopilot_trigger_payload,omitempty"`   // optional trigger payload for webhook/api runs
+	Script                   *scriptConfig        `json:"script,omitempty"`                      // script-mode autopilots only: the allowlisted script name and args; the daemon runs it with no model session
 	QuickCreatePrompt        string               `json:"quick_create_prompt,omitempty"`         // user's natural-language input for quick-create tasks
 	QuickCreatePriority      string               `json:"quick_create_priority,omitempty"`       // explicit priority selected in quick-create
 	QuickCreateDueDate       string               `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create
+	QuickCreateFill          bool                 `json:"quick_create_fill,omitempty"`           // CHE-6090: workspace setting quick_create_fill is on
+	QuickCreateTitleTypes    []string             `json:"quick_create_title_types,omitempty"`    // CHE-6090: type keys of workflow_by_type
 	QuickCreateAttachmentIDs []string             `json:"quick_create_attachment_ids,omitempty"` // attachment ids uploaded in the quick-create prompt and bound on issue create
 	QuickCreateSourceContext json.RawMessage      `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
+	BackgroundJob            string               `json:"background_job,omitempty"`              // output_only background task (CHE-4100): job name
+	BackgroundInput          string               `json:"background_input,omitempty"`            // bounded input from the task context
+	BackgroundRunSeconds     int                  `json:"background_run_secs,omitempty"`         // job run deadline
 	WakeupID                 string               `json:"wakeup_id,omitempty"`
 	WakeupSystemRule         string               `json:"wakeup_system_rule,omitempty"`      // set when a platform rule (e.g. child_done) started the run
 	WakeupJoined             string               `json:"wakeup_joined,omitempty"`           // wakeups that fired while this run waited to start and joined it instead of queuing their own
@@ -631,6 +662,12 @@ type AgentTaskResponse struct {
 	SquadName                string               `json:"squad_name,omitempty"`              // display name for the picker squad
 	ParentIssueID            string               `json:"parent_issue_id,omitempty"`         // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
 	ParentIssueIdentifier    string               `json:"parent_issue_identifier,omitempty"` // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, resolved on claim for prompt context
+	// ParentIssue is the parent of the issue this run works on, for issue-bound
+	// runs on a sub-issue. Unrelated to ParentIssueID above, which is where a
+	// quick-create run must file the issue it is about to create. Omitted when
+	// the issue has no parent or the parent cannot be read in this workspace;
+	// the daemon then renders no parent block.
+	ParentIssue *ClaimParentIssue `json:"parent_issue,omitempty"`
 	// RequestingUserName + RequestingUserProfileDescription mirror the user
 	// the agent is acting on behalf of (see daemon/types.go). v1 sources them
 	// from the runtime owner so they're populated for daemon runtimes and
@@ -883,6 +920,9 @@ type CoalescedCommentData struct {
 // from its rate table. A pointer, not a zero value: 0 ticks is a real answer
 // ("the provider says this was free") and must stay distinguishable from
 // "the provider said nothing".
+//
+// CreditsMicros is the provider's charge in millionths of its own credit unit,
+// nil for token-metered providers. It is never converted to USD.
 type TaskUsageData struct {
 	Provider         string `json:"provider,omitempty"`
 	Model            string `json:"model"`
@@ -890,7 +930,13 @@ type TaskUsageData struct {
 	OutputTokens     int64  `json:"output_tokens"`
 	CacheReadTokens  int64  `json:"cache_read_tokens"`
 	CacheWriteTokens int64  `json:"cache_write_tokens"`
-	CostUsdTicks     *int64 `json:"cost_usd_ticks,omitempty"`
+	// CacheWrite1hTokens is the part of CacheWriteTokens written with the
+	// 1-hour TTL (billed at the 1-hour write rate). nil means no TTL split was
+	// reported, so every written token bills at the 5-minute rate; 0 is a real
+	// "all 5-minute".
+	CacheWrite1hTokens *int64 `json:"cache_write_1h_tokens,omitempty"`
+	CostUsdTicks       *int64 `json:"cost_usd_ticks,omitempty"`
+	CreditsMicros      *int64 `json:"credits_micros,omitempty"`
 }
 
 // TaskAgentData holds agent info included in claim responses so the daemon
@@ -999,6 +1045,7 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		IsLeaderTask:           t.IsLeaderTask,
 		CreatedAt:              timestampToString(t.CreatedAt),
 		TriggerCommentID:       uuidToPtr(t.TriggerCommentID),
+		TriggerKind:            t.TriggerKind.String,
 		CoalescedCommentIDs:    uuidsToStrings(t.CoalescedCommentIds),
 		DeliveredCommentIDs:    uuidStringsOrEmpty(t.DeliveredCommentIds),
 		TriggerSummary:         textToPtr(t.TriggerSummary),
@@ -1194,7 +1241,7 @@ func computeTaskKind(t db.AgentTaskQueue) string {
 	if uuidToString(t.IssueID) == "" {
 		return "quick_create"
 	}
-	if uuidToString(t.TriggerCommentID) != "" {
+	if uuidToString(t.TriggerCommentID) != "" && t.TriggerKind.String != service.TriggerKindStatusHandoff {
 		return "comment"
 	}
 	return "direct"
@@ -1419,6 +1466,10 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
+	if resp.BackgroundUse, err = h.agentBackgroundUse(r.Context(), agent, ws.Settings, actorType, userID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load background agent use")
+		return
+	}
 	alwaysRedact := workspaceAlwaysRedactSecrets(ws.Settings)
 	// Agent actors NEVER see mcp_config (see ListAgents for the rationale).
 	if actorType == "agent" || alwaysRedact {
@@ -1555,7 +1606,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	// decoding — a plain rawFields[...] map lookup here would reintroduce
 	// the exact case-variant bypass this file's other fix already closed.
 	actorType, _ := h.resolveActor(r, ownerID, workspaceID)
-	if rejectGovernedFieldForAgentActor(w, r, actorType, rawFieldsHasKeyFold(rawFields, "instructions"), "instructions") {
+	if refuseMachineCoveredWrite(w, r, actorType, rawFieldsHasKeyFold(rawFields, "instructions"), agentInstructionsAction) {
 		return
 	}
 
@@ -2156,13 +2207,15 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	workspaceID := uuidToString(existing.WorkspaceID)
 	actorType, actorID := h.resolveActor(r, requestUserID(r), workspaceID)
 
-	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
-	if voteEntered(actorType, req.Instructions != nil, rawFields) {
-		h.ownerCASUpdateAgent(w, r, existing, actorType, actorID, rawFields)
+	// CHE-3482: a machine identity needs a passkey-approved action; this runs
+	// before the vote-receipt entry below.
+	if refuseMachineCoveredWrite(w, r, actorType, req.Instructions != nil, agentInstructionsAction) {
 		return
 	}
 
-	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Instructions != nil, "instructions") {
+	// CHE-1862: the vote receipt entry; only a human reaches it.
+	if voteEntered(actorType, req.Instructions != nil, rawFields) {
+		h.ownerCASUpdateAgent(w, r, existing, actorType, actorID, rawFields)
 		return
 	}
 
@@ -2998,13 +3051,15 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	userID := requestUserID(r)
-	archived, err := h.Queries.ArchiveAgent(r.Context(), db.ArchiveAgentParams{
-		ID:         agent.ID,
-		ArchivedBy: parseUUID(userID),
-	})
+	var archived db.Agent
+	err := h.applyAgentChange(r, agent, "agent.archive", agentLifecycleAuditSnapshot(agent),
+		func(ctx context.Context, q *db.Queries) (err error) {
+			archived, err = q.ArchiveAgent(ctx, db.ArchiveAgentParams{ID: agent.ID, ArchivedBy: parseUUID(userID)})
+			return err
+		})
 	if err != nil {
 		slog.Warn("archive agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to archive agent")
+		writeAgentChangeError(w, r, err, "agent.archive", "agent not found", "failed to archive agent")
 		return
 	}
 
@@ -3045,10 +3100,15 @@ func (h *Handler) RestoreAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	restored, err := h.Queries.RestoreAgent(r.Context(), agent.ID)
+	var restored db.Agent
+	err := h.applyAgentChange(r, agent, "agent.restore", agentLifecycleAuditSnapshot(agent),
+		func(ctx context.Context, q *db.Queries) (err error) {
+			restored, err = q.RestoreAgent(ctx, agent.ID)
+			return err
+		})
 	if err != nil {
 		slog.Warn("restore agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to restore agent")
+		writeAgentChangeError(w, r, err, "agent.restore", "agent not found", "failed to restore agent")
 		return
 	}
 
@@ -3093,10 +3153,19 @@ func (h *Handler) CancelAgentTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cancelled, err := h.TaskService.CancelTasksForAgent(r.Context(), parseUUID(id))
+	cancelled, err := h.TaskService.CancelTasksForAgentInTx(r.Context(), agent.ID,
+		func(ctx context.Context, q *db.Queries, tasks []db.AgentTaskQueue) error {
+			if err := h.writeAudit(ctx, q, r, auditInput{
+				Kind: "agent.tasks.cancel", WorkspaceID: agent.WorkspaceID, TargetID: agent.ID,
+				Before: map[string]any{"active_tasks": len(tasks)}, After: map[string]any{"active_tasks": 0},
+			}); err != nil {
+				return auditWriteError{err}
+			}
+			return nil
+		})
 	if err != nil {
 		slog.Warn("cancel agent tasks failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
-		writeError(w, http.StatusInternalServerError, "failed to cancel tasks")
+		writeAgentChangeError(w, r, err, "agent.tasks.cancel", "agent not found", "failed to cancel tasks")
 		return
 	}
 
@@ -3277,9 +3346,9 @@ func (h *Handler) ListWorkspaceWorkingAgents(w http.ResponseWriter, r *http.Requ
 			mineRelation = "any"
 		}
 		switch mineRelation {
-		case "assigned", "created", "involved", "any":
+		case "assigned", "created", "requested", "involved", "any":
 		default:
-			writeError(w, http.StatusBadRequest, "invalid relation: must be assigned, created, involved, or any")
+			writeError(w, http.StatusBadRequest, "invalid relation: must be assigned, created, requested, involved, or any")
 			return
 		}
 		userID, ok := requireUserID(w, r)

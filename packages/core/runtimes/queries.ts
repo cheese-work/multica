@@ -4,6 +4,7 @@ import { api } from "../api";
 export const runtimeKeys = {
   all: (wsId: string) => ["runtimes", wsId] as const,
   list: (wsId: string) => [...runtimeKeys.all(wsId), "list"] as const,
+  affected: (wsId: string) => [...runtimeKeys.all(wsId), "affected"] as const,
   listMine: (wsId: string) => [...runtimeKeys.all(wsId), "list", "mine"] as const,
   usage: (rid: string, days: number, tz: string) =>
     ["runtimes", "usage", rid, days, tz] as const,
@@ -57,5 +58,18 @@ export function runtimeListOptions(wsId: string, owner?: "me", wsSlug?: string) 
   return queryOptions({
     queryKey: owner === "me" ? runtimeKeys.listMine(wsId) : runtimeKeys.list(wsId),
     queryFn: () => api.listRuntimes({ workspace_id: wsId, owner }, wsSlug),
+  });
+}
+
+/**
+ * Off machines holding queued tasks the viewer is affected by. A new queued task
+ * raises no event, so the list also polls; pause, resume and offline sweeps
+ * arrive as `daemon:register` and invalidate it with the rest of `runtimeKeys.all`.
+ */
+export function affectedMachinesOptions(wsId: string) {
+  return queryOptions({
+    queryKey: runtimeKeys.affected(wsId),
+    queryFn: () => api.listAffectedMachines(),
+    refetchInterval: 60 * 1000,
   });
 }

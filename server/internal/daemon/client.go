@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/httptransport"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -212,6 +213,7 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityJoinedWakeupsV1,
 		protocol.DaemonCapabilityCLICommentSteerV1,
 		protocol.DaemonCapabilityAppliedSettingsV1,
+		protocol.DaemonCapabilityBackgroundOutputOnlyV1,
 		protocol.DaemonCapabilityRuntimeProfileV1,
 	}
 }
@@ -304,14 +306,30 @@ func (c *Client) ClaimTasks(ctx context.Context, daemonID string, runtimeIDs []s
 }
 
 func (c *Client) claimTasksWithHints(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int) (claimTasksResult, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, batchClaimRequestTimeout)
-	defer cancel()
-	var resp claimTasksResult
-	if err := c.postJSON(reqCtx, "/api/daemon/tasks/claim", map[string]any{
+	return c.claimTasksWithLimit(ctx, daemonID, runtimeIDs, maxTasks, nil)
+}
+
+// claimTasksBody is the shared request body of the batch claim, over HTTP and
+// the tasks.claim WS RPC. maxNonDMTasks (nil = no limit) caps how many of the
+// returned tasks may be non-DM tasks (issue or group channel tasks), which
+// keeps reserved_chat_slots free for DM runs.
+func claimTasksBody(daemonID string, runtimeIDs []string, maxTasks int, maxNonDMTasks *int) map[string]any {
+	body := map[string]any{
 		"daemon_id":   daemonID,
 		"runtime_ids": runtimeIDs,
 		"max_tasks":   maxTasks,
-	}, &resp); err != nil {
+	}
+	if maxNonDMTasks != nil {
+		body["max_non_dm_tasks"] = *maxNonDMTasks
+	}
+	return body
+}
+
+func (c *Client) claimTasksWithLimit(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, maxNonDMTasks *int) (claimTasksResult, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, batchClaimRequestTimeout)
+	defer cancel()
+	var resp claimTasksResult
+	if err := c.postJSON(reqCtx, "/api/daemon/tasks/claim", claimTasksBody(daemonID, runtimeIDs, maxTasks, maxNonDMTasks), &resp); err != nil {
 		return claimTasksResult{}, err
 	}
 	return resp, nil
@@ -458,6 +476,9 @@ type TaskPREvent struct {
 	OldHeadSHA string `json:"old_head_sha"`
 	BaseSHA    string `json:"base_sha"`
 	CheckName  string `json:"check_name"`
+	// WakeupID and Text are set only on a kind "wakeup" item (v2).
+	WakeupID string `json:"wakeup_id"`
+	Text     string `json:"text"`
 }
 
 func (c *Client) ClaimTaskPREvent(ctx context.Context, taskID string) (*TaskPREvent, error) {
@@ -519,6 +540,9 @@ var errStartClaimRejected = errors.New("task start claim rejected")
 type TaskNegotiation struct {
 	Supplement bool
 	PREvent    bool
+	// PREventWakeups is set only for a v2 echo: the run may be handed
+	// kind "wakeup" items (CHE-6971). A v1 echo leaves it false.
+	PREventWakeups bool
 }
 
 func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...string) (TaskNegotiation, error) {
@@ -545,7 +569,9 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 		negotiated = TaskNegotiation{
 			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1 ||
 				response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementChatV1,
-			PREvent: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1,
+			PREvent: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1 ||
+				response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV2,
+			PREventWakeups: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV2,
 		}
 		return nil
 	}
@@ -730,10 +756,10 @@ func (c *Client) ReportSilenceAlert(ctx context.Context, taskID, segmentID strin
 }
 
 func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
-	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, defaultTerminalRetrySchedule)
+	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, nil, defaultTerminalRetrySchedule)
 }
 
-func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, contextTokens, contextWindow int64, schedule []time.Duration) error {
+func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, contextTokens, contextWindow int64, initContext *initctx.Report, schedule []time.Duration) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {
 		body["branch_name"] = branchName
@@ -756,6 +782,9 @@ func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, outp
 	if contextTokens > 0 && contextWindow > 0 {
 		body["context"] = map[string]int64{"tokens": contextTokens, "window": contextWindow}
 	}
+	if initContext != nil {
+		body["init_context"] = initContext
+	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/complete", taskID), body, nil, schedule)
 }
 
@@ -765,6 +794,21 @@ func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []Tas
 	}
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage", taskID), map[string]any{
 		"usage": usage,
+	}, nil)
+}
+
+// ReportTaskUsageSnapshot posts the same rows mid-run, as a cumulative snapshot
+// of what the agent has spent so far (STOE-30). UpsertTaskUsage overwrites per
+// (task_id, provider, model), so snapshots cannot accumulate; the flag is what
+// keeps the server's additive metrics counter and per-run log on the terminal
+// report, where they would otherwise bill each flush against the last.
+func (c *Client) ReportTaskUsageSnapshot(ctx context.Context, taskID string, usage []TaskUsageEntry) error {
+	if len(usage) == 0 {
+		return nil
+	}
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/usage", taskID), map[string]any{
+		"usage":    usage,
+		"snapshot": true,
 	}, nil)
 }
 

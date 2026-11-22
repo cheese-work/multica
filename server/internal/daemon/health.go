@@ -15,6 +15,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/daemon/broker"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
+	"github.com/multica-ai/multica/server/internal/guard"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
@@ -57,7 +58,11 @@ type HealthResponse struct {
 	// ActiveTaskCount remains the compatibility/safety count of every claimed
 	// handleTask lifecycle. The additive counters split actual provider
 	// execution from local-directory parking for throughput and diagnostics.
-	ActiveTaskCount       int64 `json:"active_task_count"`
+	ActiveTaskCount int64 `json:"active_task_count"`
+	// ReservedChatSlots is the daemon's reserved_chat_slots setting (slots only
+	// DM runs may use); ReservedChatSlotsFree is how many of them are free now.
+	ReservedChatSlots     int   `json:"reserved_chat_slots"`
+	ReservedChatSlotsFree int   `json:"reserved_chat_slots_free"`
 	RunningTaskCount      int64 `json:"running_task_count"`
 	ResourceWaitTaskCount int64 `json:"resource_wait_task_count"`
 	// Repo maintenance stays a liveness-safe background activity, so health
@@ -148,11 +153,15 @@ type activeRepoCheckoutTask struct {
 	IntakeRun       bool
 	PinnedBranch    string
 	PinnedRepo      string
+	// DaemonToken is the task's mdt_ credential. It never leaves the daemon: the agent holds only its mat_ token.
+	DaemonToken string
 	// Elevated tasks check out the synthetic base of their grant's pinned
 	// commit, never a worktree (CHE-2216 plan 3.5).
 	Elevated      bool
 	PinnedBaseSHA string
 	PinnedHeadSHA string
+	// Broker, when set, is pinned to the run's first successful checkout.
+	Broker *runBroker
 }
 
 // registerActiveRepoCheckoutTask binds checkout identity to the active task.
@@ -381,6 +390,8 @@ func (d *Daemon) healthHandler(startedAt time.Time) http.HandlerFunc {
 			CLIVersion:            d.cfg.CLIVersion,
 			CLICommit:             d.cfg.CLICommit,
 			ActiveTaskCount:       d.activeTasks.Load(),
+			ReservedChatSlots:     d.cfg.ReservedChatSlots,
+			ReservedChatSlotsFree: d.reservedChatSlotsFree(),
 			RunningTaskCount:      d.runningTasks.Load(),
 			ResourceWaitTaskCount: d.resourceWaitTasks.Load(),
 			Agents:                agents,
@@ -452,6 +463,7 @@ func (d *Daemon) healthMux(startedAt time.Time) *http.ServeMux {
 	mux.HandleFunc("/maintenance/acquire", d.maintenanceAcquireHandler())
 	mux.HandleFunc("/maintenance/release", d.maintenanceReleaseHandler())
 	mux.HandleFunc("/repo/checkout", d.repoCheckoutHandler())
+	mux.HandleFunc("/browser/lease", d.browserLeaseHandler())
 	return mux
 }
 
@@ -531,6 +543,29 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 		req.TaskID = activeTask.TaskID
 		req.AgentName = activeTask.AgentName
 		req.WorkDir = authorizedWorkDir
+
+		// The task token selects the workspace policy, never caller input.
+		settings := d.workspaceSettings(activeTask.WorkspaceID)
+		var stored struct {
+			GuardPolicy json.RawMessage `json:"guard_policy"`
+		}
+		if len(settings) > 0 {
+			if err := json.Unmarshal(settings, &stored); err != nil {
+				http.Error(w, "repository allowlist: unreadable workspace settings", http.StatusForbidden)
+				return
+			}
+		}
+		if len(stored.GuardPolicy) > 0 && string(stored.GuardPolicy) != "null" {
+			policy, err := guard.ParsePolicy(stored.GuardPolicy)
+			if err != nil {
+				http.Error(w, "repository allowlist: invalid workspace policy", http.StatusForbidden)
+				return
+			}
+			if err := policy.CheckRepository(req.URL); err != nil {
+				http.Error(w, "repository allowlist: "+err.Error(), http.StatusForbidden)
+				return
+			}
+		}
 
 		if d.repoCache == nil {
 			http.Error(w, "repo cache not initialized", http.StatusInternalServerError)
@@ -632,6 +667,8 @@ func (d *Daemon) repoCheckoutHandler() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+
+		d.startRunBroker(activeTask, req, result)
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(result)

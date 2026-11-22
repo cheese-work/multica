@@ -61,6 +61,9 @@ const (
 	TargetSquad Target = "squad"
 	// TargetWorkspace is the request's own workspace, named by params.workspace_id.
 	TargetWorkspace Target = "workspace"
+	// TargetNone is an action that reads or changes no row: the approval is the
+	// whole effect.
+	TargetNone Target = "none"
 )
 
 // Definition is one allowlisted action. Execution is added with the extracted
@@ -81,9 +84,46 @@ type Definition struct {
 	// class. An action on a non-agent target is owner-only already.
 	OwnerOnly bool
 
+	// Passkey says whether approving the action needs a passkey assertion. The
+	// registry sets it per action type, never the proposer (B v9 S5, CHE-5415).
+	// The zero value is "unset": the handler's registry test fails for it.
+	Passkey Passkey
+
+	// Inverse names the action type that undoes this one exactly (B v9 S6,
+	// CHE-5416). Empty means the action is not revocable. Only a type whose
+	// executor has a proven exact inverse may set it.
+	Inverse string
+
+	// Template is the wording an approver reads for this action. Every action
+	// registers one; the handler's registry test fails for a type without it.
+	Template Template
+
 	// Normalize is exported so a package that owns an executor can register
 	// its action type.
 	Normalize NormalizeFunc
+}
+
+// Passkey is a registry decision, not a proposal field.
+type Passkey uint8
+
+const (
+	PasskeyUnset Passkey = iota
+	PasskeyRequired
+	PasskeyNotRequired
+)
+
+// RequiresPasskey is what the card and `multica decision get` read.
+func (d *Definition) RequiresPasskey() bool { return d.Passkey == PasskeyRequired }
+
+// Template is what a human reads before approving an action. Both fields are
+// static text: the server writes the ask, so no agent-controlled string may
+// reach it through a template. The before → after rows come from the action's
+// preview, never from the template.
+type Template struct {
+	// Title names the action in plain words.
+	Title string
+	// Summary is one line saying what approval changes.
+	Summary string
 }
 
 type NormalizeFunc func(params json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error)
@@ -108,11 +148,41 @@ func Register(def *Definition) {
 }
 
 func init() {
-	Register(&Definition{Type: "agent.copy", Version: 1, MinClass: "reversible", Normalize: normalizeAgentCopy})
-	Register(&Definition{Type: "agent.env.patch", Version: 1, MinClass: "reversible", Normalize: normalizeEnvPatch})
-	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
-	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
-	Register(&Definition{Type: "agent.instructions.set", Version: 1, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
+	Register(&Definition{Type: "agent.copy", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Copy an agent", Summary: "Creates a new agent with the same settings as the source agent."}, MinClass: "reversible", Normalize: normalizeAgentCopy})
+	Register(&Definition{Type: "agent.env.patch", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Change an agent's environment variables", Summary: "Sets or removes environment variable keys on one agent; values are never shown."}, MinClass: "reversible", Normalize: normalizeEnvPatch})
+	Register(&Definition{Type: "agent.pause", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Pause an agent", Summary: "Stops the agent from starting new runs until it is resumed."}, MinClass: "reversible", Inverse: "agent.resume", Normalize: normalizeAgentSchedulingChange("agent.pause")})
+	Register(&Definition{Type: "agent.resume", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Resume an agent", Summary: "Lets a paused agent start new runs again."}, MinClass: "reversible", Normalize: normalizeAgentSchedulingChange("agent.resume")})
+	Register(&Definition{Type: "issue.run_budget.raise", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Raise an issue's run cap", Summary: "Raises the run cap of the issue's open budget window."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetRaise})
+	Register(&Definition{Type: "issue.project.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Move an issue to another project", Summary: "Moves the issue to the proposed project, which sets the workflow and run budget the issue follows."}, MinClass: "reversible", Target: TargetIssue, Normalize: normalizeIssueProjectSet})
+	Register(&Definition{Type: "issue.run_guard.allow", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Allow more weekly runs on an issue", Summary: "Adds 10 runs to the issue's weekly run guard for 7 days and runs the refused trigger once."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunGuardAllow})
+	Register(&Definition{Type: "issue.run_budget.top_up", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Top up an issue's runs", Summary: "Resets the runs used in the issue's open budget window to zero."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeRunBudgetTopUp})
+	Register(&Definition{Type: "issue.workflow.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Change an issue's workflow", Summary: "Moves the issue to another workflow, which gives it a wider run budget."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeIssueWorkflowSet})
+	Register(&Definition{Type: "agent.instructions.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Replace an agent's instructions", Summary: "Replaces the agent's instructions with the proposed text."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentInstructionsSet})
+	Register(&Definition{Type: "agent.skills.set", Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Replace an agent's skills", Summary: "Replaces the agent's skill list with the proposed list."}, MinClass: "spend", Target: TargetAgent, RequiresPreview: true, OwnerOnly: true, Normalize: normalizeAgentSkillsSet})
+}
+
+// Types lists every allowlisted action type, sorted and without versions.
+func Types() []string {
+	seen := map[string]bool{}
+	for _, def := range registry {
+		seen[def.Type] = true
+	}
+	return sortedKeys(seen)
+}
+
+// Definitions lists every registered action, sorted by type then version.
+func Definitions() []*Definition {
+	definitions := make([]*Definition, 0, len(registry))
+	for _, definition := range registry {
+		definitions = append(definitions, definition)
+	}
+	sort.Slice(definitions, func(i, j int) bool {
+		if definitions[i].Type != definitions[j].Type {
+			return definitions[i].Type < definitions[j].Type
+		}
+		return definitions[i].Version < definitions[j].Version
+	})
+	return definitions
 }
 
 func Lookup(typ string, version int) (*Definition, bool) {
@@ -294,20 +364,50 @@ func sortedKeys(set map[string]bool) []string {
 }
 
 // RunBudgetRaiseParams is the issue.run_budget.raise payload. WindowID is the
-// snapshot's opaque window_id; RefusalID, when set, is part of the hashed params.
+// snapshot's opaque window_id; RefusalID and RefusalGeneration, when set, are
+// part of the hashed params: the approval answers that occurrence of the refusal
+// and no later one (CHE-6198).
 type RunBudgetRaiseParams struct {
-	IssueID   string `json:"issue_id"`
-	NewCap    int    `json:"new_cap"`
-	WindowID  string `json:"window_id"`
-	RefusalID string `json:"refusal_id,omitempty"`
+	IssueID           string `json:"issue_id"`
+	NewCap            int    `json:"new_cap"`
+	WindowID          string `json:"window_id"`
+	RefusalID         string `json:"refusal_id,omitempty"`
+	RefusalGeneration *int32 `json:"refusal_generation,omitempty"`
 }
 
 // RunBudgetTopUpParams names the issue and the window the person saw. The window
 // id is opaque: the executor compares it with the window in force.
 type RunBudgetTopUpParams struct {
+	IssueID           string `json:"issue_id"`
+	WindowID          string `json:"window_id"`
+	RefusalID         string `json:"refusal_id,omitempty"`
+	RefusalGeneration *int32 `json:"refusal_generation,omitempty"`
+}
+
+// IssueProjectSetParams is the issue.project.set payload. The server fills
+// IssueID from the request when the proposer sends only ProjectID.
+type IssueProjectSetParams struct {
 	IssueID   string `json:"issue_id"`
-	WindowID  string `json:"window_id"`
-	RefusalID string `json:"refusal_id,omitempty"`
+	ProjectID string `json:"project_id"`
+}
+
+func normalizeIssueProjectSet(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
+	if len(slots) > 0 {
+		return nil, nil, invalid("issue.project.set takes no secret slots")
+	}
+	var params IssueProjectSetParams
+	if err := decodeStrict(raw, &params); err != nil {
+		return nil, nil, err
+	}
+	var err error
+	if params.IssueID, err = canonicalUUID("issue_id", params.IssueID); err != nil {
+		return nil, nil, err
+	}
+	if params.ProjectID, err = canonicalUUID("project_id", params.ProjectID); err != nil {
+		return nil, nil, err
+	}
+	out, err := json.Marshal(params)
+	return out, nil, err
 }
 
 func normalizeRunBudgetRaise(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
@@ -327,11 +427,50 @@ func normalizeRunBudgetRaise(raw json.RawMessage, slots []SecretSlot) (json.RawM
 			return nil, nil, err
 		}
 	}
+	if err := checkRefusalGeneration(params.RefusalID, params.RefusalGeneration); err != nil {
+		return nil, nil, err
+	}
 	if params.NewCap < 1 || params.NewCap > issueworkflow.MaxRunsPerIssueLimit {
 		return nil, nil, invalid("new_cap must be 1-%d", issueworkflow.MaxRunsPerIssueLimit)
 	}
 	if err := checkRunBudgetWindowID(params.WindowID); err != nil {
 		return nil, nil, err
+	}
+	out, err := json.Marshal(params)
+	return out, nil, err
+}
+
+// RunGuardAllowRuns is how many runs one approved weekly run guard card adds.
+const RunGuardAllowRuns = 10
+
+// RunGuardAllowParams names the issue, the refusal the card answers and the
+// runs it grants. The runs are fixed: a card never asks for more.
+//
+// The refusal key is not "refusal_id": that key is the run budget's own, and
+// the approval checks it against a budget window this action does not have.
+type RunGuardAllowParams struct {
+	IssueID   string `json:"issue_id"`
+	RefusalID string `json:"guard_refusal_id"`
+	Runs      int    `json:"runs"`
+}
+
+func normalizeRunGuardAllow(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
+	if len(slots) > 0 {
+		return nil, nil, invalid("issue.run_guard.allow takes no secret slots")
+	}
+	var params RunGuardAllowParams
+	if err := decodeStrict(raw, &params); err != nil {
+		return nil, nil, err
+	}
+	var err error
+	if params.IssueID, err = canonicalUUID("issue_id", params.IssueID); err != nil {
+		return nil, nil, err
+	}
+	if params.RefusalID, err = canonicalUUID("guard_refusal_id", params.RefusalID); err != nil {
+		return nil, nil, err
+	}
+	if params.Runs != RunGuardAllowRuns {
+		return nil, nil, invalid("runs must be 10")
 	}
 	out, err := json.Marshal(params)
 	return out, nil, err
@@ -354,11 +493,26 @@ func normalizeRunBudgetTopUp(raw json.RawMessage, slots []SecretSlot) (json.RawM
 			return nil, nil, err
 		}
 	}
+	if err := checkRefusalGeneration(params.RefusalID, params.RefusalGeneration); err != nil {
+		return nil, nil, err
+	}
 	if err := checkRunBudgetWindowID(params.WindowID); err != nil {
 		return nil, nil, err
 	}
 	out, err := json.Marshal(params)
 	return out, nil, err
+}
+
+// checkRefusalGeneration: a generation names the occurrence of a refusal, so it
+// needs the refusal and cannot be negative.
+func checkRefusalGeneration(refusalID string, generation *int32) error {
+	if generation == nil {
+		return nil
+	}
+	if refusalID == "" || *generation < 0 {
+		return invalid("refusal_generation needs a refusal_id and cannot be negative")
+	}
+	return nil
 }
 
 // checkRunBudgetWindowID: the server compares the id as a string, so only its

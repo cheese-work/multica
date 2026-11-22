@@ -126,7 +126,7 @@ RETURNING task_id
 
 // A member clearing the issue's taint fences every elevation still live on it
 // first, so the taint cannot vanish before the sweep saw it. Same update as the
-// sweep; it runs before the issue lock (task_elevation, then issue, as authorize).
+// sweep; it runs after the issue lock, as every path that touches a run does.
 func (q *Queries) FenceIssueTaskElevations(ctx context.Context, issueID pgtype.UUID) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, fenceIssueTaskElevations, issueID)
 	if err != nil {
@@ -208,17 +208,44 @@ func (q *Queries) FenceTaintedTaskElevations(ctx context.Context, taskID pgtype.
 	return items, nil
 }
 
+const fenceTaskElevation = `-- name: FenceTaskElevation :one
+UPDATE task_elevation SET state = 'fencing', epoch = epoch + 1, updated_at = clock_timestamp()
+WHERE task_id = $1 AND state = 'elevated'
+RETURNING task_id, workspace_id, issue_id, grant_ids, scopes, epoch, state, launch_scopes_ended_at, created_at, updated_at
+`
+
+// A downgrade request fences its own task at once: epoch + 1, so authorize
+// refuses from this statement on. Only an elevated row moves.
+func (q *Queries) FenceTaskElevation(ctx context.Context, taskID pgtype.UUID) (TaskElevation, error) {
+	row := q.db.QueryRow(ctx, fenceTaskElevation, taskID)
+	var i TaskElevation
+	err := row.Scan(
+		&i.TaskID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.GrantIds,
+		&i.Scopes,
+		&i.Epoch,
+		&i.State,
+		&i.LaunchScopesEndedAt,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const finishDrainedTaskFences = `-- name: FinishDrainedTaskFences :many
 UPDATE task_elevation te SET state = 'restricted_final', updated_at = clock_timestamp()
 WHERE te.state = 'fencing'
   AND NOT EXISTS (SELECT 1 FROM elevated_op o WHERE o.task_id = te.task_id AND o.state IN ('authorized', 'unknown'))
   AND (te.launch_scopes_ended_at IS NOT NULL
        OR NOT EXISTS (SELECT 1 FROM unnest(te.scopes) s WHERE s = 'docker' OR s LIKE 'device:%'))
+  AND ($1::uuid IS NULL OR te.task_id = $1::uuid)
 RETURNING te.task_id
 `
 
-func (q *Queries) FinishDrainedTaskFences(ctx context.Context) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, finishDrainedTaskFences)
+func (q *Queries) FinishDrainedTaskFences(ctx context.Context, taskID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, finishDrainedTaskFences, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -348,4 +375,22 @@ func (q *Queries) MarkLapsedElevatedOpsUnknown(ctx context.Context) ([]MarkLapse
 		return nil, err
 	}
 	return items, nil
+}
+
+const taintTaskForDowngrade = `-- name: TaintTaskForDowngrade :exec
+UPDATE agent_task_queue
+SET taint_ids = ARRAY(SELECT DISTINCT t FROM unnest(taint_ids || ARRAY[$1::text]) AS t ORDER BY t)
+WHERE id = $2 AND NOT taint_ids @> ARRAY[$1::text]
+`
+
+type TaintTaskForDowngradeParams struct {
+	TaintID string      `json:"taint_id"`
+	TaskID  pgtype.UUID `json:"task_id"`
+}
+
+// Bytes left the proxy for this task: it carries the taint ID for good. The
+// agent_task_issue_taint_upd trigger notes it on the issue in the same statement.
+func (q *Queries) TaintTaskForDowngrade(ctx context.Context, arg TaintTaskForDowngradeParams) error {
+	_, err := q.db.Exec(ctx, taintTaskForDowngrade, arg.TaintID, arg.TaskID)
+	return err
 }

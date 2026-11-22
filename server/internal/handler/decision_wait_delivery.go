@@ -95,9 +95,22 @@ type episodeVerdict struct {
 	unauthorized bool
 }
 
-// memberMovedAfter reports whether a person changed the issue's status after t.
+// memberMovedAfter reports whether a person's move opened a run-budget window
+// after t: only an interactive session's move does (CHE-2798 S1d).
 func memberMovedAfter(ctx context.Context, queries *db.Queries, issueID pgtype.UUID, t time.Time) (bool, error) {
 	moved, err := queries.LatestMemberStatusChange(ctx, issueID)
+	return movedAfter(moved, err, t)
+}
+
+// memberMovedStatusAfter reports whether a person moved the issue's status
+// after t, whatever session made the move. A refused dispatch resumes on it, so
+// it must match the dispatch_refused branch of ListDecisionEpisodeCandidates.
+func memberMovedStatusAfter(ctx context.Context, queries *db.Queries, issueID pgtype.UUID, t time.Time) (bool, error) {
+	moved, err := queries.LatestMemberStatusMove(ctx, issueID)
+	return movedAfter(moved, err, t)
+}
+
+func movedAfter(moved pgtype.Timestamptz, err error, t time.Time) (bool, error) {
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -131,7 +144,7 @@ func (handler *Handler) episodeResumeHolds(ctx context.Context, queries *db.Quer
 			}
 			switch task.Status {
 			case "queued", "dispatched", "running", "waiting_local_directory":
-				return memberMovedAfter(ctx, queries, issue.ID, suspendedAt)
+				return memberMovedStatusAfter(ctx, queries, issue.ID, suspendedAt)
 			}
 		}
 		return true, nil
@@ -200,7 +213,7 @@ func (handler *Handler) evaluateDecisionEpisode(ctx context.Context, queries *db
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return verdict, err
 		}
-		if err == nil && task.Status == "running" && task.AgentID == snapshot.wait.AskingAgentID && task.IssueID == snapshot.issue.ID {
+		if err == nil && task.Status == "running" && task.AgentID == snapshot.recipient.ID && task.IssueID == snapshot.issue.ID {
 			verdict.running = task.ID
 		}
 	}
@@ -251,8 +264,56 @@ func (handler *Handler) loadDecisionEpisode(ctx context.Context, queries *db.Que
 			snapshot.squadID = squad.ID
 		}
 	}
-	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, wait.AskingAgentID)
+	recipientID, err := handler.episodeRecipient(ctx, queries, &snapshot)
+	if err != nil {
+		return snapshot, err
+	}
+	err = handler.loadDecisionRecipient(ctx, queries, &snapshot, recipientID)
 	return snapshot, err
+}
+
+// episodeRecipient is the agent the continuation wakes: the issue's owner
+// (the placement the episode restores, or the current assignee when nothing is
+// restored) when that is an eligible agent, otherwise the asking agent. A squad
+// owner wakes its leader in the squad context.
+func (handler *Handler) episodeRecipient(ctx context.Context, queries *db.Queries, snapshot *decisionWakeSnapshot) (pgtype.UUID, error) {
+	wait, issue := snapshot.wait, snapshot.issue
+	ownerType, ownerID := issue.AssigneeType, issue.AssigneeID
+	if wait.RestoreOnResume {
+		ownerType, ownerID = wait.RestoreAssigneeType, wait.RestoreAssigneeID
+	}
+	agentID, squadID := pgtype.UUID{}, pgtype.UUID{}
+	switch ownerType.String {
+	case "agent":
+		agentID = ownerID
+	case "squad":
+		squad, err := queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: ownerID, WorkspaceID: issue.WorkspaceID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return wait.AskingAgentID, nil
+		} else if err != nil {
+			return wait.AskingAgentID, err
+		}
+		agentID, squadID = squad.LeaderID, squad.ID
+	}
+	if !agentID.Valid || agentID == wait.AskingAgentID {
+		return wait.AskingAgentID, nil
+	}
+	owner, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: agentID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return wait.AskingAgentID, nil
+	} else if err != nil {
+		return wait.AskingAgentID, err
+	}
+	if owner.ArchivedAt.Valid || !owner.RuntimeID.Valid || owner.Kind == "system" {
+		return wait.AskingAgentID, nil
+	}
+	if invocable, err := handler.personMayInvoke(ctx, queries, owner.ID, wait.HumanUserID, issue.WorkspaceID); err != nil {
+		return wait.AskingAgentID, err
+	} else if !invocable {
+		return wait.AskingAgentID, nil
+	}
+	snapshot.squadID = squadID
+	return owner.ID, nil
 }
 
 // episodeRestore is design §4.4.2 step 6: one explicit-assignee write of the
@@ -605,8 +666,18 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	if err != nil {
 		return false, err
 	}
+	// A held issue gets no dispatch (CHE-6911 E3, row 3). The episode still closes
+	// and its items are acknowledged skipped_ineligible, so nothing is retried; no
+	// wakeup is captured, so a later release cannot replay the answer. A
+	// continuation into a running task starts no run and is not changed.
+	heldSkip := false
+	if !verdict.running.Valid {
+		if heldSkip, err = intakeHoldSkips(ctx, transaction, uuidToString(snapshot.issue.ID), "decision_episode"); err != nil {
+			return false, err
+		}
+	}
 	for _, answer := range snapshot.answers {
-		if episodeLiveAnswer(answer) {
+		if episodeLiveAnswer(answer) && !heldSkip {
 			if err := captureDecisionAnswerWakeup(ctx, transaction, snapshot.issue.ID, answer.ID, workspaceID); err != nil {
 				return false, err
 			}
@@ -614,7 +685,9 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	}
 	outcome, continuation := "planned_input", verdict.running
 	var queued db.AgentTaskQueue
-	if !verdict.running.Valid {
+	if heldSkip {
+		outcome = "skipped_ineligible"
+	} else if !verdict.running.Valid {
 		if outcome, queued, err = handler.dispatchDecisionInputs(ctx, queries, snapshot, trigger, commentIDs, summary); errors.Is(err, service.ErrRunBudgetExhausted) {
 			return suspend(suspendKindRunBudget, db.AgentTaskQueue{})
 		} else if err != nil {
@@ -636,7 +709,7 @@ func (handler *Handler) deliverDecisionEpisode(ctx context.Context, snapshot dec
 	if rows, err := queries.RecordDecisionWaitResume(ctx, db.RecordDecisionWaitResumeParams{WorkspaceID: workspaceID, ID: wait.ID, ResumeTaskID: continuation, ResumeOutcome: pgtype.Text{String: outcome, Valid: true}}); err != nil || rows != 1 {
 		return false, errors.Join(err, errors.New("decision episode resume record changed"))
 	}
-	if outcome != "run_enqueued" {
+	if outcome != "run_enqueued" && !heldSkip {
 		step := pgtype.Text{String: snapshot.issue.Status, Valid: true}
 		if err := queries.SetTaskWorkflowStep(ctx, db.SetTaskWorkflowStepParams{WorkflowStep: step, ID: continuation}); err != nil {
 			return false, err

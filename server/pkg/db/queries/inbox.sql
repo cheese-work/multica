@@ -100,15 +100,24 @@ INSERT INTO inbox_item (
     workspace_id, recipient_type, recipient_id,
     type, severity, issue_id, title, body,
     actor_type, actor_id, details, id,
-    chat_session_id, chat_message_id
+    chat_session_id, chat_message_id, dedupe_key
 )
 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
-    sqlc.narg('chat_session_id')::uuid, sqlc.narg('chat_message_id')::uuid
+    sqlc.narg('chat_session_id')::uuid, sqlc.narg('chat_message_id')::uuid, sqlc.narg('dedupe_key')::text
 WHERE ($2::text = 'member' AND EXISTS (
     SELECT 1 FROM member WHERE workspace_id = $1 AND user_id = $3
 )) OR ($2::text = 'agent' AND EXISTS (
     SELECT 1 FROM agent WHERE workspace_id = $1 AND id = $3
 ))
+-- A row with a dedupe_key is one unread record per (recipient, key): a later
+-- insert updates it in place and revives it from the archive (CHE-5901).
+ON CONFLICT (recipient_id, dedupe_key) WHERE dedupe_key IS NOT NULL AND read = false
+DO UPDATE SET
+    title = EXCLUDED.title,
+    body = EXCLUDED.body,
+    details = EXCLUDED.details,
+    archived = false,
+    updated_at = now()
 RETURNING *;
 
 -- name: MarkInboxRead :one
@@ -202,6 +211,18 @@ WITH marked AS (
     RETURNING cs.id
 )
 SELECT count(*)::bigint FROM marked;
+
+-- name: MarkInboxReadByIssue :execrows
+-- Reading an issue outside the inbox (its page, a side peek, the Unread view)
+-- reads its notifications too, so the inbox does not ask about the same issue
+-- again (MUL-8588). Every unread row in the issue's group, not just the newest:
+-- the group the inbox renders is read once its newest row is, and older unread
+-- siblings would otherwise stay in CountUnreadInbox. Archived rows are left as
+-- they are, as in MarkAllInboxRead, which also keeps the lookup on the partial
+-- index idx_inbox_active_by_issue.
+UPDATE inbox_item SET read = true
+WHERE workspace_id = $1 AND recipient_type = 'member' AND recipient_id = $2
+  AND issue_id = $3 AND archived = false AND read = false;
 
 -- name: ArchiveAllInbox :execrows
 UPDATE inbox_item SET archived = true

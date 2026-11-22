@@ -19,6 +19,8 @@ const topUpAction = "issue.run_budget.top_up"
 // window opened an hour ago, so a top-up has a window to replace.
 func budgetFixtureIssue(test *testing.T, issueID string) {
 	test.Helper()
+	// mergeEdgeSteps carries a pr.merged edge; a chosen merge status refuses it (CHE-5245).
+	setWorkspacePRMergeStatusForTest(test, "none")
 	workflow := createTestWorkflowSteps(test, "Top-up "+workflowTestSuffix(), mergeEdgeSteps)
 	dbfx.Exec(test, `UPDATE issue_workflow SET max_runs_per_issue = 3, run_budget_since = now() - interval '1 hour' WHERE id = $1`, workflow.ID)
 	dbfx.Exec(test, `UPDATE issue SET workflow_id = $1 WHERE id = $2`, workflow.ID, issueID)
@@ -100,7 +102,7 @@ func TestApproveRunBudgetTopUpTwiceOpensOneWindow(test *testing.T) {
 
 func TestApproveRunBudgetTopUpRefusesAChangedWindow(test *testing.T) {
 	action, _ := newPendingTopUp(test, true)
-	dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details) VALUES ($1, $2, 'member', $3, 'status_changed', '{}')`,
+	dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details) VALUES ($1, $2, 'member', $3, 'status_changed', '{"trigger":{"cause":{"kind":"ui_or_api"},"auth_source":"interactive_jwt"}}')`,
 		testWorkspaceID, action.issueID, action.humanID)
 	action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusOK)
 	if state, code := action.state(test), action.failureCode(test); state != "failed" || code != "stale_window" {
@@ -155,7 +157,7 @@ func TestApproveRunBudgetTopUpWaitsForAMoveInFlight(test *testing.T) {
 		test.Fatalf("the approval finished while a window boundary was in flight: %s", body)
 	}
 	// The move's activity write, which starts the next window.
-	dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details) VALUES ($1, $2, 'member', $3, 'status_changed', '{}')`,
+	dbfx.Exec(test, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details) VALUES ($1, $2, 'member', $3, 'status_changed', '{"trigger":{"cause":{"kind":"ui_or_api"},"auth_source":"interactive_jwt"}}')`,
 		testWorkspaceID, action.issueID, action.humanID)
 	release()
 	<-done
@@ -164,5 +166,31 @@ func TestApproveRunBudgetTopUpWaitsForAMoveInFlight(test *testing.T) {
 	}
 	if rows := action.topUpRows(test); rows != 0 {
 		test.Fatalf("a stale top-up wrote %d run_budget_top_up rows, want 0", rows)
+	}
+}
+
+// An approved top-up forgives the debt the old window ran up (CHE-5395): the
+// issue shows the new window's full cap, not the cap minus the carried debt.
+func TestApproveRunBudgetTopUpForgivesCarriedDebt(test *testing.T) {
+	action, window := newPendingTopUp(test, true)
+	ctx := context.Background()
+	issueID := parseUUID(action.issueID)
+	// The window was opened by windowID(); 7 runs past its cap of 3 is a debt of -4.
+	dbfx.Exec(test, `INSERT INTO issue_run_budget_entry (id, workspace_id, issue_id, window_id, kind, event_key, runs_delta, cap_delta)
+		SELECT gen_random_uuid(), workspace_id, id, $2, 'run', 'run:debt-'||id::text, -7, 0 FROM issue WHERE id = $1`, action.issueID, window)
+	action.approve(test, withVerifier(acceptingVerifier), action.claim(test, nil), http.StatusOK)
+	if state := action.state(test); state != "executed" {
+		test.Fatalf("action state = %s (%s), want executed", state, action.failureCode(test))
+	}
+	issue, err := testHandler.Queries.GetIssue(ctx, issueID)
+	if err != nil {
+		test.Fatal(err)
+	}
+	snapshot, err := service.LoadRunBudgetSnapshot(ctx, testHandler.Queries, issue)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if snapshot.RunsLeft != 3 || snapshot.RunsLimit != 3 {
+		test.Fatalf("after the top-up runs_left = %d, runs_limit = %d, want 3 and 3 (debt forgiven)", snapshot.RunsLeft, snapshot.RunsLimit)
 	}
 }

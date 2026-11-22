@@ -80,6 +80,10 @@ multica daemon autostart disable
 - 同一位置已有不是 Multica 创建的文件（例如你自己写的 systemd 单元）时，`enable` 和 `disable` 都会拒绝修改它。
 - Desktop 拉起的守护进程由 Desktop 管理，`daemon start` 不会为它提示或更新登记。
 
+### 定时自更新 [#update-schedule]
+
+每台机器可以有一个更新计划：五个字段的 cron、时区（默认 `Asia/Ho_Chi_Minh`）和 10 到 30 分钟的维护窗口（默认 30，30 是硬上限）。机器上的所有运行时显示同一个计划。机器所有者和工作区所有者用 `multica daemon update-schedule set` 设置；服务器会拒绝无效的 cron、未知的时区、超出 10 到 30 分钟的窗口，以及由 Desktop 应用启动、无法自行更新的守护进程。到每个 cron 时间（按计划的时区计算），服务器会检查这台机器。如果没有更新的版本，周期以 `up_to_date` 结束，不会暂停任何东西。否则服务器会在维护窗口内暂停这台机器，不再启动新的运行，并等待已在进行的运行结束。服务器收到时已晚于 cron 时间超过 2 分钟的执行会被跳过，不会迟到触发。如果有人手动恢复或暂停这台机器，周期以 `cancelled` 提前结束；如果窗口关闭前 3 分钟仍有运行在进行，周期以 `no_window` 结束，服务器会解除自己的暂停，运行继续。机器列表显示最近一次结果及其写入时间。本版本只做等待；更新步骤本身会在后续版本中提供。
+
 ## 派发与在线状态
 
 运行时注册后保持连接。新运行入队时，服务器通知对应的守护进程；守护进程也会定期轮询，防止连接中断时漏掉通知。所以运行时在线、又有空闲容量时，运行通常立即开始。
@@ -104,7 +108,7 @@ multica daemon autostart disable
 
 一台守护进程默认最多同时执行 20 次运行；每个智能体默认最多同时执行 6 次。实际并发取两者中的较小值。
 
-达到上限后，新运行继续排队。单个智能体的并发数在智能体设置中调整，整台电脑的上限用 `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` 调整。并行执行会同时占用机器性能、工具账号额度和同一工作目录。
+达到上限后，新运行继续排队。单个智能体的并发数在智能体设置中调整，整台电脑的上限用 `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` 调整。 用 `reserved_chat_slots`（`multica config set reserved_chat_slots 3`）为聊天（DM）运行保留槽位：议题运行最多使用 `max_concurrent_tasks - reserved_chat_slots` 个槽位，聊天运行可使用全部槽位，默认值 `0` 不改变任何行为。群组频道会话与议题运行一起计数，只有私聊使用保留槽位。`multica daemon status --output json` 会显示 `reserved_chat_slots` 和 `reserved_chat_slots_free`。并行执行会同时占用机器性能、工具账号额度和同一工作目录。
 
 运行消耗的 token、费用和失败情况在[统计](/analytics)页按工作区汇总；单条运行时的 token 用量也可以用 `multica runtime usage <runtime-id>` 查看。
 
@@ -295,7 +299,7 @@ Qoder Cloud Agents 通过远端会话执行分配的任务。Multica 服务端�
 
 超出并发上限的任务会排队等待。同一任务的后续运行会在上一会话空闲时继续使用该 Qoder 会话。智能体可以设置默认仓库，在任务所属项目未绑定仓库时使用。智能体会被要求以任务标识命名分支，并在 PR 标题前加上任务标识，以便 PR 自动关联到任务。
 
-首版支持任务运行、聊天、进度同步、取消和基于持久化记录的恢复。模型、工具和 skill 在 Qoder 中配置；暂不支持本地目录、附件，也不支持从 Multica 创建远端 Qoder Cloud Agents 智能体。运行时页面分别展示远端运行时和电脑。
+首版支持任务运行、聊天、担任小队队长、通过智能体创建任务、进度同步、取消和基于持久化记录的恢复。模型、工具和 skill 在 Qoder 中配置。任务和聊天消息里的附件和图片会交给远端会话，包括 PDF 和 Office 文档，每个文件不超过 5 MB；更大的文件不会传过去，智能体只知道有这些文件。聊天中智能体用 DeliverArtifacts 交付的文件（每个不超过 10 MB）会作为附件随回复发出。暂不支持本地目录，也不支持从 Multica 创建远端 Qoder Cloud Agents 智能体。运行时页面分别展示远端运行时和电脑。
 
 独立桥接进程的配置与限制见 [Qoder runtime README](https://github.com/multica-ai/multica/blob/main/server/cmd/qoder-runtime/README.md)。
 
@@ -331,3 +335,11 @@ multica runtime breaker reset <provider>
 - [安装 AI 编程工具](/install-agent-runtime) — 安装并验证一款受支持的 AI 编程工具。
 - [AI 编程工具对照](/providers) — 比较模型、会话恢复、MCP 和 skill 支持。
 - [运行](/tasks) — 了解排队、停止和重试。
+
+## 托管运行的本地绑定
+
+`MULTICA_RUN_BINDINGS_DIR` 默认关闭。Linux 主机所有者可选择任务写入范围之外、已存在且权限为 0700 的目录。Codex 启动后发布权限为 0600 的 `<binding_id>.json`，只向 shell 工具提供 `MULTICA_RUN_BINDING_ID`。每次重试使用新 ID；进程退出、取消或启动失败均会撤销绑定。
+
+版本 1 包含 `binding_id`、`agent_id`、`principal`（智能体 ID）、`task_id`、`issue_id`、主机 `pid`、`process_start`、`boot_id` 和 `pid_namespace`。代理必须与启动器共享 PID 命名空间，核对关联身份并独立验证进程存活。exec 包装器保留 PID，等待型包装器仅在自身存活时有效；分离的子进程不能延长绑定。
+
+这是同 UID 进程间的协作契约，不是针对主机所有者的身份认证。凭据隔离拒绝此本地路径；R1 的准入和启用仍需单独审批。该配置不授予设备权限，配置与部署须另行处理。

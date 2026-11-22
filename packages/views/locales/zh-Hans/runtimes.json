@@ -162,6 +162,10 @@
     "no_agents": "还没有智能体绑定到这个运行时。",
     "diagnostics_cli": "CLI",
     "diagnostics_visibility": "可见性",
+    "concurrency_title": "并发",
+    "concurrency_none": "不限制",
+    "concurrency_hint": "此运行时上所有智能体同时进行的运行总数上限（{{min}}–{{max}}）。留空表示不限制。",
+    "toast_concurrency_failed": "更新并发上限失败",
     "visibility_label": {
       "private": "私有",
       "public": "公开",
@@ -678,6 +682,11 @@
         "name": "停用",
         "label": "停用",
         "hint": "停止服务。30 分钟后结束"
+      },
+      "scheduled_update": {
+        "name": "定时更新",
+        "label": "定时更新",
+        "hint": "更新窗口。结束后自动解除"
       }
     },
     "paused": "已暂停：{{reason}}",
@@ -712,7 +721,45 @@
       "tasks_left_stale_other": "还剩 {{count}} 个任务（离线，数量可能已过期）。",
       "drained": "可以安全关机。",
       "ends_in": "{{duration}}后结束。",
-      "ends_soon": "{{duration}}后结束，之后 {{machine}} 会恢复接收任务。"
+      "ends_soon": "{{duration}}后结束，之后 {{machine}} 会恢复接收任务。",
+      "close": "隐藏机器横幅",
+      "summary_other": "{{count}} 台机器需要关注。",
+      "tasks_wait_other": "{{count}} 个任务在等待其上的智能体。",
+      "tasks_wait_total_other": "{{count}} 个任务在等待这些机器上的智能体。",
+      "next_to_end": "最先结束：{{machine}} 的暂停，{{duration}}。",
+      "details": "详情",
+      "machine_of": "{{machine}}（{{owner}} 的机器）",
+      "offline": "{{machine}} 已离线。",
+      "last_seen": "最后在线 {{time}}。",
+      "new_event": "新",
+      "icon_paused": "{{machine}} 已暂停",
+      "icon_offline": "{{machine}} 已离线",
+      "hide": "隐藏机器横幅：{{summary}}",
+      "show": "显示机器横幅：{{summary}}"
+    }
+  },
+  "intro": {
+    "title": "给智能体一台干活的电脑",
+    "description": "运行时是智能体真正执行任务的地方：你的电脑、一台服务器，或者云服务。",
+    "slides": {
+      "local": {
+        "title": "这台电脑，自动连接",
+        "description": "下载桌面端并登录，这台电脑上的 Claude Code、Codex 等会自动出现。"
+      },
+      "remote": {
+        "title": "其他机器，两条命令",
+        "description": "在服务器或另一台电脑上装好 CLI，运行 multica setup 就连上了。"
+      },
+      "cloud": {
+        "title": "或者用云端节点",
+        "description": "不想自己管机器？创建一台 Multica 托管的云节点。"
+      }
+    },
+    "art": {
+      "this_computer": "这台电脑 · 桌面端",
+      "detected": "自动识别到的 harness",
+      "run_there": "在那台机器上运行",
+      "connected": "{{name}} 已连接到 Multica"
     }
   }
 }

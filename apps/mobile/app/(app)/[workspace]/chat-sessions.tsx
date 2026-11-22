@@ -16,6 +16,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, useTheme } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import type { ChatSession } from "@multica/core/types";
+import { ChatAttentionRow } from "@/components/chat/chat-attention-row";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { IconButton } from "@/components/ui/icon-button";
 import { Text } from "@/components/ui/text";
@@ -25,6 +26,7 @@ import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-sto
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { splitChatSessions } from "@/lib/chat-dm-stats-archive";
 import { useT } from "@/lib/i18n";
+import { useAttentionRefresh } from "@/lib/use-attention-refresh";
 import { cn } from "@/lib/utils";
 
 export default function ChatSessionsRoute() {
@@ -32,6 +34,7 @@ export default function ChatSessionsRoute() {
   const { t } = useT("chat");
   const { colors } = useTheme();
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
+  useAttentionRefresh(wsId, sessions);
   const activeSessionId = useChatSessionPickerStore((s) => s.activeSessionId);
   const requestSelect = useChatSessionPickerStore((s) => s.requestSelect);
   const deleteSession = useDeleteChatSession();
@@ -100,8 +103,8 @@ export default function ChatSessionsRoute() {
               {active.map((session) => {
                 const selected = session.id === activeSessionId;
                 return (
+                  <View key={session.id}>
                   <Pressable
-                    key={session.id}
                     testID="mobile-chat-session-row"
                     onPress={() => {
                       requestSelect(session.id);
@@ -149,6 +152,8 @@ export default function ChatSessionsRoute() {
                       </Text>
                     ) : null}
                   </Pressable>
+                  <ChatAttentionRow session={session} />
+                  </View>
                 );
               })}
             </View>

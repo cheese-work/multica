@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/attribution"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -35,6 +37,8 @@ func (s *TaskService) TxScoped(q *db.Queries) *TaskService {
 		Wakeup:               s.Wakeup,
 		PRSnapshotsEnabled:   s.PRSnapshotsEnabled,
 		WorkflowEdges:        s.WorkflowEdges,
+		PRMergeOwed:          s.PRMergeOwed,
+		PRMergeOwe:           s.PRMergeOwe,
 		Entitlements:         s.Entitlements,
 		SourceContextStorage: s.SourceContextStorage,
 		FeatureFlags:         s.FeatureFlags,
@@ -104,56 +108,93 @@ func (s *TaskService) CancelStaleStepRunsInTx(ctx context.Context, q *db.Queries
 // recovery-caused run) are returned as they are, with nothing inserted. The
 // returned func publishes the run after commit. overlay is the run's Composio
 // overlay, built before the transaction opened (PrepareIssueRunOverlay); a run
-// inserted without one has none.
-func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, actorUserID pgtype.UUID, overlay *PreparedRuntimeMCPOverlay) (afterCommit func(), err error) {
-	pending, err := q.HasPendingAssignmentTaskForAgent(ctx, db.HasPendingAssignmentTaskForAgentParams{IssueID: issue.ID, AgentID: issue.AssigneeID})
-	if err != nil {
-		return nil, fmt.Errorf("check pending run: %w", err)
+// inserted without one has none. taskID is the run inserted, or the pending run
+// that held the slot when the error is ErrDuplicatePendingTask.
+func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, triggerCommentID, actorUserID pgtype.UUID, overlay *PreparedRuntimeMCPOverlay) (taskID pgtype.UUID, afterCommit func(), err error) {
+	survivor, err := q.PendingAssignmentTaskForAgent(ctx, db.PendingAssignmentTaskForAgentParams{IssueID: issue.ID, AgentID: issue.AssigneeID})
+	if err == nil {
+		return survivor, nil, ErrDuplicatePendingTask
 	}
-	if pending {
-		return nil, ErrDuplicatePendingTask
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, nil, fmt.Errorf("check pending run: %w", err)
 	}
 	txCtx, notifyAfterCommit := deferEnqueuedTaskHook(ctx)
-	task, attr, err := s.enqueueIssueTaskWithQueriesAndOverlay(txCtx, q, issue, pgtype.UUID{}, nil, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, overlay)
+	task, attr, err := s.enqueueIssueTaskWithQueriesAndOverlay(txCtx, q, issue, triggerCommentID, nil, false, "", actorUserID, pgtype.UUID{}, pgtype.Timestamptz{}, OriginDerived, overlay)
 	if err != nil {
-		return nil, err
+		return pgtype.UUID{}, nil, err
 	}
 	after := s.afterCommit()
-	return func() {
+	return task.ID, func() {
 		notifyAfterCommit()
 		after.RecordHumanDelegation(ctx, attr)
 		after.PublishTaskEnqueued(ctx, task)
 	}, nil
 }
 
+// PrepareStatusHandoffRunOverlay builds, outside any transaction, the Composio
+// overlay of the run a status handoff to agentID inserts: the agent is the
+// issue's assignee, or the leader of the squad it is assigned to. The
+// attribution is the one the insert will compute: the status handoff rule when
+// ctx carries a handoff comment, else the issue's provenance, so the insert
+// accepts the overlay. Nil means there is nothing to prepare, or that the
+// insert will refuse and report why.
+func (s *TaskService) PrepareStatusHandoffRunOverlay(ctx context.Context, issue db.Issue, agentID, actorUserID pgtype.UUID) *PreparedRuntimeMCPOverlay {
+	if s.Composio == nil || !featureflags.ComposioMCPAppsEnabled(ctx, s.FeatureFlags) || !agentID.Valid {
+		return nil
+	}
+	agent, err := s.Queries.GetAgent(ctx, agentID)
+	if err != nil || agent.ArchivedAt.Valid || !agent.RuntimeID.Valid {
+		return nil
+	}
+	// The insert attributes by the handoff comment: with one, the status
+	// handoff rule; without, the issue's own provenance. Match it, or the
+	// insert finds an overlay built for another originator and drops it.
+	var attr attribution.Result
+	if statusHandoffFor(ctx, pgtype.UUID{}).Valid {
+		if attr, err = s.statusHandoffAttribution(ctx, s.Queries, issue, actorUserID); err != nil {
+			return nil
+		}
+	} else {
+		attr = s.attributionForIssueTask(ctx, issue, pgtype.UUID{}, attribution.SourceCommentSource, actorUserID)
+	}
+	if attr, err = s.applyAttributionFallback(ctx, attr, agent); err != nil {
+		return nil
+	}
+	return &preparedRuntimeMCPOverlay{
+		agentID:          agent.ID,
+		originatorUserID: attr.UserID,
+		data:             s.buildRuntimeMCPOverlay(ctx, attr.UserID, agent),
+	}
+}
+
 // EnqueueSquadLeaderRunInTx inserts the squad leader's run an assignment to a
 // squad starts, with the caller's queries. A pending run of the leader on the
 // reviewed head is ErrDuplicatePendingTask, checked under the caller's issue
 // row lock so the insert never trips the unique index. The returned func
-// publishes the run after commit.
-func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, leaderID, squadID, actorUserID pgtype.UUID) (afterCommit func(), err error) {
-	pending, err := q.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+// publishes the run after commit. taskID is as for EnqueueIssueRunInTx.
+func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, leaderID, squadID, triggerCommentID, actorUserID pgtype.UUID, overlay *PreparedRuntimeMCPOverlay) (taskID pgtype.UUID, afterCommit func(), err error) {
+	survivor, err := q.PendingTaskForIssueAndAgent(ctx, db.PendingTaskForIssueAndAgentParams{
 		IssueID: issue.ID,
 		AgentID: leaderID,
 		HeadSha: s.ResolveIssueReviewSHAParam(ctx, issue.ID),
 	})
-	if err != nil {
-		return nil, fmt.Errorf("check pending leader run: %w", err)
+	if err == nil {
+		return survivor, nil, ErrDuplicatePendingTask
 	}
-	if pending {
-		return nil, ErrDuplicatePendingTask
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, nil, fmt.Errorf("check pending leader run: %w", err)
 	}
-	params, attr, err := s.prepareMentionTaskWithQueries(ctx, q, issue, leaderID, pgtype.UUID{}, nil, true, squadID, false, "", actorUserID, pgtype.UUID{}, OriginDerived)
+	params, attr, err := s.prepareMentionTaskWithQueriesAndOverlay(ctx, q, issue, leaderID, triggerCommentID, nil, true, squadID, false, "", actorUserID, pgtype.UUID{}, OriginDerived, overlay)
 	if err != nil {
-		return nil, err
+		return pgtype.UUID{}, nil, err
 	}
 	params.FreshRerun = pgtype.Bool{Bool: false, Valid: true}
 	task, err := s.enqueuePreparedInTx(ctx, q, issue, params, OriginDerived, "squad leader callback")
 	if err != nil {
-		return nil, err
+		return pgtype.UUID{}, nil, err
 	}
 	after := s.afterCommit()
-	return func() {
+	return task.ID, func() {
 		notifyTaskEnqueued(ctx, task)
 		after.RecordHumanDelegation(ctx, attr)
 		after.PublishTaskEnqueued(ctx, task)

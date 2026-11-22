@@ -51,6 +51,7 @@ FROM agent_task_queue t
 WHERE t.id = $1
   AND t.chat_session_id = cs.id
   AND t.status = 'cancelled'
+  AND t.purpose IS DISTINCT FROM 'compaction'
   AND t.session_id IS NOT NULL
   AND t.runtime_id IS NOT NULL
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
@@ -58,6 +59,7 @@ WHERE t.id = $1
       SELECT 1 FROM agent_task_queue newer
       WHERE newer.chat_session_id = t.chat_session_id
         AND newer.id <> t.id
+        AND newer.purpose IS DISTINCT FROM 'compaction'
         AND newer.session_id IS NOT NULL
         AND newer.created_at > t.created_at
   )
@@ -88,7 +90,9 @@ WHERE t.id = $1
 // backwards onto the turn the user interrupted.
 //
 // A task dispatched before an in-place /compact (older compaction epoch) never
-// moves the pointer: its session predates the boundary.
+// moves the pointer: its session predates the boundary. A compaction task
+// (purpose = 'compaction') never moves it either, and its session never counts
+// as a newer owner of it (SEC-2).
 //
 // The newer-task lookup depends on
 // idx_agent_task_queue_chat_session (migration 472). Neither chat_pending_v3
@@ -193,7 +197,7 @@ SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
 WHERE (task_kind = 'compact' OR purpose = 'compaction')
   AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
   AND chat_session_id IN (SELECT id FROM chat_session WHERE workspace_id = $1)
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, cancel_ack_reason, source_chat_session_id, trigger_kind, handoff_dispatch_id, first_dispatched_at
 `
 
 // CHE-2908 (SEC-1 rule 4): a compact chain change cancels every live compaction
@@ -297,6 +301,11 @@ func (q *Queries) CancelCompactionTasksByWorkspace(ctx context.Context, workspac
 			&i.AppliedReportedAt,
 			&i.ExternalRead,
 			&i.Purpose,
+			&i.CancelAckReason,
+			&i.SourceChatSessionID,
+			&i.TriggerKind,
+			&i.HandoffDispatchID,
+			&i.FirstDispatchedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -350,6 +359,7 @@ SELECT EXISTS (
   JOIN chat_session cs ON cs.id = t.chat_session_id
   WHERE cs.id = $1
     AND t.session_id = cs.session_id
+    AND t.purpose IS DISTINCT FROM 'compaction'
     AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ) AS current
 `
@@ -363,6 +373,38 @@ func (q *Queries) ChatSessionPointerIsCurrent(ctx context.Context, id pgtype.UUI
 	var current bool
 	err := row.Scan(&current)
 	return current, err
+}
+
+const chatSessionTitleMilestone = `-- name: ChatSessionTitleMilestone :one
+SELECT CASE
+    WHEN session.forked_from_session_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM chat_message AS own
+        WHERE own.chat_session_id = session.id AND own.role = 'user' AND own.task_id IS NOT NULL
+    ) THEN 'fork'
+    WHEN EXISTS (
+        SELECT 1 FROM chat_message AS summary
+        WHERE summary.chat_session_id = session.id AND summary.message_kind = 'compaction_summary'
+          AND NOT EXISTS (
+              SELECT 1 FROM chat_message AS later
+              WHERE later.chat_session_id = session.id AND later.role = 'user'
+                AND later.message_kind != 'channel_command' AND later.created_at > summary.created_at
+          )
+    ) THEN 'compaction'
+    ELSE ''
+END::text AS milestone
+FROM chat_session AS session
+WHERE session.id = $1
+`
+
+// Which re-title milestone the next user message of a DM would start (CHE-4107):
+// 'fork' for a fork child that has sent no message of its own (copied history
+// has no task), 'compaction' when the latest compaction summary has no user
+// message after it, else ”. Read before the new message is inserted.
+func (q *Queries) ChatSessionTitleMilestone(ctx context.Context, id pgtype.UUID) (string, error) {
+	row := q.db.QueryRow(ctx, chatSessionTitleMilestone, id)
+	var milestone string
+	err := row.Scan(&milestone)
+	return milestone, err
 }
 
 const clearChatMessageChannelMediaPending = `-- name: ClearChatMessageChannelMediaPending :exec
@@ -860,7 +902,7 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, chat_session_id,
     initiator_user_id, originator_user_id, accountable_user_id, force_fresh_session, runtime_mcp_overlay,
     runtime_connected_apps, originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
-    fire_at, channel_context_revision, id
+    fire_at, channel_context_revision, purpose, source_chat_session_id, context, id
 )
 SELECT
     $1, $2, NULL,
@@ -876,9 +918,12 @@ SELECT
     $14,
     $6::timestamptz,
     $15::bigint,
-    COALESCE($16::uuid, gen_random_uuid())
+    $16::text,
+    $17::uuid,
+    $18::jsonb,
+    COALESCE($19::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, cancel_ack_reason, source_chat_session_id, trigger_kind, handoff_dispatch_id, first_dispatched_at
 `
 
 type CreateChatTaskParams struct {
@@ -897,6 +942,9 @@ type CreateChatTaskParams struct {
 	TriggerEvidenceKind    pgtype.Text        `json:"trigger_evidence_kind"`
 	TriggerEvidenceRefID   pgtype.UUID        `json:"trigger_evidence_ref_id"`
 	ChannelContextRevision pgtype.Int8        `json:"channel_context_revision"`
+	Purpose                pgtype.Text        `json:"purpose"`
+	SourceChatSessionID    pgtype.UUID        `json:"source_chat_session_id"`
+	Context                []byte             `json:"context"`
 	ID                     pgtype.UUID        `json:"id"`
 }
 
@@ -924,6 +972,9 @@ func (q *Queries) CreateChatTask(ctx context.Context, arg CreateChatTaskParams) 
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
 		arg.ChannelContextRevision,
+		arg.Purpose,
+		arg.SourceChatSessionID,
+		arg.Context,
 		arg.ID,
 	)
 	var i AgentTaskQueue
@@ -1014,6 +1065,11 @@ func (q *Queries) CreateChatTask(ctx context.Context, arg CreateChatTaskParams) 
 		&i.AppliedReportedAt,
 		&i.ExternalRead,
 		&i.Purpose,
+		&i.CancelAckReason,
+		&i.SourceChatSessionID,
+		&i.TriggerKind,
+		&i.HandoffDispatchID,
+		&i.FirstDispatchedAt,
 	)
 	return i, err
 }
@@ -1088,6 +1144,31 @@ func (q *Queries) CreateMikaOnboardingOpening(ctx context.Context, arg CreateMik
 	return i, err
 }
 
+const dMTitleJobExists = `-- name: DMTitleJobExists :one
+SELECT EXISTS (
+    SELECT 1 FROM agent_task_queue
+    WHERE purpose = 'bg:dm_title'
+      AND source_chat_session_id = $1
+      AND context->>'milestone' = $2::text
+      AND context->>'source_message_id' = $3::text
+) AS job_exists
+`
+
+type DMTitleJobExistsParams struct {
+	SessionID       pgtype.UUID `json:"session_id"`
+	Milestone       string      `json:"milestone"`
+	SourceMessageID string      `json:"source_message_id"`
+}
+
+// True when a dm_title job for this (session, milestone, source message) was
+// ever queued: the idempotence key of a milestone trigger (CHE-4107).
+func (q *Queries) DMTitleJobExists(ctx context.Context, arg DMTitleJobExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, dMTitleJobExists, arg.SessionID, arg.Milestone, arg.SourceMessageID)
+	var job_exists bool
+	err := row.Scan(&job_exists)
+	return job_exists, err
+}
+
 const deferChatTaskForSealedPendingMedia = `-- name: DeferChatTaskForSealedPendingMedia :one
 UPDATE agent_task_queue AS task
 SET status = 'deferred', fire_at = pending.max_until
@@ -1101,7 +1182,7 @@ FROM (
 WHERE task.id = $1
   AND pending.max_until IS NOT NULL
   AND (task.fire_at IS NULL OR task.fire_at < pending.max_until)
-RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window, task.task_kind, task.compact_reason, task.compact_trigger_tokens, task.workflow_step, task.claimed_model, task.chat_compaction_epoch, task.preset_name, task.preset_source, task.preset_skips, task.claimed_thinking_level, task.claimed_service_tier, task.claimed_context_args, task.cancel_acked_at, task.stop_unconfirmed_at, task.pull_request_id, task.replacement_released_at, task.stop_hold_issue_wide, task.taint_ids, task.applied_model, task.applied_thinking_level, task.applied_service_tier, task.applied_context_args, task.applied_reported_at, task.external_read, task.purpose
+RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window, task.task_kind, task.compact_reason, task.compact_trigger_tokens, task.workflow_step, task.claimed_model, task.chat_compaction_epoch, task.preset_name, task.preset_source, task.preset_skips, task.claimed_thinking_level, task.claimed_service_tier, task.claimed_context_args, task.cancel_acked_at, task.stop_unconfirmed_at, task.pull_request_id, task.replacement_released_at, task.stop_hold_issue_wide, task.taint_ids, task.applied_model, task.applied_thinking_level, task.applied_service_tier, task.applied_context_args, task.applied_reported_at, task.external_read, task.purpose, task.cancel_ack_reason, task.source_chat_session_id, task.trigger_kind, task.handoff_dispatch_id, task.first_dispatched_at
 `
 
 // Closes the enqueue-vs-append race: under READ COMMITTED a media message can
@@ -1200,6 +1281,11 @@ func (q *Queries) DeferChatTaskForSealedPendingMedia(ctx context.Context, taskID
 		&i.AppliedReportedAt,
 		&i.ExternalRead,
 		&i.Purpose,
+		&i.CancelAckReason,
+		&i.SourceChatSessionID,
+		&i.TriggerKind,
+		&i.HandoffDispatchID,
+		&i.FirstDispatchedAt,
 	)
 	return i, err
 }
@@ -1884,6 +1970,7 @@ WITH retired_sessions AS (
         OR COALESCE(r.channel_context_revision, 1) = $2::bigint
       )
       AND r.retired_session_id IS NOT NULL
+      AND r.purpose IS DISTINCT FROM 'compaction'
       AND COALESCE(r.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
 ), resume_overflow_at AS (
     -- completed_at alone, where the issue-side twin coalesces four columns:
@@ -1898,6 +1985,7 @@ WITH retired_sessions AS (
         OR COALESCE(t.channel_context_revision, 1) = $2::bigint
       )
       AND t.status = 'failed'
+      AND t.purpose IS DISTINCT FROM 'compaction'
       AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
@@ -1914,6 +2002,7 @@ WITH retired_sessions AS (
         OR COALESCE(t.channel_context_revision, 1) = $2::bigint
       )
       AND t.session_id IS NOT NULL
+      AND t.purpose IS DISTINCT FROM 'compaction'
       AND t.status IN ('completed', 'failed', 'cancelled')
       AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = $1)
     ORDER BY t.session_id, t.completed_at DESC
@@ -2003,6 +2092,10 @@ type GetLastChatTaskSessionRow struct {
 // empty message baked into the conversation history: both must match, and
 // both track emptyContentRe / historyMessageLocatorRe in
 // pkg/taskfailure/resume.go (GH #6066).
+//
+// Every CTE skips compaction tasks (purpose = 'compaction'): their sessions
+// belong to the background job, not to the DM, and a failed one stays in the
+// current epoch (SEC-2).
 //
 // Every CTE reads the DM's current compaction epoch only: a session recorded
 // before an in-place compact is the history the compact summarised away and
@@ -2913,6 +3006,7 @@ LEFT JOIN LATERAL (
    LIMIT 1
 ) lm ON true
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = cs.id)
   AND (
     cs.explicitly_created_at IS NOT NULL
     OR
@@ -3093,6 +3187,74 @@ func (q *Queries) ListChannelOutboundMessageIDsForContext(ctx context.Context, a
 			return nil, err
 		}
 		items = append(items, external_message_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatCarryOverMessages = `-- name: ListChatCarryOverMessages :many
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id, m.reanchored_at FROM chat_message m
+JOIN chat_session cs ON cs.id = m.chat_session_id
+WHERE m.chat_session_id = $1
+  AND m.message_kind = 'message'
+  AND (m.created_at, m.id) > (cs.segment_floor_at, cs.segment_floor_id)
+  AND NOT (m.id = ANY($2::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT $3
+`
+
+type ListChatCarryOverMessagesParams struct {
+	ChatSessionID pgtype.UUID   `json:"chat_session_id"`
+	ExcludedIds   []pgtype.UUID `json:"excluded_ids"`
+	RowLimit      int32         `json:"row_limit"`
+}
+
+// Carry-over block, current segment (CHE-2819 Rule P): ordinary user and
+// assistant messages above the DM's segment floor, newest first. A queued
+// follow-up is not delivered yet and stays out; the claiming task's own input
+// batch is excluded because the claim delivers it separately.
+func (q *Queries) ListChatCarryOverMessages(ctx context.Context, arg ListChatCarryOverMessagesParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listChatCarryOverMessages, arg.ChatSessionID, arg.ExcludedIds, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+			&i.MessageKind,
+			&i.ChannelMediaPendingUntil,
+			&i.ChannelIngested,
+			&i.QuickActions,
+			&i.ChannelContextRevision,
+			&i.ChannelOutboundType,
+			&i.ChannelOutboundInstallationID,
+			&i.ChannelOutboundChatID,
+			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
+			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
+			&i.ClientMessageID,
+			&i.ReanchoredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -3482,6 +3644,10 @@ WHERE message.chat_session_id = $1
     )
   )
   AND (message.created_at, message.id) >= ($3::timestamptz, $4::uuid)
+  AND (
+    $5::timestamptz IS NULL
+    OR (message.created_at, message.id) > ($5::timestamptz, $6::uuid)
+  )
 ORDER BY message.created_at ASC, message.id ASC
 LIMIT $2
 `
@@ -3491,6 +3657,8 @@ type ListChatMessagesNewerPageParams struct {
 	Limit          int32              `json:"limit"`
 	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
 	AfterID        pgtype.UUID        `json:"after_id"`
+	FloorCreatedAt pgtype.Timestamptz `json:"floor_created_at"`
+	FloorID        pgtype.UUID        `json:"floor_id"`
 }
 
 // Oldest-first page starting at (after_created_at, after_id), inclusive. Same
@@ -3504,6 +3672,8 @@ func (q *Queries) ListChatMessagesNewerPage(ctx context.Context, arg ListChatMes
 		arg.Limit,
 		arg.AfterCreatedAt,
 		arg.AfterID,
+		arg.FloorCreatedAt,
+		arg.FloorID,
 	)
 	if err != nil {
 		return nil, err
@@ -3583,6 +3753,10 @@ WHERE message.chat_session_id = $1
     $3::timestamptz IS NULL
     OR (message.created_at, message.id) < ($3::timestamptz, $4::uuid)
   )
+  AND (
+    $5::timestamptz IS NULL
+    OR (message.created_at, message.id) > ($5::timestamptz, $6::uuid)
+  )
 ORDER BY message.created_at DESC, message.id DESC
 LIMIT $2
 `
@@ -3592,14 +3766,20 @@ type ListChatMessagesPageParams struct {
 	Limit           int32              `json:"limit"`
 	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
 	BeforeID        pgtype.UUID        `json:"before_id"`
+	FloorCreatedAt  pgtype.Timestamptz `json:"floor_created_at"`
+	FloorID         pgtype.UUID        `json:"floor_id"`
 }
 
+// floor_created_at/floor_id (both or neither) hide the rows at or before a
+// segment floor: agent-token reads pass the session's floor (CHE-2819 Rule P).
 func (q *Queries) ListChatMessagesPage(ctx context.Context, arg ListChatMessagesPageParams) ([]ChatMessage, error) {
 	rows, err := q.db.Query(ctx, listChatMessagesPage,
 		arg.ChatSessionID,
 		arg.Limit,
 		arg.BeforeCreatedAt,
 		arg.BeforeID,
+		arg.FloorCreatedAt,
+		arg.FloorID,
 	)
 	if err != nil {
 		return nil, err
@@ -3671,8 +3851,12 @@ WHERE message.chat_session_id = $1
     $3::timestamptz IS NULL
     OR (message.created_at, message.id) < ($3::timestamptz, $4::uuid)
   )
+  AND (
+    $5::timestamptz IS NULL
+    OR (message.created_at, message.id) > ($5::timestamptz, $6::uuid)
+  )
 ORDER BY message.created_at DESC, message.id DESC
-LIMIT $5
+LIMIT $7
 `
 
 type ListChatMessagesPageForChannelContextParams struct {
@@ -3680,6 +3864,8 @@ type ListChatMessagesPageForChannelContextParams struct {
 	ChannelContextRevision pgtype.Int8        `json:"channel_context_revision"`
 	BeforeCreatedAt        pgtype.Timestamptz `json:"before_created_at"`
 	BeforeID               pgtype.UUID        `json:"before_id"`
+	FloorCreatedAt         pgtype.Timestamptz `json:"floor_created_at"`
+	FloorID                pgtype.UUID        `json:"floor_id"`
 	PageLimit              int32              `json:"page_limit"`
 }
 
@@ -3693,6 +3879,8 @@ func (q *Queries) ListChatMessagesPageForChannelContext(ctx context.Context, arg
 		arg.ChannelContextRevision,
 		arg.BeforeCreatedAt,
 		arg.BeforeID,
+		arg.FloorCreatedAt,
+		arg.FloorID,
 		arg.PageLimit,
 	)
 	if err != nil {
@@ -3728,6 +3916,231 @@ func (q *Queries) ListChatMessagesPageForChannelContext(ctx context.Context, arg
 			&i.ClientMessageID,
 			&i.ReanchoredAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatSegmentMessagesPage = `-- name: ListChatSegmentMessagesPage :many
+SELECT message.id, message.chat_session_id, message.role, message.content, message.task_id, message.created_at, message.failure_reason, message.elapsed_ms, message.message_kind, message.channel_media_pending_until, message.channel_ingested, message.quick_actions, message.channel_context_revision, message.channel_outbound_type, message.channel_outbound_installation_id, message.channel_outbound_chat_id, message.channel_outbound_message_ids, message.channel_typing_settled, message.sent_via, message.decision_answer_id, message.lineage_message_ids, message.decision_request_ids, message.client_message_id, message.reanchored_at FROM chat_message AS message
+LEFT JOIN LATERAL (
+    SELECT p.created_at, p.id FROM chat_message p
+    WHERE p.chat_session_id = message.chat_session_id
+      AND p.message_kind = 'compaction_summary'
+      AND (p.created_at, p.id) < ($1::timestamptz, $2::uuid)
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT 1
+) prev ON true
+WHERE message.chat_session_id = $3
+  AND message.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+  AND (message.created_at, message.id) <= ($1::timestamptz, $2::uuid)
+  AND (prev.id IS NULL OR (message.created_at, message.id) > (prev.created_at, prev.id))
+  AND (
+    $4::timestamptz IS NULL
+    OR (message.created_at, message.id) < ($4::timestamptz, $5::uuid)
+  )
+ORDER BY message.created_at DESC, message.id DESC
+LIMIT $6
+`
+
+type ListChatSegmentMessagesPageParams struct {
+	EndCreatedAt    pgtype.Timestamptz `json:"end_created_at"`
+	EndID           pgtype.UUID        `json:"end_id"`
+	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
+	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
+	BeforeID        pgtype.UUID        `json:"before_id"`
+	RowLimit        int32              `json:"row_limit"`
+}
+
+// One closed segment, newest first, paged by the same before cursor as
+// ListChatMessagesPage. The segment ends at the divider (end_created_at,
+// end_id), inclusive, and starts after the previous divider.
+func (q *Queries) ListChatSegmentMessagesPage(ctx context.Context, arg ListChatSegmentMessagesPageParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listChatSegmentMessagesPage,
+		arg.EndCreatedAt,
+		arg.EndID,
+		arg.ChatSessionID,
+		arg.BeforeCreatedAt,
+		arg.BeforeID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+			&i.MessageKind,
+			&i.ChannelMediaPendingUntil,
+			&i.ChannelIngested,
+			&i.QuickActions,
+			&i.ChannelContextRevision,
+			&i.ChannelOutboundType,
+			&i.ChannelOutboundInstallationID,
+			&i.ChannelOutboundChatID,
+			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
+			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
+			&i.ClientMessageID,
+			&i.ReanchoredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatSegmentTail = `-- name: ListChatSegmentTail :many
+WITH prev_divider AS (
+    SELECT m.created_at, m.id FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    WHERE m.chat_session_id = $3
+      AND m.message_kind = 'compaction_summary'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT 1
+), prev_segment AS (
+    SELECT m.id, m.role, m.created_at FROM chat_message m
+    JOIN chat_session cs ON cs.id = m.chat_session_id
+    LEFT JOIN prev_divider pd ON true
+    WHERE m.chat_session_id = $3
+      AND m.message_kind = 'message'
+      AND (m.created_at, m.id) < (cs.segment_floor_at, cs.segment_floor_id)
+      AND (pd.id IS NULL OR (m.created_at, m.id) > (pd.created_at, pd.id))
+), last_answer AS (
+    SELECT created_at, id FROM prev_segment
+    WHERE role = 'assistant'
+    ORDER BY created_at DESC, id DESC
+    LIMIT 1
+)
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id, m.reanchored_at FROM chat_message m
+JOIN prev_segment ps ON ps.id = m.id
+LEFT JOIN last_answer la ON true
+WHERE (la.id IS NULL OR (m.created_at, m.id) >= (la.created_at, la.id))
+  AND NOT (m.id = ANY($1::uuid[]))
+  AND NOT (m.role = 'user' AND EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued'))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT $2
+`
+
+type ListChatSegmentTailParams struct {
+	ExcludedIds   []pgtype.UUID `json:"excluded_ids"`
+	RowLimit      int32         `json:"row_limit"`
+	ChatSessionID pgtype.UUID   `json:"chat_session_id"`
+}
+
+// Carry-over fallback when the current segment holds no assistant message yet:
+// the last assistant message of the previous segment and the messages after it,
+// newest first. Nothing at or before the previous divider is returned. Same
+// exclusions as ListChatCarryOverMessages.
+func (q *Queries) ListChatSegmentTail(ctx context.Context, arg ListChatSegmentTailParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listChatSegmentTail, arg.ExcludedIds, arg.RowLimit, arg.ChatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+			&i.MessageKind,
+			&i.ChannelMediaPendingUntil,
+			&i.ChannelIngested,
+			&i.QuickActions,
+			&i.ChannelContextRevision,
+			&i.ChannelOutboundType,
+			&i.ChannelOutboundInstallationID,
+			&i.ChannelOutboundChatID,
+			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
+			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
+			&i.ClientMessageID,
+			&i.ReanchoredAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatSegments = `-- name: ListChatSegments :many
+SELECT d.id AS divider_id, d.created_at,
+       (SELECT count(*) FROM chat_message m
+        WHERE m.chat_session_id = d.chat_session_id
+          AND m.message_kind NOT IN ('channel_command', 'onboarding_kickoff')
+          AND (m.created_at, m.id) <= (d.created_at, d.id)
+          AND (prev.id IS NULL OR (m.created_at, m.id) > (prev.created_at, prev.id)))::int AS message_count
+FROM chat_message d
+LEFT JOIN LATERAL (
+    SELECT p.created_at, p.id FROM chat_message p
+    WHERE p.chat_session_id = d.chat_session_id
+      AND p.message_kind = 'compaction_summary'
+      AND (p.created_at, p.id) < (d.created_at, d.id)
+    ORDER BY p.created_at DESC, p.id DESC
+    LIMIT 1
+) prev ON true
+WHERE d.chat_session_id = $1 AND d.message_kind = 'compaction_summary'
+ORDER BY d.created_at, d.id
+`
+
+type ListChatSegmentsRow struct {
+	DividerID    pgtype.UUID        `json:"divider_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	MessageCount int32              `json:"message_count"`
+}
+
+// Closed segments of a DM, oldest first (CHE-2819 L2a). A segment is the
+// messages after the previous divider up to and including its own divider; the
+// divider id names it. The current segment has no divider and is not listed.
+// Counts use the member-visible rows (no channel commands, no onboarding kickoff).
+func (q *Queries) ListChatSegments(ctx context.Context, chatSessionID pgtype.UUID) ([]ListChatSegmentsRow, error) {
+	rows, err := q.db.Query(ctx, listChatSegments, chatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatSegmentsRow{}
+	for rows.Next() {
+		var i ListChatSegmentsRow
+		if err := rows.Scan(&i.DividerID, &i.CreatedAt, &i.MessageCount); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -3822,6 +4235,8 @@ LEFT JOIN LATERAL (
    LIMIT 1
 ) lm ON true
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
+  -- A decision backing lane is never the member's chat (plan r4 3.7).
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = cs.id)
   AND (
     cs.explicitly_created_at IS NOT NULL
     OR
@@ -4255,7 +4670,7 @@ func (q *Queries) ListUnownedChannelChatContextRevisions(ctx context.Context, ch
 }
 
 const lockAgentTaskForCompaction = `-- name: LockAgentTaskForCompaction :one
-SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose FROM agent_task_queue
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, cancel_ack_reason, source_chat_session_id, trigger_kind, handoff_dispatch_id, first_dispatched_at FROM agent_task_queue
 WHERE id = $1
 FOR UPDATE NOWAIT
 `
@@ -4353,6 +4768,11 @@ func (q *Queries) LockAgentTaskForCompaction(ctx context.Context, id pgtype.UUID
 		&i.AppliedReportedAt,
 		&i.ExternalRead,
 		&i.Purpose,
+		&i.CancelAckReason,
+		&i.SourceChatSessionID,
+		&i.TriggerKind,
+		&i.HandoffDispatchID,
+		&i.FirstDispatchedAt,
 	)
 	return i, err
 }
@@ -4875,7 +5295,7 @@ SET task_kind = 'compact',
     compact_reason = $2,
     compact_trigger_tokens = $3
 WHERE id = $1
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, cancel_ack_reason, source_chat_session_id, trigger_kind, handoff_dispatch_id, first_dispatched_at
 `
 
 type MarkChatTaskCompactParams struct {
@@ -4979,6 +5399,11 @@ func (q *Queries) MarkChatTaskCompact(ctx context.Context, arg MarkChatTaskCompa
 		&i.AppliedReportedAt,
 		&i.ExternalRead,
 		&i.Purpose,
+		&i.CancelAckReason,
+		&i.SourceChatSessionID,
+		&i.TriggerKind,
+		&i.HandoffDispatchID,
+		&i.FirstDispatchedAt,
 	)
 	return i, err
 }
@@ -5186,7 +5611,7 @@ WHERE task.chat_session_id = $1
         AND message.role = 'user'
         AND message.channel_media_pending_until > now()
   )
-RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window, task.task_kind, task.compact_reason, task.compact_trigger_tokens, task.workflow_step, task.claimed_model, task.chat_compaction_epoch, task.preset_name, task.preset_source, task.preset_skips, task.claimed_thinking_level, task.claimed_service_tier, task.claimed_context_args, task.cancel_acked_at, task.stop_unconfirmed_at, task.pull_request_id, task.replacement_released_at, task.stop_hold_issue_wide, task.taint_ids, task.applied_model, task.applied_thinking_level, task.applied_service_tier, task.applied_context_args, task.applied_reported_at, task.external_read, task.purpose
+RETURNING task.id, task.agent_id, task.issue_id, task.status, task.priority, task.dispatched_at, task.started_at, task.completed_at, task.result, task.error, task.created_at, task.context, task.runtime_id, task.session_id, task.work_dir, task.trigger_comment_id, task.chat_session_id, task.autopilot_run_id, task.attempt, task.max_attempts, task.parent_task_id, task.failure_reason, task.trigger_summary, task.force_fresh_session, task.is_leader_task, task.wait_reason, task.initiator_user_id, task.handoff_note, task.prepare_lease_expires_at, task.squad_id, task.runtime_mcp_overlay, task.escalation_for_task_id, task.fire_at, task.originator_user_id, task.runtime_connected_apps, task.coalesced_comment_ids, task.delivered_comment_ids, task.chat_input_task_id, task.chat_finalize_deferred_at, task.originator_source, task.delegated_from_task_id, task.retry_of_task_id, task.rerun_of_task_id, task.rule_version_id, task.trigger_evidence_kind, task.trigger_evidence_ref_id, task.accountable_user_id, task.session_rollout_missing, task.retired_session_id, task.quick_actions_disabled, task.regenerate_quick_actions_for, task.branch_name, task.durable_work_dir, task.channel_context_revision, task.comment_thread_id, task.cancelled_by_type, task.cancelled_by_id, task.cancelled_by_name, task.issue_snapshot, task.context_tokens, task.context_window, task.task_kind, task.compact_reason, task.compact_trigger_tokens, task.workflow_step, task.claimed_model, task.chat_compaction_epoch, task.preset_name, task.preset_source, task.preset_skips, task.claimed_thinking_level, task.claimed_service_tier, task.claimed_context_args, task.cancel_acked_at, task.stop_unconfirmed_at, task.pull_request_id, task.replacement_released_at, task.stop_hold_issue_wide, task.taint_ids, task.applied_model, task.applied_thinking_level, task.applied_service_tier, task.applied_context_args, task.applied_reported_at, task.external_read, task.purpose, task.cancel_ack_reason, task.source_chat_session_id, task.trigger_kind, task.handoff_dispatch_id, task.first_dispatched_at
 `
 
 // Media completion may race with the 3s run batcher. Promote every original
@@ -5291,6 +5716,11 @@ func (q *Queries) PromoteChannelChatTasksIfMediaReady(ctx context.Context, chatS
 			&i.AppliedReportedAt,
 			&i.ExternalRead,
 			&i.Purpose,
+			&i.CancelAckReason,
+			&i.SourceChatSessionID,
+			&i.TriggerKind,
+			&i.HandoffDispatchID,
+			&i.FirstDispatchedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -6012,7 +6442,7 @@ const setChatTaskInputOwnerSelf = `-- name: SetChatTaskInputOwnerSelf :one
 UPDATE agent_task_queue
 SET chat_input_task_id = id
 WHERE id = $1
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, cancel_ack_reason, source_chat_session_id, trigger_kind, handoff_dispatch_id, first_dispatched_at
 `
 
 // Stamps a freshly-created direct-chat task as the owner of its own input batch
@@ -6112,6 +6542,11 @@ func (q *Queries) SetChatTaskInputOwnerSelf(ctx context.Context, id pgtype.UUID)
 		&i.AppliedReportedAt,
 		&i.ExternalRead,
 		&i.Purpose,
+		&i.CancelAckReason,
+		&i.SourceChatSessionID,
+		&i.TriggerKind,
+		&i.HandoffDispatchID,
+		&i.FirstDispatchedAt,
 	)
 	return i, err
 }

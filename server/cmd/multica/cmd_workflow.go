@@ -22,10 +22,12 @@ import (
 // to the workflow owner and workspace admins, switching a project's workflow
 // to admins and the project lead. The CLI reports the server's error as is.
 //
-// Only step and handoff edits (update --steps-file, set-instructions, handoff
-// set) take --decision-id/--print-hash, the CHE-2448 decision-bound path an
-// agent task token needs. create, delete and project workflow set carry no
-// such flags and the server refuses machine credentials on them.
+// A step or handoff edit (update --steps-file, set-instructions, handoff set)
+// needs a passkey-approved action: --decision-id on them stops with the
+// "config propose" command (CHE-5843). Only the run budget (update
+// --max-runs-per-issue) still takes --decision-id. create, delete and project
+// workflow set carry no such flags and the server refuses machine credentials
+// on them.
 
 var workflowCmd = &cobra.Command{
 	Use:   "workflow",
@@ -94,7 +96,24 @@ one issue can use before the engine blocks it (0 restores the default of 15);
 --include-child-prs=false stops PR guards from reading the PRs of sub-issues.
 --start-status KEY sets the status where new issues of the workflow start (an
 unstarted or started step of the workflow; "" restores todo).
-Prints the server's readback.`,
+A task token changes --max-runs-per-issue or --include-child-prs only through
+an owner's approval: with --issue <issue> (and --for <user-id>) the command reads
+the live workflow, opens one workflow.budget.set card with only the budget flags
+you named, prints the card URL and writes nothing until the owner approves with a
+passkey. Repeating the same call returns the same card. A budget call carries no
+--name, --description, --steps-file, --start-status, --map or --dry-run: run two
+commands instead. --print-hash prints before_sha256 and after_sha256 of the
+budget change; "multica decision request" with the workflow.budget field and
+--decision-id is the manual path. "multica config propose workflow.budget"
+names the same budget as --max-runs N (0 restores the default) and
+--include-child-prs.
+Prints the server's readback.
+
+A save that changes steps or run rules is linted first (see "workflow lint").
+An error that is not waived refuses the save and the command lists each error
+with its fix hint. Fix them, or save again with --lint-override "<reason>"; the
+reason is stored with the workflow. Warnings and info never block and are
+printed to stderr. A decision-bound agent write cannot override.`,
 	Args: exactArgs(1),
 	RunE: runWorkflowUpdate,
 }
@@ -192,14 +211,17 @@ func init() {
 	workflowUpdateCmd.Flags().Bool("dry-run", false, "Print the migration plan without writing")
 	workflowUpdateCmd.Flags().Int("max-runs-per-issue", 0, "Runs one issue can use before it is blocked, 1-1000 (0 restores the default)")
 	workflowUpdateCmd.Flags().Bool("include-child-prs", true, "Whether PR guards also read the PRs of sub-issues")
+	workflowUpdateCmd.Flags().String("lint-override", "", "Save despite lint errors, recording this reason with the workflow")
 	workflowUpdateCmd.Flags().String("start-status", "", "Status where new issues of the workflow start; an unstarted or started step (\"\" restores todo)")
 	workflowUpdateCmd.Flags().String("output", "json", "Output format: table or json")
+	workflowUpdateCmd.Flags().String("issue", "", "Task token budget change: issue UUID or identifier the card is about (required)")
+	workflowUpdateCmd.Flags().String("for", "", forFlagHelp)
 
 	workflowSetInstructionsCmd.Flags().String("status", "", "status_key of the step to change (required)")
 	workflowSetInstructionsCmd.Flags().String("file", "", "File holding the new instructions text (required)")
 	workflowSetInstructionsCmd.Flags().String("output", "json", "Output format: table or json")
 	for _, c := range []*cobra.Command{workflowUpdateCmd, workflowSetInstructionsCmd, workflowHandoffSetCmd} {
-		c.Flags().String("decision-id", "", "CHE-2448 decision path: id of the decision request Cheese answered for this exact change. The CLI sends decision_id, before_sha256 and after_sha256 and takes the steps from the live workflow read. Agent task tokens only.")
+		c.Flags().String("decision-id", "", "Run-budget decision: id of the workflow.budget decision the owner answered for this exact change (update --max-runs-per-issue/--include-child-prs only). Steps and instructions need a passkey action: this flag stops with the \"multica config propose\" command.")
 		c.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this change and exit without writing")
 	}
 
@@ -429,7 +451,7 @@ func resolveHandoffHandler(ctx context.Context, client *cli.APIClient, value str
 	switch strings.ToLower(v) {
 	case "", "none":
 		return map[string]any{"type": "none"}, nil
-	case "project_lead", "creator":
+	case "project_lead", "creator", "author":
 		return map[string]any{"type": strings.ToLower(v)}, nil
 	}
 	var typ, id string
@@ -472,6 +494,11 @@ func patchWorkflow(ctx context.Context, client *cli.APIClient, id string, body m
 		var httpErr *cli.HTTPError
 		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusForbidden && body["decision_id"] == nil {
 			return nil, fmt.Errorf("update workflow: only a workspace owner or admin can edit workflows (server said: %s)", httpErr.Body)
+		}
+		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusUnprocessableEntity {
+			if refusal := lintRefusal(httpErr.Body); refusal != "" {
+				return nil, errors.New(refusal)
+			}
 		}
 		return nil, fmt.Errorf("update workflow: %w", err)
 	}
@@ -641,6 +668,9 @@ func runWorkflowCreate(cmd *cobra.Command, _ []string) error {
 }
 
 func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
+	if proposesWorkflowBudget(cmd) {
+		return proposeWorkflowBudget(cmd, args[0])
+	}
 	body := map[string]any{}
 	if cmd.Flags().Changed("name") {
 		v, _ := cmd.Flags().GetString("name")
@@ -672,12 +702,30 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 	if len(body) == 0 {
 		return errors.New("nothing to update; provide --name, --description, --steps-file, --max-runs-per-issue, --include-child-prs and/or --start-status")
 	}
+	_, stepsWrite := body["steps"]
+	_, capWrite := body["max_runs_per_issue"]
+	_, childWrite := body["include_child_prs"]
+	if stepsWrite && !capWrite && !childWrite {
+		if err := refusePasskeyOnlyDecisionID(cmd, "workflow.steps", args[0], ""); err != nil {
+			return err
+		}
+	}
+	if cmd.Flags().Changed("lint-override") {
+		reason, _ := cmd.Flags().GetString("lint-override")
+		if strings.TrimSpace(reason) == "" {
+			return errors.New("--lint-override needs a reason")
+		}
+		body["lint_override"] = reason
+	}
 	if err := checkWorkflowBindingFlags(cmd); err != nil {
 		return err
 	}
 	newSteps, hasSteps := body["steps"].([]any)
-	if workflowBindingRequested(cmd) && !hasSteps {
-		return errors.New("a decision-bound write carries --steps-file only")
+	_, hasCap := body["max_runs_per_issue"]
+	_, hasChildren := body["include_child_prs"]
+	budgetWrite := hasCap || hasChildren
+	if workflowBindingRequested(cmd) && hasSteps == budgetWrite {
+		return errors.New("a decision-bound write carries either --steps-file or the run budget flags, not both")
 	}
 	pairs, _ := cmd.Flags().GetStringArray("map")
 	mapping, err := parseStatusMapping(pairs)
@@ -703,7 +751,14 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("resolve workflow: %w", err)
 	}
-	if workflowBindingRequested(cmd) {
+	if workflowBindingRequested(cmd) && budgetWrite {
+		if err := bindBudgetWrite(cmd, ctx, client, id, body); err != nil {
+			return err
+		}
+		if printHashRequested(cmd) {
+			return nil
+		}
+	} else if workflowBindingRequested(cmd) {
 		live, err := getWorkflow(ctx, client, id)
 		if err != nil {
 			return err
@@ -737,6 +792,7 @@ func runWorkflowUpdate(cmd *cobra.Command, args []string) error {
 			return nil
 		}
 	}
+	printSaveLintFindings(result)
 	return printWorkflow(cmd, result)
 }
 
@@ -745,6 +801,9 @@ func runWorkflowSetInstructions(cmd *cobra.Command, args []string) error {
 	path, _ := cmd.Flags().GetString("file")
 	if status == "" || path == "" {
 		return errors.New("--status and --file are required")
+	}
+	if err := refusePasskeyOnlyDecisionID(cmd, "workflow.instructions", args[0], status); err != nil {
+		return err
 	}
 	if err := checkWorkflowBindingFlags(cmd); err != nil {
 		return err
@@ -839,6 +898,9 @@ func runWorkflowHandoffSet(cmd *cobra.Command, args []string) error {
 	statusKey := strings.TrimSpace(args[1])
 	if cmd.Flags().Changed("instructions") && cmd.Flags().Changed("instructions-file") {
 		return fmt.Errorf("use either --instructions or --instructions-file, not both")
+	}
+	if err := refusePasskeyOnlyDecisionID(cmd, "workflow.steps", args[0], ""); err != nil {
+		return err
 	}
 	if err := checkWorkflowBindingFlags(cmd); err != nil {
 		return err

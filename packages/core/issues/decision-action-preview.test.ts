@@ -1,0 +1,137 @@
+import { describe, expect, it } from "vitest";
+import { approvableConfigChange, approvablePreview, CONFIG_CHANGE_FIELDS, isRunBudgetActionType } from "./decision-action-preview";
+import type { DecisionConfigChange, DecisionRequestAction } from "../types/decision";
+
+const digest = "a".repeat(64);
+const change: DecisionConfigChange = {
+  field: "workflow.instructions",
+  target_id: "wf-1",
+  keys: [],
+  diff_kind: "text",
+  diff: [{ old_start: 1, new_start: 1, lines: ["-old", "+new"] }],
+  after: "new",
+  before_sha256: "b".repeat(64),
+  after_sha256: "c".repeat(64),
+  meta: { workflow_name: "Production flow", status_key: "todo" },
+  sha256: digest,
+};
+const action = (patch: Partial<DecisionRequestAction> = {}): DecisionRequestAction => ({
+  id: "a1",
+  action_type: "workflow.step.instructions.set",
+  payload_sha256: "p",
+  config_change: change,
+  ...patch,
+});
+
+describe("approvableConfigChange", () => {
+  it("returns a well-formed Scope A change", () => {
+    expect(approvableConfigChange(action())).toEqual(change);
+  });
+
+  it.each(CONFIG_CHANGE_FIELDS)("accepts the field %s", (field) => {
+    const keys = field === "workspace.settings" ? ["compact_prompt"] : [];
+    expect(approvableConfigChange(action({ config_change: { ...change, field, keys } }))).toBeDefined();
+  });
+
+  it.each([
+    "project.description", "members.roles", "passkeys", "workspace.delete", "", "future.field",
+  ])("fails closed for the field %s", (field) => {
+    expect(approvableConfigChange(action({ config_change: { ...change, field } }))).toBeUndefined();
+  });
+
+  it.each([
+    ["no meta", undefined],
+    ["no workflow name", { status_key: "todo" }],
+    ["an empty workflow name", { workflow_name: "", status_key: "todo" }],
+    ["no status key", { workflow_name: "Production flow" }],
+    ["a non-string status key", { workflow_name: "Production flow", status_key: 3 }],
+  ])("fails closed for a workflow step change with %s", (_label, meta) => {
+    expect(approvableConfigChange(action({ config_change: { ...change, meta } }))).toBeUndefined();
+  });
+
+  it("accepts a workflow.steps.set change that edits only instructions, with or without a step target (CHE-6136)", () => {
+    // workflow.steps.set names its field workflow.instructions when only
+    // instructions change, and may edit several steps, so one step target is
+    // not always defined. The diff itself shows every changed step.
+    const steps = { ...change, diff_kind: "json" as const, meta: undefined };
+    expect(approvableConfigChange(action({ action_type: "workflow.steps.set", config_change: steps }))).toEqual(steps);
+    expect(approvableConfigChange(action({ action_type: "workflow.steps.set", config_change: change }))).toEqual(change);
+  });
+
+  it("accepts a workflow run-budget change (CHE-5285)", () => {
+    const budget = { ...change, field: "workflow.budget", diff_kind: "json" as const, after: { max_runs_per_issue: 40, include_child_prs: true }, meta: { workflow_name: "Production flow" } };
+    expect(approvableConfigChange(action({ action_type: "workflow.budget.set", config_change: budget }))).toEqual(budget);
+  });
+
+  it.each([
+    ["workspace.routing_agent.set", "workspace.routing_agent", "json"],
+    ["workspace.delegated_writes.set", "workspace.delegated_writes", "json"],
+    ["agent.skills.set", "agent.skills", "lines"],
+  ] as const)("accepts the %s change and the field it writes (CHE-4490)", (action_type, field, diff_kind) => {
+    const config_change = { ...change, field, diff_kind, meta: undefined };
+    expect(approvableConfigChange(action({ action_type, config_change }))).toEqual(config_change);
+  });
+
+  it("does not need a workflow name for another field", () => {
+    expect(approvableConfigChange(action({ config_change: { ...change, field: "agent.instructions", meta: undefined } }))).toBeDefined();
+  });
+
+  it("fails closed without a change or with a bad digest", () => {
+    expect(approvableConfigChange(action({ config_change: undefined }))).toBeUndefined();
+    expect(approvableConfigChange(action({ config_change: { ...change, sha256: "abc" } }))).toBeUndefined();
+    expect(approvableConfigChange(action({ config_change: { ...change, sha256: "A".repeat(64) } }))).toBeUndefined();
+  });
+
+  it("needs keys for a settings change and none for another field", () => {
+    expect(approvableConfigChange(action({ config_change: { ...change, field: "workspace.settings", keys: [] } }))).toBeUndefined();
+    expect(approvableConfigChange(action({ config_change: { ...change, keys: ["compact_prompt"] } }))).toBeUndefined();
+  });
+
+  it("fails closed for an action type outside the config-change types", () => {
+    expect(approvableConfigChange(action({ action_type: "agent.env.patch" }))).toBeUndefined();
+    expect(approvableConfigChange(action({ action_type: "future.thing" }))).toBeUndefined();
+  });
+
+  it("fails closed for a malformed diff", () => {
+    expect(approvableConfigChange(action({ config_change: { ...change, diff: [{ old_start: 1, new_start: 1, lines: ["x"] }] } }))).toBeUndefined();
+    expect(approvableConfigChange(action({ config_change: { ...change, diff_kind: "other" as never } }))).toBeUndefined();
+  });
+});
+
+describe("issue.workflow.set (CHE-5629)", () => {
+  const preview = {
+    sha256: "d".repeat(64),
+    fields: [
+      { label: "Workflow", current: "Default", proposed: "Production flow" },
+      { label: "Run cap", current: "10", proposed: "40" },
+    ],
+  };
+  const wfAction = { action_type: "issue.workflow.set", preview };
+
+  it("approves against the server preview like the other run-budget actions", () => {
+    expect(approvablePreview(wfAction)).toEqual(preview);
+  });
+
+  it("belongs to the Run budget group", () => {
+    expect(isRunBudgetActionType("issue.workflow.set")).toBe(true);
+    expect(isRunBudgetActionType("issue.run_budget.raise")).toBe(true);
+    expect(isRunBudgetActionType("issue.run_budget.top_up")).toBe(true);
+    expect(isRunBudgetActionType("issue.project.set")).toBe(false);
+  });
+});
+
+describe("Quick move actions (CHE-7734)", () => {
+  const preview = {
+    sha256: "e".repeat(64),
+    fields: [{ label: "Run cap", current: "10", proposed: "40" }],
+  };
+
+  it.each(["issue.project.quick_set", "project.workflow.quick_set"])("approves %s against the server preview", (type) => {
+    expect(approvablePreview({ action_type: type, preview })).toEqual(preview);
+  });
+
+  it("keeps both out of the Run budget group", () => {
+    expect(isRunBudgetActionType("issue.project.quick_set")).toBe(false);
+    expect(isRunBudgetActionType("project.workflow.quick_set")).toBe(false);
+  });
+});

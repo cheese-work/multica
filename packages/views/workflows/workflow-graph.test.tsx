@@ -87,4 +87,38 @@ describe("WorkflowGraph", () => {
         .closest("[aria-current='step']"),
     ).toBeNull();
   });
+
+  it("highlights the exit a history entry took, and only that one", () => {
+    renderWithI18n(
+      <WorkflowGraph
+        workflow={{ steps }}
+        project={null}
+        highlightEdge={{ from: "in_review", to: "done" }}
+      />,
+    );
+    const list = screen.getByRole("list", { name: /Workflow exits/ });
+    const current = within(list)
+      .getAllByRole("listitem")
+      .filter((li) => li.getAttribute("aria-current") === "true");
+    expect(current.map((li) => li.textContent)).toEqual([
+      expect.stringMatching(/In Review.*Done/),
+    ]);
+  });
+
+  it("draws no edge when the highlighted change followed none", () => {
+    renderWithI18n(
+      <WorkflowGraph
+        workflow={{ steps }}
+        project={null}
+        highlightEdge={{ from: "todo", to: "done" }}
+      />,
+    );
+    const list = screen.getByRole("list", { name: /Workflow exits/ });
+    expect(
+      within(list)
+        .getAllByRole("listitem")
+        .filter((li) => li.getAttribute("aria-current") === "true"),
+    ).toEqual([]);
+    expect(within(list).getAllByRole("listitem")).toHaveLength(2);
+  });
 });

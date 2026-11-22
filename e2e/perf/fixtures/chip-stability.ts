@@ -81,6 +81,7 @@ function commonResponse(pathname: string): unknown | undefined {
     case "/api/skills": case "/api/autopilots":
       return [];
     case "/api/labels": return { labels: [] };
+    case "/api/runtimes/affected": return { machines: [] };
     case "/api/decisions/open": return [];
     case "/api/chat/pending-tasks/has-any": return { has_pending: false };
     case `/api/workspaces/${WORKSPACE_ID}/members`: return [];
@@ -106,7 +107,10 @@ function commonResponse(pathname: string): unknown | undefined {
       issues: [], comments: [], projects: [], deleted: { issues: [], comments: [], projects: [] },
       cursor: "0", has_more: false,
     };
-    default: return undefined;
+    // Issue-page side panels added after the harness: empty objects let their parsers fall back.
+    case "/api/decisions/issue-cards": case "/api/issues/unread": return {};
+    default:
+      return /^\/api\/issues\/[0-9a-f-]{36}\/(run-budget|wakeup-definitions)$/.test(pathname) ? {} : undefined;
   }
 }
 

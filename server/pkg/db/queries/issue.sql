@@ -182,11 +182,11 @@ INSERT INTO issue (
     workspace_id, title, description, status, priority,
     assignee_type, assignee_id, creator_type, creator_id,
     parent_issue_id, position, start_date, due_date, number, project_id,
-    stage, properties, last_activity_at, id, workflow_id, requested_by_id
+    stage, properties, last_activity_at, id, workflow_id, requested_by_id, created_via
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
     sqlc.narg('stage'), COALESCE(sqlc.narg('properties')::jsonb, '{}'::jsonb), now(), COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
-    sqlc.narg('workflow_id'), sqlc.narg('requested_by_id')
+    sqlc.narg('workflow_id'), sqlc.narg('requested_by_id'), sqlc.narg('created_via')
 ) RETURNING *;
 
 -- name: GetIssueByNumber :one
@@ -300,6 +300,9 @@ UPDATE issue AS i SET
     project_id = changed.next_project_id,
     stage = changed.next_stage,
     duplicate_of_issue_id = changed.next_duplicate_of_issue_id,
+    -- metadata.blocked_on names what a blocked issue waits for (CHE-6972); it
+    -- is dropped by every write that leaves blocked, whichever writer moved it.
+    metadata = CASE WHEN changed.next_status = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' - 'blocked_entry_link' - 'blocked_entry_rearm_refusal' END,
     revision = i.revision + changed.did_change::integer,
     last_activity_at = CASE WHEN changed.did_activity
         THEN GREATEST(COALESCE(i.last_activity_at, i.updated_at), now())
@@ -328,6 +331,8 @@ UPDATE issue AS i SET
     -- Background writers (GitHub, task recovery) go through here, so they
     -- cannot leave a pointer on a reopened issue.
     duplicate_of_issue_id = CASE WHEN $2 = 'cancelled' AND i.status = 'cancelled' THEN i.duplicate_of_issue_id ELSE NULL END,
+    -- metadata.blocked_on only lives while blocked (CHE-6972); see UpdateIssue.
+    metadata = CASE WHEN $2 = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' - 'blocked_entry_link' - 'blocked_entry_rearm_refusal' END,
     position = CASE WHEN i.status IS DISTINCT FROM $2 THEN (
         SELECT COALESCE(MIN(target.position), 0) - 1
         FROM issue AS target
@@ -413,11 +418,11 @@ INSERT INTO issue (
     workspace_id, title, description, status, priority,
     assignee_type, assignee_id, creator_type, creator_id,
     parent_issue_id, position, start_date, due_date, number, project_id,
-    origin_type, origin_id, stage, properties, last_activity_at, id, workflow_id, requested_by_id
+    origin_type, origin_id, stage, properties, last_activity_at, id, workflow_id, requested_by_id, created_via
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
     sqlc.narg('origin_type'), sqlc.narg('origin_id'), sqlc.narg('stage'), COALESCE(sqlc.narg('properties')::jsonb, '{}'::jsonb), now(), COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
-    sqlc.narg('workflow_id'), sqlc.narg('requested_by_id')
+    sqlc.narg('workflow_id'), sqlc.narg('requested_by_id'), sqlc.narg('created_via')
 ) RETURNING *;
 
 -- name: LockIssueDuplicateKey :exec
@@ -436,6 +441,15 @@ WHERE workspace_id = $1
   AND parent_issue_id IS NOT DISTINCT FROM sqlc.arg('parent_issue_id')::uuid
   AND lower(btrim(regexp_replace(title, '[[:space:]]+', ' ', 'g'))) = sqlc.arg('normalized_title')
 ORDER BY created_at ASC
+LIMIT 1;
+
+-- name: FindIssueByNormalizedTitle :one
+-- Any issue, open or closed, whose title matches. Used to refuse a second
+-- dated autopilot issue (CHE-5757).
+SELECT i.* FROM issue i
+WHERE i.workspace_id = $1
+  AND lower(btrim(regexp_replace(i.title, '[[:space:]]+', ' ', 'g'))) = sqlc.arg('normalized_title')
+ORDER BY i.created_at ASC
 LIMIT 1;
 
 -- name: FindRecentAutopilotDuplicateIssue :one
@@ -488,6 +502,9 @@ cleared_wakeup_pr_events AS (
 cleared_ci_advances AS (
  DELETE FROM issue_ci_advance WHERE issue_id IN (SELECT target.id FROM target)
 ),
+cleared_workflow_switch_pending AS (
+ DELETE FROM issue_workflow_switch_pending WHERE issue_id IN (SELECT target.id FROM target)
+),
 cleared_comment_supersessions AS (
  DELETE FROM comment_supersession WHERE issue_id IN (SELECT target.id FROM target)
 ),
@@ -526,6 +543,9 @@ cleared_pr_events AS (
 ),
 cleared_review_admissions AS (
     DELETE FROM issue_review_admission WHERE issue_id IN (SELECT target.id FROM target)
+),
+cleared_unread AS (
+    DELETE FROM issue_unread WHERE issue_id IN (SELECT target.id FROM target)
 )
 DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 
@@ -544,6 +564,7 @@ WHERE i.workspace_id = $1
   AND (sqlc.narg('assignee_id')::uuid IS NULL OR i.assignee_id = sqlc.narg('assignee_id'))
   AND (sqlc.narg('assignee_ids')::uuid[] IS NULL OR i.assignee_id = ANY(sqlc.narg('assignee_ids')::uuid[]))
   AND (sqlc.narg('creator_id')::uuid IS NULL OR i.creator_id = sqlc.narg('creator_id'))
+  AND (sqlc.narg('requested_by_id')::uuid IS NULL OR i.requested_by_id = sqlc.narg('requested_by_id'))
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
   AND (sqlc.narg('metadata_filter')::jsonb IS NULL OR i.metadata @> sqlc.narg('metadata_filter')::jsonb)
   -- properties_filter is a jsonb array of groups, each group an array of
@@ -740,6 +761,22 @@ FROM issue
 WHERE workspace_id = $1
   AND parent_issue_id IS NOT NULL
 GROUP BY parent_issue_id;
+
+-- name: ListUrgentOrphanIssues :many
+-- Urgent issues nothing will pick up: not terminal, no live task, no enabled
+-- wakeup. Feeds the pulse so an urgent issue cannot sit unowned.
+SELECT i.id, i.number, i.title, i.status, i.assignee_type, i.assignee_id, i.updated_at
+FROM issue i
+WHERE i.workspace_id = $1
+  AND i.priority = 'urgent'
+  AND i.status <> ALL(sqlc.arg('terminal_status_keys')::text[])
+  AND NOT EXISTS (
+    SELECT 1 FROM agent_task_queue t
+    WHERE t.issue_id = i.id AND t.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory'))
+  AND NOT EXISTS (
+    SELECT 1 FROM issue_wakeup w
+    WHERE w.issue_id = i.id AND w.enabled AND w.paused_reason IS NULL)
+ORDER BY i.updated_at, i.id;
 
 -- SearchIssues: moved to handler (dynamic SQL for multi-word search support).
 

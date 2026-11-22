@@ -1,0 +1,30 @@
+# Agent detail background-use notice and "Who can run this agent" access note (CHE-5439, part of CHE-4013 plan).
+# Design gate: CHE-4122 design v2, approved by Cheese 13 Nov 2026 (CHE-4122 comment 01a1d38a-7f8b-74fb-87b9-00947319496a).
+# Frame used: E, parts 1 and 3 (agent page notice, access note). Parts 2 (pre-save warning) and 4 (ineligible variant) are not in this PR.
+# The access note is a plain muted caption under the access controls, not frame E's boxed banner.
+issue: CHE-5439
+design: design/background-agents/approved/e-agent-page-notice.html @ c7cbebb3e17804ea56268764151b3a1821ccd5c8
+frames:   # doop canvas mRAnnjvGod, page1; before and after at 1440 px and 390 px; static HTML from the real component strings, not live captures; visual diff NOT-RUN (CHE-6986)
+  - Agent detail, owner or admin: https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=C54JH9Yk6k
+  - Agent detail, member: https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=TY4GKH0rJ6
+  - Access note, owner, editable: https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=5Y75I6_TdE
+  - Access note, read-only: https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=6bG5HE73qC
+pages:
+  - id: agent-detail-background-use
+    url: /<workspace-slug>/agents/<agent-id>   # 1440 px and 390 px
+    keep:
+      - agent-detail-other-notices   # existing notices and tabs unchanged
+    change:
+      - agent-detail-background-notice: "new notice listing each background job this agent serves: job label, Workspace or Personal badge, job key"
+      - agent-detail-background-link-workspace: "workspace rows link to Settings > Workspace > Background agents for owners and admins only"
+      - agent-detail-background-link-personal: "personal rows (the viewer's own picks only) link to Settings > Personal > Background agents"
+      - agent-detail-background-member-note: "members see workspace rows without a link plus a note that owners and admins change them"
+    remove: []
+  - id: agent-access-settings
+    url: /<workspace-slug>/agents/<agent-id>   # Who can run this agent, 1440 px and 390 px
+    keep:
+      - access-settings-controls   # permission mode and invocation targets unchanged
+    change:
+      - access-note: "muted caption shown only when the agent serves a workspace background job: changing who can run it can stop those jobs"
+      - access-note-readonly: "read-only wording for viewers who cannot edit access"
+    remove: []

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -93,12 +94,52 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 // pending dedup stay in one place. It reports whether an executable run now
 // carries the write: a run it started, or an unstarted one that held the slot.
 func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID, handoffNote string) (started bool) {
+	intentID := handoffIntentFrom(ctx)
+	if trigger.BlockedEntry {
+		lastTask, skip, err := h.TaskService.SkipBlockedDispatch(ctx, issue, trigger.AgentID, actorType)
+		if err != nil {
+			slog.Warn("blocked dispatch comparison failed; starting run", "issue_id", uuidToString(issue.ID), "error", err)
+		} else if skip {
+			h.TaskService.RecordBlockedDispatchSkipped(ctx, issue, lastTask, actorType, actorID)
+			h.skipHandoffIntent(ctx, intentID, "blocked_unchanged_inputs")
+			return false
+		}
+	}
 	// Checked here as well as at the queue door so the activity names the actor
 	// whose status move or assignment was refused; the door has no actor.
 	var notConfirmed *service.StopNotConfirmedError
 	if err := service.StopGate(ctx, h.Queries, issue.ID); errors.As(err, &notConfirmed) {
 		h.recordStopNotConfirmed(ctx, issue, actorType, actorID, notConfirmed)
+		h.skipHandoffIntent(ctx, intentID, "stop_not_confirmed")
 		return false
+	}
+	if trigger.BlockedEntry {
+		skip, after := h.blockedEntryOnDispatch(ctx, issue, trigger.AgentID, intentID)
+		if skip {
+			return false
+		}
+		if after != nil {
+			defer func() { after(started) }()
+		}
+	}
+	if entersAutoCloseStep(issue.Status) {
+		closed, after := h.autoCloseOnEntry(ctx, issue, intentID)
+		if closed {
+			return false
+		}
+		if after != nil {
+			defer func() { after(started, trigger.AgentID) }()
+		}
+	}
+	if intentID.Valid {
+		intent, err := h.dispatchHandoffIntent(ctx, intentID)
+		if err != nil {
+			// The intent stays pending: the run is still owed, and the recovery
+			// sweep (CHE-2299 S1c) finds it.
+			slog.Error("dispatch handoff intent failed", "issue_id", uuidToString(issue.ID), "intent_id", uuidToString(intentID), "error", err)
+			return false
+		}
+		return intent.State == handoffDispatched
 	}
 	switch trigger.AssigneeType {
 	case "agent":
@@ -186,7 +227,7 @@ func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, age
 		return false
 	}
 	if len(taint) > 0 {
-		n, err := h.Queries.TaintQueuedRunCarryingIssueWrite(ctx, db.TaintQueuedRunCarryingIssueWriteParams{
+		n, err := h.taintQueuedRunCarryingWrite(ctx, db.TaintQueuedRunCarryingIssueWriteParams{
 			TaintIds:     taint,
 			IssueID:      issue.ID,
 			AgentID:      agentID,
@@ -204,6 +245,39 @@ func (h *Handler) queuedRunCarriesWrite(ctx context.Context, issue db.Issue, age
 		Step:         issue.Status,
 	})
 	return err == nil && carries
+}
+
+// underIssueLock runs fn in one transaction that holds the issue row lock
+// first. A write to a run's taint-bearing columns fires the run's taint
+// trigger, which locks the issue; every other path that touches the runs of an
+// issue takes the issue first, so such a write takes it first too. A missing
+// issue (a chat run has none) is tolerated: the trigger does not lock then.
+func (h *Handler) underIssueLock(ctx context.Context, issueID pgtype.UUID, fn func(q *db.Queries) error) error {
+	if h.TxStarter == nil {
+		return errors.New("transaction starter is not configured")
+	}
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(context.WithoutCancel(ctx))
+	qtx := h.Queries.WithTx(tx)
+	if _, err := qtx.LockIssueRunBudget(ctx, issueID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if err := fn(qtx); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// taintQueuedRunCarryingWrite updates the queued run under the issue lock.
+func (h *Handler) taintQueuedRunCarryingWrite(ctx context.Context, arg db.TaintQueuedRunCarryingIssueWriteParams) (n int64, err error) {
+	err = h.underIssueLock(ctx, arg.IssueID, func(q *db.Queries) error {
+		n, err = q.TaintQueuedRunCarryingIssueWrite(ctx, arg)
+		return err
+	})
+	return n, err
 }
 
 // memberActorUserID returns the acting member's user id as a pgtype.UUID when the
@@ -333,7 +407,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
 				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
-						humans, err := h.workflowHumans(r.Context(), h.Queries, step, project, wsUUID, previewRequester(actorType, actorID))
+						humans, err := h.workflowHumans(r.Context(), h.Queries, step, project, wsUUID, previewRequester(actorType, actorID), workflowSubject{})
 						if err != nil {
 							writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
 							return
@@ -404,22 +478,28 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 // recordStopNotConfirmed leaves the reason a run did not start where people
 // read the issue: the gate is closed until the old run's daemon acks.
 func (h *Handler) recordStopNotConfirmed(ctx context.Context, issue db.Issue, actorType, actorID string, e *service.StopNotConfirmedError) {
-	details, _ := json.Marshal(map[string]string{"message": e.Error(), "task_id": uuidToString(e.TaskID)})
+	h.recordIssueActivity(ctx, issue.WorkspaceID, issue.ID, actorType, actorID, "stop_not_confirmed",
+		map[string]string{"message": e.Error(), "task_id": uuidToString(e.TaskID)})
+}
+
+// recordIssueActivity writes one timeline entry on the issue and publishes it.
+func (h *Handler) recordIssueActivity(ctx context.Context, workspaceID, issueID pgtype.UUID, actorType, actorID, action string, detail map[string]string) {
+	details, _ := json.Marshal(detail)
 	activity, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
 		ID:          dbid.NewV7(),
-		WorkspaceID: issue.WorkspaceID,
-		IssueID:     issue.ID,
+		WorkspaceID: workspaceID,
+		IssueID:     issueID,
 		ActorType:   strToText(actorType),
 		ActorID:     optionalActorUUID(actorID),
-		Action:      "stop_not_confirmed",
+		Action:      action,
 		Details:     details,
 	})
 	if err != nil {
-		slog.Warn("record stop-not-confirmed activity failed", "err", err, "issue_id", uuidToString(issue.ID))
+		slog.Warn("record issue activity failed", "err", err, "action", action, "issue_id", uuidToString(issueID))
 		return
 	}
-	h.publish(protocol.EventActivityCreated, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{
-		"issue_id": uuidToString(issue.ID),
+	h.publish(protocol.EventActivityCreated, uuidToString(workspaceID), actorType, actorID, map[string]any{
+		"issue_id": uuidToString(issueID),
 		"entry": map[string]any{
 			"type": "activity", "id": uuidToString(activity.ID), "action": activity.Action,
 			"actor_type": actorType, "actor_id": actorID, "details": json.RawMessage(details),

@@ -47,3 +47,27 @@ func Predict(precedents []string) Prediction {
 	out.Key, out.Confidence = best, float64(bestCount+1)/float64(len(precedents)+2)
 	return out
 }
+
+// Predictors of the test-first waiver scope (CHE-4383 B3). The version is part
+// of the stored identity: editing a rule means a new version, never an edit.
+const (
+	ScopeTestFirstWaiver = "test_first_waiver"
+	PredictorWaiverRule  = "waiver_rule"
+	PredictorPrecedent   = "precedent"
+	WaiverRuleVersion    = "1"
+	PrecedentVersion     = "1"
+	KeyWaive             = "waive"
+	KeyRefuse            = "refuse"
+)
+
+// WaiverRule is waiver_rule@1: refuse without a cross-lab PASS on the head;
+// waive with one unless the weaker evidence is review only; else abstain ("").
+func WaiverRule(crossLabPassOnHead bool, weakerEvidenceKind string) string {
+	switch {
+	case !crossLabPassOnHead:
+		return KeyRefuse
+	case weakerEvidenceKind != "review_only":
+		return KeyWaive
+	}
+	return ""
+}

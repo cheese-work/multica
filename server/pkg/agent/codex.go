@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/pkg/redact"
+	"github.com/multica-ai/multica/server/pkg/runbinding"
 )
 
 // codexBlockedArgs are flags hardcoded by the daemon that must not be
@@ -853,7 +854,46 @@ func normalizeCodexMcpServerConfig(server map[string]any) map[string]any {
 		}
 	}
 	normalized["experimental_use_rmcp_client"] = true
+	mapCodexBearerEnvReference(normalized)
 	return normalized
+}
+
+var codexBearerEnvRefRe = regexp.MustCompile(`^Bearer \$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
+
+// mapCodexBearerEnvReference rewrites an `Authorization: Bearer ${VAR}` header
+// into Codex's `bearer_token_env_var = "VAR"`. Codex does not expand `${...}`
+// in `http_headers`, so the literal string would be sent as the token.
+func mapCodexBearerEnvReference(server map[string]any) {
+	if _, set := server["bearer_token_env_var"]; set {
+		return
+	}
+	headers, ok := server["http_headers"].(map[string]any)
+	if !ok {
+		return
+	}
+	for k, v := range headers {
+		if !strings.EqualFold(k, "Authorization") {
+			continue
+		}
+		str, _ := v.(string)
+		m := codexBearerEnvRefRe.FindStringSubmatch(str)
+		if m == nil {
+			return
+		}
+		server["bearer_token_env_var"] = m[1]
+		rest := make(map[string]any, len(headers))
+		for hk, hv := range headers {
+			if hk != k {
+				rest[hk] = hv
+			}
+		}
+		if len(rest) == 0 {
+			delete(server, "http_headers")
+		} else {
+			server["http_headers"] = rest
+		}
+		return
+	}
 }
 
 func isMulticaMcpSelectorKey(k string) bool {
@@ -1296,6 +1336,29 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		cmd.Dir = opts.Cwd
 	}
 	cmd.Env = buildEnv(b.cfg.Env)
+	var binding *runbinding.Publisher
+	if b.cfg.RunBinding != nil {
+		if b.cfg.CredentialBoundary != nil || b.cfg.RequireCredentialIsolation {
+			cancel()
+			stopProcess()
+			return nil, fmt.Errorf("managed local binding cannot cross credential isolation; R1 required")
+		}
+		var err error
+		binding, err = runbinding.New(runCtx, *b.cfg.RunBinding)
+		if err != nil {
+			cancel()
+			stopProcess()
+			return nil, err
+		}
+		cmd.Env = append(cmd.Env, "MULTICA_RUN_BINDING_ID="+binding.ID)
+	}
+	// Startup errors revoke too. On success ownership passes to the lifecycle.
+	launched := false
+	defer func() {
+		if !launched && binding != nil {
+			binding.Close()
+		}
+	}()
 
 	credentialCleanup, err := b.cfg.wrapCredentialCommand(cmd)
 	if err != nil {
@@ -1333,6 +1396,17 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		stopProcess()
 		return nil, fmt.Errorf("start codex: %w", err)
 	}
+	if binding != nil {
+		if err := binding.Publish(cmd.Process.Pid); err != nil {
+			binding.Close()
+			cancel()
+			stopProcess()
+			_ = cmd.Wait()
+			releaseProcessGroup(cmd)
+			return nil, fmt.Errorf("publish managed host binding: %w", err)
+		}
+	}
+	launched = true
 	activeLaunches := activeCodexLaunches.Add(1)
 	for {
 		maxSeen := maxActiveCodexLaunchesObserved.Load()
@@ -1454,6 +1528,9 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 	readerDone := make(chan struct{})
 	go func() {
 		defer close(readerDone)
+		if binding != nil {
+			defer binding.Close()
+		}
 		scanner := newAgentStreamScanner(stdout)
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
@@ -1600,6 +1677,9 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		defer close(msgCh)
 		defer close(resCh)
 		defer drainAndWait()
+		if binding != nil {
+			defer binding.Close()
+		}
 
 		startTime := time.Now()
 		finalStatus := "completed"

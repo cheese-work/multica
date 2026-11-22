@@ -11,6 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const copyWorkflowRoleToRetry = `-- name: CopyWorkflowRoleToRetry :exec
+INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
+SELECT a.workspace_id, a.issue_id, a.actor_type, a.actor_id, 'workflow_role',
+       jsonb_set(a.details, '{task_id}', to_jsonb($1::text))
+FROM activity_log a
+WHERE a.issue_id = $2 AND a.action = 'workflow_role' AND a.details->>'task_id' = $3::text
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT 1
+`
+
+type CopyWorkflowRoleToRetryParams struct {
+	ChildTaskID  string      `json:"child_task_id"`
+	IssueID      pgtype.UUID `json:"issue_id"`
+	ParentTaskID string      `json:"parent_task_id"`
+}
+
+// A retry works the role its parent did: the newest workflow_role row of the
+// parent task is copied for the child, so a reviewer's retry stays a reviewer's.
+func (q *Queries) CopyWorkflowRoleToRetry(ctx context.Context, arg CopyWorkflowRoleToRetryParams) error {
+	_, err := q.db.Exec(ctx, copyWorkflowRoleToRetry, arg.ChildTaskID, arg.IssueID, arg.ParentTaskID)
+	return err
+}
+
 const countAssigneeChangesByActor = `-- name: CountAssigneeChangesByActor :many
 SELECT
   details->>'to_type' as assignee_type,
@@ -174,6 +197,75 @@ func (q *Queries) GetLastIssueStatusChange(ctx context.Context, issueID pgtype.U
 	return i, err
 }
 
+const getLatestChainedRunRetryDetails = `-- name: GetLatestChainedRunRetryDetails :one
+SELECT details FROM activity_log
+WHERE issue_id = $1 AND action = 'chained_run_retry'
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+// The newest chained_run_retry row of an issue: the retry a failed chained run
+// got (CHE-7675). pgx.ErrNoRows when the issue never had one.
+func (q *Queries) GetLatestChainedRunRetryDetails(ctx context.Context, issueID pgtype.UUID) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getLatestChainedRunRetryDetails, issueID)
+	var details []byte
+	err := row.Scan(&details)
+	return details, err
+}
+
+const getLatestIssueActivityByAction = `-- name: GetLatestIssueActivityByAction :one
+SELECT id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at FROM activity_log
+WHERE issue_id = $1 AND action = $2
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLatestIssueActivityByActionParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Action  string      `json:"action"`
+}
+
+// The newest activity of one action on an issue, however old: a scan window
+// would miss a quick_entry row that a busy issue has long buried.
+func (q *Queries) GetLatestIssueActivityByAction(ctx context.Context, arg GetLatestIssueActivityByActionParams) (ActivityLog, error) {
+	row := q.db.QueryRow(ctx, getLatestIssueActivityByAction, arg.IssueID, arg.Action)
+	var i ActivityLog
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.ActorType,
+		&i.ActorID,
+		&i.Action,
+		&i.Details,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const hasChainedRunEntered = `-- name: HasChainedRunEntered :one
+SELECT EXISTS (
+  SELECT 1 FROM activity_log
+  WHERE issue_id = $1 AND action = 'chained_run_entered'
+    AND details->>'task_id' = $2::text AND details->>'step' = $3::text
+)
+`
+
+type HasChainedRunEnteredParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	TaskID  string      `json:"task_id"`
+	Step    string      `json:"step"`
+}
+
+// Whether the task carried the issue into the step itself (a chained move,
+// CHE-7675), as opposed to being dispatched straight into it.
+func (q *Queries) HasChainedRunEntered(ctx context.Context, arg HasChainedRunEnteredParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasChainedRunEntered, arg.IssueID, arg.TaskID, arg.Step)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const hasSquadLeaderNoActionEvaluationForTask = `-- name: HasSquadLeaderNoActionEvaluationForTask :one
 SELECT EXISTS (
   SELECT 1
@@ -249,6 +341,91 @@ func (q *Queries) ListActivitiesForIssue(ctx context.Context, arg ListActivities
 			&i.Details,
 			&i.CreatedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listIssueAuthorTasks = `-- name: ListIssueAuthorTasks :many
+SELECT t.id AS task_id, t.agent_id, COALESCE(r.provider, '')::text AS provider, COALESCE(t.applied_model, '')::text AS model
+FROM agent_task_queue t
+LEFT JOIN agent_runtime r ON r.id = t.runtime_id
+WHERE t.issue_id = $1
+  AND NOT (
+    EXISTS (SELECT 1 FROM activity_log a WHERE a.issue_id = t.issue_id AND a.action = 'workflow_role'
+              AND a.details->>'task_id' = t.id::text AND a.details->>'role' = 'reviewer')
+    AND NOT EXISTS (SELECT 1 FROM activity_log a WHERE a.issue_id = t.issue_id AND a.action = 'workflow_role'
+              AND a.details->>'task_id' = t.id::text AND a.details->>'role' IS DISTINCT FROM 'reviewer')
+  )
+ORDER BY t.created_at, t.id
+`
+
+type ListIssueAuthorTasksRow struct {
+	TaskID   pgtype.UUID `json:"task_id"`
+	AgentID  pgtype.UUID `json:"agent_id"`
+	Provider string      `json:"provider"`
+	Model    string      `json:"model"`
+}
+
+// Every agent task on an issue that counts as authorship (CHE-7658 step 11):
+// all of them except a task whose workflow_role rows say reviewer and nothing
+// else. A task with no row counts (fail closed). The lab inputs come from the
+// task row: the model the daemon applied and its runtime's provider.
+func (q *Queries) ListIssueAuthorTasks(ctx context.Context, issueID pgtype.UUID) ([]ListIssueAuthorTasksRow, error) {
+	rows, err := q.db.Query(ctx, listIssueAuthorTasks, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIssueAuthorTasksRow{}
+	for rows.Next() {
+		var i ListIssueAuthorTasksRow
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.AgentID,
+			&i.Provider,
+			&i.Model,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listIssueRunSkips = `-- name: ListIssueRunSkips :many
+SELECT id, created_at, details FROM activity_log
+WHERE issue_id = $1 AND action = 'run_skipped'
+ORDER BY created_at DESC
+LIMIT 50
+`
+
+type ListIssueRunSkipsRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Details   []byte             `json:"details"`
+}
+
+// The runs the platform declined to start on an issue (CHE-4649), newest
+// first. They are no task rows, so the run list reads them from the activity.
+func (q *Queries) ListIssueRunSkips(ctx context.Context, issueID pgtype.UUID) ([]ListIssueRunSkipsRow, error) {
+	rows, err := q.db.Query(ctx, listIssueRunSkips, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIssueRunSkipsRow{}
+	for rows.Next() {
+		var i ListIssueRunSkipsRow
+		if err := rows.Scan(&i.ID, &i.CreatedAt, &i.Details); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

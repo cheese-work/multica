@@ -1,0 +1,904 @@
+// S0b raw-element pages (CHE-5534, S4b-SS1): the real component, seeded with query data, one page per file.
+// Not a pattern: these exist so scripts/design/capture-frame.mjs can screenshot files the S4b audit lists.
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { create } from "zustand";
+import { setApiInstance } from "@multica/core/api";
+import { registerAuthStore } from "@multica/core/auth";
+import { issueDetailOptions, childIssuesOptions } from "@multica/core/issues/queries";
+import { issueRelationsOptions } from "@multica/core/issues/relations";
+import { issueStatusListOptions } from "@multica/core/issue-statuses/queries";
+import { openDecisionRequestsOptions, issueDecisionCardsOptions } from "@multica/core/chat/queries";
+import { agentListOptions, memberListOptions, workspaceListOptions } from "../../../packages/core/workspace/queries"; // relative: bypasses the harness alias so seeded keys match core/hooks
+import { decisionArtifactKeys } from "@multica/core/issues/decision-artifacts";
+import { labelListOptions } from "@multica/core/labels/queries";
+import { propertyListOptions } from "@multica/core/properties/queries";
+import { BUILT_IN_STATUS_CATEGORY, BUILT_IN_STATUS_LABEL, BUILT_IN_STATUS_ORDER } from "@multica/core/issues/config";
+import { IssueDecisionBanner } from "../../../packages/views/issues/components/issue-decision-banner";
+import { IssueHierarchy } from "../../../packages/views/issues/components/hierarchy/hierarchy-minimap";
+import { HierarchyDialog } from "../../../packages/views/issues/components/hierarchy/hierarchy-dialog";
+import { WakeupEventRow } from "../../../packages/views/chat/components/wakeup-event-row";
+import { WakeupFields } from "../../../packages/views/issues/components/wakeup-fields";
+import { PillMenu, Segmented, AgentChoice, ActorChoice, AssigneeChoice } from "../../../packages/views/issues/components/wakeup-pickers";
+import { WorkspaceWakeupRules } from "../../../packages/views/settings/components/workspace-wakeup-rules";
+import { ConfigChangeViewer } from "../../../packages/views/chat/components/config-change-viewer";
+import { WORKSPACE_WAKEUP_SCOPE, wakeupDefinitionsOptions } from "@multica/core/workspace/wakeup-definitions";
+import { squadListOptions } from "../../../packages/core/workspace/queries";
+import * as stub from "./workspace-stub"; // the aliased core/workspace/queries the picker components read
+import { ConditionParams } from "../../../packages/views/issues/components/wakeup-condition-params";
+import { DecisionArtifacts } from "../../../packages/views/chat/components/decision-artifacts";
+import { DecisionRequestCard } from "../../../packages/views/chat/components/decision-request-card";
+import { NeedsYouList } from "../../../packages/views/chat/components/needs-you-list";
+import { QuickAgentBar } from "../../../packages/views/chat/components/quick-agent-bar";
+import { DelegatedWritesSection } from "../../../packages/views/settings/components/delegated-writes-section";
+import { chatKeys } from "@multica/core/chat/queries";
+import { TelegramTab } from "../../../packages/views/settings/components/telegram-tab";
+import { SlackTab } from "../../../packages/views/settings/components/slack-tab";
+import { LarkTab } from "../../../packages/views/settings/components/lark-tab";
+import { WecomTab } from "../../../packages/views/settings/components/wecom-tab";
+import { DingTalkTab } from "../../../packages/views/settings/components/dingtalk-tab";
+import { telegramKeys } from "@multica/core/telegram";
+import { slackKeys } from "@multica/core/slack";
+import { larkKeys } from "@multica/core/lark";
+import { wecomKeys } from "@multica/core/wecom";
+import { dingtalkKeys } from "@multica/core/dingtalk";
+import { CreateAgentDialog } from "../../../packages/views/agents/components/create-agent-dialog";
+import { ConcurrencyPicker } from "../../../packages/views/agents/components/inspector/concurrency-picker";
+import { SkillAttach } from "../../../packages/views/agents/components/inspector/skill-attach";
+import { VisibilityPicker } from "../../../packages/views/agents/components/inspector/visibility-picker";
+import { InstructionsEditor } from "../../../packages/views/agents/components/instructions-editor";
+import { runtimeModelsKeys } from "../../../packages/core/runtimes/models";
+import { AddTriggerDialog } from "../../../packages/views/autopilots/components/add-trigger-dialog";
+import { ExpandableDescription } from "../../../packages/views/common/expandable-description";
+import { HtmlViewer } from "../../../packages/views/editor/html-viewer";
+import { PlanRevisionViewer } from "../../../packages/views/editor/plan-revision-viewer";
+import { ResourceLabelPicker } from "../../../packages/views/labels/resource-label-picker";
+import { labelKeys } from "@multica/core/labels";
+import { MediaLinkAction, ViewerActions, MediaSourceProvider } from "../../../packages/views/media/media-context";
+import { MediaPage, MediaUnavailablePage } from "../../../packages/views/media/media-page";
+import { mediaContentId } from "../../../packages/views/media/media-id";
+import { LocalDirectoryModeDialog } from "../../../packages/views/projects/components/local-directory-mode-dialog";
+import { NextSelfMention } from "../../../packages/views/rich-content/next-self-mention";
+import { ProjectWorkflowMenuHost } from "../../../packages/views/workflows/project-workflow-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@multica/ui/components/ui/dropdown-menu";
+import { projectListOptions } from "@multica/core/projects/queries";
+import { issueWorkflowListOptions } from "@multica/core/issue-workflows";
+import { configStore } from "@multica/core/config";
+import type { IssueWorkflow, Project } from "@multica/core/types";
+import { emptyWakeupDraft, type WakeupCondition, type WakeupDraft } from "../../../packages/views/issues/components/wakeup-draft";
+
+const WS = "ws-harness";
+const NOW = "2026-11-13T09:00:00Z";
+const AGENT = "agent-design";
+const issue = (number: number, status: string, title: string, extra: Record<string, unknown> = {}) => ({
+  id: `iss-${number}`, workspace_id: WS, number, identifier: `CHE-${number}`, title, description: null, status,
+  priority: "medium", assignee_type: "agent", assignee_id: AGENT, creator_type: "member", creator_id: "u1",
+  parent_issue_id: null, created_at: NOW, updated_at: NOW, ...extra,
+});
+
+const PARENT = issue(5430, "in_progress", "S4b: capture raw-element files in doop");
+const CURRENT = issue(5534, "in_progress", "Capture 5 S0b raw-element screenshots, batch SS1 of 7", { parent_issue_id: PARENT.id, stage: 1 });
+const SIBLINGS = [
+  issue(5531, "done", "Capture batch SS0: harness and reference frame", { parent_issue_id: PARENT.id, stage: 1 }),
+  issue(5535, "todo", "Capture 5 S0b raw-element screenshots, batch SS2 of 7", { parent_issue_id: PARENT.id, stage: 2 }),
+  issue(5536, "backlog", "Capture 5 S0b raw-element screenshots, batch SS3 of 7", { parent_issue_id: PARENT.id, stage: 2 }),
+  issue(5537, "backlog", "Capture 5 S0b raw-element screenshots, batch SS4 of 7", { parent_issue_id: PARENT.id, stage: 3 }),
+];
+const CHILDREN = [
+  issue(5541, "done", "Add harness pages for the 5 files", { parent_issue_id: CURRENT.id, stage: 1 }),
+  issue(5542, "in_progress", "Upload captures and build the reference frame", { parent_issue_id: CURRENT.id, stage: 2 }),
+  issue(5543, "todo", "Mark files captured in ui-drift.md", { parent_issue_id: CURRENT.id, stage: 2 }),
+];
+
+const statusEntries = BUILT_IN_STATUS_ORDER.map((key, position) => ({
+  id: `st-${key}`, workspace_id: WS, key, name: BUILT_IN_STATUS_LABEL[key], description: "",
+  category: BUILT_IN_STATUS_CATEGORY[key], color: "#888888", icon: null, is_system: true, position,
+  archived_at: null, created_at: NOW, updated_at: NOW,
+}));
+
+const wakeup = (n: number, title: string, instruction: string) => ({
+  id: `wk-${n}`, agent_id: AGENT, title, instruction, fire_at: "2026-11-13T11:30:00Z", created_at: "2026-11-13T09:05:00Z",
+});
+
+const card = (id: string, issueNumber: number, state: "open" | "answered", extra: Record<string, unknown> = {}) => ({
+  id, issue_id: `iss-${issueNumber}`, issue_identifier: `CHE-${issueNumber}`, issue_title: "Capture 5 S0b raw-element screenshots",
+  ask: "Which reference frame layout should the 7 batches share?", asking_agent_name: "x99-claude-sonnet-design",
+  options: [
+    { label: "One frame per batch", what_happens: "Each batch adds a frame; 7 frames total." },
+    { label: "One frame, grows", what_happens: "Every batch appends to the same frame." },
+  ],
+  recommended_option_index: 1, state, created_at: "2026-11-13T08:40:00Z", ...extra,
+});
+
+// childIssuesOptions refetches on every mount; answer from the fixtures so no request leaves the page.
+const CHILDREN_OF: Record<string, unknown[]> = { [PARENT.id]: [CURRENT, ...SIBLINGS], [CURRENT.id]: CHILDREN };
+
+export function seedRawElements(qc: QueryClient) {
+  setApiInstance({
+    listChildIssues: async (id: string) => ({ issues: CHILDREN_OF[id] ?? [] }),
+    listDecisionArtifacts: async (id: string) => {
+      if (id === "rq-art-err") throw new Error("harness: artifacts unavailable");
+      return ARTIFACTS[id] ?? [];
+    },
+    getDelegatedWrites: async (ws: string) => DELEGATED[ws] ?? null,
+    updateDelegatedWrites: async (_ws: string, rule: unknown) => rule,
+    listChatPinnedAgents: async () => PINNED,
+    // Only the polled lists (lark, dingtalk groups) can refetch before the capture; the rest stay seeded.
+    listLarkInstallations: async () => LARK_LIST,
+    listDingTalkGroups: async () => DT_GROUPS,
+    // SS6 (CHE-5539): the schedule preview in add-trigger-dialog; the plan revision viewer reads the rest from the seeded cache.
+    cronPreview: async () => ({ next_runs: ["2026-11-20T02:00:00Z", "2026-11-21T02:00:00Z", "2026-11-22T02:00:00Z"] }),
+    listAttachments: async () => PLAN_ATTACHMENTS,
+    getAttachmentTextContent: async (id: string) => ({ text: PLAN_TEXT[id] ?? "", originalContentType: "text/markdown" }),
+    // SS7 (CHE-5540): the standalone media page resolves one html block out of an issue description.
+    getIssue: async (id: string) => (id === "iss-media" ? MEDIA_ISSUE : id === PARENT.id ? PARENT : CURRENT),
+    listComments: async () => [],
+  } as never);
+  // Components read the signed-in user (assignee pickers, decision card); no real auth runs here.
+  registerAuthStore(create(() => ({ user: { id: "u1", name: "Cheese", email: "c@example.com" }, isLoading: false })) as never);
+  const set = (key: readonly unknown[], data: unknown) => qc.setQueryData(key, data);
+  // useWorkspaceId resolves the slug "harness" through the workspace list.
+  set(workspaceListOptions().queryKey, [{ id: WS, slug: "harness", name: "Harness", created_at: NOW, updated_at: NOW }]);
+  set(agentListOptions(WS).queryKey, [{ id: AGENT, workspace_id: WS, name: "x99-claude-sonnet-design", runtime_id: "rt1", archived_at: null }]);
+  set(memberListOptions(WS).queryKey, [{ id: "m1", user_id: "u1", workspace_id: WS, name: "Cheese", email: "c@example.com", role: "owner" }]);
+  set(issueStatusListOptions(WS).queryKey, { statuses: statusEntries, categories: [], total: statusEntries.length });
+  set(labelListOptions(WS).queryKey, { labels: [{ id: "lb1", name: "design-system", color: "#3b82f6" }, { id: "lb2", name: "needs-review", color: "#f59e0b" }] });
+  set(propertyListOptions(WS).queryKey, {
+    properties: [
+      { id: "pr1", name: "Design", type: "url", archived: false, config: {} },
+      { id: "pr2", name: "Readiness", type: "select", archived: false, config: { options: [{ id: "o1", name: "ready" }, { id: "o2", name: "gated-human" }] } },
+    ],
+  });
+
+  // Hierarchy: current has a parent, three siblings and three children.
+  set(issueDetailOptions(WS, PARENT.id).queryKey, PARENT);
+  set(childIssuesOptions(WS, PARENT.id).queryKey, [CURRENT, ...SIBLINGS]);
+  set(childIssuesOptions(WS, CURRENT.id).queryKey, CHILDREN);
+  set(issueRelationsOptions(WS, CURRENT.id, 1).queryKey, {
+    nodes: [...CHILDREN, PARENT].map(({ id, identifier, title, status }) => ({ id, identifier, title, status })),
+    edges: [{ source: CURRENT.id, target: "iss-5541", type: "wakeup" }],
+    omitted_count: 0, depth: 1,
+  });
+
+  // Decision banner: 5701 has an open card; 5702 has an answered one (folds).
+  set(openDecisionRequestsOptions(WS).queryKey, [{ ...card("rq-open", 5701, "open"), asking_agent_id: AGENT, escalation_class: "product_direction", chat_session_id: "cs1", message_id: null }]);
+  set(issueDecisionCardsOptions(WS, "iss-5701").queryKey, []);
+  set(issueDecisionCardsOptions(WS, "iss-5702").queryKey, [card("rq-used", 5702, "answered", {
+    answer: { state: "delivered", text: "One frame, grows", option: "One frame, grows" }, record_comment_id: "cm1",
+  })]);
+  seedSS2(set);
+  seedSS3(set);
+  seedSS5(set);
+  seedSS6(set);
+  seedSS7(set);
+  for (const id of ["rq-open", "rq-used"]) set(decisionArtifactKeys.list(id), []);
+}
+
+const Label = ({ children }: { children: ReactNode }) => <p className="mb-1 mt-4 text-caption text-muted-foreground first:mt-0">{children}</p>;
+
+/** Runs `pick` once after mount, e.g. to click a toggle so the expanded state is captured. */
+function After({ pick, delay = 0, children }: { pick: (root: HTMLElement) => HTMLElement | null | undefined; delay?: number; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    // Popover triggers (SS5) only open once their handlers are attached, so those pages pass a delay.
+    // A pick that finds nothing yet (a control still disabled while data loads) retries every 100 ms.
+    let t: ReturnType<typeof setTimeout>;
+    let tries = 0;
+    const run = () => {
+      const el = pick(ref.current!);
+      if (el) el.click();
+      else if (++tries < 30) t = setTimeout(run, 100);
+    };
+    t = setTimeout(run, delay);
+    return () => clearTimeout(t);
+  }, [pick, delay]);
+  return <div ref={ref}>{children}</div>;
+}
+
+const noop = () => {};
+
+export function DecisionBanner() {
+  return (
+    <div className="max-w-[760px] p-6">
+      <Label>need_decision, one open card</Label>
+      <IssueDecisionBanner issueId="iss-5701" status="need_decision" ownerAgentId={AGENT} />
+      <Label>answered card folds (decision used)</Label>
+      <IssueDecisionBanner issueId="iss-5702" status="in_progress" ownerAgentId={AGENT} />
+    </div>
+  );
+}
+
+export function HierarchyMinimap() {
+  return (
+    <div className="p-6">
+      <div className="w-[320px] rounded-xl border border-surface-border p-3">
+        <IssueHierarchy issue={CURRENT as never} />
+      </div>
+    </div>
+  );
+}
+
+export function HierarchyDialogPage() {
+  const heading = useRef<HTMLHeadingElement>(null);
+  return (
+    <div className="p-6">
+      <h2 ref={heading} className="text-label">Hierarchy</h2>
+      <HierarchyDialog issue={CURRENT as never} headingRef={heading} onClose={noop} />
+    </div>
+  );
+}
+
+export function WakeupEventRowPage() {
+  const expand = (root: HTMLElement) => root.querySelector<HTMLElement>("[aria-expanded=false]");
+  return (
+    <div className="max-w-[560px] p-6">
+      <Label>collapsed, titled</Label>
+      <WakeupEventRow timeZone="Asia/Bangkok" wakeup={wakeup(1, "Check CI on the capture PR", "Check the PR checks for CHE-5534.\nIf green, mark the PR ready.")} />
+      <Label>expanded, untitled, issue references chip once</Label>
+      <After pick={expand}>
+        <WakeupEventRow timeZone="Asia/Bangkok" wakeup={wakeup(2, "", "Re-run capture for CHE-5534 and CHE-5430 when CHE-5420 changes; CHE-5534 again is plain text.")} />
+      </After>
+    </div>
+  );
+}
+
+const draft = (condition: WakeupCondition, patch: Partial<WakeupDraft> = {}): WakeupDraft => ({
+  ...emptyWakeupDraft(AGENT, "Asia/Bangkok", new Date(NOW)), condition, ...patch,
+});
+const scope = { workspaceId: WS, issueId: CURRENT.id };
+
+export function ConditionParamsPage() {
+  const rows: [string, WakeupDraft][] = [
+    ["field: status", draft("field", { field: "status", fieldTarget: "in_review" })],
+    ["field: property select", draft("field", { field: "property", fieldTarget: "pr2", fieldValue: "o2" })],
+    ["field: label", draft("field", { field: "label", fieldTarget: "lb1" })],
+    ["children (stage)", draft("children", { stage: 1 })],
+    ["pull_request", draft("pull_request", { prEvent: "merged" })],
+    ["other_issue", draft("other_issue", { otherIssue: { id: "iss-5420", identifier: "CHE-5420" }, otherState: "in_review" })],
+    ["at", draft("at", { atPreset: "tomorrow" })],
+    ["recurring", draft("recurring", { recurrence: "weekdays" })],
+    ["run_end (any agent)", draft("run_end")],
+    ["custom (events)", draft("custom", { events: ["task.completed", "comment.created"] })],
+  ];
+  return (
+    <div className="max-w-[720px] p-6">
+      {rows.map(([label, d]) => (
+        <div key={label} className="flex flex-wrap items-center gap-2 py-1.5">
+          <span className="w-44 shrink-0 text-caption text-muted-foreground">{label}</span>
+          <ConditionParams draft={d} scope={scope} update={noop} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---- SS2 (CHE-5535): wakeup-fields, wakeup-pickers, workspace-wakeup-rules, config-change-viewer ----
+const DEF = (key: string, name: string, instruction: string, trigger: { kind: string; events?: string[] }) => ({
+  scope: "workspace", scope_id: WS, rule_key: key, root: true, revision: "7", updated_at: NOW, redacted: false,
+  config: { v: 1, name, instruction, trigger, target: { type: "agent", id: AGENT }, mode: "once", expiry: { after_seconds: 7 * 86400 } },
+});
+
+function seedSS2(set: (key: readonly unknown[], data: unknown) => void) {
+  // wakeup-pickers/-fields import core/workspace/queries through the harness alias (workspace-stub): seed its keys too.
+  set(stub.agentListOptions(WS).queryKey, [{ id: AGENT, workspace_id: WS, name: "x99-claude-sonnet-design", runtime_id: "rt1", archived_at: null }, { id: "agent-ux", workspace_id: WS, name: "x99-codex-terra", runtime_id: "rt2", archived_at: null }]);
+  set(stub.memberListOptions(WS).queryKey, [{ id: "m1", user_id: "u1", workspace_id: WS, name: "Cheese", email: "c@example.com", role: "owner" }]);
+  set(stub.squadListOptions(WS).queryKey, [{ id: "sq1", workspace_id: WS, name: "Design squad", archived_at: null }]);
+  set(squadListOptions(WS).queryKey, [{ id: "sq1", workspace_id: WS, name: "Design squad", archived_at: null }]);
+  set(wakeupDefinitionsOptions(WS, WORKSPACE_WAKEUP_SCOPE).queryKey, {
+    capabilities: { definition_writes: true, trigger_kinds: [], fields: [] },
+    definitions: [
+      DEF("4f1c2d3e-0000-4000-8000-000000000001", "Nudge stalled design reviews", "Check the doop frame for an open Cheese comment and reply in thread.", { kind: "event", events: ["comment.created"] }),
+      DEF("4f1c2d3e-0000-4000-8000-000000000002", "Weekly capture drift check", "Re-run the pattern harness and report any frame that changed.", { kind: "event", events: ["task.completed"] }),
+    ],
+  });
+}
+
+const HIGHLIGHT_ROW = "flex flex-wrap items-center gap-2 py-1.5";
+
+export function WakeupFieldsPage() {
+  const [reply, setReply] = useState<WakeupDraft>(() => draft("reply", { agentId: AGENT, replyActor: { type: "member", id: "u1" }, instruction: "Reply to Cheese's last comment and update the frame." }));
+  const [pr, setPr] = useState<WakeupDraft>(() => draft("pull_request", { agentId: AGENT, prEvent: "merged", mode: "continuous", instruction: "Read the failing check and push a fix to the same PR." }));
+  const [rec, setRec] = useState<WakeupDraft>(() => draft("recurring", { agentId: AGENT, recurrence: "weekdays", instruction: "Summarise open design threads." }));
+  const sc = { workspaceId: WS, issueId: CURRENT.id };
+  const block = (label: string, d: WakeupDraft, set: (d: WakeupDraft) => void) => (
+    <div className="rounded-xl border border-surface-border p-4">
+      <p className="text-caption text-muted-foreground">{label}</p>
+      <WakeupFields draft={d} update={(patch) => set({ ...d, ...patch })} scope={sc} assigneeAgentId={AGENT} />
+    </div>
+  );
+  return (
+    <div className="grid gap-4 p-6 md:grid-cols-3">
+      {block("comment reply (assignee hint)", reply, setReply)}
+      {block("pull request, continuous", pr, setPr)}
+      {block("recurring, until date", rec, setRec)}
+    </div>
+  );
+}
+
+export function WakeupPickersPage() {
+  const [v, setV] = useState("now");
+  const [seg, setSeg] = useState<"once" | "continuous">("continuous");
+  const [agent, setAgent] = useState(AGENT);
+  const [actor, setActor] = useState<WakeupDraft["replyActor"]>({ type: "member", id: "u1" });
+  const [assignee, setAssignee] = useState<WakeupDraft["assignee"]>({ type: "agent", id: AGENT });
+  const open = useRef<HTMLDivElement>(null);
+  // A popup opens after hydration settles, like the PillMenu pattern page.
+  useEffect(() => { const t = setTimeout(() => open.current?.querySelector<HTMLElement>("button")?.click(), 300); return () => clearTimeout(t); }, []);
+  return (
+    <div className="max-w-[560px] p-6">
+      <Label>PillMenu, value chosen / placeholder</Label>
+      <div className={HIGHLIGHT_ROW}>
+        <PillMenu label="Wake" value={v} options={[{ value: "now", label: "Right away" }, { value: "hour", label: "In 1 hour" }]} onChange={setV} />
+        <PillMenu label="Condition" value="" options={[]} placeholder="Choose condition" onChange={noop} />
+      </div>
+      <Label>Segmented</Label>
+      <Segmented label="Trigger count" value={seg} options={[{ value: "once", label: "Once" }, { value: "continuous", label: "Every time" }]} onChange={setSeg} />
+      <Label>ActorChoice / AssigneeChoice (closed)</Label>
+      <div className={HIGHLIGHT_ROW}>
+        <ActorChoice workspaceId={WS} value={actor} onChange={setActor} />
+        <AssigneeChoice workspaceId={WS} value={assignee} onChange={setAssignee} />
+      </div>
+      <Label>AgentChoice (open, searchable)</Label>
+      <div ref={open} className="min-h-56"><AgentChoice workspaceId={WS} value={agent} onChange={setAgent} placeholder="Choose agent" /></div>
+    </div>
+  );
+}
+
+export function WorkspaceWakeupRulesPage() {
+  return (
+    <div className="max-w-[720px] p-6">
+      <WorkspaceWakeupRules workspaceId={WS} canManage />
+    </div>
+  );
+}
+
+const CHANGE = {
+  field: "agent.instructions", target_id: "96744546-f5b7-462f-bfee-8816d42cd031", keys: ["instructions"],
+  diff_kind: "text", sha256: "0".repeat(64), before_sha256: "1".repeat(64), after_sha256: "2".repeat(64),
+  meta: { unit: "code_points", chars_before: 1204, chars_after: 1312 },
+  diff: [{ old_start: 4, new_start: 4, lines: [" ## Writes", "-Read the frame first.", "+Read the frame first and pass its updatedAt with every write.", " After one refusal, re-read and retry once."] }],
+  after: "## Writes\nRead the frame first and pass its updatedAt with every write.\nAfter one refusal, re-read and retry once.",
+};
+
+export function ConfigChangeViewerPage() {
+  const tab = (name: string) => (root: HTMLElement) => root.querySelector<HTMLElement>(`[data-testid=config-change-tab-${name}]`);
+  return (
+    <div className="max-w-[560px] p-6">
+      <Label>collapsed</Label>
+      <ConfigChangeViewer change={CHANGE as never} />
+      <Label>Changes tab open</Label>
+      <After pick={tab("changes")}><ConfigChangeViewer change={CHANGE as never} /></After>
+      <Label>Result tab open</Label>
+      <After pick={tab("result")}><ConfigChangeViewer change={{ ...CHANGE, field: "workspace.settings" } as never} /></After>
+    </div>
+  );
+}
+
+// ---- SS3 (CHE-5536): decision-artifacts, decision-request-card, needs-you-list, quick-agent-bar, delegated-writes-section ----
+const att = (id: string, filename: string, size: number, type = "text/markdown") => ({
+  id, filename, content_type: type, size_bytes: size, download_url: `/harness/${id}`,
+});
+const SHA = (c: string) => c.repeat(64);
+const ARTIFACTS: Record<string, unknown[]> = {
+  "rq-art-1": [
+    {
+      attachment_id: "at-1", label: "Plan r19", sha256: SHA("a"), supersedes_attachment_id: "at-0",
+      signed_by: { reviewer: "x99-codex-terra", comment_id: "cm-9" }, supersedes_signed_by: { reviewer: "x99-codex-terra", comment_id: "cm-3" },
+      attachment: att("at-1", "plan-r19.md", 18_432),
+      diff: { previous_filename: "plan-r18.md", hunks: [{ old_start: 12, new_start: 12, lines: [" ## Sizing", "-Batches of 7 items.", "+Batches of 5 items at most (S4a: 18 min per frame).", " Serial, one stage each."] }] },
+    },
+    { attachment_id: "at-2", label: "Capture notes", sha256: SHA("b"), attachment: att("at-2", "capture-notes.md", 2_210) },
+    { attachment_id: "at-3", label: "Harness log", sha256: SHA("c"), signed_by: { reviewer: "x99-claude-opus", comment_id: "cm-11" }, attachment: att("at-3", "harness-build.log", 94_000, "text/plain") },
+  ],
+};
+const DELEGATED: Record<string, unknown> = {
+  "ws-dw-edit": { allowed_agents: [AGENT], allowed_fields: ["workflow.steps", "squad.instructions", "project.description"], requires_human_decision: true },
+  "ws-dw-view": { allowed_agents: [AGENT], allowed_fields: ["agent.instructions", "workflow.budget"], requires_human_decision: false },
+};
+const PINNED = [{ agent_id: AGENT }, { agent_id: "agent-ux" }, { agent_id: "agent-ops" }];
+const AGENTS = [
+  { id: AGENT, name: "x99-claude-sonnet-design" }, { id: "agent-ux", name: "x99-codex-terra" },
+  { id: "agent-ops", name: "x99-claude-opus" }, { id: "agent-dev", name: "x99-codex-luna" },
+].map((a) => ({ ...a, workspace_id: WS, runtime_id: "rt1", archived_at: null }));
+const ASK = "**Decision**\nWhich reference frame layout should the 7 batches share?\n\n**Effect**\nSS3 to SS7 append to the frame you pick.";
+const sessionRow = (n: number, level: string, source: string, title: string, minutesAgo: number, extra: Record<string, unknown> = {}) => ({
+  id: `cs-n${n}`, workspace_id: WS, agent_id: AGENT, creator_id: "u1", title, status: "active", has_unread: true, pinned: false,
+  stale_level: level, attention_source: source, attention_since: new Date(Date.now() - minutesAgo * 60_000).toISOString(),
+  attention_keys: [`turn:t${n}`], created_at: NOW, updated_at: NOW, ...extra,
+});
+const SESSIONS = [
+  sessionRow(1, "red", "ask", "Which frame layout should the batches share?", 26 * 60),
+  sessionRow(2, "yellow", "decision", "Approve plan r19 for CHE-5420", 5 * 60),
+  sessionRow(3, "yellow", "unseen", "Doop OAuth for the capture agent", 4.5 * 60),
+  sessionRow(4, "fresh", "decision", "x99-codex-terra proposes delegated writes v3 on CHE-5430", 20),
+  sessionRow(5, "fresh", "later", "Renderer outage on the frame screenshot", 12),
+  sessionRow(6, "fresh", "ask", "Release sub-stage 4", 3),
+  { ...sessionRow(7, "none", "ask", "Untyped replies to triage", 90), stale_level: "none", attention_source: null, attention_since: null, attention_keys: [], attention_unclassified_keys: ["turn:u1", "turn:u2"] },
+];
+
+function seedSS3(set: (key: readonly unknown[], data: unknown) => void) {
+  set(chatKeys.sessions(WS), SESSIONS);
+  set(chatKeys.pinnedAgents(WS), PINNED);
+  for (const [ws, rule] of Object.entries(DELEGATED)) set(["delegated-writes", ws], rule);
+  set(stub.agentListOptions(WS).queryKey, AGENTS);
+  set(agentListOptions(WS).queryKey, AGENTS);
+  for (const id of ["rq-ss3-open", "rq-ss3-recorded", "rq-ss3-withdrawn"]) set(decisionArtifactKeys.list(id), []);
+}
+
+export function DecisionArtifactsPage() {
+  return (
+    <div className="max-w-[560px] p-6">
+      <Label>3 files: signed with diff, unsigned, signed without diff (approving)</Label>
+      <DecisionArtifacts requestId="rq-art-1" answered={false} />
+      <Label>same files, request answered (approved)</Label>
+      <DecisionArtifacts requestId="rq-art-1" answered />
+      <Label>list failed: retry banner</Label>
+      <DecisionArtifacts requestId="rq-art-err" answered={false} />
+    </div>
+  );
+}
+
+export function DecisionRequestCardPage() {
+  const open = { ...card("rq-ss3-open", 5430, "open"), ask: ASK, covers_request_ids: undefined };
+  const recorded = {
+    ...card("rq-ss3-recorded", 5430, "answered"), ask: ASK,
+    answer: { state: "delivered", text: "One frame, grows", option: "One frame, grows", chosen_option_index: 1, option_label: "One frame, grows" },
+    record_comment_id: "cm1",
+  };
+  const withdrawn = { ...card("rq-ss3-withdrawn", 5430, "open"), ask: ASK, state: "withdrawn", withdrawn_at: "2026-11-13T08:55:00Z", reason: "Superseded by the plan r19 decision." };
+  return (
+    <div className="grid max-w-[1100px] items-start gap-6 p-6 lg:grid-cols-2">
+      <div>
+        <Label>open, 2 options</Label>
+        <DecisionRequestCard card={open as never} />
+      </div>
+      <div>
+        <Label>answered, recorded (folded)</Label>
+        <DecisionRequestCard card={recorded as never} />
+        <Label>withdrawn (folded)</Label>
+        <DecisionRequestCard card={withdrawn as never} />
+      </div>
+    </div>
+  );
+}
+
+export function NeedsYouListPage() {
+  const expand = (root: HTMLElement) => root.querySelector<HTMLElement>("[aria-expanded=false]");
+  return (
+    <div className="w-[360px] p-3">
+      <After pick={expand}>
+        <NeedsYouList sessions={SESSIONS as never} agents={AGENTS as never} refresh={false} />
+      </After>
+    </div>
+  );
+}
+
+export function QuickAgentBarPage() {
+  return (
+    <div className="w-[320px]">
+      <Label>3 pinned, room to add</Label>
+      <QuickAgentBar agents={AGENTS as never} userId="u1" onStartNewChat={noop} />
+    </div>
+  );
+}
+
+export function DelegatedWritesPage() {
+  const root = useRef<HTMLDivElement>(null);
+  // Owner variant opens its editor after hydration settles (the refetch on mount replaces the seeded rule first).
+  useEffect(() => {
+    const t = setTimeout(() => [...root.current!.querySelectorAll<HTMLElement>("button")].find((b) => /edit rule/i.test(b.textContent ?? ""))?.click(), 600);
+    return () => clearTimeout(t);
+  }, []);
+  return (
+    <div ref={root} className="grid max-w-[900px] gap-2 p-6">
+      <Label>member, read-only (writes directly)</Label>
+      <DelegatedWritesSection wsId="ws-dw-view" canEdit={false} />
+      <Label>owner or admin, editor opened (decision required)</Label>
+      <DelegatedWritesSection wsId="ws-dw-edit" canEdit />
+    </div>
+  );
+}
+
+// ---- SS4 (CHE-5537): dingtalk-tab, lark-tab, slack-tab, telegram-tab, wecom-tab ----
+// Each tab reads one installation list for the one workspace the harness has, so each variant gets its own
+// client (seeded, never stale) and the page stacks the states: not enabled, empty, listed.
+const T0 = "2026-11-13T02:30:00Z";
+const inst = (id: string, agent: string, extra: Record<string, unknown> = {}) => ({
+  id, workspace_id: WS, agent_id: agent, installer_user_id: "u1", status: "active", installed_at: T0, created_at: T0, updated_at: T0, ...extra,
+});
+const OFF = { installations: [], configured: false };
+const EMPTY = { installations: [], configured: true, install_supported: true };
+const listed = (installations: unknown[], extra: Record<string, unknown> = {}) => ({ installations, configured: true, install_supported: true, ...extra });
+const TG = listed([
+  inst("tg1", AGENT, { bot_username: "design_capture_bot" }),
+  inst("tg2", "agent-ux", { bot_username: "terra_review_bot", status: "revoked" }),
+]);
+const SL = listed([inst("sl1", AGENT, { team_id: "T01", bot_user_id: "U01" }), inst("sl2", "agent-ops", { team_id: "T01", bot_user_id: "U02", status: "revoked" })]);
+const LARK_LIST = listed([
+  inst("lk1", AGENT, { app_id: "cli_a1", bot_open_id: "ou_1", region: "feishu", first_message_received_at: "2026-11-13T03:10:00Z" }),
+  inst("lk2", "agent-ux", { app_id: "cli_a2", bot_open_id: "ou_2", region: "lark", first_message_received_at: "2026-11-13T03:10:00Z" }),
+  inst("lk3", "agent-ops", { app_id: "cli_a3", bot_open_id: "ou_3", region: "lark", status: "revoked" }),
+]);
+const WC = listed([
+  { id: "wc1", workspace_id: WS, agent_id: AGENT, bot_id: "aibot-1", installer_user_id: "u1", status: "active" },
+  { id: "wc2", workspace_id: WS, agent_id: "agent-ops", bot_id: "aibot-2", installer_user_id: "u1", status: "revoked" },
+], { scan_install_supported: true });
+const DT = listed([inst("dt1", AGENT, { bound_dingtalk_user_ids: ["staff-1"] }), inst("dt2", "agent-ux"), inst("dt3", "agent-ops", { status: "revoked" })]);
+const DT_GROUPS = {
+  group_discovery_supported: true,
+  groups: [
+    { conversation_id: "cv1", conversation_title: "Design review", bots: [{ installation_id: "dt1", agent_id: AGENT, bot_name: "Design capture", bot_identity_issue: "", last_active_at: "2026-11-14T03:00:00Z", mention_count: 14 }] },
+    { conversation_id: "cv2", conversation_title: "Release room", bots: [{ installation_id: "dt1", agent_id: AGENT, bot_name: "Design capture", bot_identity_issue: "", last_active_at: "2026-11-10T08:00:00Z", mention_count: 3 }] },
+  ],
+  inactive_group_counts: { dt1: 2 },
+  bot_identities: { dt1: { installation_id: "dt1", agent_id: AGENT, bot_name: "Design capture", bot_identity_issue: "" }, dt2: { installation_id: "dt2", agent_id: "agent-ux", bot_name: "", bot_identity_issue: "missing_permission" } },
+};
+
+function Variant({ label, seed, children }: { label: string; seed: (qc: QueryClient) => void; children: ReactNode }) {
+  const [qc] = useState(() => {
+    const c = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
+    c.setQueryData(stub.agentListOptions(WS).queryKey, AGENTS);
+    c.setQueryData(agentListOptions(WS).queryKey, AGENTS);
+    c.setQueryData(stub.memberListOptions(WS).queryKey, [{ id: "m1", user_id: "u-owner", workspace_id: WS, name: "Cheese", email: "c@example.com", role: "owner" }]);
+    seed(c);
+    return c;
+  });
+  return (
+    <section>
+      <Label>{label}</Label>
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    </section>
+  );
+}
+
+function IntegrationTabPage({ keyOf, off, empty, full, fullLabel, children, extra }: {
+  keyOf: (ws: string) => readonly unknown[]; off: unknown; empty: unknown; full: unknown; fullLabel: string; children: ReactNode;
+  extra?: (qc: QueryClient) => void;
+}) {
+  const v = (label: string, data: unknown, grow?: (qc: QueryClient) => void) => (
+    <Variant label={label} seed={(qc) => { qc.setQueryData(keyOf(WS), data); grow?.(qc); }}>{children}</Variant>
+  );
+  return (
+    <div className="grid max-w-[760px] gap-2 p-6">
+      {v(fullLabel, full, extra)}
+      {v("no installations yet", empty)}
+      {v("secret key not set (not enabled)", off)}
+    </div>
+  );
+}
+
+export function TelegramTabPage() {
+  return <IntegrationTabPage keyOf={telegramKeys.installations} off={OFF} empty={EMPTY} full={TG} fullLabel="owner: 1 active bot, 1 revoked"><TelegramTab /></IntegrationTabPage>;
+}
+export function SlackTabPage() {
+  return <IntegrationTabPage keyOf={slackKeys.installations} off={OFF} empty={EMPTY} full={SL} fullLabel="owner: 1 active app, 1 revoked"><SlackTab /></IntegrationTabPage>;
+}
+export function LarkTabPage() {
+  return <IntegrationTabPage keyOf={larkKeys.installations} off={OFF} empty={EMPTY} full={LARK_LIST} fullLabel="owner: Feishu verified, Lark verified, 1 revoked"><LarkTab /></IntegrationTabPage>;
+}
+export function WecomTabPage() {
+  return <IntegrationTabPage keyOf={wecomKeys.installations} off={OFF} empty={EMPTY} full={WC} fullLabel="owner: 1 active bot, 1 revoked"><WecomTab /></IntegrationTabPage>;
+}
+export function DingTalkTabPage() {
+  return (
+    <IntegrationTabPage keyOf={dingtalkKeys.installations} off={OFF} empty={EMPTY} full={DT} fullLabel="owner: 2 active robots with groups and identity states, 1 revoked"
+      extra={(qc) => qc.setQueryData(dingtalkKeys.groups(WS), DT_GROUPS)}><DingTalkTab /></IntegrationTabPage>
+  );
+}
+
+// ---- SS5 (CHE-5538): create-agent-dialog, concurrency-picker, skill-attach, visibility-picker, instructions-editor ----
+const RT_SS5 = {
+  id: "rt-ss5", workspace_id: WS, daemon_id: "d-x99", name: "x99 (Claude)", runtime_mode: "local", provider: "claude", launch_header: "",
+  status: "online", device_info: "Linux x86_64", metadata: {}, owner_id: "u1", visibility: "private", pause: null,
+  daemon_running_tasks: 0, last_seen_at: NOW, created_at: "2026-11-01T00:00:00Z", updated_at: NOW,
+};
+const MODELS_SS5 = { supported: true, cached: false, models: [
+  { id: "claude-opus-5-5", label: "Claude Opus 5.5", provider: "anthropic", default: true },
+  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", provider: "anthropic" },
+  { id: "claude-haiku-5-5", label: "Claude Haiku 5.5", provider: "anthropic" },
+] };
+const skill = (id: string, name: string, description: string) => ({
+  id, workspace_id: WS, name, description, config: {}, created_by: "u1", created_at: NOW, updated_at: NOW,
+});
+const SKILLS_SS5 = [
+  skill("sk1", "ponytail", "Pick the laziest solution that works."),
+  skill("sk2", "tdd", "Test-driven development: red, green, refactor."),
+  skill("sk3", "code-review", "Review a change against standards and spec."),
+];
+const AGENT_SS5 = {
+  id: AGENT, workspace_id: WS, name: "x99-claude-sonnet-design", skills: [{ id: "sk1", name: "ponytail", description: SKILLS_SS5[0]!.description }],
+};
+
+function seedSS5(set: (key: readonly unknown[], data: unknown) => void) {
+  set(stub.skillListOptions(WS).queryKey, SKILLS_SS5);
+  set(runtimeModelsKeys.forRuntime(RT_SS5.id), MODELS_SS5);
+}
+
+export function CreateAgentDialogPage() {
+  return (
+    <div className="p-6">
+      <CreateAgentDialog
+        runtimes={[RT_SS5] as never}
+        members={[{ id: "m1", user_id: "u1", workspace_id: WS, name: "Cheese", email: "c@example.com", role: "owner" }] as never}
+        currentUserId="u1"
+        onClose={noop}
+        onCreate={async () => {}}
+      />
+    </div>
+  );
+}
+
+export function ConcurrencyPickerPage() {
+  const open = (root: HTMLElement) => root.querySelector<HTMLElement>("button[aria-label]");
+  return (
+    <div className="max-w-[420px] p-6">
+      <Label>read-only (cannot edit)</Label>
+      <ConcurrencyPicker value={6} canEdit={false} onChange={noop} />
+      <Label>editable chip</Label>
+      <ConcurrencyPicker value={6} onChange={noop} />
+      <Label>popover open: range hint, number field, Save</Label>
+      <div className="min-h-[120px]">
+        <After pick={open} delay={400}><ConcurrencyPicker value={6} onChange={noop} /></After>
+      </div>
+    </div>
+  );
+}
+
+export function VisibilityPickerPage() {
+  const open = (root: HTMLElement) => root.querySelector<HTMLElement>("button[aria-label]");
+  return (
+    <div className="max-w-[420px] p-6">
+      <Label>read-only badge: workspace, private</Label>
+      <div className="flex gap-2">
+        <VisibilityPicker value="workspace" canEdit={false} onChange={noop} />
+        <VisibilityPicker value="private" canEdit={false} onChange={noop} />
+      </div>
+      <Label>editable chips: workspace, private</Label>
+      <div className="flex gap-2">
+        <VisibilityPicker value="workspace" onChange={noop} />
+        <VisibilityPicker value="private" onChange={noop} />
+      </div>
+      <Label>popover open (workspace selected)</Label>
+      <div className="min-h-[160px]">
+        <After pick={open} delay={400}><VisibilityPicker value="workspace" onChange={noop} /></After>
+      </div>
+    </div>
+  );
+}
+
+export function SkillAttachPage() {
+  const all = { ...AGENT_SS5, skills: SKILLS_SS5.map(({ id, name, description }) => ({ id, name, description })) };
+  return (
+    <div className="grid max-w-[520px] gap-2 p-6">
+      <Variant label="2 workspace skills left to attach: dashed + Attach chip" seed={(qc) => qc.setQueryData(stub.skillListOptions(WS).queryKey, SKILLS_SS5)}>
+        <SkillAttach agent={AGENT_SS5 as never} />
+      </Variant>
+      <Variant label="canEdit false: nothing renders" seed={(qc) => qc.setQueryData(stub.skillListOptions(WS).queryKey, SKILLS_SS5)}>
+        <SkillAttach agent={AGENT_SS5 as never} canEdit={false} />
+      </Variant>
+      <Variant label="every skill already attached: nothing renders" seed={(qc) => qc.setQueryData(stub.skillListOptions(WS).queryKey, SKILLS_SS5)}>
+        <SkillAttach agent={all as never} />
+      </Variant>
+    </div>
+  );
+}
+
+export function InstructionsEditorPage() {
+  const expand = (root: HTMLElement) => root.querySelector<HTMLElement>("button");
+  return (
+    <div className="max-w-[640px] p-6">
+      <Label>collapsed, empty (placeholder)</Label>
+      <InstructionsEditor value="" onChange={noop} />
+      <Label>collapsed, 2-line preview of the value</Label>
+      <InstructionsEditor value={"You are the design capture agent.\nCapture each raw-element file at 1440 and 390.\nNever replace earlier captures."} onChange={noop} />
+      <Label>expanded: markdown editor and Collapse button</Label>
+      <After pick={expand}><InstructionsEditor value="Capture each file at 1440 and 390." onChange={noop} /></After>
+    </div>
+  );
+}
+
+// ---- SS6 (CHE-5539): add-trigger-dialog, expandable-description, html-viewer, plan-revision-viewer, resource-label-picker ----
+const LABELS_SS6 = [
+  { id: "lb1", name: "design-system", color: "#3b82f6" }, { id: "lb2", name: "needs-review", color: "#f59e0b" },
+  { id: "lb3", name: "x99-only", color: "#10b981" }, { id: "lb4", name: "blocked-on-doop", color: "#ef4444" },
+];
+const planAtt = (id: string, filename: string, created_at: string) => ({
+  id, workspace_id: WS, issue_id: "iss-5420", comment_id: null, chat_session_id: null, chat_message_id: null,
+  uploader_type: "agent", uploader_id: AGENT, filename, url: `/uploads/${id}.md`, download_url: `/uploads/${id}.md`,
+  content_type: "text/markdown", size_bytes: 900, created_at,
+});
+const PLAN_ATTACHMENTS = [
+  planAtt("pa1", "plan-rev-1.md", "2026-11-13T03:00:00Z"), planAtt("pa2", "plan-rev-2.md", "2026-11-13T05:30:00Z"), planAtt("pa3", "plan-rev-3.md", "2026-11-13T08:00:00Z"),
+];
+const PLAN_TEXT: Record<string, string> = {
+  pa1: "## Goal\n\nCapture the Patterns frames.\n\n## Do\n\n1. Capture 37 frames.\n2. Mark entries.\n\n## Done when\n\n- No pending entries.",
+  pa2: "## Goal\n\nCapture the Patterns frames and the S0b raw-element files.\n\n## Do\n\n1. Capture 37 frames.\n2. Mark entries.\n3. Capture raw files onto one doop frame.\n\n## Done when\n\n- No pending entries.",
+  pa3: "## Goal\n\nCapture the Patterns frames and the S0b raw-element files.\n\n## Do\n\n1. Capture 37 frames.\n2. Mark entries.\n3. Capture raw files onto one doop frame.\n4. Flip the validator.\n\n## Done when\n\n- No pending entries.\n- Validator fails pending.",
+};
+function seedSS6(set: (key: readonly unknown[], data: unknown) => void) {
+  set(labelListOptions(WS, "agent").queryKey, { labels: LABELS_SS6 });
+  set(labelKeys.byResource(WS, "agent", "res-chips"), { labels: LABELS_SS6.slice(0, 2) });
+  set(labelKeys.byResource(WS, "agent", "res-empty"), { labels: [] });
+  set(["plan-revisions", WS, "iss-5420"], PLAN_ATTACHMENTS);
+  set(["plan-revision-issue", WS, "iss-5420"], { id: "iss-5420", identifier: "CHE-5420" });
+  for (const [id, text] of Object.entries(PLAN_TEXT)) set(["attachment-content", id], { text, originalContentType: "text/markdown" });
+}
+
+export function AddTriggerDialogPage() {
+  // The dialog fades in; a still taken mid-fade is washed out, so the animation is switched off for the capture.
+  return <div className="p-6"><style>{"*,*::before,*::after{animation:none!important;transition:none!important}"}</style><AddTriggerDialog open onOpenChange={noop} autopilotId="ap-harness" /></div>;
+}
+
+const LONG = "Captures every raw-element file the S4b audit lists onto one doop reference frame, 1440 and 390, labelled with the file path. Each batch edits the same frame, so batches run in sequence; earlier captures are never replaced. The draft PR records the minutes per capture and marks each file captured in ui-drift.md.";
+export function ExpandableDescriptionPage() {
+  const expand = (root: HTMLElement) => root.querySelector<HTMLElement>("button");
+  return (
+    <div className="max-w-[640px] p-6">
+      <Label>short text: no toggle</Label>
+      <ExpandableDescription>Captures the raw-element files.</ExpandableDescription>
+      <Label>long text, clamped to two lines with the Show more toggle</Label>
+      <ExpandableDescription>{LONG}</ExpandableDescription>
+      <Label>long text, expanded with the Show less toggle</Label>
+      <After pick={expand} delay={300}><ExpandableDescription>{LONG}</ExpandableDescription></After>
+    </div>
+  );
+}
+
+const DOC = `<!doctype html><html><body style="font:14px system-ui;padding:16px"><h2>Capture report</h2><p>25 of 35 files captured.</p><table border="1" cellpadding="6"><tr><th>Batch</th><th>Files</th></tr><tr><td>SS5</td><td>5</td></tr><tr><td>SS6</td><td>5</td></tr></table></body></html>`;
+export function HtmlViewerPage() {
+  const viewSource = (root: HTMLElement) => root.querySelector<HTMLElement>("button[aria-pressed]");
+  return (
+    <div className="grid max-w-[900px] gap-2 p-6">
+      <Label>preview: sandboxed iframe</Label>
+      <div className="h-[320px] rounded-md border"><HtmlViewer html={DOC} document={DOC} title="capture-report.html" onReload={noop} /></div>
+      <Label>source view toggled on</Label>
+      <div className="h-[320px] rounded-md border"><After pick={viewSource} delay={300}><HtmlViewer html={DOC} document={DOC} title="capture-report.html" onReload={noop} /></After></div>
+      <Label>document still loading</Label>
+      <div className="h-[140px] rounded-md border"><HtmlViewer html={DOC} document={null} title="capture-report.html" onReload={noop} /></div>
+    </div>
+  );
+}
+
+export function PlanRevisionViewerPage() {
+  const diffOn = (root: HTMLElement) => root.querySelector<HTMLElement>("[role=switch]:not([data-disabled])");
+  const cur = PLAN_ATTACHMENTS[2]!;
+  const view = <PlanRevisionViewer attachment={cur as never} onDownload={noop} onClose={noop} />;
+  return (
+    <div className="grid gap-2 p-4">
+      <Label>read-only document, diff off (plan-rev-3.md, two earlier revisions)</Label>
+      <div className="h-[360px] rounded-md border">{view}</div>
+      <Label>diff on against plan-rev-2.md</Label>
+      <div className="h-[360px] rounded-md border"><After pick={diffOn} delay={500}>{view}</After></div>
+    </div>
+  );
+}
+
+export function ResourceLabelPickerPage() {
+  const open = (root: HTMLElement) => root.querySelector<HTMLElement>("button");
+  return (
+    <div className="max-w-[420px] p-6">
+      <Label>read-only, with labels</Label>
+      <ResourceLabelPicker resourceType="agent" resourceId="res-chips" canEdit={false} />
+      <Label>read-only, no labels</Label>
+      <ResourceLabelPicker resourceType="agent" resourceId="res-empty" canEdit={false} />
+      <Label>editable, 2 labels attached</Label>
+      <ResourceLabelPicker resourceType="agent" resourceId="res-chips" canEdit />
+      <Label>editable, empty (Add label)</Label>
+      <ResourceLabelPicker resourceType="agent" resourceId="res-empty" canEdit />
+      <Label>popover open: search, catalog, check on attached</Label>
+      <div className="min-h-[300px]"><After pick={open} delay={400}><ResourceLabelPicker resourceType="agent" resourceId="res-chips" canEdit /></After></div>
+    </div>
+  );
+}
+
+// ---- SS7 (CHE-5540): media-context, media-page, local-directory-mode-dialog, next-self-mention, project-workflow-menu ----
+const MEDIA_HTML = `<div style="font:14px system-ui;padding:16px"><h2>Capture report</h2><p>35 of 35 files on the reference frame.</p></div>`;
+const MEDIA_ISSUE = issue(5420, "in_progress", "Capture the S0b raw-element files", { id: "iss-media", workspace_id: WS, description: "Report:\n\n```html\n" + MEDIA_HTML + "\n```\n" });
+
+const wfStep = (status_key: string, handler: IssueWorkflow["steps"][number]["handler"]) => ({ status_key, handler, instructions: "" });
+const WORKFLOWS: IssueWorkflow[] = [
+  { id: "wf-default", workspace_id: WS, name: "Default", description: "", is_default: true, owner_id: null, project_ids: [], created_at: NOW, updated_at: NOW,
+    steps: [wfStep("backlog", { type: "none" }), wfStep("todo", { type: "agent", id: AGENT }), wfStep("in_progress", { type: "agent", id: AGENT }), wfStep("in_review", { type: "member", id: "u1" }), wfStep("done", { type: "none" })] },
+  { id: "wf-design", workspace_id: WS, name: "Design", description: "", is_default: false, owner_id: "u1", project_ids: ["pj1"], created_at: NOW, updated_at: NOW,
+    steps: [wfStep("backlog", { type: "none" }), wfStep("todo", { type: "agent", id: AGENT }), wfStep("in_progress", { type: "agent", id: AGENT }), wfStep("in_review", { type: "member", id: "u1" }), wfStep("done", { type: "none" })] },
+];
+const PROJECT = { id: "pj1", workspace_id: WS, title: "Design system", description: null, icon: null, status: "in_progress", priority: "medium", lead_type: "member", lead_id: "u1", workflow_id: "wf-design", created_at: NOW, updated_at: NOW } as unknown as Project;
+function seedSS7(set: (key: readonly unknown[], data: unknown) => void) {
+  set(projectListOptions(WS).queryKey, { projects: [PROJECT], total: 1 });
+  set(issueWorkflowListOptions(WS).queryKey, { workflows: WORKFLOWS });
+  configStore.getState().setFeatureFlags({ project_workflows_v1: true });
+}
+
+const SOURCE = { type: "issues" as const, id: "iss-media" };
+export function MediaContextPage() {
+  return (
+    <div className="grid max-w-[640px] gap-3 p-6">
+      <Label>MediaLinkAction, standalone: copy link (the media page)</Label>
+      <div className="flex items-center gap-2 rounded-md border p-2"><span className="text-caption text-muted-foreground">Mermaid diagram</span><ViewerActions><MediaLinkAction kind="mermaid" content="graph TD; A-->B" copyLink /></ViewerActions></div>
+      <Label>MediaLinkAction in a source: open in a new tab (enabled once the content id is computed)</Label>
+      <MediaSourceProvider source={SOURCE}>
+        <div className="flex items-center gap-2 rounded-md border p-2"><span className="text-caption text-muted-foreground">HTML preview</span><ViewerActions><MediaLinkAction kind="html" content={MEDIA_HTML} /></ViewerActions></div>
+      </MediaSourceProvider>
+      <Label>MediaLinkAction with no source: renders nothing</Label>
+      <div className="flex items-center gap-2 rounded-md border p-2"><span className="text-caption text-muted-foreground">No source (empty slot)</span><ViewerActions><MediaLinkAction kind="table" content="a|b" /></ViewerActions></div>
+    </div>
+  );
+}
+
+export function MediaPagePage() {
+  const [mediaId, setMediaId] = useState<string | null>(null);
+  useEffect(() => { void mediaContentId(MEDIA_HTML).then(setMediaId); }, []);
+  const route = { type: "issues" as const, id: "iss-media", kind: "html" as const, mediaId: mediaId ?? "" };
+  return (
+    <div className="grid gap-2 p-4">
+      <Label>MediaPage: an html block resolved from an issue (standalone, copy-link action)</Label>
+      <div className="h-[260px] overflow-hidden rounded-md border">{mediaId ? <MediaPage route={route} /> : null}</div>
+      <Label>MediaUnavailablePage: 404 or denied</Label>
+      <div className="overflow-hidden rounded-md border"><div className="scale-90"><MediaUnavailablePage /></div></div>
+    </div>
+  );
+}
+
+export function LocalDirectoryModePage() {
+  // One modal state per page: the dialog with the worktree option blocked and a server-side rejection shown.
+  return (
+    <div className="p-6">
+      <style>{"*,*::before,*::after{animation:none!important;transition:none!important}"}</style>
+      <LocalDirectoryModeDialog open onOpenChange={noop} path="/home/cheese/work/multica-fork" value="in_place" unavailableReason="not_git"
+        errorMessage="This machine cannot create a worktree for that folder." confirmLabel="Save" onConfirm={noop} />
+    </div>
+  );
+}
+
+const ROWS = Array.from({ length: 12 }, (_, i) => i);
+const FLAGS = ROWS.map((i) => i === 7 || i === 9);
+export function NextSelfMentionPage() {
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  return (
+    <div className="grid max-w-[560px] gap-2 p-6">
+      <Label>Floating jump above the list: 2 mentions of the viewer below the visible rows (count badge)</Label>
+      <div className="relative h-[280px] overflow-hidden rounded-md border">
+        <div ref={setEl} className="h-full overflow-y-auto">
+          {ROWS.map((i) => <div key={i} data-item-index={i} className="border-b px-3 py-3 text-body">Comment {i + 1}{FLAGS[i] ? " (mentions you)" : ""}</div>)}
+        </div>
+        <NextSelfMention scrollEl={el} flags={FLAGS} onJump={noop} positionClassName="absolute bottom-4 right-4 z-20" />
+      </div>
+      <Label>One mention below: no count badge</Label>
+      <div className="relative h-[200px] overflow-hidden rounded-md border">
+        <OneMention />
+      </div>
+    </div>
+  );
+}
+function OneMention() {
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const flags = ROWS.map((i) => i === 8);
+  return (
+    <>
+      <div ref={setEl} className="h-full overflow-y-auto">
+        {ROWS.map((i) => <div key={i} data-item-index={i} className="border-b px-3 py-3 text-body">Comment {i + 1}{flags[i] ? " (mentions you)" : ""}</div>)}
+      </div>
+      <NextSelfMention scrollEl={el} flags={flags} onJump={noop} positionClassName="absolute bottom-4 right-4 z-20" />
+    </>
+  );
+}
+
+export function ProjectWorkflowMenuPage() {
+  // The project title menu with the Workflow submenu opened (portal content, so the pick reads document).
+  const openSub = () => document.querySelector<HTMLElement>("[data-slot=dropdown-menu-sub-trigger], [role=menuitem][aria-haspopup=menu]");
+  return (
+    <div className="min-h-[360px] p-6">
+      <style>{"*,*::before,*::after{animation:none!important;transition:none!important}"}</style>
+      <ProjectWorkflowMenuHost project={PROJECT}>
+        {(submenu) => (
+          <After pick={openSub} delay={400}>
+            <DropdownMenu open>
+              <DropdownMenuTrigger className="rounded-md border px-3 py-1.5 text-body">Design system</DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="w-64">{submenu}</DropdownMenuContent>
+            </DropdownMenu>
+          </After>
+        )}
+      </ProjectWorkflowMenuHost>
+    </div>
+  );
+}

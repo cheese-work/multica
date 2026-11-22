@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/agentconfig"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -45,6 +46,50 @@ type DecisionRequestCardAction struct {
 	// Preview is absent when the server cannot render the action as the
 	// executor would run it now: an unknown type, or a state the executor refuses.
 	Preview *ActionPreview `json:"preview,omitempty"`
+	// PreviewUnavailable says why Preview is absent when the server knows the
+	// reason (CHE-8772), so the card never ends at a bare "Details unavailable".
+	PreviewUnavailable string `json:"preview_unavailable,omitempty"`
+	// OwnerOnly: only the workspace owner may approve (the server refuses
+	// anyone else with needs_owner); the card hides the approve button.
+	OwnerOnly bool `json:"owner_only,omitempty"`
+	// ConfigChange is the stored server preview of a pending config change,
+	// the exact text whose digest approve checks. Absent for other actions.
+	ConfigChange *ConfigChangeCard `json:"config_change,omitempty"`
+	// Readback of a decided action (B v9 S9, CHE-5419): what the decision did, when and by
+	// whom, and whether Revoke still applies. Empty while the action is pending.
+	Effect       string `json:"effect,omitempty"`
+	EffectReason string `json:"effect_reason,omitempty"`
+	DecidedAt    string `json:"decided_at,omitempty"`
+	DecidedBy    string `json:"decided_by_name,omitempty"`
+	OnBehalfOf   string `json:"on_behalf_of_name,omitempty"`
+	Revocable    bool   `json:"revocable"`
+	// Revoke is the record of a revoke that happened.
+	Revoke *CardRevoke `json:"revoke,omitempty"`
+	// Receipt is what an executed run-budget raise or top-up did and where its run stands.
+	Receipt *RunBudgetReceipt `json:"receipt,omitempty"`
+}
+
+// CardRevoke is who revoked an applied action, when, and why.
+type CardRevoke struct {
+	At     string `json:"at"`
+	By     string `json:"by_name,omitempty"`
+	Reason string `json:"reason"`
+}
+
+// ConfigChangeCard is a config change's stored preview and its digest.
+type ConfigChangeCard struct {
+	Field    string                `json:"field"`
+	TargetID string                `json:"target_id"`
+	Keys     []string              `json:"keys"`
+	DiffKind string                `json:"diff_kind"`
+	Diff     []decisiontx.DiffHunk `json:"diff"`
+	// After is the value approve would write, as the server read it: a string
+	// for text, a list of lines, or a JSON value.
+	After        any            `json:"after"`
+	BeforeSHA256 string         `json:"before_sha256"`
+	AfterSHA256  string         `json:"after_sha256"`
+	Meta         map[string]any `json:"meta,omitempty"`
+	SHA256       string         `json:"sha256"`
 }
 
 // previewDigest is the digest of a preview's canonical fields.
@@ -56,6 +101,12 @@ func previewDigest(raw []byte) string {
 	digest := sha256.Sum256(canonical)
 	return hex.EncodeToString(digest[:])
 }
+
+// previewUnavailableError is a preview the server declines to render for a reason
+// the person can act on. The reason is server text, never agent text.
+type previewUnavailableError struct{ Reason string }
+
+func (err previewUnavailableError) Error() string { return err.Reason }
 
 func newActionPreview(fields []ActionPreviewField) (*ActionPreview, error) {
 	raw, err := json.Marshal(fields)
@@ -77,19 +128,67 @@ func (handler *Handler) decisionCardAction(ctx context.Context, workspaceID, req
 		slog.WarnContext(ctx, "decision card action unreadable", "request_id", uuidToString(requestID), "error", err)
 		return nil
 	}
-	card := &DecisionRequestCardAction{ID: uuidToString(action.ID), ActionType: action.ActionType, PayloadSHA256: action.PayloadSha256, State: action.State}
+	card := &DecisionRequestCardAction{ID: uuidToString(action.ID), ActionType: action.ActionType, PayloadSHA256: action.PayloadSha256, State: action.State, OwnerOnly: actionOwnerOnly(action)}
 	if action.State != "pending" {
+		handler.fillCardReadback(ctx, card, action, requestID)
+		return card
+	}
+	if _, configured := configChanges[action.ActionType]; configured {
+		card.ConfigChange = handler.cardConfigChange(ctx, action)
 		return card
 	}
 	fields, err := handler.cardPreviewFields(ctx, action)
 	if err == nil && len(fields) > 0 {
 		card.Preview, err = newActionPreview(fields)
 	}
+	var unavailable previewUnavailableError
+	if errors.As(err, &unavailable) {
+		card.PreviewUnavailable = unavailable.Reason
+		return card
+	}
 	if err != nil {
 		slog.WarnContext(ctx, "decision card preview unavailable", "action_id", card.ID, "action_type", action.ActionType, "error", err)
 		card.Preview = nil
 	}
 	return card
+}
+
+// cardConfigChange reads the preview stored with the action, the one approve
+// checks by digest. It quotes agent settings, so it is withheld for an agent
+// the card's human could not view. Any unreadable part gives no preview, and the
+// client then offers no approve.
+func (handler *Handler) cardConfigChange(ctx context.Context, action db.DecisionAction) *ConfigChangeCard {
+	var stored struct {
+		Preview       ConfigChangeCard `json:"preview"`
+		PreviewSHA256 string           `json:"preview_sha256"`
+	}
+	if err := json.Unmarshal(action.Preconditions, &stored); err != nil || stored.PreviewSHA256 == "" || stored.Preview.Field == "" {
+		slog.WarnContext(ctx, "decision card config change unreadable", "action_id", uuidToString(action.ID), "error", err)
+		return nil
+	}
+	if strings.HasPrefix(stored.Preview.Field, "agent.") {
+		request, err := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: action.WorkspaceID, ID: action.DecisionRequestID})
+		if err == nil {
+			_, err = handler.agentForAction(ctx, action.WorkspaceID, stored.Preview.TargetID, request.HumanUserID)
+		}
+		if err != nil {
+			slog.WarnContext(ctx, "decision card config change withheld", "action_id", uuidToString(action.ID), "error", err)
+			return nil
+		}
+	}
+	card := stored.Preview
+	card.SHA256 = stored.PreviewSHA256
+	if card.Keys == nil {
+		card.Keys = []string{}
+	}
+	// A preview stored before diff_kind existed is the json kind.
+	if card.DiffKind == "" {
+		card.DiffKind = "json"
+	}
+	if card.Diff == nil {
+		card.Diff = []decisiontx.DiffHunk{}
+	}
+	return &card
 }
 
 // cardPreviewFields renders the preview for the request's human, the only
@@ -119,7 +218,8 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 			return nil, err
 		}
 		if params.NewCap <= snapshot.RunsLimit {
-			return nil, nil // the executor refuses a raise that does not raise
+			// The executor refuses a raise that does not raise (stale_cap).
+			return nil, previewUnavailableError{fmt.Sprintf("The run cap is already %d; this request asks for %d, which does not raise it. Reject it and ask again with a total above %d.", snapshot.RunsLimit, params.NewCap, snapshot.RunsLimit)}
 		}
 		delta := int64(params.NewCap - snapshot.RunsLimit)
 		return []ActionPreviewField{
@@ -136,17 +236,50 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 			return nil, err
 		}
 		return []ActionPreviewField{{"Runs used", strconv.FormatInt(snapshot.RunsUsed, 10), "0"}}, nil
+	case runGuardAllowType:
+		var params decisionaction.RunGuardAllowParams
+		if err := json.Unmarshal(action.Params, &params); err != nil {
+			return nil, err
+		}
+		issueID, err := parseUUIDString(params.IssueID)
+		if err != nil {
+			return nil, err
+		}
+		limit, err := service.WeeklyRunGuardLimit(ctx, handler.Queries, issueID)
+		if err != nil || limit <= 0 {
+			return nil, err
+		}
+		return []ActionPreviewField{{"Weekly run limit", strconv.FormatInt(limit, 10), strconv.FormatInt(limit+int64(params.Runs), 10)}}, nil
+	case issueWorkflowSetType:
+		return handler.issueWorkflowSetPreview(ctx, action)
+	case issueProjectSetType, issueProjectQuickSetType:
+		return handler.issueProjectSetPreview(ctx, action)
+	case projectWorkflowQuickSetType:
+		return handler.projectWorkflowQuickSetPreview(ctx, action)
 	case "agent.env.patch":
 		return handler.envPatchPreview(ctx, action, viewer)
 	case "agent.copy":
 		return handler.agentCopyPreview(ctx, action, viewer)
+	case agentPauseAction, agentResumeAction:
+		return handler.agentSchedulingPreview(ctx, action, viewer)
+	case "doop.deploy_lift":
+		// No row to read: the approver signs the marker and repository themselves.
+		var params decisionaction.DoopDeployLiftParams
+		if err := json.Unmarshal(action.Params, &params); err != nil {
+			return nil, err
+		}
+		return []ActionPreviewField{
+			{"Deploy train", "held", "lifted"},
+			{"Repository", params.Repo, params.Repo},
+			{"Train marker", params.MarkerValue, params.MarkerValue},
+		}, nil
 	}
 	return nil, nil
 }
 
-// openBudgetSnapshot reads the issue's run budget as the executor does, and
-// returns nil when the issue is unbudgeted or its window is no longer the one
-// the action names (the executor ends both with a failure).
+// openBudgetSnapshot reads the issue's run budget as the executor does. It
+// reports why there is none to show when the issue is unbudgeted or its window
+// is no longer the one the action names (the executor ends both with a failure).
 func (handler *Handler) openBudgetSnapshot(ctx context.Context, issueID, windowID string) (*service.RunBudgetSnapshot, error) {
 	id, err := parseUUIDString(issueID)
 	if err != nil {
@@ -157,8 +290,14 @@ func (handler *Handler) openBudgetSnapshot(ctx context.Context, issueID, windowI
 		return nil, err
 	}
 	snapshot, err := service.LoadRunBudgetSnapshot(ctx, handler.Queries, issue)
-	if err != nil || !snapshot.Budgeted || snapshot.WindowID != windowID {
+	if err != nil {
 		return nil, err
+	}
+	if !snapshot.Budgeted {
+		return nil, previewUnavailableError{"The issue has no run budget now, so there is nothing to raise. Reject this request."}
+	}
+	if snapshot.WindowID != windowID {
+		return nil, previewUnavailableError{"The run budget window changed since this was requested. Reject it and ask again."}
 	}
 	return &snapshot, nil
 }
@@ -205,7 +344,7 @@ func (handler *Handler) agentCopyPreview(ctx context.Context, action db.Decision
 	if err != nil {
 		return nil, fmt.Errorf("copy target runtime: %w", err)
 	}
-	target, err := handler.Queries.GetAgentRuntime(ctx, runtimeID)
+	target, err := handler.runtimeForAction(ctx, action.WorkspaceID, runtimeID, viewer)
 	if err != nil {
 		return nil, err
 	}
@@ -323,6 +462,24 @@ func avatarLabel(requested *string) string {
 	return *requested
 }
 
+// runtimeForAction reads the target runtime as the executor accepts it: in the
+// card's workspace and usable by the viewer. Anything else is an error, so the
+// card shows "details unavailable" and names nothing about the runtime.
+func (handler *Handler) runtimeForAction(ctx context.Context, workspaceID, runtimeID, viewer pgtype.UUID) (db.AgentRuntime, error) {
+	runtime, err := handler.Queries.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{ID: runtimeID, WorkspaceID: workspaceID})
+	if err != nil {
+		return db.AgentRuntime{}, err
+	}
+	member, err := handler.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: viewer, WorkspaceID: workspaceID})
+	if err != nil {
+		return db.AgentRuntime{}, err
+	}
+	if !canUseRuntimeForAgent(member, runtime) {
+		return db.AgentRuntime{}, errors.New("the card's recipient cannot use the action's runtime")
+	}
+	return runtime, nil
+}
+
 func (handler *Handler) agentForAction(ctx context.Context, workspaceID pgtype.UUID, agentID string, viewer pgtype.UUID) (db.Agent, error) {
 	id, err := parseUUIDStrict(agentID)
 	if err != nil {
@@ -364,4 +521,40 @@ func keysPresent(existing map[string]string, keys []string) string {
 		return "none"
 	}
 	return joinKeys(present)
+}
+
+// fillCardReadback adds what a decided action did, when, by whom and whether Revoke
+// still applies. Names come from the global user table, so a departed member still renders.
+func (handler *Handler) fillCardReadback(ctx context.Context, card *DecisionRequestCardAction, action db.DecisionAction, requestID pgtype.UUID) {
+	var reason *string
+	card.Effect, reason = decisionEffectOf(action)
+	if reason != nil {
+		card.EffectReason = *reason
+	}
+	card.Revocable = handler.revocableNow(ctx, action)
+	card.Receipt = runBudgetReceipt(ctx, handler.Queries, action)
+	decidedAt := action.ApprovedAt
+	switch {
+	case action.State == "expired":
+		decidedAt = action.ExpiresAt
+	case !decidedAt.Valid:
+		decidedAt = action.UpdatedAt
+	}
+	if decidedAt.Valid {
+		card.DecidedAt = timestampToString(decidedAt)
+	}
+	request, _ := handler.Queries.GetDecisionRequest(ctx, db.GetDecisionRequestParams{WorkspaceID: action.WorkspaceID, ID: requestID})
+	names := map[pgtype.UUID]string{}
+	if users, err := handler.Queries.GetUsersByIDs(ctx, distinctUUIDs(action.ApprovedByUserID, action.RevokedByUserID, request.HumanUserID)); err == nil {
+		for _, user := range users {
+			names[user.ID] = user.Name
+		}
+	}
+	if action.State != "expired" {
+		card.DecidedBy = names[action.ApprovedByUserID]
+		card.OnBehalfOf = names[request.HumanUserID]
+	}
+	if action.RevokedAt.Valid {
+		card.Revoke = &CardRevoke{At: timestampToString(action.RevokedAt), By: names[action.RevokedByUserID], Reason: action.RevokeReason.String}
+	}
 }

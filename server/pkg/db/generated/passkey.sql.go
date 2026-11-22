@@ -749,6 +749,35 @@ func (q *Queries) MarkPasskeySuspect(ctx context.Context, id pgtype.UUID) error 
 	return err
 }
 
+const passkeyEnrollCodeIsSuperseded = `-- name: PasskeyEnrollCodeIsSuperseded :one
+SELECT EXISTS (
+    SELECT 1 FROM passkey_enroll_ceremony
+    WHERE user_id = $1 AND purpose = $2 AND code_hmac = $3 AND id <> $4
+      AND consumed_at IS NOT NULL AND created_at > now() - interval '1 hour'
+)::bool
+`
+
+type PasskeyEnrollCodeIsSupersededParams struct {
+	UserID   pgtype.UUID `json:"user_id"`
+	Purpose  string      `json:"purpose"`
+	CodeHmac []byte      `json:"code_hmac"`
+	ID       pgtype.UUID `json:"id"`
+}
+
+// True when the code belongs to an older, consumed ceremony of the same user and
+// purpose: the user typed an earlier email's code.
+func (q *Queries) PasskeyEnrollCodeIsSuperseded(ctx context.Context, arg PasskeyEnrollCodeIsSupersededParams) (bool, error) {
+	row := q.db.QueryRow(ctx, passkeyEnrollCodeIsSuperseded,
+		arg.UserID,
+		arg.Purpose,
+		arg.CodeHmac,
+		arg.ID,
+	)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const revokeAllPasskeys = `-- name: RevokeAllPasskeys :execrows
 
 UPDATE user_passkey SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL

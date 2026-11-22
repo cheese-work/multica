@@ -74,8 +74,7 @@ export type PRAutoCompleteState =
   | "at_target"
   | "waiting"
   | "not_merged"
-  | "all_merged"
-  | "workflow_owned";
+  | "all_merged";
 
 export interface PRAutoComplete {
   /** Unknown future states are kept as strings; the UI renders nothing for them. */
@@ -144,6 +143,10 @@ export interface GitHubPullRequest {
   snapshot_stale?: boolean;
   /** RFC3339 timestamp of when the snapshot was fetched, for the stale hint. */
   snapshot_fetched_at?: string | null;
+  /** RFC3339 deadline of the installation's refresh rate-limit pause, `null`
+   * when none is active (CHE-8795). Set means a missing or old snapshot is
+   * waiting on GitHub's rate limit. Older backends omit it. */
+  snapshot_paused_until?: string | null;
   /** Legacy mirror of GitHub's `mergeable_state`. Optional; superseded by
    * `mergeable` + `merge_state_status`. */
   mergeable_state?: GitHubMergeableState | null;

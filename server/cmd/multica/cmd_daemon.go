@@ -106,6 +106,8 @@ func init() {
 	f.Duration("ws-claim-poll-interval", 0, "Healthy WebSocket claim safety-poll upper bound (env: MULTICA_DAEMON_WS_CLAIM_POLL_INTERVAL)")
 	f.Duration("heartbeat-interval", 0, "Heartbeat interval (env: MULTICA_DAEMON_HEARTBEAT_INTERVAL)")
 	f.Duration("agent-timeout", 0, "Absolute per-run wall-clock cap; 0 = no cap, rely on the watchdogs (env: MULTICA_AGENT_TIMEOUT)")
+	f.Duration("agent-idle-watchdog", 0, "No-message watchdog window; 0 = disabled (env: MULTICA_AGENT_IDLE_WATCHDOG)")
+	f.Duration("agent-tool-watchdog", 0, "Silent in-flight tool watchdog window; 0 = disabled (env: MULTICA_AGENT_TOOL_WATCHDOG)")
 	f.Duration("codex-semantic-inactivity-timeout", 0, "Codex semantic inactivity timeout (env: MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT)")
 	f.Duration("codex-handshake-timeout", 0, "Codex app-server startup RPC timeout (env: MULTICA_CODEX_HANDSHAKE_TIMEOUT)")
 	f.Int("max-concurrent-tasks", 0, "Maximum concurrent runs (env: MULTICA_DAEMON_MAX_CONCURRENT_TASKS)")
@@ -130,6 +132,8 @@ func init() {
 	rf.Duration("ws-claim-poll-interval", 0, "Healthy WebSocket claim safety-poll upper bound (env: MULTICA_DAEMON_WS_CLAIM_POLL_INTERVAL)")
 	rf.Duration("heartbeat-interval", 0, "Heartbeat interval (env: MULTICA_DAEMON_HEARTBEAT_INTERVAL)")
 	rf.Duration("agent-timeout", 0, "Absolute per-run wall-clock cap; 0 = no cap, rely on the watchdogs (env: MULTICA_AGENT_TIMEOUT)")
+	rf.Duration("agent-idle-watchdog", 0, "No-message watchdog window; 0 = disabled (env: MULTICA_AGENT_IDLE_WATCHDOG)")
+	rf.Duration("agent-tool-watchdog", 0, "Silent in-flight tool watchdog window; 0 = disabled (env: MULTICA_AGENT_TOOL_WATCHDOG)")
 	rf.Duration("codex-semantic-inactivity-timeout", 0, "Codex semantic inactivity timeout (env: MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT)")
 	rf.Duration("codex-handshake-timeout", 0, "Codex app-server startup RPC timeout (env: MULTICA_CODEX_HANDSHAKE_TIMEOUT)")
 	rf.Int("max-concurrent-tasks", 0, "Maximum concurrent runs (env: MULTICA_DAEMON_MAX_CONCURRENT_TASKS)")
@@ -906,6 +910,14 @@ func buildDaemonStartArgs(cmd *cobra.Command) []string {
 		d, _ := cmd.Flags().GetDuration("agent-timeout")
 		args = append(args, "--agent-timeout", d.String())
 	}
+	if cmd.Flags().Changed("agent-idle-watchdog") {
+		d, _ := cmd.Flags().GetDuration("agent-idle-watchdog")
+		args = append(args, "--agent-idle-watchdog", d.String())
+	}
+	if cmd.Flags().Changed("agent-tool-watchdog") {
+		d, _ := cmd.Flags().GetDuration("agent-tool-watchdog")
+		args = append(args, "--agent-tool-watchdog", d.String())
+	}
 	if d, _ := cmd.Flags().GetDuration("codex-semantic-inactivity-timeout"); d > 0 {
 		args = append(args, "--codex-semantic-inactivity-timeout", d.String())
 	}
@@ -1052,6 +1064,20 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	if agentTimeoutOverride != nil {
 		overrides.AgentTimeout = agentTimeoutOverride
 	}
+	idleWatchdogOverride, err := resolveDaemonWatchdogOverride(cmd, "agent-idle-watchdog", "MULTICA_AGENT_IDLE_WATCHDOG", fileCfg.AgentIdleWatchdog)
+	if err != nil {
+		return err
+	}
+	if idleWatchdogOverride != nil {
+		overrides.AgentIdleWatchdog = idleWatchdogOverride
+	}
+	toolWatchdogOverride, err := resolveDaemonWatchdogOverride(cmd, "agent-tool-watchdog", "MULTICA_AGENT_TOOL_WATCHDOG", fileCfg.AgentToolWatchdog)
+	if err != nil {
+		return err
+	}
+	if toolWatchdogOverride != nil {
+		overrides.AgentToolWatchdog = toolWatchdogOverride
+	}
 	semanticFlag, _ := cmd.Flags().GetDuration("codex-semantic-inactivity-timeout")
 	semanticOverride, err := resolveDaemonDurationOverride(semanticFlag, "MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT", fileCfg.CodexSemanticInactivityTimeout)
 	if err != nil {
@@ -1072,6 +1098,8 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	if n := resolveDaemonIntOverride(maxFlag, "MULTICA_DAEMON_MAX_CONCURRENT_TASKS", fileCfg.MaxConcurrentTasks); n > 0 {
 		overrides.MaxConcurrentTasks = n
 	}
+	// The env var is read by LoadConfig and beats the persisted value.
+	overrides.ReservedChatSlots = fileCfg.ReservedChatSlots
 	// --no-auto-update / MULTICA_DAEMON_AUTO_UPDATE=false / config.json
 	// disable_auto_update are all single-direction: none of them can force
 	// auto-update *on*, they can only turn it off. Env "true" is not
@@ -1312,6 +1340,23 @@ func runDaemonRestart(cmd *cobra.Command, args []string) error {
 		}
 		pid, _ := health["pid"].(float64)
 		if pid > 0 {
+			supervisor, err := findDaemonRestartSupervisor(int(pid))
+			if err != nil {
+				return err
+			}
+			if supervisor != nil {
+				// Unlike the legacy portable path, a service handoff requires
+				// explicit profile identity on both sides of shutdown.
+				if got, ok := health["profile"].(string); !ok || got != profile {
+					return fmt.Errorf("cannot prove supervised daemon profile before shutdown")
+				}
+				if err := requestDaemonShutdown(healthPort, maintenanceTokenFromCmd(cmd)); err != nil {
+					return fmt.Errorf("supervised daemon shutdown not confirmed: %w; not forcing a kill or starting a replacement", err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+				defer cancel()
+				return supervisor.wait(ctx, profile, healthPort, int(pid))
+			}
 			fmt.Fprintf(os.Stderr, "Stopping daemon (pid %d)...\n", int(pid))
 			if err := requestDaemonShutdown(healthPort, maintenanceTokenFromCmd(cmd)); err != nil {
 				// A refusal or unknown outcome never escalates to a kill.
@@ -1886,6 +1931,32 @@ func resolveDaemonAgentTimeoutOverride(cmd *cobra.Command, envName string, cfgVa
 	}
 	if parsed < 0 {
 		return nil, fmt.Errorf("config value %q for %s must be >= 0", *cfgValue, envName)
+	}
+	return &parsed, nil
+}
+
+// resolveDaemonWatchdogOverride preserves an explicit zero, which disables
+// the selected watchdog.
+func resolveDaemonWatchdogOverride(cmd *cobra.Command, flagName, envName, cfgValue string) (*time.Duration, error) {
+	if cmd.Flags().Changed(flagName) {
+		d, _ := cmd.Flags().GetDuration(flagName)
+		if d < 0 {
+			return nil, fmt.Errorf("--%s must be >= 0", flagName)
+		}
+		return &d, nil
+	}
+	if !envUnset(envName) {
+		return nil, nil
+	}
+	if cfgValue == "" {
+		return nil, nil
+	}
+	parsed, err := time.ParseDuration(strings.TrimSpace(cfgValue))
+	if err != nil {
+		return nil, fmt.Errorf("config value %q for %s is not a valid duration: %w", cfgValue, envName, err)
+	}
+	if parsed < 0 {
+		return nil, fmt.Errorf("config value %q for %s must be >= 0", cfgValue, envName)
 	}
 	return &parsed, nil
 }

@@ -16,6 +16,8 @@ export interface OpenDecisionRequest {
   /** Per-issue cards a batch card answers for; shown with `covered_cards` before an answer. */
   covers_request_ids?: string[];
   covered_cards?: DecisionCoveredCard[];
+  /** The pending executable action behind the card, so a page can find a budget request (CHE-5285). */
+  action?: DecisionRequestAction;
 }
 
 /** One answer button on an open decision card. */
@@ -57,6 +59,21 @@ export interface DecisionRequestCard {
   covered_cards?: DecisionCoveredCard[];
   /** Set when a batch card's answer closed this card. */
   answered_by_batch_request_id?: string | null;
+  /** Set on every card of a proposal batch; `batch_items` then lists one entry per item, in action-id order. */
+  batch_id?: string;
+  batch_items?: DecisionBatchItem[];
+}
+
+/** One action of a proposal batch. Batch approve takes `choices: { [action_id]: "approve" | "reject" }`, one per item. */
+export interface DecisionBatchItem {
+  action_id: string;
+  issue_id: string;
+  issue_identifier: string;
+  issue_title?: string;
+  /** The action's state: pending, executed, failed or rejected. */
+  state: string;
+  result?: unknown;
+  error_code?: string;
 }
 
 /** One per-issue card a batch card covers, with the decision it asks. */
@@ -76,6 +93,30 @@ export interface DecisionActionPreview {
   sha256: string;
 }
 
+/** One hunk of a config-change diff; every line starts with `+`, `-` or a space. */
+export interface DecisionConfigDiffHunk {
+  old_start: number;
+  new_start: number;
+  lines: string[];
+}
+
+/** The stored server preview of a config-change action: what the approver is shown and approves against. */
+export interface DecisionConfigChange {
+  field: string;
+  target_id: string;
+  keys: string[];
+  /** `json`, `text` or `lines`; a newer server may send another kind, which this client cannot approve. */
+  diff_kind: "json" | "text" | "lines" | (string & {});
+  diff: DecisionConfigDiffHunk[];
+  /** The value the change writes. A string for text, an array of lines for lines, JSON otherwise. */
+  after: unknown;
+  before_sha256: string;
+  after_sha256: string;
+  meta?: Record<string, unknown>;
+  /** Digest of the stored preview; sent back as `preview_sha256` on approval. */
+  sha256: string;
+}
+
 export interface DecisionRequestAction {
   id: string;
   action_type: string;
@@ -84,6 +125,23 @@ export interface DecisionRequestAction {
   state?: string;
   /** Absent for an unknown action type, a stale window or an older server: the card then offers no approval. */
   preview?: DecisionActionPreview;
+  /** Why `preview` is absent, when the server knows (CHE-8772). Server text, shown as is. */
+  preview_unavailable?: string;
+  /** Set for a config-change action; absent when the preview is malformed, so the card offers no approval. */
+  config_change?: DecisionConfigChange;
+  /** Only the workspace owner may approve. Absent on an older server: the client then fails closed. */
+  owner_only?: boolean;
+  /** Readback of a decided action (B v9 S9). `applied`, `not_applied` or `expired`; absent while pending or on an older server. */
+  effect?: "applied" | "not_applied" | "expired" | (string & {});
+  effect_reason?: string;
+  /** What an executed run-budget action did and where the refused run stands; absent for any other action or an older server. */
+  receipt?: import("../api/passkey-schema").BudgetReceipt;
+  decided_at?: string;
+  decided_by_name?: string;
+  on_behalf_of_name?: string;
+  /** True while a revoke would be accepted; the card shows Revoke only then. */
+  revocable?: boolean;
+  revoke?: { at: string; by_name?: string; reason: string };
 }
 
 /** The run that resumed the issue after the answer was recorded. */

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 func init() {
 	brief := &cobra.Command{Use: "brief", Short: "Read agent-made decisions for the daily brief: records, delivery failures and pilot metrics", Args: cobra.NoArgs, RunE: runAgentDecisionBrief}
 	brief.Flags().String("format", "json", "json, or markdown for the brief section \"Agents decided — veto?\"")
-	brief.Flags().String("jev-shadow-log", "", "path to the Jev shadow log (JSONL); adds Jev agreement, the 10-minute share and the live-mode gate")
+	brief.Flags().String("jev-shadow-log", "", "path to the Jev shadow log (JSONL); default $JEV_STATE_DIR/shadow.jsonl, the Jev decider's own log")
 	setting := &cobra.Command{Use: "agent-setting", Short: "Turn agent decisions on or off for the workspace (owner only; default off)", Args: cobra.NoArgs, RunE: runAgentDecisionSetting}
 	setting.Flags().Bool("enabled", false, "true turns agent decisions on, false turns them off")
 	_ = setting.MarkFlagRequired("enabled")
@@ -35,22 +36,32 @@ func runAgentDecisionBrief(command *cobra.Command, _ []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 	logPath, _ := command.Flags().GetString("jev-shadow-log")
-	var shadow *jevShadowLog
+	// A named log must exist. The default log may be missing: the brief then says so.
+	explicit := logPath != ""
+	if !explicit {
+		logPath = defaultJevShadowLog()
+	}
+	shadow := &jevShadowLog{}
 	path := "/api/agent-decisions/brief"
-	if logPath != "" {
+	if _, statErr := os.Stat(logPath); explicit || statErr == nil {
 		rows, err := readJevShadowLog(logPath)
 		if err != nil {
 			return err
 		}
-		shadow = &jevShadowLog{Rows: rows}
+		shadow.Rows = rows
 		ids := shadow.jevIDs()
 		if len(ids) > jevMaxAsks {
 			return fmt.Errorf("shadow log has %d Jev asks, the brief reads at most %d: pass a shorter log", len(ids), jevMaxAsks)
 		}
 		q := url.Values{"jev_ask": ids}
-		if len(ids) > 0 {
-			path += "?" + q.Encode()
+		if since, ok := shadow.since(); ok {
+			q.Set("since", since.UTC().Format(time.RFC3339))
 		}
+		if enc := q.Encode(); enc != "" {
+			path += "?" + enc
+		}
+	} else {
+		shadow.Missing = logPath
 	}
 	var out map[string]any
 	if err := client.GetJSON(ctx, path, &out); err != nil {
@@ -59,8 +70,8 @@ func runAgentDecisionBrief(command *cobra.Command, _ []string) error {
 	format, _ := command.Flags().GetString("format")
 	switch format {
 	case "json":
-		if shadow != nil {
-			out["jev_shadow"] = jevShadowStats(shadow.Rows, jevAsksOf(out))
+		if shadow.Missing == "" {
+			out["jev_shadow"] = jevShadowStats(shadow.Rows, jevAsksOf(out), jevWindowOf(out))
 		}
 		return cli.PrintJSON(os.Stdout, out)
 	case "markdown":
@@ -76,12 +87,13 @@ var ictZone = time.FixedZone("ICT", 7*60*60)
 func writeAgentDecisionMarkdown(w io.Writer, feed map[string]any, shadow *jevShadowLog) error {
 	records, _ := feed["decisions"].([]any)
 	failures, _ := feed["notice_failures"].([]any)
+	askFailures, _ := feed["ask_failures"].([]any)
 	stopped, isStopped := feed["stopped"].(map[string]any)
 	// With the pilot off the brief stays as it was: no section. Records made
 	// earlier stay vetoable, so they and a stop or failed notice still print.
 	waivers, _ := feed["waivers"].([]any)
 	jev, _ := feed["jev"].(map[string]any)
-	if enabled, _ := feed["enabled"].(bool); !enabled && len(records) == 0 && len(failures) == 0 && !isStopped && len(waivers) == 0 && jevNumber(jev["decisions"]) == 0 && shadow == nil {
+	if enabled, _ := feed["enabled"].(bool); !enabled && len(records) == 0 && len(failures) == 0 && len(askFailures) == 0 && !isStopped && len(waivers) == 0 && jevNumber(jev["decisions"]) == 0 && (shadow == nil || shadow.Missing != "") {
 		return nil
 	}
 	var b strings.Builder
@@ -100,6 +112,10 @@ func writeAgentDecisionMarkdown(w io.Writer, feed map[string]any, shadow *jevSha
 		}
 		fmt.Fprintf(&b, "\n  Record: %v\n", rec["link"])
 		if decider, _ := rec["decider"].(string); decider != "" {
+			// An older server sends no decider_display: print the raw value.
+			if display, _ := rec["decider_display"].(string); display != "" {
+				decider = display
+			}
 			fmt.Fprintf(&b, "  Decided by %s (agent decision, confidence %v).\n", decider, rec["confidence"])
 		}
 		if rec["state"] == "revoked" {
@@ -115,7 +131,17 @@ func writeAgentDecisionMarkdown(w io.Writer, feed map[string]any, shadow *jevSha
 			fmt.Fprintf(&b, "- decision %v, %v attempts: %v\n", f["instance_id"], f["attempts"], f["last_error"])
 		}
 	}
-	writeJevMetrics(&b, waivers, jev, shadow, jevAsksOf(feed))
+	if len(askFailures) > 0 {
+		b.WriteString("\nAsks that never reached a person:\n")
+		for _, raw := range askFailures {
+			f, _ := raw.(map[string]any)
+			fmt.Fprintf(&b, "- %v · owner %v · %v · %s\n", f["identifier"], f["agent"], f["reason"], ictTime(f["failed_at"]))
+			if excerpt, _ := f["excerpt"].(string); excerpt != "" {
+				fmt.Fprintf(&b, "  Ask: %s\n", excerpt)
+			}
+		}
+	}
+	writeJevMetrics(&b, waivers, jev, shadow, jevAsksOf(feed), jevWindowOf(feed))
 	_, err := io.WriteString(w, b.String())
 	return err
 }
@@ -170,7 +196,32 @@ type jevAsk struct {
 	Answer    string `json:"answer"`
 }
 
-type jevShadowLog struct{ Rows []jevShadowRow }
+type jevShadowLog struct {
+	Rows []jevShadowRow
+	// Set when the default log does not exist.
+	Missing string
+}
+
+// The decider's own default (scripts/jev_decider.py): $JEV_STATE_DIR/shadow.jsonl.
+func defaultJevShadowLog() string {
+	dir := os.Getenv("JEV_STATE_DIR")
+	if dir == "" {
+		home, _ := os.UserHomeDir()
+		dir = filepath.Join(home, ".local", "state", "jev-decider")
+	}
+	return filepath.Join(dir, "shadow.jsonl")
+}
+
+// When the log began: the earliest row.
+func (l *jevShadowLog) since() (time.Time, bool) {
+	var first time.Time
+	for _, r := range l.Rows {
+		if t, err := time.Parse(time.RFC3339, r.At); err == nil && (first.IsZero() || t.Before(first)) {
+			first = t
+		}
+	}
+	return first, !first.IsZero()
+}
 
 func (l *jevShadowLog) jevIDs() []string {
 	var ids []string
@@ -195,7 +246,13 @@ type jevStats struct {
 	GateHolds bool
 }
 
-func jevShadowStats(rows []jevShadowRow, asks []jevAsk) jevStats {
+// What the server counted in the log's window; nil means the log alone.
+type jevWindow struct {
+	Since   time.Time
+	InScope int
+}
+
+func jevShadowStats(rows []jevShadowRow, asks []jevAsk, w *jevWindow) jevStats {
 	byID := map[string]jevAsk{}
 	for _, a := range asks {
 		byID[a.ID] = a
@@ -230,6 +287,9 @@ func jevShadowStats(rows []jevShadowRow, asks []jevAsk) jevStats {
 		if err1 == nil && err2 == nil && decided.Sub(asked) <= jevDecideWithin {
 			s.Within10++
 		}
+	}
+	if w != nil {
+		s.InScope = w.InScope // includes budget and API-error attempts, which the log never holds
 	}
 	if s.Asks > 0 {
 		s.Rate = float64(s.Agreed) / float64(s.Asks)
@@ -285,9 +345,19 @@ func jevNumber(v any) float64 {
 	return n
 }
 
+// The server's count of in-scope asks since the log began; nil when the feed has none.
+func jevWindowOf(feed map[string]any) *jevWindow {
+	n, ok := feed["jev_in_scope"]
+	since, err := time.Parse(time.RFC3339, fmt.Sprint(feed["jev_since"]))
+	if !ok || err != nil {
+		return nil
+	}
+	return &jevWindow{Since: since, InScope: int(jevNumber(n))}
+}
+
 func percent(rate float64) string { return fmt.Sprintf("%.0f%%", rate*100) }
 
-func writeJevMetrics(b *strings.Builder, waivers []any, jev map[string]any, shadow *jevShadowLog, asks []jevAsk) {
+func writeJevMetrics(b *strings.Builder, waivers []any, jev map[string]any, shadow *jevShadowLog, asks []jevAsk, w *jevWindow) {
 	if len(waivers) == 0 {
 		b.WriteString("\nWaivers (WAIVED, not PASS): none\n")
 	} else {
@@ -308,7 +378,12 @@ func writeJevMetrics(b *strings.Builder, waivers []any, jev map[string]any, shad
 		b.WriteString("Shadow log not given: agreement, 10-minute share and live-mode gate not shown.\n")
 		return
 	}
-	s := jevShadowStats(shadow.Rows, asks)
+	s := jevShadowStats(shadow.Rows, asks, w)
+	if shadow.Missing != "" {
+		fmt.Fprintf(b, "Shadow log not found at %s: agreement and 10-minute share not shown.\n", shadow.Missing)
+		fmt.Fprintf(b, "Live-mode gate: NOT MET (needs %d%% on at least %d asks; no log)\n", jevGateAgreePct, jevGateMinAsks)
+		return
+	}
 	if s.Asks == 0 {
 		b.WriteString("Shadow agreement with Cheese: no graded asks\n")
 	} else {

@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import { ChatMessageSchema, ChatMessagesPageSchema, CommentSchema, TimelineEntriesSchema } from "./schemas";
+import { ChatMessageSchema, ChatMessagesPageSchema, CommentSchema, DecisionRequestCardSchema, TimelineEntriesSchema } from "./schemas";
 
 const card = {
   answer_id: "answer",
@@ -36,6 +36,15 @@ describe("DM decision cards", () => {
     expect(ChatMessageSchema.parse({ ...bubble, decision_requests: [{ id: 7 }] }).decision_requests).toBeUndefined();
   });
 
+  it("keeps a batch's items and drops a malformed list so no per-item choice is offered", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "open", batch_id: "batch" };
+    const items = [{ action_id: "a1", issue_id: "i1", issue_identifier: "CHE-1", state: "pending" }];
+    expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, batch_items: items } }).decision_request?.batch_items).toEqual(items);
+    const bad = ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, batch_items: [{ issue_id: "i1" }] } }).decision_request;
+    expect(bad?.batch_id).toBe("batch");
+    expect(bad?.batch_items).toBeUndefined();
+  });
+
   it("keeps the record comment of an answered request and drops a malformed one", () => {
     const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
     expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, record_comment_id: "record" } }).decision_request?.record_comment_id).toBe("record");
@@ -60,6 +69,12 @@ describe("DM decision cards", () => {
       expect(parse(action)).toEqual(action);
     });
 
+    it("keeps the server's reason for a missing preview, and drops a non-text one", () => {
+      const { preview: _omit, ...bare } = action;
+      expect(parse({ ...bare, preview_unavailable: "The run cap is already 48." })?.preview_unavailable).toBe("The run cap is already 48.");
+      expect(parse({ ...bare, preview_unavailable: 7 })?.preview_unavailable).toBeUndefined();
+    });
+
     it("keeps the action without a preview when the preview is missing or malformed", () => {
       const { preview: _omit, ...bare } = action;
       expect(parse(bare)?.preview).toBeUndefined();
@@ -81,7 +96,7 @@ describe("DM decision cards", () => {
     it("drops the preview of an action type this client does not know", () => {
       expect(parse({ ...action, action_type: "future.thing" })?.preview).toBeUndefined();
       expect(parse({ ...action, action_type: undefined })?.preview).toBeUndefined();
-      for (const known of ["issue.run_budget.raise", "issue.run_budget.top_up", "agent.env.patch", "agent.copy"]) {
+      for (const known of ["issue.run_budget.raise", "issue.run_budget.top_up", "issue.workflow.set", "issue.project.set", "issue.project.quick_set", "project.workflow.quick_set", "agent.env.patch", "agent.copy"]) {
         expect(parse({ ...action, action_type: known })?.preview).toEqual(preview);
       }
     });
@@ -90,6 +105,49 @@ describe("DM decision cards", () => {
       expect(parse({ ...action, id: 7 })).toBeUndefined();
       expect(parse({ ...action, payload_sha256: undefined })).toBeUndefined();
       expect(ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, action: "x" } }).decision_request?.id).toBe("request");
+    });
+  });
+
+  describe("config change", () => {
+    const request = { id: "request", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "open" };
+    const digest = "a".repeat(64);
+    const config_change = {
+      field: "workflow.instructions", target_id: "wf-1", keys: [], diff_kind: "text",
+      diff: [{ old_start: 1, new_start: 1, lines: ["-old", "+new"] }], after: "new",
+      before_sha256: "b".repeat(64), after_sha256: "c".repeat(64), sha256: digest,
+    };
+    const action = { id: "action", action_type: "workflow.step.instructions.set", payload_sha256: "payload", state: "pending", owner_only: true, config_change };
+    const parse = (value: unknown) => ChatMessageSchema.parse({ ...bubble, decision_request: { ...request, action: value } }).decision_request?.action;
+
+    it("keeps the server preview and the owner flag", () => {
+      expect(parse(action)).toEqual(action);
+    });
+
+    it("drops a malformed change but keeps the action, so the card says details are unavailable", () => {
+      for (const bad of [
+        "x",
+        { ...config_change, sha256: "abc" },
+        { ...config_change, diff: "x" },
+        { ...config_change, diff: [{ old_start: 1, new_start: 1, lines: [7] }] },
+        { ...config_change, field: undefined },
+        { ...config_change, keys: "x" },
+      ]) {
+        const parsed = parse({ ...action, config_change: bad });
+        expect(parsed?.config_change).toBeUndefined();
+        expect(parsed?.id).toBe("action");
+      }
+    });
+
+    it("keeps a diff_kind a newer server sends; approval fails closed on it elsewhere", () => {
+      const parsed = parse({ ...action, config_change: { ...config_change, diff_kind: "other" } });
+      expect(parsed?.config_change?.diff_kind).toBe("other");
+      expect(parsed?.id).toBe("action");
+    });
+
+    it("treats a missing or malformed owner flag as unknown", () => {
+      expect(parse({ ...action, owner_only: undefined })?.owner_only).toBeUndefined();
+      expect(parse({ ...action, owner_only: "yes" })?.owner_only).toBeUndefined();
+      expect(parse({ ...action, owner_only: false })?.owner_only).toBe(false);
     });
   });
 
@@ -209,5 +267,38 @@ describe("issue quote card fields", () => {
     };
     expect(CommentSchema.parse({ ...base, ...fields }).decision_recorder_agent_id).toBe("agent");
     expect(CommentSchema.parse({ ...base, ...fields, decision_state: "future" }).decision_state).toBeUndefined();
+  });
+});
+
+describe("budget receipt on a decided card action", () => {
+  const action = { id: "a", action_type: "issue.run_budget.top_up", payload_sha256: "p", state: "executed", effect: "applied" };
+  const request = { id: "r", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
+  const parseAction = (receipt: unknown) =>
+    DecisionRequestCardSchema.parse({ ...request, action: { ...action, receipt } }).action;
+
+  it("keeps a well-formed receipt", () => {
+    const receipt = { outcome: "run_started", applied_at: "2026-11-11T06:41:00Z", runs_used: 44, runs_limit: 25, runs_limit_after: 25, new_window: true };
+    expect(parseAction(receipt)?.receipt).toMatchObject(receipt);
+  });
+
+  it("keeps outcome and time when the numbers are absent (an action from before the receipt)", () => {
+    expect(parseAction({ outcome: "cap_applied", applied_at: "2026-11-11T06:41:00Z" })?.receipt).toMatchObject({ outcome: "cap_applied" });
+  });
+
+  it.each([
+    ["wrong types", { outcome: 5, applied_at: "t" }],
+    ["not an object", "run_started"],
+    ["missing time", { outcome: "run_started" }],
+  ])("drops a malformed receipt (%s) without losing the action", (_name, receipt) => {
+    const parsed = parseAction(receipt);
+    expect(parsed?.id).toBe("a");
+    expect(parsed?.effect).toBe("applied");
+    expect(parsed?.receipt).toBeUndefined();
+  });
+
+  it("drops one malformed number and keeps the rest", () => {
+    const parsed = parseAction({ outcome: "run_queued", applied_at: "t", runs_used: "44", runs_limit: 25, extra: 1 });
+    expect(parsed?.receipt).toMatchObject({ outcome: "run_queued", runs_limit: 25 });
+    expect(parsed?.receipt?.runs_used).toBeUndefined();
   });
 });

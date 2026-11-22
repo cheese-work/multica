@@ -1,5 +1,5 @@
 package db
 
-// Conn returns the executor the queries run on, so a caller can run its own
-// SQL on the same transaction as a WithTx query set.
+// Conn is the connection or transaction these queries run on, for readers that
+// take a DBTX (intakehold.Load) and must see the caller's transaction.
 func (q *Queries) Conn() DBTX { return q.db }

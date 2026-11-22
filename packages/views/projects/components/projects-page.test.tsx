@@ -54,10 +54,13 @@ vi.mock("@tanstack/react-query", () => ({
 
 vi.mock("@multica/core/projects", () => ({
   projectListOptions: () => ({ queryKey: ["projects"] }),
-  useUpdateProject: () => ({ mutate: mocks.updateProject }),
   useDeleteProject: () => ({ mutate: mocks.deleteProject }),
   useProjectViewStore: (selector: (state: unknown) => unknown) =>
     selector(mocks.projectViewState),
+}));
+
+vi.mock("@multica/core/projects/mutations", () => ({
+  useUpdateProject: () => ({ mutate: mocks.updateProject }),
 }));
 
 vi.mock("@multica/core/pins", () => ({
@@ -440,6 +443,17 @@ describe("ProjectsPage header", () => {
     renderProjects();
 
     await user.click(screen.getByRole("button", { name: "New project" }));
+    expect(mocks.openModal).toHaveBeenCalledWith("create-project");
+  });
+
+  it("introduces projects when there are none and creates the first one", async () => {
+    const user = userEvent.setup();
+    mocks.projects = [];
+    renderProjects();
+
+    const intro = screen.getByRole("region", { name: "Break big work into projects" });
+    expect(screen.queryByRole("grid")).not.toBeInTheDocument();
+    await user.click(within(intro).getByRole("button", { name: "New project" }));
     expect(mocks.openModal).toHaveBeenCalledWith("create-project");
   });
 });

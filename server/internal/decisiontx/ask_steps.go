@@ -22,6 +22,10 @@ type HumanStep struct {
 	Command    string      `json:"command"`
 	Values     []StepValue `json:"values"`
 	VerifyDone string      `json:"verify_done"`
+	// Evidence the human-ask guard asks for (CHE-5753).
+	Observed string      `json:"observed,omitempty"`
+	Files    []StepFile  `json:"files,omitempty"`
+	DryRun   *StepDryRun `json:"dry_run,omitempty"`
 }
 
 const (
@@ -30,7 +34,7 @@ const (
 )
 
 var (
-	stepFields   = []string{"action", "command", "values", "verify_done"}
+	stepFields   = []string{"action", "command", "values", "verify_done", "observed", "files", "dry_run"}
 	valueFields  = []string{"name", "value", "source"}
 	upperName    = regexp.MustCompile(`\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b`)
 	placeholder  = regexp.MustCompile(`<[^<>\s]+>`)
@@ -70,6 +74,15 @@ func decodeSteps(raw json.RawMessage, into *[]HumanStep) error {
 			}
 		}
 		if err := decodeValues(prefix+".values", fields["values"], &step.Values); err != nil {
+			return err
+		}
+		if err := decodeString(prefix+".observed", fields["observed"], &step.Observed); err != nil {
+			return err
+		}
+		if err := decodeStepFiles(prefix+".files", fields["files"], &step.Files); err != nil {
+			return err
+		}
+		if err := decodeDryRun(prefix+".dry_run", fields["dry_run"], &step.DryRun); err != nil {
 			return err
 		}
 		*into = append(*into, step)
@@ -152,6 +165,11 @@ func (step HumanStep) validate(prefix string) error {
 			return &AskError{at + ".value", "is a placeholder; give the literal or a source"}
 		}
 	}
+	for _, field := range []struct{ name, value string }{{"action", step.Action}, {"command", step.Command}} {
+		if agentOwned(field.value) {
+			return &AskError{prefix + "." + field.name, agentOwnedMessage}
+		}
+	}
 	text := step.Action + "\n" + step.Command
 	for _, name := range append(upperName.FindAllString(text, -1), placeholder.FindAllString(text, -1)...) {
 		if !step.declares(name) {
@@ -163,7 +181,7 @@ func (step HumanStep) validate(prefix string) error {
 			return &AskError{prefix + "." + field.name, "has a bare UUID; use a name or a mention link"}
 		}
 	}
-	return nil
+	return step.validateAskEvidence(prefix)
 }
 
 // declares reports whether a values name carries the identifier as a whole
@@ -218,6 +236,10 @@ func lintHumanSteps(ask Ask) []string {
 	return hints
 }
 
+// FenceFor is the code fence that safely wraps text: longer than any backtick
+// run in it, so quoted text cannot close the fence.
+func FenceFor(text string) string { return fenceFor(text) }
+
 func fenceFor(text string) string {
 	longest, run := 0, 0
 	for _, r := range text {
@@ -246,6 +268,7 @@ func (ask Ask) humanStepSections() string {
 			for _, value := range step.Values {
 				fmt.Fprintf(&out, "   - %s: %s\n", value.Name, valueText(value))
 			}
+			out.WriteString(step.askEvidenceLines())
 			fmt.Fprintf(&out, "   - Done when: %s\n", step.VerifyDone)
 		}
 		out.WriteString("\n")

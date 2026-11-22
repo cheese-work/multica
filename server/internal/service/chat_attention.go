@@ -51,6 +51,7 @@ type ChatAttentionChain struct {
 	RootID      string
 	CanonicalID string
 	Archived    bool
+	Hidden      bool // the viewer cannot open the chain's agent (private-agent boundary)
 	Subjects    []AttentionSubject
 	Marks       map[string]AttentionMark
 }
@@ -66,7 +67,9 @@ type ChatAttention struct {
 	AttentionSource *string
 	AttentionSince  *time.Time
 	Counts          AttentionCounts
-	Keys            []string // every displayed subject key: the snapshot a client sends back
+	Snoozed         AttentionCounts // ask, later, unseen, decision hidden by a snooze right now (CHE-5670 D4)
+	Keys            []string        // every displayed subject key: the snapshot a client sends back
+	AskKeys         []string        // displayed `item:` keys of asks that still need a reply (not waiting): reply-to-ask targets
 	Unclassified    []string
 	NextChangeAt    *time.Time
 }
@@ -95,6 +98,18 @@ func ProjectChatAttention(c ChatAttentionChain, now time.Time) ChatAttention {
 		}
 		if m.SnoozedUntil != nil && m.SnoozedUntil.After(now) { // rule 2: hide this subject only
 			changes = append(changes, *m.SnoozedUntil)
+			if !s.Waiting {
+				switch s.Kind {
+				case AttentionKindAsk:
+					out.Snoozed.Ask++
+				case AttentionKindLater:
+					out.Snoozed.Later++
+				case AttentionKindUnseen:
+					out.Snoozed.Unseen++
+				case AttentionKindDecision:
+					out.Snoozed.Decision++
+				}
+			}
 			continue
 		}
 		if s.Kind == AttentionKindLater && s.DueAt != nil && s.DueAt.After(now) { // C1
@@ -114,6 +129,7 @@ func ProjectChatAttention(c ChatAttentionChain, now time.Time) ChatAttention {
 		switch s.Kind {
 		case AttentionKindAsk:
 			out.Counts.Ask++
+			out.AskKeys = append(out.AskKeys, s.Key)
 		case AttentionKindLater:
 			out.Counts.Later++
 		case AttentionKindUnseen:
@@ -148,6 +164,7 @@ func ProjectChatAttention(c ChatAttentionChain, now time.Time) ChatAttention {
 	}
 	slices.Sort(out.Keys)
 	slices.Sort(out.Unclassified)
+	slices.Sort(out.AskKeys)
 	return out
 }
 
@@ -179,9 +196,15 @@ func SortChatAttention(rows []ChatAttention) {
 	})
 }
 
-// LoadChatAttention projects every chain of one human in a workspace at `now`, in list order.
-// Chains with no subject at all are left out.
-func LoadChatAttention(ctx context.Context, q *db.Queries, workspaceID, userID pgtype.UUID, now time.Time) ([]ChatAttention, error) {
+// attentionInputs is everything one human owes, loaded once: every chain (archived too), each with
+// its subjects, and the decisions that have no chain of this human to live in.
+type attentionInputs struct {
+	chains   []ChatAttentionChain
+	unlinked []AttentionSubject
+	marks    map[string]AttentionMark
+}
+
+func loadAttentionInputs(ctx context.Context, q *db.Queries, workspaceID, userID pgtype.UUID) (*attentionInputs, error) {
 	chains, err := q.ListChatAttentionChains(ctx, db.ListChatAttentionChainsParams{WorkspaceID: workspaceID, CreatorID: userID})
 	if err != nil {
 		return nil, fmt.Errorf("list chains: %w", err)
@@ -203,13 +226,17 @@ func LoadChatAttention(ctx context.Context, q *db.Queries, workspaceID, userID p
 		return nil, fmt.Errorf("list marks: %w", err)
 	}
 
-	marks := make(map[string]AttentionMark, len(markRows))
+	in := &attentionInputs{marks: make(map[string]AttentionMark, len(markRows))}
 	for _, m := range markRows {
 		mark := AttentionMark{Acked: m.AckedAt.Valid}
 		if m.SnoozedUntil.Valid {
 			mark.SnoozedUntil = &m.SnoozedUntil.Time
 		}
-		marks[m.SubjectKey] = mark
+		in.marks[m.SubjectKey] = mark
+	}
+	known := make(map[string]bool, len(chains))
+	for _, c := range chains {
+		known[util.UUIDToString(c.RootID)] = true
 	}
 	subjects := map[string][]AttentionSubject{} // by chain root
 	for _, i := range items {
@@ -221,26 +248,43 @@ func LoadChatAttention(ctx context.Context, q *db.Queries, workspaceID, userID p
 		subjects[root] = append(subjects[root], s)
 	}
 	for _, d := range decisions {
-		root := util.UUIDToString(d.ChainRootSessionID)
-		subjects[root] = append(subjects[root], AttentionSubject{
+		s := AttentionSubject{
 			Key: DecisionKey(util.UUIDToString(d.ID), d.AnswerRevision), Kind: AttentionKindDecision, Start: d.CreatedAt.Time,
-		})
+		}
+		root := util.UUIDToString(d.ChainRootSessionID)
+		if !d.ChainRootSessionID.Valid || !known[root] { // no chat row of this human: home `unlinked` (CHE-5670 D3)
+			in.unlinked = append(in.unlinked, s)
+			continue
+		}
+		subjects[root] = append(subjects[root], s)
 	}
 	for _, t := range turns {
 		root := util.UUIDToString(t.ChainRootSessionID)
 		subjects[root] = append(subjects[root], AttentionSubject{Key: TurnKey(util.UUIDToString(t.TaskID)), Kind: AttentionKindTurn})
 	}
-
-	out := make([]ChatAttention, 0, len(chains))
 	for _, c := range chains {
 		root := util.UUIDToString(c.RootID)
-		if c.Archived || len(subjects[root]) == 0 { // A14: an archived chain is not listed
+		in.chains = append(in.chains, ChatAttentionChain{
+			RootID: root, CanonicalID: util.UUIDToString(c.CanonicalID), Archived: c.Archived,
+			Subjects: subjects[root], Marks: in.marks,
+		})
+	}
+	return in, nil
+}
+
+// LoadChatAttention projects every chain of one human in a workspace at `now`, in list order.
+// Chains with no subject at all are left out.
+func LoadChatAttention(ctx context.Context, q *db.Queries, workspaceID, userID pgtype.UUID, now time.Time) ([]ChatAttention, error) {
+	in, err := loadAttentionInputs(ctx, q, workspaceID, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]ChatAttention, 0, len(in.chains))
+	for _, c := range in.chains {
+		if c.Archived || len(c.Subjects) == 0 { // A14: an archived chain is not listed
 			continue
 		}
-		out = append(out, ProjectChatAttention(ChatAttentionChain{
-			RootID: root, CanonicalID: util.UUIDToString(c.CanonicalID), Archived: c.Archived,
-			Subjects: subjects[root], Marks: marks,
-		}, now))
+		out = append(out, ProjectChatAttention(c, now))
 	}
 	SortChatAttention(out)
 	return out, nil

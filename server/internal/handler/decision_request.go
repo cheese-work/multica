@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -22,16 +23,32 @@ import (
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
+// askIdentity is the caller's ask identity. A structured ask leaves out the
+// time its state was read, which a re-ask changes (CHE-7007).
+func (input decisionRequestInput) askIdentity() string {
+	if input.Parsed != nil {
+		return input.Parsed.IdentityWithoutReadTime()
+	}
+	return decisiontx.Identity(input.Ask)
+}
+
 type decisionRequestInput struct {
-	SessionID       pgtype.UUID
-	NewDM           bool
-	HumanUserID     pgtype.UUID
-	Ask             string
-	Footer          string
+	SessionID   pgtype.UUID
+	NewDM       bool
+	HumanUserID pgtype.UUID
+	Ask         string
+	Footer      string
+	// CardLintMode is the workspace decision_card_lint_mode for a lint-eligible
+	// ask; off or empty leaves the comment as written. Out of the fingerprint.
+	CardLintMode    string `json:"-"`
 	ParentID        pgtype.UUID
 	EscalationClass string
 	SourceCommentID pgtype.UUID
-	Fingerprint     string
+	// Recovers is the ask guard event this request answers; the request clears
+	// it, for the person it asks, in its own transaction. It stays out of the
+	// legacy fingerprint, which is pinned.
+	Recovers    pgtype.UUID `json:"-"`
+	Fingerprint string
 	// Kind and ExpiresInSeconds are set for an action request only; they stay out of the legacy fingerprint.
 	// Covers are the open cards this batch card answers for (CHE-4453).
 	Covers           []pgtype.UUID `json:"-"`
@@ -52,6 +69,46 @@ type decisionRequestInput struct {
 	AskJSON []byte `json:"-"`
 	// Proposal is set only by the action proposal route.
 	Proposal *proposalRequest `json:"-"`
+	// DMSession is the calling chat task's session: the card renders there, for
+	// the session's creator only. Invalid for an issue task.
+	DMSession pgtype.UUID `json:"-"`
+	// Batch is set only by the batch proposal route (CHE-5412).
+	Batch *batchCard `json:"-"`
+	// Wait asks to park the issue while the request is open under
+	// decision_ask_park=on_wait (CHE-6460). Out of the fingerprint.
+	Wait bool `json:"-"`
+	// OwnerScript is the owner-script guard's finished check (CHE-7138 S7a); its
+	// event is written with the message. Nil when the guard is off or no agent
+	// text is read.
+	OwnerScript *ownerScriptCheck `json:"-"`
+}
+
+// batchCard ties the requests of one batch to one shared card: they share the
+// batch id and the card's chat message. The lead request writes the message
+// and records the one ping; the others point at it.
+type batchCard struct {
+	ID, MessageID pgtype.UUID
+	Ask           string
+	Lead          bool
+}
+
+func (card *batchCard) batchID() pgtype.UUID {
+	if card == nil {
+		return pgtype.UUID{}
+	}
+	return card.ID
+}
+
+// writesCard is true for a request that is not part of a batch, or leads one.
+func (card *batchCard) writesCard() bool { return card == nil || card.Lead }
+
+// dmSession is the chat session a request from a DM renders in: set by a
+// plain request or a proposal made from a chat task, invalid otherwise.
+func (input decisionRequestInput) dmSession() pgtype.UUID {
+	if input.DMSession.Valid {
+		return input.DMSession
+	}
+	return input.Proposal.chatSession()
 }
 
 type decisionRequestResult struct {
@@ -61,8 +118,12 @@ type decisionRequestResult struct {
 	Message          db.ChatMessage
 	ClearedComments  []db.Comment
 	CreatedSession   *db.ChatSession
-	Replayed         bool
-	Action           *db.DecisionAction
+	// BackingLane is true when the request sits in a hidden decision backing lane: nothing about
+	// the lane is announced to the member. Warnings go back to the caller as hints.
+	BackingLane bool
+	Warnings    []string
+	Replayed    bool
+	Action      *db.DecisionAction
 	// PingItem is set only when the ping was recorded inside the request
 	// transaction (single-call path); PingRecorded distinguishes "recorded,
 	// no item for a departed recipient" from "not yet recorded".
@@ -74,7 +135,19 @@ type decisionRequestResult struct {
 	ParkedActivity *db.ActivityLog
 }
 
+// createDecisionRequest creates the request, or finds the same-task retry of
+// it. A new request clears --recovers inside its own transaction; a replay never
+// reaches that code, so it validates and clears here. Clearing is idempotent.
 func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
+	result, err := handler.createDecisionRequestOnce(request, issue, input)
+	if err != nil || !result.Replayed {
+		return result, err
+	}
+	taskID, _ := util.ParseUUID(request.Header.Get("X-Task-ID")) // createDecisionRequestOnce already required it
+	return result, clearAskGuardEvent(request.Context(), handler.Queries, issue, input.Recovers, result.Request.HumanUserID, result.Request.ID, taskID)
+}
+
+func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue db.Issue, input decisionRequestInput) (decisionRequestResult, error) {
 	empty := decisionRequestResult{}
 	deny := decisionIntentRefusal{http.StatusForbidden, "decision request requires this issue's running task"}
 	if request.Header.Get("X-Actor-Source") != "task_token" {
@@ -96,6 +169,9 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	default:
 		return empty, decisionIntentRefusal{http.StatusBadRequest, "invalid escalation class"}
 	}
+	if err := handler.refuseReversibleAsk(request.Context(), issue, input); err != nil {
+		return empty, err
+	}
 	if input.HumanUserID.Valid {
 		var err error
 		if input.HumanUserID, err = handler.resolveDecisionRecipient(request.Context(), issue, input.HumanUserID); err != nil {
@@ -104,7 +180,7 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	}
 	if input.SourceCommentID.Valid {
 		task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
-		if errors.Is(err, pgx.ErrNoRows) || err == nil && (task.AgentID != agentID || task.IssueID != issue.ID || task.ChatSessionID.Valid || task.Status != "running") {
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && !runsDecisionRequest(task, agentID, issue, input.dmSession(), input.EscalationClass) {
 			return empty, deny
 		}
 		if err != nil {
@@ -116,6 +192,9 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 		if prior, err := findDecisionRequestRetry(request.Context(), handler.Queries, issue, agentID, taskID, input); err != nil || prior.Request.ID.Valid {
 			return prior, err
 		}
+	}
+	if input.OwnerScript, err = handler.checkOwnerScript(request.Context(), issue, agentID, taskID, input); err != nil {
+		return empty, err
 	}
 	intent, err := handler.Queries.GetDecisionIntentForTask(request.Context(), db.GetDecisionIntentForTaskParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, TaskID: taskID, AgentID: agentID})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -150,6 +229,26 @@ func (handler *Handler) createDecisionRequest(request *http.Request, issue db.Is
 	return finish(func() (decisionRequestResult, error) {
 		return handler.createSingleCallDecisionTx(request, issue, input, agentID)
 	})
+}
+
+// runsDecisionRequest reports whether task is the agent's running task for this
+// request: the issue's own task, the chat task of dmSession when the request is
+// made from a DM (a chat task has no issue of its own), or the task that created
+// the issue when the class is an escalation (createdIssueCard).
+func runsDecisionRequest(task db.AgentTaskQueue, agentID pgtype.UUID, issue db.Issue, dmSession pgtype.UUID, class string) bool {
+	if task.AgentID != agentID || task.Status != "running" || task.ChatSessionID != dmSession {
+		return false
+	}
+	return dmSession.Valid || task.IssueID == issue.ID || createdIssueCard(task, issue, class)
+}
+
+// createdIssueCard lets the running task that created a new root issue open an
+// escalation card on it (CHE-6911). A held new issue gets no run, so without
+// this the five escalation classes could not start at once. Narrow by design:
+// a class other than reversible, and an issue whose server-stamped origin is
+// this very task. The caller still proves the task is running and the agent's.
+func createdIssueCard(task db.AgentTaskQueue, issue db.Issue, class string) bool {
+	return class != "" && class != "reversible" && issue.OriginType.String == "agent_create" && issue.OriginID == task.ID
 }
 
 // resolveDecisionRecipient maps the named id to the active member's user id.
@@ -323,8 +422,40 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if err != nil {
 		return empty, err
 	}
+	backing, err := handler.issueAskGoesToBackingLane(ctx, queries, issue, input.dmSession().Valid)
+	if err != nil {
+		return empty, err
+	}
 	newDM := input.NewDM
-	if newDM {
+	if backing {
+		// session_id and new_dm only name the person: the ask goes to that person's backing lane.
+		humanID := input.HumanUserID
+		if !humanID.Valid {
+			named, err := queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{ID: input.SessionID, WorkspaceID: issue.WorkspaceID})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return empty, deny
+			}
+			if err != nil {
+				return empty, err
+			}
+			humanID = named.CreatorID
+		}
+		agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, humanID)
+		if err != nil {
+			return empty, err
+		}
+		var found bool
+		if session, found, err = backingLane(ctx, queries, issue, topic, targetID); err != nil {
+			return empty, err
+		}
+		if newDM = !found; newDM {
+			steward, err := handler.decisionSteward(ctx, queries, topic, agent, targetID)
+			if err != nil {
+				return empty, err
+			}
+			session = db.ChatSession{AgentID: steward.ID, CreatorID: targetID, Title: "Decisions: " + topic.Title, DecisionTopicID: topic.ID}
+		}
+	} else if newDM {
 		agent, targetID, err := handler.decisionLaneWindow(request, queries, issue, input.HumanUserID)
 		if err != nil {
 			return empty, err
@@ -376,7 +507,7 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	if category == issuestatus.CategoryDone || category == issuestatus.CategoryClosed {
 		return empty, decisionIntentRefusal{http.StatusForbidden, "decision request refuses a terminal issue"}
 	}
-	if err := requireNoRecentReask(ctx, queries, issue, located.AgentID, session.CreatorID, input.Ask); err != nil {
+	if err := requireNoRecentReask(ctx, queries, issue, located.AgentID, session.CreatorID, input.askIdentity()); err != nil {
 		return empty, err
 	}
 	if _, err := queries.LockDecisionCallingTask(ctx, db.LockDecisionCallingTaskParams{WorkspaceID: issue.WorkspaceID, ID: located.TaskID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -435,12 +566,21 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 			return empty, err
 		}
 		createdSession = &session
+		if backing {
+			if err := queries.CreateDecisionBackingLane(ctx, db.CreateDecisionBackingLaneParams{SessionID: session.ID, WorkspaceID: issue.WorkspaceID, CreatorID: session.CreatorID, TopicID: topic.ID}); err != nil {
+				return empty, err
+			}
+		}
 	}
 	result, err := insertDecisionAsk(ctx, queries, issue, input, intent, session, createdSession != nil, root, intent.CommentID, dbid.NewV7(), &tag)
 	if err != nil {
 		return empty, err
 	}
-	if result.ParkedIssue, result.ParkedActivity, err = parkIssueForDecision(ctx, queries, issue); err != nil {
+	if backing {
+		result.BackingLane = true
+		result.Warnings = append(result.Warnings, "decision_screen is on: session_id and new_dm are ignored; the ask goes to the member's decision backing lane")
+	}
+	if result.ParkedIssue, result.ParkedActivity, err = parkForDecisionRequest(ctx, queries, issue, input.Wait); err != nil {
 		return empty, err
 	}
 	if err := transaction.Commit(ctx); err != nil {
@@ -483,7 +623,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if attach {
 		commentID = tag.ID
 	}
-	askIdentity := decisiontx.Identity(input.Ask)
+	askIdentity := input.askIdentity()
 	input, err := enrichDecisionAsk(ctx, queries, issue, intent.AgentID, input)
 	if err != nil {
 		return empty, err
@@ -493,7 +633,10 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		return empty, err
 	}
 	messageID := dbid.NewV7()
-	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID, Kind: pgtype.Text{String: input.Kind, Valid: input.Kind != ""}, ExpiresInSeconds: pgtype.Float8{Float64: input.ExpiresInSeconds, Valid: input.ExpiresInSeconds > 0}, ProposalFingerprint: input.Proposal.fingerprintText()})
+	if input.Batch != nil {
+		messageID = input.Batch.MessageID
+	}
+	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID, Kind: pgtype.Text{String: input.Kind, Valid: input.Kind != ""}, ExpiresInSeconds: pgtype.Float8{Float64: input.ExpiresInSeconds, Valid: input.ExpiresInSeconds > 0}, ProposalFingerprint: input.Proposal.fingerprintText(), BatchID: input.Batch.batchID()})
 	if errors.Is(err, pgx.ErrNoRows) && input.Proposal != nil {
 		return empty, errProposalRaced
 	}
@@ -501,6 +644,12 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 		return empty, err
 	}
 	if created, err = coverBatchRequests(ctx, queries, created, input.Covers); err != nil {
+		return empty, err
+	}
+	if err := clearAskGuardEvent(ctx, queries, issue, input.Recovers, session.CreatorID, created.ID, intent.TaskID); err != nil {
+		return empty, err
+	}
+	if err := serveAskGuardEvents(ctx, queries, issue, session.CreatorID, intent.TaskID); err != nil {
 		return empty, err
 	}
 	if err := recordDecisionObservation(ctx, queries, issue, created, input.Parsed); err != nil {
@@ -521,11 +670,22 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 			return empty, err
 		}
 	}
+	content := decisionAskContent(input)
+	if input.CardLintMode != "" && input.CardLintMode != "off" {
+		human, err := queries.GetUser(ctx, session.CreatorID)
+		if err != nil {
+			return empty, err
+		}
+		var added bool
+		if content, added = decisiontx.MentionHuman(content, human.Name, uuidToString(session.CreatorID)); added {
+			slog.Info("decision card lint", "code", "mention_missing", "issue_id", uuidToString(issue.ID), "request_id", uuidToString(created.ID))
+		}
+	}
 	var comment db.Comment
 	if attach {
-		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID, Content: decisionAskContent(input)})
+		comment, err = queries.AttachDecisionAskToComment(ctx, db.AttachDecisionAskToCommentParams{WorkspaceID: issue.WorkspaceID, CommentID: tag.ID, DecisionRequestID: created.ID, Content: content})
 	} else {
-		commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: decisionAskContent(input), Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}}
+		commentParams := db.CreateCommentParams{ID: commentID, IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AuthorType: "agent", AuthorID: intent.AgentID, SourceTaskID: intent.TaskID, ParentID: parentID, Content: content, Type: "comment", DecisionRequestID: created.ID, DecisionCommentKind: pgtype.Text{String: "ask", Valid: true}}
 		if tag == nil {
 			commentParams.DecisionIntentID = intent.ID
 		}
@@ -536,17 +696,24 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if err != nil {
 		return empty, err
 	}
-	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: messageID, ChatSessionID: session.ID, Role: "assistant", Content: input.Ask, MessageKind: pgtype.Text{String: "decision_request", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
-	if err != nil {
-		return empty, err
-	}
-	if newSession {
-		if err := queries.MarkChatSessionReadBefore(ctx, db.MarkChatSessionReadBeforeParams{ID: session.ID, MessageCreatedAt: message.CreatedAt}); err != nil {
+	var message db.ChatMessage
+	if input.Batch.writesCard() {
+		cardAsk := input.Ask
+		if input.Batch != nil {
+			cardAsk = input.Batch.Ask
+		}
+		message, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: messageID, ChatSessionID: session.ID, Role: "assistant", Content: cardAsk, MessageKind: pgtype.Text{String: "decision_request", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}})
+		if err != nil {
 			return empty, err
 		}
-	}
-	if err := queries.TouchChatSession(ctx, session.ID); err != nil {
-		return empty, err
+		if newSession {
+			if err := queries.MarkChatSessionReadBefore(ctx, db.MarkChatSessionReadBeforeParams{ID: session.ID, MessageCreatedAt: message.CreatedAt}); err != nil {
+				return empty, err
+			}
+		}
+		if err := queries.TouchChatSession(ctx, session.ID); err != nil {
+			return empty, err
+		}
 	}
 	consumed, err := queries.ConsumeDecisionIntentTarget(ctx, db.ConsumeDecisionIntentTargetParams{WorkspaceID: issue.WorkspaceID, DecisionIntentID: intent.ID, HumanUserID: session.CreatorID, RequestID: created.ID})
 	if err != nil {
@@ -558,6 +725,11 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if err := queries.CompleteDecisionIntent(ctx, db.CompleteDecisionIntentParams{WorkspaceID: issue.WorkspaceID, ID: intent.ID, RequestID: created.ID}); err != nil {
 		return empty, err
 	}
+	if input.OwnerScript != nil {
+		if err := input.OwnerScript.writeDelivered(ctx, queries, issue, created, messageID, comment.ID); err != nil {
+			return empty, err
+		}
+	}
 	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared, Action: action}, nil
 }
 
@@ -566,19 +738,56 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 // fresh intent on the ask comment itself, and consumes and seals it.
 func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue db.Issue, input decisionRequestInput, agentID pgtype.UUID) (decisionRequestResult, error) {
 	ctx := request.Context()
-	empty := decisionRequestResult{}
-	deny := decisionIntentRefusal{http.StatusForbidden, "decision request window or lane is unavailable"}
 	transaction, err := handler.TxStarter.Begin(ctx)
 	if err != nil {
-		return empty, err
+		return decisionRequestResult{}, err
 	}
 	defer transaction.Rollback(ctx)
-	queries := handler.Queries.WithTx(transaction)
+	result, err := handler.singleCallDecisionIn(request, handler.Queries.WithTx(transaction), issue, input, agentID)
+	if err != nil {
+		return decisionRequestResult{}, err
+	}
+	if err := transaction.Commit(ctx); err != nil {
+		return decisionRequestResult{}, err
+	}
+	handler.DecisionWorker.Notify()
+	return result, nil
+}
+
+// singleCallDecisionIn is the body of the single-call path inside the
+// caller's transaction; the caller commits. The batch route runs it once per
+// item in one transaction.
+func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.Queries, issue db.Issue, input decisionRequestInput, agentID pgtype.UUID) (decisionRequestResult, error) {
+	ctx := request.Context()
+	empty := decisionRequestResult{}
+	deny := decisionIntentRefusal{http.StatusForbidden, "decision request window or lane is unavailable"}
+	typed := input.Parsed != nil && len(input.Parsed.TypedOptionPaths()) > 0
+	typedSendHook("before_fence")
+	if typed {
+		// First lock of the send: a settings write that turns a fenced key off waits for this
+		// transaction, and a send that waits here holds no other lock.
+		if err := queries.LockTypedSettingsFenceShared(ctx, issue.WorkspaceID); err != nil {
+			return empty, err
+		}
+	}
+	typedSendHook("after_fence")
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return empty, deny
 		}
 		return empty, err
+	}
+	typedSendHook("after_row_lock")
+	if typed {
+		// The authoritative read of decision_server_actions: inside the transaction, after the locks.
+		workspace, err := queries.GetWorkspace(ctx, issue.WorkspaceID)
+		if err != nil {
+			return empty, err
+		}
+		if !decisiontx.ServerActionsOn(workspace.Settings) {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, decisiontx.ServerActionsOffCode + ": " + input.Parsed.TypedOptionPaths()[0] + " needs the workspace setting decision_server_actions to be on; it is off"}
+		}
+		typedSendHook("after_setting_read")
 	}
 	topic, err := resolveDecisionTopic(ctx, queries, issue)
 	if err != nil {
@@ -586,10 +795,23 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	}
 	var session db.ChatSession
 	reuse := input.SessionID.Valid
-	inDM := input.Proposal.inDM()
-	if inDM {
+	dmSession := input.dmSession()
+	inDM := dmSession.Valid
+	backing, err := handler.issueAskGoesToBackingLane(ctx, queries, issue, inDM)
+	if err != nil {
+		return empty, err
+	}
+	var warnings []string
+	if backing {
+		if input.SessionID.Valid || input.NewDM {
+			warnings = append(warnings, "decision_screen is on: session_id and new_dm are ignored; the ask goes to the member's decision backing lane")
+		}
+		if session, reuse, err = backingLane(ctx, queries, issue, topic, input.HumanUserID); err != nil {
+			return empty, err
+		}
+	} else if inDM {
 		reuse = true
-		if session, err = lockProposalDM(ctx, queries, issue, input.Proposal.ChatSessionID, agentID); err != nil {
+		if session, err = lockProposalDM(ctx, queries, issue, dmSession, agentID); err != nil {
 			return empty, input.Proposal.laneError(err)
 		}
 		if session.CreatorID != input.HumanUserID {
@@ -605,6 +827,14 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 		if err := requireLaneInTopic(ctx, queries, issue, topic, session); err != nil {
 			return empty, err
 		}
+	} else if dmID, found, dmErr := latestDM(ctx, queries, issue, input, agentID); dmErr != nil {
+		return empty, dmErr
+	} else if found {
+		// An issue task asks in the DM the person already has with the agent.
+		reuse = true
+		if session, err = lockProposalDM(ctx, queries, issue, dmID, agentID); err != nil {
+			return empty, input.Proposal.laneError(err)
+		}
 	} else if session, reuse, err = topicLane(ctx, queries, issue, topic, input.HumanUserID, agentID); err != nil {
 		return empty, input.Proposal.laneError(err)
 	}
@@ -615,7 +845,7 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	if err != nil {
 		return empty, err
 	}
-	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, input.Proposal.chatSession())
+	taskIssue, agent, task, err := handler.authorizeDecisionTaskIn(request, queries, issue, "agent", agentID, dmSession, input.Proposal != nil && input.Action != nil && input.Action.Type == runBudgetRaiseType, input.EscalationClass)
 	if input.Proposal != nil && (err != nil || input.Proposal.RecipientErr != nil || !reuse) {
 		// A stopped task, a removed recipient or a lane that is gone cannot ask
 		// again, but an open proposal of this identity is reported as
@@ -651,7 +881,7 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	authorityStatus := http.StatusConflict
 	if input.Proposal != nil {
 		authorityStatus = http.StatusForbidden // D3's guard owns the re-ask rule
-	} else if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.Ask); err != nil {
+	} else if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.askIdentity()); err != nil {
 		return empty, err
 	}
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {
@@ -677,6 +907,11 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 			return empty, err
 		}
 		createdSession = &session
+		if backing {
+			if err := queries.CreateDecisionBackingLane(ctx, db.CreateDecisionBackingLaneParams{SessionID: session.ID, WorkspaceID: issue.WorkspaceID, CreatorID: session.CreatorID, TopicID: topic.ID}); err != nil {
+				return empty, err
+			}
+		}
 	}
 	if input.Proposal != nil {
 		if input.Proposal, err = handler.admitProposal(ctx, queries, issue, agent, session, input); err != nil {
@@ -698,20 +933,80 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	if err != nil {
 		return empty, err
 	}
+	if input.Action != nil && isRunBudgetActionType(input.Action.Type) {
+		window, err := runBudgetWindowOf(input.Action.Params)
+		if err != nil {
+			return empty, err
+		}
+		if err := recordRunBudgetAsk(ctx, queries, issue, "agent", agent.ID, input.Action.Type, window); err != nil {
+			return empty, err
+		}
+	}
 	// The ping commits with the request: a ping failure refuses the whole call.
-	if result.PingItem, err = decisiontx.NotifyPingTx(ctx, queries, issue.WorkspaceID, result.Request.ID); err != nil {
+	// A batch pings once, for its lead; the others are recorded as handled.
+	if input.Batch.writesCard() {
+		result.PingItem, err = decisiontx.NotifyPingTx(ctx, queries, issue.WorkspaceID, result.Request.ID)
+	} else {
+		_, err = queries.MarkDecisionPingNotified(ctx, db.MarkDecisionPingNotifiedParams{WorkspaceID: issue.WorkspaceID, ID: result.Request.ID})
+	}
+	if err != nil {
 		return empty, err
 	}
 	result.PingRecorded = true
 	if !inDM { // the DM's task is not the issue's: the anchor stays as it is
-		if result.ParkedIssue, result.ParkedActivity, err = parkIssueForDecision(ctx, queries, issue); err != nil {
+		if result.ParkedIssue, result.ParkedActivity, err = parkForDecisionRequest(ctx, queries, issue, input.Wait); err != nil {
 			return empty, err
 		}
 	}
-	if err := transaction.Commit(ctx); err != nil {
-		return empty, err
-	}
-	handler.DecisionWorker.Notify()
 	result.CreatedSession = createdSession
+	result.BackingLane = backing
+	result.Warnings = warnings
 	return result, nil
+}
+
+// issueAskGoesToBackingLane is true for an issue task's ask while decision_screen is on. A DM
+// task's ask stays in its DM (plan r4 3.7). The setting is read inside the request transaction.
+func (handler *Handler) issueAskGoesToBackingLane(ctx context.Context, queries *db.Queries, issue db.Issue, inDM bool) (bool, error) {
+	if inDM {
+		return false, nil
+	}
+	workspace, err := queries.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil {
+		return false, err
+	}
+	return decisiontx.DecisionScreenOn(workspace.Settings), nil
+}
+
+// backingLane finds and locks the member's backing lane for the topic. found is false when there
+// is none yet; the caller creates it and registers it in the same transaction. The topic-lane
+// advisory lock serialises two asks that would both create it.
+func backingLane(ctx context.Context, queries *db.Queries, issue db.Issue, topic decisionTopic, humanID pgtype.UUID) (session db.ChatSession, found bool, err error) {
+	if err := queries.LockDecisionTopicLane(ctx, db.LockDecisionTopicLaneParams{WorkspaceID: issue.WorkspaceID, CreatorID: humanID, TopicID: topic.ID}); err != nil {
+		return db.ChatSession{}, false, err
+	}
+	id, err := queries.GetDecisionBackingLane(ctx, db.GetDecisionBackingLaneParams{WorkspaceID: issue.WorkspaceID, CreatorID: humanID, TopicID: topic.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatSession{}, false, nil
+	}
+	if err != nil {
+		return db.ChatSession{}, false, err
+	}
+	if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: issue.WorkspaceID, ID: id}); err != nil {
+		return db.ChatSession{}, false, err
+	}
+	session, err = queries.GetChatSessionInWorkspace(ctx, db.GetChatSessionInWorkspaceParams{ID: id, WorkspaceID: issue.WorkspaceID})
+	return session, err == nil, err
+}
+
+// latestDM finds the recipient's most recently active plain DM with the agent
+// for a proposal made from an issue task (CHE-5253).
+func latestDM(ctx context.Context, queries *db.Queries, issue db.Issue, input decisionRequestInput, agentID pgtype.UUID) (pgtype.UUID, bool, error) {
+	if input.Proposal == nil {
+		return pgtype.UUID{}, false, nil
+	}
+	id, err := queries.GetLatestPlainDM(ctx, db.GetLatestPlainDMParams{WorkspaceID: issue.WorkspaceID, CreatorID: input.HumanUserID, AgentID: agentID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return pgtype.UUID{}, false, nil
+	}
+	return id, err == nil, err
 }

@@ -9,13 +9,15 @@ export interface InboxFilters {
   readonly unreadOnly: boolean;
   /** Only issues no agent is running or queued on. Active inbox only. */
   readonly idleOnly: boolean;
+  /** Only rows where the viewer was mentioned, by name or by `@all`. Active inbox only. */
+  readonly mentionsOnly: boolean;
 }
 
 /**
- * The dimensions the server-filtered archive understands. It has no idle
- * dimension, so `idleOnly` never reaches its endpoints or query keys.
+ * The dimensions the server-filtered archive understands. It has no idle or
+ * mention dimension, so those never reach its endpoints or query keys.
  */
-export type ArchivedInboxFilters = Omit<InboxFilters, "idleOnly">;
+export type ArchivedInboxFilters = Omit<InboxFilters, "idleOnly" | "mentionsOnly">;
 
 /**
  * Stable identity for "who this notification came from", used as the value of
@@ -32,6 +34,17 @@ export function inboxActorKey(item: InboxItem): string | null {
   if (!type) return null;
   if (type === "system") return "system";
   return item.actor_id ? `${type}:${item.actor_id}` : null;
+}
+
+/**
+ * True when the viewer was named directly or by `@all`. The server writes
+ * `mentioned` for `@squad` too and records which source it was in
+ * `details.mention_source`. A row from before that was recorded has no source,
+ * so its origin is unknown and it does not match.
+ */
+export function isViewerMention(item: InboxItem): boolean {
+  const source = item.details?.mention_source;
+  return source === "direct" || source === "all";
 }
 
 /** Inverse of `inboxActorKey`, for resolving a selection back to a directory. */
@@ -52,6 +65,7 @@ export const EMPTY_INBOX_FILTERS: InboxFilters = Object.freeze({
   actors: Object.freeze([]),
   unreadOnly: false,
   idleOnly: false,
+  mentionsOnly: false,
 });
 
 /** True when nothing is selected in any dimension. */
@@ -66,6 +80,7 @@ interface InboxFilterState {
   toggleActorFilter: (wsId: string, actor: string) => void;
   toggleUnreadOnly: (wsId: string) => void;
   toggleIdleOnly: (wsId: string) => void;
+  toggleMentionsOnly: (wsId: string) => void;
   clearPriorityFilters: (wsId: string) => void;
   clearFilters: (wsId: string) => void;
 }
@@ -131,6 +146,16 @@ export const useInboxFilterStore = create<InboxFilterState>()((set) => ({
         filtersByWorkspace: {
           ...state.filtersByWorkspace,
           [wsId]: { ...current, idleOnly: !current.idleOnly },
+        },
+      };
+    }),
+  toggleMentionsOnly: (wsId) =>
+    set((state) => {
+      const current = state.filtersByWorkspace[wsId] ?? EMPTY_INBOX_FILTERS;
+      return {
+        filtersByWorkspace: {
+          ...state.filtersByWorkspace,
+          [wsId]: { ...current, mentionsOnly: !current.mentionsOnly },
         },
       };
     }),
@@ -216,12 +241,14 @@ export interface InboxFilterContext {
 }
 
 /**
- * The archive is filtered server-side and the backend has no idle dimension,
- * so a selection kept from the active inbox stays dormant there instead of
- * narrowing whichever archived pages happen to be loaded.
+ * The archive is filtered server-side and the backend has no idle or mention
+ * dimension, so a selection kept from the active inbox stays dormant there
+ * instead of narrowing whichever archived pages happen to be loaded.
  */
 export function inboxFiltersForArchive(filters: InboxFilters): InboxFilters {
-  return filters.idleOnly ? { ...filters, idleOnly: false } : filters;
+  return filters.idleOnly || filters.mentionsOnly
+    ? { ...filters, idleOnly: false, mentionsOnly: false }
+    : filters;
 }
 
 /**
@@ -245,6 +272,13 @@ export function inboxFiltersForArchive(filters: InboxFilters): InboxFilters {
  * one never matches. `activeIssueIds` are the issues an agent is running or
  * queued on; the caller derives them from the agent task snapshot.
  *
+ * `mentionsOnly` asks about the issue's group, not just the newest row: a later
+ * comment must not hide a mention, so deduplication copies the mention's source
+ * onto the row it keeps when that row is a comment (`groupInboxItemsByIssue`).
+ * Any other newest row, such as `run_budget`, does not match itself: the filter
+ * shows the older mention row in its place (`mention_row`). A `@squad`-only
+ * mention does not match.
+ *
  * `pinnedUnreadKey` / `pinnedIdleKey` name the notification whose detail is
  * open. Opening an unread
  * notification marks it read, and replying from the detail can start an
@@ -266,6 +300,11 @@ export function filterInboxItems(
   }: InboxFilterContext = {},
 ): InboxItem[] {
   if (isEmptyInboxFilters(filters)) return items;
+  // A newest row that is not a mention stands in for its issue with the
+  // mention row that groups under it (CHE-7473).
+  if (filters.mentionsOnly) {
+    items = items.map((item) => (isViewerMention(item) ? item : (item.mention_row ?? item)));
+  }
 
   const statuses = new Set(filters.statuses);
   const priorities = new Set(filters.priorities);
@@ -284,6 +323,7 @@ export function filterInboxItems(
       !filters.unreadOnly ||
       item.read !== true ||
       (pinnedUnreadKey != null && key === pinnedUnreadKey);
+    if (filters.mentionsOnly && !isViewerMention(item)) return false;
     const matchesIdle =
       !filters.idleOnly ||
       (item.issue_id != null && !activeIssueIds.has(item.issue_id)) ||
@@ -298,6 +338,7 @@ export function inboxFilterCount(filters: InboxFilters): number {
     filters.priorities.length +
     filters.actors.length +
     (filters.unreadOnly ? 1 : 0) +
-    (filters.idleOnly ? 1 : 0)
+    (filters.idleOnly ? 1 : 0) +
+    (filters.mentionsOnly ? 1 : 0)
   );
 }

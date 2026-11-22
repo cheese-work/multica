@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 const (
@@ -19,7 +20,13 @@ func validAskMap() map[string]any {
 		"context_eli10": "A change is ready. You decide when it ships.", "agent_did": "Ran all requested checks.", "decision": "Ship now?",
 		"stakes_if_wrong": "A bad change could reach users.", "options": []any{option("NOW"), option("LATER")},
 		"recommendation": "LATER", "default_if_no_reply": "LATER", "source_issue_id": testIssueID, "source_comment_id": testCommentID,
+		"state_claims": freshClaims(),
 	}
+}
+
+// freshClaims is a valid state_claims value read just now.
+func freshClaims() []any {
+	return []any{map[string]any{"claim": "The change is ready.", "readback_command": "gh pr view 1 --json isDraft", "observed_at": time.Now().Format(time.RFC3339)}}
 }
 
 func TestDecodeAskMessages(test *testing.T) {
@@ -161,6 +168,8 @@ func validActionAskMap() map[string]any {
 		"why_human": "Owner-only: property create needs the workspace owner.", "steps": []any{"Run `multica property create --name Readiness`."},
 		"done_when": "The Readiness property is listed.", "default_if_no_reply": "Continue without the property.",
 		"source_issue_id": testIssueID, "source_comment_id": testCommentID,
+		"dry_run":      map[string]any{"host": "x99 linux bash, multica 0.9", "result": "exit 0, property listed"},
+		"state_claims": freshClaims(),
 	}
 }
 

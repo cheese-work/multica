@@ -16,12 +16,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/database"
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/dbstartup"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/maintenance"
@@ -617,6 +620,7 @@ func main() {
 	registerActivityListeners(bus, queries)
 	registerMachinePauseListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
+	registerIssueUnreadListeners(bus, queries)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
 	var metricsServer *http.Server
@@ -699,6 +703,12 @@ func main() {
 	// member_delegation_day exists only for self-host telemetry; DO_NOT_TRACK
 	// stops writing it as well as sending the snapshot.
 	h.TaskService.RecordMemberActivity = telemetryConfig.Enabled
+	// One server_deploy row per new commit (CHE-5709, D14). Display data only:
+	// a failed write is logged and never stops the boot.
+	deployVersion, _, deployCommit := normalizeServerBuildInfo(version, build, commit)
+	if _, err := h.RecordServerDeploy(context.Background(), deployCommit, deployVersion); err != nil {
+		slog.Warn("record server deploy failed", "error", err)
+	}
 	var replicaQueries *db.Queries
 	if replicaPool != nil {
 		replicaQueries = db.New(replicaPool)
@@ -719,6 +729,11 @@ func main() {
 	if maintenanceErr != nil {
 		slog.Error("maintenance listener disabled", "error", maintenanceErr)
 	}
+	// CHE-4746: gateway-facing control-plane routes live on this second listener only.
+	internalServer, internalErr := newInternalServer(port, internalMounts(h)...)
+	if internalErr != nil {
+		slog.Error("internal listener disabled", "error", internalErr)
+	}
 
 	// Start background workers.
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
@@ -731,6 +746,12 @@ func main() {
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
+	// A pending workflow switch applies when its issue's last live task ends (CHE-7669).
+	h.RegisterDeferredWorkflowSwitch(bus)
+	// A chained run that failed gets one retry, then blocks the issue (CHE-7675). After the switch: a pending switch wins.
+	h.RegisterChainedRunRetry(bus)
+	// A task's Steel browser leases end with the task (CHE-4734).
+	(&browserlease.Revoker{Queries: queries, Bus: bus, Pool: pool, Audit: handler.BrowserLeaseAudit}).Register()
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read
@@ -759,6 +780,17 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	// Claim poll histogram -> claim_poll_stats once a minute (CHE-8749 S7a).
+	go service.RunClaimPollStatsFlusher(sweepCtx, taskSvc.PollStats, queries)
+	go runBackgroundDeadlineSweeper(sweepCtx, taskSvc)
+	go runProviderReleaseController(sweepCtx, taskSvc)
+	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
+	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset. Webhook alerts, the
+	// external heartbeat and the probe credential are opt-in via MULTICA_PROVIDER_*
+	// env (CHE-4580).
+	if taskSvc.ProviderFailureProbe != nil {
+		service.StartProviderProbeMonitor(sweepCtx, os.Getenv, taskSvc.ProviderFailureProbe)
+	}
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
 	// round cannot delay offline detection or task recovery.
@@ -768,6 +800,9 @@ func main() {
 	go runSourceContextSweeper(sweepCtx, taskSvc)
 	go runWebhookNonceSweeper(sweepCtx, queries)
 	go h.RunElevationFenceSweeper(sweepCtx)
+	go h.RunRunBudgetHookSweeper(sweepCtx)
+	go h.RunSteerReplaySweeper(sweepCtx)
+	go h.RunHandoffIntentSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -797,8 +832,30 @@ func main() {
 		slog.Error("invalid GitHub allowlist", "error", err)
 		os.Exit(1)
 	}
+	// CHE-4116: move settings.routing_agent into background_agents.routing. Idempotent;
+	// a failed copy keeps the old key, so startup stops instead of routing from nothing.
+	if n, err := h.MigrateRoutingAgentSetting(sweepCtx); err != nil {
+		slog.Error("routing agent setting copy failed", "error", err)
+		os.Exit(1)
+	} else if n > 0 {
+		slog.Info("routing agent setting moved to background_agents.routing", "workspaces", n)
+	}
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
+	// CHE-4143 step 7: stack-link triggers (pull_request webhooks via the
+	// handler, and a bounded pass in the 10 min sweep). The mode gate and the
+	// GITHUB_STACK_AUTOLINK=0 kill live in the executor; the default mode is report.
+	if h.PRRefresh.Enabled() {
+		stackStore := ghstack.NewStore(pool)
+		stackLinker := &ghstack.Dispatcher{
+			Runner:  &ghstack.Executor{API: h.PRRefresh.Client(), Modes: stackStore, Reporter: stackStore},
+			Links:   stackStore,
+			Backoff: h.PRRefresh,
+		}
+		stackLinker.Start(sweepCtx)
+		h.StackAutolink = stackLinker
+		h.PRRefresh.AddSweep(stackLinker.Sweep) // before Start: the sweep loop reads the list
+	}
 	h.PRRefresh.Start(sweepCtx)
 	go h.BackfillGitHubAccountIDs(sweepCtx)
 	go h.RunGitHubIntakeWorker(sweepCtx)
@@ -831,6 +888,14 @@ func main() {
 	if h.ChannelMediaReconciler != nil {
 		h.ChannelMediaReconciler.Metrics = channelMediaMetrics
 		go h.ChannelMediaReconciler.Run(sweepCtx)
+	}
+
+	// WeCom scan-code install worker: drives QR generate + poll out of band, so
+	// no HTTP request waits on WeCom. Started even when the scan flow is
+	// unconfigured, so any session already in flight reaches a terminal state
+	// instead of spinning forever in the admin's dialog.
+	if h.WecomInstallWorker != nil {
+		go h.WecomInstallWorker.Run(sweepCtx)
 	}
 
 	// MUL-2957: DB-backed execution scheduler. The scheduler turns the
@@ -866,6 +931,18 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register issue wakeups", "error", err)
 	}
+	// CHE-5121: shared, bounded refresh of the merge pause variables. Without
+	// the GitHub App the reader stays nil, the job is a no-op and the pause
+	// state stays unknown, which holds every merge_eligibility dispatch.
+	pauseVars := &service.IssueWakeupService{Tasks: taskSvc}
+	if ghClient, err := ghsnapshot.NewClientFromEnv(); err != nil {
+		slog.Warn("github: merge pause refresh disabled (invalid App private key)", "err", err)
+	} else if ghClient != nil {
+		pauseVars.PauseVars = ghClient // ponytail: own token cache, share the handler's client if App-JWT budget matters
+	}
+	if err := schedulerMgr.Register(scheduler.MergePauseRefreshJob(pauseVars)); err != nil {
+		slog.Error("scheduler: register merge pause refresh", "error", err)
+	}
 	// CHE-1082: the legacy backfill that opens scoped wakeup definition writes.
 	// It runs from the deploy that ships it, so activation needs no manual step.
 	if err := schedulerMgr.Register(scheduler.WakeupDefinitionActivationJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
@@ -877,11 +954,31 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.StageQueueReleaseJob(taskSvc)); err != nil {
 		slog.Error("scheduler: register stage queue release", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.AdmissionDeferralReleaseJob(taskSvc)); err != nil {
+		slog.Error("scheduler: register admission deferral release", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.DMProgressDispatchJob(&service.DMProgressDispatcher{Pool: pool, Queries: queries, Bus: bus, DeliverCards: dmProgressDeliveryEnabled()})); err != nil {
+		slog.Error("scheduler: register dm progress dispatch", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
 		slog.Error("scheduler: register idle started guard", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.BlockedEntryLinkSweepJob(h)); err != nil {
+		slog.Error("scheduler: register blocked entry link sweep", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.MemberOwnedSweepJob(h)); err != nil {
+		slog.Error("scheduler: register member-owned issue sweep", "error", err)
+	}
+	// CHE-5708: scheduled daemon update cycles fire per machine and drain on a
+	// 30 s driver. The ready_to_update hook (UpdateCycleReady) lands with child 9.
+	if err := schedulerMgr.Register(scheduler.DaemonUpdateFireJob(pool, queries, h)); err != nil {
+		slog.Error("scheduler: register daemon update fire", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.DaemonUpdateCyclesJob(h)); err != nil {
+		slog.Error("scheduler: register daemon update cycles", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
@@ -901,6 +998,10 @@ func main() {
 	// condition is a 30-day cache; drop rows with no event for that long.
 	if err := schedulerMgr.Register(scheduler.GitHubWorkflowRetentionJob(queries)); err != nil {
 		slog.Warn("scheduler: failed to register github_workflow_retention job", "error", err)
+	}
+	// CHE-4937: settle stored release receipts GitHub will not redeliver.
+	if err := schedulerMgr.Register(scheduler.ReleaseReceiptSweepJob(h)); err != nil {
+		slog.Warn("scheduler: failed to register github_release_receipt_sweep job", "error", err)
 	}
 	// CHE-2586 L1: ops page snapshots (30 s sampler, 5 min rollup, retention).
 	for _, job := range []scheduler.JobSpec{
@@ -931,6 +1032,15 @@ func main() {
 			slog.Info("maintenance server starting", "addr", maintenanceServer.Addr)
 			if err := maintenanceServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				slog.Error("maintenance listener disabled", "error", err)
+			}
+		}()
+	}
+
+	if internalServer != nil {
+		go func() {
+			slog.Info("internal listener starting", "addr", internalServer.Addr)
+			if err := internalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("internal listener disabled", "error", err)
 			}
 		}()
 	}
@@ -977,6 +1087,17 @@ func main() {
 			if err := maintenanceServer.Shutdown(ctx); err != nil {
 				slog.Error("maintenance shutdown interrupted", "error", err)
 				_ = maintenanceServer.Close()
+			}
+		},
+		DrainInternal: func() {
+			if internalServer == nil {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := internalServer.Shutdown(ctx); err != nil {
+				slog.Error("internal listener shutdown interrupted", "error", err)
+				_ = internalServer.Close()
 			}
 		},
 		DrainHTTP: func() {
@@ -1054,4 +1175,16 @@ func main() {
 		},
 	}.run()
 	slog.Info("server stopped")
+}
+
+// dmProgressDeliveryEnabled is the server switch for posting progress cards to
+// DMs (CHE-7568). It is off unless MULTICA_DM_PROGRESS_DELIVERY is "true" or
+// "1"; turn it on in the release that ships the web card and its mute controls
+// (CHE-3408).
+func dmProgressDeliveryEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_DM_PROGRESS_DELIVERY"))) {
+	case "true", "1":
+		return true
+	}
+	return false
 }

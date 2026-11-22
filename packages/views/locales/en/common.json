@@ -142,8 +142,8 @@
     "reject_error": "Rejecting did not complete. Try again.",
     "waiting": "Waiting for your passkey…",
     "state": {
-      "executed": "Executed",
-      "failed": "Failed",
+      "executed": "Applied",
+      "failed": "Not applied",
       "rejected": "Rejected",
       "expired": "Expired",
       "cancelled": "Cancelled"
@@ -155,18 +155,61 @@
       "other": "Failed: {{code}}",
       "stale_base": "The target changed after the request. Ask again."
     },
+    "refusal": {
+      "class_needs_owner": "Only the workspace owner can approve this change.",
+      "payload_mismatch": "The approved change is not the change that was requested. Ask again.",
+      "preview_required": "Approve against the preview you were shown. Reload the card.",
+      "precondition_drift": "The target changed since the request. Ask again.",
+      "busy_retry": "Another change is in progress. Try again.",
+      "not_permitted": "You may not make this change.",
+      "action_not_executable": "This kind of change cannot be approved yet.",
+      "approval_proof_unavailable": "This server cannot verify a passkey approval yet.",
+      "other": "Refused: {{code}}"
+    },
+    "owner_only": "Only the workspace owner can approve this change.",
     "no_passkey": "Add a passkey before you approve.",
     "add_passkey": "Add a passkey",
     "error": "Passkey approval did not complete. Try again.",
     "lost": "The response was lost. The action is not approved again. Check the outcome.",
     "check": "Check outcome",
-    "outcome": { "cap_applied": "Cap applied", "run_queued": "Run queued", "still_blocked": "Still blocked: {{reason}}" },
+    "outcome": {
+      "cap_applied": "Cap applied",
+      "run_queued": "Run queued",
+      "still_blocked": "Still blocked: {{reason}}"
+    },
     "panel": {
       "title": "Run-budget request",
       "raise_cap": "Raise the run cap on {{issue}} to {{cap}} runs for this window.",
       "top_up": "Top up the run budget on {{issue}} for this window.",
-      "mismatch": "This approval is not a run-budget request for this issue, so it cannot be approved here.",
-      "unreadable": "This approval is not available to you, or it no longer exists."
+      "settled": "This approval is already {{state}}. If you still need it, ask the agent to propose it again.",
+      "mismatch": "This approval is not a run-budget request for this issue. Open the card in your DM or Inbox to decide it.",
+      "open_card": "Open the card",
+      "unreadable": "This approval is not available to you, or it no longer exists. Ask the agent to propose it again."
+    }
+  },
+  "budget_receipt": {
+    "applied_runs": "Applied. At application, {{issue}} showed {{used}} of {{limit}} runs.",
+    "runs_used": "Runs used",
+    "change": "{{used}} of {{limit}} → {{usedAfter}} of {{limitAfter}}",
+    "change_new_window": "{{used}} of {{limit}} → {{usedAfter}} of {{limitAfter}} (new window)",
+    "outcome": {
+      "run_queued": "Run queued.",
+      "run_started": "Run started.",
+      "status_restored": "Status restored.",
+      "still_blocked_runs": "Still blocked: no runs left.",
+      "still_blocked_tokens": "Still blocked: token budget used up.",
+      "still_blocked": "Still blocked.",
+      "later_window": "Not resumed: a newer budget window replaced this one.",
+      "status_moved": "Not resumed: the issue moved to another status.",
+      "window_changed": "Not resumed: the budget window changed.",
+      "issue_closed": "Not resumed: the issue is closed.",
+      "agent_archived": "Not resumed: the agent is archived.",
+      "restore_refused": "Not resumed: the status could not be restored.",
+      "unknown_origin": "Not resumed: the status before the block is unknown. Move the status by hand.",
+      "assignee_changed": "Not resumed: the assignee changed.",
+      "source_unknown": "Not resumed: the original trigger is unknown.",
+      "source_not_delivered": "Not resumed: the original trigger has no work left.",
+      "superseded": "Not resumed."
     }
   }
 }

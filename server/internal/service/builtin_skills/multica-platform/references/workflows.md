@@ -61,8 +61,9 @@ multica workflow update <workflow-id> --max-runs-per-issue 30 --include-child-pr
 
 Always read the printed readback. A rejected steps array changes nothing.
 
-An agent task token may write steps only through a decision-bound write
-(`--decision-id`, dry run `--print-hash`); see `decisions.md`.
+An agent task token cannot write steps or step instructions. Propose the
+change with `multica config propose workflow.steps` or `workflow.step.instructions`
+and post it with `multica decision request --action-file`; see `decisions.md`.
 
 An instruction edit changes what every future run on every issue in the
 workflow is told, so it is a standing-instruction change: follow the
@@ -101,3 +102,20 @@ multica workflow webhook list <workflow-id>                    # never shows sec
 
 `--name` is the name written in `webhook(name)`: 1-32 characters of
 `a-z`, `0-9`, `_` or `-`. `--rate-per-min` is 1-6000.
+
+## Route, description history, urgent orphans
+
+- `multica issue route <id> --status <key> --reason "<1-500 chars>" --confidence <0-1> [--owner <name> | --owner-id <uuid>] [--expected-revision <n>] [--no-start]`
+  moves an issue and records the reason and confidence in one call. Use it from
+  a routing step. Without `--owner` the project workflow picks the handler, as
+  with `issue status`; an explicit owner (member, agent or squad) replaces it.
+  Keeping the status and changing only the owner is allowed; the same status
+  and owner is refused with 409. `--no-start` starts no run, not even the
+  handler's. `--expected-revision` refuses the route if the issue changed.
+- `multica issue description history <id> [--output json]` lists the recorded
+  description revisions. `multica issue description diff <id> --from N --to M`
+  prints the unified diff between two of them. Read these before you rewrite a
+  description someone else edited.
+- `multica issue urgent-orphans [--output json]` lists open urgent issues with
+  no queued, dispatched or running task and no enabled wakeup. The PULSE sweep
+  reads it so an urgent issue never sits unowned. Read-only.

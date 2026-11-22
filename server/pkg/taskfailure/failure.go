@@ -101,6 +101,21 @@ const (
 	// agent timeout path.
 	ReasonTimeout Reason = "timeout"
 
+	// ReasonBgRunTimeout: an output-only background run passed the run
+	// deadline its job spec sets (CHE-4103). Written by the server sweep and by
+	// the daemon when it stops the provider at that deadline. Not retried: the
+	// chain moves to the next slot instead.
+	ReasonBgRunTimeout Reason = "bg_run_timeout"
+
+	// ReasonBgClaimTimeout: an output-only background task stayed queued past
+	// its claim deadline and the server sweep cancelled it (CHE-4103).
+	ReasonBgClaimTimeout Reason = "bg_claim_timeout"
+
+	// ReasonCompactionStartTimeout: a compaction task did not start within the
+	// compact claim deadline, counted from when its DM became free (CHE-2914).
+	// Written by the compaction start-bound sweep. Not retried.
+	ReasonCompactionStartTimeout Reason = "compaction_start_timeout"
+
 	// Process cleanup is a separate, non-retryable failure even when the
 	// provider succeeded or the user cancelled. Blocked successors do not
 	// create a new cleanup obligation of their own.
@@ -323,7 +338,7 @@ const (
 	ReasonAgentUnknown Reason = "agent_error.unknown"
 )
 
-// allReasons is the canonical ordered list of the 27 reasons. Order is
+// allReasons is the canonical ordered list of the reasons. Order is
 // stable so callers (e.g. Prometheus collectors that pre-warm series via
 // AllReasons) can build deterministic label sets across restarts.
 //
@@ -341,6 +356,9 @@ var allReasons = []Reason{
 	ReasonRuntimeReconnectTimeout,
 	ReasonRuntimeRecovery,
 	ReasonTimeout,
+	ReasonBgRunTimeout,
+	ReasonBgClaimTimeout,
+	ReasonCompactionStartTimeout,
 	ReasonProcessCleanupUnconfirmed,
 	ReasonProcessCleanupBlocked,
 	ReasonIterationLimit,

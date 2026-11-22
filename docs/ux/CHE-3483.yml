@@ -1,0 +1,28 @@
+# Decision card: approve a workspace configuration change with a passkey (CHE-3348 step 10).
+# Design: the locked card design/you-are-approving-card/approved/ (direction B, tabbed viewer; doop frame t8_q2WrMLL).
+# The viewer is the locked tab strip, applied to a config-change diff. No new visual direction.
+issue: CHE-3483
+design: design/you-are-approving-card/approved/approving-card-b.html @ 8ed2e49da2e4fd7c7aeb18f780165ebcd80fd1ad
+pages:
+  - id: chat-decision-card-config-change
+    url: /<workspace-slug>/chat   # a decision request card whose action is a configuration change; 540 px card on desktop
+    keep:
+      - decision-request-action-preview   # the existing preview for other action types is unchanged
+      - decision-request-answer
+      - decision-request-ask
+    change:
+      - config-change-viewer: "new: field, target and the server's stored preview in one locked viewer; Changes (diff) and Result tabs, collapsed by default"
+      - config-change-tab-changes: "tab with +added -removed counts; Left, Right, Home, End move between tabs; selecting the open tab closes it"
+      - config-change-tab-result: "tab showing the value after the change, as text"
+      - config-change-panel: "one tabpanel, labelled by the open tab; long diffs scroll in a focusable labelled region"
+      - config-change-keys: "settings keys the change touches (workspace settings only)"
+      - decision-action-approve: "Approve with passkey: challenge, assertion, then approve with payload and preview digests; shown only to the workspace owner"
+      - decision-action-refusal: "a refused approval shows the server code and a plain sentence; final refusals remove Approve"
+      - decision-action-owner-note: "a non-owner sees this note and no Approve button; Reject stays"
+    remove: []
+  - id: chat-decision-card-config-change-phone
+    url: /<workspace-slug>/chat   # 390 px
+    keep: []
+    change:
+      - config-change-viewer: "same viewer at phone width; tabs and the diff fit without horizontal page scroll"
+    remove: []

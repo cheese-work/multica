@@ -260,14 +260,14 @@ func TestDefaultWorkflowIsEditableButNotDeletable(t *testing.T) {
 	issueID := dbfx.Issue(t, "stays on in_review", testutil.Cols{"project_id": projectID, "status": "in_review"})
 
 	var updated IssueWorkflowResponse
-	req := withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+def.ID, map[string]any{
+	req := withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+def.ID, map[string]any{
 		"name": "Renamed", "steps": statusSteps("backlog", "in_progress", "blocked"),
 	}), "id", def.ID)
 	testutil.Call(t, testHandler.UpdateIssueWorkflow, req).Want(http.StatusOK).JSON(&updated)
 	if updated.Name != "Default" || len(updated.Steps) != 6 {
 		t.Fatalf("updated Default = %+v, want its name kept and in_review removed", updated)
 	}
-	// Default accepts every status, so dropping one moves no issue.
+	// Editing Default maps no issue: one on a status it dropped keeps it.
 	if status, _, _ := issueStatusAndAssignee(t, issueID); status != "in_review" {
 		t.Fatalf("editing Default moved an issue to %q", status)
 	}
@@ -346,6 +346,70 @@ func TestUpdateIssueRejectsStatusOutsideNamedWorkflow(t *testing.T) {
 		t.Fatalf("error %q should list the allowed keys", msg)
 	}
 	updateIssueForTest(t, issueID, map[string]any{"status": "blocked"}).Want(http.StatusOK)
+}
+
+// A stored Default limits statuses on its projects and on issues outside any
+// project; an issue already on another status keeps it. (MUL-8250)
+func TestDefaultLimitsStatusesInAndOutsideProjects(t *testing.T) {
+	seedTestCatalog(t)
+	resetDefaultWorkflow(t)
+	withFeatureFlag(t, testHandler, featureflags.ProjectWorkflowsV1, true)
+	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK)
+	statusName := "Ship " + workflowTestSuffix()[10:]
+	var wf IssueWorkflowResponse
+	testutil.Call(t, testHandler.CreateIssueWorkflow, workflowRequest("POST", "/api/issue-workflows", map[string]any{
+		"name":  "Ship " + workflowTestSuffix(),
+		"steps": []map[string]any{{"new_status": map[string]any{"name": statusName, "category": "started"}}},
+	})).Want(http.StatusCreated).JSON(&wf)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue_workflow WHERE id = $1`, wf.ID)
+		testPool.Exec(context.Background(), `DELETE FROM issue_status WHERE workspace_id = $1 AND name = $2`, testWorkspaceID, statusName)
+	})
+	shipKey := ""
+	for _, s := range wf.Steps {
+		if lookupStatusName(t, s.StatusKey) == statusName {
+			shipKey = s.StatusKey
+		}
+	}
+	if shipKey == "" {
+		t.Fatalf("workflow steps %+v lack the new status", wf.Steps)
+	}
+
+	outside := dbfx.Issue(t, "outside a project", testutil.Cols{"status": "todo"})
+	body := updateIssueForTest(t, outside, map[string]any{"status": shipKey}).Want(http.StatusBadRequest).Map()
+	if body["code"] != "status_not_in_workflow" {
+		t.Fatalf("code = %v, want status_not_in_workflow", body["code"])
+	}
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "issues outside a project") {
+		t.Fatalf("error %q should say the issue is outside a project", msg)
+	}
+	updateIssueForTest(t, outside, map[string]any{"status": "in_progress"}).Want(http.StatusOK)
+
+	projectID := createWorkflowTestProject(t, "Default limit project")
+	onDefault := dbfx.Issue(t, "on a Default project", testutil.Cols{"project_id": projectID, "status": "todo"})
+	updateIssueForTest(t, onDefault, map[string]any{"status": shipKey}).Want(http.StatusBadRequest)
+
+	kept := dbfx.Issue(t, "already shipped", testutil.Cols{"status": shipKey})
+	updateIssueForTest(t, kept, map[string]any{"title": "still shipped"}).Want(http.StatusOK)
+	updateIssueForTest(t, kept, map[string]any{"status": shipKey}).Want(http.StatusOK)
+	if status, _, _ := issueStatusAndAssignee(t, kept); status != shipKey {
+		t.Fatalf("an issue already on %q moved to %q", shipKey, status)
+	}
+
+	testutil.Call(t, testHandler.CreateIssue, newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title": "created outside Default", "status": shipKey,
+	})).Want(http.StatusBadRequest)
+
+	// A status created in Settings belongs to no workflow, so it joins Default.
+	var settingsStatus IssueStatusResponse
+	testutil.Call(t, testHandler.CreateIssueStatus, newRequest(http.MethodPost, "/api/issue-statuses", map[string]any{
+		"name": "Parked " + workflowTestSuffix()[10:], "category": "unstarted", "color": "#123456",
+	})).Want(http.StatusCreated).JSON(&settingsStatus)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue_status WHERE id = $1`, parseUUID(settingsStatus.ID))
+	})
+	updateIssueForTest(t, outside, map[string]any{"status": settingsStatus.Key}).Want(http.StatusOK)
+	updateIssueForTest(t, onDefault, map[string]any{"status": settingsStatus.Key}).Want(http.StatusOK)
 }
 
 func TestStatusChangeHandsOffOnDefaultProject(t *testing.T) {
@@ -476,7 +540,7 @@ func TestWorkflowOwnerPermissions(t *testing.T) {
 
 	patch := func(as func(*http.Request) *http.Request, id, name string) *testutil.Response {
 		return testutil.Call(t, testHandler.UpdateIssueWorkflow,
-			withURLParam(as(workflowRequest("PATCH", "/api/issue-workflows/"+id, map[string]any{"name": name})), "id", id))
+			withURLParam(as(workflowEditRequest("PATCH", "/api/issue-workflows/"+id, map[string]any{"name": name})), "id", id))
 	}
 	handoff := func(as func(*http.Request) *http.Request) *testutil.Response {
 		return testutil.Call(t, testHandler.SetIssueWorkflowHandoff,
@@ -531,7 +595,7 @@ func TestWorkflowOwnerPermissions(t *testing.T) {
 	novel := "Member status " + workflowTestSuffix()
 	patchSteps := func(as func(*http.Request) *http.Request, body map[string]any) *testutil.Response {
 		return testutil.Call(t, testHandler.UpdateIssueWorkflow,
-			withURLParam(as(workflowRequest("PATCH", "/api/issue-workflows/"+wf.ID, body)), "id", wf.ID))
+			withURLParam(as(workflowEditRequest("PATCH", "/api/issue-workflows/"+wf.ID, body)), "id", wf.ID))
 	}
 	patchSteps(asOwner, newSteps(novel)).Want(http.StatusForbidden)
 	createBody := newSteps(novel)
@@ -613,7 +677,7 @@ func TestWorkflowWithoutBacklogOrBlocked(t *testing.T) {
 	setProjectWorkflow(t, other, map[string]any{"workflow_id": full.ID}).Want(http.StatusOK)
 	stuck := dbfx.Issue(t, "stuck", testutil.Cols{"project_id": other, "status": "blocked"})
 	edit := func(body map[string]any) *testutil.Response {
-		return testutil.Call(t, testHandler.UpdateIssueWorkflow, withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+full.ID, body), "id", full.ID))
+		return testutil.Call(t, testHandler.UpdateIssueWorkflow, withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+full.ID, body), "id", full.ID))
 	}
 	var conflict struct {
 		Plan workflowMappingPlan `json:"plan"`
@@ -777,7 +841,7 @@ func TestArchiveStatusGuardsNamedWorkflowsOnly(t *testing.T) {
 	}
 	testutil.Call(t, testHandler.ListIssueWorkflows, workflowRequest("GET", "/api/issue-workflows", nil)).Want(http.StatusOK).JSON(&list)
 	def := list.Workflows[0]
-	patch := withURLParam(workflowRequest("PATCH", "/api/issue-workflows/"+def.ID, map[string]any{
+	patch := withURLParam(workflowEditRequest("PATCH", "/api/issue-workflows/"+def.ID, map[string]any{
 		"steps": statusSteps("in_progress", loose.Key),
 	}), "id", def.ID)
 	testutil.Call(t, testHandler.UpdateIssueWorkflow, patch).Want(http.StatusOK)

@@ -5,6 +5,7 @@ import {
   AlarmClock,
   Bell,
   Blocks,
+  Bot,
   CircleDot,
   CreditCard,
   FolderGit2,
@@ -67,6 +68,8 @@ import { searchSettings } from "./settings-search";
 import { HighlightText } from "../../search/highlight-text";
 import { useSettingsSearchIndex } from "./use-settings-search-index";
 import { WakeupsTab } from "./wakeups-tab";
+import { BackgroundAgentsTab } from "./background-agents-tab";
+import { PersonalBackgroundAgentsTab } from "./personal-background-agents-tab";
 import { CollapsedNavTrigger, PageHeader } from "../../layout/page-header";
 import { PanelHeader } from "../../layout/panel-nav";
 import { useListColumnCollapsed } from "../../layout/app-shell-context";
@@ -163,6 +166,13 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
             ...(appsAvailable
               ? [entry("apps", t(($) => $.page.tabs.apps), Plug, <ConnectedAppsTab />)]
               : []),
+            entry(
+              "personal-background-agents",
+              t(($) => $.page.tabs.personal_background_agents),
+              Bot,
+              <PersonalBackgroundAgentsTab />,
+              { wide: true },
+            ),
             entry("tokens", t(($) => $.page.tabs.tokens), KeyRound, <TokensTab />),
             entry("passkeys", t(($) => $.page.tabs.passkeys), Lock, <PasskeysTab />),
           ],
@@ -183,6 +193,13 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
             entry("members", t(($) => $.page.tabs.members), Users, <MembersTab />, {
               adminOnly: true,
             }),
+            entry(
+              "background-agents",
+              t(($) => $.page.tabs.background_agents),
+              Bot,
+              <BackgroundAgentsTab />,
+              { wide: true },
+            ),
             ...(canManageExportPrivacy
               ? [entry(
                   "export-privacy",

@@ -139,7 +139,7 @@ func TestTopUpCarriesTheRunsLeftIntoTheNewWindow(t *testing.T) {
 	}
 }
 
-func TestTopUpSubtractsAnOverdrawnWindow(t *testing.T) {
+func TestTopUpClearsAnOverdrawnWindow(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
@@ -158,8 +158,8 @@ func TestTopUpSubtractsAnOverdrawnWindow(t *testing.T) {
 	if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
 		t.Fatalf("top-up = %d: %s", w.Code, w.Body.String())
 	}
-	if got := admitUntilRefused(t, c, 10); got != 1 {
-		t.Fatalf("runs admitted after the top-up = %d, want 1 (a 2-run window minus 1 overdrawn)", got)
+	if got := admitUntilRefused(t, c, 10); got != 2 {
+		t.Fatalf("runs admitted after the top-up = %d, want 2 (a fresh 2-run window; the overdraft is forgiven)", got)
 	}
 }
 
@@ -209,5 +209,26 @@ func TestAdmitUntilRefusedLeavesNoLateIssueWriter(t *testing.T) {
 	}
 	if after.Revision != before.Revision {
 		t.Fatalf("issue revision moved from %d to %d after admitUntilRefused returned: a late writer outlives the helper", before.Revision, after.Revision)
+	}
+}
+
+// A top-up pays for a fresh window: debt an old window ran up does not leave
+// the issue "over" with runs still unused (CHE-5331).
+func TestTopUpIssueRunBudgetClearsCarriedDebt(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	c, _ := budgetedAt(t, 40, 43)
+
+	if w := topUpBudget(t, c.issueID, nil); w.Code != http.StatusOK {
+		t.Fatalf("top-up = %d: %s", w.Code, w.Body.String())
+	}
+	snap := visibleSnapshot(t, c)
+	if snap.RunsLeft != 40 || snap.State != service.RunBudgetOK || len(snap.Blocking) != 0 {
+		t.Fatalf("after top-up: left=%d state=%q blocking=%v, want 40 left, ok, not blocked", snap.RunsLeft, snap.State, snap.Blocking)
+	}
+	admitRun(t, c)
+	if got := ledgerBalance(t, c.issueID); got != 39 {
+		t.Fatalf("balance after one admission = %d, want 39", got)
 	}
 }

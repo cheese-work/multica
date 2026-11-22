@@ -195,13 +195,14 @@ vi.mock("@multica/core/workspace/queries", () => ({
 // Mock @multica/core/paths — after the URL-driven workspace refactor,
 // useCurrentWorkspace / useWorkspacePaths derive from the workspace slug in
 // URL Context. Tests don't mount a real route, so we short-circuit to fixtures.
+const mockWorkspaceSettings: { current: Record<string, unknown> } = vi.hoisted(() => ({ current: {} }));
 vi.mock("@multica/core/paths", async () => {
   const actual = await vi.importActual<typeof import("@multica/core/paths")>(
     "@multica/core/paths",
   );
   return {
     ...actual,
-    useCurrentWorkspace: () => ({ id: "ws-1", name: "Test WS", slug: "test" }),
+    useCurrentWorkspace: () => ({ id: "ws-1", name: "Test WS", slug: "test", settings: mockWorkspaceSettings.current }),
     useWorkspacePaths: () => actual.paths.workspace("test"),
   };
 });
@@ -605,14 +606,25 @@ const virtualWindow = vi.hoisted(() => ({ size: Infinity, initialIndex: 0 }));
 
 vi.mock("react-virtuoso", () => ({
   Virtuoso: forwardRef(function MockVirtuoso(
-    { data, itemContent, computeItemKey }: {
+    { data, itemContent, computeItemKey, initialTopMostItemIndex }: {
       data: unknown[];
+      initialTopMostItemIndex?: { index: number; align?: string; offset?: number };
       itemContent: (i: number, item: unknown) => unknown;
       computeItemKey: (i: number, item: unknown) => React.Key;
     },
     ref: any,
   ) {
-    const [firstIndex, setFirstIndex] = useState(virtualWindow.initialIndex);
+    const [firstIndex, setFirstIndex] = useState(
+      Number.isFinite(virtualWindow.size) && initialTopMostItemIndex
+        ? initialTopMostItemIndex.index
+        : virtualWindow.initialIndex,
+    );
+    // Real Virtuoso opens AT initialTopMostItemIndex; record it as the placement
+    // so deep-link tests can tell "list opened at the target" from "page scrolled".
+    useEffect(() => {
+      if (initialTopMostItemIndex) scrollToIndexSpy(initialTopMostItemIndex);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     useImperativeHandle(ref, () => ({
       // Real Virtuoso ref methods are not exercised by tests in this file
       // since the deep-link cold-path drives the container's scrollTop on the
@@ -1076,6 +1088,28 @@ describe("IssueDetail (shared)", () => {
     }
   });
 
+  // CHE-7426 (CHE-4317 slice 1): the locked compact-sidebar design puts the
+  // Pull requests section directly above Wakeups.
+  it("renders the Pull requests section above the Wakeups section in the sidebar", async () => {
+    renderIssueDetail();
+    const pullRequests = await screen.findByText("Pull requests");
+    const wakeups = await screen.findByText("Wakeups");
+    expect(
+      pullRequests.compareDocumentPosition(wakeups) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("renders no Pull requests section when the workspace disables the PR sidebar", async () => {
+    mockWorkspaceSettings.current = { github_pr_sidebar_enabled: false };
+    try {
+      renderIssueDetail();
+      await screen.findByText("Wakeups");
+      expect(screen.queryByText("Pull requests")).not.toBeInTheDocument();
+    } finally {
+      mockWorkspaceSettings.current = {};
+    }
+  });
+
   it("shows loading skeleton while data is loading", () => {
     // Make the API hang to keep loading state
     mockApiObj.getIssue.mockReturnValue(new Promise(() => {}));
@@ -1372,6 +1406,23 @@ describe("IssueDetail (shared)", () => {
     // The "+ Add property" affordance is always offered while any
     // optional field is still hidden.
     expect(screen.getByText("Add property")).toBeInTheDocument();
+  });
+
+  it("shows how the issue was created, and nothing for older issues (CHE-6098)", async () => {
+    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, created_via: "dialog" });
+    const { unmount } = renderIssueDetail();
+    await waitFor(() => {
+      expect(screen.getByText("Created via")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Create dialog")).toBeInTheDocument();
+    unmount();
+
+    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, created_via: "" });
+    renderIssueDetail();
+    await waitFor(() => {
+      expect(screen.getByText("Properties")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Created via")).not.toBeInTheDocument();
   });
 
   it("hides every optional property row when none are set", async () => {
@@ -1840,7 +1891,7 @@ describe("IssueDetail (shared)", () => {
   // after the interaction ends. `issue-disclosure-store.test.ts` only proves
   // `setThreadExpanded` is a correct setter; it cannot prove anything about
   // when the component calls it. This is that proof.
-  it("latches a thread's length-expanded preference when an active reply draft forces it open, surviving after the draft clears", async () => {
+  it("latches a thread's length-expanded preference when an active edit draft forces it open, surviving after the draft clears", async () => {
     const root = mockTimeline[0]!;
     const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
       ...mockTimeline[1]!,
@@ -1860,7 +1911,7 @@ describe("IssueDetail (shared)", () => {
     // Introduce an active reply draft on the root — the same draft-store key
     // (`reply:${issueId}:${rootId}`) `rootIdsWithActiveReplyDraft` reads.
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
         content: "typing a reply...",
         attachments: [],
         updatedAt: Date.now(),
@@ -1879,7 +1930,7 @@ describe("IssueDetail (shared)", () => {
     // Clear the draft — the interaction ends (reply sent), exactly like
     // useCommentDraftStore's clearDraft on a successful submit.
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, undefined);
+      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, undefined);
     });
 
     // The temporary pin is gone (no active draft), but 01-DESIGN line 56
@@ -1894,6 +1945,68 @@ describe("IssueDetail (shared)", () => {
     expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true);
   });
 
+  // CHE-1935: the reply box is already visible in the compact state, so a typed reply draft must
+  // neither unfold the thread (hidden replies would mount above the box and push it away) nor
+  // latch the expansion. An edit draft on a hidden reply still does both.
+  it("keeps a compact thread compact and unlatched while a reply draft is typed (CHE-1935)", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `che1935-reply-${i}`,
+      parent_id: root.id,
+      content: `C1935 reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    renderIssueDetail();
+
+    await screen.findByText("C1935 reply 3");
+    await screen.findByRole("button", { name: /Show \d+ more repl/ });
+
+    act(() => {
+      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+        content: "t",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+
+    // Let the latch effect run, then assert the thread did not move.
+    await act(async () => {});
+    expect(screen.queryByText("C1935 reply 0")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Show \d+ more repl/ })).toBeInTheDocument();
+    expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
+  });
+
+  it("still unfolds and latches a compact thread while an edit draft sits on a hidden reply (CHE-1935)", async () => {
+    const root = mockTimeline[0]!;
+    const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+      ...mockTimeline[1]!,
+      id: `che1935-edit-reply-${i}`,
+      parent_id: root.id,
+      content: `C1935 edit reply ${i}`,
+      created_at: `2026-01-16T00:0${i}:00Z`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    renderIssueDetail();
+
+    await screen.findByText("C1935 edit reply 3");
+    await screen.findByRole("button", { name: /Show \d+ more repl/ });
+
+    act(() => {
+      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
+        content: "editing",
+        attachments: [],
+        updatedAt: Date.now(),
+      });
+    });
+
+    await screen.findByText("C1935 edit reply 0");
+    await waitFor(() =>
+      expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBe(true),
+    );
+  });
+
   // CHE-479 regression: Fold All (search-command.tsx's foldAllCommentThreads
   // -> useIssueDisclosureStore.collapseAllThreads) must not have its
   // full-collapse intent immediately undone by the latch effect above for a
@@ -1904,7 +2017,7 @@ describe("IssueDetail (shared)", () => {
   // with an active reply draft already present, `!expandedThreadLengths.has(rootId)`
   // read true again and the effect immediately re-latched the root open,
   // silently undoing the fold.
-  it("does not let Fold All be immediately undone by the latch when a reply draft is already active on a folded root (CHE-479)", async () => {
+  it("does not let Fold All be immediately undone by the latch when an edit draft is already active on a folded root (CHE-479)", async () => {
     const root = mockTimeline[0]!;
     const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
       ...mockTimeline[1]!,
@@ -1923,7 +2036,7 @@ describe("IssueDetail (shared)", () => {
     // test above — so forceThreadOpen's pin is active and the latch effect
     // has already persisted the length-expansion for this root.
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
         content: "typing a reply...",
         attachments: [],
         updatedAt: Date.now(),
@@ -1948,7 +2061,7 @@ describe("IssueDetail (shared)", () => {
     // length preference stays expanded.
     expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy();
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
         content: "typing a reply... continued",
         attachments: [],
         updatedAt: Date.now(),
@@ -1961,11 +2074,11 @@ describe("IssueDetail (shared)", () => {
     // one starting on the same root — must still latch normally: Fold All's
     // suppression must not permanently block future latching.
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, { content: "", attachments: [], updatedAt: Date.now() });
+      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, { content: "", attachments: [], updatedAt: Date.now() });
     });
     await waitFor(() => expect(useIssueDisclosureStore.getState().expandedThreadIdsByIssue["issue-1"]?.has(root.id)).toBeFalsy());
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
         content: "a brand new reply draft",
         attachments: [],
         updatedAt: Date.now(),
@@ -2023,7 +2136,7 @@ describe("IssueDetail (shared)", () => {
     // the second, unrelated Fold All's justFoldedRoots (naming only `other`)
     // must not carry forward suppression for `root`.
     act(() => {
-      mockDraftStoreState.setDraft(`reply:issue-1:${root.id}`, {
+      mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, {
         content: "a fresh reply after an unrelated fold",
         attachments: [],
         updatedAt: Date.now(),
@@ -2383,6 +2496,62 @@ describe("IssueDetail (shared)", () => {
       } finally {
         restoreGetClientRects();
       }
+    });
+
+    it("CHE-5437: a real click on Collapse thread collapses a thread with no replies to its one-line header and hides the reply box", async () => {
+      const root = { ...mockTimeline[0]!, id: "lonely-root", content: "Lonely root body" };
+      mockApiObj.listTimeline.mockResolvedValue([root]);
+      const { container } = renderIssueDetail();
+      await screen.findByText("Lonely root body");
+
+      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
+      // A real pointer press focuses the button; the focus pin must not
+      // read the collapse control's own focus as "the user is interacting".
+      const button = within(rootWrapper()).getByRole("button", { name: "Collapse thread" });
+      fireEvent.mouseDown(button);
+      act(() => button.focus());
+      fireEvent.click(button);
+
+      await waitFor(() => expect(within(rootWrapper()).getByRole("button", { name: "Expand thread" })).toBeInTheDocument());
+      expect(useCommentCollapseStore.getState().isCollapsed("issue-1", root.id)).toBe(true);
+      // One line: the summary stays in the header, the body block is gone.
+      expect(within(rootWrapper()).queryByTestId("comment-reply-input")).not.toBeInTheDocument();
+      expect(rootWrapper().querySelector(`#comment-body-${root.id}`)).toBeNull();
+      expect(within(rootWrapper()).getByText("Lonely root body")).toBeInTheDocument();
+    });
+
+    it("CHE-5437: Collapse thread works while the reply box holds unsent text, and the text is still in the draft store", async () => {
+      const root = { ...mockTimeline[0]!, id: "draft-root", content: "Draft root body" };
+      mockApiObj.listTimeline.mockResolvedValue([root]);
+      const { container } = renderIssueDetail();
+      await screen.findByText("Draft root body");
+      const draftKey = `reply:issue-1:${root.id}`;
+      act(() => mockDraftStoreState.setDraft(draftKey, { content: "half-typed reply", attachments: [], updatedAt: 1 }));
+
+      const rootWrapper = () => container.querySelector(`#comment-${root.id}`) as HTMLElement;
+      fireEvent.click(within(rootWrapper()).getByRole("button", { name: "Collapse thread" }));
+
+      await waitFor(() => expect(within(rootWrapper()).getByRole("button", { name: "Expand thread" })).toBeInTheDocument());
+      expect(within(rootWrapper()).queryByTestId("comment-reply-input")).not.toBeInTheDocument();
+      expect(mockDraftStoreState.getDrafts()[draftKey]?.content).toBe("half-typed reply");
+    });
+
+    it("CHE-5437: withholds Show less while an edit draft forces the length open, so the button is never a dead click", async () => {
+      const root = mockTimeline[0]!;
+      const replies: TimelineEntry[] = Array.from({ length: 4 }, (_, i) => ({
+        ...mockTimeline[1]!,
+        id: `dead-reply-${i}`,
+        parent_id: root.id,
+        content: `Dead reply ${i}`,
+        created_at: `2026-01-16T00:0${i}:00Z`,
+      }));
+      mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+      renderIssueDetail();
+      await screen.findByText("Dead reply 3");
+
+      act(() => mockDraftStoreState.setDraft(`edit:issue-1:${replies[0]!.id}`, { content: "typing a reply...", attachments: [], updatedAt: 1 }));
+      await screen.findByText("Dead reply 0");
+      expect(screen.queryByRole("button", { name: "Show less" })).not.toBeInTheDocument();
     });
 
     it("reveals the collapsed description while find is open, without writing the description-expanded preference", async () => {
@@ -4038,6 +4207,53 @@ describe("IssueDetail (shared)", () => {
       const reply = document.getElementById("comment-reply-under-root");
       expect(reply).not.toBeNull();
       expect(hasHighlightedCommentBackground(reply)).toBe(false);
+    });
+
+    it("lands on a run that left no comment by its task id", async () => {
+      const taskId = "7c1f3a9e-2b4d-4e8a-9f60-0a1b2c3d4e5f";
+      const task: AgentTask = {
+        id: taskId, agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+        status: "failed", priority: 0, created_at: "2026-01-18T00:00:00Z",
+        started_at: "2026-01-18T00:00:01Z", dispatched_at: "2026-01-18T00:00:01Z",
+        completed_at: "2026-01-18T00:05:00Z", result: null, error: "go test timed out",
+        delivered_comment_ids: [],
+      };
+      mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+
+      renderIssueDetailWithHighlight(taskId);
+
+      await waitFor(() => {
+        expect(hasHighlightedCommentBackground(document.getElementById(`comment-${taskId}`))).toBe(true);
+      });
+    });
+
+    it.each([
+      ["an open thread", "open"],
+      ["a thread whose root is resolved", "root"],
+      ["a thread a later reply resolved", "reply"],
+    ])("unfolds and lands on a run that left no comment in %s", async (_case, fold) => {
+      const taskId = "7c1f3a9e-2b4d-4e8a-9f60-0a1b2c3d4e5f";
+      const root = { ...mockTimeline[0]!, id: "run-thread-root", parent_id: null,
+        resolved_at: fold === "root" ? "2026-01-19T00:00:00Z" : null };
+      const trigger = { ...mockTimeline[0]!, id: "run-trigger", parent_id: root.id,
+        content: "Please run this check", created_at: "2026-01-18T00:00:00Z" };
+      const resolution = { ...trigger, id: "run-resolution", content: "Resolved",
+        resolved_at: "2026-01-19T00:00:00Z", created_at: "2026-01-19T00:00:00Z" };
+      const task: AgentTask = {
+        id: taskId, agent_id: "agent-1", runtime_id: "runtime-1", issue_id: "issue-1",
+        status: "failed", priority: 0, created_at: "2026-01-18T00:00:00Z",
+        started_at: "2026-01-18T00:00:01Z", dispatched_at: "2026-01-18T00:00:01Z",
+        completed_at: "2026-01-18T00:05:00Z", result: null, error: "go test timed out",
+        trigger_comment_id: trigger.id, delivered_comment_ids: [trigger.id],
+      };
+      mockApiObj.listTimeline.mockResolvedValue([root, trigger, ...(fold === "reply" ? [resolution] : [])]);
+      mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+
+      renderIssueDetailWithHighlight(taskId);
+
+      await waitFor(() => {
+        expect(hasHighlightedCommentBackground(document.getElementById(`comment-${taskId}`))).toBe(true);
+      });
     });
 
     it("still scrolls when the timeline is ready before the issue (regression for inbox click)", async () => {

@@ -344,3 +344,252 @@ func TestCardClickOnAHeldClassWaitsTheHold(test *testing.T) {
 		test.Fatalf("chosen index = %+v, want 0", result.Answer.ChosenOptionIndex)
 	}
 }
+
+// TestCardAnswerOnNeedDecisionIssueWakesTheAssigneeOnce is CHE-4997: a card
+// answered while the issue waits in need_decision starts exactly one run for the
+// assignee, triggered by the "> Chose: ..." quote, and a second pass adds none.
+func TestCardAnswerOnNeedDecisionIssueWakesTheAssigneeOnce(test *testing.T) {
+	for _, assignee := range []string{"asker", "other_agent"} {
+		test.Run(assignee, func(test *testing.T) {
+			resetDecisionLease(test)
+			ensureParkCatalog(test)
+			fixture := newCardFixture(test)
+			assigneeID := fixture.agentID
+			if assignee == "other_agent" {
+				assigneeID = createHandlerTestAgent(test, "Need-decision owner", []byte("[]"))
+			}
+			dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+			dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, fixture.issueID, assigneeID)
+			result, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"})
+			if err != nil {
+				test.Fatal(err)
+			}
+			_, runner := newDecisionRunnerFixture(test)
+			for range 2 {
+				decisionPass(test, runner)
+				if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running') AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`, fixture.issueID, assigneeID, result.Comment.ID); count != 1 {
+					test.Fatalf("assignee wake runs = %d, want 1", count)
+				}
+			}
+			if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status IN ('queued', 'running')`, fixture.issueID); count != 1 {
+				test.Fatalf("active runs on the issue = %d, want exactly 1", count)
+			}
+		})
+	}
+}
+
+// Negative control: a person who cannot invoke the need_decision assignee never
+// gets that agent run by a card answer; the wake stays with the asking agent.
+func TestCardAnswerOnNeedDecisionIssueSkipsAnAssigneeThePersonCannotInvoke(test *testing.T) {
+	resetDecisionLease(test)
+	ensureParkCatalog(test)
+	fixture := newCardFixture(test)
+	assigneeID := createHandlerTestAgent(test, "Restricted owner", []byte("[]"))
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private', owner_id = NULL WHERE id = $1`, assigneeID)
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, fixture.issueID, assigneeID)
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"}); err != nil {
+		test.Fatal(err)
+	}
+	_, runner := newDecisionRunnerFixture(test)
+	decisionPass(test, runner)
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, fixture.issueID, assigneeID); count != 0 {
+		test.Fatalf("restricted assignee runs = %d, want 0", count)
+	}
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'running')`, fixture.issueID, fixture.agentID); count != 1 {
+		test.Fatalf("asking agent runs = %d, want 1", count)
+	}
+}
+
+func TestCardAnswerOnNeedDecisionIssueRunsNobodyWhenTheAssigneeIsDeniedAndTheAskerIsGone(test *testing.T) {
+	resetDecisionLease(test)
+	ensureParkCatalog(test)
+	fixture := newCardFixture(test)
+	assigneeID := createHandlerTestAgent(test, "Restricted owner", []byte("[]"))
+	dbfx.Exec(test, `UPDATE agent SET permission_mode = 'private', owner_id = $2 WHERE id = $1`, assigneeID, createEphemeralUser(test, "restricted"))
+	dbfx.Exec(test, `UPDATE agent_task_queue SET status = 'completed' WHERE id IN ($1, $2)`, fixture.taskID, fixture.chatTaskID)
+	dbfx.Exec(test, `UPDATE issue SET status = 'need_decision', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, fixture.issueID, assigneeID)
+	dbfx.Exec(test, `UPDATE agent SET archived_at = now() WHERE id = $1`, fixture.agentID)
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "Option B"}); err != nil {
+		test.Fatal(err)
+	}
+	_, runner := newDecisionRunnerFixture(test)
+	decisionPass(test, runner)
+	if count := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, fixture.issueID, assigneeID); count != 0 {
+		test.Fatalf("restricted assignee runs = %d, want 0", count)
+	}
+}
+
+// A card answer must show on the read an agent makes, or the agent keeps
+// treating the request as open (CHE-5229).
+func TestDecisionGetCarriesTheAnswerCheeseGave(test *testing.T) {
+	fixture := newCardFixture(test)
+	id := uuidToString(fixture.decision.ID)
+	var open map[string]any
+	testutil.Call(test, testHandler.GetDecision, withURLParam(newRequest(http.MethodGet, "/api/decisions/"+id, nil), "id", id)).Want(http.StatusOK).JSON(&open)
+	if _, has := open["answer"]; has {
+		test.Fatalf("open request carries an answer: %+v", open)
+	}
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Text: "can you double check"}); err != nil {
+		test.Fatal(err)
+	}
+	var fetched struct {
+		Status string `json:"status"`
+		Answer *struct {
+			AnsweredByUserID string  `json:"answered_by_user_id"`
+			AnswerSource     string  `json:"answer_source"`
+			Text             string  `json:"content_snapshot"`
+			ChosenOption     *int    `json:"chosen_option_index"`
+			CreatedAt        string  `json:"created_at"`
+			DisclaimedAt     *string `json:"disclaimed_at"`
+		} `json:"answer"`
+	}
+	testutil.Call(test, testHandler.GetDecision, withURLParam(newRequest(http.MethodGet, "/api/decisions/"+id, nil), "id", id)).Want(http.StatusOK).JSON(&fetched)
+	if fetched.Status != "answered" || fetched.Answer == nil {
+		test.Fatalf("answered request has no answer on read: %+v", fetched)
+	}
+	if fetched.Answer.AnsweredByUserID != fixture.humanID || fetched.Answer.AnswerSource != "card" || fetched.Answer.Text != "can you double check" || fetched.Answer.ChosenOption != nil || fetched.Answer.CreatedAt == "" || fetched.Answer.DisclaimedAt != nil {
+		test.Fatalf("wrong answer on read: %+v", fetched.Answer)
+	}
+}
+
+// An agent that reads a decision must see how far its answer got, or it cannot
+// tell a delivered answer from a lost one (CHE-7017). receipt_state is the
+// receipt projection the DM card carries, not the state the card displays.
+func TestDecisionGetShowsAnswerDelivery(test *testing.T) {
+	fixture := newCardFixture(test)
+	id := uuidToString(fixture.decision.ID)
+	dbfx.Exec(test, `UPDATE decision_request SET ping_message_id = $2 WHERE id = $1`, fixture.decision.ID, fixture.messageID)
+	result, err := fixture.answerOnCard(decisionCardAnswerInput{Text: "go ahead"})
+	if err != nil {
+		test.Fatal(err)
+	}
+	read := func() (raw map[string]any, receipt *string, wokenAt, outcome *string) {
+		test.Helper()
+		var fetched struct {
+			ReceiptState *string `json:"receipt_state"`
+			Answer       *struct {
+				WokenAt     *string `json:"woken_at"`
+				WakeOutcome *string `json:"wake_outcome"`
+			} `json:"answer"`
+		}
+		call := testutil.Call(test, testHandler.GetDecision, withURLParam(newRequest(http.MethodGet, "/api/decisions/"+id, nil), "id", id)).Want(http.StatusOK)
+		call.JSON(&fetched)
+		call.JSON(&raw)
+		if fetched.Answer == nil {
+			test.Fatalf("answered request has no answer on read: %+v", raw)
+		}
+		return raw, fetched.ReceiptState, fetched.Answer.WokenAt, fetched.Answer.WakeOutcome
+	}
+	keysPresent := func(raw map[string]any) {
+		test.Helper()
+		answer, _ := raw["answer"].(map[string]any)
+		for _, key := range []string{"woken_at", "wake_outcome"} {
+			if _, has := answer[key]; !has {
+				test.Fatalf("answer lacks key %q: %+v", key, answer)
+			}
+		}
+		if _, has := raw["receipt_state"]; !has {
+			test.Fatalf("read lacks key receipt_state: %+v", raw)
+		}
+	}
+
+	// 1. Recorded: nothing delivered yet.
+	raw, receipt, wokenAt, outcome := read()
+	keysPresent(raw)
+	if receipt == nil || *receipt != "recorded" || wokenAt != nil || outcome != nil {
+		test.Fatalf("recorded answer: receipt_state=%v woken_at=%v wake_outcome=%v", receipt, wokenAt, outcome)
+	}
+
+	// 2. Delivered without pickup. receipt_state is the receipt projection, so
+	// this case does not fold the card: only picked_up folds it.
+	dbfx.Exec(test, `UPDATE decision_answer SET woken_at = clock_timestamp(), wake_outcome = 'run_enqueued' WHERE id = $1`, result.Answer.ID)
+	raw, receipt, wokenAt, outcome = read()
+	keysPresent(raw)
+	if receipt == nil || *receipt != "delivered" || wokenAt == nil || outcome == nil || *outcome != "run_enqueued" {
+		test.Fatalf("delivered answer: receipt_state=%v woken_at=%v wake_outcome=%v", receipt, wokenAt, outcome)
+	}
+
+	// 3. A started task created after the answer is the pickup.
+	runID := dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
+	dbfx.Exec(test, `UPDATE agent_task_queue SET started_at = clock_timestamp() WHERE id = $1`, runID)
+	if _, receipt, _, _ = read(); receipt == nil || *receipt != "picked_up" {
+		test.Fatalf("picked-up answer: receipt_state=%v", receipt)
+	}
+}
+
+// newActionCardFixture is an open kind=action request: no options, an hour to run.
+func newActionCardFixture(test *testing.T) askedRecordFixture {
+	test.Helper()
+	fixture := newLegacyCardFixture(test)
+	dbfx.Exec(test, `UPDATE decision_request SET kind = 'action', options = '[]'::jsonb, ask_json = NULL, expires_at = clock_timestamp() + interval '1 hour' WHERE id = $1`, fixture.decision.ID)
+	return fixture
+}
+
+func TestActionCardDoneAndCantDoRecordTheirLabel(test *testing.T) {
+	for _, tc := range []struct {
+		input   decisionCardAnswerInput
+		label   string
+		content string
+	}{
+		{decisionCardAnswerInput{Option: "done"}, "done", "Done"},
+		{decisionCardAnswerInput{Option: "cant_do", Text: "no access"}, "cant_do", "Can't do\n\nno access"},
+		{decisionCardAnswerInput{Text: "running it tomorrow"}, "replied", "running it tomorrow"},
+	} {
+		test.Run(tc.label, func(test *testing.T) {
+			fixture := newActionCardFixture(test)
+			result, err := fixture.answerOnCard(tc.input)
+			if err != nil {
+				test.Fatal(err)
+			}
+			if result.Request.Status != "answered" || result.Answer.AnswerSource != "card" || result.Answer.AnsweredLabel.String != tc.label || result.Answer.ContentSnapshot != tc.content || result.Answer.ChosenOptionIndex.Valid {
+				test.Fatalf("answer = %+v, want label %q and content %q", result.Answer, tc.label, tc.content)
+			}
+			if n := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE id = $1 AND effective_at <= clock_timestamp()`, result.Answer.ID); n != 1 {
+				test.Fatal("an action answer takes effect at once for every class")
+			}
+			if n := dbfx.Count(test, `SELECT count(*) FROM decision_wake_event WHERE request_id = $1 AND type = 'answered'`, fixture.decision.ID); n != 1 {
+				test.Fatalf("answered events = %d, want 1", n)
+			}
+		})
+	}
+}
+
+func TestActionCardRefusesAnOptionThatIsNotDoneOrCantDo(test *testing.T) {
+	fixture := newActionCardFixture(test)
+	for _, option := range []string{"Option A", "Done", "yes"} {
+		if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: option}); err == nil {
+			test.Fatalf("option %q was accepted", option)
+		}
+	}
+	if n := dbfx.Count(test, `SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`, fixture.decision.ID); n != 0 {
+		test.Fatalf("refusals left %d answers", n)
+	}
+}
+
+// A decision card never takes done / cant_do: only an action request does.
+func TestDecisionCardRefusesDoneAndCantDo(test *testing.T) {
+	fixture := newCardFixture(test)
+	if _, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "done"}); err == nil {
+		test.Fatal("a decision card took done")
+	}
+}
+
+func TestActionCardAnswerAfterExpiryIsRefusedAndLeavesNothing(test *testing.T) {
+	fixture := newActionCardFixture(test)
+	dbfx.Exec(test, `UPDATE decision_request SET expires_at = clock_timestamp() - interval '1 second' WHERE id = $1`, fixture.decision.ID)
+	_, err := fixture.answerOnCard(decisionCardAnswerInput{Option: "done"})
+	var refusal decisionIntentRefusal
+	if !errors.As(err, &refusal) || refusal.status != http.StatusConflict {
+		test.Fatalf("late answer = %v, want a 409 refusal", err)
+	}
+	for _, query := range []string{
+		`SELECT count(*) FROM decision_answer WHERE decision_request_id = $1`,
+		`SELECT count(*) FROM decision_wake_event WHERE request_id = $1`,
+		`SELECT count(*) FROM decision_request WHERE id = $1 AND status <> 'open'`,
+	} {
+		if n := dbfx.Count(test, query, fixture.decision.ID); n != 0 {
+			test.Fatalf("%s = %d after a refused answer, want 0", query, n)
+		}
+	}
+}

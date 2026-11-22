@@ -45,13 +45,17 @@ func writeDecisionError(writer http.ResponseWriter, err error, operation string)
 // authorID's running, non-chat task on this open issue. Issue assignment
 // does not grant or revoke a task's decision authority.
 func (handler *Handler) authorizeDecisionTask(request *http.Request, queries *db.Queries, issue db.Issue, authorType string, authorID pgtype.UUID) (db.Issue, db.Agent, db.AgentTaskQueue, error) {
-	return handler.authorizeDecisionTaskIn(request, queries, issue, authorType, authorID, pgtype.UUID{})
+	return handler.authorizeDecisionTaskIn(request, queries, issue, authorType, authorID, pgtype.UUID{}, false, "")
 }
 
 // authorizeDecisionTaskIn is authorizeDecisionTask for a task that runs in
 // chatSession: a chat task has no issue of its own, so the issue is only the
-// anchor it names. An invalid chatSession means an issue task.
-func (handler *Handler) authorizeDecisionTaskIn(request *http.Request, queries *db.Queries, issue db.Issue, authorType string, authorID, chatSession pgtype.UUID) (db.Issue, db.Agent, db.AgentTaskQueue, error) {
+// anchor it names. An invalid chatSession means an issue task. anyIssue lets an
+// issue task act on another issue of its workspace: a run-budget raise card for
+// an over-budget issue, which cannot run a task of its own (CHE-6191). A class
+// other than reversible also admits the task that created the issue
+// (createdIssueCard); an empty class does not.
+func (handler *Handler) authorizeDecisionTaskIn(request *http.Request, queries *db.Queries, issue db.Issue, authorType string, authorID, chatSession pgtype.UUID, anyIssue bool, class string) (db.Issue, db.Agent, db.AgentTaskQueue, error) {
 	ctx := request.Context()
 	deny := decisionIntentRefusal{http.StatusForbidden, "decision intent requires a running non-chat issue task on this issue"}
 	if request.Header.Get("X-Actor-Source") != "task_token" || authorType != "agent" {
@@ -88,7 +92,7 @@ func (handler *Handler) authorizeDecisionTaskIn(request *http.Request, queries *
 	if err != nil {
 		return issue, db.Agent{}, db.AgentTaskQueue{}, err
 	}
-	if task.Status != "running" || task.ChatSessionID != chatSession || task.AgentID != authorID || !chatSession.Valid && task.IssueID != issue.ID {
+	if task.Status != "running" || task.ChatSessionID != chatSession || task.AgentID != authorID || !chatSession.Valid && !anyIssue && task.IssueID != issue.ID && !createdIssueCard(task, issue, class) {
 		return issue, db.Agent{}, db.AgentTaskQueue{}, deny
 	}
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { BotOff, CircleDot, Filter, Mail, RotateCcw, SignalHigh, UserRound } from "@multica/ui/icons";
+import { AtSign, BotOff, CircleDot, Filter, Mail, RotateCcw, SignalHigh, UserRound } from "@multica/ui/icons";
 import { PRIORITY_DISPLAY_ORDER } from "@multica/core/issues/config";
 import {
   filterInboxItems,
@@ -101,6 +101,7 @@ export function InboxFilterMenu({
     (state) => state.toggleUnreadOnly,
   );
   const toggleIdleOnly = useInboxFilterStore((state) => state.toggleIdleOnly);
+  const toggleMentionsOnly = useInboxFilterStore((state) => state.toggleMentionsOnly);
   const { getActorName, getActorInitials, getActorAvatarUrl } = useActorName();
   const clearFilters = useInboxFilterStore((state) => state.clearFilters);
   const clearPriorityFilters = useInboxFilterStore(
@@ -166,6 +167,12 @@ export function InboxFilterMenu({
         { ...effectiveFilters, unreadOnly: false },
         { activeIssueIds },
       ).filter((item) => item.read !== true).length,
+    [items, effectiveFilters, activeIssueIds],
+  );
+  const mentionsCount = useMemo(
+    () =>
+      filterInboxItems(items, { ...effectiveFilters, mentionsOnly: true }, { activeIssueIds })
+        .length,
     [items, effectiveFilters, activeIssueIds],
   );
   const localStatuses = useMemo(
@@ -246,7 +253,21 @@ export function InboxFilterMenu({
             </span>
           )}
         </DropdownMenuCheckboxItem>
-        {/* The archive is filtered server-side, which has no idle dimension. */}
+        {/* The archive is filtered server-side, which has no idle or mention dimension. */}
+        {!archived && (
+          <DropdownMenuCheckboxItem
+            checked={effectiveFilters.mentionsOnly}
+            onCheckedChange={() => toggleMentionsOnly(wsId)}
+          >
+            <AtSign className="size-3.5" />
+            <span className="flex-1">{t(($) => $.filters.mentions_only)}</span>
+            {mentionsCount > 0 && (
+              <span className="text-caption text-muted-foreground">
+                {t(($) => $.filters.notification_count, { count: mentionsCount })}
+              </span>
+            )}
+          </DropdownMenuCheckboxItem>
+        )}
         {!archived && (
           <DropdownMenuCheckboxItem
             checked={effectiveFilters.idleOnly}

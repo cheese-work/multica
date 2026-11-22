@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -10,11 +11,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // Project workflows on the issue write paths (MUL-7420).
@@ -38,7 +41,23 @@ type workflowHandoff struct {
 	def     issueworkflow.Definition
 	step    issueworkflow.Step
 	project db.Project
+	// stepHandler is who the step alone hands the issue to. override is true
+	// when the move named another assignee, which the write assigns instead.
+	stepHandler issueworkflow.StepAssignee
+	override    bool
+	// kept is true when the issue's sticky assignee for the step won over the
+	// step handler (CHE-5490).
+	kept bool
 }
+
+// errHandoffAssigneeNotApplicable refuses a handoff_assignee on a write that
+// is not a status move into a step that hands off, or that also sets the
+// assignee itself.
+var errHandoffAssigneeNotApplicable = errors.New("handoff_assignee needs a status change into a step that hands off, and no assignee_id")
+
+// errKeepForStepNeedsAssignee refuses keep_for_step without the handoff_assignee
+// it would keep.
+var errKeepForStepNeedsAssignee = errors.New("keep_for_step needs handoff_assignee")
 
 // applyIssueWorkflow enforces prev's (possibly new) project workflow on one
 // prospective update and may rewrite params: the status of an issue moving
@@ -48,6 +67,17 @@ type workflowHandoff struct {
 // step it works on, and an agent only along its step's exits. It returns the
 // handoff that write triggers, or nil.
 func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, error) {
+	if caller.keepForStep && caller.handoffAssignee == nil {
+		return nil, errKeepForStepNeedsAssignee
+	}
+	hand, err := h.decideWorkflowHandoff(ctx, q, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
+	if err == nil && hand == nil && caller.handoffAssignee != nil {
+		return nil, errHandoffAssigneeNotApplicable
+	}
+	return hand, err
+}
+
+func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller) (*workflowHandoff, error) {
 	run := caller.run
 	// A review superseded by a newer head has no say on the status, in any
 	// workflow (CHE-2307).
@@ -64,8 +94,21 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 		return nil, err
 	}
 	def, project, err := issueworkflow.ForIssue(ctx, q, prev.WorkspaceID, prev.WorkflowID, params.ProjectID)
-	if err != nil || def == nil {
+	if err != nil {
 		return nil, err
+	}
+	// Keeping the current status is never a rejected write, even when the
+	// workflow no longer lists it.
+	statusChanging := params.Status.Valid && params.Status.String != prev.Status
+	if def == nil {
+		if !statusChanging {
+			return nil, nil
+		}
+		outside, err := issueworkflow.OutsideProject(ctx, q, prev.WorkspaceID)
+		if err != nil {
+			return nil, err
+		}
+		return nil, issueworkflow.CheckStatusOutsideProject(outside, params.Status.String)
 	}
 	projectMoving := params.ProjectID != prev.ProjectID
 	if projectMoving && !statusExplicit && !def.IsDefault && !def.Has(prev.Status) {
@@ -74,7 +117,9 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 		})
 		params.Status = pgtype.Text{String: target, Valid: true}
 	}
-	if params.Status.Valid {
+	// A move into a Default project keeps the issue's status, as it is never
+	// mapped; a named workflow must list the status the issue lands on.
+	if params.Status.Valid && (statusChanging || (projectMoving && !def.IsDefault)) {
 		if err := issueworkflow.CheckStatus(def, params.Status.String); err != nil {
 			return nil, err
 		}
@@ -94,7 +139,18 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 		return nil, h.stepMovedError(ctx, prev, run.WorkflowStep.String)
 	}
 	if assigneeTouched || prev.TriageState.Valid {
+		// A move that names the assignee itself still enters the step: a
+		// reviewer step holds that assignee to the independence rule.
+		if assigneeTouched && statusExplicit && statusChanging && !prev.TriageState.Valid {
+			if err := h.checkTouchedReviewer(ctx, q, prev, params, def); err != nil {
+				return nil, err
+			}
+		}
 		return nil, nil
+	}
+	// A manual park keeps the assignee: no handoff (CHE-6460 D1c).
+	if park, err := manualParkMove(ctx, q, prev, params, statusExplicit, assigneeTouched, caller); err != nil || park {
+		return nil, err
 	}
 	entering := ""
 	switch {
@@ -107,6 +163,8 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	// re-selecting the current status is a no-op: neither hands the issue off.
 	case !projectMoving && statusExplicit && params.Status.Valid && params.Status.String != prev.Status:
 		entering = params.Status.String
+	case !projectMoving && caller.enterCurrent && statusExplicit && params.Status.Valid:
+		entering = params.Status.String
 	default:
 		return nil, nil
 	}
@@ -114,17 +172,88 @@ func (h *Handler) applyIssueWorkflow(ctx context.Context, q *db.Queries, prev db
 	if !ok || !step.HandsOff() {
 		return nil, nil
 	}
-	humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID)
+	var (
+		assigneeType string
+		assigneeID   pgtype.UUID
+		guard        *reviewerGuard
+		pickRefusal  error
+	)
+	if step.Handler.Type == issueworkflow.HandlerReviewer {
+		// The pick needs the issue's authors, so it is not ResolveHandler's.
+		var err error
+		if guard, err = h.loadReviewerGuard(ctx, q, prev.ID); err != nil {
+			return nil, err
+		}
+		var picked pgtype.UUID
+		picked, ok, pickRefusal = h.pickReviewer(ctx, q, prev, guard)
+		if ok {
+			assigneeType, assigneeID = issueworkflow.HandlerAgent, picked
+		}
+	} else {
+		humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID, subjectOf(prev))
+		if err != nil {
+			return nil, err
+		}
+		assigneeType, assigneeID, ok = issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, humans)
+	}
+	sticky, err := issueworkflow.StickyStepAssignee(ctx, q, prev.WorkspaceID, prev.ID, entering)
 	if err != nil {
 		return nil, err
 	}
-	assigneeType, assigneeID, ok := issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, humans)
-	if !ok {
-		return nil, nil
+	// A step with nobody to resolve to hands off only when the move names one
+	// or the issue keeps one for the step. A reviewer step whose table lists
+	// no qualified reviewer refuses instead.
+	if !ok && caller.handoffAssignee == nil && sticky == nil {
+		return nil, pickRefusal
 	}
-	params.AssigneeType = pgtype.Text{String: assigneeType, Valid: true}
-	params.AssigneeID = assigneeID
-	return &workflowHandoff{def: *def, step: step, project: project}, nil
+	if ok && step.KeepOtherAssignee {
+		keep, err := h.keepsOtherAssignee(ctx, q, prev, *def, project, assigneeType, assigneeID)
+		if err != nil {
+			return nil, err
+		}
+		if keep {
+			// The step still hands off, to the assignee it found: entering a
+			// step starts that assignee's run, which a plain status move
+			// would not.
+			assigneeType, assigneeID = prev.AssigneeType.String, prev.AssigneeID
+		}
+	}
+	stepHandler := issueworkflow.StepAssignee{Type: assigneeType, ID: assigneeID}
+	assignee, overridden, kept := issueworkflow.ResolveStepAssignee(stepHandler, caller.handoffAssignee, sticky)
+	if guard != nil {
+		if err := h.checkReviewerAssignee(ctx, q, prev.WorkspaceID, guard, assignee); err != nil {
+			return nil, err
+		}
+	}
+	params.AssigneeType = pgtype.Text{String: assignee.Type, Valid: true}
+	params.AssigneeID = assignee.ID
+	return &workflowHandoff{def: *def, step: step, project: project, stepHandler: stepHandler, override: overridden, kept: kept}, nil
+}
+
+// keepsOtherAssignee reports whether a step flagged KeepOtherAssignee leaves
+// the issue with its current assignee: one is set, and it is neither the
+// handler the entered step resolved to nor the handler of the step the issue
+// leaves. The second exception keeps the normal chain moving, for example
+// Tofu handing a todo issue to its author. An unassigned issue is handed off.
+//
+// TEMPORARY: CHE-5024 (per-issue workflows) replaces this rule.
+func (h *Handler) keepsOtherAssignee(ctx context.Context, q *db.Queries, prev db.Issue, def issueworkflow.Definition, project db.Project, handlerType string, handlerID pgtype.UUID) (bool, error) {
+	if !prev.AssigneeID.Valid || !prev.AssigneeType.Valid {
+		return false, nil
+	}
+	if prev.AssigneeType.String == handlerType && prev.AssigneeID == handlerID {
+		return false, nil
+	}
+	leaving, ok := def.Step(prev.Status)
+	if !ok || !leaving.HandsOff() {
+		return true, nil
+	}
+	humans, err := h.workflowHumans(ctx, q, leaving, project, prev.WorkspaceID, prev.RequestedByID, subjectOf(prev))
+	if err != nil {
+		return false, err
+	}
+	leaveType, leaveID, ok := issueworkflow.ResolveHandler(leaving, project, prev.CreatorType, prev.CreatorID, humans)
+	return !(ok && prev.AssigneeType.String == leaveType && prev.AssigneeID == leaveID), nil
 }
 
 // checkAgentMove refuses an agent's status write the issue's current step has
@@ -154,9 +283,9 @@ func (e *createHandoffError) Error() string { return e.message }
 // createHandoffResolver resolves a step's handler for a new issue and applies
 // the same permission gate a hand-picked assignee passes. IssueService.Create
 // calls it under the catalog and project locks.
-func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorType string, creatorID, requestedByID pgtype.UUID) service.CreateHandoffResolver {
+func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorType string, creatorID, requestedByID pgtype.UUID, title string) service.CreateHandoffResolver {
 	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
-		humans, err := h.workflowHumans(ctx, h.Queries, step, project, project.WorkspaceID, requestedByID)
+		humans, err := h.workflowHumans(ctx, h.Queries, step, project, project.WorkspaceID, requestedByID, workflowSubject{Title: title})
 		if err != nil {
 			return pgtype.Text{}, pgtype.UUID{}, err
 		}
@@ -172,23 +301,23 @@ func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorTyp
 	}
 }
 
-// handoffRunReasonTargetDiffers records that a handoff run started although the
-// caller asked for no run: the step's handler is not the caller.
-const handoffRunReasonTargetDiffers = "handoff_target_differs"
+// handoffRunReasonStageQueueFull records why a handoff started no run: the
+// handler's WIP limit for the step's stage is reached, so the stage queue holds
+// the run until the scheduler releases it (CHE-3611).
+const handoffRunReasonStageQueueFull = "stage_queue_full"
 
-// suppressRunForWrite is the write's suppress_run after the handoff rule:
-// --no-start says the caller's own work is already underway, which holds only
-// when the caller is the agent the handoff goes to. A handoff to anyone else
-// keeps its run, or nobody starts it. The reason is set when the flag was
-// overridden.
-func (h *Handler) suppressRunForWrite(ctx context.Context, actorType, actorID string, prev db.Issue, params db.UpdateIssueParams, handoff *workflowHandoff, suppressRun bool) (suppress bool, reason string) {
-	if !suppressRun || handoff == nil {
-		return suppressRun, ""
+// deferHandoffRun is the run flag and reason a handoff records once the stage
+// queue is consulted: a run the queue will refuse is not started. It reads the
+// queue and writes nothing; the enqueue that follows stays the authority.
+func (h *Handler) deferHandoffRun(ctx context.Context, issue db.Issue, willRun bool, runReason string) (bool, string) {
+	if !willRun {
+		return false, runReason
 	}
-	if actorType == "agent" && h.handedToAgent(ctx, prev, params, true) == actorID {
-		return true, ""
+	snap, err := service.LoadStageQueueSnapshot(ctx, h.Queries, issue)
+	if err == nil && snap.State == "queued" {
+		return false, handoffRunReasonStageQueueFull
 	}
-	return false, handoffRunReasonTargetDiffers
+	return true, runReason
 }
 
 // workflowHandoffPayload describes a handoff on the issue:updated event, so
@@ -204,7 +333,7 @@ func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, 
 	if runStarted && note != "" {
 		out["note"] = note
 	}
-	if runStarted && runReason != "" {
+	if runReason != "" && (runStarted || runReason == handoffRunReasonStageQueueFull) {
 		out["run_reason"] = runReason
 	}
 	return out
@@ -240,6 +369,30 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 		})
 		return true
 	}
+	var notIndependent *ReviewIndependenceError
+	if errors.As(err, &notIndependent) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":        notIndependent.Error(),
+			"code":         reviewIndependenceCode,
+			"reason":       notIndependent.Reason,
+			"author_labs":  notIndependent.AuthorLabs,
+			"reviewer_lab": notIndependent.ReviewerLab,
+			"reviewer_id":  notIndependent.ReviewerID,
+		})
+		return true
+	}
+	var held *intakehold.HoldError
+	if errors.As(err, &held) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":         held.Error(),
+			"code":          "intake_hold",
+			"source":        held.Source,
+			"ends_at":       held.EndsAt,
+			"fix":           intakehold.Fix,
+			"release_paths": intakehold.ReleasePaths,
+		})
+		return true
+	}
 	var gated *EntryGateError
 	if errors.As(err, &gated) {
 		writeJSON(w, http.StatusConflict, map[string]any{
@@ -253,8 +406,16 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 	if errors.Is(err, errHandoffPreviewStale) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": err.Error() + "; review the move again",
-			"code":  "handoff_preview_stale",
+			"code":  "stale_preview",
 		})
+		return true
+	}
+	if errors.Is(err, errKeepForStepNeedsAssignee) {
+		writeErrorCode(w, http.StatusBadRequest, "keep_for_step_needs_handoff_assignee", err.Error())
+		return true
+	}
+	if errors.Is(err, errHandoffAssigneeNotApplicable) {
+		writeErrorCode(w, http.StatusBadRequest, "handoff_assignee_not_applicable", err.Error())
 		return true
 	}
 	if errors.Is(err, errWorkflowChanged) {
@@ -294,6 +455,52 @@ type workflowCaller struct {
 	agent bool
 	// findings come with a reviewer's verdict (CHE-3243).
 	findings []ReviewFinding
+	// handoffAssignee is the assignee this move names for its handoff, in
+	// place of the step's handler (CHE-5487).
+	handoffAssignee *issueworkflow.StepAssignee
+	// keepForStep also keeps handoffAssignee for the entered step (CHE-5490).
+	keepForStep bool
+	// enterCurrent enters the step the issue already sits on, so a switch to
+	// another workflow hands the issue to the new workflow's handler even when
+	// the status key does not change (CHE-7669).
+	enterCurrent bool
+}
+
+// HandoffAssigneeRequest is the assignee a status move names for its handoff.
+type HandoffAssigneeRequest struct {
+	Type string `json:"type"`
+	ID   string `json:"id"`
+}
+
+// parseHandoffAssignee reads the request's handoff_assignee. It answers 400 and
+// reports false for a malformed one; nil in means no override.
+func parseHandoffAssignee(w http.ResponseWriter, in *HandoffAssigneeRequest) (*issueworkflow.StepAssignee, bool) {
+	if in == nil {
+		return nil, true
+	}
+	switch in.Type {
+	case "agent", "squad", "member":
+	default:
+		writeError(w, http.StatusBadRequest, "handoff_assignee.type must be agent, squad or member")
+		return nil, false
+	}
+	id, err := util.ParseUUID(in.ID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "handoff_assignee.id must be a UUID")
+		return nil, false
+	}
+	return &issueworkflow.StepAssignee{Type: in.Type, ID: id}, true
+}
+
+// writeHandoffAssigneeRefusal answers a handoff assignee the assignee gate
+// refused. A caller who may not invoke the named agent gets a code that names
+// the field; every other refusal keeps the gate's own answer.
+func writeHandoffAssigneeRefusal(w http.ResponseWriter, hand *workflowHandoff, status int, msg string) {
+	if hand != nil && hand.override && status == http.StatusForbidden {
+		writeErrorCode(w, status, "handoff_assignee_not_invocable", msg)
+		return
+	}
+	writeError(w, status, msg)
 }
 
 // agentRunOnIssue returns the calling agent's run when it works on this issue,
@@ -345,11 +552,22 @@ func (h *Handler) handedToAgent(ctx context.Context, prev db.Issue, params db.Up
 // the issue as the write will leave it.
 func (h *Handler) handedToAgentIfRun(r *http.Request, actorType, actorID string, prev db.Issue, params db.UpdateIssueParams, assigneeSupplied, handoff, suppressRun bool) string {
 	agent := h.handedToAgent(r.Context(), prev, params, handoff)
-	if agent == "" || suppressRun {
+	if agent == "" || !h.writeWillRun(r, actorType, actorID, prev, params, assigneeSupplied, handoff, suppressRun) {
 		return ""
 	}
+	return agent
+}
+
+// writeWillRun decides before the write whether it starts a run, on the issue
+// as the write will leave it.
+func (h *Handler) writeWillRun(r *http.Request, actorType, actorID string, prev db.Issue, params db.UpdateIssueParams, assigneeSupplied, handoff, suppressRun bool) bool {
+	if suppressRun {
+		return false
+	}
 	next := prev
-	next.AssigneeType, next.AssigneeID = params.AssigneeType, params.AssigneeID
+	if params.AssigneeID.Valid {
+		next.AssigneeType, next.AssigneeID = params.AssigneeType, params.AssigneeID
+	}
 	if params.Status.Valid {
 		next.Status = params.Status.String
 	}
@@ -365,24 +583,62 @@ func (h *Handler) handedToAgentIfRun(r *http.Request, actorType, actorID string,
 		},
 		h.issueTriggerWriteProbe(r, actorType, actorID, next),
 	)
-	if !willRun {
-		return ""
-	}
-	return agent
+	return willRun
 }
 
 // advanceRunStep moves a run's workflow step along with a status change the
 // run made itself, so its next change is judged from where it put the issue.
-func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, prev, issue db.Issue) {
+//
+// The step and its role row are one write: a run does not move into a step
+// whose role evidence is not stored (CHE-7676, RGS-1). The issue change is
+// already committed when this runs, so if the write fails the run is stopped:
+// left alive it would work as an author with only its reviewer row. It returns
+// an error only when the run could not be stopped either.
+func (h *Handler) advanceRunStep(ctx context.Context, run *db.AgentTaskQueue, prev, issue db.Issue, chained bool) error {
 	if run == nil || !run.WorkflowStep.Valid || prev.Status == issue.Status {
-		return
+		return nil
 	}
-	if err := h.Queries.SetTaskWorkflowStep(ctx, db.SetTaskWorkflowStepParams{
+	err := h.advanceRunStepWithRole(ctx, run, issue, chained)
+	if err == nil {
+		return nil
+	}
+	slog.Error("workflow: advance run step failed; stopping the run", "task_id", uuidToString(run.ID), "error", err)
+	if _, cerr := h.TaskService.CancelTaskWithReason(ctx, run.ID, "workflow role evidence not recorded: "+err.Error(), "workflow_role_unrecorded"); cerr != nil {
+		return fmt.Errorf("stop run after failed role write: %w", cerr)
+	}
+	return nil
+}
+
+func (h *Handler) advanceRunStepWithRole(ctx context.Context, run *db.AgentTaskQueue, issue db.Issue, chained bool) error {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	if err := qtx.SetTaskWorkflowStep(ctx, db.SetTaskWorkflowStepParams{
 		ID:           run.ID,
 		WorkflowStep: pgtype.Text{String: issue.Status, Valid: true},
 	}); err != nil {
-		slog.Warn("workflow: advance run step failed", "task_id", uuidToString(run.ID), "error", err)
+		return err
 	}
+	if err := service.RecordWorkflowRole(ctx, qtx, issue, *run, issue.Status); err != nil {
+		return err
+	}
+	if chained {
+		// The run carried the issue into this step itself and no handoff run
+		// started: this row is what a failed-chained-run retry (CHE-7675) reads
+		// to tell it from a run dispatched straight into the step.
+		details, _ := json.Marshal(map[string]string{"task_id": uuidToString(run.ID), "step": issue.Status})
+		if _, err := qtx.CreateActivity(ctx, db.CreateActivityParams{
+			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
+			ActorType: pgtype.Text{String: "agent", Valid: true}, ActorID: run.AgentID,
+			Action: activityChainedRunEntered, Details: details,
+		}); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 // stepMovedError explains a refused status change: where the run's step was,
@@ -414,6 +670,7 @@ func (h *Handler) workflowHandoffBrief(ctx context.Context, issue db.Issue, hand
 	}
 	in := h.workflowBriefInput(ctx, issue, hand.def, hand.project)
 	in.StatusKey = hand.step.StatusKey
+	in.Routing = h.routingStep(ctx, issue.WorkspaceID, hand.project, in.StatusKey)
 	return issueworkflow.Brief(in)
 }
 
@@ -425,6 +682,7 @@ func (h *Handler) workflowBriefInput(ctx context.Context, issue db.Issue, def is
 		Workflow:        def,
 		ProjectName:     project.Title,
 		StatusKey:       issue.Status,
+		Routing:         h.routingStep(ctx, issue.WorkspaceID, project, issue.Status),
 		IssueIdentifier: h.getIssuePrefix(ctx, issue.WorkspaceID) + "-" + strconv.Itoa(int(issue.Number)),
 		StatusName: func(key string) string {
 			return resolver.Name(ctx, h.Queries, key)
@@ -436,6 +694,17 @@ func (h *Handler) workflowBriefInput(ctx context.Context, issue db.Issue, def is
 			return h.stepHandlerName(ctx, issue, project, step)
 		},
 	}
+}
+
+// routingStep reports whether the workspace's routing agent handles status for
+// the project's workflow (decision 9's AgentFor test). A read error is not a
+// routing step: the brief then keeps the status commands.
+func (h *Handler) routingStep(ctx context.Context, ws pgtype.UUID, project db.Project, status string) bool {
+	cfg, err := loadRoutingAgent(ctx, h.Queries, ws)
+	if err != nil {
+		return false
+	}
+	return cfg.AgentFor(service.WorkflowScope(ctx, h.Queries, project), status) != ""
 }
 
 // actorDisplayName names an agent, squad or member for a brief. It falls back
@@ -554,11 +823,10 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 }
 
 // runBudgetLine tells the run how much of the issue's run budget is left
-// (CHE-2297 L1b): the runs and, once token accounting is active, the tokens the
-// admission ledger still holds. Before that it reports the tokens used and the
-// runs that reported no usage. Tokens are input plus output; the server cannot
-// see tokens during a run, so the figure lags by the runs still in flight. It
-// is empty for a workflow with no budget start, matching guardRunBudget.
+// (CHE-2297 L1b): the runs left, then the tokens used and the runs that
+// reported no usage (information only; the budget counts runs). Tokens are
+// input plus output; the server cannot see tokens during a run, so the figure
+// lags by the runs still in flight. It is empty for a workflow with no budget start, matching guardRunBudget.
 func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issueworkflow.Definition) string {
 	if def.RunBudgetSince.IsZero() {
 		return ""
@@ -571,9 +839,6 @@ func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issuew
 		return ""
 	}
 	runs := fmt.Sprintf("Run budget: %d runs left of %d", max(0, snap.RunsLeft), snap.RunsLimit)
-	if snap.TokensActive {
-		return fmt.Sprintf("%s; %d tokens left.\n", runs, max(0, snap.TokensBalance))
-	}
 	usage, err := h.Queries.GetIssueUsageSummary(ctx, issue.ID)
 	if err != nil {
 		slog.Warn("task claim: run budget usage failed", "issue_id", uuidToString(issue.ID), "error", err)
@@ -609,7 +874,10 @@ func taskRunsForAssignee(issue db.Issue, task *db.AgentTaskQueue) bool {
 // stored ids outlive the member row. Other handlers need none of this, so they
 // skip the lookups. A workspace with no owner is not an error; a failed lookup
 // is, so the write fails instead of leaving the issue unassigned.
-func (h *Handler) workflowHumans(ctx context.Context, q *db.Queries, step issueworkflow.Step, project db.Project, workspaceID, requestedByID pgtype.UUID) (issueworkflow.Humans, error) {
+func (h *Handler) workflowHumans(ctx context.Context, q *db.Queries, step issueworkflow.Step, project db.Project, workspaceID, requestedByID pgtype.UUID, subject workflowSubject) (issueworkflow.Humans, error) {
+	if step.Handler.Type == issueworkflow.HandlerAuthor {
+		return authorHumans(ctx, q, workspaceID, subject)
+	}
 	if step.Handler.Type == issueworkflow.HandlerAgent {
 		return issueworkflow.Humans{RoutingAgent: routingAgentFor(ctx, q, workspaceID, project, step.StatusKey)}, nil
 	}
@@ -651,7 +919,7 @@ func (h *Handler) workflowHumans(ctx context.Context, q *db.Queries, step issuew
 func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project db.Project, step issueworkflow.Step) string {
 	// A brief only names the handler; on a lookup failure it names the fallbacks
 	// that need no lookup. The write that matters resolves it again and fails.
-	humans, err := h.workflowHumans(ctx, h.Queries, step, project, issue.WorkspaceID, issue.RequestedByID)
+	humans, err := h.workflowHumans(ctx, h.Queries, step, project, issue.WorkspaceID, issue.RequestedByID, subjectOf(issue))
 	if err != nil {
 		slog.Warn("workflow brief: resolve human handler", "issue_id", uuidToString(issue.ID), "error", err)
 	}
@@ -664,6 +932,10 @@ func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project d
 			return "the issue creator"
 		case issueworkflow.HandlerHumanByRole:
 			return "a person (none found)"
+		case issueworkflow.HandlerAuthor:
+			return "the author (none set)"
+		case issueworkflow.HandlerReviewer:
+			return "a reviewer of another lab (from capability routing)"
 		}
 		return ""
 	}
@@ -675,6 +947,8 @@ func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project d
 		return name + " (issue creator)"
 	case issueworkflow.HandlerHumanByRole:
 		return name + " (requester, project lead or workspace owner)"
+	case issueworkflow.HandlerAuthor:
+		return name + " (author)"
 	}
 	return name
 }

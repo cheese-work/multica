@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentconfig"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -46,10 +47,13 @@ type AgentRuntimeResponse struct {
 	SharedWith []string `json:"shared_with"`
 	// ProfileID is set when this runtime is an instance of a custom
 	// runtime_profile (MUL-3284); null for built-in runtimes.
-	ProfileID  *string `json:"profile_id"`
-	LastSeenAt *string `json:"last_seen_at"`
-	CreatedAt  string  `json:"created_at"`
-	UpdatedAt  string  `json:"updated_at"`
+	ProfileID *string `json:"profile_id"`
+	// MaxConcurrentTasks caps tasks running at once across every agent bound
+	// to this runtime (GitHub #9626); null means no runtime-wide cap.
+	MaxConcurrentTasks *int32  `json:"max_concurrent_tasks"`
+	LastSeenAt         *string `json:"last_seen_at"`
+	CreatedAt          string  `json:"created_at"`
+	UpdatedAt          string  `json:"updated_at"`
 	// Commit-based update verdict (CHE-2641), computed by runtimeResponse from
 	// the loaded daemon build manifest. UpdateReason is empty when the verdict
 	// is firm; see runtimeUpdateStatus.
@@ -61,8 +65,12 @@ type AgentRuntimeResponse struct {
 	// (CHE-2430). Pause is null when the machine takes claims;
 	// DaemonRunningTasks counts dispatched and running tasks across every
 	// runtime on the same daemon.
-	Pause              *RuntimePauseResponse `json:"pause"`
-	DaemonRunningTasks *int                  `json:"daemon_running_tasks"`
+	Pause              *RuntimePauseResponse   `json:"pause"`
+	DaemonRunningTasks *int                    `json:"daemon_running_tasks"`
+	UpdateSchedule     *UpdateScheduleResponse `json:"update_schedule"`
+	LastUpdateOutcome  *string                 `json:"last_update_outcome"`
+	// LastUpdateOutcomeAt is when that cycle finished (CHE-5708).
+	LastUpdateOutcomeAt *string `json:"last_update_outcome_at"`
 }
 
 func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
@@ -75,24 +83,25 @@ func runtimeToResponse(rt db.AgentRuntime) AgentRuntimeResponse {
 	}
 
 	return AgentRuntimeResponse{
-		ID:           uuidToString(rt.ID),
-		WorkspaceID:  uuidToString(rt.WorkspaceID),
-		DaemonID:     textToPtr(rt.DaemonID),
-		Name:         rt.Name,
-		CustomName:   textToPtr(rt.CustomName),
-		RuntimeMode:  rt.RuntimeMode,
-		Provider:     rt.Provider,
-		LaunchHeader: agent.LaunchHeader(rt.Provider),
-		Status:       rt.Status,
-		DeviceInfo:   rt.DeviceInfo,
-		Metadata:     metadata,
-		OwnerID:      uuidToPtr(rt.OwnerID),
-		Visibility:   rt.Visibility,
-		SharedWith:   runtimeSharedWithStrings(rt.SharedWith),
-		ProfileID:    uuidToPtr(rt.ProfileID),
-		LastSeenAt:   timestampToPtr(rt.LastSeenAt),
-		CreatedAt:    timestampToString(rt.CreatedAt),
-		UpdatedAt:    timestampToString(rt.UpdatedAt),
+		ID:                 uuidToString(rt.ID),
+		WorkspaceID:        uuidToString(rt.WorkspaceID),
+		DaemonID:           textToPtr(rt.DaemonID),
+		Name:               rt.Name,
+		CustomName:         textToPtr(rt.CustomName),
+		RuntimeMode:        rt.RuntimeMode,
+		Provider:           rt.Provider,
+		LaunchHeader:       agent.LaunchHeader(rt.Provider),
+		Status:             rt.Status,
+		DeviceInfo:         rt.DeviceInfo,
+		Metadata:           metadata,
+		OwnerID:            uuidToPtr(rt.OwnerID),
+		Visibility:         rt.Visibility,
+		SharedWith:         runtimeSharedWithStrings(rt.SharedWith),
+		ProfileID:          uuidToPtr(rt.ProfileID),
+		MaxConcurrentTasks: int4ToPtr(rt.MaxConcurrentTasks),
+		LastSeenAt:         timestampToPtr(rt.LastSeenAt),
+		CreatedAt:          timestampToString(rt.CreatedAt),
+		UpdatedAt:          timestampToString(rt.UpdatedAt),
 	}
 }
 
@@ -117,6 +126,9 @@ type RuntimeUsageResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
+	// UncostedCacheWrite1hTokens is the 1-hour-TTL part of UncostedCacheWriteTokens
+	// (billed at the 1-hour write rate; the rest bills at the 5-minute rate).
+	UncostedCacheWrite1hTokens int64 `json:"uncosted_cache_write_1h_tokens"`
 }
 
 // GetRuntimeUsage returns daily token usage for a runtime, aggregated from
@@ -158,19 +170,20 @@ func (h *Handler) listRuntimeUsage(ctx context.Context, runtimeID pgtype.UUID, t
 	resp := make([]RuntimeUsageResponse, len(rows))
 	for i, row := range rows {
 		resp[i] = RuntimeUsageResponse{
-			RuntimeID:                resolvedRuntimeID,
-			Date:                     row.Date.Time.Format("2006-01-02"),
-			Provider:                 row.Provider,
-			Model:                    row.Model,
-			InputTokens:              row.InputTokens,
-			OutputTokens:             row.OutputTokens,
-			CacheReadTokens:          row.CacheReadTokens,
-			CacheWriteTokens:         row.CacheWriteTokens,
-			CostUSDTicks:             row.CostUsdTicks,
-			UncostedInputTokens:      row.UncostedInputTokens,
-			UncostedOutputTokens:     row.UncostedOutputTokens,
-			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
-			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
+			RuntimeID:                  resolvedRuntimeID,
+			Date:                       row.Date.Time.Format("2006-01-02"),
+			Provider:                   row.Provider,
+			Model:                      row.Model,
+			InputTokens:                row.InputTokens,
+			OutputTokens:               row.OutputTokens,
+			CacheReadTokens:            row.CacheReadTokens,
+			CacheWriteTokens:           row.CacheWriteTokens,
+			CostUSDTicks:               row.CostUsdTicks,
+			UncostedInputTokens:        row.UncostedInputTokens,
+			UncostedOutputTokens:       row.UncostedOutputTokens,
+			UncostedCacheReadTokens:    row.UncostedCacheReadTokens,
+			UncostedCacheWriteTokens:   row.UncostedCacheWriteTokens,
+			UncostedCacheWrite1hTokens: row.UncostedCacheWrite1hTokens,
 		}
 	}
 	return resp, nil
@@ -230,7 +243,10 @@ type RuntimeUsageByAgentResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32 `json:"task_count"`
+	// UncostedCacheWrite1hTokens is the 1-hour-TTL part of UncostedCacheWriteTokens
+	// (billed at the 1-hour write rate; the rest bills at the 5-minute rate).
+	UncostedCacheWrite1hTokens int64 `json:"uncosted_cache_write_1h_tokens"`
+	TaskCount                  int32 `json:"task_count"`
 }
 
 // GetRuntimeUsageByAgent returns per-agent token aggregates for a runtime
@@ -259,19 +275,20 @@ func (h *Handler) GetRuntimeUsageByAgent(w http.ResponseWriter, r *http.Request)
 	resp := make([]RuntimeUsageByAgentResponse, len(rows))
 	for i, row := range rows {
 		resp[i] = RuntimeUsageByAgentResponse{
-			AgentID:                  uuidToString(row.AgentID),
-			Provider:                 row.Provider,
-			Model:                    row.Model,
-			InputTokens:              row.InputTokens,
-			OutputTokens:             row.OutputTokens,
-			CacheReadTokens:          row.CacheReadTokens,
-			CacheWriteTokens:         row.CacheWriteTokens,
-			CostUSDTicks:             row.CostUsdTicks,
-			UncostedInputTokens:      row.UncostedInputTokens,
-			UncostedOutputTokens:     row.UncostedOutputTokens,
-			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
-			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
-			TaskCount:                row.TaskCount,
+			AgentID:                    uuidToString(row.AgentID),
+			Provider:                   row.Provider,
+			Model:                      row.Model,
+			InputTokens:                row.InputTokens,
+			OutputTokens:               row.OutputTokens,
+			CacheReadTokens:            row.CacheReadTokens,
+			CacheWriteTokens:           row.CacheWriteTokens,
+			CostUSDTicks:               row.CostUsdTicks,
+			UncostedInputTokens:        row.UncostedInputTokens,
+			UncostedOutputTokens:       row.UncostedOutputTokens,
+			UncostedCacheReadTokens:    row.UncostedCacheReadTokens,
+			UncostedCacheWriteTokens:   row.UncostedCacheWriteTokens,
+			UncostedCacheWrite1hTokens: row.UncostedCacheWrite1hTokens,
+			TaskCount:                  row.TaskCount,
 		}
 	}
 
@@ -298,7 +315,10 @@ type RuntimeUsageByHourResponse struct {
 	UncostedOutputTokens     int64 `json:"uncosted_output_tokens"`
 	UncostedCacheReadTokens  int64 `json:"uncosted_cache_read_tokens"`
 	UncostedCacheWriteTokens int64 `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32 `json:"task_count"`
+	// UncostedCacheWrite1hTokens is the 1-hour-TTL part of UncostedCacheWriteTokens
+	// (billed at the 1-hour write rate; the rest bills at the 5-minute rate).
+	UncostedCacheWrite1hTokens int64 `json:"uncosted_cache_write_1h_tokens"`
+	TaskCount                  int32 `json:"task_count"`
 }
 
 // GetRuntimeUsageByHour returns hourly (0..23) token aggregates for a
@@ -330,18 +350,19 @@ func (h *Handler) GetRuntimeUsageByHour(w http.ResponseWriter, r *http.Request) 
 	resp := make([]RuntimeUsageByHourResponse, len(rows))
 	for i, row := range rows {
 		resp[i] = RuntimeUsageByHourResponse{
-			Hour:                     int(row.Hour),
-			Model:                    row.Model,
-			InputTokens:              row.InputTokens,
-			OutputTokens:             row.OutputTokens,
-			CacheReadTokens:          row.CacheReadTokens,
-			CacheWriteTokens:         row.CacheWriteTokens,
-			CostUSDTicks:             row.CostUsdTicks,
-			UncostedInputTokens:      row.UncostedInputTokens,
-			UncostedOutputTokens:     row.UncostedOutputTokens,
-			UncostedCacheReadTokens:  row.UncostedCacheReadTokens,
-			UncostedCacheWriteTokens: row.UncostedCacheWriteTokens,
-			TaskCount:                row.TaskCount,
+			Hour:                       int(row.Hour),
+			Model:                      row.Model,
+			InputTokens:                row.InputTokens,
+			OutputTokens:               row.OutputTokens,
+			CacheReadTokens:            row.CacheReadTokens,
+			CacheWriteTokens:           row.CacheWriteTokens,
+			CostUSDTicks:               row.CostUsdTicks,
+			UncostedInputTokens:        row.UncostedInputTokens,
+			UncostedOutputTokens:       row.UncostedOutputTokens,
+			UncostedCacheReadTokens:    row.UncostedCacheReadTokens,
+			UncostedCacheWriteTokens:   row.UncostedCacheWriteTokens,
+			UncostedCacheWrite1hTokens: row.UncostedCacheWrite1hTokens,
+			TaskCount:                  row.TaskCount,
 		}
 	}
 
@@ -491,6 +512,27 @@ type UpdateAgentRuntimeRequest struct {
 	// runtime per provider) instead of just this one. Ignored when the
 	// runtime has no daemon_id.
 	ApplyToMachine bool `json:"apply_to_machine,omitempty"`
+	// MaxConcurrentTasks sets the runtime-wide concurrency cap (GitHub
+	// #9626): an integer in the agent limit range, or null to remove the
+	// cap. Absent leaves it unchanged. Owner / workspace admin only.
+	MaxConcurrentTasks json.RawMessage `json:"max_concurrent_tasks,omitempty"`
+	maxConcurrentTasks pgtype.Int4
+}
+
+// parseRuntimeMaxConcurrentTasks decodes the tri-state PATCH field: JSON null
+// clears the cap, an integer within the agent limit range sets it.
+func parseRuntimeMaxConcurrentTasks(raw json.RawMessage) (pgtype.Int4, error) {
+	if strings.TrimSpace(string(raw)) == "null" {
+		return pgtype.Int4{}, nil
+	}
+	var v int32
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return pgtype.Int4{}, errors.New("max_concurrent_tasks must be an integer or null")
+	}
+	if err := agentconfig.ValidateMaxConcurrentTasks(v); err != nil {
+		return pgtype.Int4{}, fmt.Errorf("max_concurrent_tasks %w", err)
+	}
+	return pgtype.Int4{Int32: v, Valid: true}, nil
 }
 
 // maxRuntimeCustomNameLen caps a runtime's custom name. Default names are
@@ -547,6 +589,13 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	if req.CustomName != nil {
 		if len([]rune(strings.TrimSpace(*req.CustomName))) > maxRuntimeCustomNameLen {
 			writeError(w, http.StatusBadRequest, "custom name is too long")
+			return
+		}
+	}
+	if req.MaxConcurrentTasks != nil {
+		req.maxConcurrentTasks, err = parseRuntimeMaxConcurrentTasks(req.MaxConcurrentTasks)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 	}
@@ -670,6 +719,23 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if req.MaxConcurrentTasks != nil {
+		updated, err := h.updateRuntimeMaxConcurrentTasks(r.Context(), runtimeUUID, req.maxConcurrentTasks)
+		if err != nil {
+			slog.Error("UpdateAgentRuntimeMaxConcurrentTasks failed", "error", err, "runtime_id", runtimeID)
+			writeError(w, http.StatusInternalServerError, "failed to update runtime")
+			return
+		}
+		rt = updated
+		changed = true
+		// Raising or removing the cap can make queued work claimable right
+		// away; nudge the runtime's daemon instead of waiting for its next
+		// poll.
+		if h.TaskService != nil {
+			h.TaskService.NotifyRuntimeCapacityChanged(rt.ID)
+		}
+	}
+
 	if changed {
 		// Notify connected clients that runtime metadata changed so the
 		// list/detail pages refresh — matches the pattern used by
@@ -680,6 +746,35 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, h.runtimeResponse(rt))
+}
+
+// updateRuntimeMaxConcurrentTasks writes the runtime-wide cap and then waits
+// on the runtime claim lock before committing. Claims read the cap only after
+// taking that lock, so once this returns no claim can still commit against
+// the old value (a claim queued behind the lock reads the new one). The row
+// is updated before the lock is taken; see LockRuntimeClaimCapacity for why
+// that order cannot deadlock with claims or runtime teardown.
+func (h *Handler) updateRuntimeMaxConcurrentTasks(ctx context.Context, runtimeID pgtype.UUID, limit pgtype.Int4) (db.AgentRuntime, error) {
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.AgentRuntime{}, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	updated, err := qtx.UpdateAgentRuntimeMaxConcurrentTasks(ctx, db.UpdateAgentRuntimeMaxConcurrentTasksParams{
+		MaxConcurrentTasks: limit,
+		ID:                 runtimeID,
+	})
+	if err != nil {
+		return db.AgentRuntime{}, err
+	}
+	if err := qtx.LockRuntimeClaimCapacity(ctx, runtimeID); err != nil {
+		return db.AgentRuntime{}, fmt.Errorf("lock runtime claim capacity: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.AgentRuntime{}, fmt.Errorf("commit: %w", err)
+	}
+	return updated, nil
 }
 
 func canEditRuntime(member db.Member, rt db.AgentRuntime) bool {
@@ -1263,6 +1358,10 @@ func (h *Handler) ListAgentRuntimes(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.attachDaemonPauseState(r.Context(), parseUUID(workspaceID), runtimes, resp); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load machine pause state")
+		return
+	}
+	if err := h.attachUpdateSchedules(r, runtimes, resp); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load update schedules")
 		return
 	}
 

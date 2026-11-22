@@ -16,12 +16,16 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/channelmedia"
 	"github.com/multica-ai/multica/server/internal/dispatch"
+	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/intakehold"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
@@ -66,16 +70,24 @@ type IssueResponse struct {
 	// field at all: with omitempty a built-in fixture hides it from BOTH
 	// renderings, and the drift guard goes green on a payload that has drifted.
 	// (MUL-6749)
-	StatusName   string  `json:"status_name"`
-	Priority     string  `json:"priority"`
-	AssigneeType *string `json:"assignee_type"`
-	AssigneeID   *string `json:"assignee_id"`
-	CreatorType  string  `json:"creator_type"`
-	CreatorID    string  `json:"creator_id"`
+	StatusName string `json:"status_name"`
+	// RunBudgetBlocked is true while the run budget, not a person, holds the
+	// issue in blocked (CHE-5285). Omitted when false, so a client treats
+	// absence as "not budget-stopped".
+	RunBudgetBlocked bool    `json:"run_budget_blocked,omitempty"`
+	Priority         string  `json:"priority"`
+	AssigneeType     *string `json:"assignee_type"`
+	AssigneeID       *string `json:"assignee_id"`
+	CreatorType      string  `json:"creator_type"`
+	CreatorID        string  `json:"creator_id"`
 	// RequestedByID is the member the issue was made on behalf of: set when an
 	// agent creates it for a person, and the "requester" a human-by-role
 	// workflow handler resolves. Null when no person is attributed.
 	RequestedByID *string `json:"requested_by_id"`
+	// CreatedVia is how the issue was made: dialog, agent or cli. The server
+	// sets it at create; it is empty for issues made before it existed and
+	// for creates from web or desktop forms.
+	CreatedVia    string  `json:"created_via"`
 	ParentIssueID *string `json:"parent_issue_id"`
 	// DuplicateOf is the original this issue duplicates (MUL-7349), set only
 	// while the mark counts: the issue is cancelled and the original still
@@ -85,7 +97,15 @@ type IssueResponse struct {
 	ProjectID   *string           `json:"project_id"`
 	// WorkflowID is the issue's own workflow override; null follows the project.
 	WorkflowID *string `json:"workflow_id"`
-	Position   float64 `json:"position"`
+	// WorkflowHint is set on an update that changed the title to a type the
+	// workspace maps to a different workflow than the issue's. The issue keeps
+	// its workflow; the hint tells the caller how to move it. (CHE-5271)
+	WorkflowHint string `json:"workflow_hint,omitempty"`
+	// StepBrief is the entered step's brief on a move that chained the
+	// caller's own run into the step (chain_same_owner): no new run starts, so
+	// the response is where the step's text arrives.
+	StepBrief string  `json:"step_brief,omitempty"`
+	Position  float64 `json:"position"`
 	// Stage groups sub-issues under the same parent into ordered barrier
 	// groups (null = unstaged). See service/issue_wakeup_system.go for how a
 	// closed stage wakes the parent's assignee.
@@ -123,6 +143,9 @@ type IssueResponse struct {
 	// SourceContext is detail-only. List, board, search, and children responses
 	// deliberately omit the potentially large immutable snapshot.
 	SourceContext *sourceContextDetailResponse `json:"source_context,omitempty"`
+	// IntakeHold is detail-only (CHE-6911): the list endpoints do not compute
+	// it. Absent for an issue with a parent and in a project with no entry.
+	IntakeHold *intakehold.ReadField `json:"intake_hold,omitempty"`
 	// duplicateOfIssueID is the raw mark, kept off the wire; see DuplicateOf.
 	duplicateOfIssueID pgtype.UUID
 }
@@ -297,7 +320,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var issue db.Issue
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
-	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
+	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || routeCaptureFrom(ctx) != nil || memberRouteOverrideArmed(ctx) || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
 		var err error
 		issue, cancelledWakeups, err = h.writeIssueLocked(ctx, q, workspaceID, params, wf)
 		return err
@@ -306,6 +329,7 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 		return issue, err
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, nil
 }
 
@@ -330,17 +354,30 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 			return db.Issue{}, nil, err
 		}
 	}
+	if err := markMemberRouteOverride(ctx, q, workspaceID, params); err != nil {
+		return db.Issue{}, nil, err
+	}
 	if err := captureRouteLabel(ctx, q, params); err != nil {
 		return db.Issue{}, nil, err
 	}
 	if err := h.applyDecisionEpisode(ctx, q, workspaceID, wf, &params); err != nil {
 		return db.Issue{}, nil, err
 	}
+	wf.markManualPark(ctx)
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, q, params)
 	if err != nil {
 		return issue, nil, err
 	}
-	return issue, cancelledWakeups, wf.recordVerdict(ctx, q, issue)
+	if issue, err = wf.recordManualPark(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
+	if err := wf.recordVerdict(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
+	if err := wf.recordAuthor(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
+	return issue, cancelledWakeups, wf.recordStepAssignee(ctx, q, issue)
 }
 
 // updateIssueStoppingWakeups writes params and, when the write moves the issue
@@ -365,6 +402,12 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 			return db.Issue{}, nil, fmt.Errorf("lock issue for status history: %w", err)
 		}
 		fromStatus = prior.Status
+		rec.intakeRelease = ""
+		if params.Status.String != fromStatus {
+			if rec.intakeRelease, err = intakeReleaseKey(ctx, q, rec, params.ID, params.Status.String); err != nil {
+				return db.Issue{}, nil, err
+			}
+		}
 	}
 	var prevParent pgtype.UUID
 	if params.ParentIssueID.Valid {
@@ -378,22 +421,65 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	if err != nil {
 		return issue, nil, err
 	}
+	if params.Status.Valid {
+		blockedOn := ""
+		if rec != nil {
+			blockedOn = rec.blockedOn
+		}
+		if issue, err = recordBlockedOn(ctx, q, issue, blockedOn); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("record blocked_on: %w", err)
+		}
+	}
 	if err := recordIssueMoved(ctx, q, prevParent, issue); err != nil {
 		return db.Issue{}, nil, fmt.Errorf("record moved-under event: %w", err)
 	}
 	if recordStatus && fromStatus != issue.Status {
-		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit)
+		row, err := service.RecordStatusChangeWithEvent(ctx, q, issue, fromStatus, issue.Status, rec.trigger, rec.recordedHandoff(issue), rec.eventID, rec.routingExit, rec.blockedOn, rec.intakeRelease)
 		if err != nil {
 			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
 		}
 		rec.activity = &row
 		rec.eventID, rec.routingExit = pgtype.UUID{}, false // spent: a reused record must not reuse the id
 	}
+	if rec != nil && recordStatus {
+		if err := verifyAttachedComments(ctx, q, issue, rec.attach); err != nil {
+			return db.Issue{}, nil, err
+		}
+		if rec.comment != nil {
+			if err := createHandoffComment(ctx, q, rec, issue); err != nil {
+				return db.Issue{}, nil, err
+			}
+			// The comment bumped the issue revision; return the committed one.
+			issue.Revision = rec.created.IssueRevision
+		}
+	}
+	// The intent to run the handler is written with the write that hands the
+	// issue to it, so a crash after the commit leaves it behind to find.
+	if rec != nil && rec.intent != nil {
+		if err := writeHandoffIntent(ctx, q, rec, issue); err != nil {
+			return db.Issue{}, nil, err
+		}
+	}
 	// Same transaction as the write: a claim that reads the committed write
 	// finds this taint on its run.
 	if taint := issueWriteTaint(ctx); len(taint) > 0 {
 		if err := q.TaintPendingRunsOnIssue(ctx, db.TaintPendingRunsOnIssueParams{TaintIds: taint, IssueID: issue.ID}); err != nil {
 			return db.Issue{}, nil, fmt.Errorf("taint pending runs: %w", err)
+		}
+		// A run created after this commit (a budget recovery run whose refusal
+		// callback has not run yet) has no pending run to inherit from; the
+		// issue's own taint stops it authorizing an elevated operation.
+		if err := q.NoteIssueTaint(ctx, db.NoteIssueTaintParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("note issue taint: %w", err)
+		}
+		// A member's clear keeps the ID off the issue, not off the writer's
+		// task: a recovery run created later reads it from issue_run_taint, and
+		// one already running takes it now.
+		if err := q.NoteIssueRunTaint(ctx, db.NoteIssueRunTaintParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("note issue run taint: %w", err)
+		}
+		if err := q.TaintBudgetRecoveryRuns(ctx, db.TaintBudgetRecoveryRunsParams{IssueID: issue.ID, Taint: taint}); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("taint recovery runs: %w", err)
 		}
 	}
 	if external, _ := ctx.Value(issueWriteExternalReadKey{}).(bool); external && params.Description.Valid {
@@ -491,9 +577,18 @@ func (h *Handler) newStatusCategoryFiller(ctx context.Context, wsID pgtype.UUID,
 	resolver := issuestatus.NewResolver(wsID)
 	refs := duplicateOriginals{}
 	h.loadDuplicateOriginals(ctx, wsID, refs, originals)
+	// The budget-blocked set is read once, on the first blocked row, so a page
+	// without blocked issues pays nothing. (CHE-5285)
+	var budgetBlocked map[string]bool
 	return func(resp *IssueResponse) {
 		if resp == nil {
 			return
+		}
+		if resp.Status == issuestatus.Blocked {
+			if budgetBlocked == nil {
+				budgetBlocked = h.runBudgetBlockedIssueIDs(ctx, wsID)
+			}
+			resp.RunBudgetBlocked = budgetBlocked[resp.ID]
 		}
 		// Every response that resolves its status also resolves its duplicate
 		// mark, so the two never disagree about which endpoints carry them.
@@ -506,6 +601,22 @@ func (h *Handler) newStatusCategoryFiller(ctx context.Context, wsID pgtype.UUID,
 		// free. Built-ins return "" and stay omitted. (MUL-6749)
 		resp.StatusName = resolver.Name(ctx, h.Queries, resp.Status)
 	}
+}
+
+// runBudgetBlockedIssueIDs returns the workspace issues the run budget holds
+// in blocked. A failed read yields an empty set: the chip is a hint, and a
+// list must not fail over it.
+func (h *Handler) runBudgetBlockedIssueIDs(ctx context.Context, wsID pgtype.UUID) map[string]bool {
+	set := map[string]bool{}
+	ids, err := h.Queries.ListRunBudgetBlockedIssueIDs(ctx, wsID)
+	if err != nil {
+		slog.Warn("list run-budget blocked issues failed", "error", err)
+		return set
+	}
+	for _, id := range ids {
+		set[uuidToString(id)] = true
+	}
+	return set
 }
 
 // fillStatusCategory is the single-response form. Only for endpoints that build
@@ -635,6 +746,7 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		CreatorType:        i.CreatorType,
 		CreatorID:          uuidToString(i.CreatorID),
 		RequestedByID:      uuidToPtr(i.RequestedByID),
+		CreatedVia:         i.CreatedVia.String,
 		ParentIssueID:      uuidToPtr(i.ParentIssueID),
 		duplicateOfIssueID: duplicateOfPointer(i.Status, i.DuplicateOfIssueID),
 		ProjectID:          uuidToPtr(i.ProjectID),
@@ -950,41 +1062,63 @@ type searchResult struct {
 // comment to its side table. content is the folded text; content_accents is the
 // lowered unfolded text where folding changed it, for the exact-diacritic rank.
 //
-// A comment that matches none of the patterns sets no flag in the aggregate
-// below, so the trigram predicate (CHE-3164) drops it here, where the GIN index
-// on content_folded can serve it, instead of after reading every comment of the
-// workspace. The patterns are the same ones the flags use.
-func searchCommentSource(wsParam string, likeParams []string) string {
+// Only comments of driving issues are read (CHE-7336): the other terms may sit in
+// other comments of the same issue, so a comment is kept when it matches any
+// pattern, but only inside an issue that holds the driving term. A comment that
+// matches none of the patterns sets no flag in the aggregate below, so the
+// trigram predicate (CHE-3164) drops it here, where the GIN index on
+// content_folded can serve it. Without a driving term no comment is read.
+func searchCommentSource(wsParam string, likeParams []string, hasDriving bool) string {
+	where := "FALSE"
+	if hasDriving {
+		where = fmt.Sprintf("issue_id IN (SELECT issue_id FROM driving_issues) AND (%s)",
+			foldedLikeAny("content_folded", likeParams))
+	}
 	return fmt.Sprintf(`comment AS (
 			SELECT comment_id AS id, issue_id, workspace_id, created_at,
 				content_folded AS content, content_accents
 			FROM comment_search_text
-			WHERE workspace_id = %s AND (%s)
-		)`, wsParam, foldedLikeAny("content_folded", likeParams))
+			WHERE workspace_id = %s AND %s
+		)`, wsParam, where)
+}
+
+// searchDrivingIssuesCTE lists the issues that hold the driving pattern in the
+// title, the description or a comment, or whose number was searched. Every
+// eligible issue holds every term of a multi-term query, or the whole phrase,
+// which contains every term, so every eligible issue is in this list. One arm
+// per folded column lets the planner pick that column's trigram GIN index.
+func searchDrivingIssuesCTE(wsParam, drivingParam, numParam string) string {
+	arms := []string{
+		fmt.Sprintf("SELECT issue_id FROM issue_search_text WHERE workspace_id = %s AND title_folded LIKE %s", wsParam, drivingParam),
+		fmt.Sprintf("SELECT issue_id FROM issue_search_text WHERE workspace_id = %s AND description_folded LIKE %s", wsParam, drivingParam),
+		fmt.Sprintf("SELECT issue_id FROM comment_search_text WHERE workspace_id = %s AND content_folded LIKE %s", wsParam, drivingParam),
+	}
+	if numParam != "" {
+		arms = append(arms, fmt.Sprintf("SELECT id FROM issue WHERE workspace_id = %s AND number = %s", wsParam, numParam))
+	}
+	return "driving_issues AS MATERIALIZED (\n\t\t" + strings.Join(arms, "\n\t\tUNION\n\t\t") + "\n\t)"
 }
 
 // searchIssueSource exposes the stored folded text as title and description,
 // next to the raw text that the exact-diacritic ranking compares against.
 //
-// Only issues that can be eligible are read (CHE-3164): a title or description
-// that matches a pattern (one arm per folded column, so each OR stays cheap
-// enough for the planner to pick that column's GIN index), an issue that has a
-// matching comment (comment_matches), or the issue whose number was searched.
-// Every eligibility rule below needs at least one of these, so the flags that
-// follow are computed on those rows instead of every issue of the workspace.
-func searchIssueSource(wsParam string, likeParams []string, numParam string) string {
-	candidates := fmt.Sprintf(`SELECT issue_id FROM issue_search_text
-			WHERE workspace_id = %[1]s AND (%[2]s)
-			UNION
-			SELECT issue_id FROM issue_search_text
-			WHERE workspace_id = %[1]s AND (%[3]s)
-			UNION
-			SELECT issue_id FROM comment_matches`,
-		wsParam, foldedLikeAny("title_folded", likeParams), foldedLikeAny("description_folded", likeParams))
-	if numParam != "" {
-		candidates += fmt.Sprintf(`
+// Only issues that can be eligible are read (CHE-3164, CHE-7336). With a driving
+// term these are the driving issues. Without one (every term has fewer than 3
+// characters, so no pattern can use a trigram index and each matches most rows)
+// they are the issues whose title matches a pattern, plus the issue whose number
+// was searched. Every eligibility rule below needs at least one of these, so the
+// flags that follow are computed on those rows instead of every issue of the
+// workspace.
+func searchIssueSource(wsParam string, likeParams []string, hasDriving bool, numParam string) string {
+	candidates := "SELECT issue_id FROM driving_issues"
+	if !hasDriving {
+		candidates = fmt.Sprintf(`SELECT issue_id FROM issue_search_text
+			WHERE workspace_id = %s AND (%s)`, wsParam, foldedLikeAny("title_folded", likeParams))
+		if numParam != "" {
+			candidates += fmt.Sprintf(`
 			UNION
 			SELECT id FROM issue WHERE workspace_id = %s AND number = %s`, wsParam, numParam)
+		}
 	}
 	return fmt.Sprintf(`(
 		SELECT i.id, i.workspace_id, i.status, i.updated_at, i.number,
@@ -1018,6 +1152,12 @@ func foldedLikeAny(column string, likeParams []string) string {
 // when that is cheaper. Cost is the planner's call, so the SQL never forces an
 // index, and the eligibility rules and ranking read the same flags as before.
 func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+	return buildSearchQueryDriving(phrase, terms, queryNum, hasNum, includeClosed, terminalStatusKeys, -1)
+}
+
+// buildSearchQueryDriving is buildSearchQuery with the driving term chosen by
+// the caller (index into terms; -1 picks the longest term).
+func buildSearchQueryDriving(phrase string, terms []string, queryNum int, hasNum bool, includeClosed bool, terminalStatusKeys []string, drivingTerm int) (string, []any) {
 	// The stored search text is lowered and diacritic-folded (search_fold), so the
 	// patterns are folded the same way. The lowered-only query is kept to rank a
 	// match that also agrees on diacritics above one that matches after folding.
@@ -1058,6 +1198,45 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	numParam := ""
 	if hasNum {
 		numParam = nextArg(queryNum)
+	}
+
+	// A pattern of fewer than 3 characters cannot use the trigram indexes and
+	// matches almost every row (CHE-7336), so candidates are chosen by the longest
+	// term of 3 or more characters. A single term is the phrase, which was the only
+	// pattern before, so a short one keeps its candidates when it is a number
+	// (issue 12 and text that mentions 12).
+	const shortTermLen = 2
+	drivingParam, longest := "", shortTermLen
+	if len(terms) == 1 {
+		if hasNum || utf8.RuneCountInString(terms[0]) > longest {
+			drivingParam = phraseContainsParam
+		}
+	} else if drivingTerm >= 0 && drivingTerm < len(terms) && utf8.RuneCountInString(terms[drivingTerm]) > shortTermLen {
+		drivingParam = termContainsParams[drivingTerm]
+	} else {
+		for index, term := range terms {
+			if n := utf8.RuneCountInString(term); n > longest {
+				drivingParam, longest = termContainsParams[index], n
+			}
+		}
+	}
+
+	// A short term of a multi-term query matches nearly every comment, so reading
+	// each of them to set its flag costs a sort and an aggregate over the whole
+	// workspace. Comments are read for the patterns that can be served by a trigram
+	// index only; a short term asks the question "does any comment hold it" once, as
+	// a hashed lookup, in the eligibility rule below.
+	commentReadParams := []string{phraseContainsParam}
+	shortTerm := make([]bool, len(termContainsParams))
+	for index, term := range terms {
+		if len(termContainsParams) == 0 {
+			break
+		}
+		if utf8.RuneCountInString(term) <= shortTermLen {
+			shortTerm[index] = true
+			continue
+		}
+		commentReadParams = append(commentReadParams, termContainsParams[index])
 	}
 
 	terminalStatusesParam := ""
@@ -1163,7 +1342,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) lowered_issue_description ON TRUE
 		WHERE %s
 	)`, strings.Join(issueFlagColumns, ",\n\t\t\t"),
-		searchIssueSource(wsParam, textLikeParams, numParam), titleMatchExpr, issueWhere)
+		searchIssueSource(wsParam, textLikeParams, drivingParam != "", numParam), titleMatchExpr, issueWhere)
 
 	// Comments are also scanned once, workspace-first. This intentionally avoids
 	// the legacy planner choice between global content GIN postings and repeated
@@ -1181,12 +1360,15 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	commentCandidateFlags := []string{"aggregated_comments.comment_phrase"}
 	commentTerms := make([]string, 0, len(termContainsParams))
 	for index, termParam := range termContainsParams {
+		commentTerms = append(commentTerms, fmt.Sprintf("%s LIKE %s", loweredCommentContent, termParam))
+		if shortTerm[index] {
+			continue
+		}
 		alias := fmt.Sprintf("comment_term_%d", index)
 		commentFlagColumns = append(commentFlagColumns,
 			fmt.Sprintf("BOOL_OR(%s LIKE %s) AS %s", loweredCommentContent, termParam, alias),
 		)
 		commentCandidateFlags = append(commentCandidateFlags, "aggregated_comments."+alias)
-		commentTerms = append(commentTerms, fmt.Sprintf("%s LIKE %s", loweredCommentContent, termParam))
 	}
 
 	commentSnippetPredicate := fmt.Sprintf("%s LIKE %s", loweredCommentContent, phraseContainsParam)
@@ -1233,7 +1415,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		) aggregated_comments
 		WHERE %s
 	)`,
-		searchCommentSource(wsParam, textLikeParams),
+		searchCommentSource(wsParam, commentReadParams, drivingParam != ""),
 		strings.Join(commentFlagColumns, ",\n\t\t\t\t"),
 		wsParam,
 		strings.Join(commentCandidateFlags, " OR "),
@@ -1256,10 +1438,14 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	if len(termContainsParams) > 1 {
 		var allTerms []string
 		for index := range termContainsParams {
+			commentHasTerm := fmt.Sprintf("COALESCE(cm.comment_term_%d, FALSE)", index)
+			if shortTerm[index] {
+				commentHasTerm = fmt.Sprintf(
+					"im.issue_id IN (SELECT issue_id FROM comment_search_text WHERE workspace_id = %s AND content_folded LIKE %s)",
+					wsParam, termContainsParams[index])
+			}
 			allTerms = append(allTerms, fmt.Sprintf(
-				"(im.title_term_%[1]d OR im.description_term_%[1]d OR COALESCE(cm.comment_term_%[1]d, FALSE))",
-				index,
-			))
+				"(im.title_term_%[1]d OR im.description_term_%[1]d OR %[2]s)", index, commentHasTerm))
 		}
 		eligibleParts = append(eligibleParts, "("+strings.Join(allTerms, " AND ")+")")
 	}
@@ -1359,7 +1545,14 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 		LIMIT %s OFFSET %s
 	)`, limitParam, offsetParam)
 
-	query := fmt.Sprintf(`WITH %s,
+	// The driving issues feed both comment_matches and issue_matches, so they
+	// come first. Without a driving term nothing refers to them.
+	drivingCTE := ""
+	if drivingParam != "" {
+		drivingCTE = searchDrivingIssuesCTE(wsParam, drivingParam, numParam) + ",\n\t"
+	}
+
+	query := fmt.Sprintf(`WITH %s%s,
 	%s,
 	%s,
 	%s
@@ -1374,6 +1567,7 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	JOIN issue i ON i.id = pc.issue_id AND i.workspace_id = %s
 	LEFT JOIN comment c ON c.id = pc.snippet_comment_id AND c.workspace_id = %s
 	ORDER BY pc.cancelled_rank, pc.relevance_rank, pc.status_rank, pc.diacritic_rank, pc.updated_at DESC, pc.issue_id ASC`,
+		drivingCTE,
 		commentMatchesCTE,
 		issueMatchesCTE,
 		rankedCandidatesCTE,
@@ -1383,6 +1577,122 @@ func buildSearchQuery(phrase string, terms []string, queryNum int, hasNum bool, 
 	)
 
 	return query, args
+}
+
+// titleTierScanWindow is how many of the newest issues of a workspace the instant
+// tier probes first. A window that already holds limit matches is the exact answer;
+// otherwise buildTitleTailQuery answers from the trigram index.
+var titleTierScanWindow = 2000
+
+// buildTitleSearchQuery is the instant tier of Cmd+K (CHE-7337): issues whose
+// title holds every term, newest update first, read through the same row shape as
+// buildSearchQuery so scanSearchIssue serves both. It reads no description or
+// comment and ranks nothing. It walks idx_issue_workspace_updated_at newest first
+// through at most titleTierScanWindow rows, so the work is bounded by the window.
+// It is exact only when it returns limit rows. Args: $1 workspace_id (filled by the caller), $2 term
+// patterns, then the terminal statuses when closed issues are excluded, limit and
+// offset.
+func buildTitleSearchQuery(terms []string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+	patterns, _ := titleTrigramPatterns(terms)
+	args := []any{nil, patterns}
+	recentCols, where := "id, updated_at", ""
+	if !includeClosed {
+		args = append(args, terminalStatusKeys)
+		recentCols += ", status"
+		where = fmt.Sprintf("WHERE NOT (recent.status = ANY($%d::text[]))", len(args))
+	}
+	args = append(args, 0, 0)
+	// The LATERAL probe pins a primary-key lookup per window row (a plain join may
+	// seq scan the title table), and the hits join back to issue last, so full rows
+	// are read only for the few titles that matched.
+	return fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
+		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
+		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
+		i.revision, i.duplicate_of_issue_id, i.description_external_read,
+		'title' AS match_source, '' AS matched_comment_content
+	FROM (
+		SELECT recent.id
+		FROM (
+			SELECT %s FROM issue WHERE workspace_id = $1 ORDER BY updated_at DESC, id DESC LIMIT %d
+		) recent
+		JOIN LATERAL (
+			SELECT 1 FROM issue_search_text ist
+			WHERE ist.issue_id = recent.id AND ist.workspace_id = $1 AND ist.title_folded LIKE ALL($2::text[])
+			LIMIT 1
+		) title ON true
+		%s
+		ORDER BY recent.updated_at DESC, recent.id DESC
+		LIMIT $%d OFFSET $%d
+	) hit
+	JOIN issue i ON i.id = hit.id
+	ORDER BY i.updated_at DESC, i.id DESC`, recentCols, titleTierScanWindow, where, len(args)-1, len(args)), args
+}
+
+// titleTrigramPatterns returns the LIKE pattern of every term, and whether one of
+// them has the 3 characters a trigram index needs.
+func titleTrigramPatterns(terms []string) ([]string, bool) {
+	patterns := make([]string, len(terms))
+	indexable := false
+	for i, term := range terms {
+		folded := foldDiacritics(term)
+		patterns[i] = "%" + escapeLike(folded) + "%"
+		if utf8.RuneCountInString(folded) >= 3 {
+			indexable = true
+		}
+	}
+	return patterns, indexable
+}
+
+// buildTitleTailQuery answers the instant tier for the whole workspace when the
+// newest-window query came back short (CHE-7337): the same rows and order, found
+// through idx_issue_search_text_title_trgm, or, when every term is under 3
+// characters, through idx_issue_search_text_title_grams (CHE-7422). Its work
+// follows the number of titles that match, which stays small because the window
+// already held fewer than limit of them. Args: $1 workspace_id (filled by the
+// caller), one pattern per term (or one gram array when every term is short), then
+// the terminal statuses when closed issues are excluded, limit and offset.
+func buildTitleTailQuery(terms []string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+	patterns, indexable := titleTrigramPatterns(terms)
+	args := []any{nil}
+	likes := ""
+	if indexable {
+		for _, pattern := range patterns {
+			args = append(args, pattern)
+			likes += fmt.Sprintf(" AND title_folded LIKE $%d", len(args))
+		}
+	} else {
+		// Every term is a 1-2 character gram of the title, so containment is exact.
+		grams := make([]string, len(terms))
+		for i, term := range terms {
+			grams[i] = foldDiacritics(term)
+		}
+		args = append(args, grams)
+		likes = fmt.Sprintf(" AND title_grams(title_folded) @> $%d::text[]", len(args))
+	}
+	status := ""
+	if !includeClosed {
+		args = append(args, terminalStatusKeys)
+		status = fmt.Sprintf(" AND NOT (status = ANY($%d::text[]))", len(args))
+	}
+	args = append(args, 0, 0)
+	// A LATERAL primary-key probe per hit keeps the join from scanning every issue
+	// of the workspace.
+	return fmt.Sprintf(`WITH hit AS MATERIALIZED (
+		SELECT issue_id FROM issue_search_text WHERE workspace_id = $1%s
+	)
+	SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
+		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
+		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
+		i.revision, i.duplicate_of_issue_id, i.description_external_read,
+		'title' AS match_source, '' AS matched_comment_content
+	FROM hit
+	JOIN LATERAL (
+		SELECT * FROM issue WHERE id = hit.issue_id AND workspace_id = $1%s LIMIT 1
+	) i ON true
+	ORDER BY i.updated_at DESC, i.id DESC
+	LIMIT $%d OFFSET $%d`, likes, status, len(args)-1, len(args)), args
 }
 
 func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
@@ -1433,17 +1743,27 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		terminalStatusKeys = resolvedKeys
 	}
 
-	sqlQuery, args := buildSearchQuery(q, terms, queryNum, hasNum, includeClosed, terminalStatusKeys)
-	// Fill placeholder args: $4 = workspace_id, last two = limit, offset
-	args[3] = wsUUID
+	titleOnly := r.URL.Query().Get("title_only") == "true"
+	var sqlQuery string
+	var args []any
+	wsArg := 3 // index of the workspace_id placeholder in args
+	if titleOnly {
+		sqlQuery, args = buildTitleSearchQuery(terms, includeClosed, terminalStatusKeys)
+		wsArg = 0
+	} else {
+		drivingTerm := h.pickDrivingTerm(ctx, wsUUID, terms)
+		sqlQuery, args = buildSearchQueryDriving(q, terms, queryNum, hasNum, includeClosed, terminalStatusKeys, drivingTerm)
+	}
+	// Fill placeholder args: workspace_id, last two = limit, offset
+	args[wsArg] = wsUUID
 	args[len(args)-2] = limit
 	args[len(args)-1] = offset
 
 	var results []searchResult
 	// runSearch fills results from one search statement and writes the error
 	// response itself, returning false when the request is already answered.
-	runSearch := func(sqlQuery string, args []any) bool {
-		err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
+	runSearch := func(setup []string, sqlQuery string, args []any) bool {
+		err := runSearchQueryWithSetup(ctx, h.TxStarter, setup, sqlQuery, args, func(rows pgx.Rows) error {
 			for rows.Next() {
 				sr, err := scanSearchIssue(rows)
 				if err != nil {
@@ -1456,6 +1776,14 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			if writeSearchCancellation(w, r, err) {
 				return false
+			}
+			// The typo fallback is optional (CHE-7519): when it runs out of its own
+			// budget the normal search's empty answer stands.
+			if len(setup) > 0 && isSearchStatementTimeout(err) {
+				slog.Warn("search issues typo fallback timed out; returning the normal result",
+					"workspace_id", workspaceID, "query_length", len([]rune(q)), "timeout", fuzzySearchTimeout)
+				results = nil
+				return true
 			}
 			// Statement-timeout surfaces as SQLSTATE 57014. Return a 503
 			// so the frontend can distinguish a timeout ("try a more
@@ -1477,16 +1805,28 @@ func (h *Handler) SearchIssues(w http.ResponseWriter, r *http.Request) {
 		return true
 	}
 
-	if !runSearch(sqlQuery, args) {
+	if !runSearch(nil, sqlQuery, args) {
 		return
 	}
+	// A short window is not the answer: look for the newest matches of the whole
+	// workspace through the trigram index, or the 1-2 character index.
+	if titleOnly && len(results) < limit {
+		tailQuery, tailArgs := buildTitleTailQuery(terms, includeClosed, terminalStatusKeys)
+		tailArgs[0] = wsUUID
+		tailArgs[len(tailArgs)-2] = limit
+		tailArgs[len(tailArgs)-1] = offset
+		results = nil
+		if !runSearch(nil, tailQuery, tailArgs) {
+			return
+		}
+	}
 	// Typo tolerance is a fallback: a query with any normal hit never pays for it.
-	if shouldRunFuzzyFallback(q, hasNum, offset, len(results)) {
+	if !titleOnly && shouldRunFuzzyFallback(q, hasNum, offset, len(results)) {
 		fuzzyQuery, fuzzyArgs := buildFuzzySearchQuery(foldDiacritics(q), includeClosed, terminalStatusKeys)
 		fuzzyArgs[1] = wsUUID
 		fuzzyArgs[len(fuzzyArgs)-2] = limit
 		fuzzyArgs[len(fuzzyArgs)-1] = offset
-		if !runSearch(fuzzyQuery, fuzzyArgs) {
+		if !runSearch(fuzzySearchSetup, fuzzyQuery, fuzzyArgs) {
 			return
 		}
 	}
@@ -1562,7 +1902,7 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 const listIssueColumns = `i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.description_external_read`
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read`
 
 var narrowColumns = strings.NewReplacer(
 	"i.title,", "''::text,", // Title scans into a string, so empty rather than NULL
@@ -1588,7 +1928,7 @@ func scanListIssueRows(rows pgx.Rows) ([]db.ListIssuesRow, error) {
 			&row.AssigneeType, &row.AssigneeID, &row.CreatorType, &row.CreatorID,
 			&row.ParentIssueID, &row.Position, &row.StartDate, &row.DueDate,
 			&row.CreatedAt, &row.UpdatedAt, &row.LastActivityAt, &row.Number, &row.ProjectID,
-			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.DescriptionExternalRead,
+			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.WorkflowID, &row.RequestedByID, &row.DescriptionExternalRead,
 		); err != nil {
 			return nil, err
 		}
@@ -1676,6 +2016,14 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 		creatorFilter = id
 	}
+	var requestedByFilter pgtype.UUID
+	if c := r.URL.Query().Get("requested_by_id"); c != "" {
+		id, ok := parseUUIDOrBadRequest(w, c, "requested_by_id")
+		if !ok {
+			return
+		}
+		requestedByFilter = id
+	}
 	var projectFilter pgtype.UUID
 	if p := r.URL.Query().Get("project_id"); p != "" {
 		id, ok := parseUUIDOrBadRequest(w, p, "project_id")
@@ -1736,6 +2084,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 			AssigneeID:         assigneeFilter,
 			AssigneeIds:        assigneeIdsFilter,
 			CreatorID:          creatorFilter,
+			RequestedByID:      requestedByFilter,
 			ProjectID:          projectFilter,
 			InvolvesUserID:     involvesUserFilter,
 			MetadataFilter:     metadataFilter,
@@ -1937,6 +2286,9 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if creatorFilter.Valid {
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(creatorFilter)))
 	}
+	if requestedByFilter.Valid {
+		where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(requestedByFilter)))
+	}
 	if projectFilter.Valid {
 		where = append(where, fmt.Sprintf("i.project_id = %s::uuid", addArg(projectFilter)))
 	}
@@ -2117,7 +2469,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision, i.duplicate_of_issue_id, i.description_external_read
+	   i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
 FROM issue i
 WHERE %s
 ORDER BY %s
@@ -2489,6 +2841,13 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(id)))
+	}
+	if raw := r.URL.Query().Get("requested_by_id"); raw != "" {
+		id, ok := parseUUIDOrBadRequest(w, raw, "requested_by_id")
+		if !ok {
+			return
+		}
+		where = append(where, fmt.Sprintf("i.requested_by_id = %s::uuid", addArg(id)))
 	}
 	if raw := r.URL.Query().Get("project_id"); raw != "" {
 		id, ok := parseUUIDOrBadRequest(w, raw, "project_id")
@@ -2873,6 +3232,11 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 		detailLabels = []LabelResponse{}
 	}
 	resp.Labels = &detailLabels
+	if loaded, err := intakehold.Load(r.Context(), h.DB, uuidToString(issue.ID)); err != nil {
+		slog.Warn("load intake hold failed", append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "error", err)...)
+	} else {
+		resp.IntakeHold = loaded.Field()
+	}
 
 	// Fetch issue reactions.
 	reactions, err := h.Queries.ListIssueReactions(r.Context(), issue.ID)
@@ -3255,6 +3619,10 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, status, payload)
 		return
 	}
+	if status, payload := h.checkQuickCreateQoderLimits(r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, len(req.AttachmentIDs) > 0); status != 0 {
+		writeJSON(w, status, payload)
+		return
+	}
 	if priority != "" || dueDate != "" {
 		if status, payload := h.checkQuickCreateDaemonVersionAtLeast(
 			r.Context(), obsmetrics.RuntimeLookupSourceIssue, agent.RuntimeID, agentpkg.MinQuickCreateFieldsCLIVersion,
@@ -3369,6 +3737,22 @@ func (h *Handler) checkQuickCreateDaemonVersion(ctx context.Context, source stri
 	return h.checkQuickCreateDaemonVersionAtLeast(ctx, source, runtimeID, agentpkg.MinQuickCreateCLIVersion)
 }
 
+// checkQuickCreateQoderLimits keeps attachment-backed quick-create blocked:
+// the bridge can run squad leaders, but cannot draft from these attachments.
+func (h *Handler) checkQuickCreateQoderLimits(ctx context.Context, source string, runtimeID pgtype.UUID, attachments bool) (int, map[string]any) {
+	if !attachments {
+		return 0, nil
+	}
+	rt, err := h.getAgentRuntime(ctx, source, runtimeID)
+	if err != nil || rt.Provider != qoderruntime.Provider {
+		return 0, nil
+	}
+	return http.StatusUnprocessableEntity, map[string]any{
+		"code":   "agent_unavailable",
+		"reason": "Qoder Cloud Agents cannot read attachments; remove them or pick another agent",
+	}
+}
+
 func (h *Handler) checkQuickCreateDaemonVersionAtLeast(ctx context.Context, source string, runtimeID pgtype.UUID, minimum string) (int, map[string]any) {
 	rt, err := h.getAgentRuntime(ctx, source, runtimeID)
 	if err != nil {
@@ -3379,11 +3763,9 @@ func (h *Handler) checkQuickCreateDaemonVersionAtLeast(ctx context.Context, sour
 			"reason": "agent's runtime is no longer registered",
 		}
 	}
+	// The Qoder bridge creates the issue itself instead of running the CLI.
 	if rt.Provider == qoderruntime.Provider {
-		return http.StatusUnprocessableEntity, map[string]any{
-			"code":   "agent_unavailable",
-			"reason": "Qoder Cloud Agents supports existing issue runs only; create the issue manually and assign it to this agent",
-		}
+		return 0, nil
 	}
 	current := readRuntimeCLIVersion(rt.Metadata)
 	switch err := agentpkg.CheckMinCLIVersionFor(current, minimum); {
@@ -3427,6 +3809,9 @@ func readRuntimeCLIVersion(metadata []byte) string {
 }
 
 type CreateIssueRequest struct {
+	// DecisionBindingFields carry an owner-approved issue.workflow decision for
+	// an agent's create that names a wider workflow (CHE-5228).
+	DecisionBindingFields
 	Title         string  `json:"title"`
 	Description   *string `json:"description"`
 	Status        string  `json:"status"`
@@ -3591,7 +3976,12 @@ func duplicateIssueMessage(issue IssueResponse) string {
 // (feature flag and workflow-manager permission required), otherwise the
 // project's. It writes the error response and returns false on any failure.
 // Shared by the ordinary create and the captured-comment create.
-func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
+//
+// With no override named, the workspace's workflow_by_type setting may pick one
+// from the title type (CHE-5271). That choice is workspace policy, so it skips
+// the manager and budget checks an explicit override needs; a mapped workflow
+// that no longer exists falls back to the project's.
+func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, workspaceID string, wsUUID pgtype.UUID, rawWorkflowID *string, workflowProjectID pgtype.UUID, binding DecisionBindingFields, title string) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
 	var overrideID pgtype.UUID
 	if rawWorkflowID != nil && *rawWorkflowID != "" {
 		id, ok := parseUUIDOrBadRequest(w, *rawWorkflowID, "workflow_id")
@@ -3599,6 +3989,12 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 			return overrideID, nil, db.Project{}, false
 		}
 		overrideID = id
+	}
+	explicit := overrideID.Valid
+	if !explicit {
+		if id, def, project, ok := h.workflowFromTitleType(r, wsUUID, workflowProjectID, title); ok {
+			return id, def, project, true
+		}
 	}
 	def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, overrideID, workflowProjectID)
 	if overrideID.Valid {
@@ -3617,7 +4013,89 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
 		return overrideID, nil, project, false
 	}
+	// One widening rule for create, update and set (CHE-5228): a non-interactive
+	// credential cannot name a workflow whose budget is wider than the one the
+	// issue would follow without the override.
+	if overrideID.Valid && !isInteractiveRequest(r) {
+		before, berr := issueBinding(r.Context(), h.Queries, wsUUID, pgtype.UUID{}, workflowProjectID, pgtype.Int4{})
+		if berr != nil {
+			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			return overrideID, nil, project, false
+		}
+		if budgetWidens(before, workflowBinding(def, pgtype.Int4{})) && !h.approveCreateWidening(w, r, wsUUID, binding, workflowProjectID, overrideID) {
+			return overrideID, nil, project, false
+		}
+	}
 	return overrideID, def, project, true
+}
+
+// createWorkflowSource says who chose the create's workflow override: the
+// request (caller), the workspace's title map (title_type) or nobody ("").
+func createWorkflowSource(rawWorkflowID *string, overrideID pgtype.UUID) string {
+	switch {
+	case rawWorkflowID != nil && *rawWorkflowID != "":
+		return issueworkflow.WorkflowSourceCaller
+	case overrideID.Valid:
+		return issueworkflow.WorkflowSourceTitleType
+	}
+	return ""
+}
+
+// workflowFromTitleType loads the workflow the workspace's workflow_by_type
+// setting maps the title's type to. ok is false when project workflows are off,
+// no entry matches, or the mapped workflow is gone.
+func (h *Handler) workflowFromTitleType(r *http.Request, wsUUID, workflowProjectID pgtype.UUID, title string) (pgtype.UUID, *issueworkflow.Definition, db.Project, bool) {
+	if !featureflags.ProjectWorkflowsV1Enabled(r.Context(), h.FeatureFlags) {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	ws, err := h.Queries.GetWorkspace(r.Context(), wsUUID)
+	if err != nil {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	id, ok := issueworkflow.WorkflowForTitle(ws.Settings, title)
+	if !ok {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	def, project, err := issueworkflow.ForIssue(r.Context(), h.Queries, wsUUID, id, workflowProjectID)
+	if err != nil {
+		return pgtype.UUID{}, nil, db.Project{}, false
+	}
+	return id, def, project, true
+}
+
+// titleTypeWorkflowHint is the one-line note for a title edit whose type maps
+// to a workflow other than the issue's own. The edit never moves the workflow.
+func (h *Handler) titleTypeWorkflowHint(r *http.Request, issue db.Issue) string {
+	id, def, _, ok := h.workflowFromTitleType(r, issue.WorkspaceID, issue.ProjectID, issue.Title)
+	if !ok || (issue.WorkflowID.Valid && issue.WorkflowID == id) {
+		return ""
+	}
+	return fmt.Sprintf("Title type maps to workflow %q (%s); this issue keeps its workflow. Move it with: multica issue update %s --workflow %s",
+		def.Name, uuidToString(id), uuidToString(issue.ID), uuidToString(id))
+}
+
+// approveCreateWidening checks an agent's owner-approved issue.workflow
+// decision for a create that names a wider workflow and consumes it in its own
+// transaction. The decision is spent before the issue exists: a later failure
+// of the create leaves it used, so the agent asks again rather than the
+// approval staying open. It writes the refusal and reports false on any failure.
+func (h *Handler) approveCreateWidening(w http.ResponseWriter, r *http.Request, wsUUID pgtype.UUID, binding DecisionBindingFields, projectID, workflowID pgtype.UUID) bool {
+	ctx := r.Context()
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return false
+	}
+	defer tx.Rollback(ctx)
+	if err := h.verifyBoundRebinding(ctx, h.Queries.WithTx(tx), r, wsUUID, binding, pgtype.UUID{}, projectID, pgtype.UUID{}, workflowID); err != nil {
+		writeBoundRebindingError(w, err)
+		return false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+		return false
+	}
+	return true
 }
 
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
@@ -3711,6 +4189,14 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
+	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
+		return
+	}
+	createActorType, _ := h.resolveActor(r, creatorID, workspaceID)
+	if status, msg := h.refuseAgentAssignToMember(r.Context(), createActorType, workspaceID, pgtype.UUID{}, db.Issue{}, assigneeType, assigneeID); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
 
 	if req.ProjectID != nil {
 		id, ok := parseUUIDOrBadRequest(w, *req.ProjectID, "project_id")
@@ -3738,9 +4224,23 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID)
+	overrideID, createWorkflow, createWorkflowProject, ok := h.resolveCreateWorkflow(w, r, workspaceID, wsUUID, req.WorkflowID, workflowProjectID, req.DecisionBindingFields, req.Title)
 	if !ok {
 		return
+	}
+	// Outside any project, with no override, the issue takes the Default's
+	// statuses; an override judges it below instead. (MUL-8250, CHE-3459)
+	if !workflowProjectID.Valid && createWorkflow == nil {
+		outside, err := issueworkflow.OutsideProject(r.Context(), h.Queries, wsUUID)
+		if err != nil {
+			slog.Error("create issue: resolve default workflow", append(logger.RequestAttrs(r), "error", err)...)
+			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
+			return
+		}
+		if err := issueworkflow.CheckStatusOutsideProject(outside, status); err != nil {
+			writeIssueWorkflowError(w, err)
+			return
+		}
 	}
 	if createWorkflow != nil {
 		// A creator who picked no status gets the workflow's start status.
@@ -3751,22 +4251,26 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			writeIssueWorkflowError(w, err)
 			return
 		}
-		if req.AssigneeType == nil && req.AssigneeID == nil {
-			if step, ok := createWorkflow.Step(status); ok && step.HandsOff() {
-				handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-				humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID)
-				if err != nil {
-					slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
-					writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+		// A named assignee is left alone here: the service swaps in the handler
+		// under the locks, so a workflow switch cannot leave the former handler
+		// in place of it.
+		if step, ok := createWorkflow.Step(status); ok && step.HandsOff() && req.AssigneeType == nil && req.AssigneeID == nil {
+			handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
+			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID, workflowSubject{Title: req.Title})
+			if err != nil {
+				slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
+				writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
+				return
+			}
+			if t, id, ok := issueworkflow.ResolveHandler(step, createWorkflowProject, handoffCreatorType, parseUUID(handoffCreatorID), humans); ok {
+				assigneeType = pgtype.Text{String: t, Valid: true}
+				assigneeID = id
+				if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
+					writeError(w, status, msg)
 					return
 				}
-				if t, id, ok := issueworkflow.ResolveHandler(step, createWorkflowProject, handoffCreatorType, parseUUID(handoffCreatorID), humans); ok {
-					assigneeType = pgtype.Text{String: t, Valid: true}
-					assigneeID = id
-					if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, assigneeType, assigneeID); status != 0 {
-						writeError(w, status, msg)
-						return
-					}
+				if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
+					return
 				}
 			}
 		}
@@ -3864,6 +4368,23 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// created_via is server-set and has no request field. A quick_create origin
+	// is the "create with agents" dialog: IssueService.Create rejects it unless
+	// the origin task is a quick-create task of the creating agent.
+	// The classifier reads only the server-validated task, its trigger comment
+	// and the parent (CHE-6387); a failed lookup falls back to agent and never
+	// fails the create.
+	taskForVia, _ := util.ParseUUID(r.Header.Get("X-Task-ID"))
+	createdVia := pgtype.Text{String: issuecreatedvia.ForCreate(r.Context(), h.Queries, issuecreatedvia.Request{
+		WorkspaceID:  wsUUID,
+		OriginType:   originType.String,
+		CreatorAgent: creatorType == "agent",
+		AgentID:      parseUUID(actualCreatorID),
+		TaskID:       taskForVia,
+		Channel:      statusTriggerFromRequest(r, creatorType, actualCreatorID).Channel,
+		ParentID:     parentIssueID,
+	}), Valid: true}
+
 	// Prefix is workspace-level; pre-compute once so both the broadcast
 	// payload builder and the HTTP response share the same value.
 	prefix := h.getIssuePrefix(r.Context(), wsUUID)
@@ -3934,11 +4455,8 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var handoffResolver service.CreateHandoffResolver
-	if req.AssigneeType == nil && req.AssigneeID == nil {
-		handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-		handoffResolver = h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID)
-	}
+	handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
+	handoffResolver := h.createHandoffResolver(r, workspaceID, handoffCreatorType, parseUUID(handoffCreatorID), requestedByID, req.Title)
 	markedWriter := false
 	if req.Description != nil {
 		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
@@ -3952,8 +4470,11 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	res, err := h.IssueService.Create(r.Context(), service.IssueCreateParams{
 		WorkspaceID:     wsUUID,
 		HandoffResolver: handoffResolver,
+		AssigneeNamed:   req.AssigneeType != nil || req.AssigneeID != nil,
 		MarkedWriter:    markedWriter,
 		EntryGate:       h.createEntryGate(wsUUID, creatorType, actualCreatorID),
+		FromMachine:     isMachineCredentialActor(r),
+		PropertyGate:    h.createPropertyGate(wsUUID),
 		Title:           req.Title,
 		Description:     ptrToText(req.Description),
 		Status:          status,
@@ -3966,11 +4487,13 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		ParentIssueID:   parentIssueID,
 		ProjectID:       projectID,
 		WorkflowID:      overrideID,
+		WorkflowSource:  createWorkflowSource(req.WorkflowID, overrideID),
 		RequestedByID:   requestedByID,
 		StartDate:       startDate,
 		DueDate:         dueDate,
 		OriginType:      originType,
 		OriginID:        originID,
+		CreatedVia:      createdVia,
 		Stage:           ptrToInt4(req.Stage),
 		AttachmentIDs:   attachmentIDs,
 		LabelIDs:        labelIDs,
@@ -4099,6 +4622,23 @@ type UpdateIssueRequest struct {
 	// HandoffCommentID names the comment that explains a status move. The
 	// status history keeps it only when the comment belongs to the issue.
 	HandoffCommentID *string `json:"handoff_comment_id,omitempty"`
+	// HandoffComment is created in the status transaction. It starts no
+	// comment-triggered run for the old or the new assignee. AttachCommentIDs
+	// name existing comments, in order. With HandoffCommentID they are the
+	// run's handoff context: the new comment first, then HandoffCommentID,
+	// then the attached ids. Single updates only. (CHE-5489)
+	HandoffComment   *HandoffCommentRequest `json:"handoff_comment,omitempty"`
+	AttachCommentIDs []string               `json:"attach_comment_ids,omitempty"`
+	// HandoffAssignee hands this one status move to the named assignee instead
+	// of the step's handler. Valid only with a status change into a step that
+	// hands off, and not with assignee_id. Single updates only. (CHE-5487)
+	HandoffAssignee *HandoffAssigneeRequest `json:"handoff_assignee,omitempty"`
+	// KeepForStep keeps HandoffAssignee for the target step on this issue:
+	// later entries of the step go to it. Needs HandoffAssignee. (CHE-5490)
+	KeepForStep bool `json:"keep_for_step,omitempty"`
+	// WaitingOn says who acts next when an agent moves the issue into a waiting
+	// status: "member:<user id>" or "none" (S5, CHE-7290).
+	WaitingOn *string `json:"waiting_on,omitempty"`
 	// AttachmentIDs lets the description editor bind newly uploaded files to
 	// this issue so they surface in `GET /api/issues/:id/attachments` and the
 	// editor's preview Eye keeps working past a refresh. Existing bindings
@@ -4122,7 +4662,7 @@ type UpdateIssueRequest struct {
 	// (MUL-7420)
 	StopPreviousAssigneeRuns bool `json:"stop_previous_assignee_runs,omitempty"`
 	// HandoffPreview is what the handoff confirmation showed. When the write
-	// hands off, it is refused with 409 handoff_preview_stale unless the issue's
+	// hands off, it is refused with 409 stale_preview unless the issue's
 	// assignee and the resolved handler still match it. A binding with a null
 	// handler records a preview that found no handoff, so a handler that became
 	// resolvable since is refused too. Optional; single updates only. Omitted,
@@ -4144,6 +4684,10 @@ type UpdateIssueRequest struct {
 	// no explicit null. Write-only: read the relation back from
 	// GET /api/issues/{id}/duplicates. Not accepted by batch updates.
 	DuplicateOfIssueID *string `json:"duplicate_of_issue_id,omitempty"`
+	// BlockedOn names what a move to blocked waits for (CHE-6972); see
+	// issue_blocked_on.go. Refused on any other status. Not accepted by batch
+	// updates.
+	BlockedOn *string `json:"blocked_on,omitempty"`
 }
 
 func mergeIssueChannelMediaDescription(current, incoming string, base *string, attachments []db.Attachment) string {
@@ -4319,6 +4863,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		}
 	}
 	refreshUntouchedNullableIssueParams(&params, current, rawFields, false)
+	if err := markMemberRouteOverride(ctx, qtx, workspaceID, params); err != nil {
+		return db.Issue{}, current, false, err
+	}
 	if err := captureRouteLabel(ctx, qtx, params); err != nil {
 		return db.Issue{}, current, false, err
 	}
@@ -4326,12 +4873,22 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		return db.Issue{}, current, false, err
 	}
 
+	wf.markManualPark(ctx)
 	issue, cancelledWakeups, err := updateIssueStoppingWakeups(ctx, qtx, params)
 	if err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("update locked issue: %w", err)
 	}
+	if issue, err = wf.recordManualPark(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record manual park: %w", err)
+	}
 	if err := wf.recordVerdict(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record review verdict: %w", err)
+	}
+	if err := wf.recordAuthor(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record author: %w", err)
+	}
+	if err := wf.recordStepAssignee(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record step assignee: %w", err)
 	}
 
 	attachmentsChanged := false
@@ -4360,6 +4917,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		return db.Issue{}, current, false, fmt.Errorf("commit atomic issue update: %w", err)
 	}
 	h.broadcastCancelledWakeups(ctx, workspaceID, cancelledWakeups)
+	h.openCappedCard(ctx, issue, wf)
 	return issue, current, attachmentsChanged, nil
 }
 
@@ -4460,6 +5018,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		statusKeyForGuard = statusKey
 		params.Status = pgtype.Text{String: statusKey, Valid: true}
+	}
+	blockedOn, ok := h.parseBlockedOn(r.Context(), w, &req, rawFields, prevIssue.WorkspaceID, statusKeyForGuard)
+	if !ok {
+		return
 	}
 	if req.Priority != nil {
 		if !validateIssueEnum(w, "priority", *req.Priority, validIssuePriorities) {
@@ -4617,7 +5179,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		req.EntryGateOverrideReason = &reason
 	}
 	callerRun := h.agentRunOnIssue(r, actorType, prevIssue)
-	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings})
+	handoffAssignee, ok := parseHandoffAssignee(w, req.HandoffAssignee)
+	if !ok {
+		return
+	}
+	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prevIssue, &params, req.Status != nil, touchedType || touchedID, req.EnterWorkflowStep, workflowCaller{run: callerRun, agent: actorType == "agent", findings: req.ReviewFindings, handoffAssignee: handoffAssignee, keepForStep: req.KeepForStep})
 	if workflowWrite != nil {
 		workflowWrite.preview = req.HandoffPreview
 		workflowWrite.stopPrevious = req.StopPreviousAssigneeRuns
@@ -4638,10 +5204,23 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		// A project move remapped the status; guard the key actually written.
 		statusKeyForGuard = params.Status.String
 	}
+	if !h.askGuardAllowsWaitingMove(w, r, prevIssue, actorType, statusKeyForGuard, req.WaitingOn) {
+		return
+	}
 	if touchedType || touchedID || handoff != nil {
 		if status, msg := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
-			writeError(w, status, msg)
+			writeHandoffAssigneeRefusal(w, handoff, status, msg)
 			return
+		}
+		if assigneeChanged(prevIssue, params) && h.refuseAutopilotAssign(w, h.withHandoffRun(r, prevIssue, req.HandoffCommentID, req.SuppressRun), workspaceID, params.AssigneeType, params.AssigneeID,
+			textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) {
+			return
+		}
+		if handoff == nil && (touchedType || touchedID) {
+			if status, msg := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+				writeError(w, status, msg)
+				return
+			}
 		}
 	}
 
@@ -4654,9 +5233,43 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// not also through its event wakeups. When no run will start (backlog,
 	// suppress_run, an unready agent), the wakeup is the only delivery left.
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
-	suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.SuppressRun)
+	chained := chainsSameOwner(actorType, callerRun, handoff, params)
+	suppressRun := req.SuppressRun || chained
 	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
-	writeCtx = withBudgetActor(writeCtx, r)
+	writeCtx = withQuickMoveCard(withBudgetActor(writeCtx, r), r)
+	// The handoff comment rides to the run as context. A run that will start
+	// refuses a comment that is not a live comment of this issue; a move that
+	// starts no run keeps the lenient drop-and-mark of the status history.
+	dispatchCtx := h.actingTaskContext(r)
+	// existingContext is the run's handoff context before the new comment: the
+	// legacy handoff_comment_id, then attach_comment_ids in order.
+	var existingContext []pgtype.UUID
+	if req.HandoffCommentID != nil && !suppressRun {
+		ok, err := service.HandoffCommentBelongsTo(r.Context(), h.Queries, prevIssue, *req.HandoffCommentID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to check handoff comment")
+			return
+		}
+		switch {
+		case ok:
+			existingContext = append(existingContext, parseUUID(*req.HandoffCommentID))
+		case h.writeWillRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun):
+			writeErrorCode(w, http.StatusBadRequest, "comment_not_on_issue", "handoff_comment_id is not a comment of this issue")
+			return
+		}
+	}
+	commentPlan, ok := h.prepareHandoffComment(w, r, prevIssue, req, actorType, actorID)
+	if !ok {
+		return
+	}
+	var commentSeed *handoffCommentSeed
+	var attached *attachedComments
+	if commentPlan != nil {
+		commentSeed, attached = commentPlan.seed, commentPlan.attach
+	}
+	if attached != nil && !suppressRun {
+		existingContext = append(existingContext, attached.ids...)
+	}
 	if assigneeSupplied || handoff != nil {
 		var ok bool
 		if writeCtx, ok = h.withIssueWriteTaint(w, r, writeCtx); !ok {
@@ -4685,14 +5298,34 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	statusTrigger.Version = service.StatusTriggerVersion
 	var statusRec *statusRecord
 	if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
-		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger}
+		statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTrigger, blockedOn: blockedOn}
 		if handoff != nil {
-			statusRec.handoffWorkflow = handoff.def.Name
+			statusRec.enterHandoff(handoff)
 		}
 		if req.HandoffCommentID != nil {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
 		}
+		statusRec.comment, statusRec.attach = commentSeed, attached
+		if handoff != nil && handed.agent != "" {
+			armHandoffIntent(statusRec, r, actorType, actorID, existingContext, req.HandoffNote, handed.write)
+		}
 		writeCtx = withStatusRecord(writeCtx, statusRec)
+		// Status-only fallback label (CHE-4439 decision 14): an agent run
+		// leaving the step it works on. The capture decides under the issue
+		// lock whether that step is a routing step.
+		if params.Status.Valid && actorType == "agent" && callerRun != nil && callerRun.WorkflowStep.String != "" {
+			writeCtx = withRouteCapture(writeCtx, &routeCapture{
+				Via: "status", DecisionSource: "agent", Fallback: true,
+				Caller: workflowCaller{run: callerRun, agent: true}, RunStep: callerRun.WorkflowStep.String,
+			})
+		}
+	}
+	if commentSeed != nil && statusRec == nil {
+		writeErrorCode(w, http.StatusConflict, "handoff_comment_unsupported_move", "handoff_comment cannot ride a duplicate-mark move")
+		return
+	}
+	if actorType == "member" {
+		writeCtx = withMemberRouteOverride(writeCtx)
 	}
 	var issue db.Issue
 	attachmentsChanged := false
@@ -4708,7 +5341,13 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		issue, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite)
 	}
 	if err != nil {
-		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
+		h.flushRefusedIntakeCall(r.Context(), workflowWrite)
+		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeHandoffCommentError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
+			return
+		}
+		var approval quickMoveApproval
+		if errors.As(err, &approval) {
+			h.writeQuickMoveCard(w, r, approval, rawFields)
 			return
 		}
 		if writeDuplicateMarkError(w, err) {
@@ -4730,7 +5369,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
+	if err := h.advanceRunStep(r.Context(), callerRun, prevIssue, issue, chained); err != nil {
+		slog.Error("run not stopped after failed workflow role write", append(logger.RequestAttrs(r), "error", err, "issue_id", id)...)
+		writeErrorCode(w, http.StatusInternalServerError, "workflow_role_unrecorded", "the issue changed but the run's role evidence was not recorded and the run could not be stopped")
+		return
+	}
 	issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
 
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
@@ -4738,8 +5381,14 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	h.newReadFilter(r).stubDescription(h, issue, &resp)
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
 	h.fillProjectTriggerOutcome(r.Context(), issue, &resp)
+	if req.Title != nil && prevIssue.Title != issue.Title {
+		resp.WorkflowHint = h.titleTypeWorkflowHint(r, issue)
+	}
 
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
+	if chained {
+		resp.StepBrief = h.workflowHandoffBrief(r.Context(), issue, handoff)
+	}
 	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil || handoff != nil) &&
 		(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 	if assigneeChanged {
@@ -4812,7 +5461,8 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 	}
 	if handoff != nil {
-		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+		ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
 		updatedPayload["workflow_handoff"] = handoffPayload
 		h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 	}
@@ -4842,6 +5492,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		h.openRunBudgetWindowForMove(r.Context(), issue)
 	} else if statusChanged && actorType == "agent" {
 		h.grantRunBudgetStep(r.Context(), issue, prevIssue.Status)
+	}
+	if (statusChanged || assigneeChanged) && actorType == "member" && !isMachineCredentialActor(r) {
+		h.ciWatchHumanOverride(r.Context(), issue.WorkspaceID, issue.ID)
 	}
 	releaseMove()
 	if attachmentsChanged {
@@ -4879,10 +5532,18 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		if handoff != nil {
 			h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 		}
-		if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, handoffNote) {
+		intentID := recIntentID(statusRec)
+		dispatchCtx = service.WithStatusHandoffComments(dispatchCtx, handoffContextIDs(statusRec, existingContext))
+		if h.dispatchIssueRun(withHandoffIntent(dispatchCtx, intentID), issue, trigger, actorType, actorID, handoffNote) && !intentID.Valid {
 			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 		}
+	} else if statusRec != nil {
+		h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
 	}
+	// The new comment's explicit mentions start their own runs, under the
+	// comment's author. Published after the handoff run so the handler's run
+	// is the one the move is known by.
+	h.publishHandoffComment(r.Context(), issue, statusRec, actorType, actorID)
 
 	// Sub-issue rules on the parent (the child_done system rule and sub-issue
 	// conditions): the write recorded the change; process it now. A failure
@@ -4919,6 +5580,42 @@ func (h *Handler) validateAssigneePair(ctx context.Context, r *http.Request, wor
 		return h.canInvokeAgent(ctx, agent, actorType, actorID, effectiveInvoker, workspaceID)
 	})
 }
+
+// errAgentAssignsMember refuses an agent's attempt to hand an issue to a
+// member (CHE-5516). A member-owned issue starts no run, so the work stops
+// unseen; the human step goes on a decision card instead.
+const errAgentAssignsMember = "agent_assign_member: an agent never assigns an issue to a member. Assign an agent, and open a decision request (multica decision request) for the human-only step; assigning to the member is allowed while that request is open on this issue"
+
+// refuseAgentAssignToMember returns a non-zero status when an agent actor
+// assigns to a member that is not already the assignee and the issue has no open
+// human decision request. issueID is invalid on create: no card can exist yet.
+func (h *Handler) refuseAgentAssignToMember(ctx context.Context, actorType, workspaceID string, issueID pgtype.UUID, current db.Issue, assigneeType pgtype.Text, assigneeID pgtype.UUID) (int, string) {
+	if actorType != "agent" || assigneeType.String != "member" || !assigneeType.Valid {
+		return 0, ""
+	}
+	if current.AssigneeType.String == "member" && current.AssigneeID == assigneeID {
+		return 0, ""
+	}
+	if issueID.Valid {
+		wsUUID, err := util.ParseUUID(workspaceID)
+		if err != nil {
+			return http.StatusBadRequest, "invalid workspace_id"
+		}
+		open, err := h.Queries.HasOpenDecisionRequestForIssue(ctx, db.HasOpenDecisionRequestForIssueParams{WorkspaceID: wsUUID, IssueID: issueID})
+		if err != nil {
+			return http.StatusInternalServerError, "failed to check open decision requests"
+		}
+		if open {
+			return 0, ""
+		}
+	}
+	return http.StatusForbidden, errAgentAssignsMember
+}
+
+// errAgentPaused refuses new work for a paused agent (CHE-5066). It is checked
+// after the invoke gate, so a caller who may not use the agent never learns its
+// pause state.
+const errAgentPaused = "agent_paused: this agent is paused; pick another agent by role"
 
 // validateAssignee is validateAssigneePair's check with the invoke gate's
 // caller supplied: a request judges the requester, a system write (a spawned
@@ -4968,6 +5665,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 			// mode (MUL-6380 / GH #7180).
 			return http.StatusForbidden, "you do not have permission to assign work to this agent"
 		}
+		if agent.SchedulingPausedAt.Valid {
+			return http.StatusConflict, errAgentPaused
+		}
 		return 0, ""
 	case "squad":
 		squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
@@ -4988,6 +5688,9 @@ func (h *Handler) validateAssignee(ctx context.Context, workspaceID string, assi
 			// Same wording rule as the agent branch above; "this squad"
 			// avoids disclosing the leader agent's permission mode.
 			return http.StatusForbidden, "you do not have permission to assign work to this squad"
+		}
+		if leader.SchedulingPausedAt.Valid {
+			return http.StatusConflict, errAgentPaused
 		}
 		return 0, ""
 	default:
@@ -5117,6 +5820,9 @@ func (h *Handler) DeleteIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.requireIssueDeletion(w, r, issue.WorkspaceID, []db.Issue{issue}) {
+		return
+	}
 
 	h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)
 	// Fail any linked autopilot runs before delete (ON DELETE SET NULL clears issue_id).
@@ -5176,6 +5882,16 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 	}
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
+
+	// The comment cascade of the delete nulls trigger_comment_id on runs that
+	// can belong to other issues. Lock all of those issues first.
+	issueIDs := make([]pgtype.UUID, 0, len(issues))
+	for _, issue := range issues {
+		issueIDs = append(issueIDs, issue.ID)
+	}
+	if err := service.LockIssuesBeforeIssueDelete(ctx, qtx, issueIDs); err != nil {
+		return issueDeleteResult{}, fmt.Errorf("lock issues of issue delete: %w", err)
+	}
 
 	result := issueDeleteResult{}
 	for _, issue := range issues {
@@ -5373,6 +6089,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "handoff_preview in a batch update must bind no handoff (null handler)")
 		return
 	}
+	if req.Updates.HandoffAssignee != nil {
+		writeErrorCode(w, http.StatusBadRequest, "handoff_assignee_not_applicable", "handoff_assignee is not accepted in a batch update")
+		return
+	}
 
 	workspaceID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
@@ -5433,6 +6153,14 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 	// against a mid-batch snapshot.
 	var changedParents []pgtype.UUID
 	batchFilter := h.newReadFilter(r)
+	// An exit that skips an explicit release (a continue, a panic) must not
+	// keep a lock. release runs once, so the explicit calls stay.
+	var heldMoves []func()
+	defer func() {
+		for _, release := range heldMoves {
+			release()
+		}
+	}()
 	for _, issueID := range req.IssueIDs {
 		issueUUID, err := util.ParseUUID(issueID)
 		if err != nil {
@@ -5592,7 +6320,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		workflowWrite.stopPrevious = req.Updates.StopPreviousAssigneeRuns
-		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID}
+		workflowWrite.entry = entryWrite{actorType: actorType, actorID: actorID, human: actorType == "member" && !isMachineCredentialActor(r)}
 		// The client previewed no handoff for this batch. An issue that would
 		// hand off now is skipped: nobody confirmed it. verify checks again under
 		// the locks, for a handler that appears between here and the write.
@@ -5608,10 +6336,19 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if status, _ := h.validateAssigneePair(r.Context(), r, workspaceID, params.AssigneeType, params.AssigneeID); status != 0 {
 				continue
 			}
+			if assigneeChanged(prevIssue, params) && h.autopilotAssignRefusal(r, workspaceID, params.AssigneeType, params.AssigneeID,
+				textOr(params.Title, prevIssue.Title), textOr(params.Description, prevIssue.Description.String), &prevIssue) != "" {
+				continue
+			}
+			if handoff == nil {
+				if status, _ := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+					continue
+				}
+			}
 		}
 
 		assigneeSupplied := req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil
-		suppressRun, runReason := h.suppressRunForWrite(r.Context(), actorType, actorID, prevIssue, params, handoff, req.Updates.SuppressRun)
+		suppressRun := req.Updates.SuppressRun
 		writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 		writeCtx = withBudgetActor(writeCtx, r)
 		if assigneeSupplied || handoff != nil {
@@ -5640,13 +6377,17 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			releaseMove = release
+			heldMoves = append(heldMoves, release)
 		}
 		// Same recording as UpdateIssue: the row commits with the status.
 		var statusRec *statusRecord
 		if !h.duplicateRowNamesMove(r.Context(), params, prevIssue) {
 			statusRec = &statusRecord{workspaceID: prevIssue.WorkspaceID, trigger: statusTriggerFromRequest(r, actorType, actorID)}
 			if handoff != nil {
-				statusRec.handoffWorkflow = handoff.def.Name
+				statusRec.enterHandoff(handoff)
+				if handed.agent != "" {
+					armHandoffIntent(statusRec, r, actorType, actorID, nil, req.Updates.HandoffNote, handed.write)
+				}
 			}
 			writeCtx = withStatusRecord(writeCtx, statusRec)
 		}
@@ -5673,6 +6414,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if writeIssueStatusRaceError(w, err) {
 				return
 			}
+			h.flushRefusedIntakeCall(r.Context(), workflowWrite)
 			var gated *EntryGateError
 			if errors.As(err, &gated) {
 				failed = append(failed, map[string]any{"id": issueID, "code": "entry_gate_failed", "step": gated.Step, "failed_guards": gated.Failed})
@@ -5687,12 +6429,22 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				failed = append(failed, map[string]any{"id": issueID, "code": "decision_episode_refused", "error": refused.Error()})
 				continue
 			}
+			var held *intakehold.HoldError
+			if errors.As(err, &held) {
+				failed = append(failed, map[string]any{"id": issueID, "code": "intake_hold", "error": held.Error(), "ends_at": held.EndsAt, "fix": intakehold.Fix, "release_paths": intakehold.ReleasePaths})
+				continue
+			}
 			slog.Warn("batch update issue failed", "issue_id", issueID, "error", err)
 			continue
 		}
 
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
-		h.advanceRunStep(r.Context(), callerRun, prevIssue, issue)
+		if err := h.advanceRunStep(r.Context(), callerRun, prevIssue, issue, false); err != nil {
+			releaseMove()
+			slog.Error("batch: run not stopped after failed workflow role write", "issue_id", issueID, "error", err)
+			failed = append(failed, map[string]any{"id": issueID, "code": "workflow_role_unrecorded"})
+			continue
+		}
 		// The warning comment bumps the revision; build the response from the
 		// reloaded issue so the batch result and event carry the stored one.
 		issue = h.postEntryWarning(r.Context(), workflowWrite, issue)
@@ -5739,7 +6491,8 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			"prev_duplicate_of_issue_id": liveDuplicateMark(prevIssue.Status, prevIssue.DuplicateOfIssueID),
 		}
 		if handoff != nil {
-			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), willRun, runReason)
+			ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+			handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
 			batchPayload["workflow_handoff"] = handoffPayload
 			h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
 		}
@@ -5765,9 +6518,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			if handoff != nil {
 				h.IssueService.CancelStaleStepRuns(r.Context(), issue, trigger.AgentID)
 			}
-			if h.dispatchIssueRun(h.actingTaskContext(r), issue, trigger, actorType, actorID, batchHandoffNote) {
+			intentID := recIntentID(statusRec)
+			if h.dispatchIssueRun(withHandoffIntent(h.actingTaskContext(r), intentID), issue, trigger, actorType, actorID, batchHandoffNote) && !intentID.Valid {
 				h.consumeHandedWakeups(r.Context(), issue.ID, handed)
 			}
+		} else if statusRec != nil {
+			h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
 		}
 
 		if statusChanged && issue.ParentIssueID.Valid {
@@ -5866,6 +6622,9 @@ func (h *Handler) BatchDeleteIssues(w http.ResponseWriter, r *http.Request) {
 		seenIssueIDs[issueUUID] = struct{}{}
 		issues = append(issues, issue)
 		excludedIDs = append(excludedIDs, issue.ID)
+	}
+	if !h.requireIssueDeletion(w, r, wsUUID, issues) {
+		return
 	}
 	for _, issue := range issues {
 		h.TaskService.CancelTasksForIssue(r.Context(), issue.ID)

@@ -36,7 +36,7 @@ func (s *IssueService) UpdateContent(ctx context.Context, issue db.Issue, patch 
 		ParentIssueID: issue.ParentIssueID,
 		// The snapshot's project may be stale; a content edit must not rebind.
 		PreserveProject: pgtype.Bool{Bool: true, Valid: true},
-		Stage:         issue.Stage,
+		Stage:           issue.Stage,
 	}
 	if patch.ExpectedRevision != nil {
 		params.ExpectedRevision = pgtype.Int8{Int64: *patch.ExpectedRevision, Valid: true}

@@ -162,6 +162,10 @@
     "no_agents": "まだこのランタイムに紐づいたエージェントがありません。",
     "diagnostics_cli": "CLI",
     "diagnostics_visibility": "公開範囲",
+    "concurrency_title": "同時実行数",
+    "concurrency_none": "制限なし",
+    "concurrency_hint": "このランタイム上のすべてのエージェントで同時に行える実行の最大数（{{min}}–{{max}}）。空欄にすると制限なし。",
+    "toast_concurrency_failed": "同時実行数の上限を更新できませんでした",
     "visibility_label": {
       "private": "非公開",
       "public": "公開",
@@ -678,6 +682,11 @@
         "name": "停止中",
         "label": "停止中",
         "hint": "サービス停止中。30 分後に終了"
+      },
+      "scheduled_update": {
+        "name": "定期更新",
+        "label": "定期更新",
+        "hint": "更新ウィンドウ。終了時に自動で解除"
       }
     },
     "paused": "一時停止中: {{reason}}",
@@ -712,7 +721,45 @@
       "tasks_left_stale_other": "残り {{count}} 件（オフライン、件数が古い可能性があります）。",
       "drained": "安全にシャットダウンできます。",
       "ends_in": "{{duration}}後に終了します。",
-      "ends_soon": "{{duration}}後に終了します。その後 {{machine}} は再び作業を受け付けます。"
+      "ends_soon": "{{duration}}後に終了します。その後 {{machine}} は再び作業を受け付けます。",
+      "close": "マシンのバナーを非表示",
+      "summary_other": "{{count}} 台のマシンに対応が必要です。",
+      "tasks_wait_other": "{{count}} 件のタスクがこのマシン上のエージェントを待っています。",
+      "tasks_wait_total_other": "{{count}} 件のタスクがこれらのマシン上のエージェントを待っています。",
+      "next_to_end": "次に終了: {{machine}} の一時停止、{{duration}}。",
+      "details": "詳細",
+      "machine_of": "{{machine}}（{{owner}} のマシン）",
+      "offline": "{{machine}} はオフラインです。",
+      "last_seen": "最終確認 {{time}}。",
+      "new_event": "新規",
+      "icon_paused": "{{machine}} は一時停止中",
+      "icon_offline": "{{machine}} はオフライン",
+      "hide": "マシンのバナーを非表示: {{summary}}",
+      "show": "マシンのバナーを表示: {{summary}}"
+    }
+  },
+  "intro": {
+    "title": "エージェントに作業用のコンピューターを",
+    "description": "ランタイムは、エージェントが実際にタスクを実行する場所です。手元のコンピューター、サーバー、またはクラウドサービスを使えます。",
+    "slides": {
+      "local": {
+        "title": "このコンピューターは自動で接続",
+        "description": "デスクトップアプリをダウンロードしてサインインすると、このコンピューターの Claude Code や Codex などが自動的に表示されます。"
+      },
+      "remote": {
+        "title": "ほかのマシンはコマンド 2 つ",
+        "description": "サーバーや別のコンピューターに CLI をインストールし、multica setup を実行すれば接続できます。"
+      },
+      "cloud": {
+        "title": "クラウドノードも使える",
+        "description": "マシンを自分で管理したくないなら、Multica がホストするクラウドノードを作成できます。"
+      }
+    },
+    "art": {
+      "this_computer": "このコンピューター · デスクトップ",
+      "detected": "検出された harness",
+      "run_there": "そのマシンで実行",
+      "connected": "{{name}} が Multica に接続されました"
     }
   }
 }

@@ -1,13 +1,16 @@
 "use client";
 
+import { ApiError } from "@multica/core/api";
 import { issueStatusCategory } from "@multica/core/issues";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
+import type { Issue } from "@multica/core/types";
 import { useQuery } from "@tanstack/react-query";
 import { issueListOptions, issueDetailOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useCompactIssueChips } from "../compact-issue-chips-context";
 import { StatusIcon } from "./status-icon";
+import { ISSUE_CHIP_BASE_CLASS, ISSUE_CHIP_STABLE_WIDTH_CLASS } from "./issue-chip-shell";
 
 /**
  * Compact, presentation-only representation of an issue —
@@ -47,16 +50,19 @@ export interface IssueChipProps {
   /** Extra classes — callers layer interaction hints here
    *  (e.g. `hover:bg-accent cursor-pointer` for navigable variants). */
   className?: string;
+  /** Fix the width at the shared stable width (14 rem) rather than its content.
+   *  Set for a bare key, whose loading box is the same width. */
+  stableWidth?: boolean;
 }
 
-export const ISSUE_CHIP_CLASS =
-  "issue-mention inline-flex min-w-0 max-w-[min(18rem,100%)] items-center gap-1.5 rounded-md border mx-0.5 px-2 py-0.5 text-caption";
+export const ISSUE_CHIP_CLASS = ISSUE_CHIP_BASE_CLASS;
 
 export function IssueChip({
   issueId,
   fallbackLabel,
   children,
   className,
+  stableWidth,
 }: IssueChipProps) {
   const wsId = useWorkspaceId();
   const { colorOf: statusColorOf, iconOf: statusIconOf } = useIssueStatuses(wsId);
@@ -69,11 +75,22 @@ export function IssueChip({
   const { data: detailIssue } = useQuery({
     ...issueDetailOptions(wsId, issueId),
     enabled: !listIssue,
-    refetchOnWindowFocus: true,
+    // Recover transient failures on focus without repeatedly fetching missing
+    // issues. Hydrated queries stay fresh until invalidated (staleTime: Infinity).
+    refetchOnWindowFocus: (query) =>
+      !(query.state.error instanceof ApiError && query.state.error.status === 404),
   });
 
-  const issue = listIssue ?? detailIssue;
-  const cls = className ? `${ISSUE_CHIP_CLASS} ${className}` : ISSUE_CHIP_CLASS;
+  // A list update can drop the issue from the first page while its detail
+  // lookup is still in flight. Keep the last resolved issue meanwhile so the
+  // chip does not shrink back to its key (CHE-1830, H3).
+  const lastResolved = useRef<{ issueId: string; issue: Issue }>(null);
+  const resolved = listIssue ?? detailIssue;
+  if (resolved) lastResolved.current = { issueId, issue: resolved };
+  const issue = resolved ?? (lastResolved.current?.issueId === issueId ? lastResolved.current.issue : undefined);
+  const cls = [ISSUE_CHIP_CLASS, stableWidth && ISSUE_CHIP_STABLE_WIDTH_CLASS, className]
+    .filter(Boolean)
+    .join(" ");
 
   if (children !== undefined) {
     return <span className={cls} data-copy-token={issue?.identifier}>{children}</span>;

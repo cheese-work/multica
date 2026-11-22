@@ -27,6 +27,9 @@ const StatusCauseTaskReset = "task_reset"
 // window.
 const StatusCauseWorkflowRemap = "workflow_remap"
 
+// StatusCauseRunBudget is the cause of the block an exhausted run budget makes.
+const StatusCauseRunBudget = "run_budget"
+
 // Causes of the background writers that move a status without a request:
 // a merged PR (auto-complete or the GitHub merge hook) and a Qoder Cloud run.
 const (
@@ -50,6 +53,17 @@ type StatusCause struct {
 	Kind string            `json:"kind"`
 	By   StatusCauseActor  `json:"by"`
 	Ref  map[string]string `json:"ref,omitempty"`
+	// PRs are the merged pull requests behind a pr_merged cause.
+	PRs []StatusPRRef `json:"prs,omitempty"`
+}
+
+// StatusPRRef names one pull request a status move rests on. MergeCommitSHA is
+// empty when the provider does not report one.
+type StatusPRRef struct {
+	RepoOwner      string `json:"repo_owner"`
+	RepoName       string `json:"repo_name"`
+	PRNumber       int    `json:"pr_number"`
+	MergeCommitSHA string `json:"merge_commit_sha"`
 }
 
 // StatusTrigger is the trigger object stored in a status_changed row's
@@ -79,13 +93,16 @@ func BackgroundStatusTrigger(kind string, by StatusCauseActor, ref map[string]st
 // is not a comment of the same workspace and issue is dropped and the trigger
 // is marked RefInvalid.
 func RecordStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, from, to string, trigger StatusTrigger, handoff map[string]string) (db.ActivityLog, error) {
-	return RecordStatusChangeWithEvent(ctx, qtx, issue, from, to, trigger, handoff, pgtype.UUID{}, false)
+	return RecordStatusChangeWithEvent(ctx, qtx, issue, from, to, trigger, handoff, pgtype.UUID{}, false, "", "")
 }
 
 // RecordStatusChangeWithEvent is RecordStatusChange with a pre-assigned row id
 // (a valid eventID; else a fresh UUIDv7) and, when routingExit is set, the
-// details.routing_exit mark of a routing agent leaving its step.
-func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.Issue, from, to string, trigger StatusTrigger, handoff map[string]string, eventID pgtype.UUID, routingExit bool) (db.ActivityLog, error) {
+// details.routing_exit mark of a routing agent leaving its step, and the
+// details.blocked_on ref of a move to blocked (CHE-6972). A non-empty
+// intakeRelease is stored as details.intake_release, the intake-hold entry
+// source a person's move releases (CHE-7072).
+func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.Issue, from, to string, trigger StatusTrigger, handoff map[string]string, eventID pgtype.UUID, routingExit bool, blockedOn, intakeRelease string) (db.ActivityLog, error) {
 	trigger, err := ResolveStatusTrigger(ctx, qtx, issue, trigger)
 	if err != nil {
 		return db.ActivityLog{}, err
@@ -96,6 +113,12 @@ func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.
 	}
 	if routingExit {
 		details["routing_exit"] = true
+	}
+	if blockedOn != "" {
+		details["blocked_on"] = blockedOn
+	}
+	if intakeRelease != "" {
+		details["intake_release"] = intakeRelease
 	}
 	// The timeline names the PRs that completed an issue (MUL-7429).
 	if prs := trigger.Cause.Ref["pr"]; trigger.Cause.Kind == StatusCausePRMerged && prs != "" {
@@ -115,7 +138,7 @@ func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.
 	if !eventID.Valid {
 		eventID = dbid.NewV7()
 	}
-	return qtx.CreateActivity(ctx, db.CreateActivityParams{
+	row, err := qtx.CreateActivity(ctx, db.CreateActivityParams{
 		ID:          eventID,
 		WorkspaceID: issue.WorkspaceID,
 		IssueID:     issue.ID,
@@ -124,6 +147,34 @@ func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.
 		Action:      "status_changed",
 		Details:     body,
 	})
+	if err != nil {
+		return row, err
+	}
+	return row, settleRefusalsOnStatusChange(ctx, qtx, issue, row, trigger)
+}
+
+// settleRefusalsOnStatusChange ties run-budget refusals to the status
+// occurrence this row starts. The block a refusal's hook made is that refusal's
+// occurrence. Any other move starts its own work and ends every non-terminal
+// refusal of the issue with its unfinished hook; the platform's administrative
+// remap only fits the issue to a new workflow, so it leaves them, and the hook's
+// occurrence check retires one it made stale.
+func settleRefusalsOnStatusChange(ctx context.Context, qtx *db.Queries, issue db.Issue, row db.ActivityLog, trigger StatusTrigger) error {
+	switch {
+	case trigger.Cause.Kind == StatusCauseRunBudget && trigger.Cause.Ref["refusal_id"] != "":
+		id, err := util.ParseUUID(trigger.Cause.Ref["refusal_id"])
+		if err != nil {
+			return err
+		}
+		return qtx.MarkRunBudgetRefusalBlocked(ctx, db.MarkRunBudgetRefusalBlockedParams{ID: id, OccurrenceActivityID: row.ID})
+	case trigger.Cause.Kind == StatusCauseWorkflowRemap:
+		return nil
+	case trigger.Cause.Kind == StatusCauseRunBudget && trigger.Cause.Ref["action_id"] != "":
+		// The resume worker's own restore: it ends the refusal itself, in the
+		// same transaction.
+		return nil
+	}
+	return qtx.SupersedeRunBudgetRefusalsOnStatusChange(ctx, issue.ID)
 }
 
 // ResetIssueForFailedTask moves an issue whose run failed back to todo and
@@ -172,6 +223,11 @@ func ResolveStatusTrigger(ctx context.Context, qtx *db.Queries, issue db.Issue, 
 	return trigger, nil
 }
 
+// HandoffCommentBelongsTo reports whether commentID is a live comment of issue.
+func HandoffCommentBelongsTo(ctx context.Context, q *db.Queries, issue db.Issue, commentID string) (bool, error) {
+	return handoffCommentBelongsTo(ctx, q, issue, commentID)
+}
+
 func handoffCommentBelongsTo(ctx context.Context, qtx *db.Queries, issue db.Issue, commentID string) (bool, error) {
 	id, err := util.ParseUUID(commentID)
 	if err != nil {
@@ -181,5 +237,5 @@ func handoffCommentBelongsTo(ctx context.Context, qtx *db.Queries, issue db.Issu
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
-	return err == nil && c.IssueID == issue.ID, err
+	return err == nil && c.IssueID == issue.ID && !c.DeletedAt.Valid, err
 }

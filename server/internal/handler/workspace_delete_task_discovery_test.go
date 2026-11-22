@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -493,7 +495,9 @@ func TestSweepTasksForOwner_FailsClosedWhenTasksKeepArriving(t *testing.T) {
 	}
 	noop := func(context.Context, []pgtype.UUID) error { return nil }
 
-	err := sweepTasksForOwner(ctx, "agent", owner, firstPage, nextPage, noop, noop)
+	lockAll := func(_ context.Context, ids []pgtype.UUID) ([]pgtype.UUID, error) { return ids, nil }
+
+	err := sweepTasksForOwner(ctx, "agent", owner, firstPage, nextPage, lockAll, noop, noop)
 	if err == nil {
 		t.Fatal("sweep succeeded while tasks kept arriving; teardown would commit a partial cleanup")
 	}
@@ -626,5 +630,338 @@ INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status, completed_
 VALUES ($1, $2, $3, 'completed', now())
 `, f.neighbourAgent, f.neighbourIssue, f.neighbourRuntime); err != nil {
 		t.Errorf("neighbour-only enqueue was blocked by the victim's teardown locks: %v", err)
+	}
+}
+
+// lateChildTx makes the issue list of a task page stale. With lateChild it adds a
+// real child run on a new issue right after the first list, a run created after
+// the lock query ran. With endless it answers every later list with an issue the
+// page has never locked.
+type lateChildTx struct {
+	db.DBTX
+	t                  *testing.T
+	parent             string
+	agentID, runtimeID string
+	workspaceID        string
+	lateChild, endless bool
+	lateIssueID        string
+	// armed is set when the page locks its task rows: the discovery and the first
+	// list of the page are real, and only the list after the row lock is changed.
+	armed bool
+}
+
+func (c *lateChildTx) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	if strings.Contains(sql, "LockTaskBatch") && !c.armed {
+		c.armed = true
+		if c.lateChild {
+			c.createLateChild()
+		}
+	}
+	if !c.armed || !strings.Contains(sql, "ORDER BY t.issue_id") {
+		return c.DBTX.Query(ctx, sql, args...)
+	}
+	if c.endless {
+		return &oneUUIDRows{id: parseUUID(uuid.NewString())}, nil
+	}
+	return c.DBTX.Query(ctx, sql, args...)
+}
+
+// createLateChild adds a run, created after the page read its issues, whose
+// parent is the page's task and whose issue nobody locked.
+func (c *lateChildTx) createLateChild() {
+	ctx := context.Background()
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+INSERT INTO issue (workspace_id, title, creator_type, creator_id, number)
+VALUES ($1, 'late child', 'member', $2,
+        (SELECT COALESCE(max(number), 0) + 1 FROM issue WHERE workspace_id = $1))
+RETURNING id`, c.workspaceID, testUserID).Scan(&issueID); err != nil {
+		c.t.Fatalf("create late child issue: %v", err)
+	}
+	c.lateIssueID = issueID
+	if _, err := testPool.Exec(ctx, `
+INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status, completed_at, parent_task_id)
+VALUES ($1, $2, $3, 'completed', now(), $4)`, c.agentID, issueID, c.runtimeID, c.parent); err != nil {
+		c.t.Fatalf("create late child run: %v", err)
+	}
+}
+
+// oneUUIDRows is a result set with a single uuid row.
+type oneUUIDRows struct {
+	pgx.Rows
+	id   pgtype.UUID
+	read bool
+}
+
+func (r *oneUUIDRows) Next() bool {
+	if r.read {
+		return false
+	}
+	r.read = true
+	return true
+}
+func (r *oneUUIDRows) Scan(dest ...any) error { *(dest[0].(*pgtype.UUID)) = r.id; return nil }
+func (r *oneUUIDRows) Err() error             { return nil }
+func (r *oneUUIDRows) Close()                 {}
+
+// issueLockableNow reports whether another session can lock the issue right now.
+func issueLockableNow(t *testing.T, issueID string) bool {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin probe: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var one int
+	err = tx.QueryRow(ctx, `SELECT 1 FROM issue WHERE id = $1 FOR NO KEY UPDATE NOWAIT`, issueID).Scan(&one)
+	if err == nil {
+		return true
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "55P03" {
+		return false
+	}
+	t.Fatalf("probe issue lock: %v", err)
+	return false
+}
+
+// A child created after the issue lock query names an issue the page has not
+// locked. The page must not lock that issue while it holds task rows: it returns
+// the issue so the teardown can roll back and start again with it locked first.
+func TestLockTaskPageIssuesFirstReturnsALateIssueInsteadOfLockingIt(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	f := newWorkspaceDeletePathFixture(t, "late-child")
+	parent := insertDeletePathTask(t, f.victimAgent, f.victimIssue, f.victimRuntime)
+
+	tx, err := testHandler.TxStarter.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	w := &lateChildTx{
+		DBTX: tx, t: t, parent: parent, agentID: f.victimAgent,
+		runtimeID: f.victimRuntime, workspaceID: f.neighbourID, lateChild: true,
+	}
+	held := map[pgtype.UUID]struct{}{parseUUID(f.victimIssue): {}}
+	locked, err := lockTaskPageIssuesFirst(ctx, db.New(w), parseUUID(f.victimAgent), []pgtype.UUID{parseUUID(parent)}, held)
+	var widened *issuesWidenedError
+	if !errors.As(err, &widened) {
+		t.Fatalf("late child: locked=%d err=%v, want an issuesWidenedError", len(locked), err)
+	}
+	if len(widened.IDs) != 1 || uuidToString(widened.IDs[0]) != w.lateIssueID {
+		t.Fatalf("widened ids = %v, want only the late child's issue %s", widened.IDs, w.lateIssueID)
+	}
+	if !issueLockableNow(t, w.lateIssueID) {
+		t.Fatalf("the page locked the late issue while it held task rows; it must leave the issue to the restart")
+	}
+}
+
+// widenStarter wraps every transaction the handler begins. A transaction is a
+// delete attempt once it sets its lock timeout, which only the teardown does. The
+// first widenAttempts attempts see a stale issue list; later ones see the real one.
+type widenStarter struct {
+	t             *testing.T
+	inner         txStarter
+	f             workspaceDeletePathFixture
+	parent        string
+	widenAttempts int
+	endless       bool
+
+	attempts int
+	hooks    []*lateChildTx
+	// lateHeldAtAttempt records, when an attempt starts, whether an earlier
+	// attempt's late issue was still locked by another session.
+	lateHeldAtAttempt map[int]bool
+}
+
+type widenTx struct {
+	pgx.Tx
+	s    *widenStarter
+	late *lateChildTx
+}
+
+func (w *widenTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	if strings.Contains(sql, "SET LOCAL lock_timeout") {
+		s := w.s
+		s.attempts++
+		if s.lateHeldAtAttempt == nil {
+			s.lateHeldAtAttempt = map[int]bool{}
+		}
+		for _, h := range s.hooks {
+			if h.lateIssueID != "" {
+				s.lateHeldAtAttempt[s.attempts] = !issueLockableNow(s.t, h.lateIssueID)
+			}
+		}
+		widen := s.attempts <= s.widenAttempts
+		w.late.lateChild, w.late.endless = widen && !s.endless, widen && s.endless
+		s.hooks = append(s.hooks, w.late)
+	}
+	return w.Tx.Exec(ctx, sql, args...)
+}
+
+func (w *widenTx) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	return w.late.Query(ctx, sql, args...)
+}
+
+func (s *widenStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.inner.Begin(ctx)
+	if err != nil {
+		return tx, err
+	}
+	late := &lateChildTx{
+		DBTX: tx, t: s.t, parent: s.parent, agentID: s.f.neighbourAgent,
+		runtimeID: s.f.neighbourRuntime, workspaceID: s.f.neighbourID,
+	}
+	return &widenTx{Tx: tx, s: s, late: late}, nil
+}
+
+func deleteVictimWorkspace(t *testing.T, f workspaceDeletePathFixture, s *widenStarter) *httptest.ResponseRecorder {
+	t.Helper()
+	orig := testHandler.TxStarter
+	testHandler.TxStarter = s
+	defer func() { testHandler.TxStarter = orig }()
+	rec := httptest.NewRecorder()
+	req := withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+f.victimID, nil), "id", f.victimID)
+	testHandler.DeleteWorkspace(rec, req)
+	return rec
+}
+
+// A run created after the issue lock query widens the page on the production
+// delete path. The delete rolls the transaction back, which releases every lock,
+// and runs again with the late issue locked first.
+func TestDeleteWorkspaceRestartsWhenALateChildWidensATaskPage(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	f := newWorkspaceDeletePathFixture(t, "late-restart")
+	parent := insertDeletePathTask(t, f.victimAgent, f.victimIssue, f.victimRuntime)
+	s := &widenStarter{t: t, inner: testHandler.TxStarter, f: f, parent: parent, widenAttempts: 1}
+
+	rec := deleteVictimWorkspace(t, f, s)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DeleteWorkspace = %d, want 204: %s", rec.Code, rec.Body.String())
+	}
+	if s.attempts != 2 {
+		t.Fatalf("delete attempts = %d, want 2 (the widened attempt, then the restart)", s.attempts)
+	}
+	if s.lateHeldAtAttempt[2] {
+		t.Fatalf("the restart began while the first attempt still held the late issue lock")
+	}
+	var gone bool
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT NOT EXISTS (SELECT 1 FROM workspace WHERE id = $1)`, f.victimID).Scan(&gone); err != nil || !gone {
+		t.Fatalf("victim workspace gone = %v (err %v), want true", gone, err)
+	}
+}
+
+// A page that widens on every attempt fails the delete after the restart bound,
+// and the workspace stays.
+func TestDeleteWorkspaceFailsClosedWhenPagesKeepWidening(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	f := newWorkspaceDeletePathFixture(t, "late-endless")
+	parent := insertDeletePathTask(t, f.victimAgent, f.victimIssue, f.victimRuntime)
+	s := &widenStarter{t: t, inner: testHandler.TxStarter, f: f, parent: parent, widenAttempts: 1 << 20, endless: true}
+
+	rec := deleteVictimWorkspace(t, f, s)
+	if rec.Code < 500 {
+		t.Fatalf("DeleteWorkspace = %d, want a 5xx refusal: %s", rec.Code, rec.Body.String())
+	}
+	if want := workspaceDeleteMaxRestarts + 1; s.attempts != want {
+		t.Fatalf("delete attempts = %d, want %d (the first attempt and %d restarts)", s.attempts, want, workspaceDeleteMaxRestarts)
+	}
+	var exists bool
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT EXISTS (SELECT 1 FROM workspace WHERE id = $1)`, f.victimID).Scan(&exists); err != nil || !exists {
+		t.Fatalf("victim workspace exists = %v (err %v), want true: a refused delete changes nothing", exists, err)
+	}
+}
+
+// orderTx records the name of every statement the delete sends, in order.
+type orderTx struct {
+	pgx.Tx
+	log *[]string
+}
+
+func (o *orderTx) record(sql string) {
+	for _, name := range []string{"LockIssuesByID", "LockTaskBatch", "DeleteTaskBatch"} {
+		if strings.Contains(sql, "name: "+name) || strings.Contains(sql, "-- "+name) || strings.Contains(sql, name) {
+			*o.log = append(*o.log, name)
+			return
+		}
+	}
+}
+func (o *orderTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	o.record(sql)
+	return o.Tx.Exec(ctx, sql, args...)
+}
+func (o *orderTx) Query(ctx context.Context, sql string, args ...interface{}) (pgx.Rows, error) {
+	o.record(sql)
+	return o.Tx.Query(ctx, sql, args...)
+}
+
+type orderStarter struct {
+	inner txStarter
+	log   []string
+}
+
+func (s *orderStarter) Begin(ctx context.Context) (pgx.Tx, error) {
+	tx, err := s.inner.Begin(ctx)
+	if err != nil {
+		return tx, err
+	}
+	return &orderTx{Tx: tx, log: &s.log}, nil
+}
+
+// Every issue a delete touches through its task pages is locked before the first
+// task row of any page. Page two must not lock a new issue while the delete holds
+// the rows page one deleted: a writer that holds that issue and waits on one of
+// those run rows would deadlock against it (40P01).
+func TestDeleteWorkspaceLocksEveryPageIssueBeforeTheFirstTaskRow(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	shrinkWorkspaceDeletePagesForTest(t)
+	f := newWorkspaceDeletePathFixture(t, "multipage-locks")
+	// 25 victim-agent tasks, each on its own issue: three task pages, and every
+	// page names issues the pages before it did not.
+	for i := 0; i < 25; i++ {
+		issueID := insertLateIssue(t, f.neighbourID)
+		t.Cleanup(func() {
+			_, _ = testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		})
+		insertDeletePathTask(t, f.victimAgent, issueID, f.victimRuntime)
+	}
+	s := &orderStarter{inner: testHandler.TxStarter}
+	orig := testHandler.TxStarter
+	testHandler.TxStarter = s
+	defer func() { testHandler.TxStarter = orig }()
+	rec := httptest.NewRecorder()
+	req := withURLParam(newRequest(http.MethodDelete, "/api/workspaces/"+f.victimID, nil), "id", f.victimID)
+	testHandler.DeleteWorkspace(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("DeleteWorkspace = %d, want 204: %s", rec.Code, rec.Body.String())
+	}
+	firstRow, lastDelete := -1, -1
+	for i, name := range s.log {
+		if name == "LockTaskBatch" && firstRow < 0 {
+			firstRow = i
+		}
+		if name == "DeleteTaskBatch" {
+			lastDelete = i
+		}
+	}
+	if firstRow < 0 || lastDelete < 0 {
+		t.Fatalf("no task page ran: %v", s.log)
+	}
+	for i := firstRow; i < lastDelete; i++ {
+		if s.log[i] == "LockIssuesByID" {
+			t.Fatalf("an issue lock came after the first task row was locked (statement %d of %v)", i, s.log)
+		}
 	}
 }

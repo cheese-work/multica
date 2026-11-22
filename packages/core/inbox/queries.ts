@@ -1,6 +1,6 @@
 import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import type { ArchivedInboxPage } from "../types/inbox";
-import { EMPTY_INBOX_FILTERS, type ArchivedInboxFilters } from "./filter-store";
+import { EMPTY_INBOX_FILTERS, isViewerMention, type ArchivedInboxFilters } from "./filter-store";
 import { infiniteQueryOptions, queryOptions, useQuery } from "@tanstack/react-query";
 import { api } from "../api";
 import type { InboxItem, InboxWorkspaceUnread } from "../types";
@@ -37,7 +37,7 @@ export function archivedInboxListOptions(wsId: string) {
   });
 }
 
-// Lists the archived dimensions explicitly, so an `idleOnly` carried in from
+// Lists the archived dimensions explicitly, so an `idleOnly`/`mentionsOnly` carried in from
 // the active inbox never changes the key or refetches the archive.
 function normalizedInboxFilters(filters: ArchivedInboxFilters): ArchivedInboxFilters {
   return { statuses: [...filters.statuses].sort(), priorities: [...filters.priorities].sort(),
@@ -228,11 +228,23 @@ function groupInboxItemsByIssue(items: InboxItem[]): InboxItem[] {
     const commentId =
       newest.details?.comment_id ??
       group.find((item) => item.details?.comment_id)?.details?.comment_id;
+    const viewerMention = isViewerMention(newest) ? undefined : group.find(isViewerMention);
+    // A later comment must not hide a mention from the "Mentions me" filter, so
+    // it carries the mention's source. Any other newest row (run_budget, ...)
+    // is not a mention: it keeps its own row and points at the mention row,
+    // which the filter shows instead (CHE-7473).
+    const carriesMention = newest.type === "new_comment" || newest.type === "mentioned";
+    const mention = carriesMention ? viewerMention : undefined;
 
-    if (commentId && newest.details?.comment_id !== commentId) {
+    if ((commentId && newest.details?.comment_id !== commentId) || mention || viewerMention) {
       merged.push({
         ...newest,
-        details: { ...(newest.details ?? {}), comment_id: commentId },
+        details: {
+          ...(newest.details ?? {}),
+          ...(commentId ? { comment_id: commentId } : {}),
+          ...(mention ? { mention_source: mention.details?.mention_source } : {}),
+        },
+        ...(viewerMention && !carriesMention ? { mention_row: viewerMention } : {}),
       });
       continue;
     }

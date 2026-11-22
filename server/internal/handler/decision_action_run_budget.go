@@ -36,6 +36,17 @@ func executeRunBudgetTopUpAction(ctx context.Context, execution decisionActionEx
 	if current != params.WindowID {
 		return nil, actionFailure{Code: "stale_window", Message: "the run-budget window changed since the request; ask again"}
 	}
+	issue, err := queries.GetIssue(ctx, issueID)
+	if err != nil {
+		return nil, err
+	}
+	receipt, err := runBudgetApprovalSnapshot(ctx, queries, issue, current)
+	if err != nil {
+		return nil, err
+	}
+	if err := service.ForgiveRunBudgetDebt(ctx, queries, issueID); err != nil {
+		return nil, err
+	}
 	// The boundary is the time now, not the transaction's start, so it sorts
 	// after every move that committed while this approval waited for its locks.
 	startedAt, err := queries.RunBudgetBoundaryClock(ctx)
@@ -57,5 +68,10 @@ func executeRunBudgetTopUpAction(ctx context.Context, execution decisionActionEx
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]string{"issue_id": params.IssueID, "window_id": window})
+	if err := linkRunBudgetRefusal(ctx, queries, issueID, params.RefusalID, params.RefusalGeneration, execution.Action.ID, window); err != nil {
+		return nil, err
+	}
+	receipt["issue_id"], receipt["window_id"] = params.IssueID, window
+	receipt["outcome"], receipt["new_window"] = "cap_applied", true
+	return json.Marshal(receipt)
 }

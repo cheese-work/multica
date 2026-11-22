@@ -30,6 +30,11 @@ multica runtime usage <runtime-id> --output json
 multica runtime activity <runtime-id> --output json
 multica runtime update <runtime-id> --target-version <version> --output json
 multica runtime delete <runtime-id>
+multica runtime breaker list --output json
+multica runtime breaker reset <provider>
+multica daemon update-schedule get --runtime-id <id> --output json
+multica daemon update-schedule set --runtime-id <id> --cron '0 2 * * *' [--timezone Asia/Ho_Chi_Minh] [--window-minutes 30] [--enabled=false]
+multica daemon update-schedule clear --runtime-id <id>
 multica repo checkout <url>
 multica repo checkout <url> --ref <branch-or-sha>
 multica repo checkout <url> --fresh
@@ -49,6 +54,11 @@ broker: create (head is always the task branch, base must be one the broker
 allows), edit title or body, mark ready, comment. A PR whose head is not the
 task branch of the task repository is refused. There is no merge and no
 review approval.
+
+`daemon update-schedule` stores one update schedule per machine (cron, time zone,
+window 10 to 30 minutes). Only the machine owner and the workspace owner can
+change it; a Desktop-launched daemon is refused. It stores the schedule only and
+never updates a daemon by itself.
 
 Runtime and repo commands affect active agent execution. Do not restart daemons,
 update runtimes, or check out arbitrary repos just to test.
@@ -254,6 +264,16 @@ multica runtime rename <runtime-id> "Build box"   # "" clears the custom name
 multica runtime rename <runtime-id> "Build box" --machine   # every runtime on the machine
 ```
 
+## Runtime-wide concurrency limit
+
+```bash
+multica runtime concurrency <runtime-id> 2      # at most 2 runs in progress across all agents on this runtime
+multica runtime concurrency <runtime-id> none   # remove the limit
+```
+
+Each agent's own `max_concurrent_tasks` still applies. The runtime limit caps
+their combined work, for example agents that share one local GPU.
+
 A runtime profile describes a custom agent command the daemon can run.
 
 ```bash
@@ -292,3 +312,19 @@ that is running you. If the work seems to need one, report it and stop.
 
 Never terminate a `multica` process by name: a matching process may be the
 daemon. Compare a PID with `multica daemon status --output json` first.
+
+## Provider circuit breakers
+
+- `multica runtime breaker list [--output json]` lists the provider circuit
+  breakers in the workspace.
+- `multica runtime breaker reset <provider>` closes one breaker now instead of
+  waiting for its probe. The reset is audited with who ran it and the previous
+  state. Reset only when a person asked for it or the provider is confirmed
+  healthy.
+
+## Restricted-run git token
+
+`multica git read-token` is called by the `gh` wrapper in a restricted run. The
+broker holds the token in memory, replaces it near expiry and revokes the
+previous one; nothing is written to disk. Do not call it by hand or copy its
+output anywhere.

@@ -219,3 +219,26 @@ func TestSweepRecheckMovesPastFailingAddresses(t *testing.T) {
 		}
 	}
 }
+
+// CHE-4167: the sweep runs registered extra passes, and the per-installation
+// back-off is shared with them.
+func TestSweepOnceRunsExtraSweepsAndSharesRateLimit(t *testing.T) {
+	pool := testDBPool(t)
+	m := recheckManager(t, pool, time.Now())
+	var ran int
+	m.AddSweep(func(context.Context) { ran++ })
+	m.sweepOnce(context.Background())
+	if ran != 1 {
+		t.Fatalf("extra sweep ran %d times, want 1", ran)
+	}
+	if m.RateLimitPause(7) != 0 {
+		t.Fatal("no back-off expected yet")
+	}
+	m.ExtendRateLimit(7, time.Minute)
+	if p := m.RateLimitPause(7); p <= 0 || p > time.Minute {
+		t.Fatalf("pause = %v, want within (0, 1m]", p)
+	}
+	if m.RateLimitPause(8) != 0 {
+		t.Fatal("back-off must stay per installation")
+	}
+}

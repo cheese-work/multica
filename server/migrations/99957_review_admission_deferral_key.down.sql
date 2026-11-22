@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS review_admission_deferral_issue_agent_idx;

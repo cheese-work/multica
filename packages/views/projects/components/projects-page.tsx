@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   ExternalLink,
   FolderKanban,
@@ -8,14 +8,12 @@ import {
   Pin,
   PinOff,
   Rows3,
-  Search,
   Trash2,
 } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
   projectListOptions,
-  useUpdateProject,
   useDeleteProject,
   useProjectViewStore,
   type ProjectColumnKey,
@@ -69,8 +67,8 @@ import type {
 import {
   CollectionCreateButton,
   CollectionFilterButton,
+  CollectionNoMatches,
   CollectionPageHeader,
-  CollectionPageState,
   CollectionResetButton,
   CollectionScopeItems,
 } from "../../layout/collection-page";
@@ -85,9 +83,11 @@ import {
   type CollectionSort,
 } from "../../layout/collection-list";
 import { ProjectIcon } from "./project-icon";
+import { ProjectsIntro } from "./projects-intro";
 import { useT } from "../../i18n";
 import { useFormatRelativeDate } from "./labels";
 import { ProjectStatusBadge, ProjectPriorityBadge } from "./project-badge";
+import { useProjectFieldUpdate } from "./use-project-field-update";
 import { ProjectLeadPicker } from "./project-lead-picker";
 import { PAGE_GUTTER } from "../../layout/page-header";
 import { cn } from "@multica/ui/lib/utils";
@@ -252,14 +252,10 @@ function ProjectInlineCell({
   children,
 }: {
   project: Project;
-  children: (handleUpdate: (data: UpdateProjectRequest) => void) => React.ReactNode;
+  children: (handleUpdate: (data: UpdateProjectRequest) => void, statusPending: boolean) => React.ReactNode;
 }) {
-  const updateProject = useUpdateProject();
-  const handleUpdate = useCallback(
-    (data: UpdateProjectRequest) => updateProject.mutate({ id: project.id, ...data }),
-    [project.id, updateProject],
-  );
-  return <>{children(handleUpdate)}</>;
+  const { handleUpdate, statusPending } = useProjectFieldUpdate(project.id);
+  return <>{children(handleUpdate, statusPending)}</>;
 }
 
 // Card (comfortable) view — kept from the prior page.
@@ -276,11 +272,7 @@ function ProjectCard({
   const { t } = useT("projects");
   const wsPaths = useWorkspacePaths();
   const formatRelativeDate = useFormatRelativeDate();
-  const updateProject = useUpdateProject();
-  const handleUpdate = useCallback(
-    (data: UpdateProjectRequest) => updateProject.mutate({ id: project.id, ...data }),
-    [project.id, updateProject],
-  );
+  const { handleUpdate, statusPending } = useProjectFieldUpdate(project.id);
   const progressPercent =
     project.issue_count > 0
       ? Math.round((project.done_count / project.issue_count) * 100)
@@ -298,7 +290,7 @@ function ProjectCard({
             <h3 className="truncate text-body font-medium">{project.title}</h3>
           </AppLink>
           <ProjectRowActions project={project} pinned={pinned} canDelete={canDelete} />
-          <ProjectStatusBadge project={project} handleUpdate={handleUpdate} triggerClassName="shrink-0" />
+          <ProjectStatusBadge project={project} handleUpdate={handleUpdate} statusPending={statusPending} triggerClassName="shrink-0" />
         </div>
 
         {project.issue_count > 0 ? (
@@ -607,8 +599,8 @@ export function ProjectsPage() {
         interactive: true,
         cell: (project) => (
           <ProjectInlineCell project={project}>
-            {(handleUpdate) => (
-              <ProjectStatusBadge project={project} handleUpdate={handleUpdate} align="start" />
+            {(handleUpdate, statusPending) => (
+              <ProjectStatusBadge project={project} handleUpdate={handleUpdate} statusPending={statusPending} align="start" />
             )}
           </ProjectInlineCell>
         ),
@@ -846,15 +838,7 @@ export function ProjectsPage() {
       />
 
       {showEmpty ? (
-        <CollectionPageState
-          icon={FolderKanban}
-          title={t(($) => $.page.empty)}
-          actions={
-            <Button size="sm" variant="outline" onClick={openCreateProject}>
-              {t(($) => $.page.create_first)}
-            </Button>
-          }
-        />
+        <ProjectsIntro onCreate={openCreateProject} />
       ) : (
         <>
           {isCompact ? (
@@ -876,15 +860,22 @@ export function ProjectsPage() {
               )}
               sort={sort}
               selection={{ selectedIds, onChange: setSelectedIds }}
-              empty={t(($) => $.page.no_matches)}
+              empty={
+                <CollectionNoMatches
+                  title={t(($) => $.page.no_matches)}
+                  onReset={clearFilters}
+                  hasFilters={hasActiveFilters}
+                />
+              }
             />
           ) : isLoading ? (
             <CardsLoading />
           ) : visible.length === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center py-24 text-muted-foreground">
-              <Search className="mb-3 h-10 w-10 opacity-30" />
-              <p className="text-body">{t(($) => $.page.no_matches)}</p>
-            </div>
+            <CollectionNoMatches
+              title={t(($) => $.page.no_matches)}
+              onReset={clearFilters}
+              hasFilters={hasActiveFilters}
+            />
           ) : (
             <div className={cn("min-h-0 flex-1 overflow-y-auto pt-4 pb-16", PAGE_GUTTER)}>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">

@@ -3,7 +3,7 @@
 import { useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { useRegisterCommandBarContext } from "../../search/register-context";
 import { useDefaultLayout, usePanelRef } from "react-resizable-panels";
-import { Check, ChevronRight, Link2, PanelRight, Pin, PinOff, Trash2, UserMinus } from "@multica/ui/icons";
+import { Check, ChevronRight, FileQuestion, Link2, PanelRight, Pin, PinOff, Trash2, UserMinus } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
@@ -13,7 +13,8 @@ import { useFeatureEnabled } from "@multica/core/config";
 import { PROJECT_WORKFLOWS_V1_FLAG } from "@multica/core/feature-flags";
 import { useAuthStore } from "@multica/core/auth";
 import { projectDetailOptions } from "@multica/core/projects/queries";
-import { useUpdateProject, useDeleteProject } from "@multica/core/projects/mutations";
+import { useDeleteProject } from "@multica/core/projects/mutations";
+import { useProjectFieldUpdate } from "./use-project-field-update";
 import { pinListOptions } from "@multica/core/pins";
 import { useCreatePin, useDeletePin } from "@multica/core/pins";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
@@ -25,7 +26,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { PROJECT_STATUS_ORDER, PROJECT_STATUS_CONFIG, PROJECT_PRIORITY_ORDER } from "@multica/core/projects/config";
 import { getProjectIssueMetrics } from "./project-issue-metrics";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { currentPath, useNavigation } from "../../navigation";
+import { AppLink, currentPath, useNavigation } from "../../navigation";
 import { TitleEditor, ContentEditor, type ContentEditorRef } from "../../editor";
 import { PriorityIcon } from "../../issues/components/priority-icon";
 import { ProjectResourcesSection } from "./project-resources-section";
@@ -35,8 +36,9 @@ import { ProjectDueDatePicker } from "./project-due-date-picker";
 import { ProjectWorkflowControl } from "../../workflows/project-workflow-row";
 import { ProjectWorkflowMenuHost } from "../../workflows/project-workflow-menu";
 import { IssueSurface } from "../../issues/surface/issue-surface";
+import { PROJECT_ISSUE_MODES } from "../../issues/surface/modes";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
-import { Button } from "@multica/ui/components/ui/button";
+import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/ui/components/ui/resizable";
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
@@ -67,6 +69,7 @@ import {
   useAnimatedRightSidebarState,
   useRightSidebarShortcut,
 } from "../../layout/animated-right-sidebar";
+import { CollectionPageState } from "../../layout/collection-page";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -153,7 +156,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
   const { getActorName } = useActorName();
-  const updateProject = useUpdateProject();
+  const { handleUpdate: handleUpdateField, statusPending } = useProjectFieldUpdate(projectId);
   const deleteProject = useDeleteProject();
   const { data: pinnedItems = [] } = useQuery({
     ...pinListOptions(wsId, userId ?? ""),
@@ -230,14 +233,6 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const filteredMembers = members.filter((m) => m.name.toLowerCase().includes(leadQuery) || matchesPinyin(m.name, leadQuery));
   const filteredAgents = agents.filter((a) => !a.archived_at && (a.name.toLowerCase().includes(leadQuery) || matchesPinyin(a.name, leadQuery)));
 
-  const handleUpdateField = useCallback(
-    (data: Parameters<typeof updateProject.mutate>[0] extends { id: string } & infer R ? R : never) => {
-      if (!project) return;
-      updateProject.mutate({ id: project.id, ...data });
-    },
-    [project, updateProject],
-  );
-
   const handleDelete = useCallback(() => {
     if (!project) return;
     deleteProject.mutate(project.id, {
@@ -260,7 +255,23 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   }
 
   if (!project) {
-    return <div className="flex items-center justify-center h-full text-muted-foreground">{t(($) => $.detail.not_found)}</div>;
+    return (
+      <div className="flex h-full flex-col">
+        <CollectionPageState
+          icon={FileQuestion}
+          title={t(($) => $.detail.not_found)}
+          description={t(($) => $.detail.not_found_description)}
+          actions={
+            <AppLink
+              href={wsPaths.projects()}
+              className={buttonVariants({ variant: "outline", size: "sm" })}
+            >
+              {t(($) => $.detail.back_to_list)}
+            </AppLink>
+          }
+        />
+      </div>
+    );
   }
 
   const issueMetrics = getProjectIssueMetrics(project);
@@ -320,7 +331,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
-                  <button type="button" className="inline-flex items-center gap-1.5 text-caption hover:text-foreground transition-colors">
+                  <button type="button" disabled={statusPending} className="inline-flex items-center gap-1.5 text-caption hover:text-foreground transition-colors disabled:pointer-events-none disabled:opacity-50">
                     <span className={cn("size-2 rounded-full", statusCfg.dotColor)} />
                     <span>{statusLabels[project.status]}</span>
                   </button>
@@ -510,7 +521,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
         <div ref={rightSidebarShortcutTargetRef} className="flex h-full flex-col">
           <IssueSurface
             scope={issueScope}
-            modes={["board", "list", "table", "swimlane", "gantt"]}
+            modes={PROJECT_ISSUE_MODES}
             renderHeader={({ controller }) => (
               <ProjectWorkflowMenuHost project={project}>
                 {(workflowSubmenu) => (

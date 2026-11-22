@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -140,22 +141,26 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	if len(metadata["decision_wait_alert_id"]) > 0 {
 		return transaction.Commit(ctx)
 	}
+	// No owning squad: the agent assignee is the alert target, with no squad ID (CHE-6101).
+	var recipient db.Agent
+	var squadID pgtype.UUID
 	squad, err := queries.GetDecisionWaitGuardSquad(ctx, db.GetDecisionWaitGuardSquadParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
 	if errors.Is(err, pgx.ErrNoRows) {
-		if err := setDecisionWaitMetadata(ctx, queries, issue, "decision_wait_route_error", "owning squad is missing or ambiguous"); err != nil {
-			return err
+		if recipient, err = guardAssigneeAgent(ctx, queries, issue); errors.Is(err, pgx.ErrNoRows) {
+			if err := setDecisionWaitMetadata(ctx, queries, issue, "decision_wait_route_error", "owning squad is missing or ambiguous"); err != nil {
+				return err
+			}
+			return transaction.Commit(ctx)
 		}
-		return transaction.Commit(ctx)
-	}
-	if err != nil {
-		return err
-	}
-	leader, err := queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: squad.LeaderID})
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && leader.ArchivedAt.Valid {
-		if err := setDecisionWaitMetadata(ctx, queries, issue, "decision_wait_route_error", "owning squad leader is unavailable"); err != nil {
-			return err
+	} else if err == nil {
+		squadID = squad.ID
+		recipient, err = queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: squad.LeaderID})
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && recipient.ArchivedAt.Valid {
+			if err := setDecisionWaitMetadata(ctx, queries, issue, "decision_wait_route_error", "owning squad leader is unavailable"); err != nil {
+				return err
+			}
+			return transaction.Commit(ctx)
 		}
-		return transaction.Commit(ctx)
 	}
 	if err != nil {
 		return err
@@ -169,7 +174,7 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	}
 	defer admission.Rollback(ctx)
 	note := fmt.Sprintf("Decision wait guard: issue %s has waited more than %g minutes without an open decision request (observed since %s). Find the source ask, open its decision request and verify delivery. This alert grants no new decision, merge or deploy authority.", uuidToString(issue.ID), threshold.Minutes(), started)
-	task, err := handler.TaskService.EnqueueDecisionWaitLeaderTaskInTx(ctx, queries.WithTx(admission), issue, leader.ID, squad.ID, note)
+	task, err := handler.TaskService.EnqueueDecisionWaitLeaderTaskInTx(ctx, queries.WithTx(admission), issue, recipient.ID, squadID, note)
 	if err != nil {
 		if rollbackErr := admission.Rollback(ctx); rollbackErr != nil {
 			return errors.Join(err, rollbackErr)
@@ -197,11 +202,7 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 }
 
 func setDecisionWaitMetadata(ctx context.Context, queries *db.Queries, issue db.Issue, key string, value any) error {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	_, err = queries.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: key, Value: raw})
+	_, err := setIssueMetadataValue(ctx, queries, issue.WorkspaceID, issue.ID, key, value)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -223,7 +224,7 @@ func decisionWaitEligible(ctx context.Context, queries *db.Queries, issue db.Iss
 	if issue.Status == "need_decision" {
 		return true, nil
 	}
-	properties, err := queries.ListIssueProperties(ctx, db.ListIssuePropertiesParams{WorkspaceID: issue.WorkspaceID, IncludeArchived: false})
+	properties, err := queries.ListIssuePropertyDefinitions(ctx, db.ListIssuePropertyDefinitionsParams{WorkspaceID: issue.WorkspaceID, IncludeArchived: false})
 	if err != nil {
 		return false, err
 	}
