@@ -89,8 +89,10 @@ LIMIT 50;
 
 -- name: ListIssueAuthorTasks :many
 -- Every agent task on an issue that counts as authorship (CHE-7658 step 11):
--- all of them except a task whose workflow_role rows say reviewer and nothing
--- else. A task with no row counts (fail closed). The lab inputs come from the
+-- all of them except a task whose every workflow_role row is a reviewer role or
+-- a step after the work (a review, a decision, a merge, an acceptance, a block)
+-- or no step at all (a wakeup run; CHE-9002). A task with no row counts (fail
+-- closed), and so does a row at any other step, such as todo or in_progress. The lab inputs come from the
 -- task row: the model the daemon applied and its runtime's provider.
 SELECT t.id AS task_id, t.agent_id, COALESCE(r.provider, '')::text AS provider, COALESCE(t.applied_model, '')::text AS model
 FROM agent_task_queue t
@@ -98,9 +100,11 @@ LEFT JOIN agent_runtime r ON r.id = t.runtime_id
 WHERE t.issue_id = @issue_id
   AND NOT (
     EXISTS (SELECT 1 FROM activity_log a WHERE a.issue_id = t.issue_id AND a.action = 'workflow_role'
-              AND a.details->>'task_id' = t.id::text AND a.details->>'role' = 'reviewer')
+              AND a.details->>'task_id' = t.id::text)
     AND NOT EXISTS (SELECT 1 FROM activity_log a WHERE a.issue_id = t.issue_id AND a.action = 'workflow_role'
-              AND a.details->>'task_id' = t.id::text AND a.details->>'role' IS DISTINCT FROM 'reviewer')
+              AND a.details->>'task_id' = t.id::text
+              AND a.details->>'role' IS DISTINCT FROM 'reviewer'
+              AND COALESCE(a.details->>'status', '') NOT IN ('', 'agent_review', 'in_review', 'need_decision', 'merged', 'approved', 'agent_accepted', 'blocked'))
   )
 ORDER BY t.created_at, t.id;
 
