@@ -55,7 +55,7 @@ func TestWorkspaceKeyedNoFKTablesHaveExplicitTeardown(t *testing.T) {
 	for _, table := range []string{
 		"ask_recovery_notice", "ask_repair_root", "browser_gateway_credential",
 		"issue_handoff_dispatch", "issue_step_assignee", "issue_step_watchdog_action",
-		"merge_receipt_fact", "merge_veto", "merge_veto_deadline", "decision_backing_lane",
+		"merge_receipt_fact", "merge_veto", "merge_veto_deadline", "decision_backing_lane", "guard_decision",
 		"weekly_run_guard_allowance", "weekly_run_guard_refusal",
 	} {
 		if workspaceDeletionManifest[table] != workspaceDelete {
@@ -385,6 +385,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"weekly_run_guard_refusal":           workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
 	"claim_poll_stats":                   workspaceDeleteKeep, // CHE-7545 global per-minute claim poll histogram; no workspace_id.
 	"decision_backing_lane":              workspaceDelete,     // CHE-7545 workspace_id column, no FK; explicit teardown in DeleteWorkspaceAdministration.
+	"guard_decision":                     workspaceDelete,     // CHE-7545 workspace_id column, no FK (migration 9999940); explicit teardown in DeleteWorkspaceAdministration.
 	"decision_pick":                      workspaceDeleteKeep, // CHE-7545 UNSURE: keyed by decision_request_id and member_id, no FK, no workspace_id; rows orphan after request cleanup. Decision-worker owner should add cleanup.
 	"decision_snooze":                    workspaceDeleteKeep, // CHE-7545 UNSURE: same as decision_pick.
 	"workspace_invitation":               workspaceDelete,
