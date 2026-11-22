@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"os"
+	"os/exec"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/secrets"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -424,5 +428,83 @@ func TestNewMainHTTPServerTimeouts(t *testing.T) {
 	}
 	if got := srv.WriteTimeout; got != 0 {
 		t.Errorf("WriteTimeout = %v, want 0", got)
+	}
+}
+
+func TestSecretsKeyBootError(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  secrets.KeyStatus
+		appEnv  string
+		wantErr string
+	}{
+		{"production_unset", secrets.KeyUnset, "production", "openssl rand -base64 32"},
+		{"production_malformed", secrets.KeyMalformed, " PRODUCTION ", "not base64 of 32 bytes"},
+		{"production_ok", secrets.KeyOK, "production", ""},
+		{"development_unset", secrets.KeyUnset, "development", ""},
+		{"empty_env_malformed", secrets.KeyMalformed, "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := secretsKeyBootError(tt.status, tt.appEnv)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("want nil, got %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("want error containing %q, got %v", tt.wantErr, err)
+			}
+		})
+	}
+}
+
+// TestSecretsKeyBootHelper is the child process of the boot tests below. It
+// runs the same exit path main uses and reports "booted" if it returns.
+func TestSecretsKeyBootHelper(t *testing.T) {
+	if os.Getenv("MULTICA_BOOT_HELPER") != "1" {
+		t.Skip("subprocess helper")
+	}
+	exitOnSecretsKeyBootError()
+	os.Stdout.WriteString("booted\n")
+}
+
+func runBootHelper(t *testing.T, env ...string) (exitCode int, stdout, stderr string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestSecretsKeyBootHelper$")
+	cmd.Env = append([]string{"MULTICA_BOOT_HELPER=1", "PATH=" + os.Getenv("PATH"), "DATABASE_URL=" + os.Getenv("DATABASE_URL")}, env...)
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	err := cmd.Run()
+	if ee, ok := err.(*exec.ExitError); ok {
+		exitCode = ee.ExitCode()
+	} else if err != nil {
+		t.Fatalf("run helper: %v", err)
+	}
+	return exitCode, out.String(), errb.String()
+}
+
+func TestBoot_SecretsKeyRequiredInProduction(t *testing.T) {
+	code, _, stderr := runBootHelper(t, "APP_ENV=production")
+	if code == 0 || !strings.Contains(stderr, "openssl rand -base64 32") {
+		t.Fatalf("exit=%d stderr=%q, want non-zero and the generator hint", code, stderr)
+	}
+}
+
+func TestBoot_SecretsKeyMalformed(t *testing.T) {
+	code, _, stderr := runBootHelper(t, "APP_ENV=production", "MULTICA_SECRETS_KEY=not-base64!")
+	if code == 0 || !strings.Contains(stderr, "not base64 of 32 bytes") {
+		t.Fatalf("exit=%d stderr=%q, want non-zero and the malformed hint", code, stderr)
+	}
+	if strings.Contains(stderr, "not-base64!") {
+		t.Fatalf("stderr leaks the key value: %q", stderr)
+	}
+}
+
+func TestBoot_SecretsKeyUnsetInDevelopmentBoots(t *testing.T) {
+	code, stdout, stderr := runBootHelper(t, "APP_ENV=development")
+	if code != 0 || !strings.Contains(stdout, "booted") {
+		t.Fatalf("exit=%d stdout=%q stderr=%q, want a normal boot", code, stdout, stderr)
 	}
 }

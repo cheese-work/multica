@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/multica-ai/multica/server/internal/cibroker"
+	"github.com/multica-ai/multica/server/internal/secrets/seal"
 	"log/slog"
 	"math"
 	"net/http"
@@ -263,6 +264,10 @@ type Handler struct {
 	Bus                    *events.Bus
 	TaskService            *service.TaskService
 	PluginService          *service.PluginService
+
+	// SecretsKeyring seals scoped secrets (MULTICA_SECRETS_KEY). Nil means the
+	// feature is off: handlers answer writeFeatureDisabled("secrets_storage_disabled").
+	SecretsKeyring *seal.Keyring
 	// BrowserLeases serves the browser lease API (CHE-4732); nil answers 503.
 	BrowserLeases    *browserlease.Service
 	IssueService     *service.IssueService

@@ -218,6 +218,10 @@ services:
       MULTICA_VCS_INTEGRATION_ENABLED: ${MULTICA_VCS_INTEGRATION_ENABLED:-true}
       # VCS integration at-rest encryption key for token-based providers
       MULTICA_VCS_SECRET_KEY: ${MULTICA_VCS_SECRET_KEY:-}
+      # Scoped secrets encryption key. Required in production (APP_ENV=production
+      # refuses to boot without it); generate with `openssl rand -base64 32`.
+      MULTICA_SECRETS_KEY: ${MULTICA_SECRETS_KEY:-}
+      MULTICA_SECRETS_KEY_PREVIOUS: ${MULTICA_SECRETS_KEY_PREVIOUS:-}
       # Per-workspace Jev credential encryption; unset keeps this write-only
       # storage disabled without affecting the existing process-wide JEV_API_KEY.
       MULTICA_JEV_SECRET_KEY: ${MULTICA_JEV_SECRET_KEY:-}
