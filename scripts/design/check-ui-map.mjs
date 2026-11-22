@@ -157,11 +157,22 @@ function validateMap(doc) {
   return errors;
 }
 
+// Entries of the map in a tree; none when the map is absent or unreadable (everything is then new).
+function mapEntries(tree) {
+  try {
+    const doc = parse(tree.read(MAP_PATH));
+    return Array.isArray(doc?.entries) ? doc.entries : [];
+  } catch {
+    return [];
+  }
+}
+
 /**
  * @param head    tree of the PR head (see gitTree, fsTree)
+ * @param base    tree of the PR base, or null for a map-wide run
  * @param changes readChanges(...) result, or null to check rules 3 and 4 only
  */
-export function checkUiMap({ head, changes }) {
+export function checkUiMap({ head, base = null, changes }) {
   const text = head.read(MAP_PATH);
   if (text == null) return { errors: [err("bad-map", `${MAP_PATH} is missing`)] };
   let doc;
@@ -207,9 +218,16 @@ export function checkUiMap({ head, changes }) {
     if (!topics.includes(e.lock)) errors.push(err("bad-map", `${e.screen}: design/${e.lock}/approved/ does not exist`));
   }
 
-  // Rule 4
+  // Rule 4. An `unmapped` entry is legacy: it must still match the lock as at seed_sha.
+  // Any other entry is judged against the PR base, so a re-pin that landed as `building`
+  // may become `shipped` in a later PR. Without a base (map-wide run) only `unmapped` is judged.
+  const baseEntries = base ? mapEntries(base) : null;
   for (const e of entries.filter((x) => topics.includes(x.lock))) {
     if (lockPin(lockOf(seed, e.lock)) === e.lock_export_sha256) continue; // same lock as at seed_sha
+    if (e.state !== "unmapped") {
+      if (!baseEntries) continue;
+      if (baseEntries.some((b) => b.lock === e.lock && b.lock_export_sha256 === e.lock_export_sha256)) continue; // pin unchanged in this PR
+    }
     if (e.state !== "building" || !e.blocks_map || head.read(e.blocks_map) == null) {
       errors.push(err("new-unmapped", `${e.screen}: a new entry or a changed lock_export_sha256 needs state \`building\` and an existing blocks_map (state ${e.state}, blocks_map ${e.blocks_map ?? "none"}).`));
     }
@@ -240,6 +258,7 @@ function main(argv) {
   const cwd = process.cwd();
   const r = checkUiMap({
     head: headRef ? gitTree(cwd, headRef) : fsTree(cwd),
+    base: base ? gitTree(cwd, base) : null,
     changes: base ? readChanges(cwd, base, headRef ?? "HEAD") : null,
   });
   for (const e of r.errors) console.error(`::error::ui-map ${e.reason}: ${e.message}`);

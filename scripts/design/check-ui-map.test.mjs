@@ -73,7 +73,7 @@ const run = (t, spec, { withBase = true } = {}) => {
   const { cwd, baseSha } = fixture(t, spec);
   const head = gitTree(cwd, "HEAD");
   const changes = withBase ? readChanges(cwd, baseSha, "HEAD") : null;
-  return checkUiMap({ head, changes });
+  return checkUiMap({ head, changes, base: withBase ? gitTree(cwd, baseSha) : null });
 };
 const reasons = (r) => r.errors.map((e) => e.reason).sort();
 
@@ -209,14 +209,49 @@ test("rule 4: a changed lock pin kept unmapped fails new-unmapped", (t) => {
 test("rule 4: a new entry as building with an existing blocks map passes; without the map it fails", (t) => {
   const beta = { "design/beta/approved/LOCK.json": lock(PIN_B), "design/beta/approved/b.html": "<p>b</p>" };
   const good = entry({ screen: "beta", lock: "beta", lock_export_sha256: PIN_B, state: "building", blocks_map: "tests/fidelity/beta.blocks.yml" });
-  assert.deepEqual(run(t, { entries: [entry(), good], head: { ...beta, "tests/fidelity/beta.blocks.yml": "topic: beta\n" } }).errors, []);
-  assert.deepEqual(reasons(run(t, { entries: [entry(), good], head: beta })), ["new-unmapped"]);
+  const withMap = { ...beta, "tests/fidelity/beta.blocks.yml": "topic: beta\n" };
+  assert.deepEqual(run(t, { entries: [entry(), good], baseEntries: [entry()], head: withMap }).errors, []);
+  assert.deepEqual(reasons(run(t, { entries: [entry(), good], baseEntries: [entry()], head: beta })), ["new-unmapped"]);
   const shipped = { ...good, state: "shipped" };
-  assert.deepEqual(reasons(run(t, { entries: [entry(), shipped], head: { ...beta, "tests/fidelity/beta.blocks.yml": "topic: beta\n" } })), ["new-unmapped"]);
+  assert.deepEqual(reasons(run(t, { entries: [entry(), shipped], baseEntries: [entry()], head: withMap })), ["new-unmapped"]);
 });
 test("rule 4: a building entry that exists at seed with the same pin is not new", (t) => {
   const r = run(t, { entries: [entry({ state: "building", paths: ["packages/views/issues/**"], blocks_map: "tests/fidelity/alpha.blocks.yml" })] });
   assert.deepEqual(r.errors, []);
+});
+
+// ---- rule 4 across PRs: a pin that moved since seed_sha may later become shipped ----
+const GAMMA = {
+  "design/alpha/approved/LOCK.json": lock(PIN_C),
+  "tests/fidelity/alpha.blocks.yml": "topic: alpha\n",
+};
+const repinned = (over = {}) => entry({ lock_export_sha256: PIN_C, state: "building", blocks_map: "tests/fidelity/alpha.blocks.yml", ...over });
+test("rule 4: a design PR that re-pins a seeded lock passes as building, and fails as unmapped or shipped", (t) => {
+  assert.deepEqual(run(t, { entries: [repinned()], baseEntries: [entry()], head: GAMMA }).errors, []);
+  assert.deepEqual(reasons(run(t, { entries: [repinned({ state: "unmapped" })], baseEntries: [entry()], head: GAMMA })), ["new-unmapped"]);
+  assert.deepEqual(reasons(run(t, { entries: [repinned({ state: "shipped" })], baseEntries: [entry()], head: GAMMA })), ["new-unmapped"]);
+});
+test("rule 4: a later PR may switch a re-pinned building entry to shipped (pin unchanged since the PR base)", (t) => {
+  const r = run(t, { seedFiles: SEED_FILES, base: GAMMA, entries: [repinned({ state: "shipped" })], baseEntries: [repinned()] });
+  assert.deepEqual(r.errors, []);
+});
+test("rule 4: a shipped entry whose lock moves again in a later PR must go back to building", (t) => {
+  const delta = { "design/alpha/approved/LOCK.json": lock(PIN_B) };
+  const spec = { base: GAMMA, baseEntries: [repinned({ state: "shipped" })], head: delta };
+  assert.deepEqual(reasons(run(t, { ...spec, entries: [repinned({ state: "shipped", lock_export_sha256: PIN_B })] })), ["new-unmapped"]);
+  assert.deepEqual(run(t, { ...spec, entries: [repinned({ lock_export_sha256: PIN_B })] }).errors, []);
+});
+test("rule 4: a map-only PR that re-pins in place to match a lock-only change still passes only as building", (t) => {
+  const spec = { base: GAMMA, baseEntries: [repinned()], head: { "design/alpha/approved/LOCK.json": lock(PIN_B) } };
+  assert.deepEqual(reasons(run(t, { ...spec, entries: [repinned({ state: "shipped", lock_export_sha256: PIN_B })] })), ["new-unmapped"]);
+});
+test("rule 3 canary: a lock-only PR (no map change) fails lock-pin-mismatch", (t) => {
+  const r = run(t, { entries: [entry()], baseEntries: [entry()], head: { "design/alpha/approved/LOCK.json": lock(PIN_C) } });
+  assert.ok(reasons(r).includes("lock-pin-mismatch"), JSON.stringify(r.errors));
+});
+test("rule 3 canary: a map-only PR that re-pins without the lock moving fails lock-pin-mismatch", (t) => {
+  const r = run(t, { entries: [entry({ lock_export_sha256: PIN_C })], baseEntries: [entry()] });
+  assert.ok(reasons(r).includes("lock-pin-mismatch"), JSON.stringify(r.errors));
 });
 
 // ---- a malformed map is one named failure, never a crash ----
