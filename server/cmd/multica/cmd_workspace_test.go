@@ -1529,16 +1529,54 @@ func TestBuildWorkspaceUpdateBodyRunModes(t *testing.T) {
 				t.Errorf("%s %q: expected an error", flag, mode)
 			}
 		}
-		for _, other := range []string{"run-guard-mode", "run-budget-mode", "ask-guard-mode", "name"} {
-			if other == flag {
-				continue
-			}
+		for _, other := range []string{"ask-guard-mode", "name"} {
 			resetWorkspaceUpdateFlags(t)
 			setStringFlag(t, flag, "warn")
 			setStringFlag(t, other, "warn")
 			if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil || !strings.Contains(err.Error(), "--"+flag) {
 				t.Errorf("--%s with --%s: err = %v, want a conflict naming --%s", flag, other, err, flag)
 			}
+		}
+	}
+}
+
+// CHE-9026: the owner rollout is one command, so the two run-limit flags may be
+// given together. Each still sends only its own key, and a third update flag is
+// refused with the pair.
+func TestBuildWorkspaceUpdateBodyRunModesTogether(t *testing.T) {
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "run-guard-mode", "warn")
+	setStringFlag(t, "run-budget-mode", "warn")
+	body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+	want := map[string]any{"run_guard": map[string]any{"mode": "warn"}, "run_budget": map[string]any{"mode": "warn"}}
+	if err != nil || !reflect.DeepEqual(body, want) {
+		t.Fatalf("pair: body = %#v, err %v, want %#v", body, err, want)
+	}
+
+	resetWorkspaceUpdateFlags(t)
+	setStringFlag(t, "run-guard-mode", "off")
+	setStringFlag(t, "run-budget-mode", "block")
+	body, err = buildWorkspaceUpdateBody(workspaceUpdateCmd)
+	want = map[string]any{"run_guard": map[string]any{"mode": "off"}, "run_budget": map[string]any{"mode": "block"}}
+	if err != nil || !reflect.DeepEqual(body, want) {
+		t.Fatalf("pair with different modes: body = %#v, err %v, want %#v", body, err, want)
+	}
+
+	for _, bad := range [][2]string{{"on", "warn"}, {"warn", "on"}, {"", "warn"}} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "run-guard-mode", bad[0])
+		setStringFlag(t, "run-budget-mode", bad[1])
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("pair %q/%q: expected an error", bad[0], bad[1])
+		}
+	}
+	for _, other := range []string{"ask-guard-mode", "name"} {
+		resetWorkspaceUpdateFlags(t)
+		setStringFlag(t, "run-guard-mode", "warn")
+		setStringFlag(t, "run-budget-mode", "warn")
+		setStringFlag(t, other, "warn")
+		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+			t.Errorf("pair with --%s: expected a conflict", other)
 		}
 	}
 }

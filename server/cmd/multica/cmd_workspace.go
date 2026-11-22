@@ -795,8 +795,9 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 		body["idle_started_guard"] = guard
 	}
 	// Each single-key mode flag patches one settings key alone; refuse any
-	// other update flag, including the other mode flag, rather than send a
-	// mixed patch.
+	// other update flag rather than send a mixed patch. The two run-limit flags
+	// may be given together: each still writes only its own key (CHE-9026).
+	runModePair := map[string]string{"run-guard-mode": "run-budget-mode", "run-budget-mode": "run-guard-mode"}
 	for _, single := range []struct{ flag, field, what string }{
 		{"time-wakeup-skip-mode", "time_wakeup_skip", "time-wakeup skip mode"},
 		{"auto-close-mode", "auto_close", "auto-close mode"},
@@ -809,7 +810,7 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 			continue
 		}
 		for _, name := range append([]string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "run-guard-mode", "run-budget-mode", "ask-guard-mode", "compact-agent", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}, mergeQueueFlags...) {
-			if name != single.flag && cmd.Flags().Changed(name) {
+			if name != single.flag && name != runModePair[single.flag] && cmd.Flags().Changed(name) {
 				return nil, fmt.Errorf("--%s cannot be combined with --%s; it changes only the %s", single.flag, name, single.what)
 			}
 		}
