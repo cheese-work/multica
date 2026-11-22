@@ -263,6 +263,8 @@ func TestEdgesGreenEdgeAdvancesOncePerHead(t *testing.T) {
 	})
 	linkedPRForWakeup(t, c.fx, installationID, 215212, "edge-g")
 	testPool.Exec(context.Background(), `UPDATE github_pull_request SET checks_rollup_state='SUCCESS', snapshot_head_sha=head_sha WHERE workspace_id=$1 AND pr_number=215212`, testWorkspaceID)
+	// The child that carries the PR is closed: an open child holds the edge (CHE-6466).
+	testPool.Exec(context.Background(), `UPDATE issue SET status='done' WHERE id=$1`, c.fx.child.ID)
 	c.enter(t, "in_progress")
 	tickEdges(t)
 	if got := c.status(t); got != "in_review" {
@@ -279,6 +281,42 @@ func TestEdgesGreenEdgeAdvancesOncePerHead(t *testing.T) {
 	tickEdges(t)
 	if got := c.status(t); got != "todo" {
 		t.Fatalf("spent head with a passed deadline left the issue at %s, want on_timeout todo", got)
+	}
+}
+
+// The edge watcher reads the same ready marker: a green draft PR holds the
+// issue until the author sets it, and the move spends it (CHE-5741).
+func TestEdgesGreenDraftPRNeedsReadyMarker(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	const installationID int64 = 2152020
+	c := newEdgeCase(t, installationID, []map[string]any{
+		{"status_key": "backlog"},
+		{"status_key": "in_progress", "edges": []map[string]any{
+			{"to": "in_review", "guard": "pr.checks_green", "timeout": "72h", "on_timeout": "todo"},
+		}},
+		{"status_key": "in_review"},
+		{"status_key": "todo"},
+		{"status_key": "blocked"},
+	})
+	linkedPRForWakeup(t, c.fx, installationID, 215220, "edge-draft")
+	testPool.Exec(context.Background(), `UPDATE github_pull_request SET state='draft', checks_rollup_state='SUCCESS', snapshot_head_sha=head_sha WHERE workspace_id=$1 AND pr_number=215220`, testWorkspaceID)
+	// The child that carries the PR is closed: an open child holds the edge (CHE-6466).
+	testPool.Exec(context.Background(), `UPDATE issue SET status='done' WHERE id=$1`, c.fx.child.ID)
+	c.enter(t, "in_progress")
+	tickEdges(t)
+	if got := c.status(t); got != "in_progress" {
+		t.Fatalf("green draft PR without the ready marker left the issue at %s, want in_progress", got)
+	}
+	testPool.Exec(context.Background(), `UPDATE issue SET metadata='{"ready_for_review": true}'::jsonb WHERE id=$1`, c.issueID)
+	testPool.Exec(context.Background(), `UPDATE issue_wakeup SET next_fire_at=now() WHERE issue_id=$1 AND system_rule='workflow_edges'`, c.issueID)
+	tickEdges(t)
+	if got := c.status(t); got != "in_review" {
+		t.Fatalf("green draft PR with the ready marker left the issue at %s, want in_review", got)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id=$1 AND metadata ? 'ready_for_review'`, c.issueID); n != 0 {
+		t.Fatal("the move left ready_for_review set")
 	}
 }
 
@@ -515,5 +553,59 @@ func TestEdgesGreenRerunOfRedHeadParksTheIssueInBlocked(t *testing.T) {
 	tickEdges(t)
 	if got := c.status(t); got != "blocked" {
 		t.Fatalf("green rerun of the red head: issue is %s, want blocked", got)
+	}
+}
+
+// The default workflow keeps a parent in in_progress while a sub-issue is open
+// (CHE-6466), so the edge watcher must hold pr.checks_green for the parent
+// until every direct child is done or closed, and must not spend the head.
+func TestEdgesGreenEdgeWaitsForOpenChildren(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	for i, tc := range []struct {
+		name  string
+		child string
+		want  string
+	}{
+		{"open child", "backlog", "in_progress"},
+		{"in progress child", "in_progress", "in_progress"},
+		{"done child", "done", "in_review"},
+		{"cancelled child", "cancelled", "in_review"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			installationID := int64(6466000 + i)
+			c := newEdgeCase(t, installationID, []map[string]any{
+				{"status_key": "backlog"},
+				{"status_key": "in_progress", "edges": []map[string]any{
+					{"to": "in_review", "guard": "pr.checks_green", "timeout": "72h", "on_timeout": "todo"},
+				}},
+				{"status_key": "in_review"},
+				{"status_key": "todo"},
+				{"status_key": "blocked"},
+			})
+			linkedPRForWakeup(t, c.fx, installationID, int32(646600+i), "edge-kids")
+			testPool.Exec(context.Background(), `UPDATE github_pull_request SET checks_rollup_state='SUCCESS', snapshot_head_sha=head_sha WHERE workspace_id=$1 AND pr_number=$2`, testWorkspaceID, 646600+i)
+			if _, err := testPool.Exec(context.Background(), `UPDATE issue SET status=$2 WHERE id=$1`, c.fx.child.ID, tc.child); err != nil {
+				t.Fatal(err)
+			}
+			c.enter(t, "in_progress")
+			tickEdges(t)
+			if got := c.status(t); got != tc.want {
+				t.Fatalf("green head with a %s child left the parent at %s, want %s", tc.child, got, tc.want)
+			}
+			if tc.want == "in_progress" {
+				// The held head stays unclaimed: once the child closes, the
+				// next poll moves the parent.
+				if _, err := testPool.Exec(context.Background(), `UPDATE issue SET status='done' WHERE id=$1`, c.fx.child.ID); err != nil {
+					t.Fatal(err)
+				}
+				testPool.Exec(context.Background(), `UPDATE issue_wakeup SET next_fire_at=now() WHERE issue_id=$1 AND system_rule='workflow_edges'`, c.issueID)
+				tickEdges(t)
+				if got := c.status(t); got != "in_review" {
+					t.Fatalf("after the child closed the parent is at %s, want in_review", got)
+				}
+			}
+		})
 	}
 }

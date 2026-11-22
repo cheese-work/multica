@@ -112,6 +112,10 @@ func writeAgentDecisionMarkdown(w io.Writer, feed map[string]any, shadow *jevSha
 		}
 		fmt.Fprintf(&b, "\n  Record: %v\n", rec["link"])
 		if decider, _ := rec["decider"].(string); decider != "" {
+			// An older server sends no decider_display: print the raw value.
+			if display, _ := rec["decider_display"].(string); display != "" {
+				decider = display
+			}
 			fmt.Fprintf(&b, "  Decided by %s (agent decision, confidence %v).\n", decider, rec["confidence"])
 		}
 		if rec["state"] == "revoked" {

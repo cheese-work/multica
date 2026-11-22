@@ -24,7 +24,15 @@ vi.mock("./wakeup-condition-names", () => ({
   useConditionNames: () => ({ status: (key: string) => key, label: () => undefined, property: () => undefined, actor: (_type: string, id: string) => id }),
 }));
 // The scoped defaults have their own tests and their own queries.
-vi.mock("./issue-wakeup-defaults", () => ({ IssueWakeupDefaults: () => null }));
+let defaultsAvailable = false;
+vi.mock("./issue-wakeup-defaults", () => ({
+  useWakeupDefaults: () => ({
+    available: defaultsAvailable,
+    button: defaultsAvailable ? <button type="button">Defaults stub</button> : null,
+    panel: defaultsAvailable ? <div data-testid="defaults-panel" /> : null,
+    onKeyDown: undefined,
+  }),
+}));
 const settingsPush = vi.hoisted(() => vi.fn());
 vi.mock("../../navigation", () => ({ useNavigation: () => ({ push: settingsPush }) }));
 vi.mock("@multica/core/paths", () => ({
@@ -81,6 +89,7 @@ beforeEach(() => {
   remove.mockReset();
   runs = [];
   empty = false;
+  defaultsAvailable = false;
   systemError = false;
   refetch.mockReset();
   updateSystem.mockReset().mockResolvedValue(undefined);
@@ -130,6 +139,29 @@ describe("Wakeups sidebar", () => {
     status = "completed";
     renderWithI18n(<WakeupsSection issueId="issue" />);
     expect(screen.getByRole("button", { name: "Wakeups 0" })).toHaveAttribute("aria-expanded", "true");
+  });
+  it("puts the defaults button in the header and the panel under it, even with the list collapsed", () => {
+    defaultsAvailable = true;
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    fireEvent.click(screen.getByRole("button", { name: "Wakeups 1" }));
+    expect(screen.getByRole("button", { name: "Defaults stub" }).parentElement).toBe(screen.getByRole("button", { name: "Wakeups 1" }).parentElement);
+    expect(screen.getByTestId("defaults-panel")).toBeInTheDocument();
+  });
+  it("says defaults still apply when no wakeup is live", () => {
+    empty = true;
+    defaultsAvailable = true;
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    expect(screen.getByText("No live wakeups. Defaults still apply.")).toBeVisible();
+  });
+  it("shows no empty line while a wakeup is live, or when defaults are unavailable", () => {
+    defaultsAvailable = true;
+    const { unmount } = renderWithI18n(<WakeupsSection issueId="issue" />);
+    expect(screen.queryByText("No live wakeups. Defaults still apply.")).not.toBeInTheDocument();
+    unmount();
+    empty = true;
+    defaultsAvailable = false;
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    expect(screen.queryByText("No live wakeups. Defaults still apply.")).not.toBeInTheDocument();
   });
   it("shows retry when system rules fail instead of treating the section as empty", () => {
     empty = true;

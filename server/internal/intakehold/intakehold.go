@@ -131,9 +131,15 @@ func (issue Issue) inBacklog() bool {
 // releases is condition 5, read row by row with no order: a person's row that
 // leaves backlog by form (a) from backlog or form (b) with the server's key.
 func (row StatusRow) releases() bool {
-	return row.ActorType == "member" && row.CauseKind == "ui_or_api" &&
-		slices.Contains(personAuthSources, row.AuthSource) && row.To != "backlog" &&
+	return PersonWrite(row.ActorType, row.CauseKind, row.AuthSource) && row.To != "backlog" &&
 		(row.From == "backlog" || row.Release != "")
+}
+
+// PersonWrite is whether a status write is a person's own: a member acting
+// through the issue API with a person's credential. The reader of a release
+// and the writer of the intake_release key both use it, so they cannot differ.
+func PersonWrite(actorType, causeKind, authSource string) bool {
+	return actorType == "member" && causeKind == "ui_or_api" && slices.Contains(personAuthSources, authSource)
 }
 
 // escalation is the exemption of a decision request: a person's live answer of

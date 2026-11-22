@@ -72,8 +72,29 @@ func TestCardPreviewForRaiseEqualsWhatTheExecutorChecks(test *testing.T) {
 func TestCardPreviewForRaiseIsMissingOnceTheWindowMoved(test *testing.T) {
 	action := newPendingRaise(test, 30)
 	dbfx.Exec(test, `UPDATE issue SET max_runs_override = 40 WHERE id = $1`, action.issueID) // cap now above the raise
-	if card := action.cardAction(test); card == nil || card.Preview != nil {
+	card := action.cardAction(test)
+	if card == nil || card.Preview != nil {
 		test.Fatalf("a raise the executor would refuse still has a preview: %+v", card)
+	}
+	// CHE-8772: the card says why, so the person is not left at "Detail unavailable".
+	if !strings.Contains(card.PreviewUnavailable, "already 40") || !strings.Contains(card.PreviewUnavailable, "30") {
+		test.Fatalf("preview_unavailable = %q; want the cap now (40) and the cap asked for (30)", card.PreviewUnavailable)
+	}
+}
+
+func TestCardPreviewForRaiseSaysWhyWhenTheWindowMoved(test *testing.T) {
+	action := newPendingRaise(test, 30)
+	dbfx.Exec(test, `UPDATE issue_workflow SET run_budget_since = now() WHERE id = (SELECT workflow_id FROM issue WHERE id = $1)`, action.issueID)
+	card := action.cardAction(test)
+	if card == nil || card.Preview != nil || !strings.Contains(card.PreviewUnavailable, "window") {
+		test.Fatalf("a raise for a left window: card=%+v", card)
+	}
+}
+
+func TestCardPreviewHasNoUnavailableReasonWhenItRenders(test *testing.T) {
+	card := newPendingRaise(test, 30).cardAction(test)
+	if card.Preview == nil || card.PreviewUnavailable != "" {
+		test.Fatalf("preview=%+v preview_unavailable=%q", card.Preview, card.PreviewUnavailable)
 	}
 }
 

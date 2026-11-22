@@ -60,6 +60,18 @@ Choose the project’s **Workflow** to set its board columns and who takes over 
 
 The lead can be a member or an agent; a member who is the lead can also switch the project’s workflow. Making someone the lead does not assign issues to them or start any work. To hand a step to the lead, set that step's handler to **Project lead** in the workflow.
 
+## Pause, cancel, and complete
+
+A project that is `paused`, `cancelled`, or `completed` starts no new agent runs, and agents cannot create issues in it or move issues into it.
+
+| Status | Queued runs | Running runs | Agent edits and comments on its issues |
+|---|---|---|---|
+| `paused` | Cancelled | Run to their end | Allowed for a run that is still running on an issue of this project |
+| `cancelled` | Cancelled | Cancelled at once | Refused with `project_inactive` |
+| `completed` | Cancelled | Cancelled at once | Refused with `project_inactive` |
+
+An agent run of another project is refused on these issues with `project_inactive`. Members can always edit.
+
 ## Pin to the sidebar
 
 A pinned project appears in your sidebar. Pinning is a personal preference and does not affect other members.

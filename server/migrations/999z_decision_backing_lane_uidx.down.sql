@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS decision_backing_lane_member_topic_uidx;

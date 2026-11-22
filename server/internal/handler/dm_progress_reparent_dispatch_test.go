@@ -28,7 +28,7 @@ func newReparentDispatch(t *testing.T) *reparentDispatch {
 	})
 	r := &reparentDispatch{
 		reparentWorld: w,
-		d:             &service.DMProgressDispatcher{Pool: testPool, Queries: testHandler.Queries, Bus: events.New()},
+		d:             &service.DMProgressDispatcher{Pool: testPool, Queries: testHandler.Queries, Bus: events.New(), DeliverCards: true},
 		base:          time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second),
 	}
 	// Rows are stamped on the virtual clock: the follows' watermark goes before it.
@@ -101,7 +101,7 @@ func TestDMProgressReparentDispatch_DetachKeepsTheOriginDMReceiving(t *testing.T
 	child := childOf(t, root, "to detach")
 	r := &reparentDispatch{
 		reparentWorld: reparentWorld{laneA: dm, moved: child, newParent: root},
-		d:             &service.DMProgressDispatcher{Pool: testPool, Queries: testHandler.Queries, Bus: events.New()},
+		d:             &service.DMProgressDispatcher{Pool: testPool, Queries: testHandler.Queries, Bus: events.New(), DeliverCards: true},
 		base:          time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second),
 	}
 	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM dm_progress_delivery WHERE lineage_id = $1`, dm) })

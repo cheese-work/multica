@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,6 +29,7 @@ const (
 	egressPort   = "3128"
 	egressDir    = "/run/multica-egress"
 	brokerDir    = "/run/multica-broker"
+	daemonDir    = "/run/multica-daemon"
 	bridgeMount  = "/run/multica-bridge"
 	exitNoBridge = 125 // the bridge could not start; the agent never ran
 )
@@ -60,18 +62,30 @@ func (l *Launcher) bridgeExe() string {
 	return exe
 }
 
-// checkEgress refuses a socket path the bridge cannot be built around. It
+// checkSocket refuses a socket path the bridge cannot be built around. It
 // runs again at launch; a failure there stops the run (no fallback).
-func (l *Launcher) checkEgress(sock string) error {
+func checkSocket(what, sock string) error {
 	if !filepath.IsAbs(sock) || filepath.Clean(sock) != sock {
-		return fmt.Errorf("sandbox: egress socket %q is not absolute and clean", sock)
+		return fmt.Errorf("sandbox: %s socket %q is not absolute and clean", what, sock)
 	}
 	fi, err := os.Stat(sock)
 	if err != nil {
-		return fmt.Errorf("sandbox: egress socket: %w", err)
+		return fmt.Errorf("sandbox: %s socket: %w", what, err)
 	}
 	if fi.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("sandbox: egress socket %s is not a Unix socket", sock)
+		return fmt.Errorf("sandbox: %s socket %s is not a Unix socket", what, sock)
+	}
+	return nil
+}
+
+// checkDaemonPort refuses a daemon port the bridge cannot listen on.
+func checkDaemonPort(port string) error {
+	n, err := strconv.Atoi(port)
+	if err != nil || n < 1 || n > 65535 || port != strconv.Itoa(n) {
+		return fmt.Errorf("sandbox: daemon port %q is not a TCP port", port)
+	}
+	if port == egressPort {
+		return fmt.Errorf("sandbox: daemon port %s collides with the egress proxy port", port)
 	}
 	return nil
 }
@@ -79,23 +93,34 @@ func (l *Launcher) checkEgress(sock string) error {
 // command is the argv bwrap executes: the agent itself, or the bridge that
 // starts it once the network path is up.
 func (s Spec) command() []string {
-	if s.EgressSocket == "" {
+	if s.EgressSocket == "" && s.DaemonSocket == "" {
 		return s.Argv
 	}
-	argv := []string{bridgeMount, BridgeHelperArg,
-		"-listen", "127.0.0.1:" + egressPort,
-		"-unix", egressDir + "/" + filepath.Base(s.EgressSocket), "--"}
+	argv := []string{bridgeMount, BridgeHelperArg}
+	if s.EgressSocket != "" {
+		argv = append(argv, "-listen", "127.0.0.1:"+egressPort,
+			"-unix", egressDir+"/"+filepath.Base(s.EgressSocket))
+	}
+	if s.DaemonSocket != "" {
+		argv = append(argv, "-daemon-listen", "127.0.0.1:"+s.DaemonPort,
+			"-daemon-unix", daemonDir+"/"+filepath.Base(s.DaemonSocket))
+	}
+	argv = append(argv, "--")
 	return append(argv, s.Argv...)
 }
 
-// BridgeMain is the in-sandbox bridge: it checks the proxy socket answers,
-// listens on loopback, then runs the agent command with that listener alive
-// and returns the agent's exit code. Any failure before the agent starts
-// returns exitNoBridge without running it.
+// BridgeMain is the in-sandbox bridge: it checks each host socket answers,
+// listens on loopback for each, then runs the agent command with those
+// listeners alive and returns the agent's exit code. Two forwards exist: the
+// egress proxy (-listen/-unix) and the daemon API (-daemon-listen/-daemon-unix).
+// At least one is required, and each flag pair is all or nothing. Any failure
+// before the agent starts returns exitNoBridge without running it.
 func BridgeMain(args []string) int {
 	fs := flag.NewFlagSet(BridgeHelperArg, flag.ContinueOnError)
 	listen := fs.String("listen", "", "loopback host:port")
 	sock := fs.String("unix", "", "egress proxy Unix socket")
+	dListen := fs.String("daemon-listen", "", "loopback host:port for the daemon API")
+	dSock := fs.String("daemon-unix", "", "daemon API Unix socket")
 	if err := fs.Parse(args); err != nil || fs.NArg() == 0 {
 		return exitNoBridge
 	}
@@ -103,24 +128,45 @@ func BridgeMain(args []string) int {
 		fmt.Fprintln(os.Stderr, "sandbox bridge:", err)
 		return exitNoBridge
 	}
-	host, _, err := net.SplitHostPort(*listen)
-	if err != nil {
-		return fail(err)
+	var lns []net.Listener
+	defer func() {
+		for _, ln := range lns {
+			ln.Close()
+		}
+	}()
+	forwards := 0
+	for _, f := range []struct{ name, listen, sock string }{
+		{"egress proxy", *listen, *sock}, {"daemon API", *dListen, *dSock},
+	} {
+		if f.listen == "" && f.sock == "" {
+			continue
+		}
+		if f.listen == "" || f.sock == "" {
+			return fail(fmt.Errorf("%s forward needs both a listen address and a socket", f.name))
+		}
+		forwards++
+		host, _, err := net.SplitHostPort(f.listen)
+		if err != nil {
+			return fail(err)
+		}
+		if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+			return fail(errors.New("listen address is not loopback"))
+		}
+		probe, err := net.Dial("unix", f.sock)
+		if err != nil {
+			return fail(fmt.Errorf("%s unreachable: %w", f.name, err))
+		}
+		probe.Close()
+		ln, err := net.Listen("tcp", f.listen)
+		if err != nil {
+			return fail(err)
+		}
+		lns = append(lns, ln)
+		go serve(ln, f.sock)
 	}
-	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
-		return fail(errors.New("listen address is not loopback"))
+	if forwards == 0 {
+		return fail(errors.New("no forward requested"))
 	}
-	probe, err := net.Dial("unix", *sock)
-	if err != nil {
-		return fail(fmt.Errorf("egress proxy unreachable: %w", err))
-	}
-	probe.Close()
-	ln, err := net.Listen("tcp", *listen)
-	if err != nil {
-		return fail(err)
-	}
-	defer ln.Close()
-	go serve(ln, *sock)
 	return runAgent(fs.Args())
 }
 

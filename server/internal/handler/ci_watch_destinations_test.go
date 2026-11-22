@@ -142,6 +142,37 @@ func TestCIWatchCreateIssue_WakeAndRollback(t *testing.T) {
 	}
 }
 
+// CHE-6387 P2: a CI-watch issue is made by the platform, so it records
+// created_via = autopilot (an automated rule), never NULL.
+func TestCIWatchCreateIssue_StoresCreatedViaAutopilot(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	tx, err := testPool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := testHandler.CIWatchDestinations().Issue.CreateIssue(ctx, tx, ciwatch.IssueSpec{
+		WorkspaceID: testWorkspaceID, Title: "fix(ci): via", Body: "body", Priority: "urgent", CreatorID: testUserID,
+	})
+	if err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, id) })
+	var via *string
+	if err := testPool.QueryRow(ctx, `SELECT created_via FROM issue WHERE id = $1`, id).Scan(&via); err != nil {
+		t.Fatal(err)
+	}
+	if via == nil || *via != "autopilot" {
+		t.Fatalf("created_via = %v, want autopilot", via)
+	}
+}
+
 // A squad owner's leader run joins the issue's tx like an agent owner's run:
 // commit keeps one leader task, a capped wake or a rollback leaves none.
 func TestCIWatchCreateIssue_SquadLeaderWakeAndRollback(t *testing.T) {

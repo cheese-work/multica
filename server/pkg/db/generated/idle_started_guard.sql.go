@@ -95,7 +95,7 @@ CROSS JOIN LATERAL (
     (SELECT max(GREATEST(t.created_at, t.completed_at)) FROM agent_task_queue t
       WHERE t.issue_id = i.id AND t.id::text IS DISTINCT FROM g.alert_id::text),
     (SELECT max(a.created_at) FROM activity_log a
-      WHERE a.issue_id = i.id AND a.actor_type IN ('member', 'agent'))
+      WHERE a.issue_id = i.id AND a.actor_type IN ('member', 'agent') AND a.action <> 'workflow_role')
   ) AS idle_since
 ) clock
 WHERE i.workspace_id = $1
@@ -173,7 +173,7 @@ CROSS JOIN LATERAL (
       WHERE c.issue_id = i.id AND c.deleted_at IS NULL AND c.author_type <> 'system'),
     (SELECT max(GREATEST(t.created_at, t.completed_at)) FROM agent_task_queue t WHERE t.issue_id = i.id),
     (SELECT max(a.created_at) FROM activity_log a
-      WHERE a.issue_id = i.id AND a.actor_type IN ('member', 'agent'))
+      WHERE a.issue_id = i.id AND a.actor_type IN ('member', 'agent') AND a.action <> 'workflow_role')
   ) AS idle_since
 ) clock
 WHERE i.workspace_id = $1

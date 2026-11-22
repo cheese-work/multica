@@ -24,6 +24,7 @@ var issueTableDueDates = []string{"overdue", "today", "this_week", "next_7_days"
 var issueTableFilterFields = []string{
 	"statuses", "priorities", "assignees", "creators",
 	"project_ids", "project_statuses", "label_ids", "relations", "due_dates",
+	"created_via",
 }
 
 const issueTableFilterPropertyPrefix = "property:"
@@ -329,6 +330,13 @@ func (c *issueTableFilterCompiler) fieldPredicate(field string, values []string)
 			}
 		}
 		return fmt.Sprintf("i.priority = ANY(%s::text[])", c.addArg(values)), nil
+	case "created_via":
+		for _, value := range values {
+			if !issueTableContainsString(issueTableCreatedVia, value) {
+				return "", invalid
+			}
+		}
+		return issueTableCreatedViaPredicate(values, c.addArg), nil
 	case "assignees", "creators":
 		column := "assignee"
 		if field == "creators" {

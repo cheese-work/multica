@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-const page = (body) => `<!doctype html><html><body>${body}</body></html>`;
+const page = (body) => `<!doctype html><html><head><style>body{margin:0}</style></head><body>${body}</body></html>`;
 const BLOCKS = { a: { selector: ".a" }, b: { selector: ".b" } };
 
 /** lock: HTML of the state root's inner content; code: HTML of the rendered root's inner content. */
@@ -18,6 +18,7 @@ function run({ lock, code, blocks = BLOCKS }) {
   const harness = join(dir, "page.html");
   const map = join(dir, "x.blocks.yml");
   writeFileSync(lockFile, page(`<div data-state="s1" data-profile="card-540">${lock}</div>`));
+  writeFileSync(join(dir, "LOCK.json"), JSON.stringify({ export_files: { "lock.html": "x" } })); // the inventory reads export_files (step 3b)
   writeFileSync(harness, page(`<div data-fidelity-root>${code}</div>`));
   const yaml = [
     "topic: fixture", "cases:", `  - lock_file: ${lockFile}`, "    state: s1", "    profile: card-540", "    fixture: none", "blocks:",

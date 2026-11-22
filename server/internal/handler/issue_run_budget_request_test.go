@@ -66,7 +66,7 @@ func TestRequestRunBudgetRaiseOpensASpendRequestForAnOwner(test *testing.T) {
 	var fingerprint, class, origin, human, params, actionType string
 	dbfx.QueryRow(test, `SELECT r.request_fingerprint, r.escalation_class, r.origin, r.human_user_id::text, a.params::text, a.action_type FROM decision_request r JOIN decision_action a ON a.decision_request_id = r.id WHERE r.id = $1 AND a.id = $2`, got.RequestID, got.ActionID).
 		Scan(&fingerprint, &class, &origin, &human, &params, &actionType)
-	if want := "server:run_budget_action:raise:" + fixture.window + ":9"; fingerprint != want {
+	if want := "server:run_budget_action:raise:" + fixture.window + ":9:g0"; fingerprint != want {
 		test.Fatalf("fingerprint = %q, want %q", fingerprint, want)
 	}
 	if class != "spend" || human != fixture.humanID || actionType != "issue.run_budget.raise" {
@@ -127,6 +127,24 @@ func TestRequestRunBudgetFromANonOwnerAsksEveryOwner(test *testing.T) {
 	}
 	if asked := dbfx.Count(test, `SELECT count(DISTINCT human_user_id) FROM decision_request WHERE issue_id = $1 AND human_user_id = $2`, fixture.issueID, member); asked != 0 {
 		test.Fatal("the non-owner caller was asked to approve")
+	}
+}
+
+// CHE-8772: --runs is the total, so a total at or under the cap in force asks
+// for no raise. The card it would open can never preview or apply.
+func TestRequestRunBudgetRefusesARaiseThatDoesNotRaise(test *testing.T) {
+	fixture := newBudgetRequestFixture(test)
+	for _, newCap := range []int{1, 3} { // the fixture's cap is 3
+		var refusal struct {
+			Error string `json:"error"`
+		}
+		fixture.request(test, fixture.humanID, "pat", map[string]any{"kind": "raise", "new_cap": newCap, "window_id": fixture.window}).Want(http.StatusConflict).JSON(&refusal)
+		if !strings.Contains(refusal.Error, "not_a_raise") || !strings.Contains(refusal.Error, "already 3") {
+			test.Fatalf("new_cap %d refusal = %q; want not_a_raise naming the cap in force", newCap, refusal.Error)
+		}
+	}
+	if fixture.openRequests(test) != 0 {
+		test.Fatalf("a refused call opened %d requests", fixture.openRequests(test))
 	}
 }
 

@@ -58,6 +58,11 @@ for (const [name, files, selected] of [
   ["run budget state list", ["packages/core/run-budget/schema.ts"], ["frontend", "backend", "quality"]],
   ["delegated writes field list", ["packages/views/settings/components/delegated-writes-section.tsx"], ["frontend", "backend", "quality"]],
   ["background agents job list", ["packages/views/settings/components/background-agents-tab.tsx"], ["frontend", "backend", "quality"]],
+  ["notification group key array", ["packages/core/notification-preferences/patch.ts"], ["frontend", "backend", "quality"]],
+  ["notification group key union", ["packages/core/types/notification-preference.ts"], ["frontend", "backend", "quality"]],
+  ["notification inbox group list", ["packages/views/settings/components/notifications-tab.tsx"], ["frontend", "backend", "quality"]],
+  ["notification search group list", ["packages/views/settings/components/use-settings-search-index.ts"], ["frontend", "backend", "quality"]],
+  ["mobile notification group list", ["apps/mobile/app/(app)/[workspace]/more/settings/notifications.tsx"], ["backend", "quality"]],
   ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality"]],
   ["workspace package patch", ["patches/example.patch"], ["frontend", "quality"]],
   ["mobile package patch", ["apps/mobile/patches/example.patch"], ["quality"]],
@@ -72,6 +77,8 @@ for (const [name, files, selected] of [
   ["another workflow runs the wait-policy scan", [".github/workflows/release.yml"], ["deploy_cd"]],
   ["wait policy script", [".github/scripts/ci-wait-policy.py"], ["deploy_cd"]],
   ["wait policy exceptions", [".github/ci-policy.yml"], ["deploy_cd"]],
+  ["Go builder bump needs its pinned tarball checksum", ["Dockerfile"], ["deploy_cd"]],
+  ["backend binary build script", ["scripts/build-cd-backend-binaries.sh"], ["deploy_cd"]],
 ]) {
   test(`PR, main and merge groups select only affected scopes: ${name}`, () => {
     for (const event of ["pull_request", "push", "merge_group"]) {
