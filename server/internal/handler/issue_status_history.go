@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -36,6 +37,9 @@ type statusRecord struct {
 	routingExit bool
 	// blockedOn is the validated blocked_on ref of a move to blocked (CHE-6972).
 	blockedOn string
+	// intakeRelease is the intake-hold entry source that a person's write
+	// releases the issue from. The write sets it under the issue lock (CHE-7072).
+	intakeRelease string
 	// intent, when armed, makes the write record a handoff dispatch intent in
 	// its own transaction; intentID is the row it wrote (CHE-5486).
 	intent   *handoffIntentSeed
@@ -47,6 +51,11 @@ type statusRecord struct {
 	// attach is the existing comments the move carries; the transaction checks
 	// them again under the issue lock.
 	attach *attachedComments
+	// operation is the receipt the transaction inserts first (CHE-5491).
+	operation *handoffOperationSeed
+	// waitNotice, when set, stores the typed-ask notice of a move that named a
+	// member, in the write's transaction (CHE-7292).
+	waitNotice func(ctx context.Context, q *db.Queries, prevStatus string, moved db.Issue) error
 }
 
 func withStatusRecord(ctx context.Context, rec *statusRecord) context.Context {
@@ -172,4 +181,27 @@ func (h *Handler) publishSystemStatusChange(workspaceID string, recorded *db.Act
 	}
 	h.publish(protocol.EventIssueUpdated, workspaceID, "system", "", payload)
 	h.publishRecordedStatusActivity(&statusRecord{activity: recorded}, "system", "")
+}
+
+// intakeReleaseKey is the value of details.intake_release for a status move
+// to `to`: the entry source when a person makes the move and an open intake-hold
+// entry covers the issue, else "". Callers run it under the issue lock, so the
+// scope is read from the row the move replaces and the key is stored with the
+// move itself, whatever the order of the park and the person's request (CHE-7072).
+func intakeReleaseKey(ctx context.Context, q *db.Queries, rec *statusRecord, issueID pgtype.UUID, to string) (string, error) {
+	authSource := ""
+	if rec.trigger.AuthSource != nil {
+		authSource = *rec.trigger.AuthSource
+	}
+	if to == "backlog" || !intakehold.PersonWrite(rec.trigger.Cause.By.Type, rec.trigger.Cause.Kind, authSource) {
+		return "", nil
+	}
+	loaded, err := intakehold.Load(ctx, q.Conn(), uuidToString(issueID))
+	if err != nil {
+		return "", fmt.Errorf("read intake hold for release: %w", err)
+	}
+	if loaded.Entry == nil || !intakehold.InScope(loaded.Issue, loaded.Entry, loaded.Now) {
+		return "", nil
+	}
+	return loaded.Entry.Source, nil
 }

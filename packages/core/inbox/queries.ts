@@ -228,10 +228,15 @@ function groupInboxItemsByIssue(items: InboxItem[]): InboxItem[] {
     const commentId =
       newest.details?.comment_id ??
       group.find((item) => item.details?.comment_id)?.details?.comment_id;
-    // A later comment must not hide a mention from the "Mentions me" filter.
-    const mention = isViewerMention(newest) ? undefined : group.find(isViewerMention);
+    const viewerMention = isViewerMention(newest) ? undefined : group.find(isViewerMention);
+    // A later comment must not hide a mention from the "Mentions me" filter, so
+    // it carries the mention's source. Any other newest row (run_budget, ...)
+    // is not a mention: it keeps its own row and points at the mention row,
+    // which the filter shows instead (CHE-7473).
+    const carriesMention = newest.type === "new_comment" || newest.type === "mentioned";
+    const mention = carriesMention ? viewerMention : undefined;
 
-    if ((commentId && newest.details?.comment_id !== commentId) || mention) {
+    if ((commentId && newest.details?.comment_id !== commentId) || mention || viewerMention) {
       merged.push({
         ...newest,
         details: {
@@ -239,6 +244,7 @@ function groupInboxItemsByIssue(items: InboxItem[]): InboxItem[] {
           ...(commentId ? { comment_id: commentId } : {}),
           ...(mention ? { mention_source: mention.details?.mention_source } : {}),
         },
+        ...(viewerMention && !carriesMention ? { mention_row: viewerMention } : {}),
       });
       continue;
     }

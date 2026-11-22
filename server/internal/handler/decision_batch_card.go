@@ -87,7 +87,7 @@ type coveredCardAnswer struct {
 // action, or sits on a closed issue is left as it is: it keeps its own answer
 // path. Each closed card gets one answer, so the wake worker wakes its asking
 // agent once, and one quote on its issue.
-func (handler *Handler) answerCoveredCards(ctx context.Context, queries *db.Queries, workspace db.Workspace, batch db.DecisionRequest, input decisionCardAnswerInput, content string) ([]coveredCardAnswer, error) {
+func (handler *Handler) answerCoveredCards(ctx context.Context, queries *db.Queries, workspace db.Workspace, batch db.DecisionRequest, input decisionCardAnswerInput, content string, undoUntil pgtype.Timestamptz) ([]coveredCardAnswer, error) {
 	if len(batch.CoversRequestIds) == 0 {
 		return nil, nil
 	}
@@ -100,7 +100,7 @@ func (handler *Handler) answerCoveredCards(ctx context.Context, queries *db.Quer
 		if card.ID == batch.ID {
 			continue
 		}
-		answer, err := handler.answerCoveredCard(ctx, queries, workspace, batch, card, input, content)
+		answer, err := handler.answerCoveredCard(ctx, queries, workspace, batch, card, input, content, undoUntil)
 		if err != nil {
 			return nil, err
 		}
@@ -111,7 +111,7 @@ func (handler *Handler) answerCoveredCards(ctx context.Context, queries *db.Quer
 	return closed, nil
 }
 
-func (handler *Handler) answerCoveredCard(ctx context.Context, queries *db.Queries, workspace db.Workspace, batch, card db.DecisionRequest, input decisionCardAnswerInput, content string) (*coveredCardAnswer, error) {
+func (handler *Handler) answerCoveredCard(ctx context.Context, queries *db.Queries, workspace db.Workspace, batch, card db.DecisionRequest, input decisionCardAnswerInput, content string, undoUntil pgtype.Timestamptz) (*coveredCardAnswer, error) {
 	if !coveredCardOffers(batch, card, input.Option) {
 		return nil, nil
 	}
@@ -144,8 +144,13 @@ func (handler *Handler) answerCoveredCard(ctx context.Context, queries *db.Queri
 	if err != nil {
 		return nil, err
 	}
+	// A covered answer holds its wake for the batch answer's undo grace, so undoing the batch
+	// takes the covered answers back before any covered agent runs.
+	if undoUntil.Valid && undoUntil.Time.After(effectiveAt.Time) {
+		effectiveAt = undoUntil
+	}
 	commentID := dbid.NewV7()
-	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: card.ID, AnsweredByUserID: batch.HumanUserID, AnswerSource: pgtype.Text{String: "card", Valid: true}, ChatMessageIds: []pgtype.UUID{}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}})
+	answer, err := queries.CreateDecisionAnswer(ctx, db.CreateDecisionAnswerParams{DecisionRequestID: card.ID, AnsweredByUserID: batch.HumanUserID, AnswerSource: pgtype.Text{String: "card", Valid: true}, ChatMessageIds: []pgtype.UUID{}, ContentSnapshot: content, EffectiveAt: effectiveAt, IssueCommentID: commentID, WakeAt: effectiveAt, ReplyText: pgtype.Text{String: strings.TrimSpace(input.Text), Valid: true}, UndoUntil: undoUntil})
 	if err != nil {
 		return nil, err
 	}
@@ -243,6 +248,12 @@ func coverBatchRequests(ctx context.Context, queries *db.Queries, batch db.Decis
 // disclaimed, so no covered decision stays settled by an answer that is gone.
 // Every path that withdraws or cancels a batch answer calls it, setting result.Covered.
 func withdrawCoveredAnswers(ctx context.Context, queries *db.Queries, batch db.DecisionRequest, result *decisiontx.Withdrawal, userID pgtype.UUID) error {
+	return withdrawCoveredAnswersFor(ctx, queries, batch, result, userID, "human")
+}
+
+// withdrawCoveredAnswersFor is withdrawCoveredAnswers with the reason the covered answers take:
+// an undone batch answer takes its covered answers back as undone too.
+func withdrawCoveredAnswersFor(ctx context.Context, queries *db.Queries, batch db.DecisionRequest, result *decisiontx.Withdrawal, userID pgtype.UUID, reason string) error {
 	if len(batch.CoversRequestIds) == 0 {
 		return nil
 	}
@@ -274,7 +285,7 @@ func withdrawCoveredAnswers(ctx context.Context, queries *db.Queries, batch db.D
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		withdrawn, err := decisiontx.Withdraw(ctx, queries, card, answer, laneStatus, "human", userID)
+		withdrawn, err := decisiontx.Withdraw(ctx, queries, card, answer, laneStatus, reason, userID)
 		if err != nil {
 			return err
 		}
@@ -299,6 +310,7 @@ func (handler *Handler) publishWithdrawalEvents(workspaceID, actorType, actorID 
 		handler.publish(protocol.EventCommentCreated, workspaceID, actorType, actorID, payload)
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, actorType, actorID)
+	handler.revokeLeasesOfWithdrawal(workspaceID, result)
 	handler.publishDecisionAnswerUpdated(workspaceID, actorType, actorID, result.Answer.ID, result.Request.IssueID, decisionStateDisclaimed)
 	for _, item := range result.Covered {
 		handler.publishWithdrawalEvents(workspaceID, actorType, actorID, item, nil)

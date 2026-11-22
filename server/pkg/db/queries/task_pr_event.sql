@@ -51,6 +51,7 @@ RETURNING *;
 -- Structured fields only: no PR title, body or comment text, no member author.
 -- old_head_sha is the previously observed head of a head_changed event;
 -- check_name is the first failing check of a checks_failed event's head.
+-- A wakeup item (v2 tasks only) has no PR event: its PR columns come back empty.
 WITH next AS MATERIALIZED (
     SELECT d.event_id, d.task_id
     FROM task_pr_event_delivery d
@@ -59,7 +60,26 @@ WITH next AS MATERIALIZED (
     WHERE d.task_id = @task_id
       AND d.status = 'pending'
       AND t.status = 'running'
-      AND cap.capability IN ('task-supplement-pr-event-v1', 'task-supplement-pr-event-v2')
+      AND (
+          (d.item_kind = 'pr_event'
+           AND cap.capability IN ('task-supplement-pr-event-v1', 'task-supplement-pr-event-v2'))
+          OR (d.item_kind = 'wakeup'
+              AND cap.capability = 'task-supplement-pr-event-v2'
+              AND EXISTS (
+                  SELECT 1 FROM issue_wakeup w
+                  WHERE w.id = d.wakeup_id
+                    AND w.revision = d.wakeup_revision
+                    AND w.paused_reason IS NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM workspace ws
+                        WHERE ws.id = w.workspace_id AND ws.settings->>'wakeups_paused' = 'true')
+              )
+              AND (SELECT count(*) FROM issue_wakeup_receipt r
+                   WHERE r.wakeup_id = d.wakeup_id
+                     AND r.id = ANY(d.receipt_ids)
+                     AND r.processed_at IS NULL AND r.task_id IS NULL
+                  ) = cardinality(d.receipt_ids))
+      )
     ORDER BY d.created_at, d.event_id
     FOR UPDATE OF d SKIP LOCKED
     LIMIT 1
@@ -72,10 +92,13 @@ WITH next AS MATERIALIZED (
     FROM next
     WHERE d.event_id = next.event_id
       AND d.task_id = next.task_id
-    RETURNING d.event_id, d.attempt_count
+    RETURNING d.event_id, d.attempt_count, d.item_kind, d.wakeup_id, d.note
 )
-SELECT claimed.event_id, claimed.attempt_count, e.kind, e.head_sha, e.base_sha,
-       pr.pr_number,
+SELECT claimed.event_id, claimed.attempt_count, claimed.item_kind, claimed.wakeup_id,
+       COALESCE(claimed.note, '')::text AS note,
+       COALESCE(e.kind, '')::text AS kind, COALESCE(e.head_sha, '')::text AS head_sha,
+       COALESCE(e.base_sha, '')::text AS base_sha,
+       COALESCE(pr.pr_number, 0)::int AS pr_number,
        COALESCE(NULLIF(e.previous_head_sha, ''), (
            SELECT prev.head_sha FROM issue_pr_event prev
            WHERE e.kind = 'head_changed'
@@ -97,8 +120,8 @@ SELECT claimed.event_id, claimed.attempt_count, e.kind, e.head_sha, e.base_sha,
            LIMIT 1
        ), '')::text AS check_name
 FROM claimed
-JOIN issue_pr_event e ON e.id = claimed.event_id
-JOIN github_pull_request pr ON pr.id = e.pull_request_id;
+LEFT JOIN issue_pr_event e ON e.id = claimed.event_id
+LEFT JOIN github_pull_request pr ON pr.id = e.pull_request_id;
 
 -- name: AckTaskPREventDelivered :one
 -- The provider can accept input before completion while its HTTP acknowledgement
@@ -122,6 +145,7 @@ WITH locked_task AS MATERIALIZED (
     SET status = 'delivered'
     FROM acked
     WHERE e.id = acked.event_id
+      AND acked.item_kind = 'pr_event'
 ), consumed AS (
     -- A legacy PR rule receipt still waiting for the cause this notice just
     -- handled would start a redundant run after the live task ends (CHE-2600).
@@ -132,7 +156,8 @@ WITH locked_task AS MATERIALIZED (
     JOIN issue_pr_event e ON e.id = acked.event_id
     JOIN github_pull_request pr ON pr.id = e.pull_request_id
     JOIN issue_wakeup lw ON lw.issue_id = e.issue_id
-    WHERE lr.wakeup_id = lw.id
+    WHERE acked.item_kind = 'pr_event'
+      AND lr.wakeup_id = lw.id
       AND lr.processed_at IS NULL AND lr.task_id IS NULL
       AND lr.payload->>'head_sha' = e.head_sha
       AND lr.payload->>'repo_owner' = pr.repo_owner
@@ -160,6 +185,7 @@ WITH failed AS (
     SET status = 'next_turn'
     FROM failed
     WHERE e.id = failed.event_id
+      AND failed.item_kind = 'pr_event'
       AND e.status = 'delivering'
 )
 SELECT * FROM failed;
@@ -222,6 +248,7 @@ WITH failed AS (
     SET status = 'failed', failure_reason = 'pr_closed', updated_at = now()
     FROM issue_pr_event e
     WHERE e.id = d.event_id
+      AND d.item_kind = 'pr_event'
       AND e.issue_id = @issue_id
       AND e.pull_request_id = @pull_request_id
       AND e.kind NOT IN ('merged', 'closed')
@@ -255,3 +282,70 @@ WHERE t.issue_id = @issue_id
   AND t.status = 'running'
   AND cap.capability IN ('task-supplement-pr-event-v1', 'task-supplement-pr-event-v2')
 ORDER BY t.created_at;
+
+-- Wakeup delivery items (CHE-6988, plan CHE-6971 SA-1).
+
+-- name: EnqueueTaskWakeupDelivery :one
+-- Locks the exact task like EnqueueTaskPREventDelivery, so a run that ended
+-- first gets no row. event_id is a new firing id: no issue_pr_event row exists
+-- for a wakeup item. The receipts are not reserved. A receipt id already in any
+-- item of the same wakeup is never queued again (per-firing retry exclusion).
+WITH locked_task AS MATERIALIZED (
+    SELECT t.id, cap.workspace_id, t.issue_id
+    FROM agent_task_queue t
+    JOIN task_pr_event_capability cap ON cap.task_id = t.id
+    WHERE t.id = @task_id
+      AND t.status = 'running'
+      AND cap.capability = 'task-supplement-pr-event-v2'
+    FOR UPDATE OF t
+)
+INSERT INTO task_pr_event_delivery
+    (task_id, event_id, workspace_id, issue_id, status, item_kind, wakeup_id, wakeup_revision, receipt_ids, note)
+SELECT t.id, gen_random_uuid(), t.workspace_id, t.issue_id, 'pending', 'wakeup',
+       @wakeup_id::uuid, @wakeup_revision::int, @receipt_ids::uuid[], @note::text
+FROM locked_task t
+WHERE NOT EXISTS (
+    SELECT 1 FROM task_pr_event_delivery d
+    WHERE d.wakeup_id = @wakeup_id::uuid
+      AND d.receipt_ids && @receipt_ids::uuid[]
+)
+RETURNING *;
+
+-- name: ListWakeupDeliveryItems :many
+-- Every item of the wakeup with the host run's status, oldest first.
+SELECT d.*, t.status AS task_status, t.failure_reason AS task_failure_reason
+FROM task_pr_event_delivery d
+JOIN agent_task_queue t ON t.id = d.task_id
+WHERE d.item_kind = 'wakeup' AND d.wakeup_id = @wakeup_id
+ORDER BY d.created_at, d.event_id;
+
+-- name: AdmitWakeupDeliveryFallback :one
+-- The dispatcher's only write to an item. The WHERE clause repeats the
+-- admission condition for @reason, so it loses cleanly to a concurrent
+-- AckTaskPREventDelivered: no row means the ack won. Reasons:
+--   unclaimed        pending for 120 s on a running host run
+--   turn_ended       failed (turn_ended), never claimed, so no ack can win
+--   late_ack_cutoff  failed (turn_ended), claimed, 60 s past the last update
+--   rejected         failed for any other reason (provider rejected, turn not started)
+--   host_cancelled   delivered, host run cancelled
+--   host_failed      delivered, host run failed
+UPDATE task_pr_event_delivery d
+SET status = 'fallback', updated_at = now()
+FROM agent_task_queue t
+WHERE t.id = d.task_id
+  AND d.item_kind = 'wakeup'
+  AND d.wakeup_id = @wakeup_id
+  AND d.event_id = @event_id
+  AND d.status = @seen_status::text
+  AND CASE @reason::text
+      WHEN 'unclaimed' THEN d.status = 'pending' AND t.status = 'running'
+           AND d.created_at <= now() - interval '120 seconds'
+      WHEN 'turn_ended' THEN d.status = 'failed' AND d.failure_reason = 'turn_ended' AND d.attempt_count = 0
+      WHEN 'late_ack_cutoff' THEN d.status = 'failed' AND d.failure_reason = 'turn_ended' AND d.attempt_count > 0
+           AND d.updated_at <= now() - interval '60 seconds'
+      WHEN 'rejected' THEN d.status = 'failed' AND COALESCE(d.failure_reason, '') <> 'turn_ended'
+      WHEN 'host_cancelled' THEN d.status = 'delivered' AND t.status = 'cancelled'
+      WHEN 'host_failed' THEN d.status = 'delivered' AND t.status = 'failed'
+      ELSE false
+      END
+RETURNING d.*;

@@ -364,20 +364,24 @@ func sortedKeys(set map[string]bool) []string {
 }
 
 // RunBudgetRaiseParams is the issue.run_budget.raise payload. WindowID is the
-// snapshot's opaque window_id; RefusalID, when set, is part of the hashed params.
+// snapshot's opaque window_id; RefusalID and RefusalGeneration, when set, are
+// part of the hashed params: the approval answers that occurrence of the refusal
+// and no later one (CHE-6198).
 type RunBudgetRaiseParams struct {
-	IssueID   string `json:"issue_id"`
-	NewCap    int    `json:"new_cap"`
-	WindowID  string `json:"window_id"`
-	RefusalID string `json:"refusal_id,omitempty"`
+	IssueID           string `json:"issue_id"`
+	NewCap            int    `json:"new_cap"`
+	WindowID          string `json:"window_id"`
+	RefusalID         string `json:"refusal_id,omitempty"`
+	RefusalGeneration *int32 `json:"refusal_generation,omitempty"`
 }
 
 // RunBudgetTopUpParams names the issue and the window the person saw. The window
 // id is opaque: the executor compares it with the window in force.
 type RunBudgetTopUpParams struct {
-	IssueID   string `json:"issue_id"`
-	WindowID  string `json:"window_id"`
-	RefusalID string `json:"refusal_id,omitempty"`
+	IssueID           string `json:"issue_id"`
+	WindowID          string `json:"window_id"`
+	RefusalID         string `json:"refusal_id,omitempty"`
+	RefusalGeneration *int32 `json:"refusal_generation,omitempty"`
 }
 
 // IssueProjectSetParams is the issue.project.set payload. The server fills
@@ -422,6 +426,9 @@ func normalizeRunBudgetRaise(raw json.RawMessage, slots []SecretSlot) (json.RawM
 		if params.RefusalID, err = canonicalUUID("refusal_id", params.RefusalID); err != nil {
 			return nil, nil, err
 		}
+	}
+	if err := checkRefusalGeneration(params.RefusalID, params.RefusalGeneration); err != nil {
+		return nil, nil, err
 	}
 	if params.NewCap < 1 || params.NewCap > issueworkflow.MaxRunsPerIssueLimit {
 		return nil, nil, invalid("new_cap must be 1-%d", issueworkflow.MaxRunsPerIssueLimit)
@@ -486,11 +493,26 @@ func normalizeRunBudgetTopUp(raw json.RawMessage, slots []SecretSlot) (json.RawM
 			return nil, nil, err
 		}
 	}
+	if err := checkRefusalGeneration(params.RefusalID, params.RefusalGeneration); err != nil {
+		return nil, nil, err
+	}
 	if err := checkRunBudgetWindowID(params.WindowID); err != nil {
 		return nil, nil, err
 	}
 	out, err := json.Marshal(params)
 	return out, nil, err
+}
+
+// checkRefusalGeneration: a generation names the occurrence of a refusal, so it
+// needs the refusal and cannot be negative.
+func checkRefusalGeneration(refusalID string, generation *int32) error {
+	if generation == nil {
+		return nil
+	}
+	if refusalID == "" || *generation < 0 {
+		return invalid("refusal_generation needs a refusal_id and cannot be negative")
+	}
+	return nil
 }
 
 // checkRunBudgetWindowID: the server compares the id as a string, so only its

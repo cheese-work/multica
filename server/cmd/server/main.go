@@ -24,6 +24,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
+	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/maintenance"
@@ -31,6 +32,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/profiling"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/scheduler"
+	"github.com/multica-ai/multica/server/internal/secrets"
 	"github.com/multica-ai/multica/server/internal/selfhosttelemetry"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -310,6 +312,30 @@ func jwtSecretBootError(jwtSecret, appEnv string) error {
 	return auth.ValidateJWTSecret(jwtSecret)
 }
 
+// secretsKeyBootError refuses a production boot without a usable scoped-secrets
+// key (MULTICA_SECRETS_KEY). Outside production a missing or malformed key only
+// disables the feature; the router logs that. The text never carries key material.
+func secretsKeyBootError(status secrets.KeyStatus, appEnv string) error {
+	if !strings.EqualFold(strings.TrimSpace(appEnv), "production") || status == secrets.KeyOK {
+		return nil
+	}
+	msg := "MULTICA_SECRETS_KEY is required: generate one with `openssl rand -base64 32`, set it in the server environment and keep a backup copy"
+	if status == secrets.KeyMalformed {
+		msg += " (value is not base64 of 32 bytes)"
+	}
+	return fmt.Errorf("%s", msg)
+}
+
+// exitOnSecretsKeyBootError stops the process when secretsKeyBootError rejects
+// the environment. main and the subprocess boot test share it.
+func exitOnSecretsKeyBootError() {
+	_, status, _ := secrets.LoadKeyring(os.Getenv)
+	if err := secretsKeyBootError(status, os.Getenv("APP_ENV")); err != nil {
+		slog.Error("refusing to start: "+err.Error(), "app_env", os.Getenv("APP_ENV"))
+		os.Exit(1)
+	}
+}
+
 // newMainHTTPServer builds the public HTTP server with the production timeout
 // defaults. These values are load-bearing safety settings, not cosmetic tuning,
 // so they live in one helper that main() and the config regression test share.
@@ -342,6 +368,7 @@ func main() {
 		)
 		os.Exit(1)
 	}
+	exitOnSecretsKeyBootError()
 	if os.Getenv("JWT_SECRET") == "" {
 		slog.Warn("JWT_SECRET is not set — using insecure dev default (allowed only because APP_ENV is not production).")
 	}
@@ -702,6 +729,12 @@ func main() {
 	// member_delegation_day exists only for self-host telemetry; DO_NOT_TRACK
 	// stops writing it as well as sending the snapshot.
 	h.TaskService.RecordMemberActivity = telemetryConfig.Enabled
+	// One server_deploy row per new commit (CHE-5709, D14). Display data only:
+	// a failed write is logged and never stops the boot.
+	deployVersion, _, deployCommit := normalizeServerBuildInfo(version, build, commit)
+	if _, err := h.RecordServerDeploy(context.Background(), deployCommit, deployVersion); err != nil {
+		slog.Warn("record server deploy failed", "error", err)
+	}
 	var replicaQueries *db.Queries
 	if replicaPool != nil {
 		replicaQueries = db.New(replicaPool)
@@ -739,8 +772,12 @@ func main() {
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
+	// A pending workflow switch applies when its issue's last live task ends (CHE-7669).
+	h.RegisterDeferredWorkflowSwitch(bus)
+	// A chained run that failed gets one retry, then blocks the issue (CHE-7675). After the switch: a pending switch wins.
+	h.RegisterChainedRunRetry(bus)
 	// A task's Steel browser leases end with the task (CHE-4734).
-	(&browserlease.Revoker{Queries: queries, Bus: bus}).Register()
+	(&browserlease.Revoker{Queries: queries, Bus: bus, Pool: pool, Audit: handler.BrowserLeaseAudit}).Register()
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read
@@ -769,6 +806,8 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	// Claim poll histogram -> claim_poll_stats once a minute (CHE-8749 S7a).
+	go service.RunClaimPollStatsFlusher(sweepCtx, taskSvc.PollStats, queries)
 	go runBackgroundDeadlineSweeper(sweepCtx, taskSvc)
 	go runProviderReleaseController(sweepCtx, taskSvc)
 	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
@@ -789,6 +828,7 @@ func main() {
 	go h.RunElevationFenceSweeper(sweepCtx)
 	go h.RunRunBudgetHookSweeper(sweepCtx)
 	go h.RunSteerReplaySweeper(sweepCtx)
+	go h.RunHandoffIntentSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -828,6 +868,20 @@ func main() {
 	}
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
+	// CHE-4143 step 7: stack-link triggers (pull_request webhooks via the
+	// handler, and a bounded pass in the 10 min sweep). The mode gate and the
+	// GITHUB_STACK_AUTOLINK=0 kill live in the executor; the default mode is report.
+	if h.PRRefresh.Enabled() {
+		stackStore := ghstack.NewStore(pool)
+		stackLinker := &ghstack.Dispatcher{
+			Runner:  &ghstack.Executor{API: h.PRRefresh.Client(), Modes: stackStore, Reporter: stackStore},
+			Links:   stackStore,
+			Backoff: h.PRRefresh,
+		}
+		stackLinker.Start(sweepCtx)
+		h.StackAutolink = stackLinker
+		h.PRRefresh.AddSweep(stackLinker.Sweep) // before Start: the sweep loop reads the list
+	}
 	h.PRRefresh.Start(sweepCtx)
 	go h.BackfillGitHubAccountIDs(sweepCtx)
 	go h.RunGitHubIntakeWorker(sweepCtx)
@@ -932,14 +986,25 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
-	if err := schedulerMgr.Register(scheduler.DMProgressDispatchJob(&service.DMProgressDispatcher{Pool: pool, Queries: queries, Bus: bus})); err != nil {
+	if err := schedulerMgr.Register(scheduler.DMProgressDispatchJob(&service.DMProgressDispatcher{Pool: pool, Queries: queries, Bus: bus, DeliverCards: dmProgressDeliveryEnabled()})); err != nil {
 		slog.Error("scheduler: register dm progress dispatch", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
 		slog.Error("scheduler: register idle started guard", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.BlockedEntryLinkSweepJob(h)); err != nil {
+		slog.Error("scheduler: register blocked entry link sweep", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.MemberOwnedSweepJob(h)); err != nil {
 		slog.Error("scheduler: register member-owned issue sweep", "error", err)
+	}
+	// CHE-5708: scheduled daemon update cycles fire per machine and drain on a
+	// 30 s driver. The ready_to_update hook (UpdateCycleReady) lands with child 9.
+	if err := schedulerMgr.Register(scheduler.DaemonUpdateFireJob(pool, queries, h)); err != nil {
+		slog.Error("scheduler: register daemon update fire", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.DaemonUpdateCyclesJob(h)); err != nil {
+		slog.Error("scheduler: register daemon update cycles", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
@@ -1136,4 +1201,16 @@ func main() {
 		},
 	}.run()
 	slog.Info("server stopped")
+}
+
+// dmProgressDeliveryEnabled is the server switch for posting progress cards to
+// DMs (CHE-7568). It is off unless MULTICA_DM_PROGRESS_DELIVERY is "true" or
+// "1"; turn it on in the release that ships the web card and its mute controls
+// (CHE-3408).
+func dmProgressDeliveryEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_DM_PROGRESS_DELIVERY"))) {
+	case "true", "1":
+		return true
+	}
+	return false
 }

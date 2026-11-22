@@ -24,6 +24,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -301,6 +302,46 @@ func TestIssuePullRequestResponseHidesUnavailableSnapshot(t *testing.T) {
 	}
 	if resp.Mergeable == nil || *resp.Mergeable != "conflicting" || resp.ChecksFailed != 1 {
 		t.Fatalf("current snapshot was not exposed: %+v", resp)
+	}
+}
+
+// TestSnapshotPausedUntilNamesTheInstallationRateLimit (CHE-8795): a stalled
+// snapshot names its reason on the PR read. The field is the pause deadline for
+// that PR's installation (RFC3339 UTC) and null when no pause is active.
+func TestSnapshotPausedUntilNamesTheInstallationRateLimit(t *testing.T) {
+	manager := ghsnapshot.NewManager(nil, nil, nil, nil)
+
+	if got := snapshotPausedUntil(manager, 1); got != nil {
+		t.Fatalf("no pause: snapshot_paused_until = %q, want null", *got)
+	}
+	if got := snapshotPausedUntil(nil, 1); got != nil {
+		t.Fatalf("nil manager: snapshot_paused_until = %q, want null", *got)
+	}
+
+	manager.ExtendRateLimit(1, 30*time.Minute)
+	got := snapshotPausedUntil(manager, 1)
+	if got == nil {
+		t.Fatal("paused installation: snapshot_paused_until is null")
+	}
+	until, err := time.Parse(time.RFC3339, *got)
+	if err != nil {
+		t.Fatalf("snapshot_paused_until %q is not RFC3339: %v", *got, err)
+	}
+	if d := time.Until(until); d < 29*time.Minute || d > 31*time.Minute {
+		t.Fatalf("snapshot_paused_until in %v, want about 30m", d)
+	}
+	if other := snapshotPausedUntil(manager, 2); other != nil {
+		t.Fatalf("a pause on installation 1 leaks to installation 2: %q", *other)
+	}
+
+	// The wire key is always present: null when no pause, so a reader never
+	// has to tell "absent" from "no pause".
+	body, err := json.Marshal(GitHubPullRequestResponse{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), `"snapshot_paused_until":null`) {
+		t.Fatalf("response JSON lacks snapshot_paused_until:null: %s", body)
 	}
 }
 
@@ -1457,11 +1498,13 @@ func postPRWebhook(t *testing.T, h *Handler, secret string, installationID int64
 			"created_at":       "2026-04-28T00:00:00Z",
 			"updated_at":       "2026-04-29T00:00:00Z",
 			"head":             map[string]any{"ref": branch, "repo": githubRepositoryForTest("acme", "widget")},
+			"base":             map[string]any{"ref": "main"},
 			"user":             map[string]any{"login": "octocat"},
 		},
 		"repository":   githubRepositoryForTest("acme", "widget"),
 		"installation": map[string]any{"id": installationID},
 	}
+	payload["repository"].(map[string]any)["default_branch"] = "main"
 	raw, _ := json.Marshal(payload)
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write(raw)

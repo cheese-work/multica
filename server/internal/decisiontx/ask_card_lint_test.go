@@ -175,3 +175,17 @@ func TestMentionHuman(test *testing.T) {
 		test.Errorf("already mentioned: got %q added %v", got, added)
 	}
 }
+
+func TestCardThreadOn(test *testing.T) {
+	for raw, want := range map[string]bool{"": false, `{}`: false, `{"decision_card_thread":"off"}`: false, `{"decision_card_thread":"on"}`: true} {
+		got, err := CardThreadOn([]byte(raw))
+		if err != nil || got != want {
+			test.Errorf("%q: got %v, %v; want %v", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{`{"decision_card_thread":"warn"}`, `{"decision_card_thread":null}`, `{"decision_card_thread":true}`, `{"decision_card_thread":""}`, `nope`} {
+		if _, err := CardThreadOn([]byte(raw)); err == nil {
+			test.Errorf("%q must be refused", raw)
+		}
+	}
+}

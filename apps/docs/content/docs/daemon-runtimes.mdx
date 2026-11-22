@@ -86,7 +86,7 @@ The registered command is `multica daemon start --foreground` for that profile, 
 
 ### Scheduled self-update [#update-schedule]
 
-Each machine can hold one update schedule: a five-field cron, a time zone (default `Asia/Ho_Chi_Minh`) and a maintenance window of 10 to 30 minutes (default 30; 30 is the hard limit). Every runtime on the machine shows the same schedule. The machine owner and the workspace owner set it with `multica daemon update-schedule set`; the server rejects an invalid cron, an unknown time zone, a window outside 10 to 30 minutes, and a daemon launched by the Desktop app, which cannot update itself. This release stores and edits the schedule and shows the next 3 fire times; the update cycle itself arrives in later releases.
+Each machine can hold one update schedule: a five-field cron, a time zone (default `Asia/Ho_Chi_Minh`) and a maintenance window of 10 to 30 minutes (default 30; 30 is the hard limit). Every runtime on the machine shows the same schedule. The machine owner and the workspace owner set it with `multica daemon update-schedule set`; the server rejects an invalid cron, an unknown time zone, a window outside 10 to 30 minutes, and a daemon launched by the Desktop app, which cannot update itself. At each cron time (read in the schedule's time zone) the server checks the machine. If no newer build exists, the cycle ends as `up_to_date` and nothing is paused. Otherwise it pauses the machine for the maintenance window so no new run starts, and waits for the runs already going to finish. A cron time the server reaches more than 2 minutes late is skipped, not fired late. The cycle ends early as `cancelled` if someone resumes or pauses the machine by hand, and as `no_window` if runs are still going 3 minutes before the window closes; the server then lifts its own pause and the runs keep going. The machine list shows the last outcome and when it was written. This release runs the wait; the update step itself arrives in a later release.
 
 ## Dispatch and online status
 
@@ -111,7 +111,7 @@ Detailed states and retry rules are in [Runs](/tasks).
 
 One daemon executes at most 20 runs at a time by default; each agent at most 6. Effective concurrency is the smaller of the two.
 
-Once a limit is reached, new runs keep queueing. Adjust a single agent's concurrency in the agent settings, and the machine-wide cap with `MULTICA_DAEMON_MAX_CONCURRENT_TASKS`. Parallel runs compete for machine capacity, tool account quota, and the same working directory all at once.
+Once a limit is reached, new runs keep queueing. Adjust a single agent's concurrency in the agent settings, and the machine-wide cap with `MULTICA_DAEMON_MAX_CONCURRENT_TASKS`. Set `reserved_chat_slots` (`multica config set reserved_chat_slots 3`) to keep that many slots for chat (DM) runs: issue runs use at most `max_concurrent_tasks - reserved_chat_slots` slots, chat runs may use all of them, and the default `0` changes nothing. Group channel conversations count with issue runs; only direct chats use the reserved slots. `multica daemon status --output json` shows `reserved_chat_slots` and `reserved_chat_slots_free`. Parallel runs compete for machine capacity, tool account quota, and the same working directory all at once.
 
 Token usage, cost, and failures across runs are summarized per workspace on the [Analytics](/analytics) page; `multica runtime usage <runtime-id>` shows token usage for a single runtime.
 

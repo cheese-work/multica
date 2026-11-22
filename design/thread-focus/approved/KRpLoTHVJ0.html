@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Pick submitted (S-c) · doc</title><style>
+*{margin:0;box-sizing:border-box}:root{--s:#fff;--fg:oklch(.141 .005 285.8);--m:oklch(.505 .016 285.9);--sb:oklch(.92 .004 286.3);--br:oklch(.56079497 .19449888 256.41258418)}
+body{width:960px;background:var(--s);color:var(--fg);font:14px/22px "Helvetica Neue",Helvetica,Arial,"Liberation Sans",sans-serif;padding:28px 40px}
+h1{font-size:20px;line-height:28px;font-weight:600}.meta{font-size:12px;line-height:16px;color:var(--m);margin:2px 0 14px}h2{font-size:14px;line-height:20px;font-weight:600;margin:16px 0 4px;padding-top:12px;border-top:1px solid var(--sb)}p,li{font-size:14px;line-height:22px;max-width:80ch}code{font:12px/16px ui-monospace,"Liberation Mono",monospace}
+.bk{height:44px;padding:0 16px;border:1px solid var(--sb);border-radius:6px;background:var(--s);font:inherit;font-size:14px;cursor:pointer;color:var(--fg)}.bk:focus-visible{outline:2px solid var(--br);outline-offset:2px}
+</style></head><body><h1>Pick submitted (S-c) · doc</h1><p class="meta">Frame S-c, shared by both directions, desktop 1440 and phone 390. The state right after "Submit pick".</p>
+<h2>Purpose</h2><p>Confirm the decision and show what is left: the card collapsed in its comment, a "Pick saved" bar, and one thread still waiting.</p>
+<h2>UX reasoning</h2><p>The bar says what happened and what remains ("You picked 30 s. 1 thread still waits on you."), so the next step is clear without searching. The decided thread stays visible in Focus and folds into the "Decided" row in Follow. In the prototype, one button returns to the issue view of the direction under review.</p>
+<h2>UI reasoning</h2><p>The saved bar uses the tinted info style with a check icon and a bold lead, the same as other confirmations on the page. The remaining waiting thread keeps its filled "Waiting on you" chip.</p>
+<h2>Ergonomics</h2><p>On phone, the Back to the issue button is full width and 44 px, directly under the collapsed card. The counter on the bar gives the next target without scrolling.</p>
+<h2>States</h2><p>Pick saved with one thread left (this frame). With nothing left, the page shows the empty state in B-f. A failed save shows the error state in B-f.</p>
+<h2>Motion</h2><p>The card collapses with a 150 ms dissolve; the counter changes with a swap. With reduced motion, both are instant.</p>
+<h2>Accessibility</h2><p>The saved bar is <code>role=status</code>, so the result is announced. The decided state is shown in text ("Decided", "You picked 30 s"), not in colour alone. Buttons have visible focus rings.</p>
+<p style="margin-top:18px"><button type="button" class="bk" data-doop-id="doc-back" data-doop-on="click" data-doop-action="navigate:kpQ01u8mPy">Back to the index</button></p></body></html>

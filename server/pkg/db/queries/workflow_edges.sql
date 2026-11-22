@@ -121,3 +121,17 @@ WHERE id = sqlc.arg('id')::uuid AND workspace_id = sqlc.arg('workspace_id')::uui
   AND sqlc.arg('runs')::int > COALESCE(max_runs_override, sqlc.arg('workflow_max')::int)
 RETURNING max_runs_override;
 
+
+-- name: DeleteIssueWorkflowEdgesWatch :exec
+-- Drops the issue's own watch. A workflow switch that keeps the status does not
+-- fire the status trigger, so the switch replaces the watch itself (CHE-7670).
+DELETE FROM issue_wakeup WHERE issue_id = sqlc.arg('issue_id')::uuid AND system_rule = 'workflow_edges';
+
+-- name: StartIssueWorkflowEdgesWatch :exec
+-- Starts the watch the status trigger starts on step entry (694), due at once;
+-- created_at is the step-entry time that edge timeouts count from.
+INSERT INTO issue_wakeup(id, workspace_id, issue_id, instruction, kind, mode, event_types, timezone,
+                         condition_state, enabled, system_rule, next_fire_at, created_at, updated_at)
+VALUES (gen_random_uuid(), sqlc.arg('workspace_id')::uuid, sqlc.arg('issue_id')::uuid, '', 'at', 'once', '{}', 'UTC',
+        sqlc.arg('status')::text, true, 'workflow_edges', now(), now(), now())
+ON CONFLICT (issue_id, system_rule) WHERE system_rule IS NOT NULL DO NOTHING;

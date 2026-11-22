@@ -375,3 +375,7 @@ func isCodexContextKV(kv string) bool {
 	key, _, ok := strings.Cut(kv, "=")
 	return ok && codexContextKeys[strings.TrimSpace(key)]
 }
+
+// Of is the lab of a provider and model, or "" when the lock does not list the
+// pair. A nil Labs lists nothing.
+func (l Labs) Of(provider, model string) string { return l[provider+"/"+model] }

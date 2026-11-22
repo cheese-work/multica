@@ -11,10 +11,8 @@ import (
 // guardShimNames are the tools the guard shim directory fronts (CHE-5194 T2).
 var guardShimNames = []string{"git", "gh", "sleep"}
 
-// guardedTools are the shims that call `multica guard exec` (CHE-5194 T4): gh
-// for plugins 1 and 2, sleep for plugin 2. git has no guard plugin yet and its
-// shim only hands over to the next git on the PATH.
-var guardedTools = map[string]bool{"gh": true, "sleep": true}
+// guardedTools call the guard before handing over to the credential broker.
+var guardedTools = map[string]bool{"git": true, "gh": true, "sleep": true}
 
 // frontGuardShims puts a guard shim directory first on agentEnv["PATH"] for
 // every run (CHE-5194 T2), whatever the runtime and whether or not credential
@@ -47,6 +45,9 @@ func frontGuardShims(agentEnv map[string]string, taskTempDir, multicaBin string)
 		if target == "" || strings.ContainsAny(target, "'\n") {
 			continue
 		}
+		// Cross-tool lookups (gh rules reading git state) must also bypass the
+		// guard front, while still going through credential-aware tools.
+		agentEnv["MULTICA_GUARD_REAL_"+strings.ToUpper(name)] = target
 		script := fmt.Sprintf("#!/bin/sh\nexec '%s' \"$@\"\n", target)
 		if guardedTools[name] && multicaBin != "" && !strings.ContainsAny(multicaBin, "'\n") {
 			// The guard runs the real tool itself, named by MULTICA_GUARD_REAL_<TOOL>.

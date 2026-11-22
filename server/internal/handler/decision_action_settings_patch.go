@@ -5,14 +5,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/mergequeue"
 	"net/http"
 	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/capabilityrouting"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
+	"github.com/multica-ai/multica/server/internal/designguard"
+	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -46,8 +50,22 @@ func init() {
 	registerConfigChange(settingsPatchAction, configChange{
 		Fields: []string{decisionaction.SettingsField},
 		Lock: func(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, params json.RawMessage) error {
-			_, err := loadWorkspaceTarget(ctx, queries, workspaceID, params, http.StatusConflict, true)
-			return err
+			workspace, err := loadWorkspaceTarget(ctx, queries, workspaceID, params, http.StatusConflict, true)
+			if err != nil {
+				return err
+			}
+			var patch settingsPatchParams
+			if err := json.Unmarshal(params, &patch); err != nil || !typedFenceKeysChangeRaw(workspace.Settings, patch.Settings) {
+				return nil
+			}
+			// A patch that changes a key a typed send reads must not commit while a send is open. This only
+			// tries, so the approval never waits for a send; a refusal retries with the row locks released.
+			if held, err := queries.TryLockTypedSettingsFence(ctx, workspaceID); err != nil {
+				return err
+			} else if !held {
+				return atStep("settings_fence", errBusyRetry)
+			}
+			return nil
 		},
 		Read:    readSettingsPatch,
 		Apply:   applySettingsPatch,
@@ -113,9 +131,25 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateAgentCannotDoSetting(map[string]any{key: value})
 	case key == decisiontx.SettingCardLintMode:
 		err = validateCardLintSetting(map[string]any{key: value})
-	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey:
+	case key == decisiontx.SettingCardThread:
+		err = validateCardThreadSetting(map[string]any{key: value})
+	case key == decisiontx.SettingServerActions || key == decisiontx.SettingStandingAnswers:
+		err = validateServerActionSetting(map[string]any{key: value})
+	case key == "auto_close":
+		err = validateAutoClosePatch(raw)
+	case key == "blocked_run_skip":
+		err = validateBlockedRunSkipPatch(raw)
+	case key == "run_guard" || key == "run_budget":
+		err = decisionaction.ValidateModeSetting(key, raw)
+	case key == designguard.SettingKey:
+		err = validateDesignGuardSetting(map[string]any{key: value})
+	case key == decisionAskParkKey:
+		err = validateDecisionAskParkSetting(map[string]any{key: value})
+	case key == askguard.SettingKey || key == askguard.ReversibleSettingKey || key == askguard.OwnerScriptSettingKey:
 		// validateAskGuardSetting reads a missing or non-string value as "" and refuses it.
 		err = validateAskGuardSetting(map[string]any{key: value})
+	case slices.Contains(mergequeue.Keys, key):
+		err = mergequeue.ValidateSetting(map[string]any{key: value})
 	case key == decisiontx.SettingHeldMode:
 		err = validateHeldSettingModeSetting(map[string]any{key: value})
 	case key == "compact_prompt":
@@ -140,6 +174,12 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		}
 	case key == issueworkflow.SettingsKeyWorkflowByType:
 		err = issueworkflow.ValidateWorkflowByType(raw)
+	case key == capabilityrouting.SettingsKey:
+		err = capabilityrouting.Validate(raw)
+	case key == intakehold.SettingKey:
+		err = intakehold.Validate(raw)
+	case key == issueworkflow.SettingsKeyQuickFirst:
+		err = issueworkflow.ValidateQuickFirst(raw)
 	case key == "pr_event_capture":
 		flags, isObject := value.(map[string]any)
 		if !isObject {
@@ -261,6 +301,12 @@ func readSettingsPatch(ctx context.Context, queries *db.Queries, workspaceID pgt
 	if err != nil {
 		return read, err
 	}
+	if err := refuseNewCannotDoGapRaw(stored, after); err != nil {
+		return read, settingsInvalid("%v", err)
+	}
+	if err := checkCapabilityRoutingAgents(ctx, queries, workspaceID, params.Settings); err != nil {
+		return read, err
+	}
 	before := namedSettings(stored, keys)
 	if read.LiveSHA256, err = decisionaction.SettingsDigest(read.TargetID, before); err != nil {
 		return read, err
@@ -290,6 +336,9 @@ func applySettingsPatch(ctx context.Context, execution decisionActionExecution, 
 	after, err := settingsPatchAfter(stored, params.Settings)
 	if err != nil {
 		return err
+	}
+	if err := refuseNewCannotDoGapRaw(stored, after); err != nil {
+		return settingsInvalid("%v", err)
 	}
 	for key, value := range after {
 		if value == nil {

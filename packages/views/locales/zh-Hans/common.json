@@ -186,5 +186,30 @@
       "open_card": "打开卡片",
       "unreadable": "此审批对你不可用，或已不存在。请让智能体重新提出。"
     }
+  },
+  "budget_receipt": {
+    "applied_runs": "已应用。应用时 {{issue}} 显示已运行 {{used}} 次，上限 {{limit}} 次。",
+    "runs_used": "已用运行次数",
+    "change": "{{used}}/{{limit}} → {{usedAfter}}/{{limitAfter}}",
+    "change_new_window": "{{used}}/{{limit}} → {{usedAfter}}/{{limitAfter}}（新窗口）",
+    "outcome": {
+      "run_queued": "运行已排队。",
+      "run_started": "运行已开始。",
+      "status_restored": "状态已恢复。",
+      "still_blocked_runs": "仍被阻止：没有剩余运行次数。",
+      "still_blocked_tokens": "仍被阻止：令牌预算已用完。",
+      "still_blocked": "仍被阻止。",
+      "later_window": "未恢复：更新的预算窗口已取代此窗口。",
+      "status_moved": "未恢复：该任务已移至其他状态。",
+      "window_changed": "未恢复：预算窗口已变更。",
+      "issue_closed": "未恢复：该任务已关闭。",
+      "agent_archived": "未恢复：该智能体已归档。",
+      "restore_refused": "未恢复：无法恢复状态。",
+      "unknown_origin": "未恢复：阻止前的状态未知。请手动更改状态。",
+      "assignee_changed": "未恢复：负责人已变更。",
+      "source_unknown": "未恢复：原始触发来源未知。",
+      "source_not_delivered": "未恢复：原始触发来源已无待办工作。",
+      "superseded": "未恢复。"
+    }
   }
 }

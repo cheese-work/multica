@@ -451,7 +451,7 @@ func resolveHandoffHandler(ctx context.Context, client *cli.APIClient, value str
 	switch strings.ToLower(v) {
 	case "", "none":
 		return map[string]any{"type": "none"}, nil
-	case "project_lead", "creator":
+	case "project_lead", "creator", "author":
 		return map[string]any{"type": strings.ToLower(v)}, nil
 	}
 	var typ, id string

@@ -51,6 +51,8 @@ config="$(
     config
 )"
 
+require_config "$config" 'MULTICA_SECRETS_KEY: ""'
+require_config "$config" 'MULTICA_SECRETS_KEY_PREVIOUS: ""'
 require_config "$config" 'published: "3100"'
 require_config "$config" 'published: "9100"'
 require_config "$config" 'FRONTEND_ORIGIN: http://localhost:3100'
@@ -161,6 +163,10 @@ worktree_env="$tmp_dir/.env.worktree"
 WORKTREE_NAME=selfhost-config-test bash scripts/init-worktree-env.sh "$worktree_env" >/dev/null
 worktree_backend_port="$(sed -n 's/^PORT=//p' "$worktree_env")"
 require_env "$(cat "$worktree_env")" "MULTICA_PUBLIC_URL=http://localhost:${worktree_backend_port}"
+if ! grep -Eq '^MULTICA_SECRETS_KEY=[A-Za-z0-9+/]{43}=$' "$worktree_env"; then
+  echo "init-worktree-env.sh must write a 44-char base64 MULTICA_SECRETS_KEY" >&2
+  exit 1
+fi
 
 resolve_local_public_url() {
   env -i PATH="$PATH" bash -c '

@@ -58,7 +58,7 @@ export function validateBlocksMap(doc, { profileIds, lockLabels }) {
       if (typeof c?.[k] !== "string" || !c[k]) errors.push(`${at}: ${k} is required`);
     }
     for (const k of Object.keys(c ?? {})) {
-      if (!["lock_file", "state", "profile", "fixture", "steps"].includes(k)) errors.push(`${at}: ${/annotation/i.test(k) ? "annotation field not allowed" : `unknown field ${k}`}`);
+      if (!["lock_file", "state", "profile", "fixture", "steps", "blocks"].includes(k)) errors.push(`${at}: ${/annotation/i.test(k) ? "annotation field not allowed" : `unknown field ${k}`}`);
     }
     if (c?.steps !== undefined) {
       if (!Array.isArray(c.steps)) errors.push(`${at}: steps must be a list`);
@@ -66,6 +66,12 @@ export function validateBlocksMap(doc, { profileIds, lockLabels }) {
         const sel = st?.click ?? st?.type;
         const shape = st && typeof sel === "string" && sel && (st.click !== undefined ? Object.keys(st).length === 1 : typeof st.text === "string" && Object.keys(st).length === 2);
         if (!shape) errors.push(`${at}: steps[${n}] must be { click: <selector> } or { type: <selector>, text: <string> }`);
+      });
+    }
+    if (c?.blocks !== undefined) {
+      if (!Array.isArray(c.blocks)) errors.push(`${at}: blocks must be a list`);
+      else c.blocks.forEach((id, n) => {
+        if (typeof id !== "string" || !Object.hasOwn(doc?.blocks ?? {}, id)) errors.push(`${at}: blocks[${n}] ${JSON.stringify(id)} is not in the blocks map`);
       });
     }
     if (typeof c?.state === "string" && (!STATE.test(c.state) || !lockLabels.has(c.state.slice(1)))) {

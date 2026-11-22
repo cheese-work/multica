@@ -45,6 +45,23 @@ multica chat compact --summary-file ./summary.md            # same DM id, histor
 - If the server does not support in-place compaction, the command stops and
   the DM is unchanged.
 
+The compaction task runs with the workspace's compact agent; an owner or admin
+sets it (task tokens are refused), and with none set the DM's own agent runs it:
+
+```bash
+multica workspace update <workspace> --compact-agent <agent-id-or-name>   # name resolved in that workspace
+multica workspace update <workspace> --compact-agent null                 # reset
+```
+
+- Alias for `multica workspace background-agents set compact`; exclusive with
+  every other `workspace update` flag. The CLI reads the value back and fails
+  with `compact agent was not saved` when the server kept another one.
+- A compaction task cannot fork or archive the DM, and only the current
+  compact agent may finish it. `multica chat compact` / `continue` then print
+  the stable code and message on stderr and exit 3:
+  `compaction_agent_not_current` (this agent is no longer the compact agent),
+  `compaction_continue_refused` (finish with `chat compact`, not `continue`).
+
 ## Rename a DM
 
 ```bash
@@ -137,3 +154,15 @@ DM's divider id is not found.
 - `multica chat segment <divider-id> [--limit N] [--before <next_before>]`
   reads one segment, newest page first. When `has_more` is true the reply
   carries `next_before`; pass it as `--before` to read the next older page.
+
+## DM progress follows
+
+A follow makes a DM show an issue's progress cards. Members pass
+`--chat <chat-session-id>` for a DM they created. Agents pass no `--chat`: the
+lane comes from the DM that started the task, and a task with no DM is refused.
+
+- `multica issue follow <issue-id>` starts following.
+- `multica issue unfollow <issue-id>` stops following.
+- `multica issue mute-follow <issue-id>` mutes the cards, keeping the follow.
+- `multica issue unmute-follow <issue-id>` turns the cards back on.
+- `multica issue follows --chat <chat-session-id>` lists the follows in a DM.

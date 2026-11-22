@@ -22,6 +22,7 @@ type fakePR struct {
 	Draft     bool
 	Reviewers []string
 	Body      string
+	Author    string // PR author login; empty means a plain user
 }
 
 func (p *fakePR) url() string { return fmt.Sprintf("https://github.com/%s/pull/%d", p.Repo, p.Number) }
@@ -57,6 +58,11 @@ type fakeEnv struct {
 	unprotected map[string]bool   // "owner/name/branch" -> branch is not protected
 	files       map[string]string // "owner/name@ref" -> file contents
 	apiFails    bool              // every gh api call exits 1 with HTTP 502
+
+	// Git read of the merge-queue tip (fetch, ls-tree, cat-file)
+	gitFetchExit int    // nonzero: git fetch exits with it
+	gitRepo      string // owner/name from `git remote add origin`
+	gitTip       string // FETCH_HEAD
 }
 
 func newFake() *fakeEnv {
@@ -140,6 +146,9 @@ func has(args []string, names ...string) bool {
 }
 
 func (f *fakeEnv) git(args []string) Result {
+	if r, ok := f.gitRead(args); ok {
+		return r
+	}
 	switch {
 	case len(args) >= 2 && args[0] == "branch" && args[1] == "--show-current":
 		return Result{Stdout: f.branch + "\n"}
@@ -215,12 +224,13 @@ type jsonPR struct {
 	BaseRefName         string              `json:"baseRefName"`
 	HeadRepositoryOwner map[string]string   `json:"headRepositoryOwner"`
 	ReviewRequests      []map[string]string `json:"reviewRequests"`
+	Author              map[string]string   `json:"author"`
 }
 
 func (p *fakePR) json() jsonPR {
 	j := jsonPR{Number: p.Number, URL: p.url(), Title: p.Title, IsDraft: p.Draft, Body: p.Body,
 		HeadRefName: p.HeadRef, BaseRefName: p.Base,
-		HeadRepositoryOwner: map[string]string{"login": p.HeadOwner}}
+		HeadRepositoryOwner: map[string]string{"login": p.HeadOwner}, Author: map[string]string{"login": p.Author}}
 	for _, r := range p.Reviewers {
 		j.ReviewRequests = append(j.ReviewRequests, map[string]string{"__typename": "User", "login": r})
 	}
@@ -383,4 +393,51 @@ func (f *fakeEnv) api(args []string) Result {
 func (f *fakeEnv) setRules(repo, branch, tip, content string) {
 	f.tips[repo+"/"+branch] = tip
 	f.files[repo+"@"+tip] = content
+}
+
+// gitRead serves the Git reads of the merge-queue path against the same tips
+// and files as the REST fake: init, remote add, fetch, rev-parse FETCH_HEAD,
+// ls-tree and cat-file. ok is false for any other git call.
+func (f *fakeEnv) gitRead(args []string) (Result, bool) {
+	for len(args) >= 2 && (args[0] == "-C" || args[0] == "-c") {
+		args = args[2:]
+	}
+	if len(args) == 0 {
+		return Result{}, false
+	}
+	switch {
+	case args[0] == "init":
+		return Result{}, true
+	case len(args) == 4 && args[0] == "remote" && args[1] == "add":
+		u := strings.TrimSuffix(args[3], ".git")
+		parts := strings.Split(u, "/")
+		f.gitRepo = parts[len(parts)-2] + "/" + parts[len(parts)-1]
+		return Result{}, true
+	case args[0] == "fetch":
+		if f.gitFetchExit != 0 {
+			return Result{Exit: f.gitFetchExit, Stderr: "fatal: unable to access the repository"}, true
+		}
+		branch := strings.TrimPrefix(args[len(args)-1], "refs/heads/")
+		tip, ok := f.tips[f.gitRepo+"/"+branch]
+		if !ok {
+			tip = "0000000000000000000000000000000000000000"
+		}
+		f.gitTip = tip
+		return Result{}, true
+	case len(args) == 2 && args[0] == "rev-parse" && args[1] == "FETCH_HEAD":
+		return Result{Stdout: f.gitTip + "\n"}, true
+	case args[0] == "ls-tree":
+		if _, ok := f.files[f.gitRepo+"@"+args[1]]; !ok {
+			return Result{}, true
+		}
+		return Result{Stdout: "100644 blob 0123456789abcdef0123456789abcdef01234567\t" + RepoRulesFile + "\n"}, true
+	case args[0] == "cat-file" && len(args) == 3 && args[1] == "-p":
+		sha, path, _ := strings.Cut(args[2], ":")
+		body, ok := f.files[f.gitRepo+"@"+sha]
+		if !ok || path != RepoRulesFile {
+			return Result{Exit: 128, Stderr: "fatal: path does not exist"}, true
+		}
+		return Result{Stdout: body}, true
+	}
+	return Result{}, false
 }

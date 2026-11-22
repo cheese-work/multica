@@ -232,6 +232,10 @@ func (p *Proxy) handleElevated(c net.Conn, br *bufio.Reader, target, parsed, hos
 		return
 	}
 	defer up.Close()
+	if !p.hold(up) {
+		return
+	}
+	defer p.release(up)
 
 	fmt.Fprint(c, "HTTP/1.1 200 Connection Established\r\n\r\n")
 	_ = c.SetReadDeadline(time.Now().Add(e.helloTimeout))

@@ -38,6 +38,66 @@ The creator automatically becomes an `owner`.
 After the issue prefix changes, every issue immediately switches to the new number (`MUL-5` becomes `NEW-5`), but the old numbers in PRs, branch names, and chat history do not update.
 </Callout>
 
+### Auto-close
+
+The workspace setting `auto_close` controls what happens when a child issue enters the `agent_accepted` or `merged` step and nothing is left to do. The step's agent would only close it, so the server can take the step's `agent_done` edge to `done` itself.
+
+| Value | Effect |
+| --- | --- |
+| `off` | Nothing changes. The step's agent runs. |
+| `warn` (default) | The step's agent runs as today. Each entry also records one `auto_close_would_close` activity row that names the checks that held and the run that followed. |
+| `block` | The server moves the issue to `done`, records an `auto_closed` activity row that names the checks it read, and starts no run. |
+
+A close needs every check below. If one fails or cannot be read, the step's agent runs as today.
+
+- The issue has a parent. Root issues are never closed.
+- The newest review verdict is a PASS with no P0 or P1 finding, and it is for the current candidate. With a PR, every linked PR is merged at the head the PASS names. Without a PR, the candidate is the issue's text: no attachment, description change, or comment (other than the reviewer's) came after the PASS, and neither did a CHANGES verdict, stale or superseded mark, or return to `in_progress`.
+- No open child issue, no open decision request, and no wakeup that was live when the issue entered the step, other than the issue's own merge watcher (the `pr.merged` edge).
+- The description has no `Blockers: Cheese stop` line, and the parent's `delivery_stop` metadata is not `stopped`.
+- The issue metadata `post_close_work` is `none`. The author writes it: `multica issue metadata set <issue> --key post_close_work --value none --type string`. Any other value, such as a short description of the work that remains, keeps the run.
+- The workflow has an `agent_done` or `pr.merged` edge from the step to `done`.
+- On `merged` only: every linked PR is merged into its repository's default branch, at the head the PASS names. A PR merged into another branch (a stacked layer), or one whose delivery did not state its base or default branch, keeps the run.
+
+A PR that is still open at the head the PASS names does not keep the run when the step has a `pr.merged` edge to `done` and the issue's own watcher: the server starts no run and records one `auto_close_pending_merge` activity row. The merge then closes the issue, with no run. When the merge arrives, the server reads every predicate again. If one no longer holds (a new head without a PASS, a new live wakeup), it starts the step's run instead of closing and drops the watcher.
+
+Set the mode with `multica workspace update --auto-close-mode off|warn|block`. An unreadable value counts as `off`.
+
+### Blocked-run skip
+
+The workspace setting `blocked_run_skip` controls whether an issue that enters `blocked` starts the blocked step's run. The server skips that run only when the issue says what it waits for and the step's owner already has a wakeup that will continue the work.
+
+| Value | Effect |
+| --- | --- |
+| `off` | Nothing changes. The blocked step's agent runs on entry. |
+| `warn` (default) | The run starts as today. Each entry that would have been skipped also records one `blocked_entry_would_skip` activity row that names the run that followed. |
+| `block` | The server starts no run, records a `blocked_entry_linked` activity row and keeps the wakeup live. |
+
+A run is skipped only when all of these hold. If one fails or cannot be read, the run starts as today.
+
+- The issue metadata `blocked_on` is set (`multica issue status <id> blocked --blocked-on <ref>`).
+- The blocked step's owner has an enabled condition wakeup on this issue for the same ref: the same flag, target, and state, stage, or kind. A time wakeup, another condition, or another agent's wakeup does not count.
+- That wakeup has no `last_error`, ends within 7 days, and uses `--on-timeout wake`.
+- The run would be admitted: the issue has run budget left and the agent is not paused.
+
+If the linked wakeup is later disabled or deleted, gets a `last_error`, ends without a run (it expired or the guard refused it), or stops matching `blocked_on`, the server starts the blocked step's run and records a `blocked_entry_rearmed` activity row. If the run budget is spent or the agent is paused, that run is refused too and the row says so.
+
+### Run limits
+
+Two workspace settings decide what happens when an issue spends its run cap. Each is `{"mode": "off" | "warn" | "block"}`; the default is `block`, which is today's behavior.
+
+| Setting | Cap it controls |
+| --- | --- |
+| `run_budget` | The per-issue run budget of the issue's workflow (`max_runs_per_issue`). |
+| `run_guard` | The weekly run guard: runs an issue starts in 7 days. |
+
+| Value | Effect |
+| --- | --- |
+| `block` | The next derived run is refused and the owner gets a card. |
+| `warn` | Runs are still counted and the overage shows in the run brief and in `multica issue budget get` (`state: warn`). No run is refused, no issue is blocked and no card opens. |
+| `off` | No block, no warning, no card. |
+
+The loop breaker (`MULTICA_LOOP_BREAKER_MAX_RUNS`) is not affected. Set a mode with `multica workspace update --run-budget-mode` or `--run-guard-mode`; an agent proposes `run_budget` or `run_guard` on a `workspace.settings` card.
+
 ### Ask guard
 
 The workspace setting `ask_guard_mode` controls what happens when an agent operation asks a person to act without opening a decision request.
@@ -47,6 +107,16 @@ The workspace setting `ask_guard_mode` controls what happens when an agent opera
 | `off` (default) | The guard does nothing. |
 | `warn` | The guard records an event and a metric. The operation goes ahead. |
 | `block` | The guard records the event first, then refuses the operation with `422`. Only `block` events become recovery work. |
+
+### Merge queue settings
+
+Three workspace settings configure the merge queue. Only the owner can write them, and every write path (the `multica workspace update` flags, the settings save and a `config propose` action) runs the same validator.
+
+| Setting | Value |
+| --- | --- |
+| `merge_queue_dequeue_routing` | `off` (default) or `warn`. `block` is refused with `routing-not-available` until the enforcement ships. |
+| `merge_queue_actor_bindings` | `{"agents": [...], "people": [...]}`. A GitHub login in both lists is refused. |
+| `merge_queue_watch_issue` | The issue that receives merge queue events, or empty. |
 
 ### Autopilot assignment guard
 
@@ -62,11 +132,29 @@ Each event keeps the mode it was created under, so switching from `warn` to `blo
 
 The workspace setting `reversible_ask_guard` (`off` by default, `warn`, `block`) covers a plain decision request from an agent whose class is `reversible`: the agent asks a person to approve work that agents may already decide and do themselves. `warn` logs it. `block` refuses it with `422`. Action, proposal and batch requests are unaffected. Set it back to `off` to revert; no data changes. The same setting covers a plain reply from an agent under a member's comment on an issue in `blocked` or `need_decision`, where the reply can ask that person without any decision request: `warn` logs it and `block` refuses it with `422`. Top-level comments, replies under an agent, comments that mention an agent or squad, comments with `--notify-only` and decision requests are unaffected.
 
+The workspace setting `owner_script_guard` (`off`, `warn`, `block`; `warn` when unset) covers an agent's decision request, action request and `multica decision ask` card: the owner reads no shell, so a card that tells the person to run a command is a defect of the ask. Eight rules (R1 to R8, rule set version 1) read the card text and its steps: a shell code fence, a command in a fence or in inline code, a `human_steps` command, a script attachment, and a run cue such as "run" or "paste" next to a command or right after a flagged message. `warn` delivers the card and records the hit. `block` refuses it with `422`, names the rules and fields that hit, and points to `multica config propose`, `multica decision propose <type>` or a bot permission instead. `off` checks nothing. Each check writes one event, an `owner_script_guard` activity row, in the same transaction as the card, or on its own when the card is refused. The event holds ids, the outcome, `delivered`, `rule_hits`, keyed hashes of the commands (`cmd_hmacs`) and `retry_of`; it holds no message text. The issue timeline does not list these rows. Set it back to `warn` or `off` to revert; no data changes.
+
+The workspace setting `waiting_audience_guard` (`off` by default, `warn`, `block`) covers a comment from an agent on an issue in `in_review`, `blocked` or `need_decision`. Such a comment must name its audience: a member mention, `notify_only`, a decision comment, `ask` (the member who acts next) or `no_ask`. A mention of an agent or squad, or a reply under an agent's comment, also counts. Only these typed fields and links are read, never the comment text. `warn` records a hit and posts the comment. `block` records the hit and refuses the comment with `422`. A chat-lane run only warns. Set it back to `off` to revert; no data changes.
+
+The workspace setting `waiting_on_guard` (`off` by default, `warn`, `block`) covers an agent that moves an issue into `in_review`, `blocked` or `need_decision`. The move must say who acts next with `waiting_on`: `member:<id>` or `none`. A task that already posted a decision request or a comment with a member mention on the issue needs no `waiting_on`. Only the typed field and structural links are read, never the text of earlier comments. `warn` records a hit and moves the issue. `block` records the hit and refuses the move with `422`. A chat-lane run only warns. Set it back to `off` to revert; no data changes.
+
 When the run that raised a `block` event has ended, the server sends the one person the ask names an automatic recovery notice: a DM message, an issue comment and an inbox item, written in one transaction. The notice quotes the stored ask, links the issue, and has no options, recommendation or approval, so it is never a decision request. It is sent only if the stored source has the ask text, names exactly one member, and that member is still in the workspace; otherwise the event waits for repair. Replying in the notice's comment thread marks it `answered`. A member who left the workspace can no longer read or answer it.
 
 An event that cannot be sent as a notice goes to the agent whose run produced it instead: one repair run per recovery root, started through the normal run gates (project stops, run budget, role and approval gates). The first `block` event is the root, and an event raised by a repair run inherits it, so a repair never starts a second repair. The run message holds the exact `multica decision request ... --recovers <event-id>` command and no source text. A refused run, an unavailable agent, a repair run that ends without a matching request, or a new ask raised by the repair run fails the root. The agent is its owner: one system comment on the issue names the agent and mentions no member, and `multica decision brief` lists the failure with an excerpt of the ask. Runs in a chat lane only raise `warn` events, so they are never repaired.
 
 The guard also covers an agent registering a wakeup that a person can trigger. Bind it with `--decision`, mark it `--purpose observe`, or limit it to agents; see [Wakeups](/cli#wakeups).
+
+The workspace setting `long_thread_member_ask` (`off` by default, `warn`, `move`) covers an agent comment that mentions a member in a long thread. `long_thread_member_ask_min` (a whole number from 3 to 100, default 10) is the thread size, root included, from which the setting applies. `move` opens the comment as a new ask thread that links back to the source thread; `warn` posts it in place with a hint. The setting routes the comment and never refuses it. With the defaults nothing changes. Each hit writes one guard event with mode `move` or `warn`, which the recovery and repair passes never read. Both values are validated by the server, and a bad value is refused with `400`.
+
+### Tool guard
+
+**Settings → Guard** lists the tool-guard plugins of the workspace and what each one did in the last 7 days. Each plugin shows how many calls it fixed, refused or failed on, a chart of hits per day, and its latest decisions. The numbers come from the same rows as `multica guard stats` and `multica guard log`. Days follow your viewing time zone.
+
+A workspace owner edits a workspace-level rule here: **Edit with passkey** changes its action and message, and the owner signs that exact change with a passkey. The signature names the policy version it started from. If another change landed first, nothing is saved and the page shows the two versions with **Re-apply** (put your change on the new version, with a new passkey), **Reload current** and **Discard**. Members see the page read-only. Rules that belong to an org, repo or path layer are edited with the CLI: an agent creates the change with `multica guard plugin set`, and a person approves it on the decision card with a passkey. Without a saved policy, the page shows the built-in defaults.
+
+### Decision screen
+
+The workspace setting `decision_screen` (`off` by default, `on`) hides the chat lane that holds an agent's decision ask. With `on`, an issue agent's ask to a member goes to a hidden backing lane, even when the member has a visible DM with that agent; nothing is posted in that DM. The lane does not appear in the member's chat list, unread count, badge or "Needs you" list, and the member cannot send messages into it (`409`). The ask itself still opens the same decision card. For these agents the server ignores `session_id` and `new_dm` and adds one hint to the response. An agent that asks from a DM still asks in that DM. Set it back to `off` to revert; no new lanes are created and existing lanes stay hidden.
 
 ### Held-setting ask guard
 

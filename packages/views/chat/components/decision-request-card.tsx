@@ -335,7 +335,7 @@ type CardAction = NonNullable<RequestCard["action"]>;
 
 // Approve for an action only the workspace owner may approve. Fails closed: with no workspace, no
 // member list yet or any other role the button is absent. The server still refuses a non-owner.
-type ApprovalWiring = { hideControls: boolean; handle: RefObject<ApprovalHandle | null>; onControls: (controls: ApprovalControls) => void };
+type ApprovalWiring = { issueId: string; hideControls: boolean; handle: RefObject<ApprovalHandle | null>; onControls: (controls: ApprovalControls) => void };
 
 function OwnerGatedApproval({ action, previewSha256, approveDisabled, ...wiring }: { action: CardAction; previewSha256?: string; approveDisabled: boolean } & ApprovalWiring) {
   const workspace = useCurrentWorkspace();
@@ -377,10 +377,23 @@ function ActionPreview({
   const configChange = pending && configAction ? approvableConfigChange(action) : undefined;
   const fields = pending && !configAction ? approvablePreview(action)?.fields : undefined;
   const unavailable = pending && !fields && !configChange;
+  const queryClient = useQueryClient();
+  const workspaceId = useCurrentWorkspace()?.id;
+  // The server may have moved on (a new window, a cap change): ask for the card again.
+  const retry = () => {
+    queryClient.invalidateQueries({ queryKey: chatKeys.messagesAll() });
+    queryClient.invalidateQueries({ queryKey: chatKeys.messagesPageAll() });
+    if (workspaceId) queryClient.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(workspaceId) });
+  };
   // Same tree before and after approval, so the approval component keeps its state when the card turns answered.
   return (
     <div className="space-y-2">
-      {unavailable && <p role="status" className="text-label text-warning">{t(($) => $.decision.action_unavailable)}</p>}
+      {unavailable && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <p role="status" className="text-label text-warning">{action.preview_unavailable || t(($) => $.decision.action_unavailable)}</p>
+          <Button type="button" variant="ghost" size="sm" onClick={retry}>{t(($) => $.decision.action_retry)}</Button>
+        </div>
+      )}
       {configChange && (
         <div className="space-y-2">
           {/* ui-pattern-ref: allow inline disclosure toggle (aria-expanded) matching the card Details link; Button has no text-disclosure variant */}
@@ -409,8 +422,8 @@ function ActionPreview({
         </dl>
       )}
       {ownerOnly
-        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} {...{ hideControls, handle, onControls }} />
-        : <DecisionActionApproval actionId={action.id} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} {...{ hideControls, handle, onControls }} />}
+        ? <OwnerGatedApproval action={action} previewSha256={configChange?.sha256} approveDisabled={unavailable} {...{ issueId, hideControls, handle, onControls }} />
+        : <DecisionActionApproval actionId={action.id} issueId={issueId} payloadSha256={action.payload_sha256} approveDisabled={unavailable} state={action.state} {...{ hideControls, handle, onControls }} />}
     </div>
   );
 }
@@ -526,9 +539,11 @@ const RING_MS = 600;
 const reducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // The folded row names the question: the first line of the ask, markdown marks dropped.
+// A proposal opens with the fixed "Proposed action" heading; its question is the template title below it.
 const questionOf = (ask: string, fallback: string) => {
-  const line = ask.split("\n").map((l) => l.replace(/^[\s#>*_-]+|[*_`]+/g, "").trim()).find(Boolean);
-  return line || fallback;
+  const lines = ask.split("\n").map((l) => l.replace(/^[\s#>*_-]+|[*_`]+/g, "").trim()).filter(Boolean);
+  const proposal = lines[0] === "Proposed action";
+  return (proposal ? lines.find((l, i) => i > 0 && !l.includes(" version ")) ?? fallback : lines[0]) || fallback;
 };
 
 // `inIssue`: shown on the source issue page, where there is no DM message box.

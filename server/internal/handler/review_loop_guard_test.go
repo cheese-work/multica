@@ -29,12 +29,17 @@ type reviewLoop struct {
 
 func newReviewLoop(t *testing.T) reviewLoop {
 	t.Helper()
+	return newReviewLoopSteps(t, reviewLoopSteps)
+}
+
+func newReviewLoopSteps(t *testing.T, steps []map[string]any) reviewLoop {
+	t.Helper()
 	createTestCustomStatus(t, "agent_review", "started")
 	createTestCustomStatus(t, "need_decision", "started")
 	agentID := seededReadyAgentID(t)
 	var runtimeID string
 	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID)
-	wf := createTestWorkflowSteps(t, "Review loop "+workflowTestSuffix(), reviewLoopSteps)
+	wf := createTestWorkflowSteps(t, "Review loop "+workflowTestSuffix(), steps)
 	projectID := createWorkflowTestProject(t, "Review loop project")
 	setProjectWorkflow(t, projectID, map[string]any{"workflow_id": wf.ID}).Want(http.StatusOK)
 	setColumnHandoff(t, projectID, "agent_review", handToAgent(agentID, "Review it.")).Want(http.StatusOK)

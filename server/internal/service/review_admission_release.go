@@ -125,8 +125,8 @@ func releaseAdmissionDeferral(ctx context.Context, q *db.Queries, r db.ListRevie
 		// ends it once the run has started.
 		slog.Info("admission release: admitted, queued behind a full stage", "issue_id", util.UUIDToString(r.IssueID), "agent_id", util.UUIDToString(r.AgentID), "head", r.HeadSha)
 		return nil
-	case errors.Is(err, ErrReviewHeadAnswered), errors.Is(err, ErrIssueInTriage):
-		return drop() // never clears for this record: the agent answered the head, or the issue is in triage
+	case errors.Is(err, ErrReviewHeadAnswered), errors.Is(err, ErrIssueInTriage), errors.Is(err, ErrIntakeHold):
+		return drop() // never clears for this record: the agent answered the head, or the issue is in triage or held
 	case errors.Is(err, ErrRunBudgetExhausted):
 		// A person can raise the budget, so the record waits for its deadline
 		// and the tick does not fail meanwhile.

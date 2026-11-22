@@ -1,0 +1,89 @@
+---
+title: Agents en arrière-plan
+description: Choisissez quel agent exécute les petites tâches en coulisses, comme nommer un DM, et ce qui se passe quand aucun n’est défini.
+---
+
+Certaines tâches se déroulent en coulisses : nommer un DM, suggérer des boutons d’actions rapides, compacter un long DM et router une étape de workflow. Chacune de ces **tâches d’arrière-plan** s’exécute comme une tâche ordinaire d’un agent que vous choisissez. Aucune tâche d’arrière-plan n’appelle un modèle directement.
+
+## Tâches
+
+| Tâche | Rôle | Qui peut la définir |
+|---|---|---|
+| `dm_title` | Nomme un DM à partir de son premier message. | Valeur par défaut de l’espace de travail, ou chaque membre pour ses propres DM. |
+| `quick_actions` | Suggère des boutons d’actions rapides dans un DM. | Valeur par défaut de l’espace de travail, ou chaque membre. |
+| `compact` | Compacte un long DM. | Valeur par défaut de l’espace de travail, ou chaque membre. |
+| `routing` | Prend les étapes de workflow réservées au routage. | Valeur par défaut de l’espace de travail uniquement. |
+
+Chaque tâche a un agent **principal** et un agent **de secours** facultatif.
+
+## Quel agent exécute une tâche
+
+Pour un déclenchement, Multica retient la première correspondance :
+
+1. **Votre chaîne** pour cette tâche, si vous avez défini un agent principal.
+2. Sinon la **chaîne de l’espace de travail**, si elle a un agent principal.
+3. Sinon le [chemin sans agent](#quand-aucun-agent-ne-sexécute).
+
+Dans une chaîne, le principal s’exécute d’abord, puis l’agent de secours. Un agent non défini, non éligible, archivé ou injoignable est ignoré. L’agent de secours ne s’exécute que si l’exécution du principal échoue sur une erreur de fournisseur, ou si le principal manque une [échéance](#échéances). Chaque déclenchement bascule une seule fois.
+
+Si votre propre chaîne existe mais que tous ses agents échouent, Multica ne retombe pas sur la chaîne de l’espace de travail : votre choix explicite est respecté et le chemin sans agent s’exécute.
+
+## Quand aucun agent ne s’exécute
+
+Quand aucun agent n’est défini, ou qu’aucun agent n’a produit de résultat exploitable, chaque tâche a un résultat fixe :
+
+| Tâche | Comportement sans agent |
+|---|---|
+| `dm_title` | Un titre tiré du premier message (60 caractères). Aucun appel de modèle. |
+| `quick_actions` | Aucun bouton. Aucun appel de modèle. |
+| `compact` | L’agent du DM compacte le DM, comme aujourd’hui. |
+| `routing` | L’agent responsable de l’étape du workflow exécute l’étape, comme aujourd’hui. |
+
+## Migration des espaces de travail existants
+
+Si votre espace de travail repose sur l’ancien appel direct au modèle pour les titres ou les boutons, un propriétaire doit définir les agents `dm_title` et `quick_actions` **avant** le déploiement des versions qui suppriment l’appel direct. Sans cette étape, les titres reviennent à la coupe de 60 caractères et les boutons disparaissent. C’est le comportement voulu sans agent, et il est visible dans ces espaces de travail.
+
+```bash
+multica workspace background-agents set dm_title --agent <agent> --fallback <agent>
+multica workspace background-agents set quick_actions --agent <agent>
+```
+
+## Échéances
+
+Une tâche d’arrière-plan non prise en charge à temps est annulée, et une exécution trop longue est marquée en échec. Dans les deux cas, la tâche passe à l’emplacement suivant.
+
+| Tâche | Échéance de prise en charge | Échéance d’exécution | À l’échéance |
+|---|---|---|---|
+| `dm_title` | 10 s | 60 s | Emplacement suivant, puis le titre de 60 caractères. |
+| `quick_actions` | 5 s | 20 s | Emplacement suivant, puis aucun bouton. Un passage automatique n’affiche pas d’erreur ; une actualisation manuelle signale toujours l’échec. |
+| `compact` | 30 s | Les limites de compactage existantes | L’agent du DM compacte, comme aujourd’hui. |
+| `routing` | Règles de l’étape de workflow | Règles de l’étape de workflow | Règles de l’étape de workflow. |
+
+## CLI
+
+Afficher ou définir la valeur par défaut de l’espace de travail :
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica workspace background-agents set quick_actions --agent none
+```
+
+Afficher ou définir votre propre chaîne :
+
+```bash
+multica me background-agents list
+multica me background-agents set dm_title --agent haiku
+multica me background-agents set dm_title --agent none   # retour à la valeur par défaut de l’espace de travail
+```
+
+- `<job>` vaut `dm_title`, `quick_actions`, `compact` ou `routing`. `multica me` n’accepte que les trois premiers.
+- `--agent` et `--fallback` acceptent un identifiant ou un nom d’agent. `none` efface le champ. Passez-en au moins un.
+- `list` affiche pour chaque tâche l’agent, l’agent de secours et la **source** : `user` (votre chaîne), `workspace` ou `off` (chemin sans agent). `--output json` affiche les mêmes données en JSON.
+- Modifier la valeur par défaut de l’espace de travail exige un propriétaire ou un administrateur. Les deux commandes sont réservées aux humains : un jeton de tâche est refusé avec un code d’erreur stable.
+
+## Étapes suivantes
+
+- [Référence CLI](/cli) pour l’ensemble des commandes.
+- [Chat](/chat) pour les DM.
+- [Actions rapides](/quick-actions) pour les actions rapides des tâches.

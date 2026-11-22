@@ -125,6 +125,8 @@ export interface DecisionRequestAction {
   state?: string;
   /** Absent for an unknown action type, a stale window or an older server: the card then offers no approval. */
   preview?: DecisionActionPreview;
+  /** Why `preview` is absent, when the server knows (CHE-8772). Server text, shown as is. */
+  preview_unavailable?: string;
   /** Set for a config-change action; absent when the preview is malformed, so the card offers no approval. */
   config_change?: DecisionConfigChange;
   /** Only the workspace owner may approve. Absent on an older server: the client then fails closed. */
@@ -132,6 +134,8 @@ export interface DecisionRequestAction {
   /** Readback of a decided action (B v9 S9). `applied`, `not_applied` or `expired`; absent while pending or on an older server. */
   effect?: "applied" | "not_applied" | "expired" | (string & {});
   effect_reason?: string;
+  /** What an executed run-budget action did and where the refused run stands; absent for any other action or an older server. */
+  receipt?: import("../api/passkey-schema").BudgetReceipt;
   decided_at?: string;
   decided_by_name?: string;
   on_behalf_of_name?: string;

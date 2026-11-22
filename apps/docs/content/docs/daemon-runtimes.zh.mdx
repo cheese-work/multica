@@ -82,7 +82,7 @@ multica daemon autostart disable
 
 ### 定时自更新 [#update-schedule]
 
-每台机器可以有一个更新计划：五个字段的 cron、时区（默认 `Asia/Ho_Chi_Minh`）和 10 到 30 分钟的维护窗口（默认 30，30 是硬上限）。机器上的所有运行时显示同一个计划。机器所有者和工作区所有者用 `multica daemon update-schedule set` 设置；服务器会拒绝无效的 cron、未知的时区、超出 10 到 30 分钟的窗口，以及由 Desktop 应用启动、无法自行更新的守护进程。本版本只保存和编辑计划，并显示接下来 3 次的执行时间；更新周期本身会在后续版本中提供。
+每台机器可以有一个更新计划：五个字段的 cron、时区（默认 `Asia/Ho_Chi_Minh`）和 10 到 30 分钟的维护窗口（默认 30，30 是硬上限）。机器上的所有运行时显示同一个计划。机器所有者和工作区所有者用 `multica daemon update-schedule set` 设置；服务器会拒绝无效的 cron、未知的时区、超出 10 到 30 分钟的窗口，以及由 Desktop 应用启动、无法自行更新的守护进程。到每个 cron 时间（按计划的时区计算），服务器会检查这台机器。如果没有更新的版本，周期以 `up_to_date` 结束，不会暂停任何东西。否则服务器会在维护窗口内暂停这台机器，不再启动新的运行，并等待已在进行的运行结束。服务器收到时已晚于 cron 时间超过 2 分钟的执行会被跳过，不会迟到触发。如果有人手动恢复或暂停这台机器，周期以 `cancelled` 提前结束；如果窗口关闭前 3 分钟仍有运行在进行，周期以 `no_window` 结束，服务器会解除自己的暂停，运行继续。机器列表显示最近一次结果及其写入时间。本版本只做等待；更新步骤本身会在后续版本中提供。
 
 ## 派发与在线状态
 
@@ -108,7 +108,7 @@ multica daemon autostart disable
 
 一台守护进程默认最多同时执行 20 次运行；每个智能体默认最多同时执行 6 次。实际并发取两者中的较小值。
 
-达到上限后，新运行继续排队。单个智能体的并发数在智能体设置中调整，整台电脑的上限用 `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` 调整。并行执行会同时占用机器性能、工具账号额度和同一工作目录。
+达到上限后，新运行继续排队。单个智能体的并发数在智能体设置中调整，整台电脑的上限用 `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` 调整。 用 `reserved_chat_slots`（`multica config set reserved_chat_slots 3`）为聊天（DM）运行保留槽位：议题运行最多使用 `max_concurrent_tasks - reserved_chat_slots` 个槽位，聊天运行可使用全部槽位，默认值 `0` 不改变任何行为。群组频道会话与议题运行一起计数，只有私聊使用保留槽位。`multica daemon status --output json` 会显示 `reserved_chat_slots` 和 `reserved_chat_slots_free`。并行执行会同时占用机器性能、工具账号额度和同一工作目录。
 
 运行消耗的 token、费用和失败情况在[统计](/analytics)页按工作区汇总；单条运行时的 token 用量也可以用 `multica runtime usage <runtime-id>` 查看。
 

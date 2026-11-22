@@ -51,6 +51,10 @@ func executeRunBudgetRaiseAction(ctx context.Context, execution decisionActionEx
 	if params.NewCap <= current {
 		return nil, actionFailure{Code: "stale_cap", Message: fmt.Sprintf("the cap is already %d; a raise never lowers it", current)}
 	}
+	receipt, err := runBudgetApprovalSnapshot(ctx, queries, issue, windowID)
+	if err != nil {
+		return nil, err
+	}
 	raised, err := queries.RaiseIssueMaxRuns(ctx, db.RaiseIssueMaxRunsParams{
 		ID: issue.ID, WorkspaceID: issue.WorkspaceID, Runs: int32(params.NewCap), WorkflowMax: int32(def.EffectiveMaxRuns()),
 	})
@@ -74,8 +78,10 @@ func executeRunBudgetRaiseAction(ctx context.Context, execution decisionActionEx
 		return nil, err
 	}
 	// A raise keeps the window: the resume runs in the window the refusal named.
-	if err := linkRunBudgetRefusal(ctx, queries, issue.ID, params.RefusalID, execution.Action.ID, windowID); err != nil {
+	if err := linkRunBudgetRefusal(ctx, queries, issue.ID, params.RefusalID, params.RefusalGeneration, execution.Action.ID, windowID); err != nil {
 		return nil, err
 	}
-	return json.Marshal(map[string]any{"from": current, "to": raised.Int32, "outcome": "cap_applied"})
+	receipt["from"], receipt["to"], receipt["outcome"] = current, raised.Int32, "cap_applied"
+	receipt["runs_limit_after"] = raised.Int32
+	return json.Marshal(receipt)
 }

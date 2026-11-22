@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it } from "vitest";
-import { ChatMessageSchema, ChatMessagesPageSchema, CommentSchema, TimelineEntriesSchema } from "./schemas";
+import { ChatMessageSchema, ChatMessagesPageSchema, CommentSchema, DecisionRequestCardSchema, TimelineEntriesSchema } from "./schemas";
 
 const card = {
   answer_id: "answer",
@@ -69,6 +69,12 @@ describe("DM decision cards", () => {
       expect(parse(action)).toEqual(action);
     });
 
+    it("keeps the server's reason for a missing preview, and drops a non-text one", () => {
+      const { preview: _omit, ...bare } = action;
+      expect(parse({ ...bare, preview_unavailable: "The run cap is already 48." })?.preview_unavailable).toBe("The run cap is already 48.");
+      expect(parse({ ...bare, preview_unavailable: 7 })?.preview_unavailable).toBeUndefined();
+    });
+
     it("keeps the action without a preview when the preview is missing or malformed", () => {
       const { preview: _omit, ...bare } = action;
       expect(parse(bare)?.preview).toBeUndefined();
@@ -90,7 +96,7 @@ describe("DM decision cards", () => {
     it("drops the preview of an action type this client does not know", () => {
       expect(parse({ ...action, action_type: "future.thing" })?.preview).toBeUndefined();
       expect(parse({ ...action, action_type: undefined })?.preview).toBeUndefined();
-      for (const known of ["issue.run_budget.raise", "issue.run_budget.top_up", "issue.workflow.set", "issue.project.set", "agent.env.patch", "agent.copy"]) {
+      for (const known of ["issue.run_budget.raise", "issue.run_budget.top_up", "issue.workflow.set", "issue.project.set", "issue.project.quick_set", "project.workflow.quick_set", "agent.env.patch", "agent.copy"]) {
         expect(parse({ ...action, action_type: known })?.preview).toEqual(preview);
       }
     });
@@ -261,5 +267,38 @@ describe("issue quote card fields", () => {
     };
     expect(CommentSchema.parse({ ...base, ...fields }).decision_recorder_agent_id).toBe("agent");
     expect(CommentSchema.parse({ ...base, ...fields, decision_state: "future" }).decision_state).toBeUndefined();
+  });
+});
+
+describe("budget receipt on a decided card action", () => {
+  const action = { id: "a", action_type: "issue.run_budget.top_up", payload_sha256: "p", state: "executed", effect: "applied" };
+  const request = { id: "r", issue_id: "issue", ask: "Ask", created_at: bubble.created_at, state: "answered" };
+  const parseAction = (receipt: unknown) =>
+    DecisionRequestCardSchema.parse({ ...request, action: { ...action, receipt } }).action;
+
+  it("keeps a well-formed receipt", () => {
+    const receipt = { outcome: "run_started", applied_at: "2026-11-11T06:41:00Z", runs_used: 44, runs_limit: 25, runs_limit_after: 25, new_window: true };
+    expect(parseAction(receipt)?.receipt).toMatchObject(receipt);
+  });
+
+  it("keeps outcome and time when the numbers are absent (an action from before the receipt)", () => {
+    expect(parseAction({ outcome: "cap_applied", applied_at: "2026-11-11T06:41:00Z" })?.receipt).toMatchObject({ outcome: "cap_applied" });
+  });
+
+  it.each([
+    ["wrong types", { outcome: 5, applied_at: "t" }],
+    ["not an object", "run_started"],
+    ["missing time", { outcome: "run_started" }],
+  ])("drops a malformed receipt (%s) without losing the action", (_name, receipt) => {
+    const parsed = parseAction(receipt);
+    expect(parsed?.id).toBe("a");
+    expect(parsed?.effect).toBe("applied");
+    expect(parsed?.receipt).toBeUndefined();
+  });
+
+  it("drops one malformed number and keeps the rest", () => {
+    const parsed = parseAction({ outcome: "run_queued", applied_at: "t", runs_used: "44", runs_limit: 25, extra: 1 });
+    expect(parsed?.receipt).toMatchObject({ outcome: "run_queued", runs_limit: 25 });
+    expect(parsed?.receipt?.runs_used).toBeUndefined();
   });
 });

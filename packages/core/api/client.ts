@@ -1,11 +1,25 @@
 import type { ZodType } from "zod";
 import type { DecisionArtifact, DecisionRequestCard, OpenDecisionRequest } from "../types/decision";
-import { AgentRuntimeSchema, EMPTY_RUNTIME, RuntimePauseSchema } from "../runtimes/schema";
+import {
+  AgentRuntimeSchema,
+  EMPTY_MACHINE_AUDIT,
+  EMPTY_MACHINE_HISTORY,
+  EMPTY_MACHINE_PLANNED,
+  EMPTY_RUNTIME,
+  MachineAuditPageSchema,
+  MachineHistoryPageSchema,
+  MachinePlannedSchema,
+  RuntimePauseSchema,
+  type MachineAuditPage,
+  type MachineHistoryPage,
+  type MachinePlanned,
+} from "../runtimes/schema";
 import { AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES } from "../runtimes/affected-machines";
 import type { ProviderBreaker } from "../types/provider-breaker";
+import type { GuardDecision, GuardDecisionFilters, GuardStats } from "../types/guard";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
-import { ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
+import { GuardDecisionListSchema, GuardStatsSchema, ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
 import type { ArchivedInboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
 import { parseRunBudget, parseRunBudgetActionResponse, type RunBudgetActionResponse } from "../run-budget/schema";
@@ -296,8 +310,8 @@ import {
 } from "../ci-watch/schema";
 import {
   DecisionActionViewSchema, PasskeyAnswerChallengeSchema, PasskeyChallengeSchema, PasskeyBatchOutcomeSchema, PasskeyDecisionOutcomeSchema, PasskeyEnrolledSchema, PasskeyEnrollStartSchema,
-  PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
-  type DecisionActionView, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyBatchOutcome, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
+  GuardPolicyVersionSchema, PasskeyListSchema, PasskeyRevokeCodeStartSchema, PasskeyRevokedSchema, parsePasskeyResponse,
+  type DecisionActionView, type GuardPolicyVersion, type PasskeyAnswerChallenge, type PasskeyAssertionEnvelope, type PasskeyBatchOutcome, type PasskeyChallenge, type PasskeyDecisionOutcome, type PasskeyEnrollStart, type PasskeySummary,
 } from "./passkey-schema";
 import {
   RuntimeProfileSchema,
@@ -869,6 +883,14 @@ function isReplayableBody(body: BodyInit | null | undefined): boolean {
   return false;
 }
 
+function machinePageQuery(page?: { cursor?: string; limit?: number }): string {
+  const q = new URLSearchParams();
+  if (page?.cursor) q.set("cursor", page.cursor);
+  if (page?.limit) q.set("limit", String(page.limit));
+  const s = q.toString();
+  return s ? `?${s}` : "";
+}
+
 export class ApiClient {
   private baseUrl: string;
   private token: string | null = null;
@@ -1352,11 +1374,12 @@ export class ApiClient {
     );
   }
 
-  async searchIssues(params: { q: string; limit?: number; offset?: number; include_closed?: boolean; signal?: AbortSignal }): Promise<SearchIssuesResponse> {
+  async searchIssues(params: { q: string; limit?: number; offset?: number; include_closed?: boolean; title_only?: boolean; signal?: AbortSignal }): Promise<SearchIssuesResponse> {
     const search = new URLSearchParams({ q: params.q });
     if (params.limit !== undefined) search.set("limit", String(params.limit));
     if (params.offset !== undefined) search.set("offset", String(params.offset));
     if (params.include_closed) search.set("include_closed", "true");
+    if (params.title_only) search.set("title_only", "true");
     const raw = await this.fetch<unknown>(
       `/api/issues/search?${search}`,
       params.signal ? { signal: params.signal } : undefined,
@@ -1520,6 +1543,44 @@ export class ApiClient {
     const parsed = parseWithFallback<{ breakers: ProviderBreaker[] } | null>(raw, ProviderBreakerListSchema, null, { endpoint: "GET /api/workspaces/:id/provider-breakers" });
     if (!parsed) throw new Error("Could not load provider breakers");
     return parsed.breakers;
+  }
+
+  async getGuardStats(days: number): Promise<GuardStats> {
+    const raw = await this.fetch<unknown>(`/api/guard/stats?days=${days}`);
+    const parsed = parseWithFallback<GuardStats | null>(raw, GuardStatsSchema, null, { endpoint: "GET /api/guard/stats" });
+    if (!parsed) throw new Error("Could not load guard stats");
+    return parsed;
+  }
+
+  /** The stored guard policy and its digest. An edit names the digest as its base. */
+  async getGuardPolicy(workspaceId: string): Promise<GuardPolicyVersion> {
+    const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/guard-policy`;
+    return parsePasskeyResponse(await this.fetch<unknown>(path), GuardPolicyVersionSchema, `GET ${path}`);
+  }
+
+  /** Opens the owner's passkey challenge for one edit. A stale `base_sha256` is a 409 `ApiError` whose body carries the current policy. */
+  challengeGuardPolicy(workspaceId: string, input: { policy: unknown; base_sha256: string }): Promise<PasskeyChallenge> {
+    return this.passkeyPost(`/api/workspaces/${encodeURIComponent(workspaceId)}/guard-policy/challenge`, PasskeyChallengeSchema, input);
+  }
+
+  /** Writes the policy the assertion signed. Stale base: 409 with the current policy in `ApiError.body`. */
+  async putGuardPolicy(workspaceId: string, input: { policy: unknown; base_sha256: string; assertion: PasskeyAssertionEnvelope }): Promise<GuardPolicyVersion> {
+    const path = `/api/workspaces/${encodeURIComponent(workspaceId)}/guard-policy`;
+    const raw: unknown = await this.fetch(path, { method: "PUT", body: JSON.stringify(input) });
+    return parsePasskeyResponse(raw, GuardPolicyVersionSchema, `PUT ${path}`);
+  }
+
+  async listGuardDecisions(filters: GuardDecisionFilters): Promise<GuardDecision[]> {
+    const query = new URLSearchParams();
+    if (filters.plugin) query.set("plugin", filters.plugin);
+    if (filters.action) query.set("action", filters.action);
+    if (filters.since) query.set("since", filters.since);
+    if (filters.limit) query.set("limit", String(filters.limit));
+    const qs = query.toString();
+    const raw = await this.fetch<unknown>(`/api/guard/decisions${qs ? `?${qs}` : ""}`);
+    const parsed = parseWithFallback<{ decisions: GuardDecision[] } | null>(raw, GuardDecisionListSchema, null, { endpoint: "GET /api/guard/decisions" });
+    if (!parsed) throw new Error("Could not load guard decisions");
+    return parsed.decisions;
   }
 
   async resetProviderBreaker(workspaceId: string, provider: string): Promise<void> {
@@ -2735,6 +2796,23 @@ export class ApiClient {
       { reason, paused_by: null, paused_at: "", expires_at: "" },
       { endpoint: "pauseRuntimeMachine" },
     );
+  }
+
+  // Machine tabs (CHE-5709). History and planned follow runtime visibility; the
+  // audit log is for human workspace owners and admins. No access reads as 404.
+  async getMachineHistory(runtimeId: string, page?: { cursor?: string; limit?: number }): Promise<MachineHistoryPage> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/machine/history${machinePageQuery(page)}`);
+    return parseWithFallback(raw, MachineHistoryPageSchema, EMPTY_MACHINE_HISTORY, { endpoint: "getMachineHistory" });
+  }
+
+  async getMachineAudit(runtimeId: string, page?: { cursor?: string; limit?: number }): Promise<MachineAuditPage> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/machine/audit${machinePageQuery(page)}`);
+    return parseWithFallback(raw, MachineAuditPageSchema, EMPTY_MACHINE_AUDIT, { endpoint: "getMachineAudit" });
+  }
+
+  async getMachinePlanned(runtimeId: string): Promise<MachinePlanned> {
+    const raw = await this.fetch<unknown>(`/api/runtimes/${runtimeId}/machine/planned`);
+    return parseWithFallback(raw, MachinePlannedSchema, EMPTY_MACHINE_PLANNED, { endpoint: "getMachinePlanned" });
   }
 
   // Idempotent: resuming a machine that is not paused still answers 204.

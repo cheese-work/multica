@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/dispatch"
@@ -46,6 +47,12 @@ type edgeMove struct {
 // connection is the one it waits on. overlay is the next run's Composio
 // overlay, built before the transaction opened (prepareEdgeRunOverlay).
 func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db.Issue, to, source string, extra map[string]any, startHandler bool, overlay *service.PreparedRuntimeMCPOverlay) (edgeMove, error) {
+	return h.moveIssueOnEdgeTxAs(ctx, q, issue, to, source, extra, startHandler, overlay, workflowCaller{})
+}
+
+// moveIssueOnEdgeTxAs is moveIssueOnEdgeTx for a move that carries a caller's
+// handoff options (the deferred switch re-enters the current step).
+func (h *Handler) moveIssueOnEdgeTxAs(ctx context.Context, q *db.Queries, issue db.Issue, to, source string, extra map[string]any, startHandler bool, overlay *service.PreparedRuntimeMCPOverlay, caller workflowCaller) (edgeMove, error) {
 	th := h.onQueries(q)
 	params := db.UpdateIssueParams{
 		ID:               issue.ID,
@@ -62,7 +69,7 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	if err := assertIssueStatusStillActive(ctx, q, issue.WorkspaceID, to); err != nil {
 		return edgeMove{}, err
 	}
-	handoff, write, err := h.decideIssueWorkflowWith(ctx, q, issue, &params, true, false, false, workflowCaller{})
+	handoff, write, err := h.decideIssueWorkflowWith(ctx, q, issue, &params, true, false, false, caller)
 	if err != nil {
 		return edgeMove{}, fmt.Errorf("workflow refused the move: %w", err)
 	}
@@ -100,6 +107,28 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		trigger, willRun = th.IssueService.WillEnqueueRun(ctx, service.IssueTriggerInput{
 			Issue: updated, PrevStatus: issue.Status, AssigneeChanged: true, StatusChanged: true, EnteredHandoffStep: true,
 		}, service.IssueTriggerProbe{})
+	}
+	// One close check before the run is enqueued (CHE-7671): a clean issue that
+	// enters an auto-close step takes its done edge in this transaction, and one
+	// that waits for its merge starts no run.
+	var (
+		closed         *edgeMove
+		closedDetails  string
+		pendingMerge   bool
+		pendingDetails string
+	)
+	if willRun && entersAutoCloseStep(updated.Status) {
+		switch d := th.closeOrDispatch(ctx, updated); d.Outcome {
+		case closeOutcomeClosed:
+			inner, err := h.moveIssueOnEdgeTx(ctx, q, updated, "done", "auto_close", map[string]any{"predicates": d.Predicates}, false, nil)
+			if err != nil {
+				slog.Warn("auto close: move failed; the step's run starts", "err", err, "issue_id", uuidToString(updated.ID))
+				break
+			}
+			closed, closedDetails, willRun = &inner, d.Predicates, false
+		case closeOutcomePendingMerge:
+			pendingMerge, pendingDetails, willRun = true, d.Predicates, false
+		}
 	}
 	var handoffDetails map[string]string
 	if handoff != nil {
@@ -145,7 +174,7 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 		duplicateRun = errors.Is(err, service.ErrDuplicatePendingTask)
 		switch {
 		case err == nil:
-		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrReviewHeadAnswered), errors.Is(err, service.ErrIssueInTriage), errors.Is(err, service.ErrAgentPaused),
+		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrReviewHeadAnswered), errors.Is(err, service.ErrIssueInTriage), errors.Is(err, service.ErrIntakeHold), errors.Is(err, service.ErrAgentPaused),
 			errors.Is(err, service.ErrRecoveryCaused), errors.Is(err, errSquadLeaderNotAdmitted):
 			runRefused = err
 		default:
@@ -161,7 +190,7 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 
 	payload := map[string]any{
 		"assignee_changed": assigneeChanged,
-		"status_changed":   true,
+		"status_changed":   issue.Status != to,
 		"prev_status":      issue.Status,
 		"creator_type":     issue.CreatorType,
 		"creator_id":       uuidToString(issue.CreatorID),
@@ -184,6 +213,15 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	}
 
 	afterCommit := func(ctx context.Context) (ranHandler bool) {
+		defer func() {
+			switch {
+			case closed != nil:
+				closed.AfterCommit(ctx)
+				h.recordReviewActivity(ctx, issue.ID, "system", "", activityAutoClosed, map[string]string{"predicates": closedDetails})
+			case pendingMerge:
+				h.recordReviewActivity(ctx, issue.ID, "system", "", activityAutoClosePending, map[string]string{"predicates": pendingDetails})
+			}
+		}()
 		payload["issue"] = h.issueResponseWithCategory(ctx, updated)
 		h.broadcastCancelledWakeups(ctx, issue.WorkspaceID, cancelledWakeups)
 		h.finishRecordedHandoff(ctx, rec, handoffDetails)
@@ -209,6 +247,9 @@ func (h *Handler) moveIssueOnEdgeTx(ctx context.Context, q *db.Queries, issue db
 	var activityID pgtype.UUID
 	if rec.activity != nil {
 		activityID = rec.activity.ID
+	}
+	if closed != nil {
+		updated = closed.Issue
 	}
 	return edgeMove{Issue: updated, StatusActivityID: activityID, RunRefused: runRefused, TaskID: runTaskID, AfterCommit: afterCommit}, nil
 }

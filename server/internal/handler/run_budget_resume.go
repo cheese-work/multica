@@ -54,13 +54,28 @@ func (e *resumeRefused) Unwrap() error { return e.cause }
 // answers, under the issue lock it already holds. A refusal still waiting (open,
 // still_blocked or resume_pending) takes the latest approval's action and
 // window; a superseded or resumed refusal stays as it is; a refusal of another
-// issue and an approval without a refusal link nothing.
-func linkRunBudgetRefusal(ctx context.Context, q *db.Queries, issueID pgtype.UUID, refusalID string, actionID pgtype.UUID, window string) error {
+// issue and an approval without a refusal link nothing. So does an approval
+// whose generation is not the refusal's now, or that names none: it answers an
+// occurrence the refusal has since left (CHE-6198).
+func linkRunBudgetRefusal(ctx context.Context, q *db.Queries, issueID pgtype.UUID, refusalID string, generation *int32, actionID pgtype.UUID, window string) error {
+	if generation == nil {
+		return nil
+	}
+	return linkRunBudgetRefusalAt(ctx, q, issueID, refusalID, generation, actionID, window)
+}
+
+// linkRunBudgetRefusalAt links the refusal at a generation, or at whichever one
+// waits when generation is nil.
+func linkRunBudgetRefusalAt(ctx context.Context, q *db.Queries, issueID pgtype.UUID, refusalID string, generation *int32, actionID pgtype.UUID, window string) error {
 	id, err := util.ParseUUID(refusalID)
 	if err != nil {
 		return nil
 	}
-	_, err = q.LinkRunBudgetRefusal(ctx, db.LinkRunBudgetRefusalParams{ActionID: actionID, ResumeWindowID: window, ID: id, IssueID: issueID})
+	params := db.LinkRunBudgetRefusalParams{ActionID: actionID, ResumeWindowID: window, ID: id, IssueID: issueID}
+	if generation != nil {
+		params.Generation = pgtype.Int4{Int32: *generation, Valid: true}
+	}
+	_, err = q.LinkRunBudgetRefusal(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
@@ -123,7 +138,7 @@ func lockResume(ctx context.Context, q *db.Queries, id, issueID, actionID pgtype
 // isRunRefusal reports whether err is an admission refusal, as opposed to a failure.
 func isRunRefusal(err error) bool {
 	return errors.Is(err, service.ErrRunBudgetExhausted) || errors.Is(err, service.ErrStageQueueFull) ||
-		errors.Is(err, service.ErrAdmissionDeferred) || errors.Is(err, service.ErrIssueInTriage) ||
+		errors.Is(err, service.ErrAdmissionDeferred) || errors.Is(err, service.ErrIssueInTriage) || errors.Is(err, service.ErrIntakeHold) ||
 		errors.Is(err, service.ErrRecoveryCaused) || errors.Is(err, errSquadLeaderNotAdmitted)
 }
 
@@ -169,6 +184,7 @@ func (h *Handler) resumeRefusal(ctx context.Context, id pgtype.UUID) {
 			if after != nil {
 				after(ctx)
 			}
+			h.publishRefusalOutcome(ctx, row.WorkspaceID, row.ActionID)
 			return
 		case errors.Is(err, errResumeDone):
 			return
@@ -591,6 +607,21 @@ func (h *Handler) failResume(ctx context.Context, row db.RunBudgetRefusal, state
 	runBudgetResumeAt("before_outcome")
 	if err := h.Queries.FailRunBudgetRefusalResume(ctx, db.FailRunBudgetRefusalResumeParams{ID: row.ID, ActionID: row.ActionID, State: state, Reason: reason}); err != nil {
 		slog.Warn("run budget: record resume outcome failed", "err", err, "refusal_id", uuidToString(row.ID))
+		return
+	}
+	h.publishRefusalOutcome(ctx, row.WorkspaceID, row.ActionID)
+}
+
+// publishRefusalOutcome tells the open card that the run its approval was for has
+// an outcome (CHE-6947): the card re-reads its receipt on this event. An approval
+// whose action row is gone has no card to tell.
+func (h *Handler) publishRefusalOutcome(ctx context.Context, workspaceID, actionID pgtype.UUID) {
+	action, err := h.Queries.GetDecisionAction(ctx, db.GetDecisionActionParams{ID: actionID, WorkspaceID: workspaceID})
+	if err == nil {
+		err = h.publishDecisionActionCardUpdated(ctx, action)
+	}
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Info("run budget: card update not published", "err", err, "action_id", uuidToString(actionID))
 	}
 }
 

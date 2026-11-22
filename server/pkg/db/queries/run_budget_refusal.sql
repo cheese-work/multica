@@ -78,15 +78,17 @@ SET hook_phase = @hook_phase::text,
     updated_at = now()
 WHERE id = @id::uuid;
 
--- name: SupersedeRunBudgetRefusalsExcept :exec
+-- name: SupersedeRunBudgetRefusalsExcept :many
 -- A refusal for a later window ends every earlier non-terminal refusal of the
--- issue and its unfinished hook (P2r supersession a).
+-- issue and its unfinished hook (P2r supersession a). Returns the approved
+-- action of each row it ended, whose card now reads a new outcome.
 UPDATE run_budget_refusal
 SET state = 'superseded', state_reason = 'later_window',
     hook_phase = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'retired' ELSE hook_phase END,
     hook_reason = CASE WHEN hook_phase IN ('intent', 'blocked') THEN 'later_window' ELSE hook_reason END,
     updated_at = now()
-WHERE issue_id = $1 AND id <> $2 AND state IN ('open', 'resume_pending', 'still_blocked');
+WHERE issue_id = $1 AND id <> $2 AND state IN ('open', 'resume_pending', 'still_blocked')
+RETURNING action_id;
 
 -- name: SupersedeRunBudgetRefusalsOnStatusChange :exec
 -- A status move starts its own work: every non-terminal refusal of the issue
@@ -126,13 +128,17 @@ WHERE id = @id::uuid AND hook_phase = 'intent';
 -- cancelled and the worker admits the run directly. A refusal still waiting for
 -- its worker is linked again: the latest approval's action and window win, so a
 -- top-up that commits while the worker is rolling back is not lost. No row back:
--- the refusal is superseded or already resumed.
+-- the refusal is superseded or already resumed, or it was revived since the
+-- approval's card was opened (its hook_generation moved on): an approval answers
+-- the occurrence it was asked for (CHE-6198). A NULL generation links whatever
+-- occurrence waits, for the workflow budget change that answers no one card.
 UPDATE run_budget_refusal
 SET state = 'resume_pending', state_reason = NULL, action_id = @action_id::uuid, resume_window_id = @resume_window_id::text,
     hook_phase = CASE WHEN hook_phase = 'intent' THEN 'retired' ELSE hook_phase END,
     hook_reason = CASE WHEN hook_phase = 'intent' THEN 'resume_pending' ELSE hook_reason END,
     updated_at = now()
-WHERE id = @id::uuid AND issue_id = @issue_id::uuid AND state IN ('open', 'still_blocked', 'resume_pending')
+WHERE id = @id::uuid AND issue_id = @issue_id::uuid AND (sqlc.narg('generation')::int IS NULL OR hook_generation = sqlc.narg('generation')::int)
+  AND state IN ('open', 'still_blocked', 'resume_pending')
 RETURNING *;
 
 -- name: ListResumePendingRunBudgetRefusals :many

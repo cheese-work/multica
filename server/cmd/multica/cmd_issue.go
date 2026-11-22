@@ -343,7 +343,11 @@ var issueStatusCmd = &cobra.Command{
 		"To record what a blocked issue waits for, move it with --blocked-on <ref>. It is\n" +
 		"accepted only with status blocked; the ref is stored in metadata blocked_on and\n" +
 		"cleared when the issue leaves blocked. Each form is the target of a wakeup\n" +
-		"condition flag:\n" + blockedOnFormsHelp,
+		"condition flag:\n" + blockedOnFormsHelp + "\n" +
+		"Waiting statuses: " + audienceFixLine + "\n" +
+		"--waiting-on member:<member-id> tells that member they are asked; --waiting-on none\n" +
+		"declares that no person acts next. It is accepted only with in_review, blocked or\n" +
+		"need_decision.",
 	Args: exactArgs(2),
 	RunE: runIssueStatus,
 }
@@ -393,7 +397,7 @@ var issueCommentAddCmd = &cobra.Command{
 		"`multica issue runs <issue-id> --active --output json`). A run that cannot take the message gets the " +
 		"normal trigger; the command reports per run whether it was steered or queued, coalesced, deferred or " +
 		"blocked. If a steered run ends before reading an agent's message, the message is handled in a follow-up " +
-		"run. Steering cannot carry attachments.",
+		"run. Steering cannot carry attachments.\n\n" + audienceFixLine,
 	Args: exactArgs(1),
 	RunE: runIssueCommentAdd,
 }
@@ -771,6 +775,7 @@ func init() {
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
 	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1")
 	issueStatusCmd.Flags().String("blocked-on", "", "With status blocked: what the issue waits for (see the forms in --help)")
+	issueStatusCmd.Flags().String("waiting-on", "", "With status in_review, blocked or need_decision: who acts next, member:<member-id> or none")
 	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
 	issueStatusCmd.Flags().String("output", "table", "Output format: table or json")
 
@@ -802,6 +807,10 @@ func init() {
 	issueCommentListCmd.Flags().Bool("compact", false, "JSON output only: drop response fields that carry no information for a reader — the issue_id echoed from the request path, source_task_id, updated_at when identical to created_at, null-valued fields, and empty arrays. Content and identity fields pass through untouched. Recommended for agent reads; composes with any mode.")
 	issueCommentListCmd.Flags().Bool("summary", false, "Clip each comment's content to a short preview (sets content_truncated) so you can scan a list without pulling full bodies. Composes with any mode.")
 	issueCommentListCmd.Flags().Bool("full", false, "Escape hatch: return every comment in resolved threads verbatim. By default the complete-thread reads (default list, --recent, --thread without --tail) are folded — a resolved thread collapses to its root + conclusion, with the dropped count reported on the root — so you do not pay tokens for settled discussion. Pass --full when you need the folded discussion. No effect on --since/--tail/--roots-only reads, which are never folded.")
+	issueCommentListCmd.Flags().Bool("with-me", false, "Only return the threads that involve the viewer: the viewer wrote in them, was mentioned directly, or a decision request in them targets the viewer. The viewer is you, or the member or agent named by --for. Filters whole threads, so it composes with --roots-only, --summary and --thread. Adds thread_relation to each root.")
+	issueCommentListCmd.Flags().Bool("without-me", false, "Only return the threads that do not involve the viewer (the opposite of --with-me). Mutually exclusive with --with-me and --waiting-on.")
+	issueCommentListCmd.Flags().String("waiting-on", "", "Only return the threads that wait on this member: an open decision request targets them, or a direct mention of them has had no reply from them yet. Takes a member id or name and reads the relation as that member. Mutually exclusive with --with-me and --without-me.")
+	issueCommentListCmd.Flags().String("for", "", "Member or agent id or name whose view the relation is computed for (default: you). Alone, it adds thread_relation to each root without filtering. With --with-me or --without-me, it filters by that actor's relation.")
 	issueCommentListCmd.Flags().String("before", "", "Cursor (RFC3339Nano timestamp). With --recent: thread cursor (last_activity_at). With --thread + --tail: reply cursor (reply created_at). Read from the X-Multica-Next-Before response header, printed on stderr as \"Next thread cursor\" / \"Next reply cursor\"; must be paired with --before-id.")
 	issueCommentListCmd.Flags().String("before-id", "", "Cursor UUID. With --recent: thread root UUID. With --thread + --tail: oldest reply UUID. Read from the X-Multica-Next-Before-Id response header; must be paired with --before.")
 
@@ -836,6 +845,9 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's reversible decision from attested DM messages or a member comment; every other class is refused and must be answered on the decision card")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
 	issueCommentAddCmd.Flags().Bool("notify-only", false, "Declare the comment an FYI so it may mention a member without a decision request; it never binds a wait. Cannot combine with --decision-intent, --decision-record or --decision-veto")
+	issueCommentAddCmd.Flags().String("from-thread", "", "Open the comment as a new root that links back to the thread of this comment (same issue). The server adds one line to the source thread; it mentions nobody and starts no run. Cannot combine with --parent. An agent task cannot resolve the new root; resolve the source thread with a reply there")
+	issueCommentAddCmd.Flags().String("ask", "", "Member id (UUID) of the person who acts next on this comment; use on a comment on an issue in in_review, blocked or need_decision. Cannot combine with --no-ask, --notify-only or a decision flag")
+	issueCommentAddCmd.Flags().Bool("no-ask", false, "Declare that no person acts next on this comment. Cannot combine with --ask, --notify-only or a decision flag")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
 	issueCommentAddCmd.Flags().StringArray("excerpt", nil, "Verbatim part of the source message to quote as the human's words (repeatable; requires --decision-record). Pass one per record when a message answers several asks; the server refuses text the message does not hold")
 	issueCommentAddCmd.Flags().String("source-comment", "", "Source member comment UUID (requires --decision-record and --parent; excludes --message)")
@@ -2551,6 +2563,10 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+	waitingOn, err := parseWaitingOnFlag(cmd, status)
+	if err != nil {
+		return err
+	}
 
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -2578,6 +2594,9 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("resolve --duplicate-of issue: %w", err)
 		}
 		body["duplicate_of_issue_id"] = original.ID
+	}
+	if waitingOn != "" {
+		body["waiting_on"] = waitingOn
 	}
 	if noStart {
 		body["suppress_run"] = true
@@ -2611,6 +2630,10 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	output, _ := cmd.Flags().GetString("output")
 	if output == "json" {
 		return cli.PrintJSON(os.Stdout, result)
+	}
+	// A chained move starts no run, so the entered step's text comes back here.
+	if brief := strVal(result, "step_brief"); brief != "" {
+		fmt.Fprintln(os.Stdout, brief)
 	}
 	return nil
 }
@@ -3032,12 +3055,23 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--before / --before-id require --recent (thread cursor) or --thread + --tail (reply cursor)")
 	}
 
+	rel, err := parseCommentRelationFlags(ctx, client, cmd)
+	if err != nil {
+		return err
+	}
+
 	params := url.Values{}
 	if since != "" {
 		params.Set("since", since)
 	}
 	if rootsOnly {
 		params.Set("roots_only", "true")
+	}
+	if rel.relation != "" {
+		params.Set("relation", rel.relation)
+	}
+	if rel.forID != "" {
+		params.Set("for", rel.forID)
 	}
 	if summary {
 		params.Set("summary", "true")
@@ -3094,10 +3128,22 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// A relation read that failed server-side comes back unfiltered. Printing
+	// that as if it were filtered would hand the reader every thread.
+	if rel.relation != "" && respHeaders.Get(handlerHeaderThreadRelation) == "unavailable" {
+		return fmt.Errorf("thread relation is unavailable on the server, so the list cannot be filtered; retry, or read without --with-me, --without-me, --waiting-on and --for")
+	}
+
 	output, _ := cmd.Flags().GetString("output")
+	compact, _ := cmd.Flags().GetBool("compact")
 	if output == "json" {
-		if compact, _ := cmd.Flags().GetBool("compact"); compact {
+		if compact {
 			compactComments(comments)
+		}
+		// --compact and --summary reads carry thread_relation only when a
+		// relation flag is set, so an existing agent read does not grow.
+		if (compact || summary) && rel.relation == "" {
+			dropThreadRelation(comments)
 		}
 		return cli.PrintJSON(os.Stdout, comments)
 	}
@@ -3136,6 +3182,91 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// handlerHeaderThreadRelation mirrors handler.HeaderThreadRelation: the server
+// sets it to "unavailable" when the relation read failed and it returned the
+// comments unfiltered.
+const handlerHeaderThreadRelation = "X-Multica-Thread-Relation"
+
+// commentRelationParams is the relation part of a comment list request.
+type commentRelationParams struct {
+	// relation is the relation= value; empty when no relation flag is set.
+	relation string
+	// forID is the for= value; empty means the caller.
+	forID string
+}
+
+// parseCommentRelationFlags reads --with-me, --without-me, --waiting-on and
+// --for. --waiting-on <member> is --for <member> plus the waiting filter. --for
+// alone asks for thread_relation without a filter (relation=1).
+func parseCommentRelationFlags(ctx context.Context, client *cli.APIClient, cmd *cobra.Command) (commentRelationParams, error) {
+	withMe, _ := cmd.Flags().GetBool("with-me")
+	withoutMe, _ := cmd.Flags().GetBool("without-me")
+	waitingOn, _ := cmd.Flags().GetString("waiting-on")
+	forFlag, _ := cmd.Flags().GetString("for")
+	waitingSet := cmd.Flags().Changed("waiting-on")
+
+	set := 0
+	for _, on := range []bool{withMe, withoutMe, waitingSet} {
+		if on {
+			set++
+		}
+	}
+	if set > 1 {
+		return commentRelationParams{}, fmt.Errorf("--with-me, --without-me and --waiting-on are mutually exclusive")
+	}
+	if waitingSet && strings.TrimSpace(waitingOn) == "" {
+		return commentRelationParams{}, fmt.Errorf("--waiting-on needs a member id or name")
+	}
+
+	var p commentRelationParams
+	if strings.TrimSpace(forFlag) != "" {
+		id, err := resolveRelationActor(ctx, client, forFlag, memberOrAgentKinds)
+		if err != nil {
+			return commentRelationParams{}, fmt.Errorf("--for: %w", err)
+		}
+		p.forID = id
+	}
+	if waitingSet {
+		id, err := resolveRelationActor(ctx, client, waitingOn, memberOnlyKinds)
+		if err != nil {
+			return commentRelationParams{}, fmt.Errorf("--waiting-on: %w", err)
+		}
+		if p.forID != "" && !strings.EqualFold(p.forID, id) {
+			return commentRelationParams{}, fmt.Errorf("--waiting-on %s already names the viewer; drop --for or pass the same member", waitingOn)
+		}
+		p.forID = id
+	}
+	switch {
+	case withMe:
+		p.relation = "with_me"
+	case withoutMe:
+		p.relation = "without_me"
+	case waitingSet:
+		p.relation = "waiting"
+	case p.forID != "":
+		p.relation = "1"
+	}
+	return p, nil
+}
+
+// resolveRelationActor returns the id of the member or agent a flag names. A
+// UUID passes through (the server checks it); anything else is looked up by name.
+func resolveRelationActor(ctx context.Context, client *cli.APIClient, raw string, kinds assigneeKinds) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if isUUID(raw) {
+		return raw, nil
+	}
+	_, id, err := resolveAssignee(ctx, client, raw, kinds)
+	return id, err
+}
+
+// dropThreadRelation removes thread_relation from every comment.
+func dropThreadRelation(comments []map[string]any) {
+	for _, c := range comments {
+		delete(c, "thread_relation")
+	}
+}
+
 func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	decisionRecord, _ := cmd.Flags().GetBool("decision-record")
 	decisionIntent, _ := cmd.Flags().GetBool("decision-intent")
@@ -3143,6 +3274,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	notifyOnly, _ := cmd.Flags().GetBool("notify-only")
 	if notifyOnly && (decisionRecord || decisionIntent || decisionVeto) {
 		return fmt.Errorf("--notify-only cannot combine with --decision-intent, --decision-record or --decision-veto: those comments are already typed")
+	}
+	askID, noAsk, err := audienceFlags(cmd, notifyOnly || decisionRecord || decisionIntent || decisionVeto)
+	if err != nil {
+		return err
 	}
 	messageIDs, _ := cmd.Flags().GetStringArray("message")
 	escalationClass, _ := cmd.Flags().GetString("class")
@@ -3173,6 +3308,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 	if !hasContent && !decisionRecord {
 		return fmt.Errorf("--content, --content-stdin, or --content-file is required")
+	}
+	fromThread, _ := cmd.Flags().GetString("from-thread")
+	if fromThread != "" && parent != "" {
+		return fmt.Errorf("--from-thread opens a new root and cannot combine with --parent")
 	}
 	resolveThread, _ := cmd.Flags().GetBool("resolve-thread")
 	if parent, _ := cmd.Flags().GetString("parent"); resolveThread && parent == "" {
@@ -3251,6 +3390,20 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 	if notifyOnly {
 		body["notify_only"] = true
+	}
+	if fromThread != "" {
+		body["from_thread"] = fromThread
+	}
+	if resolveThread {
+		// The resolve call below still resolves; this tells the server not to
+		// move the comment out of the thread first (long-thread route, CHE-6432).
+		body["resolve_thread"] = true
+	}
+	if askID != "" {
+		body["ask"] = askID
+	}
+	if noAsk {
+		body["no_ask"] = true
 	}
 	if decisionRecord {
 		body["decision_record"] = true

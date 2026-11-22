@@ -242,6 +242,11 @@ func isBadRules(err error) bool {
 // missing file and an unprotected base give no rules. A malformed file or a
 // failed read is an error.
 func (e *Engine) fetchRepoRules(ctx context.Context, repo, base string) (*Rules, []string, error) {
+	if e.queueGitContext(base) {
+		if rules, revs, handled, err := e.fetchRulesViaGit(ctx, repo, base); handled {
+			return rules, revs, err
+		}
+	}
 	segs := strings.Split(base, "/")
 	for i, s := range segs {
 		segs[i] = url.PathEscape(s)
@@ -320,6 +325,10 @@ func (e *Engine) CheckPR(ctx context.Context, sel []string) (int, error) {
 	}
 	e.noRepair = true
 	d := e.ensure(ctx, pl, info.URL, false, 1, nil)
+	// CHE-8780: show which base tip and rules file this check judged, on the ok path and the refused path.
+	if e.rulesNote != "" {
+		fmt.Fprintln(e.Err, "guard: "+e.rulesNote)
+	}
 	if d.kind == KindRefused {
 		fmt.Fprintln(e.Err, "guard: "+d.line)
 		return d.code, nil

@@ -37,6 +37,7 @@ func TestBackgroundEnqueueRejectsDMTaskWithoutSourceSession(t *testing.T) {
 		t.Fatalf("enqueue without a source session = %v, want ErrBackgroundMissingSourceSession", err)
 	}
 	dm := dbfx.ChatSession(t, a, testutil.Cols{"workspace_id": wsID})
+	seedChain(t, wsID, a, bgagents.DMTitle, bgagents.UserSource) // the enqueue re-reads the stored chain (CHE-4114)
 	task, err := enqueue(dm)
 	if err != nil {
 		t.Fatalf("enqueue with a source session: %v", err)

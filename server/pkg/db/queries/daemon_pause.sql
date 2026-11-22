@@ -167,3 +167,71 @@ WHERE machine_owner_id = $1 AND daemon_id = $2 AND finished_at IS NULL;
 
 -- name: GetDaemonUpdateCycle :one
 SELECT * FROM daemon_update_cycle WHERE id = $1;
+
+-- name: ListMachineRuntimes :many
+-- Every runtime on a machine, online ones first, then the most recently seen.
+SELECT * FROM agent_runtime
+WHERE COALESCE(owner_id, workspace_id) = $1 AND daemon_id = $2
+ORDER BY (status = 'online') DESC, last_seen_at DESC NULLS LAST, id;
+
+-- name: GetDaemonUpdateCycleByFire :one
+-- The cycle a cron time already produced; the fire step is idempotent on it.
+SELECT * FROM daemon_update_cycle
+WHERE machine_owner_id = $1 AND daemon_id = $2 AND fire_at = $3;
+
+-- name: ListDrainingDaemonUpdateCycles :many
+SELECT * FROM daemon_update_cycle
+WHERE state = 'draining' AND finished_at IS NULL
+ORDER BY started_at;
+
+-- name: LockDaemonUpdateCycle :one
+SELECT * FROM daemon_update_cycle WHERE id = $1 FOR UPDATE;
+
+-- name: FinishDaemonUpdateCycle :one
+-- Conditional on (id, state): a second driver finds no row and does nothing.
+UPDATE daemon_update_cycle
+SET state = @outcome, outcome = @outcome, outcome_detail = sqlc.narg('outcome_detail'),
+    outcome_source = 'server', live_runs_at_end = sqlc.narg('live_runs_at_end'), finished_at = now()
+WHERE id = @id AND state = @from_state AND finished_at IS NULL
+RETURNING *;
+
+-- name: CycleHoldsLivePause :one
+-- Is the machine's pause still this cycle's, and not yet expired at @now?
+SELECT EXISTS (
+    SELECT 1 FROM daemon_pause
+    WHERE machine_owner_id = @machine_owner_id AND daemon_id = @daemon_id
+      AND cycle_id = @cycle_id AND expires_at > @now::timestamptz
+)::bool AS holds;
+
+-- name: ListLastDaemonUpdateOutcomes :many
+-- The latest finished cycle of each machine asked for (a superset of the pairs;
+-- callers match the exact pair).
+SELECT DISTINCT ON (machine_owner_id, daemon_id) machine_owner_id, daemon_id, outcome, finished_at
+FROM daemon_update_cycle
+WHERE machine_owner_id = ANY(@machine_owner_ids::uuid[])
+  AND daemon_id = ANY(@daemon_ids::text[])
+  AND finished_at IS NOT NULL
+ORDER BY machine_owner_id, daemon_id, finished_at DESC;
+
+-- name: RecordServerDeploy :execrows
+-- One row when the running commit differs from the newest row; a restart on
+-- the same commit writes none (CHE-5709, D14).
+-- ponytail: two replicas starting in the same instant on a new commit can both write; dedupe on read if it matters.
+INSERT INTO server_deploy ("commit", version)
+SELECT @commit::text, @version::text
+WHERE (SELECT d."commit" FROM server_deploy d ORDER BY d.started_at DESC, d.id DESC LIMIT 1) IS DISTINCT FROM @commit::text;
+
+-- name: ListServerDeploysSince :many
+SELECT "commit", version, started_at FROM server_deploy
+WHERE started_at >= @since
+ORDER BY started_at DESC, id DESC;
+
+-- name: ListMachineUpdateCycles :many
+-- A machine's cycles, newest first. Keyset page on (started_at DESC, id DESC);
+-- the cursor row is excluded.
+SELECT * FROM daemon_update_cycle
+WHERE machine_owner_id = @machine_owner_id AND daemon_id = @daemon_id
+  AND (sqlc.narg('cursor_at')::timestamptz IS NULL
+       OR (started_at, id) < (sqlc.narg('cursor_at')::timestamptz, sqlc.narg('cursor_id')::uuid))
+ORDER BY started_at DESC, id DESC
+LIMIT @row_limit;

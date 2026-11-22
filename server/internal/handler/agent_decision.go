@@ -30,6 +30,8 @@ const (
 	agentDecisionGateTestFirstRed = "test_first_red"
 	// Display name of a decision Jev took for Cheese. It is an agent decision.
 	agentDecisionDeciderJev = "Jev for Cheese"
+	// Stored form of the same decision once the delegate rename ships; readers accept it before any writer stores it.
+	agentDecisionDeciderDelegate = "delegate"
 	// The one class an agent or Jev decision may carry.
 	agentDecisionClassReversible = "reversible_gate"
 )

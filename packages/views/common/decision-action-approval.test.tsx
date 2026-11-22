@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { decisionActionKeys } from "@multica/core/chat/queries";
 import { ApiError } from "@multica/core/api/client";
 import { renderWithI18n } from "../test/i18n";
 import { DecisionActionApproval } from "./decision-action-approval";
@@ -12,6 +14,7 @@ const api = vi.hoisted(() => ({
 }));
 const sign = vi.hoisted(() => vi.fn());
 vi.mock("@multica/core/api", () => ({ api }));
+vi.mock("@multica/core/paths", async (importActual) => ({ ...(await importActual<typeof import("@multica/core/paths")>()), useCurrentWorkspace: () => ({ id: "ws-1" }) }));
 vi.mock("@multica/core/auth/webauthn", () => ({ signPasskeyChallenge: sign }));
 
 const outcome = (state: string, error_code?: string) => ({ id: "a1", state, ...(error_code && { error_code }) });
@@ -298,5 +301,49 @@ describe("DecisionActionApproval", () => {
     await screen.findByRole("alert");
     expect(screen.queryByRole("button", { name: "Approve with passkey" })).toBeNull();
     expect(screen.getByRole("button", { name: "Reject" })).toBeTruthy();
+  });
+});
+
+describe("DecisionActionApproval done view: budget receipt", () => {
+  const receipt = (outcome: string, extra = {}) => ({ outcome, applied_at: "2026-11-11T06:41:00Z", ...extra });
+  const executed = (r?: unknown) => ({ ...outcome("executed"), result: { outcome: "cap_applied" }, ...(r ? { receipt: r } : {}) });
+  const renderDone = (initial: unknown) => {
+    api.approveDecisionAction.mockResolvedValue(initial);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderWithI18n(
+      <QueryClientProvider client={qc}><DecisionActionApproval actionId="a1" payloadSha256="abc" issueId="i1" /></QueryClientProvider>,
+    );
+    return qc;
+  };
+  const approve = async () => fireEvent.click(await screen.findByRole("button", { name: "Approve with passkey" }));
+
+  it("shows the outcome line and before → after row from the approve response", async () => {
+    renderDone(executed(receipt("run_queued", { runs_used: 44, runs_limit: 25, runs_limit_after: 25, new_window: true })));
+    await approve();
+    expect(await screen.findByText("Run queued.")).toBeTruthy();
+    expect(screen.getByText("44 of 25 → 0 of 25 (new window)")).toBeTruthy();
+  });
+
+  it("updates without a remount when the outcome query is refetched", async () => {
+    const qc = renderDone(executed(receipt("cap_applied")));
+    await approve();
+    await screen.findByText("Cap applied");
+    expect(screen.queryByText("Run queued.")).toBeNull();
+
+    api.getDecisionActionOutcome.mockResolvedValue(executed(receipt("run_queued")));
+    await act(() => qc.invalidateQueries({ queryKey: decisionActionKeys.outcomesForIssue("ws-1", "i1") }));
+    expect(await screen.findByText("Run queued.")).toBeTruthy();
+
+    api.getDecisionActionOutcome.mockResolvedValue(executed(receipt("run_started")));
+    await act(() => qc.invalidateQueries({ queryKey: decisionActionKeys.outcomesForIssue("ws-1", "i1") }));
+    expect(await screen.findByText("Run started.")).toBeTruthy();
+    expect(screen.queryByText("Run queued.")).toBeNull();
+  });
+
+  it("an unknown outcome token shows no extra line", async () => {
+    renderDone(executed(receipt("future_thing")));
+    await approve();
+    await screen.findByText("Cap applied");
+    expect(screen.queryByText(/future/)).toBeNull();
   });
 });

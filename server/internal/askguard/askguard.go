@@ -28,12 +28,26 @@ const SettingKey = "ask_guard_mode"
 // already allows. Its own key, so it reverts without touching SettingKey.
 const ReversibleSettingKey = "reversible_ask_guard"
 
+// WaitingAudienceSettingKey holds the mode of S4 (CHE-7289): an agent comment
+// on a waiting issue must carry a typed audience. Its own key, so S4 starts in
+// warn and reverts without touching SettingKey.
+const WaitingAudienceSettingKey = "waiting_audience_guard"
+
+// WaitingOnSettingKey holds the mode of S5 (CHE-7290): an agent's move into a
+// waiting status must say who acts next. Its own key, so S5 starts in warn and
+// reverts without touching SettingKey or WaitingAudienceSettingKey.
+const WaitingOnSettingKey = "waiting_on_guard"
+
 type Mode string
 
 const (
 	ModeOff   Mode = "off"
 	ModeWarn  Mode = "warn"
 	ModeBlock Mode = "block"
+	// ModeMove marks an operation the server routed instead of refusing (the
+	// long-thread route, CHE-6432). Never a workspace setting, so ParseMode
+	// does not accept it; the recovery and repair workers read block rows only.
+	ModeMove Mode = "move"
 )
 
 // ParseMode accepts exactly the three mode names.
@@ -53,6 +67,16 @@ func ModeFromSettings(raw []byte) (Mode, error) { return modeFromSettings(raw, S
 // ReversibleModeFromSettings reads ReversibleSettingKey the same way.
 func ReversibleModeFromSettings(raw []byte) (Mode, error) {
 	return modeFromSettings(raw, ReversibleSettingKey)
+}
+
+// WaitingAudienceModeFromSettings reads WaitingAudienceSettingKey the same way.
+func WaitingAudienceModeFromSettings(raw []byte) (Mode, error) {
+	return modeFromSettings(raw, WaitingAudienceSettingKey)
+}
+
+// WaitingOnModeFromSettings reads WaitingOnSettingKey the same way.
+func WaitingOnModeFromSettings(raw []byte) (Mode, error) {
+	return modeFromSettings(raw, WaitingOnSettingKey)
 }
 
 func modeFromSettings(raw []byte, key string) (Mode, error) {
@@ -137,6 +161,34 @@ func (g Guard) Hit(ctx context.Context, workspaceID pgtype.UUID, op Op) (Verdict
 	return Verdict{Event: &ev, Block: mode == ModeBlock}, nil
 }
 
+// RecordWarn stores the operation as a warn event whatever the workspace
+// ask_guard_mode is, for a rule that has its own mode (S4). The event is never
+// a block event, so the recovery pass, which reads block events, never acts on
+// it: the refusal itself is the fix.
+func (g Guard) RecordWarn(ctx context.Context, workspaceID pgtype.UUID, op Op) error {
+	_, result, err := g.record(ctx, workspaceID, ModeWarn, op)
+	g.Metrics.RecordAskGuardEvent(string(ModeWarn), result)
+	return err
+}
+
+// RecordNotice stores a typed ask (--ask comment, --waiting-on member move) as
+// a block event, the kind the recovery pass delivers once its run ends. Unlike
+// RecordWarn, Queries may be bound to the caller's transaction, so the event
+// commits with the comment it serves. The operation key makes a repeat of the
+// same payload a no-op. It writes no metric: it is not a guard hit.
+func (g Guard) RecordNotice(ctx context.Context, workspaceID pgtype.UUID, op Op) error {
+	_, _, err := g.record(ctx, workspaceID, ModeBlock, op)
+	return err
+}
+
+// RecordMove stores a routed operation as a move event. Like RecordNotice,
+// Queries may be bound to the caller's transaction, so the event commits with
+// the comment it describes. It writes no metric: it is not a guard hit.
+func (g Guard) RecordMove(ctx context.Context, workspaceID pgtype.UUID, op Op) error {
+	_, _, err := g.record(ctx, workspaceID, ModeMove, op)
+	return err
+}
+
 func (g Guard) record(ctx context.Context, workspaceID pgtype.UUID, mode Mode, op Op) (db.AskGuardEvent, string, error) {
 	sum := sha256.Sum256(op.Payload)
 	digest := hex.EncodeToString(sum[:])
@@ -175,4 +227,26 @@ func MentionedMembers(content string) []string {
 		}
 	}
 	return ids
+}
+
+// OwnerScriptSettingKey holds the mode of the owner-script guard (CHE-7138).
+const OwnerScriptSettingKey = "owner_script_guard"
+
+// OwnerScriptModeFromSettings reads OwnerScriptSettingKey. Unlike the other ask
+// guards a missing key is warn, not off: the guard records and never refuses
+// until a person sets block.
+func OwnerScriptModeFromSettings(raw []byte) (Mode, error) {
+	if len(raw) == 0 {
+		return ModeWarn, nil
+	}
+	var settings map[string]any
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return "", fmt.Errorf("workspace settings: %w", err)
+	}
+	v, ok := settings[OwnerScriptSettingKey]
+	if !ok {
+		return ModeWarn, nil
+	}
+	s, _ := v.(string)
+	return ParseMode(s)
 }

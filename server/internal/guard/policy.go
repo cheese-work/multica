@@ -91,6 +91,10 @@ type Policy struct {
 	Layers []Layer `json:"layers,omitempty"`
 	// Rules are PR rules (title, trailer) that every repository inherits.
 	Rules *Rules `json:"rules,omitempty"`
+	// RepositoryAllowlist restricts writes and checkouts for each listed owner.
+	// An absent owner is unrestricted; an empty list denies all its repositories.
+	// This workspace boundary cannot be overridden by a deeper layer.
+	RepositoryAllowlist map[string][]string `json:"repository_allowlist,omitempty"`
 
 	lockdown bool // set by lockdownPolicy; never read from JSON
 	// fileReviewers are the reviewers a repository file asks for; set on a
@@ -122,6 +126,18 @@ func DefaultPolicy() *Policy {
 func (p *Policy) validate() error {
 	if p.Version != 1 {
 		return fmt.Errorf("policy version %d is not supported", p.Version)
+	}
+	seen := map[string]bool{}
+	for owner, repos := range p.RepositoryAllowlist {
+		if !repositoryPart.MatchString(owner) || seen[strings.ToLower(owner)] {
+			return fmt.Errorf("repository_allowlist: invalid or duplicate owner %q", owner)
+		}
+		seen[strings.ToLower(owner)] = true
+		for _, repo := range repos {
+			if !repositoryPart.MatchString(repo) {
+				return fmt.Errorf("repository_allowlist: invalid repository %q", repo)
+			}
+		}
 	}
 	for _, pl := range p.Plugins {
 		if pl.Name == "" || pl.Match.Tool == "" {

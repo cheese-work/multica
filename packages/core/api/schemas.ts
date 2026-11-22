@@ -111,6 +111,7 @@ import type {
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
 import { SHA256_HEX, isPreviewedActionType } from "../issues/decision-action-preview";
+import { BudgetReceiptSchema } from "./passkey-schema";
 
 export const PluginConfigFieldSchema = z.lazy(() => z.object({
   key: z.string(),
@@ -443,6 +444,7 @@ export const GitHubPullRequestSchema = z.lazy(() => z.object({
   failed_check_names: z.array(z.string()).optional().default([]),
   snapshot_stale: z.boolean().optional().default(false),
   snapshot_fetched_at: z.string().nullable().optional(),
+  snapshot_paused_until: z.string().nullable().optional().catch(undefined),
   mergeable_state: z.string().nullable().optional(),
   additions: z.number().optional().default(0),
   deletions: z.number().optional().default(0),
@@ -568,6 +570,7 @@ const IssueWorkflowHandlerSchema = z.lazy(() => z.object({
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
   "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role", "human_in_charge",
+  "author", "reviewer",
 ]);
 
 const IssueWorkflowEdgeSchema = z.lazy(() => z.object({
@@ -581,7 +584,8 @@ const IssueWorkflowEntryGateSchema = z.lazy(() => z.object({
   guard: z.string(),
   mode: z.string(),
   member_override: z.boolean().default(true),
-}));
+  // Loose: `param` and `projects` (and later gate fields) must survive a save.
+}).loose());
 
 const IssueWorkflowSubWorkflowSchema = z.lazy(() => z.object({
   workflow_id: z.string(),
@@ -1106,6 +1110,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
     fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
     sha256: z.string().regex(SHA256_HEX),
   }).loose().optional().catch(undefined),
+  preview_unavailable: z.string().optional().catch(undefined),
   // A malformed config change degrades to none: the card says details are unavailable and offers no approval.
   config_change: z.object({
     field: z.string(),
@@ -1122,6 +1127,7 @@ const DecisionActionSchema = z.lazy(() => z.object({
   owner_only: z.boolean().optional().catch(undefined),
   effect: z.string().optional().catch(undefined),
   effect_reason: z.string().optional().catch(undefined),
+  receipt: BudgetReceiptSchema,
   decided_at: z.string().optional().catch(undefined),
   decided_by_name: z.string().optional().catch(undefined),
   on_behalf_of_name: z.string().optional().catch(undefined),
@@ -1594,6 +1600,15 @@ export const EMPTY_CREATE_FEEDBACK_RESPONSE: CreateFeedbackResponse = {
   created_at: "",
 };
 
+// A thread's relation to the viewer, set on thread roots (CHE-6428). All three
+// flags are required: a partial object would read as "not with me" and hide a
+// thread, so anything malformed drops to undefined and the UI shows every thread.
+const ThreadRelationSchema = z.object({
+  with_me: z.boolean(),
+  agents_only: z.boolean(),
+  waiting_on_me: z.boolean(),
+}).loose();
+
 export const CommentSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1621,6 +1636,7 @@ export const CommentSchema = z.lazy(() => z.object({
   // Set only on comments a quick action produced (MUL-5465). Server-only.
   quick_action_id: z.string().nullable().optional(),
   deleted_at: z.string().nullable().optional().catch(undefined),
+  thread_relation: ThreadRelationSchema.optional().catch(undefined),
 }).loose());
 
 export const CommentsListSchema = z.lazy(() => z.array(CommentSchema));
@@ -2255,6 +2271,10 @@ const CostSplitShape = {
   uncosted_output_tokens: z.number().optional(),
   uncosted_cache_read_tokens: z.number().optional(),
   uncosted_cache_write_tokens: z.number().optional(),
+  // The 1-hour-TTL part of uncosted_cache_write_tokens. Absent (older
+  // backend) means "no split": every uncosted written token prices at the
+  // 5-minute rate, exactly as before the field existed.
+  uncosted_cache_write_1h_tokens: z.number().optional(),
 };
 
 const DashboardUsageDailySchema = z.lazy(() => z.object({
@@ -2444,6 +2464,8 @@ const TaskUsageSchema = z.lazy(() => z.object({
   output_tokens: z.number().default(0),
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
+  // Absent = no TTL split reported; writes price at the 5-minute rate.
+  cache_write_1h_tokens: z.number().optional().catch(undefined),
   cost_usd_ticks: z.number().optional(),
   credits_micros: z.number().optional().catch(undefined),
 }).loose());
@@ -4807,6 +4829,45 @@ export const ProviderBreakerSchema = z.lazy(() => z.object({
   next_probe_at: z.string().nullish().transform((v) => v ?? null),
   last_success_at: z.string().nullish().transform((v) => v ?? null),
   trip_evidence: z.array(z.string()).nullish().transform((v) => v ?? []),
+}));
+// Tool-guard decision counts and rows (CHE-5207). Counts default to zero and
+// the list shapes are strict: a malformed body must not read as "no hits".
+const guardCount = z.number().int().nonnegative().catch(0);
+const guardText = z.string().nullish().transform((v) => v ?? "");
+export const GuardDayCountsSchema = z.lazy(() => z.object({
+  day: z.string(),
+  fixed: guardCount,
+  refused: guardCount,
+  errors: guardCount,
+}));
+export const GuardStatsSchema = z.lazy(() => z.object({
+  days: z.number().int().catch(7),
+  tz: guardText,
+  since: guardText,
+  plugins: z.array(z.object({
+    plugin: z.string(),
+    fixed: guardCount,
+    refused: guardCount,
+    errors: guardCount,
+    shadow_hits: guardCount,
+    passes: guardCount,
+    daily: z.array(GuardDayCountsSchema).nullish().transform((v) => v ?? []),
+  })),
+}));
+export const GuardDecisionListSchema = z.lazy(() => z.object({
+  decisions: z.array(z.object({
+    id: z.string(),
+    task_id: guardText,
+    time: guardText,
+    plugin: guardText,
+    action: guardText,
+    tool: guardText,
+    subcommand: guardText,
+    line: guardText,
+    issue: guardText,
+    note: guardText,
+    runtime: guardText,
+  })),
 }));
 export const ProviderBreakerListSchema = z.lazy(() => z.object({
   breakers: z.array(ProviderBreakerSchema).nullish().transform((v) => v ?? []),

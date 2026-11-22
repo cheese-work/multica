@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -18,10 +19,10 @@ import (
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
-// TestRunBudgetRoutesInteractiveOnly sends every credential kind through the
-// real router and Auth middleware (CHE-2798 S1a): raise and top-up open spend,
-// so only an interactive session reaches the handler.
-func TestRunBudgetRoutesInteractiveOnly(t *testing.T) {
+// TestRunBudgetDirectRoutesGone sends every credential kind through the real
+// router and Auth middleware (CHE-2798 S1c): the direct raise and top-up routes
+// answer 410 to all of them, an interactive session included, and write nothing.
+func TestRunBudgetDirectRoutesGone(t *testing.T) {
 	if testPool == nil {
 		t.Skip("no database connection")
 	}
@@ -81,10 +82,10 @@ func TestRunBudgetRoutesInteractiveOnly(t *testing.T) {
 	}
 
 	type credential struct {
-		name    string
-		server  string
-		allowed bool
-		apply   func(*http.Request)
+		name        string
+		server      string
+		csrfRefused bool
+		apply       func(*http.Request)
 	}
 	bearer := func(token string) func(*http.Request) {
 		return func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+token) }
@@ -115,10 +116,10 @@ func TestRunBudgetRoutesInteractiveOnly(t *testing.T) {
 			bearer(pat)(r)
 			r.Header.Set("X-Actor-Source", "interactive_jwt")
 		}},
-		{"interactive cookie, no csrf", testServer.URL, false, cookie("")},
-		{"interactive cookie, wrong csrf", testServer.URL, false, cookie("00.00")},
-		{"interactive cookie, valid csrf", testServer.URL, true, cookie(csrf)},
-		{"desktop interactive bearer", testServer.URL, true, bearer(interactive)},
+		{"interactive cookie, no csrf", testServer.URL, true, cookie("")},
+		{"interactive cookie, wrong csrf", testServer.URL, true, cookie("00.00")},
+		{"interactive cookie, valid csrf", testServer.URL, false, cookie(csrf)},
+		{"desktop interactive bearer", testServer.URL, false, bearer(interactive)},
 	}
 	for _, route := range []string{"/run-budget", "/run-budget/top-up"} {
 		for _, c := range credentials {
@@ -143,20 +144,20 @@ func TestRunBudgetRoutesInteractiveOnly(t *testing.T) {
 				if err := testPool.QueryRow(ctx, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = $2`, issueID, action).Scan(&wrote); err != nil {
 					t.Fatal(err)
 				}
-				if !c.allowed {
-					if resp.StatusCode != http.StatusForbidden || wrote != 0 {
-						t.Fatalf("status = %d, %s rows %d; want 403 and 0", resp.StatusCode, action, wrote)
-					}
-					return
+				// S1c: the direct routes are gone for every credential, the one that
+				// could raise before included. The action path is the only way.
+				want := http.StatusGone
+				if c.csrfRefused {
+					// The global CSRF check stops a cookie request before any route.
+					want = http.StatusForbidden
 				}
-				if resp.StatusCode != http.StatusOK || wrote != 1 {
-					t.Fatalf("interactive caller: status %d, %s rows %d; want 200 and 1", resp.StatusCode, action, wrote)
+				if resp.StatusCode != want || wrote != 0 {
+					b, _ := io.ReadAll(resp.Body)
+					t.Fatalf("status = %d (%s), %s rows %d; want %d and 0", resp.StatusCode, b, action, wrote, want)
 				}
-				if route == "/run-budget" {
-					var cap int
-					if err := testPool.QueryRow(ctx, `SELECT COALESCE(max_runs_override, 0) FROM issue WHERE id = $1`, issueID).Scan(&cap); err != nil || cap != 5 {
-						t.Fatalf("max_runs_override = %d (err %v), want 5", cap, err)
-					}
+				var capNow int
+				if err := testPool.QueryRow(ctx, `SELECT COALESCE(max_runs_override, 0) FROM issue WHERE id = $1`, issueID).Scan(&capNow); err != nil || capNow != 0 {
+					t.Fatalf("max_runs_override = %d (err %v), want 0", capNow, err)
 				}
 			})
 		}

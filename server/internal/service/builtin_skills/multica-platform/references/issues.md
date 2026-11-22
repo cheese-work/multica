@@ -9,7 +9,6 @@ Product contracts the runtime brief does not fully encode.
 - [Relations graph](#relations-graph)
 - [Who else is running right now](#who-else-is-running-right-now)
 - [Sub-issues: todo starts work now, backlog parks it](#sub-issues-todo-starts-work-now-backlog-parks-it)
-- [Per-issue token usage](#per-issue-token-usage)
 - [Resolve the thread you answered](#resolve-the-thread-you-answered)
 - [Charts and files in a comment](#charts-and-files-in-a-comment)
 - [Incorrect to correct](#incorrect-to-correct)
@@ -407,18 +406,6 @@ Read each sub-issue's description before promoting and only promote items whose
 stated dependencies are met; if a description conflicts with the parent's
 breakdown, leave it `backlog` and comment to confirm first.
 
-## Per-issue token usage
-
-```bash
-multica issue usage <issue-id> --output json
-```
-
-Returns aggregated token usage across the issue's runs. In table output `RUNS`
-counts terminal runs only — one still in flight is not yet reflected. A total
-prefixed with `>=` is a lower bound, not the real total: one or more terminal
-runs did not report usage (aborted or infra-failed), so the true figure is at
-least that but unknown above it. Do not compare an unprefixed total with a
-`>=`-prefixed one without checking which you have.
 ## Resolve the thread you answered
 
 An answered thread left open keeps reading as pending work. When your reply
@@ -497,19 +484,9 @@ multica issue subscriber remove <issue-id> [--user <name> | --user-id <uuid>]
 - **Subscribers** default to the caller. `--user` is a fuzzy name match;
   prefer `--user-id`, which cannot match the wrong person.
 
-## DM progress follows
-
-A follow makes a DM show an issue's progress cards. Members pass
-`--chat <chat-session-id>` for a DM they created. Agents pass no `--chat`: the
-lane comes from the DM that started the task, and a task with no DM is refused.
-
-- `multica issue follow <issue-id>` starts following.
-- `multica issue unfollow <issue-id>` stops following.
-- `multica issue mute-follow <issue-id>` mutes the cards, keeping the follow.
-- `multica issue unmute-follow <issue-id>` turns the cards back on.
-- `multica issue follows --chat <chat-session-id>` lists the follows in a DM.
-
 ## Issue wakeups
 
 `multica issue wakeup` persists event/time work. See [wakeups.md](wakeups.md)
 for commands, conditions, and lifecycle behavior.
+
+DM progress follows: [chat.md](chat.md#dm-progress-follows). Per-issue token usage: [workspace.md](workspace.md#per-issue-token-usage).

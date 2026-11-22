@@ -26,6 +26,7 @@ import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-sto
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { splitChatSessions } from "@/lib/chat-dm-stats-archive";
 import { useT } from "@/lib/i18n";
+import { useAttentionRefresh } from "@/lib/use-attention-refresh";
 import { cn } from "@/lib/utils";
 
 export default function ChatSessionsRoute() {
@@ -33,6 +34,7 @@ export default function ChatSessionsRoute() {
   const { t } = useT("chat");
   const { colors } = useTheme();
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
+  useAttentionRefresh(wsId, sessions);
   const activeSessionId = useChatSessionPickerStore((s) => s.activeSessionId);
   const requestSelect = useChatSessionPickerStore((s) => s.requestSelect);
   const deleteSession = useDeleteChatSession();

@@ -88,6 +88,8 @@ func exhaustedIssueWith(ctx context.Context, q *db.Queries, e service.RunBudgetE
 // nothing was recorded.
 func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetExhausted) (id pgtype.UUID, generation int32, ok bool) {
 	window := e.Since.UTC().Format(time.RFC3339Nano)
+	var superseded []pgtype.UUID
+	var workspaceID pgtype.UUID
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
 		// The issue lock comes before anything that reads or updates its runs.
@@ -180,11 +182,19 @@ func (h *Handler) recordRefusalIntent(ctx context.Context, e service.RunBudgetEx
 		if err := q.SetRunBudgetRefusalSource(ctx, source); err != nil {
 			return err
 		}
-		return q.SupersedeRunBudgetRefusalsExcept(ctx, db.SupersedeRunBudgetRefusalsExceptParams{IssueID: issue.ID, ID: id})
+		superseded, err = q.SupersedeRunBudgetRefusalsExcept(ctx, db.SupersedeRunBudgetRefusalsExceptParams{IssueID: issue.ID, ID: id})
+		workspaceID = issue.WorkspaceID
+		return err
 	})
 	if err != nil {
 		slog.Warn("run budget: record refusal failed", "err", err, "issue_id", uuidToString(e.IssueID))
 		return pgtype.UUID{}, 0, false
+	}
+	// The retired refusals' approved cards now read superseded:later_window.
+	for _, action := range superseded {
+		if action.Valid {
+			h.publishRefusalOutcome(ctx, workspaceID, action)
+		}
 	}
 	return id, generation, ok
 }

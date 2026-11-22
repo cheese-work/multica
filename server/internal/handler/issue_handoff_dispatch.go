@@ -25,6 +25,7 @@ const (
 	handoffPending    = "pending"
 	handoffDispatched = "dispatched"
 	handoffSkipped    = "skipped"
+	handoffFailed     = "failed"
 )
 
 type handoffIntentKey struct{}
@@ -124,8 +125,18 @@ func (h *Handler) skipHandoffIntent(ctx context.Context, intentID pgtype.UUID, r
 // are locked for the whole decision, so two dispatchers take turns, and the
 // later one reads the first one's run.
 func (h *Handler) dispatchHandoffIntent(ctx context.Context, intentID pgtype.UUID) (db.IssueHandoffDispatch, error) {
+	return h.dispatchHandoffIntentOpt(ctx, intentID, false)
+}
+
+// dispatchHandoffIntentOpt is dispatchHandoffIntent; recovery is the sweep's
+// retry of an older intent, which first checks, under the issue lock, that the
+// issue is still where the intent's write left it.
+func (h *Handler) dispatchHandoffIntentOpt(ctx context.Context, intentID pgtype.UUID, recovery bool) (db.IssueHandoffDispatch, error) {
 	if h.TxStarter == nil {
 		return db.IssueHandoffDispatch{}, errors.New("transaction starter is not configured")
+	}
+	if err := h.handoffHook("before_dispatch"); err != nil {
+		return db.IssueHandoffDispatch{}, err
 	}
 	intent, err := h.Queries.GetHandoffDispatch(ctx, intentID)
 	if err != nil {
@@ -150,11 +161,14 @@ func (h *Handler) dispatchHandoffIntent(ctx context.Context, intentID pgtype.UUI
 	if intent.State != handoffPending {
 		return intent, nil
 	}
-	settled, afterCommit, err := h.settleHandoffIntentInTx(ctx, q, intent, overlay)
+	settled, afterCommit, err := h.settleHandoffIntentInTx(ctx, q, intent, overlay, recovery)
 	if err != nil {
 		return db.IssueHandoffDispatch{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
+		return db.IssueHandoffDispatch{}, err
+	}
+	if err := h.handoffHook("after_commit"); err != nil {
 		return db.IssueHandoffDispatch{}, err
 	}
 	if afterCommit != nil {
@@ -165,7 +179,7 @@ func (h *Handler) dispatchHandoffIntent(ctx context.Context, intentID pgtype.UUI
 
 // settleHandoffIntentInTx finds or starts the intent's run and records the
 // outcome on the intent, all with q. The run and its link commit together.
-func (h *Handler) settleHandoffIntentInTx(ctx context.Context, q *db.Queries, intent db.IssueHandoffDispatch, overlay *service.PreparedRuntimeMCPOverlay) (db.IssueHandoffDispatch, func(), error) {
+func (h *Handler) settleHandoffIntentInTx(ctx context.Context, q *db.Queries, intent db.IssueHandoffDispatch, overlay *service.PreparedRuntimeMCPOverlay, recovery bool) (db.IssueHandoffDispatch, func(), error) {
 	// The receipts the handoff's write left for the run's agent settle in the
 	// transaction that records the delivery, so a crash cannot leave a delivered
 	// intent with a receipt that triggers a second run.
@@ -191,6 +205,19 @@ func (h *Handler) settleHandoffIntentInTx(ctx context.Context, q *db.Queries, in
 		return row, nil, err
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return db.IssueHandoffDispatch{}, nil, err
+	}
+	if recovery {
+		// A failed read is an error: the sweep retries, never starts a stale run.
+		superseded, err := q.HandoffDispatchSuperseded(ctx, db.HandoffDispatchSupersededParams{
+			IssueID: intent.IssueID, TargetType: intent.TargetType, TargetID: intent.TargetID,
+			StatusHistoryID: intent.StatusHistoryID, CreatedAt: intent.CreatedAt,
+		})
+		if err != nil {
+			return db.IssueHandoffDispatch{}, nil, fmt.Errorf("check handoff superseded: %w", err)
+		}
+		if superseded.Bool {
+			return skipped("superseded")
+		}
 	}
 	issue, err := q.GetIssue(ctx, intent.IssueID)
 	if err != nil {
@@ -242,7 +269,7 @@ func (h *Handler) settleHandoffIntentInTx(ctx context.Context, q *db.Queries, in
 func handoffRunRefused(err error) bool {
 	for _, refusal := range []error{
 		service.ErrRunBudgetExhausted, service.ErrStageQueueFull, service.ErrAdmissionDeferred, service.ErrReviewHeadAnswered,
-		service.ErrIssueInTriage, service.ErrAgentPaused, service.ErrRecoveryCaused, service.ErrAgentArchived, errSquadLeaderNotAdmitted,
+		service.ErrIssueInTriage, service.ErrIntakeHold, service.ErrAgentPaused, service.ErrRecoveryCaused, service.ErrAgentArchived, errSquadLeaderNotAdmitted,
 	} {
 		if errors.Is(err, refusal) {
 			return true
@@ -254,10 +281,16 @@ func handoffRunRefused(err error) bool {
 // intentRunAgent is the agent whose run the intent asks for: the agent target,
 // or the leader of a squad target.
 func (h *Handler) intentRunAgent(ctx context.Context, q *db.Queries, intent db.IssueHandoffDispatch) pgtype.UUID {
-	if intent.TargetType != "squad" {
-		return intent.TargetID
+	return squadLeaderOrAgent(ctx, q, intent.WorkspaceID, intent.TargetType, intent.TargetID)
+}
+
+// squadLeaderOrAgent is the agent a run for the target goes to: the agent
+// itself, or the leader of a squad. Zero when the squad is gone.
+func squadLeaderOrAgent(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, targetType string, targetID pgtype.UUID) pgtype.UUID {
+	if targetType != "squad" {
+		return targetID
 	}
-	squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: intent.TargetID, WorkspaceID: intent.WorkspaceID})
+	squad, err := q.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{ID: targetID, WorkspaceID: workspaceID})
 	if err != nil {
 		return pgtype.UUID{}
 	}
@@ -286,4 +319,11 @@ func intentRunContext(ctx context.Context, intent db.IssueHandoffDispatch) conte
 		ctx = service.WithActingTask(ctx, intent.SourceTaskID)
 	}
 	return service.WithStatusHandoffComments(ctx, intent.ContextCommentIds)
+}
+
+func (h *Handler) handoffHook(point string) error {
+	if h.handoffDispatchHook == nil {
+		return nil
+	}
+	return h.handoffDispatchHook(point)
 }

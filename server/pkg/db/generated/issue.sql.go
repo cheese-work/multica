@@ -516,6 +516,9 @@ cleared_wakeup_pr_events AS (
 cleared_ci_advances AS (
  DELETE FROM issue_ci_advance WHERE issue_id IN (SELECT target.id FROM target)
 ),
+cleared_workflow_switch_pending AS (
+ DELETE FROM issue_workflow_switch_pending WHERE issue_id IN (SELECT target.id FROM target)
+),
 cleared_comment_supersessions AS (
  DELETE FROM comment_supersession WHERE issue_id IN (SELECT target.id FROM target)
 ),
@@ -1543,7 +1546,7 @@ const listIssues = `-- name: ListIssues :many
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read, i.created_via
 FROM issue i
 WHERE i.workspace_id = $1
   AND ($4::text IS NULL OR i.status = $4)
@@ -1641,6 +1644,7 @@ type ListIssuesRow struct {
 	WorkflowID              pgtype.UUID        `json:"workflow_id"`
 	RequestedByID           pgtype.UUID        `json:"requested_by_id"`
 	DescriptionExternalRead bool               `json:"description_external_read"`
+	CreatedVia              pgtype.Text        `json:"created_via"`
 }
 
 // involves_user_id widens the assignee filter to surface issues where the user
@@ -1699,6 +1703,7 @@ func (q *Queries) ListIssues(ctx context.Context, arg ListIssuesParams) ([]ListI
 			&i.WorkflowID,
 			&i.RequestedByID,
 			&i.DescriptionExternalRead,
+			&i.CreatedVia,
 		); err != nil {
 			return nil, err
 		}
@@ -1714,18 +1719,22 @@ const listOpenIssues = `-- name: ListOpenIssues :many
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read, i.created_via
 FROM issue i
 WHERE i.workspace_id = $1
   -- Negate only known terminal keys so an unknown legacy key remains visible.
   AND NOT (i.status = ANY($2::text[]))
-  AND ($3::text IS NULL OR i.priority = $3)
-  AND ($4::uuid IS NULL OR i.assignee_id = $4)
-  AND ($5::uuid[] IS NULL OR i.assignee_id = ANY($5::uuid[]))
-  AND ($6::uuid IS NULL OR i.creator_id = $6)
-  AND ($7::uuid IS NULL OR i.requested_by_id = $7)
-  AND ($8::uuid IS NULL OR i.project_id = $8)
-  AND ($9::jsonb IS NULL OR i.metadata @> $9::jsonb)
+  -- created_via: values to match; 'unknown' also matches NULL rows.
+  AND ($3::text[] IS NULL
+       OR i.created_via = ANY($3::text[])
+       OR ('unknown' = ANY($3::text[]) AND i.created_via IS NULL))
+  AND ($4::text IS NULL OR i.priority = $4)
+  AND ($5::uuid IS NULL OR i.assignee_id = $5)
+  AND ($6::uuid[] IS NULL OR i.assignee_id = ANY($6::uuid[]))
+  AND ($7::uuid IS NULL OR i.creator_id = $7)
+  AND ($8::uuid IS NULL OR i.requested_by_id = $8)
+  AND ($9::uuid IS NULL OR i.project_id = $9)
+  AND ($10::jsonb IS NULL OR i.metadata @> $10::jsonb)
   -- properties_filter is a jsonb array of groups, each group an array of
   -- patterns (built by parsePropertiesFilterParam): the issue must match at
   -- least one pattern from EVERY group (AND of ORs). Three pattern shapes:
@@ -1743,10 +1752,10 @@ WHERE i.workspace_id = $1
   -- terminal-status predicate intentionally remains a filter rather than a
   -- positive index narrowing so unknown legacy status keys stay visible.
   AND (
-    $10::jsonb IS NULL
+    $11::jsonb IS NULL
     OR NOT EXISTS (
       SELECT 1
-      FROM jsonb_array_elements($10::jsonb) AS pf(alternatives)
+      FROM jsonb_array_elements($11::jsonb) AS pf(alternatives)
       WHERE NOT EXISTS (
         SELECT 1
         FROM jsonb_array_elements(pf.alternatives) AS alt(pattern)
@@ -1784,11 +1793,11 @@ WHERE i.workspace_id = $1
     )
   )
   AND (
-    $11::uuid IS NULL
+    $12::uuid IS NULL
     OR (i.assignee_type = 'agent' AND i.assignee_id IN (
           SELECT a.id FROM agent a
            WHERE a.workspace_id = $1
-             AND a.owner_id     = $11::uuid
+             AND a.owner_id     = $12::uuid
     ))
     OR (i.assignee_type = 'squad' AND i.assignee_id IN (
           SELECT sm.squad_id
@@ -1796,14 +1805,14 @@ WHERE i.workspace_id = $1
             JOIN squad s ON s.id = sm.squad_id
            WHERE s.workspace_id = $1
              AND sm.member_type = 'member'
-             AND sm.member_id   = $11::uuid
+             AND sm.member_id   = $12::uuid
           UNION
           SELECT s.id
             FROM squad s
             JOIN agent a ON a.id = s.leader_id
            WHERE s.workspace_id = $1
              AND a.workspace_id = $1
-             AND a.owner_id     = $11::uuid
+             AND a.owner_id     = $12::uuid
           UNION
           SELECT sm.squad_id
             FROM squad_member sm
@@ -1812,7 +1821,7 @@ WHERE i.workspace_id = $1
            WHERE s.workspace_id = $1
              AND sm.member_type = 'agent'
              AND a.workspace_id = $1
-             AND a.owner_id     = $11::uuid
+             AND a.owner_id     = $12::uuid
     ))
   )
 ORDER BY i.position ASC, i.created_at DESC
@@ -1821,6 +1830,7 @@ ORDER BY i.position ASC, i.created_at DESC
 type ListOpenIssuesParams struct {
 	WorkspaceID        pgtype.UUID   `json:"workspace_id"`
 	TerminalStatusKeys []string      `json:"terminal_status_keys"`
+	CreatedVia         []string      `json:"created_via"`
 	Priority           pgtype.Text   `json:"priority"`
 	AssigneeID         pgtype.UUID   `json:"assignee_id"`
 	AssigneeIds        []pgtype.UUID `json:"assignee_ids"`
@@ -1860,6 +1870,7 @@ type ListOpenIssuesRow struct {
 	WorkflowID              pgtype.UUID        `json:"workflow_id"`
 	RequestedByID           pgtype.UUID        `json:"requested_by_id"`
 	DescriptionExternalRead bool               `json:"description_external_read"`
+	CreatedVia              pgtype.Text        `json:"created_via"`
 }
 
 // See ListIssues for the semantics of involves_user_id (mirrors the 4-branch
@@ -1868,6 +1879,7 @@ func (q *Queries) ListOpenIssues(ctx context.Context, arg ListOpenIssuesParams) 
 	rows, err := q.db.Query(ctx, listOpenIssues,
 		arg.WorkspaceID,
 		arg.TerminalStatusKeys,
+		arg.CreatedVia,
 		arg.Priority,
 		arg.AssigneeID,
 		arg.AssigneeIds,
@@ -1913,6 +1925,7 @@ func (q *Queries) ListOpenIssues(ctx context.Context, arg ListOpenIssuesParams) 
 			&i.WorkflowID,
 			&i.RequestedByID,
 			&i.DescriptionExternalRead,
+			&i.CreatedVia,
 		); err != nil {
 			return nil, err
 		}
@@ -2442,7 +2455,7 @@ UPDATE issue AS i SET
     duplicate_of_issue_id = changed.next_duplicate_of_issue_id,
     -- metadata.blocked_on names what a blocked issue waits for (CHE-6972); it
     -- is dropped by every write that leaves blocked, whichever writer moved it.
-    metadata = CASE WHEN changed.next_status = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' END,
+    metadata = CASE WHEN changed.next_status = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' - 'blocked_entry_link' - 'blocked_entry_rearm_refusal' END,
     revision = i.revision + changed.did_change::integer,
     last_activity_at = CASE WHEN changed.did_activity
         THEN GREATEST(COALESCE(i.last_activity_at, i.updated_at), now())
@@ -2549,7 +2562,7 @@ UPDATE issue AS i SET
     -- cannot leave a pointer on a reopened issue.
     duplicate_of_issue_id = CASE WHEN $2 = 'cancelled' AND i.status = 'cancelled' THEN i.duplicate_of_issue_id ELSE NULL END,
     -- metadata.blocked_on only lives while blocked (CHE-6972); see UpdateIssue.
-    metadata = CASE WHEN $2 = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' END,
+    metadata = CASE WHEN $2 = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' - 'blocked_entry_link' - 'blocked_entry_rearm_refusal' END,
     position = CASE WHEN i.status IS DISTINCT FROM $2 THEN (
         SELECT COALESCE(MIN(target.position), 0) - 1
         FROM issue AS target

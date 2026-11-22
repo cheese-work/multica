@@ -25,6 +25,7 @@ func (handler *Handler) AskDecision(writer http.ResponseWriter, request *http.Re
 		Footer          string          `json:"footer"`
 		ParentID        string          `json:"parent_id"`
 		EscalationClass string          `json:"escalation_class"`
+		Wait            bool            `json:"wait"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 8*maxCommentContentBytes))
 	decoder.DisallowUnknownFields() // issue, agent and person come from the task, never the body
@@ -65,7 +66,7 @@ func (handler *Handler) AskDecision(writer http.ResponseWriter, request *http.Re
 	}
 	body, err := json.Marshal(map[string]any{
 		"issue_id": uuidToString(issue.ID), "for": uuidToString(human), "ask": input.Ask,
-		"footer": input.Footer, "parent_id": input.ParentID, "escalation_class": input.EscalationClass,
+		"footer": input.Footer, "parent_id": input.ParentID, "escalation_class": input.EscalationClass, "wait": input.Wait,
 	})
 	if err != nil {
 		writeError(writer, http.StatusInternalServerError, "failed to encode decision ask")

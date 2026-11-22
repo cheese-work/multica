@@ -1,0 +1,92 @@
+{
+  "provider": "doop",
+  "base_url": "https://congvc-c00.taila6fa8a.ts.net:34443/",
+  "canvas_or_project_id": "mRAnnjvGod",
+  "page_id": "mRAnnjvGod:che-7316",
+  "screens": [
+    {
+      "screen": "P1 · Draft ready",
+      "frame_id": "pKtksZVCVg",
+      "updatedAt": "2026-11-18T15:03:28.476Z",
+      "content_sha256": "099bcab15999f4850baf816d2d33ebe80490634d466bbb7a52af363f1c731b89"
+    },
+    {
+      "screen": "P2 · Queued, 1 message",
+      "frame_id": "5XfFssISKo",
+      "updatedAt": "2026-11-18T15:03:31.339Z",
+      "content_sha256": "82e584649c26f73a587714b454102d17de6b70f9a817a2fc75070886d479be52"
+    },
+    {
+      "screen": "P3 · Queued, 2 messages",
+      "frame_id": "eKQYfGUsg4",
+      "updatedAt": "2026-11-19T02:03:02.258Z",
+      "content_sha256": "a4d8ee5310a665d200a7d53ec5b160ebacf8e4a8a516ed32b819295ecd4dbbcb"
+    },
+    {
+      "screen": "P4 · Provider recovered",
+      "frame_id": "mm85NcOhSx",
+      "updatedAt": "2026-11-19T02:26:19.440Z",
+      "content_sha256": "41645fdf71b0e2771246a527cb47ac238a0b96f072bedf0392300f000582a566"
+    },
+    {
+      "screen": "E1 · Send not saved, draft kept",
+      "frame_id": "6_-UufVR07",
+      "updatedAt": "2026-11-19T02:03:10.900Z",
+      "content_sha256": "15108d6f94e61396337799974d318080cca911f201ccd6bab2e809cabacee2b9"
+    },
+    {
+      "screen": "Chat · states",
+      "frame_id": "9Shubl0GlQ",
+      "updatedAt": "2026-11-19T02:27:07.702Z",
+      "content_sha256": "dd23489743fa9d8e735d4f1f69eb9629bbecea2584a647a8cfd4d4f92055ea11"
+    },
+    {
+      "screen": "Chat · phone 390",
+      "frame_id": "9vPxT1-w_R",
+      "updatedAt": "2026-11-19T02:04:01.422Z",
+      "content_sha256": "97f5e952909d9e8b80d657323590d4731a802159c16ac7d1489132ee2ef76cc0"
+    },
+    {
+      "screen": "CHE-7316 · components",
+      "frame_id": "eikaD29JrI",
+      "updatedAt": "2026-11-19T02:26:37.693Z",
+      "content_sha256": "275d4a7227e4150738a3eea789d2c74efab17f5aae305afe4bc5cbf4ba2aaec4"
+    }
+  ],
+  "export_sha256": "ecdc915a694c72cf526dafd24060268d25c89068574faac5c5e869c3faf30be6",
+  "export_files": {
+    "p1-draft-ready.html": "099bcab15999f4850baf816d2d33ebe80490634d466bbb7a52af363f1c731b89",
+    "p2-queued-1-message.html": "82e584649c26f73a587714b454102d17de6b70f9a817a2fc75070886d479be52",
+    "p3-queued-2-messages.html": "a4d8ee5310a665d200a7d53ec5b160ebacf8e4a8a516ed32b819295ecd4dbbcb",
+    "p4-provider-recovered.html": "41645fdf71b0e2771246a527cb47ac238a0b96f072bedf0392300f000582a566",
+    "e1-send-not-saved.html": "15108d6f94e61396337799974d318080cca911f201ccd6bab2e809cabacee2b9",
+    "states.html": "dd23489743fa9d8e735d4f1f69eb9629bbecea2584a647a8cfd4d4f92055ea11",
+    "phone-390.html": "97f5e952909d9e8b80d657323590d4731a802159c16ac7d1489132ee2ef76cc0",
+    "components.html": "275d4a7227e4150738a3eea789d2c74efab17f5aae305afe4bc5cbf4ba2aaec4"
+  },
+  "export_transform": "Exact HTML read from doop get_frame for each frame at the listed updatedAt, written with one trailing newline; the frame's own htmlBytes equals the character count of the file minus that newline. export_sha256 is the SHA-256 of the files concatenated in export_files order. No other change.",
+  "screen_docs": [
+    {
+      "screen": "Queued state · doc",
+      "frame_id": "TnHs6UIRJ_",
+      "updatedAt": "2026-11-19T02:04:00.108Z",
+      "file": "screens/queued-state.md",
+      "content_sha256": "8dcc9dc6706dbb431dd669b157882f2670d5485263b0ebb9d9af5aeb7974ffbe",
+      "in_waiver_frame_list": false
+    },
+    {
+      "screen": "Send not saved · doc",
+      "frame_id": "E0Bl-j8dm7",
+      "updatedAt": "2026-11-19T02:03:42.404Z",
+      "file": "screens/send-not-saved.md",
+      "content_sha256": "f449388b5ba0871023098a67af981e8fda22f86c9f5d6e8a0b20a6f6c81b24ae",
+      "in_waiver_frame_list": false
+    }
+  ],
+  "exported_at": "2026-11-19 10:14 ICT",
+  "exported_by": "x99-claude-sonnet-design / claude-sonnet-5-5 / X99",
+  "issue": "CHE-7316",
+  "selection_id": "01a1f189-1459-73c8-8b5c-9755a24facc1",
+  "ux_verdict_id": "01a1f1a8-cd40-7af2-bfc1-6c5421ea3f79",
+  "ux_verdict_result": "HOLD (not a PASS) on CHE-7437; waived for these exact versions by Cheese, decision card d1490c53, 19 Nov 2026 ICT"
+}

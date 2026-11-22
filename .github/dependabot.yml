@@ -1,7 +1,8 @@
 # CHE-4680 (CHE-4658 P2, D16 A). Grouped weekly updates: per ecosystem at most one version-update PR and one
 # security-update PR a week. Titles read `<prefix>(deps): ...`, never feat/fix/perf, so `Changelog line` needs no line.
-# Dependabot cannot append the `[squash]` merge-method tag; the PR author tag is set by the merger. Labels are left at
-# the Dependabot defaults (`dependencies` + ecosystem); `mechanical-tier` classifies by changed path, not by label.
+# Dependabot cannot append the `[squash]` merge-method tag; the guard (server/internal/guard, CHE-7135) accepts its PRs
+# untagged and the merge queue default applies. Labels are left at the Dependabot defaults (`dependencies` + ecosystem);
+# `mechanical-tier` classifies by changed path, not by label.
 version: 2
 updates:
   - package-ecosystem: gomod
@@ -67,6 +68,10 @@ updates:
       interval: "weekly"
       day: "monday"
       timezone: "Asia/Ho_Chi_Minh"
+    # CHE-7520: Node 25+ ships no corepack, so Dockerfile.web/.docs break. Move to Node 26 by hand (corepack install first).
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 3
     commit-message:
       prefix: "build"

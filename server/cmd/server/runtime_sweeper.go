@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/bgagents"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
@@ -183,6 +184,7 @@ func runtimeSweepRound(ctx context.Context, queries *db.Queries, liveness handle
 	}
 	sweepStaleTasks(ctx, queries, taskSvc, bus, reconnectGrace)
 	sweepExpiredQueuedTasks(ctx, queries, taskSvc, reconnectGrace)
+	sweepUnstartedCompactionTasks(ctx, taskSvc)
 	sweepDeferredChatFinalizations(ctx, queries, taskSvc)
 	taskSvc.CancelExpiredBudgetRecoveryRuns(ctx)
 }
@@ -687,6 +689,41 @@ func sweepExpiredQueuedTasks(ctx context.Context, queries *db.Queries, taskSvc *
 
 	slog.Info("task sweeper: expired stale queued tasks", "count", len(failedTasks))
 	taskSvc.CaptureQueuedExpiredTasks(ctx, failedTasks)
+	taskSvc.HandleFailedTasks(ctx, failedTasks)
+	return
+}
+
+// compactionStartTimeoutSeconds is the compaction start bound: the `compact`
+// claim deadline of the background-job catalog (CHE-4097, 30 s). With the
+// sweep interval the effective bound is that plus up to one sweep interval.
+var compactionStartTimeoutSeconds = bgagents.Catalog[bgagents.Compact].ClaimDeadline.Seconds()
+
+// sweepUnstartedCompactionTasks fails compaction tasks that did not start in
+// time, counted from when their DM became free. ExpireUnstartedCompactionTasks
+// settles the tasks in the same transaction as the status write;
+// HandleFailedTasks (post-failure effects only) runs after that commit.
+// Ordinary work and its thresholds are untouched.
+func sweepUnstartedCompactionTasks(ctx context.Context, taskSvc *service.TaskService) (stats runtimeSweepStageStats) {
+	startedAt := time.Now()
+	defer func() {
+		observeRuntimeSweepStage(taskServiceMetrics(taskSvc), obsmetrics.RuntimeSweepStageCompactionStartBound, startedAt, stats)
+	}()
+
+	failedTasks, err := taskSvc.ExpireUnstartedCompactionTasks(ctx, db.ExpireUnstartedCompactionTasksParams{
+		StartTimeoutSecs: compactionStartTimeoutSeconds,
+		MaxPerTick:       queuedExpireBatchSize,
+	})
+	if err != nil {
+		slog.Warn("task sweeper: failed to expire unstarted compaction tasks", "error", err)
+		return
+	}
+	stats.candidates = len(failedTasks)
+	stats.changed = len(failedTasks)
+	if len(failedTasks) == 0 {
+		return
+	}
+
+	slog.Info("task sweeper: expired unstarted compaction tasks", "count", len(failedTasks))
 	taskSvc.HandleFailedTasks(ctx, failedTasks)
 	return
 }

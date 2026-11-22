@@ -72,6 +72,10 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 	// the first edge that fact satisfies, in list order, is the move.
 	edge, ok := issueworkflow.FirstMatch(def.EdgesOf(issue.Status), issueworkflow.Facts{
 		PRs: []issueworkflow.PRFact{{State: prState, ChecksRollup: "SUCCESS", HeadFresh: true}},
+		// A draft PR is the author's early push (workflow step 2): its green
+		// checks move the issue only once the author set the ready marker. A
+		// head refused here is not claimed, so the next snapshot tries again.
+		ReadyForReview: issueReadyForReview(issue),
 	})
 	if !ok {
 		return false
@@ -114,6 +118,17 @@ func (h *Handler) advanceIssueOnCIGreen(ctx context.Context, issueID pgtype.UUID
 		}
 	}
 	return ranHandler
+}
+
+// readyForReviewMetadataKey is the issue metadata marker the author sets (true)
+// when a draft PR is ready for the CI-green advance (CHE-5741). A trigger on
+// issue.status spends it on any status change (migration 999k), so each fix
+// round needs a fresh marker.
+const readyForReviewMetadataKey = "ready_for_review"
+
+func issueReadyForReview(issue db.Issue) bool {
+	ready, _ := parseIssueMetadata(issue.Metadata)[readyForReviewMetadataKey].(bool)
+	return ready
 }
 
 // hasOpenChildren reports whether any direct child of issue is not yet in a
@@ -236,6 +251,8 @@ func edgeMoveCause(source string) string {
 		return "run_budget"
 	case "idle_started_guard":
 		return "watchdog"
+	case "step_watchdog_budget":
+		return "step_watchdog_budget"
 	case "pr_automation":
 		return service.StatusCausePRMerged
 	}

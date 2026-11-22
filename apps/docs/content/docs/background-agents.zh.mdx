@@ -1,0 +1,89 @@
+---
+title: 后台智能体
+description: 选择由哪个智能体运行幕后的小任务（例如给 DM 起标题），以及未设置时会发生什么。
+---
+
+有些工作在幕后进行：给 DM 起标题、建议快捷操作按钮、压缩过长的 DM，以及路由工作流步骤。每个这样的**后台作业**都作为你选定智能体的一个普通任务运行。任何后台作业都不会自行直接调用模型。
+
+## 作业
+
+| 作业 | 作用 | 谁可以设置 |
+|---|---|---|
+| `dm_title` | 根据第一条消息给 DM 起标题。 | 工作区默认值，或每位成员为自己的 DM 设置。 |
+| `quick_actions` | 在 DM 中建议快捷操作按钮。 | 工作区默认值，或每位成员。 |
+| `compact` | 压缩过长的 DM。 | 工作区默认值，或每位成员。 |
+| `routing` | 处理仅需路由的工作流步骤。 | 仅工作区默认值。 |
+
+每个作业有一个**主**智能体和一个可选的**备用**智能体。
+
+## 由哪个智能体运行作业
+
+作业被触发时，Multica 选择第一个匹配项：
+
+1. **你自己的链**：如果你为该作业设置了主智能体。
+2. 否则是**工作区链**：如果它设置了主智能体。
+3. 否则走[无智能体路径](#未运行智能体时)。
+
+链内先运行主智能体，再运行备用智能体。未设置、不符合条件、已归档或不可达的智能体会被跳过。只有当主智能体的运行因提供方错误而失败，或错过[时限](#时限)时，才会运行备用智能体。每次触发只故障转移一次。
+
+如果你自己的链存在但其中所有智能体都失败，Multica 不会回退到工作区链：你的明确选择会被尊重，并走无智能体路径。
+
+## 未运行智能体时
+
+未设置智能体，或没有智能体给出可用结果时，每个作业的结果是固定的：
+
+| 作业 | 无智能体时的行为 |
+|---|---|
+| `dm_title` | 从第一条消息截取的标题（60 个字符）。不调用模型。 |
+| `quick_actions` | 没有按钮。不调用模型。 |
+| `compact` | 由该 DM 自己的智能体压缩，与现在一致。 |
+| `routing` | 由工作流步骤自己的处理智能体运行该步骤，与现在一致。 |
+
+## 现有工作区的迁移
+
+如果你的工作区目前依赖旧的直接模型调用来生成标题或按钮，所有者必须在移除直接调用的构建部署**之前**设置 `dm_title` 和 `quick_actions` 智能体。否则，标题会退回到 60 个字符的截取，按钮也会消失。这是预期的无智能体行为，这些工作区会看到这一变化。
+
+```bash
+multica workspace background-agents set dm_title --agent <agent> --fallback <agent>
+multica workspace background-agents set quick_actions --agent <agent>
+```
+
+## 时限
+
+后台任务若未及时被领取会被取消，运行过久则会被标记为失败。两种情况都会让作业转到下一个槽位。
+
+| 作业 | 领取时限 | 运行时限 | 超时后 |
+|---|---|---|---|
+| `dm_title` | 10 秒 | 60 秒 | 下一个槽位，然后使用 60 个字符的标题。 |
+| `quick_actions` | 5 秒 | 20 秒 | 下一个槽位，然后不显示按钮。自动触发时不提示错误；手动刷新仍会报告失败。 |
+| `compact` | 30 秒 | 现有的压缩限制 | 由 DM 自己的智能体压缩，与现在一致。 |
+| `routing` | 工作流步骤规则 | 工作流步骤规则 | 工作流步骤规则。 |
+
+## CLI
+
+查看或设置工作区默认值：
+
+```bash
+multica workspace background-agents list
+multica workspace background-agents set dm_title --agent haiku --fallback luna
+multica workspace background-agents set quick_actions --agent none
+```
+
+查看或设置你自己的链：
+
+```bash
+multica me background-agents list
+multica me background-agents set dm_title --agent haiku
+multica me background-agents set dm_title --agent none   # 恢复为工作区默认值
+```
+
+- `<job>` 为 `dm_title`、`quick_actions`、`compact` 或 `routing`。`multica me` 只接受前三个。
+- `--agent` 和 `--fallback` 接受智能体 ID 或名称。`none` 表示清除该字段。至少传入一个。
+- `list` 会输出每个作业的智能体、备用智能体和**来源**：`user`（你的链）、`workspace`，或 `off`（无智能体路径）。`--output json` 以 JSON 输出相同数据。
+- 写入工作区默认值需要所有者或管理员。两个命令都只允许人类使用：任务令牌会被拒绝，并返回固定的错误码。
+
+## 接下来
+
+- [CLI 参考](/cli)：完整命令集。
+- [聊天](/chat)：关于 DM。
+- [快捷操作](/quick-actions)：任务的快捷操作。

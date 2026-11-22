@@ -152,6 +152,27 @@ docker exec "$container" psql -U "$db_user" -d "$db_name" -c "ROLLBACK PREPARED 
 sleep 1
 expect_admit "final gate admits once the prepared transaction is resolved" final_gate
 
+# CHE-7008: live traffic takes short transaction-scoped advisory locks while
+# the old release still serves. A holder inside a young transaction that
+# commits within the 15s window is transient and must not refuse the
+# passive preflight. The strict final gate still denies while it is held.
+docker exec -d "$container" psql -U "$db_user" -d "$db_name" -c \
+  "BEGIN; SELECT pg_advisory_xact_lock(7008); SELECT pg_sleep(3); COMMIT;"
+sleep 1
+expect_admit "short xact advisory lock in a young transaction admits preflight" preflight
+terminate_all_client_backends
+sleep 1
+
+# An idle session holding a session-level advisory lock (no transaction, so
+# no age to judge) stays present for the whole window and still denies,
+# with the holder's state in the evidence.
+docker exec -d "$container" bash -c \
+  "{ echo 'SELECT pg_advisory_lock(4247);'; sleep 25; } | psql -U $db_user -d $db_name"
+sleep 1
+expect_deny "persistent idle session advisory lock denies preflight" preflight
+terminate_all_client_backends
+sleep 1
+
 # Competing advisory-lock holder.
 docker exec -d "$container" bash -c \
   "psql -U $db_user -d $db_name -c 'SELECT pg_advisory_lock(4246); SELECT pg_sleep(20);' & sleep 22"

@@ -204,4 +204,65 @@ describe("ConfigChangeViewer", () => {
     expect(screen.getByTestId("config-change-counts")).toHaveTextContent("Characters: 1 → 2");
     expect(screen.getByTestId("config-change-counts")).not.toHaveTextContent("allowed");
   });
+
+  describe("Show full with a section scope (CHE-5703)", () => {
+    const openFull = async (value: DecisionConfigChange) => {
+      const user = userEvent.setup();
+      open(value);
+      await user.click(screen.getByRole("button", { name: "Show full" }));
+      return screen.getByRole("region", { name: "Result after approval" });
+    };
+    const text = ["intro", "# Alpha", "a1", "# Review exception", "until 14 Nov", "keep", "# Omega", "o1"];
+
+    it("opens only the changed text section of a long config, heading included, with no − or + marks", async () => {
+      const long = [...text.slice(0, 3), ...Array.from({ length: 300 }, (_, i) => `filler ${i}`), ...text.slice(3)];
+      const start = long.indexOf("# Review exception") + 1;
+      const region = await openFull({
+        ...change,
+        field: "workspace.context",
+        after: long.join("\n"),
+        meta: { section: { kind: "heading", items: [{ name: "Review exception", start_line: start, end_line: start + 2 }] } },
+      });
+      expect(region.textContent).toBe("# Review exception\nuntil 14 Nov\nkeep");
+      expect(region.textContent).not.toMatch(/^[+−-]/m);
+    });
+
+    it("opens only the changed workflow step of a steps change", async () => {
+      const steps = [
+        { status_key: "todo", handler: { type: "agent", id: "a" } },
+        { status_key: "agent_review", handler: { type: "agent", id: "b" } },
+        { status_key: "done", handler: { type: "agent", id: "c" } },
+      ];
+      const region = await openFull({
+        ...change,
+        field: "workflow.steps",
+        diff_kind: "json",
+        after: steps,
+        meta: { section: { kind: "step", items: [{ name: "agent_review" }] } },
+      });
+      expect(JSON.parse(region.textContent!)).toEqual([steps[1]]);
+    });
+
+    it("opens only the changed settings keys", async () => {
+      const region = await openFull({
+        ...change,
+        field: "workspace.settings",
+        keys: ["auto_compact"],
+        diff_kind: "json",
+        after: { auto_compact: true, other: 1 },
+        meta: { section: { kind: "key", items: [{ name: "auto_compact" }] } },
+      });
+      expect(JSON.parse(region.textContent!)).toEqual({ auto_compact: true });
+    });
+
+    it.each([
+      ["no scope", undefined],
+      ["a line range past the end of the text", { kind: "heading", items: [{ name: "x", start_line: 1, end_line: 99 }] }],
+      ["a step the value lacks", { kind: "step", items: [{ name: "nope" }] }],
+      ["an unknown kind", { kind: "paragraph", items: [{ name: "x" }] }],
+    ])("opens the whole value for %s", async (_label, section) => {
+      const region = await openFull({ ...change, after: text.join("\n"), meta: section ? { section } : undefined });
+      expect(region.textContent).toBe(text.join("\n"));
+    });
+  });
 });

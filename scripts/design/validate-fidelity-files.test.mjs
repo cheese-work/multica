@@ -102,3 +102,9 @@ test("lockLabelWidths reads a label that carries a data-annotation mark (CHE-584
   const html = '<div class="col ph"><div class="lbl" data-annotation>7 · Phone</div></div>';
   assert.deepEqual([...lockLabelWidths(html)], [["7", 358]]);
 });
+
+test("a case may list the blocks its state draws; the ids must be in the blocks map (CHE-9088)", () => {
+  assert.deepEqual(validateBlocksMap(map({ cases: [kase({ blocks: ["decision-request-ask"] })] }), ctx).errors, []);
+  assert.match(validateBlocksMap(map({ cases: [kase({ blocks: ["decision-request-nope"] })] }), ctx).errors.join(), /blocks\[0\].*decision-request-nope/);
+  assert.match(validateBlocksMap(map({ cases: [kase({ blocks: "x" })] }), ctx).errors.join(), /blocks must be a list/);
+});

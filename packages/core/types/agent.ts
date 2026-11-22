@@ -151,6 +151,8 @@ export interface RuntimeDevice {
   update_schedule?: RuntimeUpdateSchedule | null;
   /** Result of the machine's last update cycle; null until one ran. */
   last_update_outcome?: RuntimeUpdateOutcome | null;
+  /** When that outcome was written (RFC 3339); null until a cycle ran. */
+  last_update_outcome_at?: string | null;
   /**
    * Runtime-wide cap on tasks running at once across every agent bound to
    * this runtime (GitHub #9626). `null` means no runtime cap; each agent's
@@ -632,6 +634,8 @@ export interface TaskUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  /** The 1-hour-TTL part of `cache_write_tokens`; absent = no TTL split reported. */
+  cache_write_1h_tokens?: number;
   cost_usd_ticks?: number;
   credits_micros?: number;
 }
@@ -1166,6 +1170,7 @@ export interface RuntimeUsage {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
 }
 
 export interface RuntimeHourlyActivity {
@@ -1191,6 +1196,7 @@ export interface RuntimeUsageByAgent {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1209,6 +1215,7 @@ export interface RuntimeUsageByHour {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1231,6 +1238,7 @@ export interface DashboardUsageDaily {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1250,6 +1258,7 @@ export interface DashboardUsageByAgent {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 

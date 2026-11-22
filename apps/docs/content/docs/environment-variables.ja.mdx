@@ -42,12 +42,14 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `MULTICA_DATABASE_CONNECT_TIMEOUT` | `5s` | 起動時の接続試行ごとのフォールバックタイムアウト。pgx ネイティブの `connect_timeout`、`PGCONNECT_TIMEOUT`、service 設定が優先されます |
 | `PORT` | `8080` | API のリッスンポート |
 | `JWT_SECRET` | 本番環境で必須 | ログイン JWT と一部の署名フローに使うシークレット。本番では空または既知のプレースホルダーだと起動を拒否 |
+| `MULTICA_SECRETS_KEY` | 本番環境で必須 | スコープ付きシークレット用の Base64 エンコードされた 32 バイトの鍵（`openssl rand -base64 32`）。本番では未設定だと起動を拒否するため、バックアップを保管してください。任意の `MULTICA_SECRETS_KEY_PREVIOUS` はローテーション中に古いエンベロープを読めるようにします |
 | `APP_ENV` | 空 | プロダクションでは `production` を設定 |
 | `AUTH_TOKEN_TTL` | `720h`（30 日） | ブラウザ JWT と cookie の有効期間。Go duration または正の整数秒を受け付けます。セッションは有効期間の半分を過ぎるとスライド更新され、使い続けている限り失効しません。`60s` 未満は `60s` に補正されます |
 | `LOG_LEVEL` | アプリのデフォルト | ログレベル |
 | `MULTICA_SHUTDOWN_HOLD_DURATION` | `0` | 終了シグナル受信後、グレースフルシャットダウンを開始するまでの待機時間 |
 | `MULTICA_RUNTIME_RECONNECT_GRACE` | `3h` | オフラインのランタイムが処理中の作業を失敗させずに再接続できる猶予時間。`150s` 未満は `150s` に補正されます |
 | `MULTICA_REVIEW_GUARD_AGENT_IDS` | 空（ガード無効） | レビュアーのエージェント ID をカンマ区切りで指定します。そのエージェントが PR の head に対して PASS・FAIL・BLOCKED・NOT-RUN をすでに投稿しており、Issue に開いたリンク済み PR がちょうど 1 件ある場合、レビュー実行は理由 `review_head_answered` でスキップされます。head が変わると再び実行されます。評価は `Verdict: PASS/FAIL/CHANGES REQUESTED/BLOCKED/NOT-RUN` の行（または `BLOCKED`・`NOT-RUN` で始まる行）と、head SHA を示す `Candidate:` または `Head:` の行で構成されます。スキップはキャンセル済みの実行として実行一覧に表示されます。スケジュールされたチェックインは対象外です |
+| `MULTICA_TASK_ASSERTION_SIGNING_KEY` | 空（無効） | `<kid>:<base64 の Ed25519 シード>`。設定すると、タスクの claim 応答に `doop_task_assertion` も含まれます。これは署名付きで 24 時間有効なタスク ID（タスク、エージェント、Issue、プロジェクト、ランタイムのプロバイダー、claim 時のモデル）で、doop が対応する公開鍵で検証します。未設定: フィールドなし、claim は従来どおり。不正な値は 1 回だけログに出力され、何も発行されません（claim は成功します）。何も保存されません |
 
 Kubernetes で shutdown hold を設定する場合、`terminationGracePeriodSeconds` は hold と実際のシャットダウンにかかる時間の合計より大きくしてください。
 
@@ -236,6 +238,17 @@ API key と base URL の両方が空の場合、このレイヤーは無効に�
 これは補助生成レイヤーのみに関する説明です。エージェントの実行は別のデータ経路です。エージェントがチャットに応答するとき、デーモンはそのエージェントの AI コーディングツールをツール自身の資格情報で実行し、上記の `MULTICA_LLM_*` 設定をツールへ渡すことはありません。（エージェント自身が必要とする実行単位の Multica 接続用変数は、デーモンが別途注入します。）上記の変数を空にしてもこの経路には影響しないため、エージェントのランタイム設定側で制御してください。
 </Callout>
 
+## デザインガード (doop)
+
+このグループは、ワークスペース設定 `design_card_guard` のために Multica が doop からデザインの証明 (attestation) を読む方法を設定します。共有の Bearer トークンを付けた HTTPS GET 1 回で、証明を 1 件読みます。
+
+| 変数 | 既定値 | 説明 |
+|---|---|---|
+| `MULTICA_DOOP_API_URL` | 空 | doop のオリジン。例: `https://doop.example.com`。`https` で、パスを含めてはいけません |
+| `MULTICA_DOOP_ATTESTATION_TOKEN` | 空 | 32 文字以上の共有トークン。doop 側の `DOOP_ATTESTATION_READ_TOKEN` と同じ値にします |
+
+どちらかが未設定または使えない値の場合、リーダーは未構成となり、すべての読み取りが未構成として失敗します。1 回の読み取りはタイムアウト 3 秒で、リダイレクトを辿らず、本文は最大 256 KiB です。
+
 ## デーモン設定
 
 以下の変数は、エージェントを実行するコンピューター上で読み込まれます。API コンテナ内ではありません。
@@ -249,6 +262,7 @@ API key と base URL の両方が空の場合、このレイヤーは無効に�
 | `MULTICA_DAEMON_WS_CLAIM_POLL_INTERVAL` | `3m` | 正常な WebSocket での claim 安全ポーリング上限。`MULTICA_DAEMON_POLL_INTERVAL` とは独立して設定され、下方向のジッターにより既定値は実際には `2m30s`–`2m45s` となり、旧 Server または結果が不確実な claim では通常のポーリング間隔を維持します |
 | `MULTICA_DAEMON_HEARTBEAT_INTERVAL` | `15s` | ハートビート間隔 |
 | `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` | `20` | デーモン 1 つあたりの同時実行上限 |
+| `MULTICA_DAEMON_RESERVED_CHAT_SLOTS` | `0` | チャット（DM）の実行だけが使えるスロット数。Issue の実行は最大 `max_concurrent_tasks - reserved_chat_slots` 個まで |
 | `MULTICA_AGENT_TIMEOUT` | `0` | 1 回の実行の絶対時間上限。`0` は上限なし |
 | `MULTICA_AGENT_IDLE_WATCHDOG` | `2h` | 出力もツール実行もない状態の静穏上限。`0` で watchdog 全体を無効化 |
 | `MULTICA_AGENT_TOOL_WATCHDOG` | `MULTICA_AGENT_IDLE_WATCHDOG` と同じ | 単一のツール呼び出しが静穏なままでいられる上限。モデルより長い余裕をツールに与えたい場合のみ設定し、`0` はツール実行中に強制停止しません。Cursor のバックグラウンドシェルは、起動したプロセスが終了するまで実行中として扱われます。この上限に達すると、デーモンはそれらのプロセスを停止し、Cursor が最終結果を出すための新しい watchdog 予算を与えます。プロセスの所有権やクリーンアップを検証できない場合は、通常の実行キャンセル方針に従います |
@@ -386,6 +400,7 @@ multica config show
 | `runtime_name` | `Local Agent` | ランタイムの表示名 |
 | `workspaces_root` | `~` 配下のプロファイル別パス | 実行用作業ディレクトリのルート |
 | `max_concurrent_tasks` | `20` | 同時実行上限。`0` または空は未設定を意味します |
+| `reserved_chat_slots` | `0` | チャット（DM）の実行用に空けておくスロット。Issue の実行は最大 `max_concurrent_tasks - reserved_chat_slots` 個まで。`0` または空は予約なしを意味します |
 | `poll_interval` | `30s` | 実行のポーリング間隔 |
 | `ws_claim_poll_interval` | `3m` | 正常な WebSocket での claim 安全ポーリング上限。`poll_interval` とは独立して設定され、Daemon は下方向のジッターを適用します |
 | `heartbeat_interval` | `15s` | ハートビート間隔 |
@@ -401,6 +416,7 @@ multica config show
 - duration 系のキーは正の Go duration（`10s`、`2h` など）を受け付け、`0s` と負の値は拒否されます。唯一の例外は `agent_timeout` で、`0s` は有効な値として実行時間上限を明示的に無効化します。
 - 空文字列を渡すと永続化された値がクリアされ、環境変数または組み込みデフォルトに戻ります。例: `multica config set poll_interval ""`。
 - `max_concurrent_tasks` には非負の整数が必要です。
+- `reserved_chat_slots` には `0` 以上で `max_concurrent_tasks` 未満の整数が必要です。それ以外の値は、両方の値を示すエラーで拒否されます。
 - 相対パスの `workspaces_root` は保存時に絶対パスへ変換されます。
 
 ## 可観測性と分析

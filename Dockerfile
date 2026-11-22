@@ -1,5 +1,5 @@
 # --- Build stage ---
-FROM golang:1.27.3-alpine AS deps
+FROM golang:1.27.4-alpine AS deps
 
 RUN apk add --no-cache git
 
@@ -24,6 +24,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/g
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/maintenance ./cmd/maintenance
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/backfill_task_usage_hourly ./cmd/backfill_task_usage_hourly
 RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/backfill_codex_usage_cache ./cmd/backfill_codex_usage_cache
+RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod cd server && CGO_ENABLED=0 go build -ldflags "-s -w" -o bin/backfill_issue_created_via ./cmd/backfill_issue_created_via
 
 # Build binaries
 ARG VERSION=dev
@@ -46,7 +47,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/g
     && cp "server/bin/daemon-binaries/multica-linux-$(cd server && go env GOARCH)" server/bin/multica
 
 # --- Runtime stage ---
-FROM alpine:3.21
+FROM alpine:3.24
 
 RUN apk add --no-cache ca-certificates tzdata
 
@@ -59,6 +60,7 @@ COPY --from=builder /src/server/bin/migrate .
 COPY --from=builder /src/server/bin/maintenance .
 COPY --from=builder /src/server/bin/backfill_task_usage_hourly .
 COPY --from=builder /src/server/bin/backfill_codex_usage_cache .
+COPY --from=builder /src/server/bin/backfill_issue_created_via .
 COPY server/migrations/ ./migrations/
 COPY LICENSE NOTICE ./
 COPY docker/entrypoint.sh docker/entrypoint.cd.sh .

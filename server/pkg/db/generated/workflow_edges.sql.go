@@ -43,6 +43,17 @@ func (q *Queries) CurrentXactID(ctx context.Context) (int64, error) {
 	return column_1, err
 }
 
+const deleteIssueWorkflowEdgesWatch = `-- name: DeleteIssueWorkflowEdgesWatch :exec
+DELETE FROM issue_wakeup WHERE issue_id = $1::uuid AND system_rule = 'workflow_edges'
+`
+
+// Drops the issue's own watch. A workflow switch that keeps the status does not
+// fire the status trigger, so the switch replaces the watch itself (CHE-7670).
+func (q *Queries) DeleteIssueWorkflowEdgesWatch(ctx context.Context, issueID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteIssueWorkflowEdgesWatch, issueID)
+	return err
+}
+
 const deleteWorkflowEdges = `-- name: DeleteWorkflowEdges :exec
 DELETE FROM issue_wakeup WHERE id = $1::uuid AND system_rule = 'workflow_edges'
 `
@@ -265,6 +276,27 @@ type ScheduleWorkflowEdgesParams struct {
 // life; these queries only reschedule or drop it and read the facts.
 func (q *Queries) ScheduleWorkflowEdges(ctx context.Context, arg ScheduleWorkflowEdgesParams) error {
 	_, err := q.db.Exec(ctx, scheduleWorkflowEdges, arg.NextFireAt, arg.ID)
+	return err
+}
+
+const startIssueWorkflowEdgesWatch = `-- name: StartIssueWorkflowEdgesWatch :exec
+INSERT INTO issue_wakeup(id, workspace_id, issue_id, instruction, kind, mode, event_types, timezone,
+                         condition_state, enabled, system_rule, next_fire_at, created_at, updated_at)
+VALUES (gen_random_uuid(), $1::uuid, $2::uuid, '', 'at', 'once', '{}', 'UTC',
+        $3::text, true, 'workflow_edges', now(), now(), now())
+ON CONFLICT (issue_id, system_rule) WHERE system_rule IS NOT NULL DO NOTHING
+`
+
+type StartIssueWorkflowEdgesWatchParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	Status      string      `json:"status"`
+}
+
+// Starts the watch the status trigger starts on step entry (694), due at once;
+// created_at is the step-entry time that edge timeouts count from.
+func (q *Queries) StartIssueWorkflowEdgesWatch(ctx context.Context, arg StartIssueWorkflowEdgesWatchParams) error {
+	_, err := q.db.Exec(ctx, startIssueWorkflowEdgesWatch, arg.WorkspaceID, arg.IssueID, arg.Status)
 	return err
 }
 
