@@ -43,6 +43,11 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	// runBootHelper re-executes this binary. Setup and cleanup both delete the
+	// shared integration-tests workspace, so a child must not run them.
+	if os.Getenv("MULTICA_BOOT_HELPER") == "1" {
+		os.Exit(m.Run())
+	}
 	ctx := context.Background()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {

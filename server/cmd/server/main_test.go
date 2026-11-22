@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"go/ast"
 	"go/parser"
@@ -511,6 +512,21 @@ func TestBoot_SecretsKeyUnsetInDevelopmentBoots(t *testing.T) {
 	code, stdout, stderr := runBootHelper(t, "APP_ENV=development")
 	if code != 0 || !strings.Contains(stdout, "booted") {
 		t.Fatalf("exit=%d stdout=%q stderr=%q, want a normal boot", code, stdout, stderr)
+	}
+}
+
+// The boot helper re-executes this test binary, so its TestMain must not run
+// the shared-fixture setup and cleanup: both delete the integration-tests
+// workspace by slug, which orphans testWorkspaceID for every later test in the
+// parent (CHE-9101: 176 cascade failures in the rest shard).
+func TestBootHelperLeavesSharedFixtureAlone(t *testing.T) {
+	runBootHelper(t, "APP_ENV=development")
+	var n int
+	if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&n); err != nil {
+		t.Fatalf("count fixture workspace: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("shared fixture workspace %s is gone after the boot helper ran", testWorkspaceID)
 	}
 }
 
