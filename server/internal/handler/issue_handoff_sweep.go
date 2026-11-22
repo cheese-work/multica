@@ -57,8 +57,10 @@ func (h *Handler) SweepHandoffIntents(ctx context.Context, now time.Time) {
 }
 
 // pruneHandoffIntents is the hook for pruning settled issue_handoff_dispatch
-// rows. S2b adds the query and its test.
-func (h *Handler) pruneHandoffIntents(ctx context.Context, now time.Time) {}
+// rows. It also deletes operation receipts older than 7 days (CHE-5491).
+func (h *Handler) pruneHandoffIntents(ctx context.Context, now time.Time) {
+	h.pruneHandoffOperations(ctx, now)
+}
 
 func (h *Handler) recoverHandoffIntent(ctx context.Context, intent db.IssueHandoffDispatch) {
 	_, err := h.dispatchHandoffIntentOpt(ctx, intent.ID, true)

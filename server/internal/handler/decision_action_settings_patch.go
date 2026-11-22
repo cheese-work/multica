@@ -133,6 +133,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateAgentCannotDoSetting(map[string]any{key: value})
 	case key == decisiontx.SettingCardLintMode:
 		err = validateCardLintSetting(map[string]any{key: value})
+	case key == decisiontx.SettingCardThread:
+		err = validateCardThreadSetting(map[string]any{key: value})
 	case key == decisiontx.SettingServerActions || key == decisiontx.SettingStandingAnswers:
 		err = validateServerActionSetting(map[string]any{key: value})
 	case key == "auto_close":

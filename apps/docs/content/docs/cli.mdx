@@ -260,6 +260,20 @@ multica issue comment list MUL-123 --thread <comment-id> --tail 5 --output json 
 - `--recent N` returns the N most recently active threads with every reply, which can be long.
 - Resolved threads are folded to their root and conclusion by default; add `--full` for the complete text.
 
+To read only the threads that involve you (or another member or agent), add a relation flag:
+
+```bash
+multica issue comment list MUL-123 --roots-only --summary --with-me --output json --compact
+multica issue comment list MUL-123 --roots-only --summary --waiting-on <member> --output json --compact
+```
+
+- `--with-me` returns only threads you wrote in, were mentioned in directly, or that hold a decision request addressed to you. `--without-me` returns the rest.
+- `--waiting-on <member>` returns only threads that wait on that member: an open decision request targets them, or a direct mention of them has had no reply from them yet. It takes a member id or name.
+- `--for <id>` reads the relation as that member or agent instead of you. Alone, it adds `thread_relation` to each root without filtering.
+- These flags filter whole threads, so they work with `--roots-only`, `--summary` and `--thread`. Each root then carries `thread_relation`.
+- Without a relation flag, `--compact` and `--summary` output does not carry `thread_relation`, so existing reads do not grow.
+- If the server cannot compute the relation, the command fails instead of printing an unfiltered list.
+
 Lists can be trimmed to the fields you need, too: `multica issue list --output json --fields id,identifier,title,status`. The filtering happens in the CLI, so it shrinks output and context, not the request.
 
 ### Wakeups
@@ -589,6 +603,8 @@ A fourth value, `server_action`, makes the server act as the person who picks th
 
 The workspace setting `decision_card_lint_mode` (`off`, `warn`, `block`; default `off`) checks the wording of an option card. In `warn` the card is created and the response carries one hint per finding. In `block` the server returns `400` with a reason code and the field path, and creates no card. The codes are: `weak_cons`, every con of an option is only your time ("takes 1 minute of your time") or one more check or review; `option_markdown`, a table, heading, image, HTML, fenced code or Mermaid block in `label`, `what_happens`, `pros` or `cons` (bold, italic, inline code, lists and links are allowed); `option_leak`, option text that marks the recommendation ("recommended", "(rec)", or bold on one label only); `default_leak`, on class `spend`, `deploy`, `publish`, `irreversible` or `product_direction`, a `default_if_no_reply` that names an option (write "No action until you pick."). English and Vietnamese phrases are matched. Action cards and waiver-topic cards are not checked. When the issue comment of a card does not mention the person it asks, the server adds the mention and logs `mention_missing`; this is never a refusal.
 
+The workspace setting `decision_card_thread` (`off`, `on`; default `off`) gives each new card its own thread. With `on`, the issue comment of a card is a new root comment, and the server always adds the mention of the person it asks, whatever `decision_card_lint_mode` holds. The decision ping stays the only Inbox item; the added mention creates none. If you pass `--parent`, that thread becomes the source: the new thread records it, the source thread gets one system reply with a link, the source thread keeps its resolution, and the CLI prints `Card placed in a new thread <id>; thread <source root> got a link.` A decision-intent comment that has a parent opens a new thread the same way, and the card is placed in that thread. A re-ask and an ask a DM agent writes in its DM keep their place. With `off`, nothing changes.
+
 The workspace setting `design_card_guard` is an object with `mode`, `doop_origin`, `design_url_property_id` and `design_workflow_id`. `mode` is `off`, `warn` or `block`; an absent key or a missing `mode` is `off`. With `warn` or `block`, `doop_origin` (an `https` origin without a path) and `design_url_property_id` (a UUID) are required; `design_workflow_id` (a UUID) is optional. The server refuses any other field, a `null` value or a wrong type with `400`. A settings change by decision action may name the key. The setting is only read and checked for now: it does not yet warn on or refuse any card.
 
 ### Decision proposals
@@ -739,7 +755,7 @@ Migration from CSV parsing: replace `--attachment a,b` with `--attachment a --at
 | | `search <query>` | Search issues | `--limit`, `--include-closed` |
 | | `children <id>` | List sub-issues grouped by stage | |
 | | `pull-requests <id>` | List linked PRs | |
-| | `comment list/add/update/delete/resolve/unresolve` | Manage comments | `add`: `--content` / `--content-stdin` / `--content-file`, `--parent`, `--attachment`; `update`: `--expected-revision` (required), `--content` / `--content-stdin` / `--content-file`; `list`: `--since`, `--thread`, `--tail`, `--recent`, `--roots-only`, `--summary`, `--compact`, `--full` |
+| | `comment list/add/update/delete/resolve/unresolve` | Manage comments | `add`: `--content` / `--content-stdin` / `--content-file`, `--parent`, `--attachment`; `update`: `--expected-revision` (required), `--content` / `--content-stdin` / `--content-file`; `list`: `--since`, `--thread`, `--tail`, `--recent`, `--roots-only`, `--summary`, `--compact`, `--full`, `--with-me`, `--without-me`, `--waiting-on`, `--for` |
 | | `timeline <id>` | List activity records and comments in time order | `--action` (repeatable), `--activity-only`, `--since`, `--tail` |
 | | `wakeup events/list/get/create/update/disable/trigger/delete/checkin/runs` | Manage issue wakeups; see [Issue wakeups](/issue-wakeups) | `create` / `update`: `--agent-id`, `--kind` (`event`, `at`, `every`, `cron`), `--event`, `--at` / `--after`, `--every`, `--cron`, `--timezone`, `--until-*` conditions, `--expires-in` / `--expires-at`, `--instruction` / `--instruction-file`; `checkin`: `--note` |
 | | `subscriber list/add/remove <issue-id>` | Manage subscribers | `--user`, `--user-id` (defaults to the current user) |

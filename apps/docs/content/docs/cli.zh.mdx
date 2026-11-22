@@ -221,6 +221,20 @@ multica issue comment list MUL-123 --thread <comment-id> --tail 5 --output json 
 - `--recent N` 返回最近活跃的 N 个线程，每个线程带上全部回复，回复多时输出可能很长。
 - 已解决的线程默认折叠成首条评论和结论，需要原文时加 `--full`。
 
+只读与你（或其他成员、智能体）有关的线程时，加上关系参数：
+
+```bash
+multica issue comment list MUL-123 --roots-only --summary --with-me --output json --compact
+multica issue comment list MUL-123 --roots-only --summary --waiting-on <member> --output json --compact
+```
+
+- `--with-me` 只返回你发过言、被直接提及，或带有发给你的决策请求的线程；`--without-me` 返回其余线程。
+- `--waiting-on <member>` 只返回在等该成员的线程：有发给他的未决决策请求，或他被直接提及后还没有回复。接受成员 ID 或名称。
+- `--for <id>` 以该成员或智能体（而不是你）的视角计算关系。单独使用时，只给每个根评论加上 `thread_relation`，不做筛选。
+- 这些参数按整个线程筛选，可与 `--roots-only`、`--summary`、`--thread` 一起用。每条根评论会带上 `thread_relation`。
+- 不加关系参数时，`--compact` 和 `--summary` 的输出不含 `thread_relation`，现有读取的输出不会变大。
+- 服务端算不出关系时，命令直接报错，不会把未筛选的列表当作筛选结果输出。
+
 列表也可以只取需要的字段：`multica issue list --output json --fields id,identifier,title,status`。筛选在 CLI 本地完成，减少的是输出和上下文，不是请求量。
 
 ### 唤醒
@@ -417,6 +431,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 
 工作区设置 `decision_card_lint_mode`（`off`、`warn`、`block`；默认 `off`）检查选项卡片的措辞。`warn` 时创建卡片，并为每条发现在响应中附带一条提示。`block` 时服务器返回 `400`，附带原因代码和字段路径，且不创建卡片。代码如下：`weak_cons`，某个选项的每条缺点都只是你的时间（"takes 1 minute of your time"）或多一次检查或评审；`option_markdown`，`label`、`what_happens`、`pros` 或 `cons` 中含表格、标题、图片、HTML、代码块或 Mermaid 块（允许粗体、斜体、行内代码、列表和链接）；`option_leak`，选项文字暗示推荐项（"recommended"、"(rec)"，或只有一个标签加粗）；`default_leak`，在类别 `spend`、`deploy`、`publish`、`irreversible` 或 `product_direction` 下，`default_if_no_reply` 点名了某个选项（请写 "No action until you pick."）。英语和越南语措辞都会匹配。操作卡片和豁免主题卡片不受检查。 如果卡片的 issue 评论没有提及被询问的人，服务器会补上提及并记录 `mention_missing`，不会拒绝。
 
+工作区设置 `decision_card_thread`（`off`、`on`；默认 `off`）让每张新卡片拥有自己的线程。`on` 时，卡片的 issue 评论是新的根评论，无论 `decision_card_lint_mode` 为何值，服务器都会加上被询问者的提及。决定提醒仍是收件箱中唯一的条目；新增的提及不会产生条目。如果传入 `--parent`，该线程成为来源：新线程记录来源，来源线程得到一条带链接的系统回复，来源线程保持其已解决状态，CLI 输出 `Card placed in a new thread <id>; thread <source root> got a link.` 带父评论的决定意图评论以同样方式开启新线程，卡片放在该线程中。重新询问以及 DM 智能体在其 DM 中写的询问保持原位。`off` 时没有任何变化。
+
 工作区设置 `design_card_guard` 是一个对象，含 `mode`、`doop_origin`、`design_url_property_id` 和 `design_workflow_id`。`mode` 为 `off`、`warn` 或 `block`；键不存在或缺少 `mode` 时为 `off`。`warn` 或 `block` 时，`doop_origin`（不带路径的 `https` 源）和 `design_url_property_id`（UUID）必填；`design_workflow_id`（UUID）可选。服务器对其他字段、`null` 值或类型错误返回 `400`。通过决策动作修改设置时可以指定该键。目前只读取并校验该设置，尚不会对任何卡片发出警告或拒绝。
 
 ## 后台智能体
@@ -566,7 +582,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `search <query>` | 搜索任务 | `--limit`、`--include-closed` |
 | | `children <id>` | 按阶段分组列出子任务 | |
 | | `pull-requests <id>` | 列出关联的 PR | |
-| | `comment list/add/update/delete/resolve/unresolve` | 管理评论 | `add`：`--content` / `--content-stdin` / `--content-file`、`--parent`、`--attachment`；`update`：`--expected-revision`（必填）、`--content` / `--content-stdin` / `--content-file`；`list`：`--since`、`--thread`、`--tail`、`--recent`、`--roots-only`、`--summary`、`--compact`、`--full` |
+| | `comment list/add/update/delete/resolve/unresolve` | 管理评论 | `add`：`--content` / `--content-stdin` / `--content-file`、`--parent`、`--attachment`；`update`：`--expected-revision`（必填）、`--content` / `--content-stdin` / `--content-file`；`list`：`--since`、`--thread`、`--tail`、`--recent`、`--roots-only`、`--summary`、`--compact`、`--full`、`--with-me`、`--without-me`、`--waiting-on`、`--for` |
 | | `timeline <id>` | 按时间列出活动记录和评论 | `--action`（可重复）、`--activity-only`、`--since`、`--tail` |
 | | `wakeup events/list/get/create/update/disable/trigger/delete/checkin/runs` | 管理任务唤醒，详见[任务唤醒](/issue-wakeups) | `create` / `update`：`--agent-id`、`--kind`（`event`、`at`、`every`、`cron`）、`--event`、`--at` / `--after`、`--every`、`--cron`、`--timezone`、`--until-*` 条件、`--expires-in` / `--expires-at`、`--instruction` / `--instruction-file`；`checkin`：`--note` |
 | | `subscriber list/add/remove <issue-id>` | 管理订阅者 | `--user`、`--user-id`（缺省为当前用户） |
