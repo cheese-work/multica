@@ -195,3 +195,44 @@ func TestHandoffAssignee_RouteEndpointOverride(t *testing.T) {
 		t.Errorf("step handler runs = %v, want none", runs)
 	}
 }
+
+// CHE-6074 (S3b of CHE-2299): the override is defined for one status move, so a
+// project move that enters the step but keeps the status refuses it.
+func TestHandoffAssignee_ProjectMoveKeepingStatusRefused(t *testing.T) {
+	c := newHandoffAssigneeCase(t)
+	issueID := dbfx.Issue(t, "handoff assignee same status", testutil.Cols{"status": "in_progress"})
+
+	resp := updateIssueForTest(t, issueID, map[string]any{
+		"project_id": c.projectID, "enter_workflow_step": true, "handoff_assignee": overrideTo(c.overrideID),
+	})
+	resp.Want(http.StatusBadRequest)
+	if !strings.Contains(resp.Body.String(), "handoff_assignee_not_applicable") {
+		t.Fatalf("body = %s, want handoff_assignee_not_applicable", resp.Body.String())
+	}
+	if status, _, id := issueStatusAndAssignee(t, issueID); status != "in_progress" || id == c.overrideID {
+		t.Errorf("issue = (%s, assignee %s), want in_progress and not the override %s", status, id, c.overrideID)
+	}
+	if n := c.agentRuns(t, issueID, c.overrideID); n != 0 {
+		t.Errorf("override runs = %d, want 0", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND details->>'handoff_override' = 'true'`, issueID); n != 0 {
+		t.Errorf("override history rows = %d, want 0", n)
+	}
+}
+
+// A project move that changes the status keeps the S3 behavior.
+func TestHandoffAssignee_ProjectMoveChangingStatusKeepsOverride(t *testing.T) {
+	c := newHandoffAssigneeCase(t)
+	issueID := dbfx.Issue(t, "handoff assignee changing status", testutil.Cols{"status": "todo"})
+
+	updateIssueForTest(t, issueID, map[string]any{
+		"project_id": c.projectID, "status": "in_progress", "enter_workflow_step": true, "handoff_assignee": overrideTo(c.overrideID),
+	}).Want(http.StatusOK)
+
+	if status, typ, id := issueStatusAndAssignee(t, issueID); status != "in_progress" || typ != "agent" || id != c.overrideID {
+		t.Fatalf("issue = (%s, %s, %s), want in_progress assigned to the override %s", status, typ, id, c.overrideID)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND details->>'handoff_override' = 'true'`, issueID); n != 1 {
+		t.Errorf("override history rows = %d, want 1", n)
+	}
+}

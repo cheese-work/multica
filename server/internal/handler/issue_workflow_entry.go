@@ -159,6 +159,11 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 		if params.Status.Valid {
 			entering = params.Status.String
 		}
+		// The override is defined for one status move: a move that keeps
+		// the status names no assignee (CHE-6074).
+		if caller.handoffAssignee != nil && entering == prev.Status {
+			return nil, errHandoffAssigneeNotApplicable
+		}
 	// A project move is administrative unless the caller opted in, and
 	// re-selecting the current status is a no-op: neither hands the issue off.
 	case !projectMoving && statusExplicit && params.Status.Valid && params.Status.String != prev.Status:
