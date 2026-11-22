@@ -13,6 +13,7 @@ func init() {
 		"PUT /api/github/stack-autolink":                          "workspace.update",
 		"PUT /api/projects/{id}/workflow-split":                   "project.workflow_split.update",
 		"DELETE /api/projects/{id}/workflow-split":                "project.workflow_split.clear",
+		"PUT /api/projects/{id}/comment-wake":                     "project.comment_wake.update",
 	} {
 		auditedRoutes[route] = kind
 		delete(auditPendingL5b, route)

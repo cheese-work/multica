@@ -127,6 +127,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateProviderHoldSetting(map[string]any{key: value})
 	case key == "guard_policy":
 		err = validateGuardPolicySetting(map[string]any{key: value})
+	case key == commentWakeSetting:
+		err = validateCommentWakeSetting(map[string]any{key: value})
 	case key == decisiontx.SettingCannotDoMode || key == decisiontx.SettingCannotDo:
 		err = validateAgentCannotDoSetting(map[string]any{key: value})
 	case key == decisiontx.SettingCardLintMode:
