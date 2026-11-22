@@ -42,6 +42,10 @@ def decide(*args):
     return fresh.decide(*args, ran)
 
 
+def commit_json(sha, minutes_ago):
+    return {"sha": sha, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
+
+
 class DecideTest(unittest.TestCase):
     def test_failed_first_attempt_is_rerun_once(self):
         self.assertEqual(decide(SHA, head_at(10), NOW, [qual("failure")], [])["rerun"], 10)
@@ -76,6 +80,31 @@ class DecideTest(unittest.TestCase):
         self.assertFalse(decide(SHA, head_at(5), NOW, [], [])["alert"])
 
 
+class UndeployedSinceTest(unittest.TestCase):
+    """CHE-7522: the 90 min window starts at the oldest main commit newer than what runs, not at the newest commit."""
+
+    A, B = "a" * 40, "b" * 40
+
+    def test_window_starts_at_the_oldest_commit_newer_than_the_deployed_one(self):
+        commits = [(self.B, head_at(40)), (self.A, head_at(100)), ("c" * 40, head_at(300))]
+        self.assertEqual(fresh.undeployed_since(commits, lambda sha: sha == "c" * 40), head_at(100))
+
+    def test_head_deployed_starts_the_window_at_the_head(self):
+        commits = [(self.B, head_at(40)), (self.A, head_at(100))]
+        self.assertEqual(fresh.undeployed_since(commits, lambda sha: sha == self.B), head_at(40))
+
+    def test_nothing_deployed_in_the_list_starts_at_the_oldest_commit(self):
+        commits = [(self.B, head_at(40)), (self.A, head_at(100))]
+        self.assertEqual(fresh.undeployed_since(commits, lambda sha: False), head_at(100))
+
+    def test_a_second_merge_does_not_restart_the_alarm(self):
+        # A merged 100 min ago and never deployed, B merged 40 min ago: the alarm fires on A's age.
+        commits = [(self.B, head_at(40)), (self.A, head_at(100))]
+        since = fresh.undeployed_since(commits, lambda sha: False)
+        self.assertTrue(fresh.decide(self.B, since, NOW, [qual("success")], [], ran)["alert"])
+        self.assertTrue(fresh.decide_live(self.B, since, NOW, "d43d0c9")["alert"])
+
+
 class LiveTest(unittest.TestCase):
     """Run history cannot see a rollback done on C00, so the live revision is the only proof of what runs now."""
 
@@ -101,8 +130,8 @@ class LiveTest(unittest.TestCase):
         with patch.object(fresh.urllib.request, "urlopen", side_effect=OSError("timed out")):
             self.assertIsNone(fresh.live_commit("https://c00.test:19444"))
 
-    def run_live(self, live, minutes_ago):
-        commit = {"sha": SHA, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
+    def run_live(self, live, minutes_ago, older=()):
+        commit = [commit_json(SHA, minutes_ago), *older]
         out = io.StringIO()
         with patch.dict(fresh.os.environ, {"GITHUB_REPOSITORY": "cheese-work/multica", "C00_API_URL": "https://c00.test"}), \
                 patch.object(fresh, "gh_api", return_value=json.dumps(commit)), patch.object(fresh, "utcnow", return_value=NOW), \
@@ -115,6 +144,12 @@ class LiveTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("::error::", out)
         self.assertIn("d43d0c9", out)
+
+    def test_main_live_alerts_on_the_oldest_undeployed_commit_not_the_newest(self):
+        older = [commit_json("a" * 40, 100), commit_json("d43d0c9" + "0" * 33, 300)]
+        rc, out = self.run_live("d43d0c9", 40, older=older)
+        self.assertEqual(rc, 1)
+        self.assertIn("100 min", out)
 
     def test_main_live_healthy_is_silent(self):
         self.assertEqual(self.run_live(SHA[:7], 600), (0, "main %s runs on C00 (live revision %s).\n" % (SHA[:9], SHA[:7])))
@@ -193,8 +228,8 @@ class MissedSlotTest(unittest.TestCase):
 
 
 class MainTest(unittest.TestCase):
-    def run_main(self, qual_runs, deploy_runs, minutes_ago, deploy_job="success", schedule_runs=(sched("2026-11-05T09:20:00Z"),), any_runs=(), dispatch_fails=False, log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
-        commit = {"sha": SHA, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
+    def run_main(self, qual_runs, deploy_runs, minutes_ago, older=(), deploy_job="success", schedule_runs=(sched("2026-11-05T09:20:00Z"),), any_runs=(), dispatch_fails=False, log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
+        commit = [commit_json(SHA, minutes_ago), *older]
         jobs = [{"id": 7, "name": "build-images", "conclusion": "failure"}, {"id": 8, "name": "cd-qualification", "conclusion": "skipped"}]
         seen = []
 
@@ -205,7 +240,7 @@ class MainTest(unittest.TestCase):
                 raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403")
             if args[:2] in (("run", "rerun"), ("workflow", "run")):
                 return ""
-            if "/commits/main" in path:
+            if "/commits?" in path:
                 return json.dumps(commit)
             if "workflows/cd-qualification.yml/runs" in path:
                 return json.dumps({"workflow_runs": qual_runs})
@@ -243,6 +278,13 @@ class MainTest(unittest.TestCase):
         self.assertIn("::error::", out)
         self.assertIn("https://example.test/run/10", out)
         self.assertIn("buildx failed: boom", out)
+
+    def test_unmerged_deploy_of_an_older_commit_keeps_the_alarm_after_a_newer_merge(self):
+        # CHE-7522: A (100 min old) never deployed, head B is 40 min old; C00 runs older commit C.
+        older = [commit_json("a" * 40, 100), commit_json("c" * 40, 300)]
+        rc, out, _ = self.run_main([qual("failure", attempt=2)], [deploy("success", sha="c" * 40)], 40, older=older)
+        self.assertEqual(rc, 1)
+        self.assertIn("100 min after merge", out)
 
     def test_healthy_deployed_head_is_silent(self):
         rc, out, seen = self.run_main([qual("success")], [deploy("success")], 300)

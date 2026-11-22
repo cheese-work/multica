@@ -196,6 +196,12 @@ func executeIssueProjectSetAction(ctx context.Context, execution decisionActionE
 	if move.widens() && !stored.Widens {
 		return nil, actionFailure{Code: "stale_budget", Message: "the move now widens the run budget; ask again"}
 	}
+	return applyIssueProjectMove(ctx, execution, issue, move, stored.FromProjectID)
+}
+
+// applyIssueProjectMove writes an approved move and its activity rows.
+func applyIssueProjectMove(ctx context.Context, execution decisionActionExecution, issue db.Issue, move issueProjectMove, fromProjectID string) (json.RawMessage, error) {
+	queries := execution.Queries
 	moved, err := queries.SetIssueProjectFromDecision(ctx, db.SetIssueProjectFromDecisionParams{
 		ID: issue.ID, WorkspaceID: issue.WorkspaceID, ProjectID: move.target.ID, FromProjectID: issue.ProjectID, Status: move.toStatus,
 	})
@@ -206,7 +212,7 @@ func executeIssueProjectSetAction(ctx context.Context, execution decisionActionE
 		return nil, err
 	}
 	details, err := json.Marshal(map[string]any{
-		"from_project_id": stored.FromProjectID, "to_project_id": uuidToString(moved.ProjectID),
+		"from_project_id": fromProjectID, "to_project_id": uuidToString(moved.ProjectID),
 		"action_id": uuidToString(execution.Action.ID), "widens_run_budget": move.widens(),
 		"from_status": move.fromStatus, "to_status": moved.Status,
 	})
@@ -220,7 +226,7 @@ func executeIssueProjectSetAction(ctx context.Context, execution decisionActionE
 		return nil, err
 	}
 	result := map[string]any{
-		"project_id": uuidToString(moved.ProjectID), "from_project_id": stored.FromProjectID,
+		"project_id": uuidToString(moved.ProjectID), "from_project_id": fromProjectID,
 		"from_status": move.fromStatus, "to_status": moved.Status,
 	}
 	if moved.Status != move.fromStatus {

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -248,6 +249,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		sawAsyncLaunch := false
 		usage := make(map[string]TokenUsage)
 		seenUsage := make(map[string]struct{})
+		cacheSplit := make(map[string]claudeCacheSplit)
 		eventCount := 0
 		invalidEventCount := 0
 		assistantEventCount := 0
@@ -336,7 +338,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			switch msg.Type {
 			case "assistant":
 				assistantEventCount++
-				turn := b.handleAssistant(msg, msgCh, usage, seenUsage)
+				turn := b.handleAssistant(msg, msgCh, usage, seenUsage, cacheSplit)
 				toolUseCount += turn.toolUses
 				if turn.callModel != "" {
 					contextModel, contextTokens = turn.callModel, turn.callTokens
@@ -383,7 +385,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					usageMsg := msg
 					lastUsageResult = &usageMsg
 					if !unverifiableBaseline {
-						usage = resultUsage
+						usage = applyClaudeCacheSplit(resultUsage, cacheSplit, len(msg.ModelUsage) > 0)
 					}
 				}
 				contextWindow = claudeContextWindow(msg.ModelUsage, contextModel)
@@ -480,7 +482,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			case snapshotErr != nil:
 				b.cfg.Logger.Warn("claude final cost state unavailable; keeping stream usage fallback", "error", snapshotErr)
 			case found:
-				usage = subtractClaudeUsage(appendedUsage, usageSnapshot.baseline)
+				usage = applyClaudeCacheSplit(subtractClaudeUsage(appendedUsage, usageSnapshot.baseline), cacheSplit, true)
 			}
 		}
 
@@ -544,7 +546,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			// totals do not share the requested session's baseline.
 			if lastUsageResult != nil {
 				if resultUsage, authoritative := claudeResultUsageSince(*lastUsageResult, opts.Model, nil); authoritative {
-					usage = resultUsage
+					usage = applyClaudeCacheSplit(resultUsage, cacheSplit, len(lastUsageResult.ModelUsage) > 0)
 				}
 			}
 			b.cfg.Logger.Info("claude resume was rejected; dropping session id and signalling fresh-session retry",
@@ -574,7 +576,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	return session, nil
 }
 
-func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage, seenUsage map[string]struct{}) assistantTurn {
+func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage, seenUsage map[string]struct{}, split map[string]claudeCacheSplit) assistantTurn {
 	var content claudeMessageContent
 	if err := json.Unmarshal(msg.Message, &content); err != nil {
 		// Unreadable body: understood stays false so the caller drops any
@@ -603,6 +605,13 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		u.InputTokens += content.Usage.InputTokens
 		u.CacheReadTokens += content.Usage.CacheReadInputTokens
 		u.CacheWriteTokens += content.Usage.CacheCreationInputTokens
+		if cc := content.Usage.CacheCreation; cc != nil {
+			sp := split[content.Model]
+			sp.OneHour += cc.Ephemeral1hInputTokens
+			sp.Total += cc.Ephemeral1hInputTokens + cc.Ephemeral5mInputTokens
+			split[content.Model] = sp
+			u.CacheWrite1hTokens = i64Ptr(sp.OneHour)
+		}
 		usage[content.Model] = u
 		turn.callModel = content.Model
 		turn.callTokens = content.Usage.InputTokens + content.Usage.CacheReadInputTokens + content.Usage.CacheCreationInputTokens
@@ -810,7 +819,17 @@ type claudeUsage struct {
 	OutputTokens             int64 `json:"output_tokens"`
 	CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
 	CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+	// CacheCreation is the per-TTL split of CacheCreationInputTokens. Absent on
+	// older Claude Code builds and on some providers.
+	CacheCreation *struct {
+		Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
+		Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
+	} `json:"cache_creation,omitempty"`
 }
+
+// claudeCacheSplit is one model's main-loop cache writes that carried a TTL
+// split: OneHour of Total tokens used the 1-hour TTL.
+type claudeCacheSplit struct{ OneHour, Total int64 }
 
 type claudeResultModelUsage struct {
 	ContextWindow            int64 `json:"contextWindow"`
@@ -903,6 +922,51 @@ func claudeResultUsageSince(msg claudeSDKMessage, fallbackModel string, baseline
 			CacheWriteTokens: msg.Usage.CacheCreationInputTokens,
 		},
 	}, true
+}
+
+func i64Ptr(v int64) *int64 { return &v }
+
+// applyClaudeCacheSplit stamps CacheWrite1hTokens onto result-derived usage.
+//
+// With modelUsage the result carries only totals, and sub-agent writes are in
+// them, so each model's cache writes (already net of any resume baseline) are
+// scaled by that model's main-loop 1-hour ratio; a model with no main-loop
+// split (a sub-agent-only model) takes the run-wide ratio. Without modelUsage
+// the main-loop 1-hour sum is the best figure there is. A run with no split in
+// any main-loop event leaves the field nil; a split that reports zero
+// tokens yields 0. ponytail: sub-agent TTL mix is
+// assumed equal to the main loop's; exact only if the transcript is parsed.
+func applyClaudeCacheSplit(usage map[string]TokenUsage, split map[string]claudeCacheSplit, fromModelUsage bool) map[string]TokenUsage {
+	// An entry exists only for events that reported a split, so an empty map
+	// means no split at all (nil). A reported split with a zero total is a real
+	// answer: 0 one-hour tokens.
+	if len(split) == 0 {
+		return usage
+	}
+	var run claudeCacheSplit
+	for _, sp := range split {
+		run.OneHour += sp.OneHour
+		run.Total += sp.Total
+	}
+	ratio := func(tokens int64, sp claudeCacheSplit) int64 {
+		if sp.Total == 0 {
+			return 0
+		}
+		return int64(math.Round(float64(tokens) * float64(sp.OneHour) / float64(sp.Total)))
+	}
+	for model, u := range usage {
+		if !fromModelUsage {
+			u.CacheWrite1hTokens = i64Ptr(run.OneHour)
+		} else {
+			sp := split[model]
+			if sp.Total == 0 {
+				sp = run
+			}
+			u.CacheWrite1hTokens = i64Ptr(ratio(u.CacheWriteTokens, sp))
+		}
+		usage[model] = u
+	}
+	return usage
 }
 
 func claudeModelUsage(modelUsage map[string]claudeResultModelUsage) map[string]TokenUsage {

@@ -103,7 +103,7 @@ func linkRefusal(t *testing.T, id pgtype.UUID, window string) pgtype.UUID {
 	if window == "" { // no top-up since the refusal: the approval pays for its own window
 		window = row.WindowID
 	}
-	if err := linkRunBudgetRefusal(context.Background(), testHandler.Queries, row.IssueID, uuidToString(id), action, window); err != nil {
+	if err := linkRunBudgetRefusal(context.Background(), testHandler.Queries, row.IssueID, uuidToString(id), &row.HookGeneration, action, window); err != nil {
 		t.Fatal(err)
 	}
 	return action

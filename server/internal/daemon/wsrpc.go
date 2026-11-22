@@ -313,11 +313,14 @@ func (c *wsRPCClient) deliver(resp protocol.RPCResponsePayload) {
 // are identical to the HTTP endpoint so both transports are interchangeable.
 // Wired into the claim poller as part of the poller cutover.
 func (d *Daemon) ClaimTasksWSFirst(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int) ([]*Task, error) {
-	result, err := d.claimTasksWSFirst(ctx, daemonID, runtimeIDs, maxTasks)
+	result, err := d.claimTasksWSFirst(ctx, daemonID, runtimeIDs, maxTasks, nil)
 	return result.Tasks, err
 }
 
-func (d *Daemon) claimTasksWSFirst(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int) (claimTasksResult, error) {
+// maxNonDMTasks is the reserved_chat_slots non-DM budget (nil = unlimited). The
+// legacy per-runtime fallback cannot express it: it only exists for servers that
+// predate the batch route, and those predate the reservation too.
+func (d *Daemon) claimTasksWSFirst(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, maxNonDMTasks *int) (claimTasksResult, error) {
 	// Un-upgraded server without the batch route: a prior poll already learned
 	// this (via a 404), so go straight to the legacy per-runtime claim and skip
 	// the WS + batch attempts each cycle.
@@ -343,11 +346,7 @@ func (d *Daemon) claimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		var resp claimTasksResult
 		// batchClaimRequestTimeout is the server-side execution budget; the
 		// daemon waits that plus the client's grace margin for the response.
-		_, err := d.wsRPC.CallIfRPCV1Supported(ctx, "tasks.claim", batchClaimRequestTimeout, map[string]any{
-			"daemon_id":   daemonID,
-			"runtime_ids": runtimeIDs,
-			"max_tasks":   maxTasks,
-		}, &resp)
+		_, err := d.wsRPC.CallIfRPCV1Supported(ctx, "tasks.claim", batchClaimRequestTimeout, claimTasksBody(daemonID, runtimeIDs, maxTasks, maxNonDMTasks), &resp)
 		if err == nil {
 			resp.ClaimedOverWS = true
 			return resp, nil
@@ -369,7 +368,7 @@ func (d *Daemon) claimTasksWSFirst(ctx context.Context, daemonID string, runtime
 		}
 		d.logger.Debug("ws claim failed; falling back to http", "error", err)
 	}
-	result, err := d.client.claimTasksWithHints(ctx, daemonID, runtimeIDs, maxTasks)
+	result, err := d.client.claimTasksWithLimit(ctx, daemonID, runtimeIDs, maxTasks, maxNonDMTasks)
 	if err == nil {
 		return result, nil
 	}

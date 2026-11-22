@@ -52,11 +52,13 @@ A close needs every check below. If one fails or cannot be read, the step's agen
 
 - The issue has a parent. Root issues are never closed.
 - The newest review verdict is a PASS with no P0 or P1 finding, and it is for the current candidate. With a PR, every linked PR is merged at the head the PASS names. Without a PR, the candidate is the issue's text: no attachment, description change, or comment (other than the reviewer's) came after the PASS, and neither did a CHANGES verdict, stale or superseded mark, or return to `in_progress`.
-- No open child issue, no open decision request, and no wakeup that was live when the issue entered the step.
+- No open child issue, no open decision request, and no wakeup that was live when the issue entered the step, other than the issue's own merge watcher (the `pr.merged` edge).
 - The description has no `Blockers: Cheese stop` line, and the parent's `delivery_stop` metadata is not `stopped`.
 - The issue metadata `post_close_work` is `none`. The author writes it: `multica issue metadata set <issue> --key post_close_work --value none --type string`. Any other value, such as a short description of the work that remains, keeps the run.
-- The workflow has an `agent_done` edge from the step to `done`.
+- The workflow has an `agent_done` or `pr.merged` edge from the step to `done`.
 - On `merged` only: every linked PR is merged into its repository's default branch, at the head the PASS names. A PR merged into another branch (a stacked layer), or one whose delivery did not state its base or default branch, keeps the run.
+
+A PR that is still open at the head the PASS names does not keep the run when the step has a `pr.merged` edge to `done` and the issue's own watcher: the server starts no run and records one `auto_close_pending_merge` activity row. The merge then closes the issue, with no run. When the merge arrives, the server reads every predicate again. If one no longer holds (a new head without a PASS, a new live wakeup), it starts the step's run instead of closing and drops the watcher.
 
 Set the mode with `multica workspace update --auto-close-mode off|warn|block`. An unreadable value counts as `off`.
 
@@ -124,6 +126,10 @@ When the run that raised a `block` event has ended, the server sends the one per
 An event that cannot be sent as a notice goes to the agent whose run produced it instead: one repair run per recovery root, started through the normal run gates (project stops, run budget, role and approval gates). The first `block` event is the root, and an event raised by a repair run inherits it, so a repair never starts a second repair. The run message holds the exact `multica decision request ... --recovers <event-id>` command and no source text. A refused run, an unavailable agent, a repair run that ends without a matching request, or a new ask raised by the repair run fails the root. The agent is its owner: one system comment on the issue names the agent and mentions no member, and `multica decision brief` lists the failure with an excerpt of the ask. Runs in a chat lane only raise `warn` events, so they are never repaired.
 
 The guard also covers an agent registering a wakeup that a person can trigger. Bind it with `--decision`, mark it `--purpose observe`, or limit it to agents; see [Wakeups](/cli#wakeups).
+
+### Decision screen
+
+The workspace setting `decision_screen` (`off` by default, `on`) hides the chat lane that holds an agent's decision ask. With `on`, an issue agent's ask to a member goes to a hidden backing lane, even when the member has a visible DM with that agent; nothing is posted in that DM. The lane does not appear in the member's chat list, unread count, badge or "Needs you" list, and the member cannot send messages into it (`409`). The ask itself still opens the same decision card. For these agents the server ignores `session_id` and `new_dm` and adds one hint to the response. An agent that asks from a DM still asks in that DM. Set it back to `off` to revert; no new lanes are created and existing lanes stay hidden.
 
 ### Held-setting ask guard
 

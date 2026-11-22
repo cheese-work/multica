@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"reflect"
 
@@ -187,4 +188,50 @@ func validateServerActionSetting(value any) error {
 		return nil
 	}
 	return decisiontx.ValidateServerActionSettings(config)
+}
+
+// errCannotDoGap is the refusal of a write that leaves an enforcing mode with
+// no explicit catalog (CHE-8819, plan r9 S3b).
+const errCannotDoGap = "`agent_cannot_do_mode` warn or block needs an explicit `agent_cannot_do` list; set the list first, or set the mode to off"
+
+// cannotDoGap reports the gap state: mode warn or block with no agent_cannot_do
+// key. Only such a workspace reads the built-in catalog rows.
+func cannotDoGap(settings map[string]any) bool {
+	mode, _ := settings[decisiontx.SettingCannotDoMode].(string)
+	_, hasList := settings[decisiontx.SettingCannotDo]
+	return (mode == "warn" || mode == "block") && !hasList
+}
+
+// refuseNewCannotDoGap refuses a write whose result is in the gap state when
+// the stored settings were not, so the set of gap workspaces only shrinks. A
+// gap workspace stays writable: keeping the gap, ending it, or changing other keys passes.
+func refuseNewCannotDoGap(stored, result map[string]any) error {
+	if cannotDoGap(result) && !cannotDoGap(stored) {
+		return errors.New(errCannotDoGap)
+	}
+	return nil
+}
+
+// refuseNewCannotDoGapRaw is refuseNewCannotDoGap for a settings patch: after
+// holds the named keys (nil value removes the key) laid over stored.
+func refuseNewCannotDoGapRaw(stored, after map[string]json.RawMessage) error {
+	view := func(raw map[string]json.RawMessage) map[string]any {
+		out := map[string]any{}
+		for _, key := range []string{decisiontx.SettingCannotDoMode, decisiontx.SettingCannotDo} {
+			var value any
+			if len(raw[key]) > 0 && json.Unmarshal(raw[key], &value) == nil && value != nil {
+				out[key] = value
+			}
+		}
+		return out
+	}
+	result := maps.Clone(stored)
+	for key, value := range after {
+		if value == nil {
+			delete(result, key)
+		} else {
+			result[key] = value
+		}
+	}
+	return refuseNewCannotDoGap(view(stored), view(result))
 }

@@ -188,7 +188,7 @@
     }
   },
   "budget_receipt": {
-    "applied_runs": "적용했습니다. {{issue}}의 실행 횟수는 이제 {{limit}}회 중 {{used}}회입니다.",
+    "applied_runs": "적용했습니다. 적용 시점에 {{issue}}의 실행 횟수는 {{limit}}회 중 {{used}}회였습니다.",
     "runs_used": "사용한 실행 횟수",
     "change": "{{limit}}회 중 {{used}}회 → {{limitAfter}}회 중 {{usedAfter}}회",
     "change_new_window": "{{limit}}회 중 {{used}}회 → {{limitAfter}}회 중 {{usedAfter}}회 (새 창)",

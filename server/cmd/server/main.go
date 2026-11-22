@@ -746,8 +746,12 @@ func main() {
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
+	// A pending workflow switch applies when its issue's last live task ends (CHE-7669).
+	h.RegisterDeferredWorkflowSwitch(bus)
+	// A chained run that failed gets one retry, then blocks the issue (CHE-7675). After the switch: a pending switch wins.
+	h.RegisterChainedRunRetry(bus)
 	// A task's Steel browser leases end with the task (CHE-4734).
-	(&browserlease.Revoker{Queries: queries, Bus: bus}).Register()
+	(&browserlease.Revoker{Queries: queries, Bus: bus, Pool: pool, Audit: handler.BrowserLeaseAudit}).Register()
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read
@@ -776,6 +780,8 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	// Claim poll histogram -> claim_poll_stats once a minute (CHE-8749 S7a).
+	go service.RunClaimPollStatsFlusher(sweepCtx, taskSvc.PollStats, queries)
 	go runBackgroundDeadlineSweeper(sweepCtx, taskSvc)
 	go runProviderReleaseController(sweepCtx, taskSvc)
 	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
@@ -796,6 +802,7 @@ func main() {
 	go h.RunElevationFenceSweeper(sweepCtx)
 	go h.RunRunBudgetHookSweeper(sweepCtx)
 	go h.RunSteerReplaySweeper(sweepCtx)
+	go h.RunHandoffIntentSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -953,7 +960,7 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
-	if err := schedulerMgr.Register(scheduler.DMProgressDispatchJob(&service.DMProgressDispatcher{Pool: pool, Queries: queries, Bus: bus})); err != nil {
+	if err := schedulerMgr.Register(scheduler.DMProgressDispatchJob(&service.DMProgressDispatcher{Pool: pool, Queries: queries, Bus: bus, DeliverCards: dmProgressDeliveryEnabled()})); err != nil {
 		slog.Error("scheduler: register dm progress dispatch", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
@@ -1168,4 +1175,16 @@ func main() {
 		},
 	}.run()
 	slog.Info("server stopped")
+}
+
+// dmProgressDeliveryEnabled is the server switch for posting progress cards to
+// DMs (CHE-7568). It is off unless MULTICA_DM_PROGRESS_DELIVERY is "true" or
+// "1"; turn it on in the release that ships the web card and its mute controls
+// (CHE-3408).
+func dmProgressDeliveryEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_DM_PROGRESS_DELIVERY"))) {
+	case "true", "1":
+		return true
+	}
+	return false
 }

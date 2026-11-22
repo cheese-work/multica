@@ -78,7 +78,7 @@ func executeRunBudgetRaiseAction(ctx context.Context, execution decisionActionEx
 		return nil, err
 	}
 	// A raise keeps the window: the resume runs in the window the refusal named.
-	if err := linkRunBudgetRefusal(ctx, queries, issue.ID, params.RefusalID, execution.Action.ID, windowID); err != nil {
+	if err := linkRunBudgetRefusal(ctx, queries, issue.ID, params.RefusalID, params.RefusalGeneration, execution.Action.ID, windowID); err != nil {
 		return nil, err
 	}
 	receipt["from"], receipt["to"], receipt["outcome"] = current, raised.Int32, "cap_applied"
