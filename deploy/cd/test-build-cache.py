@@ -530,59 +530,87 @@ class CdBackendBinariesTests(unittest.TestCase):
         self.assertIn('sha256sum -c', text)
         self.assertIn('GOTOOLCHAIN=local', text)
 
-    # Acceptance 3
-    def run_script(self, runner_temp, **env):
-        trap = Path(runner_temp, 'bin')
-        trap.mkdir(exist_ok=True)
+    # Acceptance 3 (A1), reworked by CHE-7211: fixed paths under one base, guard before restore
+    def run_script(self, *args, base, script=None, **env):
+        trap = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, trap, True)
         for tool in ['go', 'curl']:
-            Path(trap, tool).write_text('#!/bin/sh\necho "$0 must not run before the cache guard" >&2\nexit 99\n')
+            Path(trap, tool).write_text('#!/bin/sh\necho "$0 must not run before the guard" >&2\nexit 99\n')
             Path(trap, tool).chmod(0o755)
-        return subprocess.run(['bash', str(COMPILE_SCRIPT)], cwd=ROOT, capture_output=True, text=True,
-                              env={**os.environ, 'PATH': f'{trap}:{os.environ["PATH"]}', 'RUNNER_TEMP': str(runner_temp),
+        return subprocess.run(['bash', str(script or COMPILE_SCRIPT), *args], cwd=ROOT, capture_output=True, text=True,
+                              env={**os.environ, 'PATH': f'{trap}:{os.environ["PATH"]}', 'CD_GO_BASE': str(base),
                                    'GITHUB_SHA': SHA, 'VERSION': VERSION, 'BUILD': BUILD, **env})
 
-    def test_cache_guard_refuses_paths_outside_runner_temp_or_not_empty(self):
+    def install_script(self, base):
+        """Copy the script and the Dockerfile to <base>/src, where the workflow runs them."""
+        (base / 'src/scripts').mkdir(parents=True)
+        shutil.copy(COMPILE_SCRIPT, base / 'src/scripts/build-cd-backend-binaries.sh')
+        shutil.copy(ROOT / 'Dockerfile', base / 'src/Dockerfile')
+        return base / 'src/scripts/build-cd-backend-binaries.sh'
+
+    def test_guard_refuses_a_work_dir_that_is_not_empty_or_not_absolute(self):
         with tempfile.TemporaryDirectory() as directory:
-            temp = Path(directory, 'runner-temp')
-            temp.mkdir()
+            base = Path(directory, 'multica-go-cd')
+            base.mkdir()
+            (base / 'mod').mkdir()
+            (base / 'mod/old').write_text('stale')
+            for name, args in {'not empty': {'base': base}, 'relative': {'base': 'relative/dir'}}.items():
+                with self.subTest(name):
+                    result = self.run_script('guard', **args)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertNotEqual(result.returncode, 99, result.stderr)
+                    self.assertNotIn('must not run', result.stderr)
+                    self.assertIn('go work dir', result.stderr.lower())
+            self.assertTrue((base / 'mod/old').exists(), 'the guard must not delete what it refuses')
+
+    def test_guard_creates_the_work_dir_when_it_is_missing_or_empty(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory, 'multica-go-cd')
+            self.assertEqual(self.run_script('guard', base=base).returncode, 0)
+            self.assertTrue(base.is_dir())
+            self.assertEqual(self.run_script('guard', base=base).returncode, 0)
+
+    def test_compile_refuses_cache_paths_that_are_not_the_fixed_ones_or_a_source_outside_the_base(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory, 'multica-go-cd')
+            script = self.install_script(base)
+            good = {'GOCACHE': str(base / 'build'), 'GOMODCACHE': str(base / 'mod')}
             outside = Path(directory, 'outside')
             outside.mkdir()
-            good = {'GOCACHE': str(temp / 'cd-go/build'), 'GOMODCACHE': str(temp / 'cd-go/mod')}
-            (temp / 'cd-go/build').mkdir(parents=True)
-            (temp / 'cd-go/mod').mkdir(parents=True)
-            (temp / 'cd-go/mod/old').write_text('stale')
-            (outside / 'x').write_text('x')
             cases = {
                 'GOCACHE outside': {**good, 'GOCACHE': str(outside)},
                 'GOMODCACHE outside': {**good, 'GOMODCACHE': str(outside)},
-                'GOCACHE traversal': {**good, 'GOCACHE': str(temp / 'cd-go/build/../../../outside')},
-                'GOCACHE is RUNNER_TEMP': {**good, 'GOCACHE': str(temp)},
-                'GOMODCACHE not empty': good,
+                'GOCACHE traversal': {**good, 'GOCACHE': str(base / 'build/../../outside')},
+                'GOCACHE is the base': {**good, 'GOCACHE': str(base)},
+                'GOCACHE other dir under base': {**good, 'GOCACHE': str(base / 'other')},
+                'same dir': {**good, 'GOCACHE': str(base / 'mod')},
                 'GOCACHE unset': {**good, 'GOCACHE': ''},
             }
             for name, env in cases.items():
                 with self.subTest(name):
-                    result = self.run_script(temp, **env)
+                    result = self.run_script(base=base, script=script, **env)
                     self.assertNotEqual(result.returncode, 0)
                     self.assertNotEqual(result.returncode, 99, result.stderr)
                     self.assertNotIn('must not run', result.stderr)
                     self.assertIn('cache', result.stderr.lower())
-            (temp / 'cd-go/mod/old').unlink()
-            (temp / 'cd-go/build/old').write_text('stale')
-            with self.subTest('GOCACHE not empty'):
-                result = self.run_script(temp, **good)
+            with self.subTest('source not at <base>/src'):
+                result = self.run_script(base=base, **good)
                 self.assertNotEqual(result.returncode, 0)
+                self.assertNotEqual(result.returncode, 99, result.stderr)
                 self.assertNotIn('must not run', result.stderr)
+                self.assertIn('src', result.stderr)
 
-    def test_workflow_removes_the_job_caches_even_after_a_failure(self):
-        cleanup = [step for step in self.steps if 'cd-go' in step.get('run', '') and 'rm -rf' in step.get('run', '')]
-        self.assertEqual(len(cleanup), 1)
-        self.assertIn('always()', cleanup[0]['if'])
-        self.assertEqual(self.steps[-1], cleanup[0], 'cleanup must be the last step')
-        compile_step = next(step for step in self.steps if 'build-cd-backend-binaries.sh' in step.get('run', ''))
-        env = compile_step.get('env', {})
-        self.assertEqual(env.get('GOCACHE'), '${{ runner.temp }}/cd-go/build')
-        self.assertEqual(env.get('GOMODCACHE'), '${{ runner.temp }}/cd-go/mod')
+    def test_compile_accepts_restored_caches(self):
+        # A restored cache is not stale: the A1 empty-at-start refusal moved to the guard step.
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory, 'multica-go-cd')
+            script = self.install_script(base)
+            (base / 'build').mkdir()
+            (base / 'build/restored').write_text('object')
+            result = self.run_script(base=base, script=script, GOCACHE=str(base / 'build'), GOMODCACHE=str(base / 'mod'))
+            self.assertNotIn('not empty', result.stderr)
+            self.assertEqual(result.returncode, 99, 'expected to reach the toolchain download (curl trap): ' + result.stderr)
+            self.assertTrue((base / 'build/restored').exists())
 
     # Acceptance 4
     def check(self, mutate=None, sha=SHA):
@@ -703,7 +731,7 @@ class CdBackendBinariesTests(unittest.TestCase):
         return next(i for i, step in enumerate(self.steps) if predicate(step))
 
     def test_backend_leg_compiles_and_checks_payloads_before_the_image_build(self):
-        compile_at = self.step_index(lambda s: 'build-cd-backend-binaries.sh' in s.get('run', ''))
+        compile_at = self.step_index(lambda s: s.get('name') == 'Compile backend binaries on the runner')
         check_at = self.step_index(lambda s: 'check-backend-payloads.py' in s.get('run', ''))
         build_at = self.step_index(lambda s: s.get('name') == 'Build and publish immutable amd64 backend')
         self.assertLess(compile_at, check_at)
@@ -739,6 +767,155 @@ class CdBackendBinariesTests(unittest.TestCase):
         self.assertEqual(self.workflow['concurrency']['group'], 'cd-qualification-build-${{ github.ref }}')
         self.assertIs(self.workflow['concurrency']['cancel-in-progress'], False)
         self.assertEqual(sorted(self.workflow['jobs']), ['build-images', 'cd-qualification', 'd1-fixtures', 'fork-changelog'])
+
+
+class CdGoCacheWorkflowTests(unittest.TestCase):
+    """CHE-7211 (A2): budget-checked GHA Go cache for the A1 runner compile."""
+    BASE = '/tmp/multica-go-cd'
+
+    def setUp(self):
+        self.text = (ROOT / '.github/workflows/cd-qualification.yml').read_text()
+        self.workflow = yaml.safe_load(self.text)
+        self.job = self.workflow['jobs']['build-images']
+        self.steps = self.job['steps']
+
+    def named(self, name):
+        return next(step for step in self.steps if step.get('name') == name)
+
+    def index(self, name):
+        return next(i for i, step in enumerate(self.steps) if step.get('name') == name)
+
+    def cache_steps(self, action):
+        return [step for step in self.steps if step.get('uses', '').startswith(f'actions/cache/{action}@')]
+
+    def test_cache_steps_use_literal_fixed_paths_equal_in_restore_and_save(self):
+        for action in ['restore', 'save']:
+            self.assertEqual(sorted(step['with']['path'] for step in self.cache_steps(action)),
+                             [f'{self.BASE}/build', f'{self.BASE}/mod'], action)
+        for step in self.cache_steps('restore') + self.cache_steps('save'):
+            self.assertNotIn('runner.temp', str(step))
+            self.assertEqual(step['if'].count("matrix.image == 'backend'") >= 1 or step['if'].startswith('${{'), True)
+        for kind in ['build', 'mod']:
+            restore = next(s for s in self.cache_steps('restore') if s['with']['path'].endswith('/' + kind))
+            save = next(s for s in self.cache_steps('save') if s['with']['path'].endswith('/' + kind))
+            self.assertEqual(restore['with']['key'], save['with']['key'])
+        self.assertNotIn('cd-go', self.text)
+        self.assertNotIn('runner.temp', yaml.safe_dump(self.steps))
+
+    def test_cache_keys(self):
+        build = next(s for s in self.cache_steps('restore') if s['with']['path'].endswith('/build'))['with']
+        module = next(s for s in self.cache_steps('restore') if s['with']['path'].endswith('/mod'))['with']
+        go = '${{ steps.goversion.outputs.version }}'
+        self.assertEqual(module['key'], f"go-cd-mod-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{go}-${{{{ hashFiles('server/go.sum') }}}}")
+        prefix = f'go-cd-build-${{{{ runner.os }}}}-${{{{ runner.arch }}}}-{go}-refs/heads/main-'
+        self.assertEqual(build['key'], prefix + "${{ hashFiles('server/**', 'scripts/build-daemon-binaries.sh') }}")
+        self.assertEqual(build['restore-keys'].strip(), prefix)
+        self.assertNotIn('restore-keys', module)
+
+    def test_compile_runs_in_the_fixed_source_worktree_with_fixed_toolchain_and_caches(self):
+        worktree = self.named('Create the source worktree')
+        self.assertIn(f'git worktree add --detach {self.BASE}/src "$GITHUB_SHA"', worktree['run'])
+        self.assertLess(self.index('Create the source worktree'), self.index('Compile backend binaries on the runner'))
+        compile_step = self.named('Compile backend binaries on the runner')
+        self.assertEqual(compile_step['working-directory'], f'{self.BASE}/src')
+        env = compile_step['env']
+        self.assertEqual(env['GOROOT'], f'{self.BASE}/go')
+        self.assertEqual(env['GOMODCACHE'], f'{self.BASE}/mod')
+        self.assertEqual(env['GOCACHE'], f'{self.BASE}/build')
+        self.assertTrue(env['CD_BACKEND_OUT'].startswith(self.BASE + '/'))
+        self.assertIn('scripts/build-cd-backend-binaries.sh', compile_step['run'])
+
+    def test_no_trimpath_so_the_payload_check_still_sees_the_ldflags(self):
+        self.assertNotIn('-trimpath', self.text)
+        self.assertNotIn('-trimpath', COMPILE_SCRIPT.read_text())
+
+    def test_guard_runs_before_the_restore_and_prune_check_save_run_in_order(self):
+        order = ['Refuse a non-empty Go work dir', 'Restore Go module cache', 'Restore Go build cache',
+                 'Compile backend binaries on the runner', 'Prune Go build cache to this run\'s entries',
+                 'Check the cache budget before saving', 'Save Go build cache', 'Save Go module cache']
+        indexes = [self.index(name) for name in order]
+        self.assertEqual(indexes, sorted(indexes))
+        guard = self.named(order[0])
+        self.assertIn('build-cd-backend-binaries.sh guard', guard['run'])
+        self.assertIn('actions/checkout', ''.join(s.get('uses', '') for s in self.steps[:self.index(order[0])]))
+
+    def test_save_only_on_an_exact_key_miss_and_only_when_the_decision_is_true(self):
+        for name, restore_id, output in [('Save Go build cache', 'restore-build', 'build_save'),
+                                         ('Save Go module cache', 'restore-mod', 'module_save')]:
+            step = self.named(name)
+            condition = step['if']
+            self.assertIn(f"steps.budget.outputs.{output} == 'true'", condition)
+            self.assertIn(f"steps.{restore_id}.outputs.cache-hit != 'true'", condition)
+            self.assertEqual(step['timeout-minutes'], 4)
+            self.assertIs(step['continue-on-error'], True)
+        for step in self.cache_steps('restore'):
+            self.assertIn(step['id'], ['restore-build', 'restore-mod'])
+
+    def test_budget_check_is_read_only_bounded_and_fail_closed(self):
+        step = self.named('Check the cache budget before saving')
+        self.assertEqual(step['id'], 'budget')
+        self.assertIs(step['continue-on-error'], True)
+        self.assertEqual(step['timeout-minutes'], 2)
+        self.assertEqual(step['env']['GITHUB_TOKEN'], '${{ secrets.GITHUB_TOKEN }}')
+        run = step['run']
+        self.assertIn('cache-policy.py --repo "$GITHUB_REPOSITORY" --check-save', run)
+        self.assertIn('du -sb', run)
+        self.assertIn("steps.compile.outcome == 'success'", step['if'])
+        for key, kind in [('BUILD_KEY', 'build'), ('MODULE_KEY', 'mod')]:
+            restore = next(s for s in self.cache_steps('restore') if s['with']['path'].endswith('/' + kind))
+            self.assertEqual(step['env'][key], restore['with']['key'], 'the check must judge the key the save writes')
+        # build entry first, then module entry
+        self.assertLess(run.index('--candidate "$BUILD_KEY='), run.index('--candidate "$MODULE_KEY='))
+
+    def test_budget_check_writes_outputs_only_after_the_python_check_succeeded(self):
+        run = self.named('Check the cache budget before saving')['run']
+        self.assertIn('set -euo pipefail', run)
+        self.assertLess(run.index('--check-save'), run.index('>> "$GITHUB_OUTPUT"'))
+        self.assertIn('build_save=', run)
+        self.assertIn('module_save=', run)
+
+    def test_job_permissions_are_exactly_the_three_needed(self):
+        self.assertEqual(self.job['permissions'], {'contents': 'read', 'packages': 'write', 'actions': 'read'})
+        self.assertEqual(self.workflow['permissions'], {'contents': 'read', 'packages': 'write'})
+
+    def test_the_workflow_deletes_no_cache(self):
+        for needle in ['cache delete', 'actions: write', 'DELETE', '--delete']:
+            self.assertNotIn(needle, self.text)
+        # The only cache-policy mode this workflow runs is the read-only --check-save.
+        for match in re.finditer(r'cache-policy\.py[^\n]*', self.text):
+            self.assertIn('--check-save', match.group(0))
+        run_text = '\n'.join(s.get('run', '') for s in self.steps)
+        self.assertNotIn('plan_deletions', run_text)
+
+    def test_cleanup_always_runs_last_and_removes_the_work_dir_and_the_worktree(self):
+        cleanup = self.steps[-1]
+        self.assertEqual(cleanup['name'], 'Remove the job-scoped Go work dir')
+        self.assertIn('always()', cleanup['if'])
+        self.assertIn("matrix.image == 'backend'", cleanup['if'])
+        self.assertIn(f'rm -rf {self.BASE}', cleanup['run'])
+        self.assertIn('git worktree', cleanup['run'])
+        self.assertEqual(len([s for s in self.steps if re.search(r'rm -rf /tmp/multica-go-cd(\s|$)', s.get('run', ''))]), 1)
+
+    def test_payload_check_and_image_build_read_the_fixed_output_dir(self):
+        for name in ['Check backend payloads against the source commit', 'Build and publish immutable amd64 backend']:
+            step = self.named(name)
+            self.assertTrue(step['env']['CD_BACKEND_OUT'].startswith(self.BASE + '/'), name)
+        check = self.named('Check backend payloads against the source commit')['run']
+        self.assertIn(f'{self.BASE}/go/bin', check)
+        self.assertIn(f'{self.BASE}/stamp.env', check)
+
+    def test_go_version_step_reads_the_dockerfile(self):
+        step = self.named('Resolve the Go toolchain version')
+        self.assertEqual(step['id'], 'goversion')
+        self.assertIn('Dockerfile', step['run'])
+        self.assertIn('GITHUB_OUTPUT', step['run'])
+
+    def test_go_cd_is_a_managed_cache_family(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('cache_policy', ROOT / '.github/scripts/cache-policy.py')
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        self.assertEqual(policy.cache_family('go-cd-mod-Linux-X64-1.27.3-' + 'a' * 64), ('go-cd-mod-Linux-X64-1.27.3', True))
 
 
 if __name__ == '__main__':
