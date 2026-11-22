@@ -146,6 +146,8 @@ The guard also covers an agent registering a wakeup that a person can trigger. B
 
 The workspace setting `long_thread_member_ask` (`off` by default, `warn`, `move`) covers an agent comment that mentions a member in a long thread. `long_thread_member_ask_min` (a whole number from 3 to 100, default 10) is the thread size, root included, from which the setting applies. `move` opens the comment as a new ask thread that links back to the source thread; `warn` posts it in place with a hint. The setting routes the comment and never refuses it. With the defaults nothing changes. Each hit writes one guard event with mode `move` or `warn`, which the recovery and repair passes never read. Both values are validated by the server, and a bad value is refused with `400`.
 
+The workspace setting `decision_reask_thread` (`off` by default, `warn`, `block`) covers a second decision card from the same agent to the same member on the same issue within 30 days. Without `--reask-of <request id>` (the card goes into that card's thread and an open earlier card is withdrawn) or `--new-topic` (the card starts its own thread), `block` refuses the card with 409 and the text of the two flags, and writes one `refused` row in the ask guard log; `warn` creates the card, returns the same text as a hint and writes one `warn` row. The refusal is not an unserved ask: no recovery notice and no repair run follow it.
+
 ### Tool guard
 
 **Settings → Guard** lists the tool-guard plugins of the workspace and what each one did in the last 7 days. Each plugin shows how many calls it fixed, refused or failed on, a chart of hits per day, and its latest decisions. The numbers come from the same rows as `multica guard stats` and `multica guard log`. Days follow your viewing time zone.

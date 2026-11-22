@@ -82,6 +82,19 @@ type decisionRequestInput struct {
 	// event is written with the message. Nil when the guard is off or no agent
 	// text is read.
 	OwnerScript *ownerScriptCheck `json:"-"`
+	// ReaskOf is the earlier card this ask continues (--reask-of, CHE-6433) and
+	// NewTopic says the ask is a different matter (--new-topic). Out of the
+	// fingerprint: a re-ask is told apart by its parent, the root of that card's thread.
+	ReaskOf  pgtype.UUID `json:"-"`
+	NewTopic bool        `json:"-"`
+	// ReaskSession is the chat session of the card ReaskOf names, read before the
+	// transaction so the lock order can place it among the sessions.
+	ReaskSession pgtype.UUID `json:"-"`
+	// AskRaw is the ask as the caller sent it; the re-ask gate keys its guard row on it.
+	AskRaw []byte `json:"-"`
+	// Reask is the card ReaskOf names, locked in the request transaction. insertDecisionAsk
+	// withdraws it when it is still open.
+	Reask *db.DecisionRequest `json:"-"`
 }
 
 // batchCard ties the requests of one batch to one shared card: they share the
@@ -124,7 +137,9 @@ type decisionRequestResult struct {
 	BackingLane bool
 	Warnings    []string
 	Replayed    bool
-	Action      *db.DecisionAction
+	// Withdrawn is the card a re-ask replaced; its events go out after the commit.
+	Withdrawn *decisionRequestResult
+	Action    *db.DecisionAction
 	// PingItem is set only when the ping was recorded inside the request
 	// transaction (single-call path); PingRecorded distinguishes "recorded,
 	// no item for a departed recipient" from "not yet recorded".
@@ -182,6 +197,9 @@ func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue d
 			return empty, err
 		}
 	}
+	if input, err = handler.resolveReask(request.Context(), issue, input); err != nil {
+		return empty, err
+	}
 	if input.SourceCommentID.Valid {
 		task, err := handler.Queries.GetAgentTask(request.Context(), taskID)
 		if errors.Is(err, pgx.ErrNoRows) || err == nil && !runsDecisionRequest(task, agentID, issue, input.dmSession(), input.EscalationClass) {
@@ -217,6 +235,9 @@ func (handler *Handler) createDecisionRequestOnce(request *http.Request, issue d
 	// A pending intent comment keeps the two-step flow; otherwise this call
 	// opens, uses and seals its own window.
 	if pending := err == nil && !intent.ConsumedAt.Valid && !intent.ClosedAt.Valid && !intent.SealedAt.Valid; pending {
+		if input.ReaskOf.Valid {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, "reask_of cannot go with an open intent comment; send the card without the intent"}
+		}
 		if input.SessionID.Valid == input.NewDM || input.ParentID.Valid {
 			return empty, decisionIntentRefusal{http.StatusBadRequest, "a listed lane or an explicit new DM, and no parent, are required with an open intent"}
 		}
@@ -640,7 +661,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 	if input.Batch != nil {
 		messageID = input.Batch.MessageID
 	}
-	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID, Kind: pgtype.Text{String: input.Kind, Valid: input.Kind != ""}, ExpiresInSeconds: pgtype.Float8{Float64: input.ExpiresInSeconds, Valid: input.ExpiresInSeconds > 0}, ProposalFingerprint: input.Proposal.fingerprintText(), BatchID: input.Batch.batchID()})
+	created, err := queries.CreateDecisionRequest(ctx, db.CreateDecisionRequestParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, AskingAgentID: intent.AgentID, HumanUserID: session.CreatorID, ChatSessionID: session.ID, PingMessageID: messageID, IssueCommentID: commentID, Ask: input.Ask, Options: options, AskJson: input.AskJSON, EscalationClass: input.EscalationClass, Origin: "asked", DecisionIntentID: intent.ID, SourceCommentID: input.SourceCommentID, SourceContentSnapshot: sourceSnapshot, RequestFingerprint: input.Fingerprint, AskIdentity: askIdentity, ProjectID: issue.ProjectID, Kind: pgtype.Text{String: input.Kind, Valid: input.Kind != ""}, ExpiresInSeconds: pgtype.Float8{Float64: input.ExpiresInSeconds, Valid: input.ExpiresInSeconds > 0}, ProposalFingerprint: input.Proposal.fingerprintText(), BatchID: input.Batch.batchID(), ReaskOfRequestID: input.ReaskOf})
 	if errors.Is(err, pgx.ErrNoRows) && input.Proposal != nil {
 		return empty, errProposalRaced
 	}
@@ -680,8 +701,17 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 			return empty, err
 		}
 	}
+	var withdrawn *decisionRequestResult
+	if input.Reask != nil {
+		// The card the re-ask replaces closes in this transaction, as the asking agent.
+		result, err := withdrawOpenDecision(ctx, queries, *input.Reask, root, reaskSupersededPrefix+uuidToString(created.ID), "agent", intent.AgentID, intent.TaskID, pgtype.UUID{})
+		if err != nil {
+			return empty, err
+		}
+		withdrawn = &result
+	}
 	var askSource pgtype.UUID
-	if cardThread && tag == nil {
+	if cardThread && tag == nil && !input.ReaskOf.Valid {
 		// A new root: the parent only names the source thread, so the reply rules
 		// (resolution clear, parent link) do not apply.
 		if root != nil {
@@ -766,7 +796,7 @@ func insertDecisionAsk(ctx context.Context, queries *db.Queries, issue db.Issue,
 			return empty, err
 		}
 	}
-	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared, Action: action, AskStub: askStub, Warnings: warnings}, nil
+	return decisionRequestResult{Request: created, Comment: comment, AttachedToIntent: attach, Message: message, ClearedComments: cleared, Action: action, AskStub: askStub, Warnings: warnings, Withdrawn: withdrawn}, nil
 }
 
 // createSingleCallDecisionTx is the request path without an intent comment: it
@@ -781,6 +811,12 @@ func (handler *Handler) createSingleCallDecisionTx(request *http.Request, issue 
 	defer transaction.Rollback(ctx)
 	result, err := handler.singleCallDecisionIn(request, handler.Queries.WithTx(transaction), issue, input, agentID)
 	if err != nil {
+		var gate reaskGateError
+		if errors.As(err, &gate) {
+			// The refusal rolls the request back; its row is written on its own.
+			transaction.Rollback(ctx)
+			handler.recordReaskRefused(ctx, issue.WorkspaceID, gate)
+		}
 		return decisionRequestResult{}, err
 	}
 	if err := transaction.Commit(ctx); err != nil {
@@ -814,6 +850,18 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 		return empty, err
 	}
 	typedSendHook("after_row_lock")
+	if input.ReaskSession.Valid {
+		// Lock order: workspace, session (this one and the lane's, lower id first), thread,
+		// issue, task, member, request. A re-ask names no lane of its own, so the card's
+		// session is the one it can lock first; a lane resolved below with a lower id than
+		// the card's session is the one residual cycle (see the PR).
+		if _, err := queries.LockDecisionSession(ctx, db.LockDecisionSessionParams{WorkspaceID: issue.WorkspaceID, ID: input.ReaskSession}); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return empty, decisionCodedRefusal{http.StatusConflict, "reask_lane_gone", "the lane of the card to re-ask is gone; use --new-topic"}
+			}
+			return empty, err
+		}
+	}
 	if typed {
 		// The authoritative read of decision_server_actions: inside the transaction, after the locks.
 		workspace, err := queries.GetWorkspace(ctx, issue.WorkspaceID)
@@ -917,8 +965,14 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	authorityStatus := http.StatusConflict
 	if input.Proposal != nil {
 		authorityStatus = http.StatusForbidden // D3's guard owns the re-ask rule
-	} else if err := requireNoRecentReask(ctx, queries, issue, agentID, input.HumanUserID, input.askIdentity()); err != nil {
+	} else if err := requireNoRecentReaskExcept(ctx, queries, issue, agentID, input.HumanUserID, input.askIdentity(), input.ReaskOf); err != nil {
 		return empty, err
+	}
+	var gateHint string
+	if input.Proposal == nil {
+		if gateHint, err = reaskGate(ctx, queries, issue, input, task); err != nil {
+			return empty, err
+		}
 	}
 	if err := handler.checkDecisionTarget(request, queries, issue, agent, input.HumanUserID); err != nil {
 		return empty, err
@@ -930,6 +984,9 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 		if errors.Is(err, pgx.ErrNoRows) {
 			return empty, deny
 		}
+		return empty, err
+	}
+	if input, err = lockReask(ctx, queries, issue, input); err != nil {
 		return empty, err
 	}
 	var createdSession *db.ChatSession
@@ -997,6 +1054,9 @@ func (handler *Handler) singleCallDecisionIn(request *http.Request, queries *db.
 	result.CreatedSession = createdSession
 	result.BackingLane = backing
 	result.Warnings = append(warnings, result.Warnings...)
+	if gateHint != "" {
+		result.Warnings = append(result.Warnings, gateHint)
+	}
 	return result, nil
 }
 

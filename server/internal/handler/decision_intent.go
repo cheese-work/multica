@@ -22,15 +22,28 @@ type decisionIntentRefusal struct {
 
 func (refusal decisionIntentRefusal) Error() string { return refusal.message }
 
+// decisionCodedRefusal is a refusal that also carries a stable code, so the CLI
+// and a script can tell the cases apart without reading the sentence.
+type decisionCodedRefusal struct {
+	status  int
+	code    string
+	message string
+}
+
+func (refusal decisionCodedRefusal) Error() string { return refusal.message }
+
 func writeDecisionIntentError(writer http.ResponseWriter, err error) {
 	writeDecisionError(writer, err, "decision intent")
 }
 
 func writeDecisionError(writer http.ResponseWriter, err error, operation string) {
 	var refusal decisionIntentRefusal
+	var codedRefusal decisionCodedRefusal
 	var proofRefusal passkey.Refusal
 	if errors.As(err, &refusal) {
 		writeError(writer, refusal.status, refusal.message)
+	} else if errors.As(err, &codedRefusal) {
+		writeErrorCode(writer, codedRefusal.status, codedRefusal.code, codedRefusal.message)
 	} else if errors.As(err, &proofRefusal) {
 		writeError(writer, proofRefusal.Status, proofRefusal.Message)
 	} else if decisiontx.IsRetryable(err) {

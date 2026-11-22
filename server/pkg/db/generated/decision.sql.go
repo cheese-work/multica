@@ -499,8 +499,8 @@ func (q *Queries) CreateDecisionIntentTarget(ctx context.Context, arg CreateDeci
 }
 
 const createDecisionRequest = `-- name: CreateDecisionRequest :one
-INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id, kind, expires_at, proposal_fingerprint, batch_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15::jsonb, '[]'::jsonb), $16, $17::jsonb, $18, COALESCE($19::text, 'decision'), now() + make_interval(secs => $20::float8), $21, $22)
+INSERT INTO decision_request (workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, origin, decision_intent_id, source_comment_id, source_content_snapshot, request_fingerprint, options, ask_identity, ask_json, project_id, kind, expires_at, proposal_fingerprint, batch_id, reask_of_request_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15::jsonb, '[]'::jsonb), $16, $17::jsonb, $18, COALESCE($19::text, 'decision'), now() + make_interval(secs => $20::float8), $21, $22, $23)
 ON CONFLICT (workspace_id, proposal_fingerprint) WHERE status = 'open' DO NOTHING
 RETURNING id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id, read_at, route, would_auto_apply, auto_apply_rule_id, reask_of_request_id
 `
@@ -528,6 +528,7 @@ type CreateDecisionRequestParams struct {
 	ExpiresInSeconds      pgtype.Float8 `json:"expires_in_seconds"`
 	ProposalFingerprint   pgtype.Text   `json:"proposal_fingerprint"`
 	BatchID               pgtype.UUID   `json:"batch_id"`
+	ReaskOfRequestID      pgtype.UUID   `json:"reask_of_request_id"`
 }
 
 func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionRequestParams) (DecisionRequest, error) {
@@ -554,6 +555,7 @@ func (q *Queries) CreateDecisionRequest(ctx context.Context, arg CreateDecisionR
 		arg.ExpiresInSeconds,
 		arg.ProposalFingerprint,
 		arg.BatchID,
+		arg.ReaskOfRequestID,
 	)
 	var i DecisionRequest
 	err := row.Scan(
@@ -2284,6 +2286,63 @@ func (q *Queries) ListDecisionPingRetries(ctx context.Context, limit int32) ([]D
 	return items, nil
 }
 
+const listDecisionReaskGateCards = `-- name: ListDecisionReaskGateCards :many
+SELECT id, status, ask, ask_json, created_at FROM decision_request
+WHERE authority = 'human' AND workspace_id = $1 AND issue_id = $2
+  AND asking_agent_id = $3 AND human_user_id = $4
+  AND created_at > now() - interval '30 days'
+ORDER BY created_at DESC, id DESC
+LIMIT 5
+`
+
+type ListDecisionReaskGateCardsParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	AskingAgentID pgtype.UUID `json:"asking_agent_id"`
+	HumanUserID   pgtype.UUID `json:"human_user_id"`
+}
+
+type ListDecisionReaskGateCardsRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Status    string             `json:"status"`
+	Ask       string             `json:"ask"`
+	AskJson   []byte             `json:"ask_json"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// The re-ask gate (CHE-6433): this agent's cards to this member on this issue
+// in the last 30 days, any status, newest first. The refusal lists these five.
+func (q *Queries) ListDecisionReaskGateCards(ctx context.Context, arg ListDecisionReaskGateCardsParams) ([]ListDecisionReaskGateCardsRow, error) {
+	rows, err := q.db.Query(ctx, listDecisionReaskGateCards,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.AskingAgentID,
+		arg.HumanUserID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDecisionReaskGateCardsRow{}
+	for rows.Next() {
+		var i ListDecisionReaskGateCardsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Status,
+			&i.Ask,
+			&i.AskJson,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDecisionRequestsByIssue = `-- name: ListDecisionRequestsByIssue :many
 SELECT id, workspace_id, issue_id, asking_agent_id, human_user_id, chat_session_id, ping_message_id, issue_comment_id, ask, escalation_class, status, origin, decision_intent_id, cancel_reason, cancel_notice_posted_at, ping_notified_at, reask_delivered_at, reask_outcome, created_at, source_comment_id, source_content_snapshot, request_fingerprint, withdraw_reason, withdrawn_at, withdrawn_by_task_id, withdrawn_by_user_id, options, ask_identity, ask_json, authority, project_id, kind, expires_at, proposal_fingerprint, answer_revision, wake_seq, batch_id, ping_outcome, covers_request_ids, answered_by_batch_request_id, read_at, route, would_auto_apply, auto_apply_rule_id, reask_of_request_id FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND issue_id = $2
@@ -3530,7 +3589,7 @@ func (q *Queries) MoveDecisionSessionSteward(ctx context.Context, arg MoveDecisi
 }
 
 const openDecisionAsksSince = `-- name: OpenDecisionAsksSince :many
-SELECT ask, ask_identity, created_at FROM decision_request
+SELECT id, ask, ask_identity, created_at FROM decision_request
 WHERE authority = 'human' AND workspace_id = $1 AND issue_id = $2
   AND asking_agent_id = $3 AND human_user_id = $4
   AND status = 'open' AND created_at > now() - interval '24 hours'
@@ -3545,6 +3604,7 @@ type OpenDecisionAsksSinceParams struct {
 }
 
 type OpenDecisionAsksSinceRow struct {
+	ID          pgtype.UUID        `json:"id"`
 	Ask         string             `json:"ask"`
 	AskIdentity string             `json:"ask_identity"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
@@ -3564,7 +3624,12 @@ func (q *Queries) OpenDecisionAsksSince(ctx context.Context, arg OpenDecisionAsk
 	items := []OpenDecisionAsksSinceRow{}
 	for rows.Next() {
 		var i OpenDecisionAsksSinceRow
-		if err := rows.Scan(&i.Ask, &i.AskIdentity, &i.CreatedAt); err != nil {
+		if err := rows.Scan(
+			&i.ID,
+			&i.Ask,
+			&i.AskIdentity,
+			&i.CreatedAt,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

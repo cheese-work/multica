@@ -64,6 +64,8 @@ func init() {
 	decisionRequestCmd.Flags().String("expires-in", "", "With --kind action: how long the ask stays open, e.g. 72h (default 72h, maximum 168h)")
 	decisionRequestCmd.Flags().String("recovers", "", "Ask guard event ID this request answers (from a refusal or a recovery notice); the request clears that event for the person it asks")
 	decisionRequestCmd.Flags().Bool("wait", false, waitFlagHelp)
+	decisionRequestCmd.Flags().String("reask-of", "", "Decision request ID of an earlier card to this person on this issue that this card continues. The card goes into that card's thread; an open earlier card is withdrawn with the reason \"Superseded by re-ask <new id>\". Takes no --parent, --session or --new-dm; not with --new-topic. Needs --for")
+	decisionRequestCmd.Flags().Bool("new-topic", false, "This card is a different matter from the earlier cards to this person on this issue; it starts its own thread. Not with --reask-of. With workspace setting decision_reask_thread block, a second card to the same person on the same issue needs --reask-of or --new-topic")
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
@@ -131,6 +133,14 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 		return err
 	}
 	recovers, _ := command.Flags().GetString("recovers")
+	reaskOf, _ := command.Flags().GetString("reask-of")
+	newTopic, _ := command.Flags().GetBool("new-topic")
+	if reaskOf != "" && newTopic {
+		return fmt.Errorf("--reask-of and --new-topic exclude each other: a re-ask continues a card's thread, a new topic starts its own")
+	}
+	if reaskOf != "" && (parentID != "" || sessionID != "" || newDM || humanID == "") {
+		return fmt.Errorf("--reask-of needs --for and takes no --parent, --session or --new-dm")
+	}
 	if issueRef == "" || class == "" || askPath == "" {
 		return fmt.Errorf("--issue, --class, and --ask-file are required")
 	}
@@ -191,6 +201,12 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	}
 	if wait, _ := command.Flags().GetBool("wait"); wait {
 		body["wait"] = true
+	}
+	if reaskOf != "" {
+		body["reask_of"] = reaskOf
+	}
+	if newTopic {
+		body["new_topic"] = true
 	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/decisions", body, &result); err != nil {

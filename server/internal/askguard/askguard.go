@@ -48,6 +48,10 @@ const (
 	// long-thread route, CHE-6432). Never a workspace setting, so ParseMode
 	// does not accept it; the recovery and repair workers read block rows only.
 	ModeMove Mode = "move"
+	// ModeRefused marks an ask the re-ask gate refused (CHE-6433). Like ModeMove it
+	// is never a workspace setting; the refusal is its own fix, so the recovery and
+	// repair workers, which read block rows only, never act on it.
+	ModeRefused Mode = "refused"
 )
 
 // ParseMode accepts exactly the three mode names.
@@ -186,6 +190,14 @@ func (g Guard) RecordNotice(ctx context.Context, workspaceID pgtype.UUID, op Op)
 // the comment it describes. It writes no metric: it is not a guard hit.
 func (g Guard) RecordMove(ctx context.Context, workspaceID pgtype.UUID, op Op) error {
 	_, _, err := g.record(ctx, workspaceID, ModeMove, op)
+	return err
+}
+
+// RecordRefused stores a refused operation as a refused event. Queries must not
+// be bound to the caller's transaction: the event commits on its own after the
+// refusal rolled the operation back. It writes no metric: it is not a guard hit.
+func (g Guard) RecordRefused(ctx context.Context, workspaceID pgtype.UUID, op Op) error {
+	_, _, err := g.record(ctx, workspaceID, ModeRefused, op)
 	return err
 }
 
