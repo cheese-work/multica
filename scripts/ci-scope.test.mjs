@@ -63,6 +63,8 @@ for (const [name, files, selected] of [
   ["notification inbox group list", ["packages/views/settings/components/notifications-tab.tsx"], ["frontend", "backend", "quality"]],
   ["notification search group list", ["packages/views/settings/components/use-settings-search-index.ts"], ["frontend", "backend", "quality"]],
   ["mobile notification group list", ["apps/mobile/app/(app)/[workspace]/more/settings/notifications.tsx"], ["backend", "quality"]],
+  ["web failure reason lists", ["packages/views/agents/components/tabs/task-failure.ts"], ["frontend", "backend", "quality"]],
+  ["mobile failure reason list", ["apps/mobile/lib/failure-reason-label.ts"], ["backend", "quality"]],
   ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality"]],
   ["workspace package patch", ["patches/example.patch"], ["frontend", "quality"]],
   ["mobile package patch", ["apps/mobile/patches/example.patch"], ["quality"]],
