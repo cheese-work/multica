@@ -610,6 +610,13 @@ func buildCommentPrompt(task Task, provider string) string {
 		if editedSinceResume {
 			b.WriteString(buildEditedTriggerNote(task))
 		}
+		if task.TriggerRepeatCount > 0 {
+			name := task.TriggerAuthorName
+			if name == "" {
+				name = "The user"
+			}
+			fmt.Fprintf(&b, "%s repeated this message: it was sent %d time(s) before (earlier comments: %s).\n\n", name, task.TriggerRepeatCount, strings.Join(task.TriggerRepeatIDs, ", "))
+		}
 		if task.TriggerThreadContext != "" {
 			fmt.Fprintf(&b, "Thread context (thread %s, earlier messages, oldest first; the comment above is the newest):\n\n```text\n%s\n```\n\n", task.TriggerThreadID, task.TriggerThreadContext)
 		}

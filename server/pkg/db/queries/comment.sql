@@ -1070,6 +1070,26 @@ WHERE c.id IN (SELECT id FROM recent_replies)
        AND c.deleted_at IS NULL)
 ORDER BY c.created_at, c.id;
 
+-- name: ListEarlierIdenticalMemberCommentIDs :many
+-- Live comments by the same member on the same issue, posted before the anchor,
+-- whose text equals the given text once trimmed and whitespace-collapsed
+-- (CHE-9042). Oldest first.
+SELECT c.id
+FROM comment c
+WHERE c.workspace_id = sqlc.arg(workspace_id)
+  AND c.issue_id = sqlc.arg(issue_id)
+  AND c.author_type = 'member'
+  AND c.author_id = sqlc.arg(author_id)
+  AND c.type = 'comment'
+  AND c.deleted_at IS NULL
+  AND (c.created_at, c.id) < (
+    sqlc.arg(anchor_created_at)::timestamptz,
+    sqlc.arg(anchor_id)::uuid
+  )
+  AND regexp_replace(btrim(c.content), '\s+', ' ', 'g') =
+      regexp_replace(btrim(sqlc.arg(content)::text), '\s+', ' ', 'g')
+ORDER BY c.created_at, c.id;
+
 -- name: LockCommentAncestorPath :many
 WITH RECURSIVE ancestor_ids AS (
   SELECT c.id, c.parent_id, 1::integer AS depth, ARRAY[c.id]::uuid[] AS visited_ids
