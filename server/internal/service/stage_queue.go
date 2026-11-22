@@ -54,6 +54,7 @@ func stageEntries(ctx context.Context, q *db.Queries, stage stagequeue.Stage, ag
 		gates   int32
 		created pgtype.Timestamptz
 		active  bool
+		project string
 	}
 	var rows []row
 	if stage == stagequeue.StageReview {
@@ -62,7 +63,7 @@ func stageEntries(ctx context.Context, q *db.Queries, stage stagequeue.Stage, ag
 			return nil, err
 		}
 		for _, r := range rs {
-			rows = append(rows, row{r.RunIssueID, r.PrKey, r.OpenGates, r.CreatedAt, r.Active})
+			rows = append(rows, row{r.RunIssueID, r.PrKey, r.OpenGates, r.CreatedAt, r.Active, r.ProjectStatus})
 		}
 	} else {
 		rs, err := q.ListGateStageEntries(ctx, db.ListGateStageEntriesParams{AgentID: agentID, Stage: string(stage), CandidateID: candidate})
@@ -70,11 +71,16 @@ func stageEntries(ctx context.Context, q *db.Queries, stage stagequeue.Stage, ag
 			return nil, err
 		}
 		for _, r := range rs {
-			rows = append(rows, row{r.RunIssueID, r.PrKey, r.OpenGates, r.CreatedAt, r.Active})
+			rows = append(rows, row{r.RunIssueID, r.PrKey, r.OpenGates, r.CreatedAt, r.Active, r.ProjectStatus})
 		}
 	}
 	entries := make([]stagequeue.Entry, 0, len(rows))
 	for _, r := range rows {
+		// An issue of a project that refuses runs can never run, so it holds no
+		// slot and queues for none. A run still active (a pause drains) keeps its slot.
+		if ProjectInactive(r.project) && !r.active {
+			continue
+		}
 		entries = append(entries, stagequeue.Entry{
 			PR: util.UUIDToString(r.pr), OpenGates: int(r.gates), Created: r.created.Time,
 			Active: r.active, Ref: util.UUIDToString(r.run),

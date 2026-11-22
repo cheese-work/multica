@@ -3,28 +3,22 @@ package handler
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/dispatch"
-	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
-
-// RaiseIssueRunBudgetRequest sets the issue's own run cap to Runs total.
-type RaiseIssueRunBudgetRequest struct {
-	Runs int `json:"runs"`
-}
 
 // GetIssueRunBudget returns the issue's run budget: runs used in the open
 // window against the limit in force, its state, and the suggested raise. Any
@@ -67,130 +61,12 @@ func (h *Handler) GetIssueStageQueue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, snap)
 }
 
-// RaiseIssueRunBudget lifts one issue's run cap (CHE-2226) so a person can pay
-// for more runs on that issue without raising the cap of every issue on the
-// workflow. Members only: the actor comes from the authenticated request, never
-// from the body, and an agent cannot spend its own budget.
-func (h *Handler) RaiseIssueRunBudget(w http.ResponseWriter, r *http.Request) {
-	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
-	if !ok {
-		return
-	}
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
-	if actorType != "member" {
-		writeError(w, http.StatusForbidden, "only a person can raise an issue's run budget")
-		return
-	}
-	var req RaiseIssueRunBudgetRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.Runs > issueworkflow.MaxRunsPerIssueLimit {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("runs must not exceed %d", issueworkflow.MaxRunsPerIssueLimit))
-		return
-	}
-	def, _, err := issueworkflow.ForIssue(r.Context(), h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
-	if err != nil || def == nil {
-		writeError(w, http.StatusBadRequest, "the issue has no workflow run budget to raise")
-		return
-	}
-	workflowMax := def.EffectiveMaxRuns()
-	current := workflowMax
-	if issue.MaxRunsOverride.Valid && int(issue.MaxRunsOverride.Int32) > current {
-		current = int(issue.MaxRunsOverride.Int32)
-	}
-	if req.Runs <= current {
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("runs must be above the cap now in force (%d)", current))
-		return
-	}
-	// The cap and the audit of who raised it commit together: a raise with no
-	// record of the person behind it must not stay in force.
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
-	// The window opens, and the cap is read, under the issue lock: a raise
-	// that waited behind another one starts from the cap that one left.
-	current, err = service.OpenRunBudgetWindow(r.Context(), qtx, issue.ID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
-		return
-	}
-	if req.Runs <= current {
-		writeError(w, http.StatusConflict, fmt.Sprintf("the cap changed while raising it; it is now %d", current))
-		return
-	}
-	raised, err := qtx.RaiseIssueMaxRuns(r.Context(), db.RaiseIssueMaxRunsParams{
-		ID: issue.ID, WorkspaceID: issue.WorkspaceID, Runs: int32(req.Runs), WorkflowMax: int32(workflowMax),
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusConflict, "the cap changed while raising it; read it again")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
-		return
-	}
-	body, _ := json.Marshal(map[string]any{"from": current, "to": raised.Int32})
-	activity, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
-		WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: actorType, Valid: true},
-		ActorID: parseUUID(actorID), Action: "run_budget_raised", Details: body,
-	})
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to record the run budget raise")
-		return
-	}
-	if err := service.RecordRunBudgetRaise(r.Context(), qtx, issue, activity.ID, int(raised.Int32)-current); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to record the run budget raise")
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to raise the run budget")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"max_runs": raised.Int32, "previous_max_runs": current})
-}
-
-// TopUpIssueRunBudget opens a new run-budget window on the issue without a
-// status move (CHE-2297 L2d): the window credit is the cap in force. Members only, for
-// the same reason as a raise: an agent cannot pay for its own runs. The
-// activity row is the window's start, so it commits with the credit.
-func (h *Handler) TopUpIssueRunBudget(w http.ResponseWriter, r *http.Request) {
-	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
-	if !ok {
-		return
-	}
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
-	// resolveActor calls a machine credential without agent headers a member, so
-	// the credential check is separate (the route carries RequireHumanActor too).
-	if actorType != "member" || isMachineCredentialActor(r) {
-		writeError(w, http.StatusForbidden, "only a person can top up an issue's run budget")
-		return
-	}
-	actor := parseUUID(actorID)
-	max, err := h.topUpRunBudget(r.Context(), issue, actorType, actor, []byte("{}"), nil, nil)
-	if errors.Is(err, errRunBudgetNotBudgeted) {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err != nil {
-		slog.Warn("run budget: top-up failed", "err", err, "issue_id", uuidToString(issue.ID))
-		writeError(w, http.StatusInternalServerError, "failed to top up the run budget")
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"max_runs": max})
+// RunBudgetDirectRouteGone answers the retired direct raise and top-up routes
+// (CHE-2798 S1c). Both opened spend from one POST; a raise or top-up now goes
+// through a decision action request that an owner approves (A2b meter, CLI).
+// No credential reaches either write, an interactive session included.
+func (h *Handler) RunBudgetDirectRouteGone(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusGone, "this route is removed; request a run budget raise or top-up and approve it in the web app (POST /api/issues/{id}/run-budget/requests)")
 }
 
 var errRunBudgetNotBudgeted = errors.New("the issue has no workflow run budget to top up")
@@ -388,6 +264,24 @@ func (h *Handler) enterRunBudgetBoundaries(ctx context.Context, issueIDs ...pgty
 	return leave, nil
 }
 
+var (
+	// runBudgetBoundaryIdleTimeout ends a boundary transaction that has sat
+	// idle this long. It is the server-side backstop for a holder whose
+	// process stopped keeping it alive.
+	runBudgetBoundaryIdleTimeout = 60 * time.Second
+	// runBudgetBoundaryKeepalive is how often a live holder touches its
+	// transaction. The protected status write runs on other connections, so
+	// the boundary transaction is idle while the work is live; without this
+	// the idle timeout would drop the lock under a healthy holder.
+	runBudgetBoundaryKeepalive = 20 * time.Second
+	// runBudgetBoundaryHoldLimit force-releases a boundary lock held this long,
+	// freeing the in-process turn and pool slot the server cannot. The
+	// keepalive stops here, so a leak ends within this limit.
+	runBudgetBoundaryHoldLimit = 90 * time.Second
+)
+
+const runBudgetBoundaryRollbackTimeout = 5 * time.Second
+
 // lockRunBudgetBoundary holds the issue's boundary lock until release runs;
 // release is safe to call more than once. An agent's or the platform's status
 // write takes it around the write and its grant. A person's move reads the
@@ -403,15 +297,73 @@ func (h *Handler) lockRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID
 		leave()
 		return nil, err
 	}
+	// txMu serialises the keepalive with the rollback: a pgx connection runs
+	// one statement at a time.
+	var txMu sync.Mutex
+	stop := make(chan struct{})
 	release = sync.OnceFunc(func() {
-		_ = tx.Rollback(ctx)
+		close(stop)
+		txMu.Lock()
+		defer txMu.Unlock()
+		// The request may be cancelled by now; a rollback on a cancelled
+		// context is never sent and would leave the lock to the server.
+		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runBudgetBoundaryRollbackTimeout)
+		defer cancel()
+		_ = tx.Rollback(rollbackCtx)
 		leave()
 	})
+	// Backstop for a holder that stops keeping its transaction alive: the
+	// server ends the transaction, and with it the lock, once it sits idle.
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL idle_in_transaction_session_timeout = %d", runBudgetBoundaryIdleTimeout.Milliseconds())); err != nil {
+		release()
+		return nil, err
+	}
 	if err := h.Queries.WithTx(tx).LockIssueRunBudgetBoundary(ctx, issueID); err != nil {
 		release()
 		return nil, err
 	}
+	go keepRunBudgetBoundary(ctx, issueID, tx, &txMu, stop, release, runBudgetBoundaryKeepalive, runBudgetBoundaryHoldLimit)
 	return release, nil
+}
+
+// keepRunBudgetBoundary keeps a held boundary transaction from idling out
+// while its holder works, and force-releases it at the hold limit. Reaching
+// the limit means the holder leaked, or ran longer than any status write
+// should; either way the in-process turn and slot are freed and the issue is
+// logged.
+func keepRunBudgetBoundary(ctx context.Context, issueID pgtype.UUID, tx pgx.Tx, txMu *sync.Mutex, stop <-chan struct{}, release func(), keepalive, holdLimit time.Duration) {
+	started := time.Now()
+	ticker := time.NewTicker(keepalive)
+	defer ticker.Stop()
+	limit := time.NewTimer(holdLimit)
+	defer limit.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-limit.C:
+			slog.Error("run budget: boundary lock held too long; releasing it", "issue_id", uuidToString(issueID), "held", time.Since(started).String())
+			release()
+			return
+		case <-ticker.C:
+			txMu.Lock()
+			select {
+			case <-stop:
+				txMu.Unlock()
+				return
+			default:
+			}
+			pingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), runBudgetBoundaryRollbackTimeout)
+			_, err := tx.Exec(pingCtx, "SELECT 1")
+			cancel()
+			txMu.Unlock()
+			if err != nil {
+				slog.Error("run budget: boundary lock lost; releasing it", "issue_id", uuidToString(issueID), "held", time.Since(started).String(), "error", err)
+				release()
+				return
+			}
+		}
+	}
 }
 
 // lockRunBudgetMove readies a person's status write, which starts the issue's

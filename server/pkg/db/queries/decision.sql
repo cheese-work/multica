@@ -62,8 +62,8 @@ SELECT * FROM decision_request
 WHERE authority = 'human' AND workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id') AND asking_agent_id = sqlc.arg('agent_id') AND proposal_fingerprint IS NOT NULL AND status = 'open';
 
 -- name: CreateDecisionAnswer :one
-INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label)
-VALUES (sqlc.arg('decision_request_id'), sqlc.narg('answered_by_task_id'), sqlc.narg('answered_by_user_id'), COALESCE(sqlc.narg('answer_source')::text, 'agent_record'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), sqlc.narg('wake_at'), sqlc.narg('chosen_option_index'), sqlc.narg('reply_text'), sqlc.narg('context_message_id'), sqlc.arg('excerpted')::boolean, sqlc.narg('answered_label'))
+INSERT INTO decision_answer (decision_request_id, answered_by_task_id, answered_by_user_id, answer_source, source_chat_session_id, chat_message_ids, source_comment_id, content_snapshot, effective_at, issue_comment_id, wake_at, chosen_option_index, reply_text, context_message_id, excerpted, answered_label, undo_until)
+VALUES (sqlc.arg('decision_request_id'), sqlc.narg('answered_by_task_id'), sqlc.narg('answered_by_user_id'), COALESCE(sqlc.narg('answer_source')::text, 'agent_record'), sqlc.narg('source_chat_session_id'), sqlc.arg('chat_message_ids'), sqlc.narg('source_comment_id'), sqlc.arg('content_snapshot'), sqlc.arg('effective_at'), sqlc.narg('issue_comment_id'), sqlc.narg('wake_at'), sqlc.narg('chosen_option_index'), sqlc.narg('reply_text'), sqlc.narg('context_message_id'), sqlc.arg('excerpted')::boolean, sqlc.narg('answered_label'), sqlc.narg('undo_until'))
 RETURNING *;
 
 -- name: GetDecisionRequest :one
@@ -254,10 +254,30 @@ WHERE authority = 'human' AND origin = 'asked' AND status = 'open'
   AND (ping_notified_at IS NOT NULL OR id = sqlc.arg('id'));
 
 -- name: UpdateDecisionPingLine :exec
--- Rewrites the coalesced line in place. chat_message_id stays, so no push is queued.
+-- Rewrites the coalesced line, moves the item to the top of the inbox and
+-- re-points it at the newest ask's card (CHE-8878). The chat_message_id change
+-- makes the push trigger re-arm every delivery row of the item; the caller
+-- snapshots them first and restores the 15 minute spacing afterwards.
 UPDATE inbox_item
-SET body = sqlc.arg('body'), details = details || jsonb_build_object('open_ask_count', sqlc.arg('open_ask_count')::int), updated_at = now()
+SET body = sqlc.arg('body'),
+    details = details || jsonb_build_object('open_ask_count', sqlc.arg('open_ask_count')::int),
+    chat_message_id = COALESCE(sqlc.narg('chat_message_id')::uuid, chat_message_id),
+    updated_at = now()
 WHERE workspace_id = sqlc.arg('workspace_id') AND id = sqlc.arg('id');
+
+-- name: ListPushDeliveryTimings :many
+-- The push state of one inbox item before a coalesced ask re-arms it.
+SELECT id, sent_at, next_attempt_at FROM push_delivery WHERE record_id = $1;
+
+-- name: SpacePushDelivery :exec
+-- After a coalesced ask re-armed a delivery row (CHE-8878). A push still
+-- waiting keeps its time: it will show the updated line. A push already sent
+-- is due again 15 minutes after it was sent, at the earliest (rule of CHE-6009),
+-- so a stream of asks gives one push per window and never loses the last one.
+UPDATE push_delivery
+SET next_attempt_at = CASE WHEN sqlc.narg('was_sent_at')::timestamptz IS NULL THEN sqlc.arg('was_next_attempt_at')::timestamptz
+        ELSE GREATEST(now() + interval '10 seconds', sqlc.narg('was_sent_at')::timestamptz + interval '15 minutes') END
+WHERE id = sqlc.arg('id') AND sent_at IS NULL;
 
 -- name: ListDecisionPingRepings :many
 -- One coalesced open ask per (agent, person, DM) whose group has no open
@@ -338,6 +358,7 @@ WHERE session.workspace_id = sqlc.arg('workspace_id')
   AND session.creator_id = sqlc.arg('creator_id') AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = session.id)
   AND (sqlc.narg('session_id')::uuid IS NULL OR session.id = sqlc.narg('session_id')::uuid)
 ORDER BY ref.referenced_at DESC NULLS LAST, session.updated_at DESC, session.id DESC
 LIMIT 10;
@@ -349,6 +370,7 @@ WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = s
   AND session.decision_topic_id = sqlc.arg('topic_id') AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = session.id)
 ORDER BY session.created_at, session.id
 LIMIT 1;
 
@@ -359,12 +381,25 @@ WHERE session.workspace_id = sqlc.arg('workspace_id') AND session.creator_id = s
   AND session.agent_id = sqlc.arg('agent_id') AND session.status = 'active'
   AND session.channel_origin_at IS NULL AND NOT session.is_agent_intro
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding binding WHERE binding.chat_session_id = session.id)
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = session.id)
 ORDER BY session.updated_at DESC, session.id DESC
 LIMIT 1;
 
 -- name: LockDecisionTopicLane :exec
 -- Serializes the find-or-create of a person's DM for one topic.
 SELECT pg_advisory_xact_lock(hashtextextended('decision-topic:' || sqlc.arg('workspace_id')::uuid::text || ':' || sqlc.arg('creator_id')::uuid::text || ':' || sqlc.arg('topic_id')::uuid::text, 0));
+
+-- name: GetDecisionBackingLane :one
+-- The member's hidden lane for a topic, if one is registered (plan r4 3.7). Call under LockDecisionTopicLane.
+SELECT session_id FROM decision_backing_lane
+WHERE workspace_id = sqlc.arg('workspace_id') AND creator_id = sqlc.arg('creator_id') AND topic_id = sqlc.arg('topic_id');
+
+-- name: IsDecisionBackingLane :one
+SELECT EXISTS (SELECT 1 FROM decision_backing_lane WHERE session_id = sqlc.arg('session_id'));
+
+-- name: CreateDecisionBackingLane :exec
+INSERT INTO decision_backing_lane (session_id, workspace_id, creator_id, topic_id)
+VALUES (sqlc.arg('session_id'), sqlc.arg('workspace_id'), sqlc.arg('creator_id'), sqlc.arg('topic_id'));
 
 -- name: ListDecisionTopicSessions :many
 SELECT chat_session.id, chat_session.creator_id FROM chat_session
@@ -699,3 +734,9 @@ ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1;
 -- Reading a DM stamps the delivered cards in it once. Read is not answered.
 UPDATE decision_request SET read_at = clock_timestamp()
 WHERE chat_session_id = sqlc.arg('chat_session_id') AND read_at IS NULL AND ping_notified_at IS NOT NULL;
+
+-- name: GetLiveDecisionAnswer :one
+SELECT answer.* FROM decision_answer answer
+JOIN decision_request request ON request.authority = 'human' AND request.id = answer.decision_request_id
+WHERE request.workspace_id = sqlc.arg('workspace_id') AND request.id = sqlc.arg('id') AND answer.disclaimed_at IS NULL
+ORDER BY answer.created_at DESC, answer.id DESC LIMIT 1;

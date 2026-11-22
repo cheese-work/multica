@@ -61,6 +61,15 @@ test("expected slog WARN lines from backend-agent-tests fixtures are not warning
   assert.equal(Object.keys(warningCounts([{ name: "backend-agent-tests", log: unrelated, annotations: [] }])).length, 1)
 })
 
+test("decision-card-e2e: the Postgres image's initdb trust notice and Next's no-build-cache notice are expected, other warnings still count (CHE-7000)", () => {
+  const initdb = '2026-11-18T01:00:00.0000000Z initdb: warning: enabling "trust" authentication for local connections'
+  const nextCache = "2026-11-18T01:01:00.0000000Z  \u26a0 No build cache found. Please configure build caching for faster rebuilds."
+  const log = `${initdb}\n${nextCache}`
+  assert.deepEqual(warningCounts([{ name: "decision-card-e2e", log, annotations: [] }]), {})
+  assert.deepEqual(warningCounts([{ name: "decision-card-e2e", log: `${log}\nWarning: new diagnostic`, annotations: [] }]), { "decision-card-e2e: Warning: new diagnostic": 1 })
+  assert.equal(Object.keys(warningCounts([{ name: "backend-tests", log, annotations: [] }])).length, 2)
+})
+
 test("ANSI sequences are stripped before warning detection", () => {
   assert.deepEqual(warningCounts([{ name: "build", log: "\u001b[2KWar\u001b[33mning: fixture diagnostic\u001b[0m", annotations: [] }]), { "build: Warning: fixture diagnostic": 1 })
 })
@@ -269,6 +278,12 @@ test("migration-checks, added by CHE-6563, has a zero warning baseline until mai
   assert.match(zero, /"migration-checks"/)
 })
 
+test("decision-card-e2e, added by CHE-6847, has a zero warning baseline until main runs it", () => {
+  const source = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
+  const zero = source.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
+  assert.match(zero, /"decision-card-e2e"/)
+})
+
 // CHE-7010: run the real script against a stubbed `gh` on PATH. The stub serves one job (a zero-baseline job, so no
 // baseline lookup) and fails the job-log endpoint with the given HTTP status for the first `times` calls.
 function runWithStubbedGh({ status, times, warning = false, message = "stub failure", resetIn = 3600, bare = false, job = "gitleaks" }) {
@@ -403,4 +418,31 @@ else throw new Error("Unexpected API request " + endpoint)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// CHE-8843: GitHub can lose a job log (HTTP 404 BlobNotFound). A baseline run with a missing log is skipped like a jobs-API 5xx.
+test("a baseline job whose log returns 404 is skipped for the next older run (CHE-8843)", () => {
+  const pending = new Set(["frontend-build"])
+  const jobBaselines = { "frontend-build": null }
+  const baselineJobs = []
+  const logs = []
+  const runs = [{ id: 3, html_url: "run-3", head_sha: "c" }, { id: 2, html_url: "run-2", head_sha: "b" }]
+  const listJobs = (run) => [{ name: "frontend-build", status: "completed", conclusion: "success", runId: run.id }]
+  const collect = (job) => {
+    if (job.runId === 3) throw httpError(404)
+    return { name: job.name, log: "" }
+  }
+  scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJobs, collect, log: (line) => logs.push(line) })
+  assert.equal(jobBaselines["frontend-build"].run, "run-2")
+  assert.equal(pending.size, 0)
+  assert.equal(baselineJobs.length, 1)
+  assert.match(logs.join("\n"), /run 3/)
+})
+
+test("a non-404 baseline log error still fails loudly (CHE-8843)", () => {
+  const runs = [{ id: 3, html_url: "run-3", head_sha: "c" }]
+  const listJobs = () => okJobs
+  const options = { pending: new Set(["frontend-build"]), jobBaselines: {}, baselineJobs: [], listJobs, log: () => {} }
+  assert.throws(() => scanBaselines(runs, { ...options, collect: () => { throw httpError(403) } }), /Command failed/)
+  assert.throws(() => scanBaselines(runs, { ...options, collect: () => { throw new SyntaxError("Unexpected token") } }), /Unexpected token/)
 })

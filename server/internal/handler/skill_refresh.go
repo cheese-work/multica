@@ -153,6 +153,12 @@ func (h *Handler) RefreshSkill(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), importFetchTimeout)
 	defer cancel()
 
+	if origin.Type == "github" {
+		var release func()
+		ctx, release = h.githubSkillAuthContext(ctx, skill.WorkspaceID, origin.SourceURL)
+		defer release()
+	}
+
 	imported, err := fetchImportedSkillFromOrigin(ctx, httpClient, origin)
 	if err != nil {
 		if errors.Is(err, errSkillNotRefreshable) {

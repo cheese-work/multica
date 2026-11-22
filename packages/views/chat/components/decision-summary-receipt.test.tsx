@@ -48,7 +48,7 @@ describe("DecisionSummary budget receipt", () => {
     ["superseded:future", "Not resumed."],
   ])("%s", (outcome, line) => {
     const got = render({ receipt: { outcome, applied_at: at, ...topUp } });
-    expect(got.effect).toBe("Applied. CHE-3461 now shows 0 of 25 runs.");
+    expect(got.effect).toBe("Applied. At application, CHE-3461 showed 0 of 25 runs.");
     expect(got.runs).toBe("44 of 25 → 0 of 25 (new window)");
     expect(got.outcome).toBe(line);
   });
@@ -62,7 +62,7 @@ describe("DecisionSummary budget receipt", () => {
 
   it("a raise shows the new cap and no new-window note", () => {
     const got = render({ action_type: "issue.run_budget.raise", receipt: { outcome: "cap_applied", applied_at: at, ...raise } });
-    expect(got.effect).toBe("Applied. CHE-3461 now shows 25 of 30 runs.");
+    expect(got.effect).toBe("Applied. At application, CHE-3461 showed 25 of 30 runs.");
     expect(got.runs).toBe("25 of 25 → 25 of 30");
   });
 

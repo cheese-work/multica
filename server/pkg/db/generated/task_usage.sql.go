@@ -90,7 +90,7 @@ func (q *Queries) GetIssueUsageSummary(ctx context.Context, issueID pgtype.UUID)
 }
 
 const getTaskUsage = `-- name: GetTaskUsage :many
-SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, credits_micros FROM task_usage
+SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, credits_micros, cache_write_1h_tokens FROM task_usage
 WHERE task_id = $1
 ORDER BY model
 `
@@ -117,6 +117,7 @@ func (q *Queries) GetTaskUsage(ctx context.Context, taskID pgtype.UUID) ([]TaskU
 			&i.UpdatedAt,
 			&i.CostUsdTicks,
 			&i.CreditsMicros,
+			&i.CacheWrite1hTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -137,6 +138,7 @@ SELECT
     tu.output_tokens,
     tu.cache_read_tokens,
     tu.cache_write_tokens,
+    tu.cache_write_1h_tokens,
     tu.cost_usd_ticks,
     tu.credits_micros
 FROM task_usage tu
@@ -152,15 +154,16 @@ type ListAgentTaskUsageParams struct {
 }
 
 type ListAgentTaskUsageRow struct {
-	TaskID           pgtype.UUID `json:"task_id"`
-	Provider         string      `json:"provider"`
-	Model            string      `json:"model"`
-	InputTokens      int64       `json:"input_tokens"`
-	OutputTokens     int64       `json:"output_tokens"`
-	CacheReadTokens  int64       `json:"cache_read_tokens"`
-	CacheWriteTokens int64       `json:"cache_write_tokens"`
-	CostUsdTicks     pgtype.Int8 `json:"cost_usd_ticks"`
-	CreditsMicros    pgtype.Int8 `json:"credits_micros"`
+	TaskID             pgtype.UUID `json:"task_id"`
+	Provider           string      `json:"provider"`
+	Model              string      `json:"model"`
+	InputTokens        int64       `json:"input_tokens"`
+	OutputTokens       int64       `json:"output_tokens"`
+	CacheReadTokens    int64       `json:"cache_read_tokens"`
+	CacheWriteTokens   int64       `json:"cache_write_tokens"`
+	CacheWrite1hTokens pgtype.Int8 `json:"cache_write_1h_tokens"`
+	CostUsdTicks       pgtype.Int8 `json:"cost_usd_ticks"`
+	CreditsMicros      pgtype.Int8 `json:"credits_micros"`
 }
 
 // Per-(task, provider, model) usage rows for one agent's explicitly requested
@@ -184,6 +187,7 @@ func (q *Queries) ListAgentTaskUsage(ctx context.Context, arg ListAgentTaskUsage
 			&i.OutputTokens,
 			&i.CacheReadTokens,
 			&i.CacheWriteTokens,
+			&i.CacheWrite1hTokens,
 			&i.CostUsdTicks,
 			&i.CreditsMicros,
 		); err != nil {
@@ -524,6 +528,7 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(COALESCE(uncosted_cache_write_1h_tokens, 0))::bigint AS uncosted_cache_write_1h_tokens,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
@@ -540,19 +545,20 @@ type ListDashboardUsageByAgentParams struct {
 }
 
 type ListDashboardUsageByAgentRow struct {
-	AgentID                  pgtype.UUID `json:"agent_id"`
-	Provider                 string      `json:"provider"`
-	Model                    string      `json:"model"`
-	InputTokens              int64       `json:"input_tokens"`
-	OutputTokens             int64       `json:"output_tokens"`
-	CacheReadTokens          int64       `json:"cache_read_tokens"`
-	CacheWriteTokens         int64       `json:"cache_write_tokens"`
-	CostUsdTicks             int64       `json:"cost_usd_ticks"`
-	UncostedInputTokens      int64       `json:"uncosted_input_tokens"`
-	UncostedOutputTokens     int64       `json:"uncosted_output_tokens"`
-	UncostedCacheReadTokens  int64       `json:"uncosted_cache_read_tokens"`
-	UncostedCacheWriteTokens int64       `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32       `json:"task_count"`
+	AgentID                    pgtype.UUID `json:"agent_id"`
+	Provider                   string      `json:"provider"`
+	Model                      string      `json:"model"`
+	InputTokens                int64       `json:"input_tokens"`
+	OutputTokens               int64       `json:"output_tokens"`
+	CacheReadTokens            int64       `json:"cache_read_tokens"`
+	CacheWriteTokens           int64       `json:"cache_write_tokens"`
+	CostUsdTicks               int64       `json:"cost_usd_ticks"`
+	UncostedInputTokens        int64       `json:"uncosted_input_tokens"`
+	UncostedOutputTokens       int64       `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens    int64       `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens   int64       `json:"uncosted_cache_write_tokens"`
+	UncostedCacheWrite1hTokens int64       `json:"uncosted_cache_write_1h_tokens"`
+	TaskCount                  int32       `json:"task_count"`
 }
 
 // Per-(agent, provider, model) token aggregates from `task_usage_hourly`. No
@@ -591,6 +597,7 @@ func (q *Queries) ListDashboardUsageByAgent(ctx context.Context, arg ListDashboa
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.UncostedCacheWrite1hTokens,
 			&i.TaskCount,
 		); err != nil {
 			return nil, err
@@ -617,6 +624,7 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(COALESCE(uncosted_cache_write_1h_tokens, 0))::bigint AS uncosted_cache_write_1h_tokens,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
@@ -634,19 +642,20 @@ type ListDashboardUsageDailyParams struct {
 }
 
 type ListDashboardUsageDailyRow struct {
-	Date                     pgtype.Date `json:"date"`
-	Provider                 string      `json:"provider"`
-	Model                    string      `json:"model"`
-	InputTokens              int64       `json:"input_tokens"`
-	OutputTokens             int64       `json:"output_tokens"`
-	CacheReadTokens          int64       `json:"cache_read_tokens"`
-	CacheWriteTokens         int64       `json:"cache_write_tokens"`
-	CostUsdTicks             int64       `json:"cost_usd_ticks"`
-	UncostedInputTokens      int64       `json:"uncosted_input_tokens"`
-	UncostedOutputTokens     int64       `json:"uncosted_output_tokens"`
-	UncostedCacheReadTokens  int64       `json:"uncosted_cache_read_tokens"`
-	UncostedCacheWriteTokens int64       `json:"uncosted_cache_write_tokens"`
-	TaskCount                int32       `json:"task_count"`
+	Date                       pgtype.Date `json:"date"`
+	Provider                   string      `json:"provider"`
+	Model                      string      `json:"model"`
+	InputTokens                int64       `json:"input_tokens"`
+	OutputTokens               int64       `json:"output_tokens"`
+	CacheReadTokens            int64       `json:"cache_read_tokens"`
+	CacheWriteTokens           int64       `json:"cache_write_tokens"`
+	CostUsdTicks               int64       `json:"cost_usd_ticks"`
+	UncostedInputTokens        int64       `json:"uncosted_input_tokens"`
+	UncostedOutputTokens       int64       `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens    int64       `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens   int64       `json:"uncosted_cache_write_tokens"`
+	UncostedCacheWrite1hTokens int64       `json:"uncosted_cache_write_1h_tokens"`
+	TaskCount                  int32       `json:"task_count"`
 }
 
 // Daily per-(date, provider, model) token aggregates for the workspace, served
@@ -693,6 +702,7 @@ func (q *Queries) ListDashboardUsageDaily(ctx context.Context, arg ListDashboard
 			&i.UncostedOutputTokens,
 			&i.UncostedCacheReadTokens,
 			&i.UncostedCacheWriteTokens,
+			&i.UncostedCacheWrite1hTokens,
 			&i.TaskCount,
 		); err != nil {
 			return nil, err
@@ -714,6 +724,7 @@ SELECT
     tu.output_tokens,
     tu.cache_read_tokens,
     tu.cache_write_tokens,
+    tu.cache_write_1h_tokens,
     tu.cost_usd_ticks,
     tu.credits_micros
 FROM task_usage tu
@@ -723,15 +734,16 @@ ORDER BY tu.task_id, tu.model
 `
 
 type ListIssueTaskUsageRow struct {
-	TaskID           pgtype.UUID `json:"task_id"`
-	Provider         string      `json:"provider"`
-	Model            string      `json:"model"`
-	InputTokens      int64       `json:"input_tokens"`
-	OutputTokens     int64       `json:"output_tokens"`
-	CacheReadTokens  int64       `json:"cache_read_tokens"`
-	CacheWriteTokens int64       `json:"cache_write_tokens"`
-	CostUsdTicks     pgtype.Int8 `json:"cost_usd_ticks"`
-	CreditsMicros    pgtype.Int8 `json:"credits_micros"`
+	TaskID             pgtype.UUID `json:"task_id"`
+	Provider           string      `json:"provider"`
+	Model              string      `json:"model"`
+	InputTokens        int64       `json:"input_tokens"`
+	OutputTokens       int64       `json:"output_tokens"`
+	CacheReadTokens    int64       `json:"cache_read_tokens"`
+	CacheWriteTokens   int64       `json:"cache_write_tokens"`
+	CacheWrite1hTokens pgtype.Int8 `json:"cache_write_1h_tokens"`
+	CostUsdTicks       pgtype.Int8 `json:"cost_usd_ticks"`
+	CreditsMicros      pgtype.Int8 `json:"credits_micros"`
 }
 
 // Per-(task, provider, model) usage rows for every task on one issue — the
@@ -763,6 +775,7 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 			&i.OutputTokens,
 			&i.CacheReadTokens,
 			&i.CacheWriteTokens,
+			&i.CacheWrite1hTokens,
 			&i.CostUsdTicks,
 			&i.CreditsMicros,
 		); err != nil {
@@ -789,8 +802,8 @@ func (q *Queries) LockTaskUsageReport(ctx context.Context, taskID pgtype.UUID) e
 }
 
 const upsertTaskUsage = `-- name: UpsertTaskUsage :exec
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, credits_micros, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, credits_micros, cache_write_1h_tokens, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -799,19 +812,21 @@ DO UPDATE SET
     cache_write_tokens = EXCLUDED.cache_write_tokens,
     cost_usd_ticks = EXCLUDED.cost_usd_ticks,
     credits_micros = EXCLUDED.credits_micros,
+    cache_write_1h_tokens = EXCLUDED.cache_write_1h_tokens,
     updated_at = now()
 `
 
 type UpsertTaskUsageParams struct {
-	TaskID           pgtype.UUID `json:"task_id"`
-	Provider         string      `json:"provider"`
-	Model            string      `json:"model"`
-	InputTokens      int64       `json:"input_tokens"`
-	OutputTokens     int64       `json:"output_tokens"`
-	CacheReadTokens  int64       `json:"cache_read_tokens"`
-	CacheWriteTokens int64       `json:"cache_write_tokens"`
-	CostUsdTicks     pgtype.Int8 `json:"cost_usd_ticks"`
-	CreditsMicros    pgtype.Int8 `json:"credits_micros"`
+	TaskID             pgtype.UUID `json:"task_id"`
+	Provider           string      `json:"provider"`
+	Model              string      `json:"model"`
+	InputTokens        int64       `json:"input_tokens"`
+	OutputTokens       int64       `json:"output_tokens"`
+	CacheReadTokens    int64       `json:"cache_read_tokens"`
+	CacheWriteTokens   int64       `json:"cache_write_tokens"`
+	CostUsdTicks       pgtype.Int8 `json:"cost_usd_ticks"`
+	CreditsMicros      pgtype.Int8 `json:"credits_micros"`
+	CacheWrite1hTokens pgtype.Int8 `json:"cache_write_1h_tokens"`
 }
 
 // Bumps `updated_at` on INSERT and on conflict so the hourly-rollup worker
@@ -822,6 +837,9 @@ type UpsertTaskUsageParams struct {
 // when it reports none. It is overwritten like the token counters so a
 // corrected report replaces the previous figure rather than accumulating.
 // credits_micros follows the same rule for providers that bill in credits.
+// cache_write_1h_tokens is the 1-hour-TTL part of cache_write_tokens, NULL when
+// the run carried no TTL split; it too is overwritten, so a report without a
+// split resets it rather than keeping a stale one.
 func (q *Queries) UpsertTaskUsage(ctx context.Context, arg UpsertTaskUsageParams) error {
 	_, err := q.db.Exec(ctx, upsertTaskUsage,
 		arg.TaskID,
@@ -833,6 +851,7 @@ func (q *Queries) UpsertTaskUsage(ctx context.Context, arg UpsertTaskUsageParams
 		arg.CacheWriteTokens,
 		arg.CostUsdTicks,
 		arg.CreditsMicros,
+		arg.CacheWrite1hTokens,
 	)
 	return err
 }

@@ -634,6 +634,8 @@ export interface TaskUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+  /** The 1-hour-TTL part of `cache_write_tokens`; absent = no TTL split reported. */
+  cache_write_1h_tokens?: number;
   cost_usd_ticks?: number;
   credits_micros?: number;
 }
@@ -1168,6 +1170,7 @@ export interface RuntimeUsage {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
 }
 
 export interface RuntimeHourlyActivity {
@@ -1193,6 +1196,7 @@ export interface RuntimeUsageByAgent {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1211,6 +1215,7 @@ export interface RuntimeUsageByHour {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1233,6 +1238,7 @@ export interface DashboardUsageDaily {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1252,6 +1258,7 @@ export interface DashboardUsageByAgent {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
+  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 

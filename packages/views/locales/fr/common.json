@@ -188,7 +188,7 @@
     }
   },
   "budget_receipt": {
-    "applied_runs": "Appliqué. {{issue}} affiche maintenant {{used}} exécutions sur {{limit}}.",
+    "applied_runs": "Appliqué. À l'application, {{issue}} affichait {{used}} exécutions sur {{limit}}.",
     "runs_used": "Exécutions utilisées",
     "change": "{{used}} sur {{limit}} → {{usedAfter}} sur {{limitAfter}}",
     "change_new_window": "{{used}} sur {{limit}} → {{usedAfter}} sur {{limitAfter}} (nouvelle fenêtre)",

@@ -384,6 +384,13 @@ func (handler *Handler) recordRevoke(ctx context.Context, transaction pgx.Tx, qu
 	if !mayInvoke || !snapshot.recipient.RuntimeID.Valid || snapshot.recipient.ArchivedAt.Valid {
 		return woken, nil
 	}
+	// A held issue gets no dispatch (CHE-6911 E3, row 5). The revoke path holds no
+	// issue lock, so the helper reads the facts without it.
+	if held, err := intakeHoldSkips(ctx, transaction, uuidToString(issue.ID), "decision_revoke"); err != nil {
+		return empty, err
+	} else if held {
+		return woken, nil
+	}
 	wake, queued, err := handler.dispatchDecisionInputs(ctx, queries, snapshot, woken.comment, []pgtype.UUID{woken.comment.ID}, revokeWakeSummary(action, who, reason))
 	if err != nil {
 		return empty, err

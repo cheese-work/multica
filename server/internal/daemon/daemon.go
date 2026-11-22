@@ -685,6 +685,10 @@ type Daemon struct {
 	// It deliberately includes preparation and local-directory waiters because
 	// restart/update barriers must not kill any claimed task.
 	activeTasks atomic.Int64
+	// nonDMTasks counts the claimed tasks that are not DM runs: issue tasks and
+	// group channel tasks. With reserved_chat_slots it bounds the slots they may
+	// hold.
+	nonDMTasks atomic.Int64
 
 	// hostSampler holds the latest host CPU/RAM/disk sample. Built in New so it
 	// exists before Run starts any reader; Run starts its sampling loop.
@@ -5787,7 +5791,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			continue
 		}
 
-		claimResult, err := d.claimTasksWSFirst(pollerCtx, d.cfg.DaemonID, runtimeIDs, len(slots))
+		claimResult, err := d.claimTasksWSFirst(pollerCtx, d.cfg.DaemonID, runtimeIDs, len(slots), d.nonDMClaimBudget())
 		if err != nil {
 			d.exitClaim()
 			releaseSlots(slots)
@@ -5823,6 +5827,10 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			d.logger.Info("task received", "task", t.ID, "target", taskTarget)
 			taskWG.Add(1)
 			d.activeTasks.Add(1)
+			isNonDMTask := t.ChatSessionID == "" || t.ChatType == "group"
+			if isNonDMTask {
+				d.nonDMTasks.Add(1)
+			}
 			if cache, ok := d.repoCache.(interface{ CancelMaintenance() }); ok {
 				// A task can reuse an existing worktree and never enter the
 				// checkout path that normally preempts repository maintenance.
@@ -5830,9 +5838,14 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 				// direct Git operations cannot overlap it.
 				cache.CancelMaintenance()
 			}
-			go func(t Task, slot int, claim *inflightClaim) {
+			go func(t Task, slot int, claim *inflightClaim, isNonDMTask bool) {
 				defer taskWG.Done()
 				defer d.taskDone()
+				defer func() {
+					if isNonDMTask {
+						d.nonDMTasks.Add(-1)
+					}
+				}()
 				defer d.inflight.end(t.ID, claim)
 				defer func() {
 					// Release local capacity before waking the poller. The task's
@@ -5844,7 +5857,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 					signalPollerWakeup(wakeup)
 				}()
 				d.handleTask(parentCtx, t, slot)
-			}(t, slot, claim)
+			}(t, slot, claim, isNonDMTask)
 			dispatched++
 		}
 		d.exitClaim()
@@ -5864,6 +5877,31 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			return
 		}
 	}
+}
+
+// nonDMClaimBudget is how many more non-chat tasks this daemon may claim:
+// MaxConcurrentTasks-ReservedChatSlots minus the issue tasks already running.
+// nil means no limit (reserved_chat_slots=0), so claim requests stay exactly
+// as they were before the setting existed.
+func (d *Daemon) nonDMClaimBudget() *int {
+	if d.cfg.ReservedChatSlots <= 0 {
+		return nil
+	}
+	budget := d.cfg.MaxConcurrentTasks - d.cfg.ReservedChatSlots - int(d.nonDMTasks.Load())
+	if budget < 0 {
+		budget = 0
+	}
+	return &budget
+}
+
+// reservedChatSlotsFree is how many reserved slots are free, for `daemon
+// status`. Non-DM tasks never take a reserved slot, so only DM runs use them.
+func (d *Daemon) reservedChatSlotsFree() int {
+	if d.cfg.ReservedChatSlots <= 0 {
+		return 0
+	}
+	chatRunning := int(d.activeTasks.Load() - d.nonDMTasks.Load())
+	return max(0, d.cfg.ReservedChatSlots-chatRunning)
 }
 
 // taskClaimPollInterval returns the next missed-event safety poll. The longer
@@ -6103,6 +6141,7 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 	} else {
 		taskLog.Info("picked task", "issue", task.IssueID, "agent", agentName, "provider", provider)
 	}
+	logTrialArm(taskLog, task)
 	taskLog.Debug("task context",
 		"workspace_id", task.WorkspaceID,
 		"runtime_id", task.RuntimeID,
@@ -9102,10 +9141,29 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
 	var managedClaude execenv.ManagedClaudeHome
 	isManagedClaude := harnessProfile == execenv.HarnessProfileManaged && provider == "claude"
+	// CHE-6540: a Claude run in trial arm 1 gets a stable cwd and a byte-stable
+	// brief file; everything else is control and keeps the layout below.
+	_, bwrapErr := exec.LookPath("bwrap")
+	stableCwd, bootLever := d.cfg.bootPrefixFor(task, provider, bwrapErr == nil)
+	if d.cfg.CostTrialLever && bwrapErr != nil && provider == "claude" {
+		taskLog.Warn("boot prefix lever needs bwrap; running as control", "error", bwrapErr)
+	}
+	if stableCwd != "" {
+		if err := os.MkdirAll(stableCwd, 0o755); err != nil {
+			taskLog.Warn("stable cwd mount point unavailable", "path", stableCwd, "error", err)
+			stableCwd, bootLever = "", false
+		}
+	}
 	// injectBrief writes the runtime brief. Managed Claude delivers it through
-	// --append-system-prompt-file (no workdir CLAUDE.md); everything else is
-	// unchanged.
+	// --append-system-prompt-file (no workdir CLAUDE.md), as does a boot-prefix
+	// lever run; everything else is unchanged.
+	var leverBriefPath, taskBrief string
 	injectBrief := func() (string, error) {
+		if bootLever {
+			brief, path, perTask, err := deliverBrief(provider, taskCtx, env.WorkDir, env.RootDir, true)
+			leverBriefPath, taskBrief = path, perTask
+			return brief, err
+		}
 		if !isManagedClaude {
 			return execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
 		}
@@ -9115,20 +9173,28 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var runtimeBrief string
 	if isManagedClaude {
 		// A managed failure must not fall back to the personal config.
-		managedClaude, err = execenv.PrepareManagedClaudeHome(env.RootDir, execenv.SourceClaudeConfigDir(), execenv.RuntimeBrief(provider, taskCtx), taskCtx.AgentSkills, effectiveMcpConfig)
+		homeBrief := execenv.RuntimeBrief(provider, taskCtx)
+		if bootLever {
+			homeBrief, _ = execenv.SplitRuntimeBrief(provider, taskCtx)
+		}
+		managedClaude, err = execenv.PrepareManagedClaudeHome(env.RootDir, execenv.SourceClaudeConfigDir(), homeBrief, taskCtx.AgentSkills, effectiveMcpConfig)
 		if err != nil {
 			return TaskResult{}, fmt.Errorf("prepare managed claude home: %w", err)
 		}
 	}
 	runtimeBrief, err = injectBrief()
 	if err != nil {
+		if bootLever {
+			// The lever run has no other brief; a missing file is a broken treatment run.
+			return TaskResult{}, fmt.Errorf("write boot-prefix brief: %w", err)
+		}
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
 	// An exempt turn runs in the user's directory without having queued for it,
 	// so a sibling coding task may be writing to the same tree right now. That
 	// is the one thing it cannot work out from its own context — tell it.
 	// Worktree mode is excluded: there the tree is this task's private checkout.
-	var promptOptions []PromptOption
+	promptOptions := bootPromptOptions(taskBrief)
 	if localAssignment != nil && !localAssignment.UsesWorktree() && localDirectoryLockExempt(task) {
 		promptOptions = append(promptOptions, WithSharedLocalDirectory())
 	}
@@ -9453,15 +9519,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
-	stableCwd := d.cfg.stableCwdFor(provider, task.Agent.Name, task.AgentID)
-	if stableCwd != "" {
-		if err := os.MkdirAll(stableCwd, 0o755); err != nil {
-			taskLog.Warn("stable cwd mount point unavailable", "path", stableCwd, "error", err)
-			stableCwd = ""
-		}
-	}
 	execOpts := agent.ExecOptions{
-		StableCwd: stableCwd,
 		// PR events ride the same injection channel, so they need its hooks too.
 		EnableTaskSupplement:       negotiation.Supplement || negotiation.PREvent,
 		CursorHookCommand:          cursorHookCommand,
@@ -9499,10 +9557,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		OpenclawMode:            openclawMode,
 		OpenclawModelOverride:   openclawModelOverride,
 		ClaudeSettingsPath:      env.ClaudeSettingsPath,
-		AppendSystemPromptFile:  managedClaude.BriefPath,
 		DisableProviderWebTools: task.DisableProviderWebTools(),
 		QwenpawWorkspace:        env.QwenpawWorkspace,
 	}
+	applyBootLaunch(&execOpts, stableCwd, managedClaude.BriefPath, leverBriefPath, bootLever)
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:
 	//   - openclaw is pinned to the task workdir via the per-task config we
@@ -10213,13 +10271,14 @@ func taskUsageEntries(provider string, usage map[string]agent.TokenUsage) []Task
 			continue
 		}
 		entries = append(entries, TaskUsageEntry{
-			Provider:         provider,
-			Model:            model,
-			InputTokens:      u.InputTokens,
-			OutputTokens:     u.OutputTokens,
-			CacheReadTokens:  u.CacheReadTokens,
-			CacheWriteTokens: u.CacheWriteTokens,
-			CostUSDTicks:     u.CostUSDTicks,
+			Provider:           provider,
+			Model:              model,
+			InputTokens:        u.InputTokens,
+			OutputTokens:       u.OutputTokens,
+			CacheReadTokens:    u.CacheReadTokens,
+			CacheWriteTokens:   u.CacheWriteTokens,
+			CacheWrite1hTokens: u.CacheWrite1hTokens,
+			CostUSDTicks:       u.CostUSDTicks,
 		})
 	}
 	// Stable ordering lets the flush compare snapshots across map iterations.
@@ -11075,6 +11134,22 @@ func (d *Daemon) runIdleWatchdogWithClock(agentCtx context.Context, window, tool
 	}
 }
 
+// addOptional sums two nullable counters into a fresh pointer: nil only when
+// both are nil, so a side without a TTL split never erases the other's.
+func addOptional(a, b *int64) *int64 {
+	if a == nil && b == nil {
+		return nil
+	}
+	var sum int64
+	if a != nil {
+		sum += *a
+	}
+	if b != nil {
+		sum += *b
+	}
+	return &sum
+}
+
 func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 	if len(a) == 0 {
 		return b
@@ -11092,6 +11167,7 @@ func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {
 		existing.OutputTokens += u.OutputTokens
 		existing.CacheReadTokens += u.CacheReadTokens
 		existing.CacheWriteTokens += u.CacheWriteTokens
+		existing.CacheWrite1hTokens = addOptional(existing.CacheWrite1hTokens, u.CacheWrite1hTokens)
 		existing.CostUSDTicks += u.CostUSDTicks
 		merged[model] = existing
 	}

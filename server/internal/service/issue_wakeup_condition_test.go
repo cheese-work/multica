@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -998,4 +999,220 @@ func TestWakeupConditionVCSChecksKeyedByPullRequest(t *testing.T) {
 			t.Fatalf("a different PR finishing started %d runs, want 1", n)
 		}
 	})
+}
+
+// holdFixture links GitHub PRs and check runs for the checks_finished hold
+// (CHE-5422 S2): a FAILURE rollup waits while other checks on the head run.
+type holdFixture struct {
+	f     principalFixture
+	s     *IssueWakeupService
+	issue pgtype.UUID
+	agent string
+	n     int
+}
+
+func newHoldFixture(t *testing.T) *holdFixture {
+	t.Helper()
+	f, s, issue, agent := conditionFixture(t)
+	s.Tasks.PRSnapshotsEnabled = true
+	return &holdFixture{f: f, s: s, issue: issue, agent: agent}
+}
+
+// pr links a GitHub PR whose snapshot is for its current head "bbb".
+func (h *holdFixture) pr(t *testing.T, rollup string) string {
+	t.Helper()
+	h.n++
+	var pr string
+	if err := h.f.Pool.QueryRow(context.Background(), `INSERT INTO github_pull_request(workspace_id,installation_id,repo_owner,repo_name,pr_number,title,state,html_url,pr_created_at,pr_updated_at,head_sha,snapshot_head_sha,checks_rollup_state)
+		VALUES($1,1,'multica-ai',$2,(extract(epoch from clock_timestamp())*1000)::bigint % 100000,'PR','open','https://example.test/pr',now(),now(),'bbb','bbb',$3) RETURNING id`,
+		h.f.WorkspaceID, fmt.Sprintf("wakeup-hold-%d", h.n), rollup).Scan(&pr); err != nil {
+		t.Fatal(err)
+	}
+	h.f.Cleanup(t, "DELETE FROM github_pull_request WHERE id=$1", pr)
+	h.f.Cleanup(t, "DELETE FROM github_pull_request_check_run WHERE pr_id=$1", pr)
+	h.f.Cleanup(t, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", pr)
+	h.f.Exec(t, "INSERT INTO issue_pull_request(issue_id,pull_request_id) VALUES($1,$2)", h.issue, pr)
+	return pr
+}
+
+func (h *holdFixture) check(t *testing.T, pr string, ordinal int, name, status, conclusion string, statusContext bool) {
+	t.Helper()
+	h.f.Exec(t, `INSERT INTO github_pull_request_check_run(pr_id,head_sha,ordinal,name,status,conclusion,is_status_context) VALUES($1,'bbb',$2,$3,$4,NULLIF($5,''),$6)`,
+		pr, ordinal, name, status, conclusion, statusContext)
+}
+
+func (h *holdFixture) rule(t *testing.T, in WakeupInput) db.IssueWakeup {
+	t.Helper()
+	in.AgentID, in.Kind, in.Instruction = h.agent, "event", "Look at CI"
+	in.Condition = condition(t, map[string]any{"type": "pull_request", "event": "checks_finished"})
+	return wakeCreate(t, h.f, h.s, h.issue, in)
+}
+
+func (h *holdFixture) runs(t *testing.T, w db.IssueWakeup, want int, why string) {
+	t.Helper()
+	if n := wakeRuns(t, h.f, w.ID); n != want {
+		t.Fatalf("%s: %d runs, want %d", why, n, want)
+	}
+}
+
+// Tests 1 and 2: a failure waits for another running check, then fires once.
+func TestWakeupConditionChecksFinishedHoldsFailureWhileOtherChecksRun(t *testing.T) {
+	for _, running := range []string{"queued", "in_progress", "requested", "pending"} {
+		t.Run(running, func(t *testing.T) {
+			h := newHoldFixture(t)
+			pr := h.pr(t, "FAILURE")
+			h.check(t, pr, 0, "unit", "completed", "failure", false)
+			h.check(t, pr, 1, "e2e", running, "", false)
+			w := h.rule(t, WakeupInput{})
+			wakeTick(t, h.f, h.s, w.ID)
+			h.runs(t, w, 0, running+" check on the head")
+			h.f.Exec(t, "UPDATE github_pull_request_check_run SET status='completed',conclusion='success' WHERE pr_id=$1 AND name='e2e'", pr)
+			got := wakeTick(t, h.f, h.s, w.ID)
+			h.runs(t, w, 1, "other check finished")
+			task, err := h.f.q.GetAgentTask(context.Background(), got.LastTaskID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(task.HandoffNote.String, `"checks":"failure"`) {
+				t.Fatalf("PR facts missing: %s", task.HandoffNote.String)
+			}
+			wakeTick(t, h.f, h.s, w.ID)
+			h.runs(t, w, 1, "second poll")
+		})
+	}
+}
+
+// Test 3: the security-gate verdict status never holds a failure.
+func TestWakeupConditionChecksFinishedIgnoresPendingVerdictOnFailure(t *testing.T) {
+	h := newHoldFixture(t)
+	pr := h.pr(t, "FAILURE")
+	h.check(t, pr, 0, "unit", "completed", "failure", false)
+	h.check(t, pr, 1, "security-gate", "queued", "", true)
+	w := h.rule(t, WakeupInput{})
+	wakeTick(t, h.f, h.s, w.ID)
+	h.runs(t, w, 1, "only security-gate pending")
+}
+
+// A pending check that is not the verdict status context still holds, even
+// when it shares the security-gate name.
+func TestWakeupConditionChecksFinishedHoldsOnSecurityGateNamedCheckRun(t *testing.T) {
+	h := newHoldFixture(t)
+	pr := h.pr(t, "FAILURE")
+	h.check(t, pr, 0, "unit", "completed", "failure", false)
+	h.check(t, pr, 1, "security-gate", "in_progress", "", false)
+	w := h.rule(t, WakeupInput{})
+	wakeTick(t, h.f, h.s, w.ID)
+	h.runs(t, w, 0, "a check run named security-gate")
+}
+
+// Test 4: a check waiting for environment approval counts as done.
+func TestWakeupConditionChecksFinishedWaitingCheckDoesNotHold(t *testing.T) {
+	h := newHoldFixture(t)
+	pr := h.pr(t, "FAILURE")
+	h.check(t, pr, 0, "unit", "completed", "failure", false)
+	h.check(t, pr, 1, "deploy", "waiting", "", false)
+	w := h.rule(t, WakeupInput{})
+	wakeTick(t, h.f, h.s, w.ID)
+	h.runs(t, w, 1, "waiting check")
+}
+
+// Test 5: an unrelated workflow still running on the head holds the fire, and
+// the rule's own expiry still applies.
+func TestWakeupConditionChecksFinishedHoldKeepsRuleExpiry(t *testing.T) {
+	for _, onTimeout := range []string{"end", "wake"} {
+		t.Run(onTimeout, func(t *testing.T) {
+			h := newHoldFixture(t)
+			pr := h.pr(t, "FAILURE")
+			h.check(t, pr, 0, "unit", "completed", "failure", false)
+			h.check(t, pr, 1, "nightly-docs", "in_progress", "", false)
+			w := h.rule(t, WakeupInput{ExpiresInSeconds: 3600, OnTimeout: onTimeout})
+			wakeTick(t, h.f, h.s, w.ID)
+			h.runs(t, w, 0, "unrelated workflow running")
+			h.f.Exec(t, "UPDATE issue_wakeup SET expires_at=now()-interval '1 second' WHERE id=$1", w.ID)
+			wakeTick(t, h.f, h.s, w.ID)
+			want := 0
+			if onTimeout == "wake" {
+				want = 1
+			}
+			h.runs(t, w, want, "after expiry")
+			got, err := h.f.q.LocklessWakeup(context.Background(), w.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !got.TimedOutAt.Valid && onTimeout == "wake" {
+				t.Fatal("on_timeout wake rule did not record its timeout")
+			}
+		})
+	}
+}
+
+// Test 6: a re-run after the fire is decided by the existing newer-result rule.
+func TestWakeupConditionChecksFinishedRerunAfterFire(t *testing.T) {
+	h := newHoldFixture(t)
+	pr := h.pr(t, "FAILURE")
+	h.check(t, pr, 0, "unit", "completed", "failure", false)
+	w := h.rule(t, WakeupInput{Mode: "continuous"})
+	wakeTick(t, h.f, h.s, w.ID)
+	h.runs(t, w, 1, "first failure")
+	h.f.Exec(t, "UPDATE agent_task_queue SET status='completed' WHERE context->>'wakeup_id'=$1", util.UUIDToString(w.ID))
+	// The re-run starts: the rollup is PENDING until it ends.
+	h.f.Exec(t, "UPDATE github_pull_request SET checks_rollup_state='PENDING' WHERE id=$1", pr)
+	h.f.Exec(t, "UPDATE github_pull_request_check_run SET status='in_progress',conclusion=NULL WHERE pr_id=$1", pr)
+	wakeTick(t, h.f, h.s, w.ID)
+	h.runs(t, w, 1, "re-run in progress")
+	// It passes: a new result, so one more fire.
+	h.f.Exec(t, "UPDATE github_pull_request SET checks_rollup_state='SUCCESS' WHERE id=$1", pr)
+	h.f.Exec(t, "UPDATE github_pull_request_check_run SET status='completed',conclusion='success' WHERE pr_id=$1", pr)
+	wakeTick(t, h.f, h.s, w.ID)
+	h.runs(t, w, 2, "re-run passed")
+}
+
+// Test 7: success, error and pending rollups read as before.
+func TestWakeupConditionChecksFinishedSuccessPathsUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		rollup string
+		want   int
+	}{{"SUCCESS", 1}, {"ERROR", 1}, {"PENDING", 0}} {
+		t.Run(tc.rollup, func(t *testing.T) {
+			h := newHoldFixture(t)
+			pr := h.pr(t, tc.rollup)
+			h.check(t, pr, 0, "unit", "completed", "success", false)
+			h.check(t, pr, 1, "e2e", "in_progress", "", false)
+			w := h.rule(t, WakeupInput{})
+			wakeTick(t, h.f, h.s, w.ID)
+			// A PENDING rollup with a running check stays pending as today.
+			h.runs(t, w, tc.want, tc.rollup+" with a running check")
+		})
+	}
+}
+
+// Test 8: with two linked PRs the hold is off, as today.
+func TestWakeupConditionChecksFinishedHoldIsSinglePROnly(t *testing.T) {
+	h := newHoldFixture(t)
+	failing := h.pr(t, "FAILURE")
+	h.check(t, failing, 0, "unit", "completed", "failure", false)
+	h.check(t, failing, 1, "e2e", "in_progress", "", false)
+	green := h.pr(t, "SUCCESS")
+	h.check(t, green, 0, "unit", "completed", "success", false)
+	w := h.rule(t, WakeupInput{})
+	wakeTick(t, h.f, h.s, w.ID)
+	h.runs(t, w, 1, "two PRs, one early failure")
+	h.f.Exec(t, "UPDATE agent_task_queue SET status='completed' WHERE context->>'wakeup_id'=$1", util.UUIDToString(w.ID))
+	h.f.Exec(t, "UPDATE github_pull_request_check_run SET status='completed',conclusion='success' WHERE pr_id=$1 AND name='e2e'", failing)
+	wakeTick(t, h.f, h.s, w.ID)
+	h.runs(t, w, 1, "the held check finishing adds no wake")
+}
+
+// Test 9: a self-hosted PR counts as a second PR, so the hold is off.
+func TestWakeupConditionChecksFinishedHoldCountsSelfHostedPRs(t *testing.T) {
+	h := newHoldFixture(t)
+	pr := h.pr(t, "FAILURE")
+	h.check(t, pr, 0, "unit", "completed", "failure", false)
+	h.check(t, pr, 1, "e2e", "in_progress", "", false)
+	connection := newConnection(t, h.f)
+	linkVCSPR(t, h.f, h.issue, connection, "forgejo", 7, "vcsheadsha")
+	setVCSStatus(t, h.f, connection, "vcsheadsha", "pending")
+	w := h.rule(t, WakeupInput{})
+	wakeTick(t, h.f, h.s, w.ID)
+	h.runs(t, w, 1, "one GitHub and one self-hosted PR")
 }

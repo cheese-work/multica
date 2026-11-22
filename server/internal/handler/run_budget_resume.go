@@ -54,13 +54,28 @@ func (e *resumeRefused) Unwrap() error { return e.cause }
 // answers, under the issue lock it already holds. A refusal still waiting (open,
 // still_blocked or resume_pending) takes the latest approval's action and
 // window; a superseded or resumed refusal stays as it is; a refusal of another
-// issue and an approval without a refusal link nothing.
-func linkRunBudgetRefusal(ctx context.Context, q *db.Queries, issueID pgtype.UUID, refusalID string, actionID pgtype.UUID, window string) error {
+// issue and an approval without a refusal link nothing. So does an approval
+// whose generation is not the refusal's now, or that names none: it answers an
+// occurrence the refusal has since left (CHE-6198).
+func linkRunBudgetRefusal(ctx context.Context, q *db.Queries, issueID pgtype.UUID, refusalID string, generation *int32, actionID pgtype.UUID, window string) error {
+	if generation == nil {
+		return nil
+	}
+	return linkRunBudgetRefusalAt(ctx, q, issueID, refusalID, generation, actionID, window)
+}
+
+// linkRunBudgetRefusalAt links the refusal at a generation, or at whichever one
+// waits when generation is nil.
+func linkRunBudgetRefusalAt(ctx context.Context, q *db.Queries, issueID pgtype.UUID, refusalID string, generation *int32, actionID pgtype.UUID, window string) error {
 	id, err := util.ParseUUID(refusalID)
 	if err != nil {
 		return nil
 	}
-	_, err = q.LinkRunBudgetRefusal(ctx, db.LinkRunBudgetRefusalParams{ActionID: actionID, ResumeWindowID: window, ID: id, IssueID: issueID})
+	params := db.LinkRunBudgetRefusalParams{ActionID: actionID, ResumeWindowID: window, ID: id, IssueID: issueID}
+	if generation != nil {
+		params.Generation = pgtype.Int4{Int32: *generation, Valid: true}
+	}
+	_, err = q.LinkRunBudgetRefusal(ctx, params)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil
 	}
