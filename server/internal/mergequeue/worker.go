@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -93,6 +94,10 @@ type Worker struct {
 	Ev   Evidencer
 	Now  func() time.Time
 	Log  *slog.Logger
+
+	mu      sync.Mutex // guards the cursor
+	afterAt time.Time  // where the next sweep resumes: after this row (created_at, id)
+	afterID uuid.UUID
 }
 
 type intakeRow struct {
@@ -120,6 +125,13 @@ func scanIntake(row pgx.Row) (r intakeRow, err error) {
 // first error of a row does not stop the others. It reads the pending rows page
 // by page (keyset on created_at, id), so rows that fail on every sweep never
 // hide the rows behind them.
+//
+// The scheduler cancels a sweep after its run timeout. Slow failing reads can
+// use all of that time, so the Worker keeps a cursor: the next sweep resumes
+// after the last row this one started, and the cursor returns to the oldest
+// row once a sweep reaches the end. Every pending row is reached within a few
+// sweeps, however slow the rows before it are. The cursor is in memory; a
+// restart only starts again from the oldest row.
 func (w *Worker) Sweep(ctx context.Context) (int, error) {
 	type prKey struct {
 		Repo
@@ -129,11 +141,11 @@ func (w *Worker) Sweep(ctx context.Context) (int, error) {
 	failed := map[prKey]error{}             // a failed read is not repeated for the PR's other rows
 	var errs []error
 	settled := 0
-	var afterAt time.Time
-	afterID := uuid.Nil
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	for {
 		rows, err := w.Pool.Query(ctx, `SELECT `+intakeCols+` FROM merge_queue_intake
-			WHERE status = 'pending' AND (created_at, id) > ($1, $2) ORDER BY created_at, id LIMIT $3`, afterAt, afterID, sweepLimit)
+			WHERE status = 'pending' AND (created_at, id) > ($1, $2) ORDER BY created_at, id LIMIT $3`, w.afterAt, w.afterID, sweepLimit)
 		if err != nil {
 			return settled, errors.Join(append(errs, err)...)
 		}
@@ -151,6 +163,10 @@ func (w *Worker) Sweep(ctx context.Context) (int, error) {
 			return settled, errors.Join(append(errs, err)...)
 		}
 		for _, r := range page {
+			if err := ctx.Err(); err != nil { // out of time: the next sweep starts at this row
+				return settled, errors.Join(append(errs, err)...)
+			}
+			w.afterAt, w.afterID = r.CreatedAt, r.ID // started: a timeout inside this row moves the next sweep past it
 			k := prKey{r.repo(), r.PR}
 			if err, bad := failed[k]; bad {
 				errs = append(errs, fmt.Errorf("intake %s: %w", r.ID, err))
@@ -176,10 +192,9 @@ func (w *Worker) Sweep(ctx context.Context) (int, error) {
 			}
 		}
 		if len(page) < sweepLimit {
+			w.afterAt, w.afterID = time.Time{}, uuid.Nil // reached the end: the next sweep starts again at the oldest row
 			return settled, errors.Join(errs...)
 		}
-		last := page[len(page)-1]
-		afterAt, afterID = last.CreatedAt, last.ID
 	}
 }
 

@@ -533,3 +533,52 @@ func TestWorkerSweepReachesAHealthyRowBehindPersistentFailures(t *testing.T) {
 		t.Errorf("failing PRs read %d; want %d", len(src.failed), sweepLimit)
 	}
 }
+
+// slowFailingSource hangs every failing timeline read until the sweep's
+// context ends, like a GitHub read that outlasts the scheduler's run timeout.
+type slowFailingSource struct {
+	*fakeSource
+	healthyPR int
+}
+
+func (s *slowFailingSource) Timeline(ctx context.Context, r Repo, pr int) ([]TimelineItem, error) {
+	if r.WS == s.ws && pr != s.healthyPR {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	return s.fakeSource.Timeline(ctx, r, pr)
+}
+
+// The scheduler cancels a sweep after 50 s. Failing reads that eat that whole
+// slice must not make every later sweep stop at the same rows: progress carries
+// over to the next sweep, so the healthy row behind them settles.
+func TestWorkerSweepResumesAfterATimeoutBeforeTheHealthyRow(t *testing.T) {
+	p, ws := pool(t)
+	const bad = 3
+	for i := 0; i < bad; i++ {
+		in := input(ws, fmt.Sprintf("slow-%d", i), "warn")
+		in.PR = 200 + i
+		var id uuid.UUID
+		inTx(t, p, func(tx pgx.Tx) {
+			var err error
+			if id, _, err = InsertIntake(context.Background(), tx, in); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if _, err := p.Exec(context.Background(), `UPDATE merge_queue_intake SET created_at = $2 WHERE id = $1`, id, t0.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	healthy := pendingAt(t, p, ws, "good-after-slow", "warn", t0.Add(time.Hour)) // PR 7
+	src := &slowFailingSource{fakeSource: &fakeSource{ws: ws, items: []TimelineItem{removal("n1", t0.Add(55*time.Minute))}, runs: []BuildRun{failedRun(t0)}}, healthyPR: 7}
+	w := &Worker{Pool: p, Src: src, Ev: &fakeEvidence{}, Now: func() time.Time { return t0.Add(3 * time.Hour) }}
+	sweeps := 0
+	for ; sweeps < bad+2 && view(t, p, healthy).Status != "processed"; sweeps++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond) // stands in for the 50 s run timeout
+		_, _ = w.Sweep(ctx)
+		cancel()
+	}
+	if v := view(t, p, healthy); v.Status != "processed" {
+		t.Errorf("after %d timed-out sweeps the healthy row is %+v; want processed", sweeps, v)
+	}
+}
