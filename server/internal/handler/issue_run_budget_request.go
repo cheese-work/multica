@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -69,6 +70,21 @@ func (h *Handler) RequestIssueRunBudgetAction(w http.ResponseWriter, r *http.Req
 	var links []RunBudgetActionLink
 	err := h.withPgxTx(r.Context(), func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
+		// A card for a window the issue has left could never preview or apply:
+		// the executor ends it with stale_window (CHE-6882).
+		snapshot, err := service.LoadRunBudgetSnapshot(r.Context(), q, issue)
+		if err != nil {
+			return err
+		}
+		// A window that is no time at all keeps the 400 the card opening gives it.
+		if _, parseErr := time.Parse(time.RFC3339Nano, req.WindowID); parseErr == nil && snapshot.Budgeted && snapshot.WindowID != req.WindowID {
+			return decisionIntentRefusal{http.StatusConflict, "stale_window: the run window changed since you read it; the open window is " + snapshot.WindowID + ". Read the budget again"}
+		}
+		// --runs is the total the issue may use. A total at or under the cap in force
+		// raises nothing: the card could never preview or apply (CHE-8772).
+		if req.Kind == "raise" && snapshot.Budgeted && req.NewCap <= snapshot.RunsLimit {
+			return decisionIntentRefusal{http.StatusConflict, fmt.Sprintf("not_a_raise: the run cap is already %d and %d is a total, not an addition. Ask for a total above %d", snapshot.RunsLimit, req.NewCap, snapshot.RunsLimit)}
+		}
 		recipients, err := h.runBudgetActionRecipients(r, q, issue, userID)
 		if err != nil {
 			return err

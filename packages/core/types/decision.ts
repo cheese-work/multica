@@ -125,6 +125,8 @@ export interface DecisionRequestAction {
   state?: string;
   /** Absent for an unknown action type, a stale window or an older server: the card then offers no approval. */
   preview?: DecisionActionPreview;
+  /** Why `preview` is absent, when the server knows (CHE-8772). Server text, shown as is. */
+  preview_unavailable?: string;
   /** Set for a config-change action; absent when the preview is malformed, so the card offers no approval. */
   config_change?: DecisionConfigChange;
   /** Only the workspace owner may approve. Absent on an older server: the client then fails closed. */

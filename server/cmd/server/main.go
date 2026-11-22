@@ -703,6 +703,12 @@ func main() {
 	// member_delegation_day exists only for self-host telemetry; DO_NOT_TRACK
 	// stops writing it as well as sending the snapshot.
 	h.TaskService.RecordMemberActivity = telemetryConfig.Enabled
+	// One server_deploy row per new commit (CHE-5709, D14). Display data only:
+	// a failed write is logged and never stops the boot.
+	deployVersion, _, deployCommit := normalizeServerBuildInfo(version, build, commit)
+	if _, err := h.RecordServerDeploy(context.Background(), deployCommit, deployVersion); err != nil {
+		slog.Warn("record server deploy failed", "error", err)
+	}
 	var replicaQueries *db.Queries
 	if replicaPool != nil {
 		replicaQueries = db.New(replicaPool)
@@ -740,8 +746,12 @@ func main() {
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
+	// A pending workflow switch applies when its issue's last live task ends (CHE-7669).
+	h.RegisterDeferredWorkflowSwitch(bus)
+	// A chained run that failed gets one retry, then blocks the issue (CHE-7675). After the switch: a pending switch wins.
+	h.RegisterChainedRunRetry(bus)
 	// A task's Steel browser leases end with the task (CHE-4734).
-	(&browserlease.Revoker{Queries: queries, Bus: bus}).Register()
+	(&browserlease.Revoker{Queries: queries, Bus: bus, Pool: pool, Audit: handler.BrowserLeaseAudit}).Register()
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read
@@ -770,6 +780,8 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
+	// Claim poll histogram -> claim_poll_stats once a minute (CHE-8749 S7a).
+	go service.RunClaimPollStatsFlusher(sweepCtx, taskSvc.PollStats, queries)
 	go runBackgroundDeadlineSweeper(sweepCtx, taskSvc)
 	go runProviderReleaseController(sweepCtx, taskSvc)
 	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
@@ -790,6 +802,7 @@ func main() {
 	go h.RunElevationFenceSweeper(sweepCtx)
 	go h.RunRunBudgetHookSweeper(sweepCtx)
 	go h.RunSteerReplaySweeper(sweepCtx)
+	go h.RunHandoffIntentSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -952,6 +965,9 @@ func main() {
 	}
 	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
 		slog.Error("scheduler: register idle started guard", "error", err)
+	}
+	if err := schedulerMgr.Register(scheduler.BlockedEntryLinkSweepJob(h)); err != nil {
+		slog.Error("scheduler: register blocked entry link sweep", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.MemberOwnedSweepJob(h)); err != nil {
 		slog.Error("scheduler: register member-owned issue sweep", "error", err)

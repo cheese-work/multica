@@ -60,6 +60,18 @@ Le **Workflow** du projet définit les colonnes du tableau et qui prend le relai
 
 Le responsable peut être un membre ou un agent ; un membre responsable peut aussi changer le workflow du projet. Désigner un responsable ne lui assigne aucune tâche et ne lance aucun travail. Pour lui confier une étape, choisissez **Responsable du projet** pour cette étape dans le workflow.
 
+## Mettre en pause, annuler et terminer
+
+Un projet `paused`, `cancelled` ou `completed` ne démarre aucune nouvelle exécution d'agent, et les agents ne peuvent ni y créer de tâches ni y déplacer des tâches.
+
+| Statut | Exécutions en file d'attente | Exécutions en cours | Modifications et commentaires d'un agent sur ses tâches |
+|---|---|---|---|
+| `paused` | Annulées | Vont jusqu'à leur fin | Autorisés pour une exécution encore en cours sur une tâche de ce projet |
+| `cancelled` | Annulées | Annulées immédiatement | Refusés avec `project_inactive` |
+| `completed` | Annulées | Annulées immédiatement | Refusés avec `project_inactive` |
+
+Une exécution d'agent d'un autre projet reste refusée sur ces tâches avec `project_inactive`. Les membres peuvent toujours modifier.
+
 ## Épingler à la barre latérale
 
 Un projet épinglé apparaît dans votre barre latérale. L'épinglage est une préférence personnelle et n'affecte pas les autres membres.

@@ -216,6 +216,7 @@ func (handler *Handler) publishDecisionWithdrawal(workspaceID string, result dec
 	actorType, actorID := result.Comment.AuthorType, uuidToString(result.Comment.AuthorID)
 	handler.publish(protocol.EventCommentCreated, workspaceID, actorType, actorID, map[string]any{"comment": commentToResponse(result.Comment, nil, nil)})
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, actorType, actorID)
+	handler.revokeLeasesOfDecision(workspaceID, result.Request.ID, result.Request.CancelReason.String)
 	if result.Message.ID.Valid {
 		message := result.Message
 		handler.publishChatFor(protocol.EventChatMessage, workspaceID, actorType, actorID, uuidToString(result.Request.HumanUserID), uuidToString(message.ChatSessionID), protocol.ChatMessagePayload{ChatSessionID: uuidToString(message.ChatSessionID), MessageID: uuidToString(message.ID), Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt), MessageKind: message.MessageKind})

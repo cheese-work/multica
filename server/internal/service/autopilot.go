@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/multica-ai/multica/server/internal/issuecreatedvia"
 	"log/slog"
 	"regexp"
 	"strings"
@@ -809,6 +810,14 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return fmt.Errorf("get next issue position: %w", err)
 	}
 
+	// The issue is made for the human the dispatch runs as: the clicking member,
+	// else the trigger's created_by principal (CHE-7110). None when no member
+	// resolves, so a legacy trigger stays requester-less.
+	requestedBy := actorUserID
+	if !requestedBy.Valid {
+		requestedBy = ResolveAutopilotTriggerPrincipal(ctx, qtx, run.TriggerID, ap.ID, ap.WorkspaceID)
+	}
+
 	issue, err := qtx.CreateIssueWithOrigin(ctx, db.CreateIssueWithOriginParams{
 		ID:           dbid.NewV7(),
 		WorkspaceID:  ap.WorkspaceID,
@@ -833,6 +842,8 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		ProjectID:     projectID,
 		OriginType:    pgtype.Text{String: "autopilot", Valid: true},
 		OriginID:      ap.ID,
+		RequestedByID: requestedBy,
+		CreatedVia:    pgtype.Text{String: issuecreatedvia.Autopilot, Valid: true},
 	})
 	if err != nil {
 		return fmt.Errorf("create issue: %w", err)

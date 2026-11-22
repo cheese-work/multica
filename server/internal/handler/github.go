@@ -142,6 +142,11 @@ type GitHubPullRequestResponse struct {
 	SnapshotStale bool `json:"snapshot_stale"`
 	// SnapshotFetchedAt is when the snapshot was last fetched (RFC3339), or null.
 	SnapshotFetchedAt *string `json:"snapshot_fetched_at"`
+	// SnapshotPausedUntil is the deadline (RFC3339 UTC) of the installation's
+	// refresh rate-limit pause, or null when none is active (CHE-8795). While it
+	// is set, refreshes for this PR wait, so a missing snapshot has a named
+	// reason. The pause is in memory per server process.
+	SnapshotPausedUntil *string `json:"snapshot_paused_until"`
 	// Diff stats (lines added/removed and file count) sourced from the
 	// `pull_request` webhook payload. Legacy rows that pre-date this
 	// field default to 0; the frontend treats total == 0 as "unknown"
@@ -231,6 +236,17 @@ func githubPullRequestToResponse(p db.GithubPullRequest, snapshotEnabled bool) G
 		Deletions:        p.Deletions,
 		ChangedFiles:     p.ChangedFiles,
 	}
+}
+
+// snapshotPausedUntil formats the installation's refresh rate-limit deadline for
+// the PR read, nil when no pause is active (CHE-8795).
+func snapshotPausedUntil(manager *ghsnapshot.Manager, installationID int64) *string {
+	until, paused := manager.RateLimitUntil(installationID)
+	if !paused {
+		return nil
+	}
+	formatted := until.UTC().Format(time.RFC3339)
+	return &formatted
 }
 
 // prSnapshotStaleThreshold is how old an open PR's last successful fetch may be
@@ -1172,55 +1188,61 @@ func parseGitHubPageParam(
 	return value, true
 }
 
-func fetchGitHubInstallationRepositories(
-	ctx context.Context,
-	installationID int64,
-	page, perPage int,
-) (GitHubRepositoriesResponse, error) {
+// mintGitHubInstallationToken exchanges the App JWT for a short-lived
+// installation token carrying exactly the permissions in permissionsJSON. The
+// caller revokes the token with revokeGitHubInstallationToken. Errors never
+// include the JWT, the token or the response body.
+func mintGitHubInstallationToken(ctx context.Context, client *http.Client, installationID int64, permissionsJSON string) (string, error) {
 	appJWT, err := signGitHubAppJWT(time.Now())
 	if err != nil {
-		return GitHubRepositoriesResponse{}, err
+		return "", err
 	}
 	if appJWT == "" {
-		return GitHubRepositoriesResponse{}, errors.New("github App JWT credentials unavailable")
+		return "", errors.New("github App JWT credentials unavailable")
 	}
-
-	client := &http.Client{Timeout: 15 * time.Second}
 	tokenEndpoint := fmt.Sprintf(
 		"%s/app/installations/%d/access_tokens",
 		strings.TrimRight(githubAPIBase, "/"),
 		installationID,
 	)
-	tokenReq, err := http.NewRequestWithContext(
-		ctx,
-		http.MethodPost,
-		tokenEndpoint,
-		strings.NewReader(`{"permissions":{"metadata":"read"}}`),
-	)
+	tokenReq, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, strings.NewReader(permissionsJSON))
 	if err != nil {
-		return GitHubRepositoriesResponse{}, err
+		return "", err
 	}
 	setGitHubAPIHeaders(tokenReq, appJWT)
 	tokenReq.Header.Set("Content-Type", "application/json")
 	tokenResp, err := client.Do(tokenReq)
 	if err != nil {
-		return GitHubRepositoriesResponse{}, fmt.Errorf("create installation token: %w", err)
+		return "", fmt.Errorf("create installation token: %w", err)
 	}
 	defer tokenResp.Body.Close()
 	if tokenResp.StatusCode != http.StatusCreated {
 		_, _ = io.Copy(io.Discard, io.LimitReader(tokenResp.Body, githubAPIResponseLimit))
-		return GitHubRepositoriesResponse{}, fmt.Errorf("create installation token: github status %d", tokenResp.StatusCode)
+		return "", fmt.Errorf("create installation token: github status %d", tokenResp.StatusCode)
 	}
 	var tokenBody struct {
 		Token string `json:"token"`
 	}
 	if err := json.NewDecoder(io.LimitReader(tokenResp.Body, githubAPIResponseLimit)).Decode(&tokenBody); err != nil {
-		return GitHubRepositoriesResponse{}, fmt.Errorf("decode installation token: %w", err)
+		return "", fmt.Errorf("decode installation token: %w", err)
 	}
 	if tokenBody.Token == "" {
-		return GitHubRepositoriesResponse{}, errors.New("github returned an empty installation token")
+		return "", errors.New("github returned an empty installation token")
 	}
-	defer revokeGitHubInstallationToken(client, tokenBody.Token)
+	return tokenBody.Token, nil
+}
+
+func fetchGitHubInstallationRepositories(
+	ctx context.Context,
+	installationID int64,
+	page, perPage int,
+) (GitHubRepositoriesResponse, error) {
+	client := &http.Client{Timeout: 15 * time.Second}
+	token, err := mintGitHubInstallationToken(ctx, client, installationID, `{"permissions":{"metadata":"read"}}`)
+	if err != nil {
+		return GitHubRepositoriesResponse{}, err
+	}
+	defer revokeGitHubInstallationToken(client, token)
 
 	repositoriesEndpoint := fmt.Sprintf(
 		"%s/installation/repositories?page=%d&per_page=%d",
@@ -1232,7 +1254,7 @@ func fetchGitHubInstallationRepositories(
 	if err != nil {
 		return GitHubRepositoriesResponse{}, err
 	}
-	setGitHubAPIHeaders(repositoriesReq, tokenBody.Token)
+	setGitHubAPIHeaders(repositoriesReq, token)
 	repositoriesResp, err := client.Do(repositoriesReq)
 	if err != nil {
 		return GitHubRepositoriesResponse{}, fmt.Errorf("list installation repositories: %w", err)
@@ -1363,6 +1385,7 @@ func (h *Handler) ListPullRequestsForIssue(w http.ResponseWriter, r *http.Reques
 	out := make([]GitHubPullRequestResponse, 0, len(rows))
 	for _, row := range rows {
 		resp := issuePullRequestRowToResponse(row, h.PRRefresh.Enabled())
+		resp.SnapshotPausedUntil = snapshotPausedUntil(h.PRRefresh, row.InstallationID)
 		resp.LinkSource = prLinkSource(row.LinkedByType, identifier, row.Title, row.Branch.String)
 		if row.LinkKind == "reference" {
 			resp.LinkSource = "reference"
@@ -2189,6 +2212,7 @@ func (h *Handler) mirrorPullRequestForWorkspace(ctx context.Context, wsID pgtype
 		MergedAt:        parseGHTime(p.PullRequest.MergedAt), ClosedAt: parseGHTime(p.PullRequest.ClosedAt),
 		PrCreatedAt: parseGHTimeRequired(p.PullRequest.CreatedAt), PrUpdatedAt: parseGHTimeRequired(p.PullRequest.UpdatedAt),
 		HeadSha: p.PullRequest.Head.SHA, MergeableState: mergeable, MergeCommitSha: p.PullRequest.MergeCommitSHA,
+		BaseRef: p.PullRequest.Base.Ref, DefaultBranch: p.Repository.DefaultBranch,
 		HeadRepoSame:        p.PullRequest.Head.Repo.sameRepository(p.Repository.ID, p.Repository.Owner.Login, p.Repository.Name),
 		ClearMergeableState: pgtype.Bool{Bool: clearMergeable, Valid: true},
 		Additions:           p.PullRequest.Additions, Deletions: p.PullRequest.Deletions,

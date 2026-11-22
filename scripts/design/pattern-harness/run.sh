@@ -328,4 +328,38 @@ cap instructions-editor \
   --component packages/views/agents/components/instructions-editor.tsx \
   --token text-body --token text-caption --token text-muted-foreground
 
+# SS6 (CHE-5539)
+cap add-trigger-dialog --height 1000 \
+  --component packages/views/autopilots/components/add-trigger-dialog.tsx \
+  --token text-body --token text-caption --token text-muted-foreground
+cap expandable-description \
+  --component packages/views/common/expandable-description.tsx \
+  --token text-body --token text-caption --token line-clamp-2
+cap html-viewer --height 1100 \
+  --component packages/views/editor/html-viewer.tsx \
+  --token text-body --token border-border
+cap plan-revision-viewer --height 1000 \
+  --component packages/views/editor/plan-revision-viewer.tsx \
+  --token text-label --token text-caption --token bg-success/10 --token bg-destructive/10
+cap resource-label-picker --height 1000 \
+  --component packages/views/labels/resource-label-picker.tsx \
+  --token text-body --token text-caption --token text-muted-foreground
+
+# SS7 (CHE-5540)
+cap media-context \
+  --component packages/views/media/media-context.tsx \
+  --token text-muted-foreground --token hover:bg-secondary --token disabled:opacity-40
+cap media-page --height 1100 \
+  --component packages/views/media/media-page.tsx \
+  --token text-body --token text-display-sm --token text-muted-foreground
+cap local-directory-mode-dialog --height 1000 \
+  --component packages/views/projects/components/local-directory-mode-dialog.tsx \
+  --token text-body --token text-micro --token text-caption --token ring-primary
+cap next-self-mention --height 1000 \
+  --component packages/views/rich-content/next-self-mention.tsx \
+  --token text-caption --token bg-primary --token text-primary-foreground
+cap project-workflow-menu --height 1000 \
+  --component packages/views/workflows/project-workflow-menu.tsx \
+  --token text-caption --token text-muted-foreground --token text-body
+
 rm -rf "$build"

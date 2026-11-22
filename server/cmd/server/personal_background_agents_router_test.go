@@ -36,8 +36,8 @@ func personalBGRequest(t *testing.T, token, method, path, body string) (int, map
 
 // CHE-4113: the personal write routes belong to every workspace member, not
 // only owner/admin. Through the real router a plain member reaches the handler:
-// an effective write is refused by the shipped-disabled switch (409), an
-// unchanged write is accepted.
+// an effective write is applied (200; the shipped-disabled 409 was removed by
+// CHE-4114), as is an unchanged write.
 func TestPersonalBackgroundAgentsWritesReachPlainMember(t *testing.T) {
 	ctx := context.Background()
 	var userID, agentID string
@@ -65,8 +65,8 @@ func TestPersonalBackgroundAgentsWritesReachPlainMember(t *testing.T) {
 	}
 
 	status, body := personalBGRequest(t, token, http.MethodPut, "/me/background-agents", `{"dm_title":{"agent_id":"`+agentID+`"}}`)
-	if status != http.StatusConflict || body["code"] != "personal_background_agents_not_enabled" {
-		t.Errorf("member PUT effective write = %d %v, want 409 personal_background_agents_not_enabled", status, body)
+	if status != http.StatusOK {
+		t.Errorf("member PUT effective write = %d %v, want 200", status, body)
 	}
 	if status, body := personalBGRequest(t, token, http.MethodPut, "/me/background-agents", `{"dm_title":{"agent_id":null}}`); status != http.StatusOK {
 		t.Errorf("member PUT unchanged write = %d %v, want 200", status, body)

@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/queueorder"
 	"github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -61,6 +62,12 @@ var auditKinds = map[string]auditKindSpec{
 		TargetType: "workspace",
 		Allow:      []string{"name", "issue_prefix"},
 		Text:       []string{"description", "context", "compact_prompt"},
+	},
+	// CHE-8761: old and new are the effective queue_order and
+	// queue_aging_minutes, so an unset key reads as its default.
+	"workspace.queue_order": {
+		TargetType: "workspace",
+		Allow:      []string{queueorder.KeyOrder, queueorder.KeyAging},
 	},
 	"agent.update": {
 		TargetType: "agent",

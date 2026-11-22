@@ -247,6 +247,15 @@ WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND project_id = sqlc.arg('project_id')::uuid
   AND workflow_id IS NULL;
 
+-- name: ListInheritedRunsOverridesForProject :many
+-- The distinct run overrides (0 for none) among a project's issues that follow
+-- its workflow. Each one prices its issues' cap under a workflow switch.
+SELECT DISTINCT COALESCE(max_runs_override, 0)::int AS runs_override FROM issue
+WHERE workspace_id = sqlc.arg('workspace_id')::uuid
+  AND project_id = sqlc.arg('project_id')::uuid
+  AND workflow_id IS NULL
+ORDER BY 1;
+
 -- name: ListOverrideIssueStatusesForWorkflow :many
 -- Statuses held by issues that follow this workflow by override, for an edit
 -- that would drop one of them.
@@ -267,3 +276,20 @@ WHERE issue_id = sqlc.arg('issue_id')::uuid AND head_sha = sqlc.arg('head_sha'):
 -- name: DeleteIssueWorkflowLintOverridesForWorkspace :exec
 -- Workspace teardown only; the log outlives a deleted workflow.
 DELETE FROM issue_workflow_lint_override WHERE workspace_id = sqlc.arg('workspace_id')::uuid;
+
+-- name: DeleteIssueWorkflowSwitchPending :one
+-- Consumes an issue's pending workflow switch. No row means another event
+-- already applied it, so the caller writes nothing.
+DELETE FROM issue_workflow_switch_pending
+WHERE issue_id = sqlc.arg('issue_id')::uuid
+RETURNING *;
+
+-- name: UpsertIssueWorkflowSwitchPending :exec
+-- Parks a workflow switch: one row per issue, the newest request wins.
+INSERT INTO issue_workflow_switch_pending (issue_id, workspace_id, workflow_id, reason)
+VALUES (sqlc.arg('issue_id')::uuid, sqlc.arg('workspace_id')::uuid, sqlc.arg('workflow_id')::uuid, sqlc.arg('reason')::text)
+ON CONFLICT (issue_id) DO UPDATE
+SET workflow_id = EXCLUDED.workflow_id, reason = EXCLUDED.reason, created_at = now();
+
+-- name: HasIssueWorkflowSwitchPending :one
+SELECT EXISTS (SELECT 1 FROM issue_workflow_switch_pending WHERE issue_id = sqlc.arg('issue_id')::uuid);

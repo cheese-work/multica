@@ -74,6 +74,13 @@ func openWorkflowSetCard(t *testing.T, f rebindFixture) openedWorkflowSetCard {
 	t.Helper()
 	var opened workflowSetOpened
 	taskTokenSetWorkflow(t, f, map[string]any{"workflow_id": f.wide}).Want(http.StatusAccepted).JSON(&opened)
+	return adoptCard(t, opened)
+}
+
+// adoptCard reads what approving an opened card takes and removes the card's
+// rows when the test ends.
+func adoptCard(t *testing.T, opened workflowSetOpened) openedWorkflowSetCard {
+	t.Helper()
 	card := openedWorkflowSetCard{workflowSetOpened: opened}
 	dbfx.QueryRow(t, `SELECT r.human_user_id::text, a.payload_sha256 FROM decision_action a JOIN decision_request r ON r.id = a.decision_request_id WHERE a.id = $1`, opened.ActionID).Scan(&card.humanID, &card.hash)
 	dbfx.Cleanup(t, `DELETE FROM decision_action WHERE id = $1`, opened.ActionID)

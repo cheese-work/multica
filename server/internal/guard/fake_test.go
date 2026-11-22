@@ -22,6 +22,7 @@ type fakePR struct {
 	Draft     bool
 	Reviewers []string
 	Body      string
+	Author    string // PR author login; empty means a plain user
 }
 
 func (p *fakePR) url() string { return fmt.Sprintf("https://github.com/%s/pull/%d", p.Repo, p.Number) }
@@ -223,12 +224,13 @@ type jsonPR struct {
 	BaseRefName         string              `json:"baseRefName"`
 	HeadRepositoryOwner map[string]string   `json:"headRepositoryOwner"`
 	ReviewRequests      []map[string]string `json:"reviewRequests"`
+	Author              map[string]string   `json:"author"`
 }
 
 func (p *fakePR) json() jsonPR {
 	j := jsonPR{Number: p.Number, URL: p.url(), Title: p.Title, IsDraft: p.Draft, Body: p.Body,
 		HeadRefName: p.HeadRef, BaseRefName: p.Base,
-		HeadRepositoryOwner: map[string]string{"login": p.HeadOwner}}
+		HeadRepositoryOwner: map[string]string{"login": p.HeadOwner}, Author: map[string]string{"login": p.Author}}
 	for _, r := range p.Reviewers {
 		j.ReviewRequests = append(j.ReviewRequests, map[string]string{"__typename": "User", "login": r})
 	}

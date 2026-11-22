@@ -96,3 +96,19 @@ test("dependency-review blocks a PR that adds a high or critical dependency and 
   const zero = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8").match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
   assert.match(zero, /"dependency-review"/)
 })
+
+// CHE-7342: a warning-budget script change must not turn the check red on unrelated PRs.
+test("warning-budget unit tests run only when a PR touches the script, its tests or fixtures", () => {
+  const job = workflow("ci.yml").split("  warning-budget:")[1].split("\n  # CHE-2696")[0]
+  const step = job.split("      - name: ").find((s) => s.startsWith("Test warning regression fixtures"))
+  assert.match(step, /if: .*steps\.wb_scope\.outputs\.unit == 'true'/)
+  assert.match(job, /id: wb_scope/)
+  assert.match(job, /pull-requests: read/)
+  // The budget comparison is never gated.
+  const compare = job.split("      - name: ").find((s) => s.startsWith("Compare CI logs"))
+  assert.doesNotMatch(compare, /\n\s+if:/)
+  // The path pattern in the workflow selects exactly the script, its tests and its fixtures.
+  const pattern = new RegExp(job.match(/grep -Eq '([^']+)'/)[1])
+  for (const f of ["scripts/warning-budget.mjs", "scripts/warning-budget.test.mjs", "scripts/fixtures/warnings/new-warning.json"]) assert.match(f, pattern, f)
+  for (const f of ["server/main.go", "scripts/ci-scope.mjs", "docs/engineering/ci-warnings.md"]) assert.doesNotMatch(f, pattern, f)
+})

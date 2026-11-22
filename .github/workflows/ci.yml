@@ -91,13 +91,32 @@ jobs:
       contents: read
       actions: read
       checks: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
           package-manager-cache: false
+      # CHE-7342: the script's own unit tests run only when a PR changes the script, its tests or fixtures,
+      # so a bad script change on main cannot turn this check red on unrelated PRs. Other events run them.
+      - name: Decide whether the unit tests apply
+        id: wb_scope
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          # Fetch first: an API error must fail the step, not read as "no match" and skip the tests.
+          files=
+          [ -z "$PR" ] || files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
+          if [ -z "$PR" ] || grep -Eq '^scripts/(warning-budget|fixtures/warnings/)' <<< "$files"; then
+            echo unit=true >> "$GITHUB_OUTPUT"
+          else
+            echo unit=false >> "$GITHUB_OUTPUT"
+          fi
       - name: Test warning regression fixtures
+        if: ${{ steps.wb_scope.outputs.unit == 'true' }}
         run: node --test scripts/warning-budget.test.mjs
       - name: Compare CI logs and annotations with successful main
         env:
@@ -234,6 +253,8 @@ jobs:
         run: bash scripts/mirror-upstream-main.test.sh
       - name: Test the merge review pack script
         run: bash scripts/merge-review-pack.test.sh
+      - name: Test the merge ledger check script
+        run: bash scripts/merge-ledger-check.test.sh
       - name: Test the upstream-main rulesets
         run: node --test scripts/mirror-rulesets.test.mjs scripts/mirror-workflow.test.mjs
       - name: Check no upstream update source
@@ -320,7 +341,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/dockerfile-patches.test.mjs scripts/pr-changelog-line.test.mjs scripts/agent-adoption.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/pr-guards-guard-check.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-stale-cancel.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs scripts/background-agent-usage.test.mjs scripts/ci-backend-shards.test.mjs scripts/e2e-warmup-timeout.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/dockerfile-patches.test.mjs scripts/pr-changelog-line.test.mjs scripts/agent-adoption.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/identity-literals.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/pr-guards-guard-check.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-stale-cancel.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs scripts/background-agent-usage.test.mjs scripts/quick-ab-measure.test.mjs scripts/ci-backend-shards.test.mjs scripts/e2e-warmup-timeout.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs deploy/cd/quiescence.test.mjs
 
       - name: Filter paths
         id: filter
@@ -415,9 +436,10 @@ jobs:
       # recent prefix match. Each frontend worker runs a disjoint task set, so
       # it gets its own prefix rather than racing to save one key.
       # GitHub scopes caches by branch: a PR reads main's entries (so unchanged
-      # tasks hit on the first push) and writes its own (so re-pushes hit too).
+      # tasks hit on the first push) but never writes its own (CHE-7210). Only
+      # main saves, from this workflow's daily schedule run.
       - name: Restore turbo cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -438,6 +460,15 @@ jobs:
         # per-runner cgroup limit and get OOM-killed. concurrency=4 still hit
         # OOM in a later run; cap further.
         run: pnpm exec turbo build typecheck lint --concurrency=2 --filter='!@multica/docs' --filter='!@multica/mobile'
+
+      # Only main saves (CHE-7210): an entry saved on a PR or merge-queue ref is
+      # readable only by that ref, and those refs filled the 10 GB repo cache.
+      - name: Save turbo cache
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Check frontend quality
         uses: ./.github/actions/frontend-quality
@@ -476,7 +507,7 @@ jobs:
       # logs rather than artifacts -- yet a hit still skips the whole suite,
       # which is the single most expensive task in the graph.
       - name: Restore turbo cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -491,6 +522,15 @@ jobs:
         # `test` reaches dependency sources through the hash-only
         # `^cache-inputs` edge (see turbo.json), so no `tsc` runs here.
         run: pnpm exec turbo test --filter='!@multica/docs' --filter='!@multica/mobile' --filter='!@multica/views'
+
+      # Only main saves (CHE-7210): an entry saved on a PR or merge-queue ref is
+      # readable only by that ref, and those refs filled the 10 GB repo cache.
+      - name: Save turbo cache
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-test-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # Split views across two runners. GitHub reports the matrix job's combined
   # result, so the aggregate gate can continue depending on this one job ID.
@@ -534,7 +574,7 @@ jobs:
       # argument in the task hash, while dependency sources still flow through
       # turbo.json's hash-only `^cache-inputs` edge.
       - name: Restore turbo cache
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: .turbo/cache
           key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -545,6 +585,15 @@ jobs:
 
       - name: Test views shard ${{ matrix.index }}/${{ matrix.total }}
         run: pnpm exec turbo test --filter='@multica/views' -- --shard=${{ matrix.index }}/${{ matrix.total }}
+
+      # Only main saves (CHE-7210): an entry saved on a PR or merge-queue ref is
+      # readable only by that ref, and those refs filled the 10 GB repo cache.
+      - name: Save turbo cache
+        if: ${{ success() && github.ref == 'refs/heads/main' }}
+        uses: actions/cache/save@v6
+        with:
+          path: .turbo/cache
+          key: turbo-views-test-${{ matrix.index }}-of-${{ matrix.total }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runtime.outputs.node }}-${{ github.ref }}-${{ hashFiles('pnpm-lock.yaml') }}-${{ github.run_id }}-${{ github.run_attempt }}
 
   # CHE-2418 B3: fast fail-first check for locale skew. The merge queue failed
   # 22% of runs, mostly on locales/parity.test.ts: two PRs, each green alone,
@@ -773,6 +822,12 @@ jobs:
         id: goepoch
         run: touch -d '-1 hour' "$RUNNER_TEMP/go-build-epoch"
 
+      # CHE-7000: used memory every 5 s for the whole job; the step below turns
+      # it into one peak per shard. Survives the step: the runner reaps it at job end.
+      - name: Start memory sampler
+        run: |
+          (while true; do awk '/^MemTotal:/{t=$2} /^MemAvailable:/{print int((t-$2)/1024)}' /proc/meminfo >> "$RUNNER_TEMP/mem.log"; sleep 5; done) > /dev/null 2>&1 &
+
       - name: Build
         if: ${{ matrix.partition == 'rest' }}
         run: cd server && go build -race ./...
@@ -829,6 +884,11 @@ jobs:
           MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
         run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
+
+      - name: Report peak memory
+        if: ${{ !cancelled() }}
+        run: |
+          echo "peak-mem: ${{ matrix.partition }} $(sort -n "$RUNNER_TEMP/mem.log" | tail -1) MiB used of $(awk '/^MemTotal:/{print int($2/1024)}' /proc/meminfo) MiB"
 
       # Per-shard timing for rebalancing the partitions. `!cancelled()` so a
       # red shard still reports where its time went.
@@ -1420,6 +1480,7 @@ jobs:
           python3 .github/scripts/test_ci_wait_policy.py
           python3 .github/scripts/ci-wait-policy.py
           python3 deploy/cd/test-rollback-failed-readback.py
+          python3 deploy/cd/test-c00-image-gc.py
           python3 deploy/cd/test-build-cache.py
           python3 .github/scripts/test_cache_policy.py
           bash deploy/cd/test-admission.sh

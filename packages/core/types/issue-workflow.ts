@@ -18,7 +18,9 @@ export type IssueWorkflowHandlerType =
   | "project_lead"
   | "creator"
   | "human_by_role"
-  | "human_in_charge";
+  | "human_in_charge"
+  | "author"
+  | "reviewer";
 
 export interface IssueWorkflowHandler {
   type: IssueWorkflowHandlerType;
@@ -64,6 +66,10 @@ export interface IssueWorkflowEntryGate {
   mode: IssueWorkflowEntryMode;
   /** Whether a person may pass a failed block gate with a reason. Default true. */
   member_override?: boolean;
+  /** Guard parameter, e.g. an estimate limit. Kept so a save does not drop it. */
+  param?: string;
+  /** Scopes `upstream_checked` to these project ids (CHE-5583). */
+  projects?: string[];
 }
 
 /** One exit of a step, e.g. `{ to: "done", guard: "pr.merged", timeout: "72h" }`. */
