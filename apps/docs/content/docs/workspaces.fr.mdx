@@ -127,6 +127,12 @@ Un événement qui ne peut pas être envoyé comme avis va plutôt à l'agent do
 
 Le garde couvre aussi un agent qui enregistre un réveil qu'une personne peut déclencher. Liez-le avec `--decision`, marquez-le `--purpose observe` ou limitez-le aux agents ; voir [Réveils](/cli#wakeups).
 
+### Garde des outils
+
+**Paramètres → Guard** liste les plugins de garde des outils de l'espace de travail et ce que chacun a fait ces 7 derniers jours. Chaque plugin affiche le nombre d'appels corrigés, refusés ou en erreur, un graphique des occurrences par jour et ses dernières décisions. Les chiffres viennent des mêmes lignes que `multica guard stats` et `multica guard log`. Les jours suivent votre fuseau horaire d'affichage.
+
+Un propriétaire de l'espace de travail modifie ici une règle de niveau espace de travail : **Modifier avec une clé d'accès** change son action et son message, et le propriétaire signe cette modification exacte avec une passkey. La signature nomme la version de la politique dont elle part. Si une autre modification est arrivée avant, rien n'est enregistré et la page montre les deux versions avec **Réappliquer** (votre modification sur la nouvelle version, avec une nouvelle passkey), **Recharger l'actuelle** et **Abandonner**. Les membres voient la page en lecture seule. Les règles d'une couche org, dépôt ou chemin se modifient en CLI : un agent crée la modification avec `multica guard plugin set`, puis une personne l'approuve avec une passkey sur la carte de décision. Sans politique enregistrée, la page affiche les valeurs par défaut intégrées.
+
 ### Écran de décision
 
 Le paramètre d'espace de travail `decision_screen` (`off` par défaut, `on`) masque la conversation qui porte la demande de décision d'un agent. Avec `on`, la demande d'un agent d'issue à un membre va dans une conversation de support masquée, même si le membre a un message privé visible avec cet agent ; rien n'est publié dans ce message privé. Elle n'apparaît ni dans la liste de chat du membre, ni dans le compteur de non-lus, ni dans le badge, ni dans la liste « Needs you », et le membre ne peut pas y envoyer de message (`409`). La demande ouvre toujours la même carte de décision. Pour ces agents, le serveur ignore `session_id` et `new_dm` et ajoute un indice à la réponse. Un agent qui demande depuis un message privé continue de demander dans ce message privé. Remettez `off` pour revenir en arrière : aucune nouvelle conversation n'est créée et les existantes restent masquées.

@@ -207,6 +207,10 @@ WHERE i.workspace_id = $1
   AND NOT EXISTS (
     SELECT 1 FROM issue_pull_request ip JOIN github_pull_request p ON p.id = ip.pull_request_id
     WHERE ip.issue_id = i.id AND p.state IN ('open', 'draft') AND p.checks_rollup_state = 'PENDING')
+  AND NOT EXISTS (
+    SELECT 1 FROM decision_request r
+    WHERE r.issue_id = i.id AND r.status = 'open' AND r.created_at > now() - interval '72 hours'
+      AND NOT EXISTS (SELECT 1 FROM issue_decision_park d WHERE d.issue_id = i.id))
 ORDER BY clock.idle_since, i.id
 `
 
@@ -231,6 +235,8 @@ type ListIdleStartedGuardIssuesRow struct {
 // are skipped. Any agent-owned continuation excludes the issue. issue_id narrows
 // the scan to one issue: act mode re-runs it under the issue lock. episode keeps
 // an issue that carries an issue_idle_guard receipt, for re-checking its own episode.
+// An open decision request under 72 h old on an issue with no park record is a
+// continuation too: the answer wakes the asker (CHE-6460 D1d).
 func (q *Queries) ListIdleStartedGuardIssues(ctx context.Context, arg ListIdleStartedGuardIssuesParams) ([]ListIdleStartedGuardIssuesRow, error) {
 	rows, err := q.db.Query(ctx, listIdleStartedGuardIssues,
 		arg.WorkspaceID,

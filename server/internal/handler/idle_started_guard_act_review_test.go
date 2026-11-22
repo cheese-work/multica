@@ -36,7 +36,9 @@ func (fixture idleActFixture) openRequest(test *testing.T) {
 	session := dbfx.Insert(test, "chat_session", testutil.Cols{"workspace_id": testWorkspaceID, "agent_id": fixture.agent, "creator_id": testUserID, "title": "idle request"})
 	ping := dbfx.Insert(test, "chat_message", testutil.Cols{"chat_session_id": session, "role": "assistant", "content": "Approve?", "message_kind": "decision_request", "sent_via": "task_token"})
 	dbfx.Insert(test, "decision_request", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issue, "asking_agent_id": fixture.agent, "human_user_id": testUserID,
-		"chat_session_id": session, "ping_message_id": ping, "ask": "Approve?", "escalation_class": "reversible", "origin": "asked", "status": "open"})
+		"chat_session_id": session, "ping_message_id": ping, "ask": "Approve?", "escalation_class": "reversible", "origin": "asked", "status": "open",
+		// Older than 72 h: a younger unparked request is a continuation the guard skips (CHE-6460 D1d).
+		"created_at": testutil.Raw("now() - interval '73 hours'")})
 	test.Cleanup(func() { dbfx.Exec(test, `DELETE FROM decision_request WHERE issue_id = $1`, fixture.issue) })
 }
 
