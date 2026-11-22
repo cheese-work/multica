@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 
@@ -142,57 +144,138 @@ func TestIntakeHoldAdmitsAMemberNamedRun(test *testing.T) {
 }
 
 // A release by a person and an effective escalation answer end the hold for the
-// derived run too; an answer that is not yet effective does not.
+// derived run too; an answer that is not yet effective does not. Each release is
+// judged through both an assignment and a mention, on a fresh issue each, since a
+// second enqueue on one issue meets the pending-task guard.
 func TestIntakeHoldReleaseAdmitsDerivedRuns(test *testing.T) {
 	f := newTriageRunFixture(test)
 	hold := newHoldFixture(test, func(entry map[string]any) { entry["exempt_escalation_classes"] = []string{"spend"} })
-	admitted := func(test *testing.T, issue db.Issue) error {
-		test.Helper()
-		_, err := testHandler.TaskService.EnqueueTaskForIssue(context.Background(), issue)
-		return err
+	funnels := map[string]func(db.Issue) error{
+		"assignment": func(issue db.Issue) error {
+			_, err := testHandler.TaskService.EnqueueTaskForIssue(context.Background(), issue)
+			return err
+		},
+		"mention": func(issue db.Issue) error {
+			_, err := testHandler.TaskService.EnqueueTaskForMention(context.Background(), issue, parseUUID(f.agentID), pgtype.UUID{}, service.OriginDerived)
+			return err
+		},
 	}
-	test.Run("form a: a person moved it out of backlog, now back", func(test *testing.T) {
-		issueID, issue := heldRunIssue(test, f, hold, "feat: release a")
-		statusRow(test, issueID, "member", "ui_or_api", "interactive_jwt", "backlog", "todo", nil)
-		if err := admitted(test, issue); err != nil {
-			test.Fatalf("assignment run after a release = %v", err)
+	cases := []struct {
+		name     string
+		admitted bool
+		release  func(test *testing.T, issueID string)
+	}{
+		{"form a: a person moved it out of backlog, now back", true, func(test *testing.T, issueID string) {
+			statusRow(test, issueID, "member", "ui_or_api", "interactive_jwt", "backlog", "todo", nil)
+		}},
+		{"form b: release key, row older than the park decision", true, func(test *testing.T, issueID string) {
+			statusRow(test, issueID, "member", "ui_or_api", "pat", "need_decision", "todo", map[string]any{"intake_release": "CHE-6911"})
+			dbfx.Exec(test, `INSERT INTO issue_decision_park (issue_id, workspace_id, prior_status, to_status) VALUES ($1, $2, 'backlog', 'need_decision')`, issueID, testWorkspaceID)
+		}},
+		{"escalation answer not yet effective", false, func(test *testing.T, issueID string) {
+			escalationAnswer(test, issueID, "spend", "now() + interval '10 minutes'")
+		}},
+		{"escalation answer after wake_at", true, func(test *testing.T, issueID string) {
+			escalationAnswer(test, issueID, "spend", "now() - interval '1 second'")
+		}},
+	}
+	for _, c := range cases {
+		for name, enqueue := range funnels {
+			test.Run(c.name+" / "+name, func(test *testing.T) {
+				issueID, issue := heldRunIssue(test, f, hold, "feat: release "+name)
+				c.release(test, issueID)
+				err := enqueue(issue)
+				switch {
+				case c.admitted && err != nil:
+					test.Fatalf("%s after the release = %v, want it admitted", name, err)
+				case c.admitted && tasksOn(test, issueID) != 1:
+					test.Fatalf("%s after the release wrote %d task row(s), want 1", name, tasksOn(test, issueID))
+				case !c.admitted && !errors.Is(err, service.ErrIntakeHold):
+					test.Fatalf("%s = %v, want ErrIntakeHold", name, err)
+				case !c.admitted && tasksOn(test, issueID) != 0:
+					test.Fatalf("refused %s wrote %d task row(s)", name, tasksOn(test, issueID))
+				}
+			})
+		}
+	}
+}
+
+// wakeupOn creates an event wakeup for the fixture agent on issueID. With
+// source true the rule is created from a task an agent is running, so the run
+// it starts is derived; without, a person made it and the run is named.
+func wakeupOn(test *testing.T, f triageRunFixture, issueID string, source bool) (*service.IssueWakeupService, db.IssueWakeup) {
+	test.Helper()
+	ctx := context.Background()
+	svc := &service.IssueWakeupService{Tasks: testHandler.TaskService}
+	wakeup, err := svc.Create(ctx, parseUUID(issueID), parseUUID(testUserID), pgtype.UUID{}, service.WakeupInput{
+		AgentID: f.agentID, Kind: "event", EventTypes: []string{"issue.status_changed"}, Instruction: "look again",
+	})
+	if err != nil {
+		test.Fatal(err)
+	}
+	test.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_wakeup_receipt WHERE wakeup_id = $1`, wakeup.ID)
+		testPool.Exec(ctx, `DELETE FROM issue_wakeup WHERE issue_id = $1`, issueID)
+	})
+	if source {
+		// The source run belongs to another agent, so it does not meet the
+		// pending-task guard of the run the wakeup starts.
+		sourceTask := createHandlerTestTaskForAgentOnIssue(test, handlerTestAgentID(test), issueID)
+		dbfx.Exec(test, `UPDATE issue_wakeup SET source_task_id = $2 WHERE id = $1`, wakeup.ID, sourceTask)
+	}
+	return svc, wakeup
+}
+
+// A wakeup an agent created is derived and refused: no run starts and the rule
+// records the reason. One a person created is named and starts its run.
+func TestIntakeHoldWakeupDispatch(test *testing.T) {
+	f := newTriageRunFixture(test)
+	hold := newHoldFixture(test, nil)
+	ctx := context.Background()
+	fire := func(test *testing.T, source bool) (issueID, lastError string, wakeupRuns int) {
+		test.Helper()
+		issueID, _ = heldRunIssue(test, f, hold, "feat: wakeup")
+		svc, wakeup := wakeupOn(test, f, issueID, source)
+		if err := svc.Trigger(ctx, parseUUID(issueID), wakeup.ID, parseUUID(testUserID)); err != nil {
+			test.Fatalf("trigger: %v", err)
+		}
+		var recorded *string
+		dbfx.QueryRow(test, `SELECT last_error FROM issue_wakeup WHERE id = $1`, wakeup.ID).Scan(&recorded)
+		if recorded != nil {
+			lastError = *recorded
+		}
+		wakeupRuns = dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND context->>'wakeup_id' = $2`, issueID, uuidToString(wakeup.ID))
+		return issueID, lastError, wakeupRuns
+	}
+	test.Run("created by an agent: no run, last_error intake_hold", func(test *testing.T) {
+		_, lastError, runs := fire(test, true)
+		if runs != 0 {
+			test.Fatalf("the refused wakeup started %d run(s)", runs)
+		}
+		if !strings.HasPrefix(lastError, "intake_hold") {
+			test.Fatalf("last_error = %q, want it to start with intake_hold", lastError)
 		}
 	})
-	test.Run("form b: release key, row older than the park decision", func(test *testing.T) {
-		issueID, issue := heldRunIssue(test, f, hold, "feat: release b")
-		statusRow(test, issueID, "member", "ui_or_api", "pat", "need_decision", "todo", map[string]any{"intake_release": "CHE-6911"})
-		dbfx.Exec(test, `INSERT INTO issue_decision_park (issue_id, workspace_id, prior_status, to_status) VALUES ($1, $2, 'backlog', 'need_decision')`, issueID, testWorkspaceID)
-		if err := admitted(test, issue); err != nil {
-			test.Fatalf("assignment run after a form b release = %v", err)
+	test.Run("created by a person: a queued run, no error", func(test *testing.T) {
+		issueID, lastError, runs := fire(test, false)
+		if runs != 1 {
+			test.Fatalf("the wakeup started %d run(s), want 1", runs)
 		}
-	})
-	test.Run("escalation answer not yet effective refuses", func(test *testing.T) {
-		issueID, issue := heldRunIssue(test, f, hold, "feat: answer later")
-		escalationAnswer(test, issueID, "spend", "now() + interval '10 minutes'")
-		if err := admitted(test, issue); !errors.Is(err, service.ErrIntakeHold) {
-			test.Fatalf("run before wake_at = %v, want ErrIntakeHold", err)
+		if lastError != "" {
+			test.Fatalf("last_error = %q, want none", lastError)
 		}
-	})
-	test.Run("escalation answer after wake_at admits", func(test *testing.T) {
-		issueID, issue := heldRunIssue(test, f, hold, "feat: answer now")
-		escalationAnswer(test, issueID, "spend", "now() - interval '1 second'")
-		if err := admitted(test, issue); err != nil {
-			test.Fatalf("run after wake_at = %v", err)
+		if n := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND status = 'queued'`, issueID); n != 1 {
+			test.Fatalf("queued runs = %d, want 1", n)
 		}
 	})
 }
 
-// A wakeup an agent created is derived and refused; the error text names the
-// reason, so last_error shows intake_hold. The retry paths skip quietly.
-func TestIntakeHoldRefusesWakeupAndRetry(test *testing.T) {
+// The retry that follows a failed run is derived too; it stops without an error.
+func TestIntakeHoldRefusesRetry(test *testing.T) {
 	f := newTriageRunFixture(test)
 	hold := newHoldFixture(test, nil)
 	ctx := context.Background()
-	issueID, issue := heldRunIssue(test, f, hold, "feat: retry")
-
-	if got := service.ErrIntakeHold.Error(); got[:len("intake_hold")] != "intake_hold" {
-		test.Fatalf("ErrIntakeHold text %q does not name the reason", got)
-	}
+	issueID, _ := heldRunIssue(test, f, hold, "feat: retry")
 	taskID := dbfx.Task(test, f.agentID, testutil.Cols{
 		"runtime_id": f.runtimeID, "issue_id": issueID, "status": "failed", "failure_reason": "timeout",
 		"attempt": 1, "max_attempts": 2,
@@ -206,7 +289,123 @@ func TestIntakeHoldRefusesWakeupAndRetry(test *testing.T) {
 	if err != nil || child != nil {
 		test.Fatalf("auto-retry on a held issue = (%v, %v), want skipped", child, err)
 	}
-	_ = issue
+	if n := tasksOn(test, issueID); n != 1 {
+		test.Fatalf("task rows after the refused retry = %d, want only the failed run", n)
+	}
+}
+
+// An agent's comment that mentions an agent is a derived run: its trigger
+// outcome is blocked with intake_hold, and a person's comment is not.
+func TestIntakeHoldCommentTriggerOutcomes(test *testing.T) {
+	f := newTriageRunFixture(test)
+	hold := newHoldFixture(test, nil)
+	mention := "[@Agent](mention://agent/" + f.agentID + ") look"
+	issueID, _ := heldRunIssue(test, f, hold, "feat: comment")
+	authorID := handlerTestAgentID(test)
+	sourceTask := createAgentCommentTaskForPolicyTest(test, authorID, issueID)
+	before := tasksOn(test, issueID)
+
+	outcomes := postAgentCommentForTriggerPolicyTest(test, issueID, authorID, sourceTask, mention)
+	if len(outcomes) != 1 || outcomes[0].TargetID != f.agentID || outcomes[0].ReasonCode != ReasonIntakeHold || outcomes[0].Status != DispatchBlocked {
+		test.Fatalf("agent comment outcomes = %+v, want one blocked intake_hold for %s", outcomes, f.agentID)
+	}
+	if got := tasksOn(test, issueID); got != before {
+		test.Fatalf("the refused mention wrote %d task row(s)", got-before)
+	}
+
+	// The same words from a person start a run.
+	outcomes = postCommentForTriggerPolicyTest(test, issueID, mention)
+	if len(outcomes) != 1 || outcomes[0].Status != DispatchQueued {
+		test.Fatalf("member comment outcomes = %+v, want one queued", outcomes)
+	}
+}
+
+// heldAutopilot is a create_issue autopilot on projectID with a schedule trigger.
+func heldAutopilot(test *testing.T, f triageRunFixture, projectID, label string) (db.Autopilot, pgtype.UUID, string) {
+	test.Helper()
+	title := fmt.Sprintf("held autopilot %s %d", label, time.Now().UnixNano())
+	var created AutopilotResponse
+	testutil.Call(test, testHandler.CreateAutopilot, newRequest("POST", "/api/autopilots?workspace_id="+testWorkspaceID, map[string]any{
+		"title": title, "assignee_id": f.agentID, "execution_mode": "create_issue", "issue_title_template": title, "project_id": projectID,
+	})).Want(http.StatusCreated).JSON(&created)
+	test.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM autopilot_run WHERE autopilot_id = $1`, created.ID)
+		testPool.Exec(context.Background(), `DELETE FROM autopilot WHERE id = $1`, created.ID)
+	})
+	autopilot, err := testHandler.Queries.GetAutopilot(context.Background(), parseUUID(created.ID))
+	if err != nil {
+		test.Fatal(err)
+	}
+	trigger := dbfx.Insert(test, "autopilot_trigger", testutil.Cols{
+		"autopilot_id": created.ID, "kind": "schedule", "cron_expression": "0 * * * *", "created_by_type": "member", "created_by_id": testUserID,
+	})
+	return autopilot, parseUUID(trigger), title
+}
+
+// An autopilot that creates its issue in backlog starts a derived run on it. On
+// a project the hold owns the run is refused and the issue stays in backlog.
+func TestIntakeHoldAutopilotRuns(test *testing.T) {
+	seedTestCatalog(test)
+	f := newTriageRunFixture(test)
+	hold := newHoldFixture(test, nil)
+	workflow := createTestWorkflow(test, "Held start "+workflowTestSuffix())
+	patchWorkflow(test, workflow.ID, map[string]any{"start_status_key": "backlog"}).Want(http.StatusOK)
+	dbfx.Exec(test, `UPDATE project SET workflow_id = $1 WHERE id = $2`, workflow.ID, hold.projectID)
+	freeProject := createWorkflowTestProject(test, "no hold "+workflowTestSuffix())
+	dbfx.Exec(test, `UPDATE project SET workflow_id = $1 WHERE id = $2`, workflow.ID, freeProject)
+	ctx := context.Background()
+
+	created := func(test *testing.T, title string) (issueID, status string, runs int) {
+		test.Helper()
+		if err := testPool.QueryRow(ctx, `SELECT id::text, status FROM issue WHERE workspace_id = $1 AND title = $2`, testWorkspaceID, title).Scan(&issueID, &status); err != nil {
+			test.Fatalf("the autopilot created no issue titled %q: %v", title, err)
+		}
+		test.Cleanup(func() {
+			testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+			deleteTestIssue(test, issueID)
+		})
+		return issueID, status, tasksOn(test, issueID)
+	}
+	reasonOf := func(run *db.AutopilotRun, err error) string {
+		text := ""
+		if err != nil {
+			text = err.Error()
+		}
+		if run != nil && run.FailureReason.Valid {
+			text += " " + run.FailureReason.String
+		}
+		return text
+	}
+
+	test.Run("control: a project with no hold starts the run", func(test *testing.T) {
+		autopilot, trigger, title := heldAutopilot(test, f, freeProject, "control")
+		if _, err := testHandler.AutopilotService.DispatchAutopilot(ctx, autopilot, trigger, "schedule", nil); err != nil {
+			test.Fatalf("dispatch = %v", err)
+		}
+		if _, status, runs := created(test, title); status != "backlog" || runs != 1 {
+			test.Fatalf("control issue = status %q with %d run(s), want backlog with 1", status, runs)
+		}
+	})
+	test.Run("schedule: refused, the issue waits in backlog", func(test *testing.T) {
+		autopilot, trigger, title := heldAutopilot(test, f, hold.projectID, "schedule")
+		run, err := testHandler.AutopilotService.DispatchAutopilot(ctx, autopilot, trigger, "schedule", nil)
+		if got := reasonOf(run, err); !strings.Contains(got, "intake_hold") {
+			test.Fatalf("dispatch outcome = %q, want intake_hold", got)
+		}
+		if _, status, runs := created(test, title); status != "backlog" || runs != 0 {
+			test.Fatalf("held issue = status %q with %d run(s), want backlog with 0", status, runs)
+		}
+	})
+	test.Run("manual run now: refused too", func(test *testing.T) {
+		autopilot, _, title := heldAutopilot(test, f, hold.projectID, "manual")
+		run, _, err := testHandler.AutopilotService.DispatchAutopilotManual(ctx, autopilot, pgtype.UUID{}, nil, parseUUID(testUserID))
+		if got := reasonOf(run, err); !strings.Contains(got, "intake_hold") {
+			test.Fatalf("dispatch outcome = %q, want intake_hold", got)
+		}
+		if _, _, runs := created(test, title); runs != 0 {
+			test.Fatalf("held issue started %d run(s)", runs)
+		}
+	})
 }
 
 // No caller reports internal_error for ErrIntakeHold (acceptance 10): one table
