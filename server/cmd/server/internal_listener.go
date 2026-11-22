@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -36,17 +37,45 @@ func installTokenAuthenticator(lookup func(ctx context.Context, token string) (p
 	}
 }
 
-// internalMounts are the gateway-facing route groups served on the internal listener. They stay
-// off while the plugin service is absent: with no way to authenticate, nothing is served.
-func internalMounts(h *handler.Handler) []func(chi.Router) {
-	if h == nil || h.PluginService == nil || h.BrowserLeases == nil {
+// jwksSource is the signer side of the JWKS route: the keyring serves its own public keys.
+type jwksSource interface{ JWKSHandler() http.Handler }
+
+// loadBrowserSigner builds the lease signer from MULTICA_BROWSER_SIGNING_KEYS and
+// MULTICA_BROWSER_GATEWAY_AUDIENCES. Unset or malformed keys, or a malformed allowlist, give no
+// signer (the error is logged without the secret). An unset allowlist gives a signer that signs
+// nothing but still serves its JWKS.
+func loadBrowserSigner(getenv func(string) string) browserlease.Signer {
+	if strings.TrimSpace(getenv(browserlease.SigningKeysEnv)) == "" {
 		return nil
 	}
-	auth := installTokenAuthenticator(func(ctx context.Context, token string) (pgtype.UUID, error) {
-		inst, err := h.PluginService.AuthenticateInstallToken(ctx, token)
-		return inst.WorkspaceID, err
-	})
-	acks := browserlease.NewAckService(h.BrowserLeases.Pool)
-	acks.Queue = h.BrowserLeases
-	return []func(chi.Router){acks.Mount(auth)}
+	kr, err := browserlease.KeyringFromEnv(getenv)
+	if err != nil {
+		slog.Error("browser lease: signer not loaded; leases stay unsigned", "error", err)
+		return nil
+	}
+	return kr
+}
+
+// internalMounts are the gateway-facing route groups served on the internal listener. Each is
+// mounted on its own dependency: the JWKS needs the signer only, so it is served with no plugin
+// service; the cleanup-ack routes need the plugin service to authenticate and stay off without it.
+func internalMounts(h *handler.Handler) []func(chi.Router) {
+	if h == nil || h.BrowserLeases == nil {
+		return nil
+	}
+	var mounts []func(chi.Router)
+	if src, ok := h.BrowserLeases.Signer.(jwksSource); ok && src != nil {
+		jwks := src.JWKSHandler()
+		mounts = append(mounts, func(r chi.Router) { r.Handle("/jwks", jwks) })
+	}
+	if h.PluginService != nil {
+		auth := installTokenAuthenticator(func(ctx context.Context, token string) (pgtype.UUID, error) {
+			inst, err := h.PluginService.AuthenticateInstallToken(ctx, token)
+			return inst.WorkspaceID, err
+		})
+		acks := browserlease.NewAckService(h.BrowserLeases.Pool)
+		acks.Queue = h.BrowserLeases
+		mounts = append(mounts, acks.Mount(auth))
+	}
+	return mounts
 }
