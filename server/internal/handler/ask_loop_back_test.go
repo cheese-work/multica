@@ -78,11 +78,6 @@ func (f loopBackFixture) loopLines(t *testing.T) []string {
 	return out
 }
 
-func (f loopBackFixture) runs(t *testing.T) int {
-	t.Helper()
-	return dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, f.issueID)
-}
-
 func TestAskLoopBackMemberReplyPostsOneQuotedLine(t *testing.T) {
 	f := newLoopBackFixture(t, "on")
 
