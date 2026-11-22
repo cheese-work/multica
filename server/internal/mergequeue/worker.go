@@ -117,52 +117,70 @@ func scanIntake(row pgx.Row) (r intakeRow, err error) {
 
 // Sweep processes the pending intake rows, oldest first, and reports how many
 // it settled. A row it cannot settle yet stays pending for the next sweep; the
-// first error of a row does not stop the others.
+// first error of a row does not stop the others. It reads the pending rows page
+// by page (keyset on created_at, id), so rows that fail on every sweep never
+// hide the rows behind them.
 func (w *Worker) Sweep(ctx context.Context) (int, error) {
-	rows, err := w.Pool.Query(ctx, `SELECT `+intakeCols+` FROM merge_queue_intake WHERE status = 'pending' ORDER BY created_at LIMIT $1`, sweepLimit)
-	if err != nil {
-		return 0, err
-	}
-	var pending []intakeRow
-	for rows.Next() {
-		r, err := scanIntake(rows)
-		if err != nil {
-			rows.Close()
-			return 0, err
-		}
-		pending = append(pending, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
 	type prKey struct {
 		Repo
 		PR int
 	}
 	timelines := map[prKey][]TimelineItem{} // one GitHub read per PR per sweep
+	failed := map[prKey]error{}             // a failed read is not repeated for the PR's other rows
 	var errs []error
 	settled := 0
-	for _, r := range pending {
-		k := prKey{r.repo(), r.PR}
-		items, ok := timelines[k]
-		if !ok {
-			if items, err = w.Src.Timeline(ctx, r.repo(), r.PR); err != nil {
-				errs = append(errs, fmt.Errorf("intake %s: timeline: %w", r.ID, err))
+	var afterAt time.Time
+	afterID := uuid.Nil
+	for {
+		rows, err := w.Pool.Query(ctx, `SELECT `+intakeCols+` FROM merge_queue_intake
+			WHERE status = 'pending' AND (created_at, id) > ($1, $2) ORDER BY created_at, id LIMIT $3`, afterAt, afterID, sweepLimit)
+		if err != nil {
+			return settled, errors.Join(append(errs, err)...)
+		}
+		var page []intakeRow
+		for rows.Next() {
+			r, err := scanIntake(rows)
+			if err != nil {
+				rows.Close()
+				return settled, errors.Join(append(errs, err)...)
+			}
+			page = append(page, r)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return settled, errors.Join(append(errs, err)...)
+		}
+		for _, r := range page {
+			k := prKey{r.repo(), r.PR}
+			if err, bad := failed[k]; bad {
+				errs = append(errs, fmt.Errorf("intake %s: %w", r.ID, err))
 				continue
 			}
-			timelines[k] = items
+			items, ok := timelines[k]
+			if !ok {
+				if items, err = w.Src.Timeline(ctx, r.repo(), r.PR); err != nil {
+					err = fmt.Errorf("timeline: %w", err)
+					failed[k] = err
+					errs = append(errs, fmt.Errorf("intake %s: %w", r.ID, err))
+					continue
+				}
+				timelines[k] = items
+			}
+			done, err := w.process(ctx, r, items)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("intake %s: %w", r.ID, err))
+				continue
+			}
+			if done {
+				settled++
+			}
 		}
-		done, err := w.process(ctx, r, items)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("intake %s: %w", r.ID, err))
-			continue
+		if len(page) < sweepLimit {
+			return settled, errors.Join(errs...)
 		}
-		if done {
-			settled++
-		}
+		last := page[len(page)-1]
+		afterAt, afterID = last.CreatedAt, last.ID
 	}
-	return settled, errors.Join(errs...)
 }
 
 func (w *Worker) log() *slog.Logger {
@@ -299,7 +317,8 @@ func (w *Worker) pickRemoval(ctx context.Context, row intakeRow, items []Timelin
 // already stored a row for that node, the delivery attaches to it: the
 // delivery's row is removed, its delivery id moves over, and the stored row is
 // returned (uuid.Nil when that row is already settled), so the removal has one
-// row and one attribution.
+// row and one attribution. The stored row takes the delivery's routing: the
+// delivery is the intake commit, whatever the record read later.
 func (w *Worker) bind(ctx context.Context, row intakeRow, rem TimelineItem) (intakeRow, error) {
 	tx, err := w.Pool.Begin(ctx)
 	if err != nil {
@@ -317,7 +336,7 @@ func (w *Worker) bind(ctx context.Context, row intakeRow, rem TimelineItem) (int
 		case err == nil:
 			target = existing
 			if _, err := tx.Exec(ctx, `
-				UPDATE merge_queue_intake t SET delivery_id = coalesce(t.delivery_id, d.delivery_id), updated_at = now()
+				UPDATE merge_queue_intake t SET delivery_id = coalesce(t.delivery_id, d.delivery_id), routing = d.routing, updated_at = now()
 				FROM merge_queue_intake d WHERE t.id = $1 AND d.id = $2`, existing, row.ID); err != nil {
 				return row, err
 			}

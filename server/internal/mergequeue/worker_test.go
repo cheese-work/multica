@@ -3,6 +3,8 @@ package mergequeue
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -446,5 +448,88 @@ func TestWorkerDoesNotBindALateDeliveryOfAnOlderRemovalToTheNewerOne(t *testing.
 	}
 	if n := count(t, p, "merge_queue_evidence", ws); n != 0 || ev.calls != 0 {
 		t.Errorf("evidence rows %d, collections %d; want none", n, ev.calls)
+	}
+}
+
+// A delivery that attaches to a row the record stored keeps the routing of its
+// own intake commit, in both orders of the two values and when the stored row is
+// already settled (plan 4.3).
+func TestWorkerAttachKeepsTheRoutingOfTheDeliveryIntakeCommit(t *testing.T) {
+	for _, routes := range [][2]string{{"warn", "block"}, {"block", "warn"}} { // {stored row, delivery}
+		for _, settled := range []bool{false, true} {
+			p, ws := pool(t)
+			var stored uuid.UUID
+			inTx(t, p, func(tx pgx.Tx) {
+				var err error
+				if stored, _, err = EnsureIntakeForRemoval(context.Background(), tx, input(ws, "", routes[0]), "n1", t0); err != nil {
+					t.Fatal(err)
+				}
+			})
+			if settled {
+				if _, err := p.Exec(context.Background(), `UPDATE merge_queue_intake SET status = 'processed' WHERE id = $1`, stored); err != nil {
+					t.Fatal(err)
+				}
+			}
+			pendingAt(t, p, ws, "d1", routes[1], t0.Add(time.Minute))
+			src := &fakeSource{ws: ws, items: []TimelineItem{removal("n1", t0)}, runs: []BuildRun{failedRun(t0)}}
+			w, _ := newWorker(p, src, t0.Add(time.Hour))
+			if _, err := w.Sweep(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if n := count(t, p, "merge_queue_intake", ws); n != 1 {
+				t.Fatalf("routes %v settled %v: intake rows = %d; want 1", routes, settled, n)
+			}
+			if v := view(t, p, stored); v.Routing != routes[1] || v.Delivery != "d1" {
+				t.Errorf("routes %v settled %v: row = %+v; want routing %s and delivery d1", routes, settled, v, routes[1])
+			}
+		}
+	}
+}
+
+// failingSource fails the timeline read of every PR but one.
+type failingSource struct {
+	*fakeSource
+	healthyPR int
+	failed    map[int]int
+}
+
+func (f *failingSource) Timeline(ctx context.Context, r Repo, pr int) ([]TimelineItem, error) {
+	if r.WS == f.ws && pr != f.healthyPR {
+		f.failed[pr]++
+		return nil, errors.New("github unavailable")
+	}
+	return f.fakeSource.Timeline(ctx, r, pr)
+}
+
+// Rows that fail on every sweep must not hide the rows behind them: the sweep
+// reads past the first page (sweepLimit rows).
+func TestWorkerSweepReachesAHealthyRowBehindPersistentFailures(t *testing.T) {
+	p, ws := pool(t)
+	for i := 0; i < sweepLimit; i++ {
+		var id uuid.UUID
+		inTx(t, p, func(tx pgx.Tx) {
+			var err error
+			in := input(ws, fmt.Sprintf("bad-%d", i), "warn")
+			in.PR = 100 + i
+			if id, _, err = InsertIntake(context.Background(), tx, in); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if _, err := p.Exec(context.Background(), `UPDATE merge_queue_intake SET created_at = $2 WHERE id = $1`, id, t0.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	healthy := pendingAt(t, p, ws, "good", "warn", t0.Add(time.Hour)) // PR 7, behind the failing rows
+	src := &failingSource{fakeSource: &fakeSource{ws: ws, items: []TimelineItem{removal("n1", t0.Add(55*time.Minute))}, runs: []BuildRun{failedRun(t0)}}, healthyPR: 7, failed: map[int]int{}}
+	w := &Worker{Pool: p, Src: src, Ev: &fakeEvidence{}, Now: func() time.Time { return t0.Add(3 * time.Hour) }}
+	n, err := w.Sweep(context.Background())
+	if err == nil {
+		t.Error("sweep error = nil; want the failing rows reported")
+	}
+	if v := view(t, p, healthy); n != 1 || v.Status != "processed" {
+		t.Errorf("settled %d, healthy row %+v; want 1 and processed", n, v)
+	}
+	if len(src.failed) != sweepLimit {
+		t.Errorf("failing PRs read %d; want %d", len(src.failed), sweepLimit)
 	}
 }
