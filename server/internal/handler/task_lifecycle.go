@@ -268,6 +268,10 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonIssueInTriage)
 		return
 	}
+	if errors.Is(err, service.ErrIntakeHold) {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonIntakeHold)
+		return
+	}
 	if errors.Is(err, service.ErrStageQueueFull) {
 		h.writeDispatchBlocked(w, http.StatusConflict, ReasonStageQueueFull)
 		return
@@ -286,6 +290,10 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 	}
 	if errors.Is(err, service.ErrRecoveryCaused) {
 		writeError(w, http.StatusForbidden, errRecoveryCaused)
+		return
+	}
+	if errors.Is(err, service.ErrRecoveryNotAdmitted) {
+		writeError(w, http.StatusConflict, "recovery rerun not admitted: this failed run already has a recovery claim or the retry budget is spent")
 		return
 	}
 	var notConfirmed *service.StopNotConfirmedError

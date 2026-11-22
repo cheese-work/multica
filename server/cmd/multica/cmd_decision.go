@@ -38,6 +38,9 @@ var decisionRevokeCmd = &cobra.Command{
 	Long: "Undo the action a decision approved, while its type has an inverse and it is not yet revoked. Only the person the ask is for can revoke. The server records who, when and why, and wakes the proposing agent with outcome revoked. An action that needs a passkey must be revoked in the app.",
 }
 
+// waitFlagHelp is the --wait help of decision request and decision ask (CHE-6460).
+const waitFlagHelp = "Park this issue while the request is open, only when nothing else can proceed. The issue parks only when the workspace sets decision_ask_park=on_wait; with always, every request parks and --wait changes nothing. A blocked issue parks either way"
+
 func init() {
 	decisionRequestCmd.Flags().String("issue", "", "Issue UUID or identifier")
 	_ = decisionRequestCmd.MarkFlagRequired("issue")
@@ -60,6 +63,7 @@ func init() {
 	decisionRequestCmd.Flags().StringSlice("covers", nil, "Batch card: ids of open plain choice cards (reversible or product_direction, with no action, governed write or artifact) for the same human that this answer also closes (max 25); every covered card must offer each batch option with the same label and the same what_happens meaning; withdrawing the batch answer withdraws the covered answers too")
 	decisionRequestCmd.Flags().String("expires-in", "", "With --kind action: how long the ask stays open, e.g. 72h (default 72h, maximum 168h)")
 	decisionRequestCmd.Flags().String("recovers", "", "Ask guard event ID this request answers (from a refusal or a recovery notice); the request clears that event for the person it asks")
+	decisionRequestCmd.Flags().Bool("wait", false, waitFlagHelp)
 	decisionRequestCmd.Flags().String("footer-file", "", "Optional UTF-8 file appended to the issue comment only, e.g. RHC-2 lines")
 	for _, flag := range []string{"class", "ask-file"} {
 		_ = decisionRequestCmd.MarkFlagRequired(flag)
@@ -184,6 +188,9 @@ func runDecisionRequest(command *cobra.Command, _ []string) error {
 	}
 	if recovers != "" {
 		body["recovers"] = recovers
+	}
+	if wait, _ := command.Flags().GetBool("wait"); wait {
+		body["wait"] = true
 	}
 	var result map[string]any
 	if err := client.PostJSON(ctx, "/api/decisions", body, &result); err != nil {

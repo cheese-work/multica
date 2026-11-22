@@ -51,6 +51,9 @@ type statusRecord struct {
 	// attach is the existing comments the move carries; the transaction checks
 	// them again under the issue lock.
 	attach *attachedComments
+	// waitNotice, when set, stores the typed-ask notice of a move that named a
+	// member, in the write's transaction (CHE-7292).
+	waitNotice func(ctx context.Context, q *db.Queries, prevStatus string, moved db.Issue) error
 }
 
 func withStatusRecord(ctx context.Context, rec *statusRecord) context.Context {

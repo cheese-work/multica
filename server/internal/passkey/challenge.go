@@ -20,7 +20,7 @@ const (
 	PurposeRevoke          Purpose = "passkey_revoke"
 )
 
-var issuable = map[Purpose]bool{PurposeDecisionApprove: true, PurposeRevoke: true, PurposeGateChange: true, PurposeEnroll: true, PurposeDecisionAnswer: true}
+var issuable = map[Purpose]bool{PurposeDecisionApprove: true, PurposeRevoke: true, PurposeGateChange: true, PurposeEnroll: true, PurposeDecisionAnswer: true, PurposeGuardPolicy: true}
 
 const ChallengeTTL = 5 * time.Minute
 

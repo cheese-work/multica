@@ -269,7 +269,7 @@ func (h *Handler) settleHandoffIntentInTx(ctx context.Context, q *db.Queries, in
 func handoffRunRefused(err error) bool {
 	for _, refusal := range []error{
 		service.ErrRunBudgetExhausted, service.ErrStageQueueFull, service.ErrAdmissionDeferred, service.ErrReviewHeadAnswered,
-		service.ErrIssueInTriage, service.ErrAgentPaused, service.ErrRecoveryCaused, service.ErrAgentArchived, errSquadLeaderNotAdmitted,
+		service.ErrIssueInTriage, service.ErrIntakeHold, service.ErrAgentPaused, service.ErrRecoveryCaused, service.ErrAgentArchived, errSquadLeaderNotAdmitted,
 	} {
 		if errors.Is(err, refusal) {
 			return true

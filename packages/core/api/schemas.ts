@@ -1600,6 +1600,15 @@ export const EMPTY_CREATE_FEEDBACK_RESPONSE: CreateFeedbackResponse = {
   created_at: "",
 };
 
+// A thread's relation to the viewer, set on thread roots (CHE-6428). All three
+// flags are required: a partial object would read as "not with me" and hide a
+// thread, so anything malformed drops to undefined and the UI shows every thread.
+const ThreadRelationSchema = z.object({
+  with_me: z.boolean(),
+  agents_only: z.boolean(),
+  waiting_on_me: z.boolean(),
+}).loose();
+
 export const CommentSchema = z.lazy(() => z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1627,6 +1636,7 @@ export const CommentSchema = z.lazy(() => z.object({
   // Set only on comments a quick action produced (MUL-5465). Server-only.
   quick_action_id: z.string().nullable().optional(),
   deleted_at: z.string().nullable().optional().catch(undefined),
+  thread_relation: ThreadRelationSchema.optional().catch(undefined),
 }).loose());
 
 export const CommentsListSchema = z.lazy(() => z.array(CommentSchema));
@@ -4819,6 +4829,45 @@ export const ProviderBreakerSchema = z.lazy(() => z.object({
   next_probe_at: z.string().nullish().transform((v) => v ?? null),
   last_success_at: z.string().nullish().transform((v) => v ?? null),
   trip_evidence: z.array(z.string()).nullish().transform((v) => v ?? []),
+}));
+// Tool-guard decision counts and rows (CHE-5207). Counts default to zero and
+// the list shapes are strict: a malformed body must not read as "no hits".
+const guardCount = z.number().int().nonnegative().catch(0);
+const guardText = z.string().nullish().transform((v) => v ?? "");
+export const GuardDayCountsSchema = z.lazy(() => z.object({
+  day: z.string(),
+  fixed: guardCount,
+  refused: guardCount,
+  errors: guardCount,
+}));
+export const GuardStatsSchema = z.lazy(() => z.object({
+  days: z.number().int().catch(7),
+  tz: guardText,
+  since: guardText,
+  plugins: z.array(z.object({
+    plugin: z.string(),
+    fixed: guardCount,
+    refused: guardCount,
+    errors: guardCount,
+    shadow_hits: guardCount,
+    passes: guardCount,
+    daily: z.array(GuardDayCountsSchema).nullish().transform((v) => v ?? []),
+  })),
+}));
+export const GuardDecisionListSchema = z.lazy(() => z.object({
+  decisions: z.array(z.object({
+    id: z.string(),
+    task_id: guardText,
+    time: guardText,
+    plugin: guardText,
+    action: guardText,
+    tool: guardText,
+    subcommand: guardText,
+    line: guardText,
+    issue: guardText,
+    note: guardText,
+    runtime: guardText,
+  })),
 }));
 export const ProviderBreakerListSchema = z.lazy(() => z.object({
   breakers: z.array(ProviderBreakerSchema).nullish().transform((v) => v ?? []),

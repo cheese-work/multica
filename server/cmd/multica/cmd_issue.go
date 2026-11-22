@@ -841,6 +841,7 @@ func init() {
 	issueCommentAddCmd.Flags().Bool("decision-record", false, "Record the named human's reversible decision from attested DM messages or a member comment; every other class is refused and must be answered on the decision card")
 	issueCommentAddCmd.Flags().Bool("decision-veto", false, "Withdraw the stamped answer named by --parent; requires a non-empty --content-file reason")
 	issueCommentAddCmd.Flags().Bool("notify-only", false, "Declare the comment an FYI so it may mention a member without a decision request; it never binds a wait. Cannot combine with --decision-intent, --decision-record or --decision-veto")
+	issueCommentAddCmd.Flags().String("from-thread", "", "Open the comment as a new root that links back to the thread of this comment (same issue). The server adds one line to the source thread; it mentions nobody and starts no run. Cannot combine with --parent. An agent task cannot resolve the new root; resolve the source thread with a reply there")
 	issueCommentAddCmd.Flags().String("ask", "", "Member id (UUID) of the person who acts next on this comment; use on a comment on an issue in in_review, blocked or need_decision. Cannot combine with --no-ask, --notify-only or a decision flag")
 	issueCommentAddCmd.Flags().Bool("no-ask", false, "Declare that no person acts next on this comment. Cannot combine with --ask, --notify-only or a decision flag")
 	issueCommentAddCmd.Flags().StringArray("message", nil, "Source DM message UUID (repeatable; requires --decision-record)")
@@ -3196,6 +3197,10 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if !hasContent && !decisionRecord {
 		return fmt.Errorf("--content, --content-stdin, or --content-file is required")
 	}
+	fromThread, _ := cmd.Flags().GetString("from-thread")
+	if fromThread != "" && parent != "" {
+		return fmt.Errorf("--from-thread opens a new root and cannot combine with --parent")
+	}
 	resolveThread, _ := cmd.Flags().GetBool("resolve-thread")
 	if parent, _ := cmd.Flags().GetString("parent"); resolveThread && parent == "" {
 		return fmt.Errorf("--resolve-thread requires --parent: it resolves the thread the reply belongs to")
@@ -3273,6 +3278,9 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 	if notifyOnly {
 		body["notify_only"] = true
+	}
+	if fromThread != "" {
+		body["from_thread"] = fromThread
 	}
 	if askID != "" {
 		body["ask"] = askID

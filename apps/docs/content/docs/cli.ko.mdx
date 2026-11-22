@@ -149,7 +149,15 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 
 `in_review`, `blocked`, `need_decision` 태스크에 에이전트가 남기는 댓글은 다음에 움직일 사람을 밝혀야 합니다. 사람이 움직이면 `--ask <member-id>`, 아무도 움직이지 않으면 `--no-ask`를 씁니다. 멤버 멘션, `--notify-only`, 결정 요청도 인정됩니다. 두 플래그는 서로, 그리고 `--notify-only`나 결정 플래그와 함께 쓸 수 없습니다. 같은 이동에는 `multica issue status`에 `--waiting-on member:<member-id>` 또는 `--waiting-on none`이 필요하며 `in_review`, `blocked`, `need_decision`에서만 허용됩니다. 워크스페이스 설정 `waiting_audience_guard`와 `waiting_on_guard`가 대상 누락을 허용, 기록, 거부 중 무엇으로 처리할지 정합니다.
 
+긴 스레드를 늘리지 않고 짧게 질문하려면 질문 스레드를 엽니다. `--from-thread <comment-id>`는 해당 댓글의 스레드(같은 이슈의 댓글이어야 하며, 아니면 `400 thread_issue_mismatch`)로 돌아가는 링크를 가진 새 루트로 댓글을 만듭니다. 서버는 원본 스레드에 `Asked <이름> in thread <id>.` 한 줄을 추가합니다. 누구도 멘션하지 않고, 실행을 시작하지 않으며, 원본 스레드의 해결 상태도 바꾸지 않습니다. `--from-thread`는 `--parent`와 함께 쓸 수 없습니다. 에이전트 작업은 질문 스레드의 루트를 해결할 수 없습니다(`409 ask_root_not_resolvable`). 원본 스레드에 답글을 달아 해결하세요. 멤버는 기존처럼 해결할 수 있습니다.
+
+```bash
+multica issue comment add MUL-123 --content-file ask.md --from-thread <comment-id>
+```
+
 `multica decision request`의 `--recovers <event-id>`는 요청이 ask 가드 이벤트(거부된 작업이나 복구 알림에 표시된 이벤트)에 대한 응답임을 나타냅니다. 서버는 이벤트가 이 이슈에 있고 요청이 묻는 사람을 위해 발생한 경우에만, 요청과 같은 트랜잭션에서 그 이벤트를 해제합니다. 한 사람에 대한 요청은 다른 사람의 이벤트를 해제하지 않으며, `--recovers`가 없는 요청은 아무것도 해제하지 않습니다. 다른 이슈나 다른 사람의 이벤트는 `400`으로 거부됩니다.하나의 요청은 이벤트 하나만 복구합니다. 같은 요청을 재시도하면서 두 번째 이벤트를 지정하면 `400`으로 거부됩니다.
+
+`--wait`(`multica decision request`와 `multica decision ask`)는 요청이 열려 있는 동안 이슈를 보류하도록 서버에 요청합니다. 다른 작업을 진행할 수 없을 때만 사용하세요. 이슈는 워크스페이스 설정 `decision_ask_park`가 `on_wait`일 때만 보류됩니다. 기본값인 `always`에서는 모든 요청이 이슈를 보류하며 `--wait`는 아무것도 바꾸지 않습니다. `blocked` 이슈는 어느 쪽이든 보류됩니다. `--wait`가 없으면 이슈의 상태와 담당자는 그대로이고, 답변이 요청한 에이전트를 깨웁니다.
 
 같은 프로젝트, 같은 상위 태스크 아래에 제목이 같은(대소문자와 여분의 공백은 구분하지 않음) 닫히지 않은 태스크가 이미 있으면 `issue create`는 생성을 거부하고 그 태스크를 알려 줍니다. 그래도 만들려면 `--allow-duplicate`를 붙이세요. 한 태스크를 다른 태스크의 중복으로 표시하려면 `multica issue status MUL-124 cancelled --duplicate-of MUL-123`을 실행합니다.
 
@@ -624,6 +632,8 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | `guard` | `exec <tool> -- <args>` | 가드를 거쳐 도구 실행: `gh pr create`·`edit`·`ready`는 드래프트 강제, 태그 부여, 재조회 확인을 거치고 `gh api`로 풀 리퀘스트에 쓰는 호출(GraphQL mutation 포함)은 거부, CI 대기(`gh pr checks --watch`, `gh run watch`, 20초 이상의 `sleep`)는 대신 쓸 wakeup 명령을 안내하며 거부 | 종료 코드: 도구 자체의 코드, 가드가 거부하면 2. 환경 변수: `MULTICA_GUARD_POLICY` + `MULTICA_GUARD_POLICY_SHA256`, `MULTICA_GUARD_LOG`, `MULTICA_GUARD_REAL_<TOOL>` |
 | `guard` | `check-pr <pr-url\|number\|branch>` | 풀 리퀘스트를 정책과 저장소의 `.github/agent-rules.yml`에 비추어 변경 없이 검사합니다. 파일은 PR의 보호된 기본 브랜치의 현재 끝에서 데이터로 읽으며 PR 브랜치에서는 읽지 않습니다. 파일이 없으면 규칙이 추가되지 않고, 형식이 잘못된 파일이나 읽을 수 없는 기본 브랜치는 검사를 실패시킵니다. CI 검사로 사용합니다 | 종료 코드: 0 통과, 1 규칙 위반, 2 거부. `-R owner/name`으로 저장소 지정 |
 | `guard` | `plugin list\|get\|set` | 저장된 가드 정책을 읽거나(`list`, `get <name>`) 이를 대체하는 결정 액션 파일을 작성(`set --file <policy.json> --out <action.json>` 또는 `--dry-run`). 정책에는 워크스페이스 플러그인과 리뷰 규칙, 그리고 org·저장소·경로 레이어가 들어 있다. 더 깊은 레이어가 얕은 레이어를 키 단위로 덮어쓰며, `locked`가 붙은 레이어 또는 워크스페이스는 그 키를 더 깊은 레이어로부터 고정한다. `set`은 아무것도 전송하지 않으며, 사람이 passkey로 `workspace.settings.patch`를 승인한다. 데몬은 승인된 정책을 작업 트리 밖의 파일 `MULTICA_GUARD_POLICY`와 `MULTICA_GUARD_POLICY_SHA256`로 각 실행에 전달한다 | 출력: JSON 행(`--output table`은 표). `set`은 `before_sha256`과 `after_sha256`을 출력 |
+| `guard` | `log` | 워크스페이스의 최근 가드 판정을 최신순으로 나열한다. `--plugin`, `--action`(`fixed`, `refused`, `plugin-error`, `shadow-hit`, `pass`), `--since`(일수, `24h`나 `7d` 같은 기간, 또는 RFC 3339 시각. 기본값 `7d`), `--limit`(기본 50, 최대 500)으로 거를 수 있다. 데몬은 각 실행이 끝날 때 그 판정 로그를 업로드한다. Guard 설정 페이지도 같은 행을 보여 준다 | 출력: JSON 행(`--output table`은 표) |
+| `guard` | `stats` | 플러그인별 가드 판정 수(`fixed`, `refused`, `errors`)를 최근 `--days`일(기본 7, 최대 90) 동안 센다. Guard 설정 페이지도 같은 수치를 보여 준다 | 출력: JSON 행(`--output table`은 표) |
 
 `repository_allowlist`는 소유자별 허용 저장소 이름을 지정하며 대소문자를 구분하지 않습니다. 지정한 소유자는 기본 거부하고 생략한 소유자는 제한하지 않습니다. 플러그인과 하위 계층보다 먼저 `gh pr create`, `gh pr comment`, `git push`, 인증된 `repo checkout`의 미승인 작업을 거부합니다. Git은 pushurl과 URL 재작성을 포함한 실제 대상을 확인하며 불명확하면 거부합니다. 승인 전에 daemon을 업데이트하세요. Cheese Work의 기준 파일은 `config/tevo-prod1-guard.json`입니다.
 

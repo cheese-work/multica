@@ -57,6 +57,19 @@ type TaskService struct {
 	Analytics analytics.Client
 	Metrics   *obsmetrics.BusinessMetrics
 	Wakeup    TaskWakeupNotifier
+	// RecoveryClaims is the one claim store every automatic retry writer
+	// claims through before it dispatches (CHE-1126 Layer 2, CHE-4568). Nil
+	// leaves the writers unclaimed, as in isolated test services.
+	RecoveryClaims *RecoveryClaimStore
+	// beforeRecoveryClaim runs as a writer starts to claim, holding whatever
+	// connection it already has; nil in production.
+	beforeRecoveryClaim func(context.Context)
+	// afterRecoveryClaim runs once a writer holds an admitted claim and has
+	// not yet dispatched. Tests pause the writer here; nil in production.
+	afterRecoveryClaim func(context.Context)
+	// afterRecoveryFence runs once a writer has renewed its claim and has not
+	// yet dispatched; nil in production.
+	afterRecoveryFence func(context.Context)
 	// PRSnapshotsEnabled reports whether the server can refresh GitHub check snapshots.
 	PRSnapshotsEnabled bool
 	// MergeFacts is the facts source every wakeup service built on this task
@@ -2081,7 +2094,7 @@ func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, iss
 			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
 		}
-		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) && !errors.Is(err, ErrReviewHeadAnswered) && !errors.Is(err, ErrAgentPaused) {
+		if !errors.Is(err, ErrRunBudgetExhausted) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrAdmissionDeferred) && !errors.Is(err, ErrReviewHeadAnswered) && !errors.Is(err, ErrAgentPaused) && !errors.Is(err, ErrIntakeHold) {
 			slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
 		}
 		return db.AgentTaskQueue{}, err
@@ -6686,7 +6699,8 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 	// MaybeRetryFailedTask posts for the same refusal (createAgentComment
 	// opens its own transaction and cannot run inside this one).
 	var retryProviderHoldNotice string
-	if err := s.runInPgxTx(ctx, func(qtx *db.Queries, tx pgx.Tx) error {
+	hold := &recoveryHold{}
+	txErr := s.runInPgxTx(ctx, func(qtx *db.Queries, tx pgx.Tx) error {
 		if wantRetry {
 			parent, err := qtx.GetAgentTask(ctx, taskID)
 			if err != nil {
@@ -6857,6 +6871,18 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 				createRetry = false
 			}
 		}
+		// CHE-4568: claim through the shared store before minting. A refusal or
+		// an unreadable store skips the retry, never aborts this transaction.
+		if createRetry {
+			admitted, cerr := s.claimRecovery(ctx, qtx, hold, t.IssueID, taskID, RecoveryModeNativeResume, int(retryMaxAttempts.Int32))
+			if cerr != nil || !admitted {
+				slog.Info("fail task auto-retry skipped: recovery claim not admitted",
+					"task_id", util.UUIDToString(taskID), "error", cerr)
+				createRetry = false
+			} else if !s.fenceRecoveryClaim(ctx, hold, qtx.Conn()) {
+				createRetry = false
+			}
+		}
 		if createRetry {
 			child, cerr := qtx.CreateRetryTask(ctx, db.CreateRetryTaskParams{
 				NewTaskID:            dbid.NewV7(),
@@ -6909,6 +6935,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 						return fmt.Errorf("copy retry channel delivery: %w", err)
 					}
 					retried = &child
+					s.submitRecoveryClaim(ctx, hold, qtx, child.ID)
 				}
 			case errors.Is(cerr, pgx.ErrNoRows):
 				// The statement wrote nothing: either the owning workspace was
@@ -6985,7 +7012,13 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			failureMsg = &failure
 		}
 		return SettleTerminalTaskState(ctx, qtx, t)
-	}); err != nil {
+	})
+	if retried != nil && txErr == nil {
+		s.finishRecoveryClaim(ctx, hold, retried.ID, true, nil)
+	} else {
+		s.finishRecoveryClaim(ctx, hold, pgtype.UUID{}, false, txErr)
+	}
+	if err := txErr; err != nil {
 		if errors.Is(err, ErrClaimNotUnstarted) {
 			return nil, false, err
 		}
@@ -7464,6 +7497,20 @@ func hasRunnableSuccessor(ctx context.Context, q *db.Queries, task db.AgentTaskQ
 // Autopilot tasks are NOT auto-retried here; the autopilot scheduler owns
 // its own re-run cadence and we don't want to double-fire it.
 func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentTaskQueue) (*db.AgentTaskQueue, error) {
+	hold := &recoveryHold{}
+	child, err := s.maybeRetryFailedTask(ctx, parent, hold)
+	s.finishRecoveryClaim(ctx, hold, childID(child), child != nil, err)
+	return child, err
+}
+
+func childID(t *db.AgentTaskQueue) pgtype.UUID {
+	if t == nil {
+		return pgtype.UUID{}
+	}
+	return t.ID
+}
+
+func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentTaskQueue, hold *recoveryHold) (*db.AgentTaskQueue, error) {
 	if parent.Status != "failed" || taskfailure.ResponseProtectionUnavailable(parent.Error.String) {
 		return nil, nil
 	}
@@ -7570,13 +7617,20 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, err
 	}
 	if err := guardIssueRunAllowed(ctx, qtx, parent.IssueID, OriginDerived, RunTarget{AgentID: parent.AgentID, Trigger: "retry", SourceTaskID: parent.ID}); err != nil {
-		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrAgentPaused) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || errors.Is(err, ErrAdmissionDeferred) || IsProjectInactive(err) {
+		if errors.Is(err, ErrIssueInTriage) || errors.Is(err, ErrIntakeHold) || errors.Is(err, ErrAgentPaused) || errors.Is(err, ErrRunBudgetExhausted) || errors.Is(err, ErrStageQueueFull) || errors.Is(err, ErrAdmissionDeferred) || IsProjectInactive(err) {
 			slog.Info("task auto-retry skipped: issue does not run",
 				"parent_task_id", util.UUIDToString(parent.ID),
 				"issue_id", util.UUIDToString(parent.IssueID))
 			return nil, nil
 		}
 		return nil, err
+	}
+	// CHE-4568: claim through the shared store, after every gate that can
+	// decline and just before the mint, so a declined retry leaves no claim.
+	if admitted, cerr := s.claimRecovery(ctx, qtx, hold, parent.IssueID, parent.ID, RecoveryModeNativeResume, int(retryAttemptCeiling(reason, parent.MaxAttempts))); cerr != nil {
+		return nil, fmt.Errorf("task auto-retry: recovery claim: %w", cerr)
+	} else if !admitted || !s.fenceRecoveryClaim(ctx, hold, qtx.Conn()) {
+		return nil, nil
 	}
 	child, err := qtx.CreateRetryTask(ctx, db.CreateRetryTaskParams{
 		NewTaskID:            dbid.NewV7(),
@@ -7607,6 +7661,7 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if err := noteRunInserted(ctx, qtx, parent.IssueID, child.ID); err != nil {
 		return nil, err
 	}
+	s.submitRecoveryClaim(ctx, hold, qtx, child.ID)
 	if err := CopyWorkflowRoleToRetry(ctx, qtx, parent, child); err != nil {
 		return nil, err
 	}
@@ -7769,6 +7824,21 @@ func IsFreshRerun(task db.AgentTaskQueue) bool {
 // rerun as a back door — and a blocked rerun mutates nothing. Pass nil only
 // from trusted internal callers (tests, backfill) that have already gated.
 func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, fresh bool, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
+	hold := &recoveryHold{}
+	defer func() {
+		if hold.owned != nil { // a panic skipped the finish; free the row lock
+			_ = hold.owned.Rollback(context.WithoutCancel(ctx))
+		}
+		if hold.leave != nil {
+			hold.leave()
+		}
+	}()
+	task, err := s.rerunIssue(ctx, hold, issueID, sourceTaskID, triggerCommentID, actorUserID, fresh, canInvoke)
+	s.finishRecoveryClaim(ctx, hold, childID(task), task != nil, err)
+	return task, err
+}
+
+func (s *TaskService) rerunIssue(ctx context.Context, hold *recoveryHold, issueID pgtype.UUID, sourceTaskID pgtype.UUID, triggerCommentID pgtype.UUID, actorUserID pgtype.UUID, fresh bool, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
 	if err := RequireActiveIssueProject(ctx, s.Queries, issueID); err != nil {
 		return nil, err
 	}
@@ -7798,6 +7868,7 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 		isLeader            bool
 		squadID             pgtype.UUID
 		coalescedCommentIDs []pgtype.UUID
+		sourceMaxAttempts   int32
 	)
 	if sourceTaskID.Valid {
 		sourceTask, err := s.Queries.GetAgentTask(ctx, sourceTaskID)
@@ -7819,6 +7890,7 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 			return nil, ErrRerunSourceIsTriage
 		}
 		agentID = sourceTask.AgentID
+		sourceMaxAttempts = sourceTask.MaxAttempts
 		isLeader = sourceTask.IsLeaderTask
 		// Carry the source task's squad provenance so a rerun of a leader
 		// task still injects the squad briefing at claim time (see migration
@@ -8021,6 +8093,27 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, sourc
 			"existing_task_id", util.UUIDToString(existing.ID),
 		)
 		return existing, nil
+	}
+	// CHE-4568: an automated rerun (no acting member: the watchdog and other
+	// system callers) claims through the shared store before it cancels or
+	// enqueues anything. A human rerun is a decision and is never claimed.
+	if sourceTaskID.Valid && !actorUserID.Valid {
+		// The fence transaction below pins one pooled connection for the whole
+		// rerun, so bound how many reruns may do that at once, before taking any.
+		if s.RecoveryClaims != nil {
+			leave, eerr := s.RecoveryClaims.Enter(ctx)
+			if eerr != nil {
+				return nil, fmt.Errorf("rerun: recovery admission: %w", eerr)
+			}
+			hold.leave = leave
+		}
+		admitted, cerr := s.claimRecovery(ctx, s.Queries, hold, issueID, sourceTaskID, RecoveryModeFreshReplay, int(sourceMaxAttempts))
+		if cerr != nil {
+			return nil, fmt.Errorf("rerun: recovery claim: %w", cerr)
+		}
+		if !admitted || !s.fenceRecoveryClaimOwned(ctx, hold) {
+			return nil, ErrRecoveryNotAdmitted
+		}
 	}
 	cancelledCount := clearPendingSlot()
 
