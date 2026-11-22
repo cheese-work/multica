@@ -155,6 +155,8 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 multica issue comment add MUL-123 --content-file ask.md --from-thread <comment-id>
 ```
 
+에이전트의 댓글이 긴 스레드 깊은 곳에서 멤버를 멘션하면, 서버는 에이전트가 `--from-thread`를 넘긴 것처럼 그 댓글을 새 질문 스레드로 옮길 수 있습니다. 워크스페이스 설정 `long_thread_member_ask`(기본값 `off`, `warn`, `move`)가 동작을 정하고, `long_thread_member_ask_min`(3~100, 기본값 10)은 적용되는 스레드 크기입니다(루트 포함). 멘션된 멤버 중 누구도 스레드의 마지막 댓글 3개 안에 글을 쓰지 않았을 때만 적용됩니다. `--notify-only`, 결정 유형, `--supersedes`, `--resolve-thread`가 있는 댓글은 옮기지 않습니다. `move`에서는 응답에 `placement`(`moved`, `source_root_id`, `reason`)와 힌트가 담기고, `warn`에서는 댓글이 그 자리에 게시되며 `--from-thread`를 알리는 힌트가 담깁니다. 댓글을 수정해도 옮겨지지 않습니다.
+
 `multica decision request`의 `--recovers <event-id>`는 요청이 ask 가드 이벤트(거부된 작업이나 복구 알림에 표시된 이벤트)에 대한 응답임을 나타냅니다. 서버는 이벤트가 이 이슈에 있고 요청이 묻는 사람을 위해 발생한 경우에만, 요청과 같은 트랜잭션에서 그 이벤트를 해제합니다. 한 사람에 대한 요청은 다른 사람의 이벤트를 해제하지 않으며, `--recovers`가 없는 요청은 아무것도 해제하지 않습니다. 다른 이슈나 다른 사람의 이벤트는 `400`으로 거부됩니다.하나의 요청은 이벤트 하나만 복구합니다. 같은 요청을 재시도하면서 두 번째 이벤트를 지정하면 `400`으로 거부됩니다.
 
 `--wait`(`multica decision request`와 `multica decision ask`)는 요청이 열려 있는 동안 이슈를 보류하도록 서버에 요청합니다. 다른 작업을 진행할 수 없을 때만 사용하세요. 이슈는 워크스페이스 설정 `decision_ask_park`가 `on_wait`일 때만 보류됩니다. 기본값인 `always`에서는 모든 요청이 이슈를 보류하며 `--wait`는 아무것도 바꾸지 않습니다. `blocked` 이슈는 어느 쪽이든 보류됩니다. `--wait`가 없으면 이슈의 상태와 담당자는 그대로이고, 답변이 요청한 에이전트를 깨웁니다.

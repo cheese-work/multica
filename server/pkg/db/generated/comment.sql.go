@@ -397,6 +397,47 @@ func (q *Queries) CountThreadCommentsSince(ctx context.Context, arg CountThreadC
 	return count, err
 }
 
+const countThreadLiveComments = `-- name: CountThreadLiveComments :one
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = $1 AND c.issue_id = $2 AND c.workspace_id = $3
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1)
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = $2 AND c.workspace_id = $3
+)
+SELECT count(*) FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.deleted_at IS NULL
+`
+
+type CountThreadLiveCommentsParams struct {
+	TargetID    pgtype.UUID `json:"target_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The live comments in @target_id's thread, root included (same walk as
+// GetThreadLatestComment). The long-thread route (CHE-6432) compares it with
+// long_thread_member_ask_min.
+func (q *Queries) CountThreadLiveComments(ctx context.Context, arg CountThreadLiveCommentsParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countThreadLiveComments, arg.TargetID, arg.IssueID, arg.WorkspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createComment = `-- name: CreateComment :one
 WITH touched_issue AS (
     UPDATE issue SET
@@ -2719,6 +2760,73 @@ func (q *Queries) ListThreadCommentsForIssuePaged(ctx context.Context, arg ListT
 			&i.Revision,
 			&i.DeletedAt,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listThreadLastAuthors = `-- name: ListThreadLastAuthors :many
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = $2 AND c.issue_id = $3 AND c.workspace_id = $4
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1)
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = $3 AND c.workspace_id = $4
+)
+SELECT comment.author_type, comment.author_id FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.deleted_at IS NULL
+ORDER BY comment.created_at DESC, comment.id DESC
+LIMIT $1
+`
+
+type ListThreadLastAuthorsParams struct {
+	RowLimit    int32       `json:"row_limit"`
+	TargetID    pgtype.UUID `json:"target_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type ListThreadLastAuthorsRow struct {
+	AuthorType string      `json:"author_type"`
+	AuthorID   pgtype.UUID `json:"author_id"`
+}
+
+// The author of each of the newest @row_limit live comments in @target_id's
+// thread (root plus every descendant), newest first. The long-thread route
+// (CHE-6432) reads it to see whether a mentioned member is in the conversation.
+func (q *Queries) ListThreadLastAuthors(ctx context.Context, arg ListThreadLastAuthorsParams) ([]ListThreadLastAuthorsRow, error) {
+	rows, err := q.db.Query(ctx, listThreadLastAuthors,
+		arg.RowLimit,
+		arg.TargetID,
+		arg.IssueID,
+		arg.WorkspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListThreadLastAuthorsRow{}
+	for rows.Next() {
+		var i ListThreadLastAuthorsRow
+		if err := rows.Scan(&i.AuthorType, &i.AuthorID); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
