@@ -357,6 +357,7 @@ var budgetGuardFor = map[string][]string{
 var budgetGuardExempt = map[string]string{
 	"executeIssueWorkflowSetAction": "the card seals the binding before and after through sealWorkflowBinding, and the executor recomputes both under the issue lock and ends stale_base on any difference",
 	"MoveIssue":                     "delegates to the UpdateIssue handler, which sets the actor for the guard",
+	"applyDeferredWorkflowSwitch":   "applies a parked switch; RequestWorkflowSwitch, the only writer of that row, has no production caller yet, so a caller that adds one must price the move first (follow-up of CHE-7132)",
 	"applyIssueProjectMove":         "write tail; its callers are held to loadIssueProjectMove above",
 	"applyProjectSwitch":            "write tail; its callers are held to a price check above",
 }
