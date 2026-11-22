@@ -9141,10 +9141,29 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Inject runtime-specific config (meta skill) so the agent discovers .agent_context/.
 	var managedClaude execenv.ManagedClaudeHome
 	isManagedClaude := harnessProfile == execenv.HarnessProfileManaged && provider == "claude"
+	// CHE-6540: a Claude run in trial arm 1 gets a stable cwd and a byte-stable
+	// brief file; everything else is control and keeps the layout below.
+	_, bwrapErr := exec.LookPath("bwrap")
+	stableCwd, bootLever := d.cfg.bootPrefixFor(task, provider, bwrapErr == nil)
+	if d.cfg.CostTrialLever && bwrapErr != nil && provider == "claude" {
+		taskLog.Warn("boot prefix lever needs bwrap; running as control", "error", bwrapErr)
+	}
+	if stableCwd != "" {
+		if err := os.MkdirAll(stableCwd, 0o755); err != nil {
+			taskLog.Warn("stable cwd mount point unavailable", "path", stableCwd, "error", err)
+			stableCwd, bootLever = "", false
+		}
+	}
 	// injectBrief writes the runtime brief. Managed Claude delivers it through
-	// --append-system-prompt-file (no workdir CLAUDE.md); everything else is
-	// unchanged.
+	// --append-system-prompt-file (no workdir CLAUDE.md), as does a boot-prefix
+	// lever run; everything else is unchanged.
+	var leverBriefPath, taskBrief string
 	injectBrief := func() (string, error) {
+		if bootLever {
+			brief, path, perTask, err := deliverBrief(provider, taskCtx, env.WorkDir, env.RootDir, true)
+			leverBriefPath, taskBrief = path, perTask
+			return brief, err
+		}
 		if !isManagedClaude {
 			return execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx)
 		}
@@ -9154,13 +9173,21 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	var runtimeBrief string
 	if isManagedClaude {
 		// A managed failure must not fall back to the personal config.
-		managedClaude, err = execenv.PrepareManagedClaudeHome(env.RootDir, execenv.SourceClaudeConfigDir(), execenv.RuntimeBrief(provider, taskCtx), taskCtx.AgentSkills, effectiveMcpConfig)
+		homeBrief := execenv.RuntimeBrief(provider, taskCtx)
+		if bootLever {
+			homeBrief, _ = execenv.SplitRuntimeBrief(provider, taskCtx)
+		}
+		managedClaude, err = execenv.PrepareManagedClaudeHome(env.RootDir, execenv.SourceClaudeConfigDir(), homeBrief, taskCtx.AgentSkills, effectiveMcpConfig)
 		if err != nil {
 			return TaskResult{}, fmt.Errorf("prepare managed claude home: %w", err)
 		}
 	}
 	runtimeBrief, err = injectBrief()
 	if err != nil {
+		if bootLever {
+			// The lever run has no other brief; a missing file is a broken treatment run.
+			return TaskResult{}, fmt.Errorf("write boot-prefix brief: %w", err)
+		}
 		d.logger.Warn("execenv: inject runtime config failed (non-fatal)", "error", err)
 	}
 	// An exempt turn runs in the user's directory without having queued for it,
@@ -9168,6 +9195,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// is the one thing it cannot work out from its own context — tell it.
 	// Worktree mode is excluded: there the tree is this task's private checkout.
 	var promptOptions []PromptOption
+	if taskBrief != "" {
+		promptOptions = append(promptOptions, WithTaskBrief(taskBrief))
+	}
 	if localAssignment != nil && !localAssignment.UsesWorktree() && localDirectoryLockExempt(task) {
 		promptOptions = append(promptOptions, WithSharedLocalDirectory())
 	}
@@ -9492,12 +9522,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if provider == "opencode" || provider == "codearts" {
 		idleWatchdogTimeout = d.cfg.OpenCodeIdleWatchdog
 	}
-	stableCwd := d.cfg.stableCwdFor(provider, task.Agent.Name, task.AgentID)
-	if stableCwd != "" {
-		if err := os.MkdirAll(stableCwd, 0o755); err != nil {
-			taskLog.Warn("stable cwd mount point unavailable", "path", stableCwd, "error", err)
-			stableCwd = ""
-		}
+	appendSystemPromptFile := managedClaude.BriefPath
+	if bootLever {
+		appendSystemPromptFile = leverBriefPath
 	}
 	execOpts := agent.ExecOptions{
 		StableCwd: stableCwd,
@@ -9538,7 +9565,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		OpenclawMode:            openclawMode,
 		OpenclawModelOverride:   openclawModelOverride,
 		ClaudeSettingsPath:      env.ClaudeSettingsPath,
-		AppendSystemPromptFile:  managedClaude.BriefPath,
+		AppendSystemPromptFile:  appendSystemPromptFile,
 		DisableProviderWebTools: task.DisableProviderWebTools(),
 		QwenpawWorkspace:        env.QwenpawWorkspace,
 	}
