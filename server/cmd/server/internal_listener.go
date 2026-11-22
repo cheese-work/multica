@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"net/http"
 	"os"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/controlplane"
@@ -23,30 +21,26 @@ func newInternalServer(publicPort string, mounts ...func(chi.Router)) (*http.Ser
 	return controlplane.NewServer(os.Getenv("MULTICA_INTERNAL_LISTEN_ADDR"), publicPort, mounts...)
 }
 
-// installTokenAuthenticator resolves "Authorization: Bearer mpi_..." to the workspace of the
-// install it belongs to. lookup reports an unknown, disabled or malformed token as an error.
-func installTokenAuthenticator(lookup func(ctx context.Context, token string) (pgtype.UUID, error)) browserlease.Authenticator {
-	return func(r *http.Request) (pgtype.UUID, bool) {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		if !ok || token == "" {
-			return pgtype.UUID{}, false
-		}
-		ws, err := lookup(r.Context(), token)
-		return ws, err == nil && ws.Valid
-	}
-}
-
-// internalMounts are the gateway-facing route groups served on the internal listener. They stay
-// off while the plugin service is absent: with no way to authenticate, nothing is served.
+// internalMounts are the gateway-facing route groups served on the internal listener: events,
+// cleanup-ack and quarantine, all behind a per-gateway credential (CHE-8883). A plugin install
+// token authenticates nothing here. With no credential issued, every request is 401.
 func internalMounts(h *handler.Handler) []func(chi.Router) {
-	if h == nil || h.PluginService == nil || h.BrowserLeases == nil {
+	if h == nil || h.BrowserLeases == nil || h.Queries == nil {
 		return nil
 	}
-	auth := installTokenAuthenticator(func(ctx context.Context, token string) (pgtype.UUID, error) {
-		inst, err := h.PluginService.AuthenticateInstallToken(ctx, token)
-		return inst.WorkspaceID, err
-	})
+	creds := browserlease.CredentialAuth{Queries: h.Queries}
 	acks := browserlease.NewAckService(h.BrowserLeases.Pool)
 	acks.Queue = h.BrowserLeases
-	return []func(chi.Router){acks.Mount(auth)}
+	events := &browserlease.Gateway{
+		Store:        browserlease.DBStore{Queries: h.Queries},
+		Broker:       &browserlease.Broker{},
+		Authenticate: creds.Authenticate,
+		Owns:         creds.Owns,
+	}
+	return []func(chi.Router){
+		acks.Mount(creds.Authenticate),
+		func(r chi.Router) {
+			r.Method(http.MethodGet, strings.TrimPrefix(browserlease.EventsPath, "/internal/browser"), events.EventsHandler())
+		},
+	}
 }

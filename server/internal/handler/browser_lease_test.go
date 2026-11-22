@@ -56,6 +56,7 @@ func newBrowserLeaseFixture(t *testing.T, taskStatus string) browserLeaseFixture
 	if _, err := q.CreateBrowserInstance(context.Background(), db.CreateBrowserInstanceParams{WorkspaceID: ws, Name: "x99-1"}); err != nil {
 		t.Fatal(err)
 	}
+	seedGatewayCredential(t, "c00")
 	t.Cleanup(func() {
 		for _, tbl := range []string{"browser_lease", "browser_instance", "browser_profile"} {
 			testPool.Exec(context.Background(), "DELETE FROM "+tbl+" WHERE workspace_id = $1", testWorkspaceID)

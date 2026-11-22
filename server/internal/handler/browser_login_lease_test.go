@@ -42,6 +42,7 @@ func newLoginLeaseFixture(t *testing.T) loginLeaseFixture {
 	if _, err := q.CreateBrowserInstance(ctx, db.CreateBrowserInstanceParams{WorkspaceID: ws, Name: "c00-1"}); err != nil {
 		t.Fatal(err)
 	}
+	seedGatewayCredential(t, "c00")
 	var other string
 	email := "login-lease-" + uuid.NewString() + "@multica.test"
 	if err := testPool.QueryRow(ctx, `INSERT INTO "user" (name, email) VALUES ('Login Lease Other', $1) RETURNING id`, email).Scan(&other); err != nil {

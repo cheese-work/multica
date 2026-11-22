@@ -88,6 +88,7 @@ type env struct {
 	signer *fakeSigner
 	ws     pgtype.UUID
 	now    time.Time
+	cred   Principal // the unrevoked c00 credential every test workspace starts with
 }
 
 func newUUID() pgtype.UUID { return pgtype.UUID{Bytes: uuid.New(), Valid: true} }
@@ -105,16 +106,30 @@ func newEnv(t *testing.T, instances ...string) *env {
 		Class3: testClass3(t),
 	}
 	t.Cleanup(func() {
-		for _, tbl := range []string{"browser_lease", "browser_instance", "browser_profile"} {
+		for _, tbl := range []string{"browser_lease", "browser_instance", "browser_profile", "browser_gateway_credential"} {
 			testPool.Exec(context.Background(), "DELETE FROM "+tbl+" WHERE workspace_id = $1", e.ws)
 		}
 	})
+	e.cred = e.credential("c00")
 	for _, name := range instances {
 		if _, err := q.CreateBrowserInstance(context.Background(), db.CreateBrowserInstanceParams{WorkspaceID: e.ws, Name: name}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return e
+}
+
+// credential inserts an unrevoked credential for the gateway in the test workspace. Test
+// instances are created on the default gateway c00, which a grant now requires a credential for.
+func (e *env) credential(gateway string) Principal {
+	e.t.Helper()
+	row, err := e.svc.Queries.CreateBrowserGatewayCredential(context.Background(), db.CreateBrowserGatewayCredentialParams{
+		WorkspaceID: e.ws, Gateway: gateway, CredentialHash: HashCredential("mbc_test_" + uuid.NewString()),
+	})
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return Principal{CredentialID: row.ID, WorkspaceID: e.ws, Gateway: gateway}
 }
 
 func (e *env) profile(class string) db.BrowserProfile {

@@ -108,6 +108,7 @@ func TestBrowserLeaseMintS2DecisionIsAskedAsTheMintingAgent(t *testing.T) {
 	if _, err := db.New(testPool).CreateBrowserInstance(context.Background(), db.CreateBrowserInstanceParams{WorkspaceID: parseUUID(testWorkspaceID), Name: "c00-1"}); err != nil {
 		t.Fatal(err)
 	}
+	seedGatewayCredential(t, "c00")
 	out := mintS2(t, f, profile)
 
 	var asking string

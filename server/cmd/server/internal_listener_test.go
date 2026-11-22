@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -72,16 +70,20 @@ func TestInternalListenerAddrFromEnv(t *testing.T) {
 }
 
 // CHE-4736 (W3-7): cleanup-ack and quarantine are served on the internal listener, behind the
-// install-token authenticator, and nowhere else.
+// per-gateway credential authenticator, and nowhere else.
 func ackListener(t *testing.T) *http.Server {
 	t.Helper()
-	ws := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
-	auth := installTokenAuthenticator(func(_ context.Context, token string) (pgtype.UUID, error) {
-		if token != "mpi_good" {
-			return pgtype.UUID{}, errors.New("unknown token")
+	p := browserlease.Principal{
+		CredentialID: pgtype.UUID{Bytes: [16]byte{2}, Valid: true},
+		WorkspaceID:  pgtype.UUID{Bytes: [16]byte{1}, Valid: true},
+		Gateway:      "c00",
+	}
+	auth := func(r *http.Request) (browserlease.Principal, bool) {
+		if r.Header.Get("Authorization") != "Bearer mbc_good" {
+			return browserlease.Principal{}, false
 		}
-		return ws, nil
-	})
+		return p, true
+	}
 	t.Setenv("MULTICA_INTERNAL_LISTEN_ADDR", "172.30.0.2:9000")
 	srv, err := newInternalServer("8080", browserlease.NewAckService(nil).Mount(auth))
 	if err != nil || srv == nil {
@@ -90,7 +92,7 @@ func ackListener(t *testing.T) *http.Server {
 	return srv
 }
 
-func TestInternalListenerServesCleanupAckBehindTheInstallToken(t *testing.T) {
+func TestInternalListenerServesCleanupAckBehindTheGatewayCredential(t *testing.T) {
 	srv := ackListener(t)
 	const inst = "6f1d3b8e-1b6e-4f0e-9d0a-0c1c2b3a4d5e"
 	for _, route := range []string{"cleanup-ack", "quarantine"} {
@@ -100,9 +102,9 @@ func TestInternalListenerServesCleanupAckBehindTheInstallToken(t *testing.T) {
 			want       int
 		}{
 			{"no header", "", http.StatusUnauthorized},
-			{"wrong scheme", "Basic mpi_good", http.StatusUnauthorized},
-			{"unknown token", "Bearer mpi_bad", http.StatusUnauthorized},
-			{"good token reaches the handler", "Bearer mpi_good", http.StatusBadRequest}, // empty body: epoch missing
+			{"wrong scheme", "Basic mbc_good", http.StatusUnauthorized},
+			{"unknown token", "Bearer mbc_bad", http.StatusUnauthorized},
+			{"good credential reaches the handler", "Bearer mbc_good", http.StatusBadRequest}, // empty body: epoch missing
 		}
 		for _, c := range cases {
 			req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{}`))
