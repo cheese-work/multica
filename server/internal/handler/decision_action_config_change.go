@@ -219,6 +219,12 @@ func configChangePreconditions(ctx context.Context, queries *db.Queries, workspa
 		return nil, err
 	}
 	meta := previewMeta(read, kind, diff)
+	if section := previewSection(read, kind, diff); section != nil {
+		if meta == nil {
+			meta = map[string]any{}
+		}
+		meta["section"] = section
+	}
 	keys := read.Keys
 	if keys == nil {
 		keys = []string{}

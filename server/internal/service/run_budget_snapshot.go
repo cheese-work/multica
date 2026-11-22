@@ -26,10 +26,10 @@ type RunBudgetSnapshot struct {
 	WindowStartedAt time.Time `json:"window_started_at"`
 	// WindowID is opaque to clients: a budget action echoes it back so the
 	// server can tell whether the window it was asked about is still open.
-	WindowID  string   `json:"window_id"`
-	RunsState string   `json:"runs_state,omitempty"`
-	State     string   `json:"state,omitempty"`
-	Blocking  []string `json:"blocking"`
+	WindowID     string            `json:"window_id"`
+	RunsState    string            `json:"runs_state,omitempty"`
+	State        string            `json:"state,omitempty"`
+	Blocking     []string          `json:"blocking"`
 	CanRaise     bool              `json:"can_raise"`
 	RaisePreview *RunBudgetPreview `json:"raise_preview,omitempty"`
 }
@@ -47,6 +47,8 @@ const (
 	RunBudgetNear    = "near"
 	RunBudgetAtLimit = "at_limit"
 	RunBudgetOver    = "over"
+	// RunBudgetWarn is the State of a spent budget in warn mode: runs go on.
+	RunBudgetWarn = "warn"
 )
 
 // NewRunBudgetSnapshot builds the snapshot from the counted runs, the limit in
@@ -136,7 +138,17 @@ func LoadRunBudgetSnapshot(ctx context.Context, q *db.Queries, issue db.Issue) (
 	if err != nil {
 		return RunBudgetSnapshot{Blocking: []string{}}, err
 	}
-	return NewRunBudgetSnapshot(usage.Runs, usage.Max, left, usage.Source, usage.Since), nil
+	snap := NewRunBudgetSnapshot(usage.Runs, usage.Max, left, usage.Source, usage.Since)
+	// Warn reports the overage without blocking; off does not report a budget.
+	switch runBudgetMode(ctx, q, issue.WorkspaceID) {
+	case RunBudgetModeOff:
+		return RunBudgetSnapshot{Blocking: []string{}}, nil
+	case RunBudgetModeWarn:
+		if left < 1 {
+			snap.State, snap.Blocking = RunBudgetWarn, []string{}
+		}
+	}
+	return snap, nil
 }
 
 // CurrentRunBudget reads the issue's cap and run balance as admission would

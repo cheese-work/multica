@@ -26,6 +26,8 @@
     "packages/core/realtime/specific-events.ts",
     "packages/core/search-index/hooks.ts",
     "packages/views/issues/components/wakeup-draft.ts",
+    "packages/views/issues/components/wakeup-activity.tsx",
+    "packages/views/issues/components/timeline-coalesce.ts",
     "packages/views/issues/components/issue-wakeup-defaults.tsx",
     "packages/core/api/issue-graph-schema.ts",
     "packages/core/run-budget/schema.ts",

@@ -221,6 +221,20 @@ multica issue comment list MUL-123 --thread <comment-id> --tail 5 --output json 
 - `--recent N` 返回最近活跃的 N 个线程，每个线程带上全部回复，回复多时输出可能很长。
 - 已解决的线程默认折叠成首条评论和结论，需要原文时加 `--full`。
 
+只读与你（或其他成员、智能体）有关的线程时，加上关系参数：
+
+```bash
+multica issue comment list MUL-123 --roots-only --summary --with-me --output json --compact
+multica issue comment list MUL-123 --roots-only --summary --waiting-on <member> --output json --compact
+```
+
+- `--with-me` 只返回你发过言、被直接提及，或带有发给你的决策请求的线程；`--without-me` 返回其余线程。
+- `--waiting-on <member>` 只返回在等该成员的线程：有发给他的未决决策请求，或他被直接提及后还没有回复。接受成员 ID 或名称。
+- `--for <id>` 以该成员或智能体（而不是你）的视角计算关系。单独使用时，只给每个根评论加上 `thread_relation`，不做筛选。
+- 这些参数按整个线程筛选，可与 `--roots-only`、`--summary`、`--thread` 一起用。每条根评论会带上 `thread_relation`。
+- 不加关系参数时，`--compact` 和 `--summary` 的输出不含 `thread_relation`，现有读取的输出不会变大。
+- 服务端算不出关系时，命令直接报错，不会把未筛选的列表当作筛选结果输出。
+
 列表也可以只取需要的字段：`multica issue list --output json --fields id,identifier,title,status`。筛选在 CLI 本地完成，减少的是输出和上下文，不是请求量。
 
 ### 唤醒
@@ -382,6 +396,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `multica workspace update --time-wakeup-skip-mode off|warn|block` 设置工作区的定时唤醒跳过模式（`settings.time_wakeup_skip.mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改，每次修改都会记入活动日志。`off` 关闭检查并运行所有被推迟的定时唤醒；`warn` 只记录 `block` 会怎么做，触发照常运行；`block` 会推迟未变化的已声明触发，并要求智能体在定时唤醒上传入 `--watch <inputs>` 或 `--watch always`。
 - `multica workspace update --auto-close-mode off|warn|block` 设置自动关闭模式（`settings.auto_close.mode`）。它只修改这一个键，不改其他设置，也不能与其他更新标志同时使用。只有所有者可以修改。关闭所需的检查见[工作区](/docs/workspaces)。评审后无事可做时，任务的作者记录 `multica issue metadata set <issue> --key post_close_work --value none --type string`。
 - `multica workspace update --blocked-run-skip-mode off|warn|block` 设置阻塞进入时跳过运行的模式（`settings.blocked_run_skip.mode`）。它只修改该键，不改变其他设置，且不能与其他更新标志同时使用。只有所有者可以更改。何时跳过进入时的运行见[工作区](/docs/workspaces)。
+- `multica workspace update --run-budget-mode off|warn|block` 和 `--run-guard-mode off|warn|block` 分别设置单任务运行预算模式（`settings.run_budget.mode`）和每周运行守卫模式（`settings.run_guard.mode`）。每个标志只修改自己的键，不改变其他设置。这两个标志可以在同一条命令中一起使用，例如 `--run-guard-mode warn --run-budget-mode warn`；它们都不能与其他更新标志组合。只有所有者可以修改。各模式的效果见 [工作区](/docs/workspaces)。
 - `multica workspace update --ask-guard-mode off|warn|block` 设置提问守卫模式（`settings.ask_guard_mode`）。它只修改这一个键，不改其他任何设置，也不能与其他更新标志同时使用。只有所有者可以修改。命令会输出保存后的工作区，`multica workspace get` 也会在 `settings` 下显示该模式。`off` 关闭守卫；`warn` 只统计遗漏并放行；`block` 拒绝。
 - `multica workspace update --merge-queue-routing off|warn`、`--merge-queue-bindings '<json>'` 和 `--merge-queue-watch-issue <issue-id|none>` 设置合并队列设置（`settings.merge_queue_dequeue_routing`、`settings.merge_queue_actor_bindings`、`settings.merge_queue_watch_issue`）。它们可以相互组合，但不能与其他更新标志组合。只有所有者可以修改。`--merge-queue-routing block` 以及同时出现在两个列表中的登录名会被以 `routing-not-available` 等拒绝。
 - `--issue-title-template` 只替换 `{{date}}`（UTC，`YYYY-MM-DD`），其他 `{{...}}` 会被拒绝。定时触发器的 `--timezone` 默认 UTC。
@@ -565,7 +580,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `search <query>` | 搜索任务 | `--limit`、`--include-closed` |
 | | `children <id>` | 按阶段分组列出子任务 | |
 | | `pull-requests <id>` | 列出关联的 PR | |
-| | `comment list/add/update/delete/resolve/unresolve` | 管理评论 | `add`：`--content` / `--content-stdin` / `--content-file`、`--parent`、`--attachment`；`update`：`--expected-revision`（必填）、`--content` / `--content-stdin` / `--content-file`；`list`：`--since`、`--thread`、`--tail`、`--recent`、`--roots-only`、`--summary`、`--compact`、`--full` |
+| | `comment list/add/update/delete/resolve/unresolve` | 管理评论 | `add`：`--content` / `--content-stdin` / `--content-file`、`--parent`、`--attachment`；`update`：`--expected-revision`（必填）、`--content` / `--content-stdin` / `--content-file`；`list`：`--since`、`--thread`、`--tail`、`--recent`、`--roots-only`、`--summary`、`--compact`、`--full`、`--with-me`、`--without-me`、`--waiting-on`、`--for` |
 | | `timeline <id>` | 按时间列出活动记录和评论 | `--action`（可重复）、`--activity-only`、`--since`、`--tail` |
 | | `wakeup events/list/get/create/update/disable/trigger/delete/checkin/runs` | 管理任务唤醒，详见[任务唤醒](/issue-wakeups) | `create` / `update`：`--agent-id`、`--kind`（`event`、`at`、`every`、`cron`）、`--event`、`--at` / `--after`、`--every`、`--cron`、`--timezone`、`--until-*` 条件、`--expires-in` / `--expires-at`、`--instruction` / `--instruction-file`；`checkin`：`--note` |
 | | `subscriber list/add/remove <issue-id>` | 管理订阅者 | `--user`、`--user-id`（缺省为当前用户） |

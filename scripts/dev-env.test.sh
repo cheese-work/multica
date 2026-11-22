@@ -129,6 +129,26 @@ assert_nested_listener_is_recorded() (
     || fail "nested listener pid was not recorded"
 )
 
+# lsof can omit a live listener on Linux (observed on X99: it cannot stat some
+# mounts and prints nothing for a next-server socket), so the lookup falls back
+# to ss. An lsof answer still wins, and a port nobody listens on stays free.
+assert_listener_lookup_falls_back_to_ss() (
+  local bin="$tmp_dir/lookup-bin"
+  mkdir -p "$bin"
+  printf '#!/usr/bin/env bash\n[ -z "${FAKE_LSOF:-}" ] || printf "%%s\\n" "$FAKE_LSOF"\n' > "$bin/lsof"
+  printf '#!/usr/bin/env bash\n[ -z "${FAKE_SS:-}" ] || printf "%%s\\n" "$FAKE_SS"\n' > "$bin/ss"
+  chmod +x "$bin/lsof" "$bin/ss"
+  # shellcheck disable=SC1090
+  source "$root_dir/scripts/dev-env.sh"
+  local ss_line='LISTEN 0 511 *:13304 *:* users:(("next-server (v1",pid=777,fd=22))'
+  [ "$(PATH="$bin:$PATH" FAKE_LSOF=555 FAKE_SS="$ss_line" port_listener_pid 13304)" = 555 ] \
+    || fail "an lsof answer must win over ss"
+  [ "$(PATH="$bin:$PATH" FAKE_SS="$ss_line" port_listener_pid 13304)" = 777 ] \
+    || fail "lsof silent: the ss listener pid must be returned"
+  [ -z "$(PATH="$bin:$PATH" port_listener_pid 13304)" ] \
+    || fail "no listener anywhere: the port must read as free"
+)
+
 assert_stop_handles_listener() {
   local case_name=$1 listener=$2 listener_pgid=$3 listener_parent=$4 recorded=${5:-}
   local expected_target=${6:-}
@@ -283,6 +303,7 @@ assert_listener_ownership nested owned 100 420 310
 assert_listener_ownership recorded owned 100 200 200 200
 assert_listener_ownership external external 100 999 999
 assert_nested_listener_is_recorded
+assert_listener_lookup_falls_back_to_ss
 
 # Stopping first records an owned nested listener before killing the launcher's
 # process group. An unrelated port occupant never receives a signal.

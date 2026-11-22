@@ -221,6 +221,20 @@ multica issue comment list MUL-123 --thread <comment-id> --tail 5 --output json 
 - `--recent N`은 최근 활동이 있었던 스레드 N개를 모든 답글과 함께 반환하므로 답글이 많으면 출력이 길어집니다.
 - 해결된 스레드는 기본적으로 첫 댓글과 결론으로 접힙니다. 전체 내용이 필요하면 `--full`을 붙이세요.
 
+나(또는 다른 멤버나 에이전트)와 관련된 스레드만 읽으려면 관계 플래그를 붙이세요.
+
+```bash
+multica issue comment list MUL-123 --roots-only --summary --with-me --output json --compact
+multica issue comment list MUL-123 --roots-only --summary --waiting-on <member> --output json --compact
+```
+
+- `--with-me`는 내가 글을 썼거나, 직접 멘션되었거나, 나에게 온 결정 요청이 있는 스레드만 반환합니다. `--without-me`는 나머지를 반환합니다.
+- `--waiting-on <member>`는 해당 멤버를 기다리는 스레드만 반환합니다. 그 멤버에게 온 미결 결정 요청이 있거나, 직접 멘션된 뒤 아직 답하지 않은 스레드입니다. 멤버 ID나 이름을 받습니다.
+- `--for <id>`는 나 대신 그 멤버나 에이전트의 시점으로 관계를 계산합니다. 단독으로 쓰면 필터링 없이 각 루트에 `thread_relation`만 붙입니다.
+- 이 플래그들은 스레드 전체를 기준으로 걸러내므로 `--roots-only`, `--summary`, `--thread`와 함께 쓸 수 있습니다. 각 루트에 `thread_relation`이 붙습니다.
+- 관계 플래그가 없으면 `--compact`와 `--summary` 출력에 `thread_relation`이 없으므로 기존 읽기는 커지지 않습니다.
+- 서버가 관계를 계산하지 못하면 걸러지지 않은 목록을 출력하지 않고 명령이 오류로 끝납니다.
+
 목록도 필요한 필드만 받을 수 있습니다: `multica issue list --output json --fields id,identifier,title,status`. 필터링은 CLI에서 이루어지므로 줄어드는 것은 출력과 컨텍스트이고 요청량은 그대로입니다.
 
 ### 깨우기
@@ -382,6 +396,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `multica workspace update --time-wakeup-skip-mode off|warn|block`은 워크스페이스의 시간 웨이크업 건너뛰기 모드(`settings.time_wakeup_skip.mode`)를 설정합니다. 이 키만 변경하고 다른 설정은 바꾸지 않으며, 다른 업데이트 플래그와 함께 쓸 수 없습니다. 소유자만 변경할 수 있으며, 모든 변경은 활동 로그에 기록됩니다. `off`는 확인을 끄고 보류된 시간 웨이크업을 모두 실행합니다. `warn`은 `block`이 했을 동작을 기록하고 실행은 그대로 합니다. `block`은 변화 없는 선언된 실행을 보류하고, 에이전트가 시간 웨이크업에 `--watch <inputs>` 또는 `--watch always`를 전달하도록 요구합니다.
 - `multica workspace update --auto-close-mode off|warn|block`은 자동 닫기 모드(`settings.auto_close.mode`)를 설정합니다. 이 키만 수정하고 다른 설정은 바꾸지 않으며, 다른 업데이트 플래그와 함께 쓸 수 없습니다. 소유자만 변경할 수 있습니다. 닫기에 필요한 검사는 [워크스페이스](/docs/workspaces)를 참고하세요. 리뷰 후 남은 일이 없으면 태스크 작성자가 `multica issue metadata set <issue> --key post_close_work --value none --type string`을 기록합니다.
 - `multica workspace update --blocked-run-skip-mode off|warn|block`은 차단 진입 실행 건너뛰기 모드(`settings.blocked_run_skip.mode`)를 설정합니다. 이 키만 수정하고 다른 설정은 바꾸지 않으며 다른 업데이트 플래그와 함께 쓸 수 없습니다. 소유자만 변경할 수 있습니다. 진입 실행을 건너뛰는 조건은 [워크스페이스](/docs/workspaces)를 참고하세요.
+- `multica workspace update --run-budget-mode off|warn|block`와 `--run-guard-mode off|warn|block`은 태스크별 실행 예산 모드(`settings.run_budget.mode`)와 주간 실행 가드 모드(`settings.run_guard.mode`)를 설정합니다. 각각 해당 키만 변경하고 다른 설정은 바꾸지 않습니다. 두 플래그는 `--run-guard-mode warn --run-budget-mode warn`처럼 한 명령에 함께 쓸 수 있으며, 다른 업데이트 플래그와는 함께 쓸 수 없습니다. 소유자만 변경할 수 있습니다. 각 모드의 동작은 [워크스페이스](/docs/workspaces)를 참고하세요.
 - `multica workspace update --ask-guard-mode off|warn|block`은 질문 가드 모드(`settings.ask_guard_mode`)를 설정합니다. 이 키만 변경하고 다른 설정은 바꾸지 않으며, 다른 업데이트 플래그와 함께 쓸 수 없습니다. 소유자만 변경할 수 있습니다. 명령은 저장된 워크스페이스를 출력하며, `multica workspace get`도 `settings` 아래에 모드를 보여줍니다. `off`는 가드를 끄고, `warn`은 누락을 집계하되 통과시키며, `block`은 거부합니다.
 - `multica workspace update --merge-queue-routing off|warn`, `--merge-queue-bindings '<json>'`, `--merge-queue-watch-issue <issue-id|none>`은 머지 큐 설정(`settings.merge_queue_dequeue_routing`, `settings.merge_queue_actor_bindings`, `settings.merge_queue_watch_issue`)을 지정합니다. 서로는 함께 쓸 수 있지만 다른 업데이트 플래그와는 함께 쓸 수 없습니다. 소유자만 변경할 수 있습니다. `--merge-queue-routing block`과 두 목록에 모두 있는 로그인은 `routing-not-available` 등으로 거부됩니다.
 - `--issue-title-template`은 `{{date}}`(UTC, `YYYY-MM-DD`)만 치환하며 다른 `{{...}}`는 거부합니다. 일정 트리거의 `--timezone` 기본값은 UTC입니다.
@@ -558,7 +573,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | | `search <query>` | 태스크 검색 | `--limit`, `--include-closed` |
 | | `children <id>` | 단계별로 묶은 하위 태스크 목록 | |
 | | `pull-requests <id>` | 연결된 PR 목록 | |
-| | `comment list/add/update/delete/resolve/unresolve` | 댓글 관리 | `add`: `--content` / `--content-stdin` / `--content-file`, `--parent`, `--attachment`. `update`: `--expected-revision`(필수), `--content` / `--content-stdin` / `--content-file`. `list`: `--since`, `--thread`, `--tail`, `--recent`, `--roots-only`, `--summary`, `--compact`, `--full` |
+| | `comment list/add/update/delete/resolve/unresolve` | 댓글 관리 | `add`: `--content` / `--content-stdin` / `--content-file`, `--parent`, `--attachment`. `update`: `--expected-revision`(필수), `--content` / `--content-stdin` / `--content-file`. `list`: `--since`, `--thread`, `--tail`, `--recent`, `--roots-only`, `--summary`, `--compact`, `--full`, `--with-me`, `--without-me`, `--waiting-on`, `--for` |
 | | `timeline <id>` | 활동 기록과 댓글을 시간순으로 표시 | `--action`(반복 가능), `--activity-only`, `--since`, `--tail` |
 | | `wakeup events/list/get/create/update/disable/trigger/delete/checkin/runs` | 태스크 깨우기 관리. 자세한 내용은 [태스크 깨우기](/issue-wakeups) | `create` / `update`: `--agent-id`, `--kind`(`event`, `at`, `every`, `cron`), `--event`, `--at` / `--after`, `--every`, `--cron`, `--timezone`, `--until-*` 조건, `--expires-in` / `--expires-at`, `--instruction` / `--instruction-file`. `checkin`: `--note` |
 | | `subscriber list/add/remove <issue-id>` | 구독자 관리 | `--user`, `--user-id`(생략하면 현재 사용자) |

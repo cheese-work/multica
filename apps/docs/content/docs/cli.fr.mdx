@@ -221,6 +221,20 @@ multica issue comment list MUL-123 --thread <comment-id> --tail 5 --output json 
 - `--recent N` renvoie les N fils les plus récemment actifs avec toutes leurs réponses, ce qui peut être long.
 - Les fils résolus sont repliés par défaut sur le premier commentaire et la conclusion ; ajoutez `--full` pour le texte complet.
 
+Pour ne lire que les fils qui vous concernent (ou concernent un autre membre ou agent), ajoutez un indicateur de relation :
+
+```bash
+multica issue comment list MUL-123 --roots-only --summary --with-me --output json --compact
+multica issue comment list MUL-123 --roots-only --summary --waiting-on <member> --output json --compact
+```
+
+- `--with-me` ne renvoie que les fils où vous avez écrit, où vous êtes mentionné directement, ou qui contiennent une demande de décision qui vous est adressée. `--without-me` renvoie les autres.
+- `--waiting-on <member>` ne renvoie que les fils qui attendent ce membre : une demande de décision ouverte le vise, ou une mention directe de lui est restée sans réponse de sa part. Il accepte un identifiant ou un nom de membre.
+- `--for <id>` calcule la relation du point de vue de ce membre ou agent au lieu du vôtre. Seul, il ajoute `thread_relation` à chaque racine sans filtrer.
+- Ces indicateurs filtrent des fils entiers : ils fonctionnent avec `--roots-only`, `--summary` et `--thread`. Chaque racine porte alors `thread_relation`.
+- Sans indicateur de relation, la sortie de `--compact` et `--summary` ne contient pas `thread_relation` : les lectures existantes ne grossissent pas.
+- Si le serveur ne peut pas calculer la relation, la commande échoue au lieu d'afficher une liste non filtrée.
+
 Les listes peuvent aussi se limiter aux champs utiles : `multica issue list --output json --fields id,identifier,title,status`. Le filtrage a lieu dans la CLI : il réduit la sortie et le contexte, pas la requête.
 
 ### Réveils
@@ -382,6 +396,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Europ
 - `multica workspace update --time-wakeup-skip-mode off|warn|block` définit le mode de saut des réveils horaires de l'espace de travail (`settings.time_wakeup_skip.mode`). Il ne modifie que cette clé, ne change aucun autre réglage et ne peut pas être combiné avec d'autres options de mise à jour. Seul le propriétaire peut le modifier, et chaque changement est consigné dans le journal d'activité. `off` désactive la vérification et exécute tous les réveils horaires différés ; `warn` consigne ce que `block` ferait et exécute quand même le déclenchement ; `block` diffère un déclenchement déclaré inchangé et impose aux agents de passer `--watch <inputs>` ou `--watch always` sur un réveil horaire.
 - `multica workspace update --auto-close-mode off|warn|block` définit le mode de fermeture automatique (`settings.auto_close.mode`). Elle modifie cette clé seule, ne change aucun autre paramètre et ne se combine pas avec d'autres options de mise à jour. Seul le propriétaire peut la modifier. Voir [Espaces de travail](/docs/workspaces) pour les contrôles qu'exige une fermeture. L'auteur d'une tâche enregistre `multica issue metadata set <issue> --key post_close_work --value none --type string` quand il ne reste rien à faire après la revue.
 - `multica workspace update --blocked-run-skip-mode off|warn|block` définit le mode de saut de l'exécution à l'entrée en blocage (`settings.blocked_run_skip.mode`). Il modifie cette clé seule, ne change aucun autre paramètre et ne peut pas être combiné avec d'autres options de mise à jour. Seul le propriétaire peut le modifier. Voir [Espaces de travail](/docs/workspaces) pour savoir quand une exécution d'entrée est sautée.
+- `multica workspace update --run-budget-mode off|warn|block` et `--run-guard-mode off|warn|block` définissent le mode du budget d'exécutions par tâche (`settings.run_budget.mode`) et celui de la garde hebdomadaire (`settings.run_guard.mode`). Chacune modifie sa clé seule et ne change aucun autre paramètre. Les deux options peuvent être données ensemble dans une seule commande, par exemple `--run-guard-mode warn --run-budget-mode warn` ; aucune ne peut être combinée avec une autre option de mise à jour. Seul le propriétaire peut les modifier. Voir [Espaces de travail](/docs/workspaces) pour l'effet de chaque mode.
 - `multica workspace update --ask-guard-mode off|warn|block` définit le mode de la garde des questions (`settings.ask_guard_mode`). Il ne modifie que cette clé, ne change aucun autre réglage et ne peut pas être combiné avec d'autres options de mise à jour. Seul le propriétaire peut le modifier. La commande affiche l'espace de travail enregistré, et `multica workspace get` montre le mode sous `settings`. `off` désactive la garde ; `warn` compte les manquements et les laisse passer ; `block` les refuse.
 - `multica workspace update --merge-queue-routing off|warn`, `--merge-queue-bindings '<json>'` et `--merge-queue-watch-issue <issue-id|none>` définissent les paramètres de la file de fusion (`settings.merge_queue_dequeue_routing`, `settings.merge_queue_actor_bindings`, `settings.merge_queue_watch_issue`). Ils se combinent entre eux, mais pas avec d'autres options de mise à jour. Seul le propriétaire peut les modifier. `--merge-queue-routing block` est refusé avec `routing-not-available`, de même qu'un identifiant présent dans les deux listes.
 - `--issue-title-template` ne remplace que `{{date}}` (UTC, `YYYY-MM-DD`) et refuse tout autre `{{...}}`. Le `--timezone` d'un déclencheur planifié vaut UTC par défaut.
@@ -566,7 +581,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | | `search <query>` | Rechercher des tâches | `--limit`, `--include-closed` |
 | | `children <id>` | Lister les sous-tâches regroupées par étape | |
 | | `pull-requests <id>` | Lister les PR associées | |
-| | `comment list/add/update/delete/resolve/unresolve` | Gérer les commentaires | `add` : `--content` / `--content-stdin` / `--content-file`, `--parent`, `--attachment` ; `update` : `--expected-revision` (obligatoire), `--content` / `--content-stdin` / `--content-file` ; `list` : `--since`, `--thread`, `--tail`, `--recent`, `--roots-only`, `--summary`, `--compact`, `--full` |
+| | `comment list/add/update/delete/resolve/unresolve` | Gérer les commentaires | `add` : `--content` / `--content-stdin` / `--content-file`, `--parent`, `--attachment` ; `update` : `--expected-revision` (obligatoire), `--content` / `--content-stdin` / `--content-file` ; `list` : `--since`, `--thread`, `--tail`, `--recent`, `--roots-only`, `--summary`, `--compact`, `--full`, `--with-me`, `--without-me`, `--waiting-on`, `--for` |
 | | `timeline <id>` | Lister l'activité et les commentaires dans l'ordre chronologique | `--action` (répétable), `--activity-only`, `--since`, `--tail` |
 | | `wakeup events/list/get/create/update/disable/trigger/delete/checkin/runs` | Gérer les réveils de tâche ; voir [Réveils de tâche](/issue-wakeups) | `create` / `update` : `--agent-id`, `--kind` (`event`, `at`, `every`, `cron`), `--event`, `--at` / `--after`, `--every`, `--cron`, `--timezone`, conditions `--until-*`, `--expires-in` / `--expires-at`, `--instruction` / `--instruction-file` ; `checkin` : `--note` |
 | | `subscriber list/add/remove <issue-id>` | Gérer les abonnés | `--user`, `--user-id` (par défaut, l'utilisateur actuel) |

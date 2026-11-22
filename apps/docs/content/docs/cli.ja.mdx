@@ -221,6 +221,20 @@ multica issue comment list MUL-123 --thread <comment-id> --tail 5 --output json 
 - `--recent N` は最近動きのあった N 件のスレッドを、すべての返信付きで返します。返信が多いと出力は長くなります。
 - 解決済みのスレッドは既定で最初のコメントと結論に折りたたまれます。全文が必要なら `--full` を付けます。
 
+自分（または別のメンバーやエージェント）に関わるスレッドだけを読むには、関係フラグを付けます。
+
+```bash
+multica issue comment list MUL-123 --roots-only --summary --with-me --output json --compact
+multica issue comment list MUL-123 --roots-only --summary --waiting-on <member> --output json --compact
+```
+
+- `--with-me` は、自分が書き込んだ、直接メンションされた、または自分宛ての判断リクエストがあるスレッドだけを返します。`--without-me` は残りを返します。
+- `--waiting-on <member>` は、そのメンバーを待っているスレッドだけを返します。そのメンバー宛ての未決の判断リクエストがある、または直接メンションされてまだ返信がないスレッドです。メンバー ID または名前を取ります。
+- `--for <id>` は、自分の代わりにそのメンバーまたはエージェントの視点で関係を計算します。単独で使うと、絞り込みはせず各ルートに `thread_relation` を付けるだけです。
+- これらのフラグはスレッド単位で絞り込むので、`--roots-only`、`--summary`、`--thread` と併用できます。各ルートに `thread_relation` が付きます。
+- 関係フラグを付けない場合、`--compact` と `--summary` の出力に `thread_relation` は含まれないため、既存の読み取りは増えません。
+- サーバーが関係を計算できないときは、絞り込まれていない一覧を出力せず、コマンドがエラーになります。
+
 一覧も必要なフィールドだけに絞れます：`multica issue list --output json --fields id,identifier,title,status`。絞り込みは CLI 側で行われるので、減るのは出力とコンテキストで、リクエストの量は変わりません。
 
 ### ウェイクアップ
@@ -382,6 +396,7 @@ multica autopilot trigger-add <autopilot-id> --cron "0 9 * * 1" --timezone Asia/
 - `multica workspace update --time-wakeup-skip-mode off|warn|block` は、ワークスペースの時刻ウェイクアップのスキップモード（`settings.time_wakeup_skip.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみで、変更はすべてアクティビティログに記録されます。`off` は確認をオフにし、保留中の時刻ウェイクアップをすべて実行します。`warn` は `block` なら何をするかを記録し、起動は通常どおり実行します。`block` は変化のない宣言済みの起動を保留し、エージェントには時刻ウェイクアップで `--watch <inputs>` または `--watch always` を必須にします。
 - `multica workspace update --auto-close-mode off|warn|block` は自動クローズのモード（`settings.auto_close.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーだけです。クローズに必要なチェックは [ワークスペース](/docs/workspaces) を参照してください。レビュー後にやることが残っていないとき、タスクの作成者は `multica issue metadata set <issue> --key post_close_work --value none --type string` を記録します。
 - `multica workspace update --blocked-run-skip-mode off|warn|block` はブロック時の実行スキップのモード（`settings.blocked_run_skip.mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみです。入り方の実行がスキップされる条件は[ワークスペース](/docs/workspaces)を参照してください。
+- `multica workspace update --run-budget-mode off|warn|block` と `--run-guard-mode off|warn|block` は、タスクごとの実行予算のモード（`settings.run_budget.mode`）と週次実行ガードのモード（`settings.run_guard.mode`）を設定します。それぞれそのキーだけを更新し、他の設定は変更しません。この2つのフラグは、たとえば `--run-guard-mode warn --run-budget-mode warn` のように1つのコマンドで同時に指定できます。他の更新フラグとは併用できません。変更できるのはオーナーのみです。各モードの動作は [ワークスペース](/docs/workspaces) を参照してください。
 - `multica workspace update --ask-guard-mode off|warn|block` は、質問ガードのモード（`settings.ask_guard_mode`）を設定します。このキーだけを更新し、他の設定は変更せず、他の更新フラグとは併用できません。変更できるのはオーナーのみです。コマンドは保存後のワークスペースを表示し、`multica workspace get` でも `settings` にモードが表示されます。`off` でガードをオフにし、`warn` は違反を数えるだけで通し、`block` は拒否します。
 - `multica workspace update --merge-queue-routing off|warn`、`--merge-queue-bindings '<json>'`、`--merge-queue-watch-issue <issue-id|none>` はマージキューの設定（`settings.merge_queue_dequeue_routing`、`settings.merge_queue_actor_bindings`、`settings.merge_queue_watch_issue`）を設定します。これらどうしは併用できますが、他の更新フラグとは併用できません。変更できるのはオーナーだけです。`--merge-queue-routing block` と、両方のリストにあるログインは `routing-not-available` などで拒否されます。
 - `--issue-title-template` で置き換えられるのは `{{date}}`（UTC、`YYYY-MM-DD`）だけで、ほかの `{{...}}` は拒否されます。スケジュールトリガーの `--timezone` は既定で UTC です。
@@ -558,7 +573,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `search <query>` | タスクを検索 | `--limit`、`--include-closed` |
 | | `children <id>` | サブタスクをステージごとに一覧 | |
 | | `pull-requests <id>` | 関連付けられた PR を一覧 | |
-| | `comment list/add/update/delete/resolve/unresolve` | コメントを管理 | `add`: `--content` / `--content-stdin` / `--content-file`、`--parent`、`--attachment`；`update`: `--expected-revision`（必須）、`--content` / `--content-stdin` / `--content-file`；`list`: `--since`、`--thread`、`--tail`、`--recent`、`--roots-only`、`--summary`、`--compact`、`--full` |
+| | `comment list/add/update/delete/resolve/unresolve` | コメントを管理 | `add`: `--content` / `--content-stdin` / `--content-file`、`--parent`、`--attachment`；`update`: `--expected-revision`（必須）、`--content` / `--content-stdin` / `--content-file`；`list`: `--since`、`--thread`、`--tail`、`--recent`、`--roots-only`、`--summary`、`--compact`、`--full`、`--with-me`、`--without-me`、`--waiting-on`、`--for` |
 | | `timeline <id>` | アクティビティ記録とコメントを時系列で表示 | `--action`（繰り返し可）、`--activity-only`、`--since`、`--tail` |
 | | `wakeup events/list/get/create/update/disable/trigger/delete/checkin/runs` | タスクのウェイクアップを管理。詳しくは[タスクのウェイクアップ](/issue-wakeups) | `create` / `update`: `--agent-id`、`--kind`（`event`、`at`、`every`、`cron`）、`--event`、`--at` / `--after`、`--every`、`--cron`、`--timezone`、`--until-*` 条件、`--expires-in` / `--expires-at`、`--instruction` / `--instruction-file`；`checkin`: `--note` |
 | | `subscriber list/add/remove <issue-id>` | 購読者を管理 | `--user`、`--user-id`（省略時は現在のユーザー） |

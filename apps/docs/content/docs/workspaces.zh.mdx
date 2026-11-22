@@ -81,6 +81,23 @@ PASS 所指 head 的 PR 仍未合并时，如果该步骤有到 `done` 的 `pr.m
 
 如果关联的唤醒之后被停用或删除、出现 `last_error`、未产生运行就结束（已过期或被守卫拒绝），或不再匹配 `blocked_on`，服务器会启动阻塞步骤的运行，并记录一条 `blocked_entry_rearmed` 活动记录。若运行预算已用尽或智能体已暂停，该运行同样会被拒绝，记录中会注明。
 
+### 运行次数上限
+
+两个工作区设置决定任务用完运行次数上限后的行为。两者的值都是 `{"mode": "off" | "warn" | "block"}`，默认值为 `block`，即当前行为。
+
+| 设置 | 控制的上限 |
+| --- | --- |
+| `run_budget` | 任务所属工作流的单任务运行预算（`max_runs_per_issue`）。 |
+| `run_guard` | 每周运行守卫：任务在 7 天内启动的运行次数。 |
+
+| 值 | 效果 |
+| --- | --- |
+| `block` | 下一次派生运行被拒绝，负责人收到一张卡片。 |
+| `warn` | 运行照常计数，超出部分显示在简报和 `multica issue budget get`（`state: warn`）中。不拒绝运行，不阻塞任务，也不打开卡片。 |
+| `off` | 不阻塞、不警告、不开卡片。 |
+
+循环断路器（`MULTICA_LOOP_BREAKER_MAX_RUNS`）不受影响。用 `multica workspace update --run-budget-mode` 或 `--run-guard-mode` 设置模式；代理在 `workspace.settings` 卡片上提议 `run_budget` 或 `run_guard`。
+
 ### 请求守卫
 
 工作区设置 `ask_guard_mode` 决定当智能体的操作未创建决策请求就要求人去处理时的行为。
