@@ -25,12 +25,3 @@ func instanceEpoch(t *testing.T, e *env, name string) int64 {
 	}
 	return n
 }
-
-func instancePhase(t *testing.T, e *env, name string) string {
-	t.Helper()
-	var s string
-	if err := testPool.QueryRow(context.Background(), `SELECT phase FROM browser_instance WHERE workspace_id = $1 AND name = $2`, e.ws, name).Scan(&s); err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
