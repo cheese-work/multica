@@ -240,7 +240,7 @@ func TestClaimPollStatsBatchOfFiveAgentsIsOnePoll(t *testing.T) {
 		f.queueTask(t, fmt.Sprintf("poll-stats-batch-refused-%d", i), 0, 0)
 	}
 
-	claimed, err := f.svc.ClaimTasksForRuntimes(context.Background(), []pgtype.UUID{f.runtimeID}, 10)
+	claimed, _, err := f.svc.ClaimTasksForRuntimes(context.Background(), []pgtype.UUID{f.runtimeID}, 10)
 	if err != nil {
 		t.Fatalf("ClaimTasksForRuntimes: %v", err)
 	}

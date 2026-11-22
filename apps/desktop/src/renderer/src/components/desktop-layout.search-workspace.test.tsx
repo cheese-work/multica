@@ -207,8 +207,9 @@ it("cancels an in-flight search when the production router switches workspace", 
   await openSearch();
   holdA = true;
   fireEvent.change(input(), { target: { value: "alpha" } });
-  // Issues, projects and (fork) chat-message search each hold one request.
-  await waitFor(() => expect(held.length).toBe(3), NETWORK_WAIT);
+  // The issue title tier, the ranked issue search, projects and (fork)
+  // chat-message search each hold one request.
+  await waitFor(() => expect(held.length).toBe(4), NETWORK_WAIT);
   await notify("synthetic-b");
   await act(async () => {
     for (const { response, payload } of held.splice(0)) response.end(JSON.stringify(payload));
