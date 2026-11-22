@@ -28,7 +28,9 @@ const NEXT = {
   stream: { from: ["running"], to: "running" },
   complete: { from: ["running"], to: "completed" },
   fail: { from: ["running"], to: "failed" },
-  ackCancelled: { from: ["queued", "running"], to: "cancelled" },
+  // A user cancel is what ends the run on the server; the ack only confirms the daemon saw it.
+  cancel: { from: ["queued", "running"], to: "cancelled" },
+  ackCancelled: { from: ["cancelled"], to: "cancel-acked" },
 };
 
 export function createStubRuntime({ serverUrl, token, workspaceId, deviceName = "live-stub-runtime", fetchImpl = fetch }) {
@@ -36,15 +38,16 @@ export function createStubRuntime({ serverUrl, token, workspaceId, deviceName = 
   let runtimeId = null;
   const runs = new Map();
 
-  const post = async (path, body) => {
+  const call = async (method, path, body) => {
     const res = await fetchImpl(`${origin}${path}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-      body: JSON.stringify(body),
+      method,
+      headers: { authorization: `Bearer ${token}`, "x-workspace-id": workspaceId, "content-type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
-    if (!res.ok) throw fail("request-failed", `POST ${path} -> ${res.status}`);
+    if (!res.ok) throw fail("request-failed", `${method} ${path} -> ${res.status}`);
     return res.json();
   };
+  const post = (path, body) => call("POST", path, body);
 
   // Check the transition before any call, so a refused step sends nothing.
   const step = async (taskId, name, send, marker) => {
@@ -75,7 +78,7 @@ export function createStubRuntime({ serverUrl, token, workspaceId, deviceName = 
       if (!runtimeId) throw fail("not-registered", "call register() first");
       const { task } = await post(`/api/daemon/runtimes/${runtimeId}/tasks/claim`, {});
       if (!task) return null;
-      runs.set(task.id, { state: "queued", seq: 0, timeline: ["queued"] });
+      runs.set(task.id, { state: "queued", seq: 0, timeline: ["queued"], issueId: task.issue_id, proof: task.cancel_ack_proof });
       return task;
     },
 
@@ -91,7 +94,16 @@ export function createStubRuntime({ serverUrl, token, workspaceId, deviceName = 
 
     complete: (id, output) => step(id, "complete", () => post(`/api/daemon/tasks/${id}/complete`, { output })),
     fail: (id, error) => step(id, "fail", () => post(`/api/daemon/tasks/${id}/fail`, { error })),
-    ackCancelled: (id) => step(id, "ackCancelled", () => post(`/api/daemon/tasks/${id}/cancel-ack`, {})),
+    // The same user action the UI sends; the server then holds the run as cancelled.
+    cancel(id) {
+      const issueId = runs.get(id)?.issueId;
+      const path = issueId ? `/api/issues/${issueId}/tasks/${id}/cancel` : `/api/tasks/${id}/cancel`;
+      return step(id, "cancel", () => post(path, {}));
+    },
+    ackCancelled: (id) => step(id, "ackCancelled", () => post(`/api/daemon/tasks/${id}/cancel-ack`, { cancel_ack_proof: runs.get(id).proof }), "cancel-acked"),
+
+    // The server's view of the run, not the stub's.
+    status: async (id) => (await call("GET", `/api/daemon/tasks/${id}/status`)).status,
 
     timeline: (id) => [...(runs.get(id)?.timeline ?? [])],
   };

@@ -21,21 +21,32 @@ const codeOfAsync = async (fn) => {
   return undefined;
 };
 
-// A fake daemon API on 127.0.0.1. It records every call and hands out one task per claim.
+// A fake daemon API on 127.0.0.1 that models the server's task state: only start, complete,
+// fail and a user cancel change a task's status. A cancel-ack alone never does (daemon.go AckTaskCancelled).
 async function fakeServer() {
   const calls = [];
-  const tasks = [];
+  const queue = [];
+  const status = new Map();
   const server = createServer((req, res) => {
     let body = "";
     req.on("data", (c) => (body += c));
     req.on("end", () => {
       const parsed = body ? JSON.parse(body) : {};
-      calls.push({ method: req.method, path: req.url, auth: req.headers.authorization, body: parsed });
+      calls.push({ method: req.method, path: req.url, auth: req.headers.authorization, ws: req.headers["x-workspace-id"], body: parsed });
       res.setHeader("content-type", "application/json");
       if (req.url === "/api/daemon/register") return res.end(JSON.stringify({ runtimes: [{ id: "rt-1" }] }));
       if (req.url === "/api/daemon/runtimes/rt-1/tasks/claim") {
-        return res.end(JSON.stringify({ task: tasks.shift() ?? null }));
+        const id = queue.shift();
+        if (!id) return res.end(JSON.stringify({ task: null }));
+        status.set(id, "dispatched");
+        return res.end(JSON.stringify({ task: { id, issue_id: `issue-of-${id}`, cancel_ack_proof: `proof-${id}` } }));
       }
+      let m;
+      if ((m = req.url.match(/^\/api\/daemon\/tasks\/([^/]+)\/status$/))) return res.end(JSON.stringify({ status: status.get(m[1]) }));
+      if ((m = req.url.match(/^\/api\/daemon\/tasks\/([^/]+)\/start$/))) status.set(m[1], "running");
+      if ((m = req.url.match(/^\/api\/daemon\/tasks\/([^/]+)\/complete$/))) status.set(m[1], "completed");
+      if ((m = req.url.match(/^\/api\/daemon\/tasks\/([^/]+)\/fail$/))) status.set(m[1], "failed");
+      if ((m = req.url.match(/^\/api\/issues\/issue-of-([^/]+)\/tasks\/\1\/cancel$/))) status.set(m[1], "cancelled");
       res.end(JSON.stringify({ status: "ok" }));
     });
   });
@@ -44,7 +55,8 @@ async function fakeServer() {
   return {
     url: `http://127.0.0.1:${port}`,
     calls,
-    queue: (id) => tasks.push({ id }),
+    queue: (id) => queue.push(id),
+    status: (id) => status.get(id),
     paths: () => calls.map((c) => `${c.method} ${c.path}`),
     close: () => new Promise((r) => server.close(r)),
   };
@@ -121,7 +133,7 @@ test("a run can end failed", async () => {
   }
 });
 
-test("a run can end cancelled; the stub acknowledges the cancel", async () => {
+test("a run ends cancelled only when the user cancel reaches the server; the ack carries the claim proof", async () => {
   const srv = await fakeServer();
   try {
     const rt = createStubRuntime({ serverUrl: srv.url, token: "t", workspaceId: "ws-1" });
@@ -129,9 +141,52 @@ test("a run can end cancelled; the stub acknowledges the cancel", async () => {
     srv.queue("task-3");
     const { id } = await rt.claim();
     await rt.start(id);
+    assert.equal(srv.status(id), "running");
+
+    assert.equal(await codeOfAsync(() => rt.ackCancelled(id)), "invalid-transition", "an ack before the cancel is refused");
+    assert.equal(srv.status(id), "running");
+
+    await rt.cancel(id);
+    assert.equal(srv.status(id), "cancelled", "the server, not the stub, holds the cancelled state");
+    const cancel = srv.calls.at(-1);
+    assert.equal(cancel.path, "/api/issues/issue-of-task-3/tasks/task-3/cancel");
+    assert.equal(cancel.ws, "ws-1");
+
     await rt.ackCancelled(id);
-    assert.deepEqual(rt.timeline(id), ["queued", "running", "cancelled"]);
-    assert.equal(srv.calls.at(-1).path, "/api/daemon/tasks/task-3/cancel-ack");
+    const ack = srv.calls.at(-1);
+    assert.equal(ack.path, "/api/daemon/tasks/task-3/cancel-ack");
+    assert.equal(ack.body.cancel_ack_proof, "proof-task-3");
+    assert.deepEqual(rt.timeline(id), ["queued", "running", "cancelled", "cancel-acked"]);
+    assert.equal(await codeOfAsync(() => rt.complete(id, "late")), "invalid-transition");
+  } finally {
+    await srv.close();
+  }
+});
+
+test("a queued run can be cancelled before it starts", async () => {
+  const srv = await fakeServer();
+  try {
+    const rt = createStubRuntime({ serverUrl: srv.url, token: "t", workspaceId: "ws-1" });
+    await rt.register();
+    srv.queue("task-5");
+    const { id } = await rt.claim();
+    await rt.cancel(id);
+    assert.equal(srv.status(id), "cancelled");
+    assert.deepEqual(rt.timeline(id), ["queued", "cancelled"]);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("status() reads the server's view of the run", async () => {
+  const srv = await fakeServer();
+  try {
+    const rt = createStubRuntime({ serverUrl: srv.url, token: "t", workspaceId: "ws-1" });
+    await rt.register();
+    srv.queue("task-6");
+    const { id } = await rt.claim();
+    await rt.start(id);
+    assert.equal(await rt.status(id), "running");
   } finally {
     await srv.close();
   }
@@ -150,6 +205,7 @@ test("one step per signal: a step out of order is refused and sends nothing", as
     await rt.start(id);
     await rt.complete(id, "ok");
     assert.equal(await codeOfAsync(() => rt.fail(id, "late")), "invalid-transition");
+    assert.equal(await codeOfAsync(() => rt.cancel(id)), "invalid-transition");
     assert.equal(await codeOfAsync(() => rt.start("unknown-task")), "unknown-task");
     assert.equal(srv.calls.length, before + 2);
   } finally {
