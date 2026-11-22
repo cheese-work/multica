@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -100,15 +102,17 @@ func TestStepWatchdogOnBlocksBudgetRefusedOnce(t *testing.T) {
 		}
 	})
 
-	t.Run("open admission is left to a later slice", func(t *testing.T) {
+	t.Run("open admission is not blocked", func(t *testing.T) {
 		issueID := f.stalledIssue(t, 25*time.Hour, 0)
+		dbfx.Cleanup(t, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		dbfx.Cleanup(t, `DELETE FROM issue_handoff_dispatch WHERE issue_id = $1`, issueID)
 		if err := testHandler.sweepStepWatchdog(context.Background(), 1000); err != nil {
 			t.Fatal(err)
 		}
 		var status string
 		dbfx.QueryRow(t, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&status)
-		if status != "approved" || ledgerCount(t, issueID, "redispatch") != 0 {
-			t.Errorf("status = %q, want approved with no ledger row", status)
+		if status != "approved" || ledgerCount(t, issueID, "block_budget") != 0 {
+			t.Errorf("status = %q, want approved with no block_budget row", status)
 		}
 	})
 }
@@ -227,8 +231,10 @@ func TestStepWatchdogSweepProgressesPastHandledCandidates(t *testing.T) {
 
 	t.Run("steps the mode does not act on yet", func(t *testing.T) {
 		setWatchdogMode(t, "on")
+		paused := createHandlerTestAgent(t, "paused-"+uuid.NewString()[:8], []byte("[]"))
+		dbfx.Exec(t, `UPDATE agent SET scheduling_paused_at = now() WHERE id = $1`, paused)
 		for _, age := range []time.Duration{30, 29, 28} {
-			f.stalledIssue(t, age*time.Hour, 0) // admission open: a later slice's case
+			f.stalledIssue(t, age*time.Hour, 0, testutil.Cols{"assignee_id": paused}) // notify_only: a later slice's case
 		}
 		budget := f.stalledIssue(t, 25*time.Hour, 36)
 		if err := testHandler.sweepStepWatchdog(context.Background(), limit); err != nil {
