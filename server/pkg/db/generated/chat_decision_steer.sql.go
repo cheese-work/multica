@@ -26,7 +26,7 @@ type GetDeliveredChatTaskSupplementParams struct {
 }
 
 // A steered message the provider holds for this exact run. Pending, delivering,
-// uncertain and failed receipts do not match: the agent may not have seen them.
+// requeued and withdrawn receipts do not match: the agent may not have seen them.
 func (q *Queries) GetDeliveredChatTaskSupplement(ctx context.Context, arg GetDeliveredChatTaskSupplementParams) (ChatTaskSupplement, error) {
 	row := q.db.QueryRow(ctx, getDeliveredChatTaskSupplement, arg.ChatSessionID, arg.MessageID, arg.TaskID)
 	var i ChatTaskSupplement

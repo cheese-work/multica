@@ -71,7 +71,7 @@ DELETE FROM chat_task_supplement WHERE workspace_id = $1;
 
 -- name: DeleteChatSupplementCapabilitiesBySession :exec
 DELETE FROM task_supplement_capability
-WHERE task_id IN (SELECT id FROM agent_task_queue WHERE chat_session_id = $1);
+WHERE task_id IN (SELECT q.id FROM agent_task_queue q WHERE q.chat_session_id = $1);
 
 -- name: WithdrawChatTaskSupplementsByRuntime :exec
 UPDATE chat_task_supplement SET status = 'withdrawn'

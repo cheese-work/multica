@@ -92,7 +92,7 @@ func (q *Queries) CreateChatTaskSupplement(ctx context.Context, arg CreateChatTa
 
 const deleteChatSupplementCapabilitiesBySession = `-- name: DeleteChatSupplementCapabilitiesBySession :exec
 DELETE FROM task_supplement_capability
-WHERE task_id IN (SELECT id FROM agent_task_queue WHERE chat_session_id = $1)
+WHERE task_id IN (SELECT q.id FROM agent_task_queue q WHERE q.chat_session_id = $1)
 `
 
 func (q *Queries) DeleteChatSupplementCapabilitiesBySession(ctx context.Context, chatSessionID pgtype.UUID) error {
