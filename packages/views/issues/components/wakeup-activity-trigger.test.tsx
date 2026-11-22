@@ -60,6 +60,28 @@ describe("wakeup_triggered rows name what fired and who woke", () => {
     );
   });
 
+  it("gives each of the 5 PR rules its own sentence, never the needs-attention default", () => {
+    const format = read();
+    const sentences: Record<string, string> = {
+      pr_merged: "PR #252 merged · woke Emacs",
+      pr_checks_failed: "PR #252 checks failed · woke Emacs",
+      pr_checks_passed: "PR #252 checks passed · woke Emacs",
+      pr_needs_attention: "PR #252 needs attention · woke Emacs",
+      pr_dequeued: "PR #252 left the merge queue · woke Emacs",
+    };
+    for (const [rule, sentence] of Object.entries(sentences)) {
+      expect(format(entry("wakeup_triggered", { wakeup: prRule, rule, ...pr }))).toBe(sentence);
+    }
+    expect(new Set(Object.values(sentences)).size).toBe(5);
+  });
+
+  it("tells a member about a passed or dequeued PR without calling it a wakeup", () => {
+    const format = read();
+    const member = { ...pr, target_type: "member", target_id: "u" };
+    expect(format(entry("wakeup_triggered", { wakeup: prRule, rule: "pr_checks_passed", ...member, outcome: "notified" }))).toBe("PR #252 checks passed · notified Jiayuan");
+    expect(format(entry("wakeup_triggered", { wakeup: prRule, rule: "pr_dequeued", ...member, outcome: "none" }))).toBe("PR #252 left the merge queue");
+  });
+
   it("never renders an empty event name", () => {
     const format = read();
     const rows = [
@@ -86,6 +108,14 @@ describe("wakeup_triggered rows name what fired and who woke", () => {
     expect(read()(entry("wakeup_triggered", { rule: "child_done", stage: 1, total: 2, target_type: "agent", target_id: "a", outcome: "woke" }))).toBe(
       "Stage 1's 2 sub-issues all finished · woke Emacs",
     );
+  });
+});
+
+describe("wakeup_rearmed rows", () => {
+  it("are timeline wakeup entries with their own sentence, not the raw key", () => {
+    expect(activity.WAKEUP_ACTIVITY_ACTIONS.has("wakeup_rearmed")).toBe(true);
+    const row = read()(entry("wakeup_rearmed", { failed_task_id: "t0", wakeup_revision: 3 }));
+    expect(row).toBe("Wakeup re-armed after the run failed");
   });
 });
 
