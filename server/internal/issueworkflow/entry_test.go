@@ -149,6 +149,20 @@ func TestEntryRoundTripsThroughStoredSteps(t *testing.T) {
 	}
 }
 
+// CHE-6831: a child issue must not enter a step that only root issues leave.
+func TestEvaluateEntryRootIssueRefusesAChild(t *testing.T) {
+	if got := EvaluateEntry(gates(EntryModeBlock, "root_issue"), Facts{}); len(got) != 0 {
+		t.Fatalf("a root issue must pass root_issue: %v", guardNames(got))
+	}
+	got := EvaluateEntry(gates(EntryModeBlock, "root_issue"), Facts{HasParent: true})
+	if len(got) != 1 || !strings.Contains(got[0].Fact, "parent") || got[0].Fix == "" {
+		t.Fatalf("a child must fail root_issue with a parent fact and a fix: %+v", got)
+	}
+	if err := validateEntry(Step{StatusKey: "investigating", Entry: gates(EntryModeBlock, "root_issue")}); err != nil {
+		t.Fatalf("root_issue is a valid entry gate: %v", err)
+	}
+}
+
 // pr.none_open (CHE-8771): an agent may close an issue only when no open or
 // draft PR is linked. Merged and closed PRs do not hold it back.
 func TestEvaluateEntryPRNoneOpen(t *testing.T) {

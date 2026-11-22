@@ -211,6 +211,21 @@ describe("IssueDecisionBanner", () => {
       expect(screen.getByTestId("decision-request-card").querySelector("[data-fold-body]")).toHaveAttribute("inert");
     });
 
+    it("CHE-7217: a decided action card shows its question and no Decision needed header", async () => {
+      api.listOpenDecisionRequests.mockResolvedValue([]);
+      api.listIssueDecisionCards.mockResolvedValue([used("act", {
+        ask: "**Proposed action**\n**Top up an issue's runs**\nResets the runs used.\n`issue.run_budget.top_up` version 1 on [Issue](mention://issue/issue)",
+        answer: { state: "delivered", answered_at: "2026-11-01T05:10:00Z" },
+        action: { id: "a", action_type: "issue.run_budget.top_up", payload_sha256: "p", state: "executed", effect: "applied" },
+      })]);
+      show();
+      const region = await screen.findByRole("region", { name: "Decisions" });
+      expect(screen.queryByRole("region", { name: "Decision needed" })).toBeNull();
+      expect(region.className).not.toMatch(/warning/);
+      expect(screen.getByTestId("decision-request-fold-toggle")).toHaveTextContent("Top up an issue's runs");
+      expect(screen.getByTestId("decision-request-fold-toggle")).not.toHaveTextContent("Proposed action");
+    });
+
     it("expands a folded card on click", async () => {
       api.listOpenDecisionRequests.mockResolvedValue([]);
       api.listIssueDecisionCards.mockResolvedValue([used("done")]);

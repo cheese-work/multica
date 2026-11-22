@@ -188,7 +188,7 @@
     }
   },
   "budget_receipt": {
-    "applied_runs": "已应用。{{issue}} 现显示已运行 {{used}} 次，上限 {{limit}} 次。",
+    "applied_runs": "已应用。应用时 {{issue}} 显示已运行 {{used}} 次，上限 {{limit}} 次。",
     "runs_used": "已用运行次数",
     "change": "{{used}}/{{limit}} → {{usedAfter}}/{{limitAfter}}",
     "change_new_window": "{{used}}/{{limit}} → {{usedAfter}}/{{limitAfter}}（新窗口）",
