@@ -121,6 +121,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
   const workspaceName = workspace?.name ?? t(($) => $.page.workspace_fallback);
   const { role } = useCurrentMember(workspace?.id ?? "");
   const isMember = role === "member";
+  // Owners and admins only: export privacy and the audit log (the API refuses members).
   const canManageExportPrivacy = role === "owner" || role === "admin";
   const navigation = useNavigation();
   const listCollapsed = useListColumnCollapsed();
@@ -211,10 +212,11 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
                   <ExportPrivacyTab />,
                 )]
               : []),
-            // STUB (CHE-5653): shown to everyone until the role gate lands.
-            entry("audit-log", t(($) => $.page.tabs.audit_log), ScrollText, <AuditLogPage />, {
-              wide: true,
-            }),
+            ...(canManageExportPrivacy
+              ? [entry("audit-log", t(($) => $.page.tabs.audit_log), ScrollText, <AuditLogPage />, {
+                  wide: true,
+                })]
+              : []),
             ...(billingEnabled
               ? [
                   entry(

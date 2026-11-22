@@ -4830,6 +4830,28 @@ export const ProviderBreakerSchema = z.lazy(() => z.object({
   last_success_at: z.string().nullish().transform((v) => v ?? null),
   trip_evidence: z.array(z.string()).nullish().transform((v) => v ?? []),
 }));
+// Workspace audit trail rows (CHE-5653). The server stores before/after already
+// redacted, so they are display data. A missing map reads as empty and an unknown
+// actor type as `system`, never a crash of the whole page.
+export const AuditEventSchema = z.lazy(() => z.object({
+  id: z.string(),
+  at: z.string(),
+  actor_type: z.enum(["member", "agent", "system"]).catch("system"),
+  actor_id: z.string().nullish().transform((v) => v ?? null),
+  actor_name: z.string().nullish().transform((v) => v ?? null),
+  task_id: z.string().nullish().transform((v) => v ?? null),
+  kind: z.string(),
+  target_type: z.string().nullish().transform((v) => v ?? ""),
+  target_id: z.string().nullish().transform((v) => v ?? null),
+  target_name: z.string().nullish().transform((v) => v ?? null),
+  before: z.record(z.string(), z.unknown()).nullish().transform((v) => v ?? {}),
+  after: z.record(z.string(), z.unknown()).nullish().transform((v) => v ?? {}),
+  external_requested: z.array(z.string()).nullish().transform((v) => v ?? []),
+}));
+export const AuditEventsPageSchema = z.lazy(() => z.object({
+  events: z.array(AuditEventSchema).nullish().transform((v) => v ?? []),
+  next_cursor: z.string().nullish().transform((v) => v ?? null),
+}));
 // Tool-guard decision counts and rows (CHE-5207). Counts default to zero and
 // the list shapes are strict: a malformed body must not read as "no hits".
 const guardCount = z.number().int().nonnegative().catch(0);

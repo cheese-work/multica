@@ -137,7 +137,8 @@ it("sends the kind prefix, the actor and the time range as query filters", async
   await screen.findByText("agent.update");
   fireEvent.change(screen.getByLabelText("Event kind"), { target: { value: "agent." } });
   await waitFor(() => expect(list).toHaveBeenLastCalledWith("ws", expect.objectContaining({ kind: "agent." })));
-  fireEvent.change(await screen.findByLabelText("Actor"), { target: { value: "u1" } });
+  await screen.findByRole("option", { name: "Ada" });
+  fireEvent.change(screen.getByLabelText("Actor"), { target: { value: "u1" } });
   await waitFor(() => expect(list).toHaveBeenLastCalledWith("ws", expect.objectContaining({ kind: "agent.", actor_id: "u1" })));
   fireEvent.change(screen.getByLabelText("From"), { target: { value: "2026-11-09T11:00" } });
   fireEvent.change(screen.getByLabelText("To"), { target: { value: "2026-11-09T12:00" } });
