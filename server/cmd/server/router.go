@@ -2373,8 +2373,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
 					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Get("/stage-queue", h.GetIssueStageQueue)
-					r.With(handler.RequireInteractiveSession).Post("/run-budget", h.RaiseIssueRunBudget)
-					r.With(handler.RequireInteractiveSession).Post("/run-budget/top-up", h.TopUpIssueRunBudget)
+					// CHE-2798 S1c: the direct raise and top-up are gone; a raise or top-up is a
+					// decision action request an owner approves (POST /run-budget/requests below).
+					r.Post("/run-budget", h.RunBudgetDirectRouteGone)
+					r.Post("/run-budget/top-up", h.RunBudgetDirectRouteGone)
 					r.With(handler.RequireHumanActor).Post("/run-budget/requests", h.RequestIssueRunBudgetAction)
 					// CHE-2489: a person widens one issue's runs; machine credentials never reach the handler.
 					r.With(handler.RequireHumanActor).Post("/capability-grants", h.CreateRunCapabilityGrant)

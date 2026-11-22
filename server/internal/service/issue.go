@@ -160,7 +160,7 @@ type CreatePropertyGate func(ctx context.Context, q *db.Queries, def *issueworkf
 // CreateEntryGate refuses a create the landing step's block entry gates stop.
 // It may return a recorder for the new row (warn gates), which Create runs in
 // the same transaction right after the insert.
-type CreateEntryGate func(ctx context.Context, q *db.Queries, step issueworkflow.Step) (RecordCreateEntry, error)
+type CreateEntryGate func(ctx context.Context, q *db.Queries, step issueworkflow.Step, hasParent bool) (RecordCreateEntry, error)
 
 // RecordCreateEntry writes what an entry gate leaves on a created issue.
 type RecordCreateEntry func(ctx context.Context, q *db.Queries, issue db.Issue) error
@@ -615,7 +615,7 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 	if p.EntryGate != nil && def != nil {
 		if step, ok := def.Step(p.Status); ok {
 			var err error
-			if recordEntry, err = p.EntryGate(ctx, qtx, step); err != nil {
+			if recordEntry, err = p.EntryGate(ctx, qtx, step, p.ParentIssueID.Valid); err != nil {
 				return IssueCreateResult{}, err
 			}
 		}

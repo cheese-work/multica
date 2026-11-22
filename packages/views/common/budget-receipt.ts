@@ -4,7 +4,7 @@ import type { useT } from "../i18n";
 type T = ReturnType<typeof useT<"common">>["t"];
 
 export type BudgetReceiptLines = {
-  /** "Applied. CHE-1 now shows 0 of 25 runs."; null without numbers or an issue label. */
+  /** "Applied. At application, CHE-1 showed 0 of 25 runs."; null without numbers or an issue label. */
   effect: string | null;
   /** The "Runs used" row: label and "44 of 25 → 0 of 25 (new window)"; null unless every number is present. */
   runs: { label: string; change: string } | null;
