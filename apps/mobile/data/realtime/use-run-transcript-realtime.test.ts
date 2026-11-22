@@ -36,15 +36,15 @@ function message(seq: number): TaskMessagePayload {
 function useConnect() {
   useRunTranscriptRealtime(issueId, taskId);
   const handlers = new Map<string, (payload: unknown) => void>();
-  let reconnect = () => {};
+  const reconnect = { run: () => {} };
   const ws = {
     on: (event: string, handler: (payload: unknown) => void) => {
       handlers.set(event, handler);
       return () => { handlers.delete(event); };
     },
     onReconnect: (handler: () => void) => {
-      reconnect = handler;
-      return () => { reconnect = () => {}; };
+      reconnect.run = handler;
+      return () => { reconnect.run = () => {}; };
     },
   };
   const cleanup = () => { for (const unsubscribe of unsubscribes) unsubscribe(); };
@@ -52,7 +52,7 @@ function useConnect() {
   cleanups.push(cleanup);
   return {
     emit: (event: string, payload: unknown) => { handlers.get(event)?.(payload); },
-    reconnect: () => reconnect(),
+    reconnect: () => reconnect.run(),
     cleanup,
   };
 }
