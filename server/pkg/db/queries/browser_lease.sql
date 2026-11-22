@@ -43,6 +43,34 @@ SELECT * FROM browser_instance
 WHERE id = $1 AND workspace_id = $2
 FOR UPDATE;
 
+-- name: LockBrowserInstanceShare :one
+-- Signing reads the instance row E checks and keeps it from changing until commit (plan r16, lock
+-- order level 3). Narrowing, registration and the grant claim take the row FOR UPDATE.
+SELECT * FROM browser_instance
+WHERE id = $1 AND workspace_id = $2
+FOR SHARE;
+
+-- name: LockBrowserInstancesForUpdate :many
+-- Grant locks every candidate in id order (lock order level 3), then reads them back as locked.
+SELECT * FROM browser_instance
+WHERE workspace_id = $1 AND id = ANY(@ids::uuid[])
+ORDER BY id
+FOR UPDATE;
+
+-- name: LockBrowserGatewayCredentialsShare :many
+-- The unrevoked credentials of the given gateways, locked in id order (lock order level 4). A
+-- revocation takes the row FOR UPDATE, so it waits for every grant and signing that read it.
+SELECT id, gateway FROM browser_gateway_credential
+WHERE workspace_id = $1 AND gateway = ANY(@gateways::text[]) AND revoked_at IS NULL
+ORDER BY id
+FOR SHARE;
+
+-- name: LockBrowserLeaseForUpdate :one
+-- Lock order level 5: the lease row, after its instance and credential rows.
+SELECT * FROM browser_lease
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE;
+
 -- name: AckBrowserLeaseCleanup :one
 -- Stamps cleanup-ack on the ended lease that still holds the instance, for the given epoch only.
 UPDATE browser_lease
