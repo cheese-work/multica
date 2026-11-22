@@ -20,6 +20,9 @@ ON CONFLICT DO NOTHING;
 -- name: GetTaskPREventCapability :one
 SELECT * FROM task_pr_event_capability WHERE task_id = @task_id;
 
+-- name: GetTaskPREventDelivery :one
+SELECT * FROM task_pr_event_delivery WHERE task_id = @task_id AND event_id = @event_id;
+
 -- name: EnqueueTaskPREventDelivery :one
 -- Locking the exact task serializes against terminal transitions: a run that
 -- ended first gets no row. Only an accepted event of the task's own issue is
