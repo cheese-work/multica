@@ -36,7 +36,10 @@ const boundaryClaude = `#!/bin/sh
 case "$*" in *--version*) echo 9.9.9; exit 0;; esac
 IFS= read -r _
 direct=blocked
+# A failed connect only proves isolation when the probe itself exists.
+command -v nc >/dev/null 2>&1 || direct=probe-missing
 for a in $DIRECT_ADDRS; do
+  [ "$direct" = probe-missing ] && break
   if nc -z -w 3 "${a%:*}" "${a##*:}" >/dev/null 2>&1; then direct=reachable; fi
 done
 if [ -e "$SENTINEL" ]; then sentinel=present; else sentinel=absent; fi
