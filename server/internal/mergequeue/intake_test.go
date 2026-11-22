@@ -146,3 +146,25 @@ func TestRoutingFromSettingsDefaultsToWarn(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsureIntakeForRemovalIsPerWorkspace(t *testing.T) {
+	p, ws1 := pool(t)
+	ws2 := uuid.New()
+	t.Cleanup(func() {
+		_, _ = p.Exec(context.Background(), "DELETE FROM merge_queue_intake WHERE workspace_id = $1", ws2)
+	})
+	var id1, id2 uuid.UUID
+	var created1, created2 bool
+	inTx(t, p, func(tx pgx.Tx) {
+		var err error
+		if id1, created1, err = EnsureIntakeForRemoval(context.Background(), tx, input(ws1, "", "block"), "n1", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+		if id2, created2, err = EnsureIntakeForRemoval(context.Background(), tx, input(ws2, "", "warn"), "n1", time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !created1 || !created2 || id1 == id2 {
+		t.Errorf("created %v/%v, ids %v/%v; want one new row per workspace", created1, created2, id1, id2)
+	}
+}

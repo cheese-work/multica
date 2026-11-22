@@ -76,7 +76,7 @@ func EnsureIntakeForRemoval(ctx context.Context, db DB, in IntakeInput, nodeID s
 	err = db.QueryRow(ctx, `
 		INSERT INTO merge_queue_intake (workspace_id, repo_owner, repo_name, pr_number, removal_node_id, delivery_id, routing, removed_at)
 		VALUES ($1, $2, $3, $4, $5, NULLIF($6::text, ''), $7, $8)
-		ON CONFLICT (removal_node_id) WHERE removal_node_id IS NOT NULL DO NOTHING
+		ON CONFLICT (workspace_id, removal_node_id) WHERE removal_node_id IS NOT NULL DO NOTHING
 		RETURNING id`, in.WS, in.owner(), in.repo(), in.PR, nodeID, in.DeliveryID, in.Routing, removedAt).Scan(&id)
 	if err == nil {
 		return id, true, nil
@@ -84,7 +84,7 @@ func EnsureIntakeForRemoval(ctx context.Context, db DB, in IntakeInput, nodeID s
 	if !errors.Is(err, pgx.ErrNoRows) {
 		return uuid.Nil, false, err
 	}
-	err = db.QueryRow(ctx, `SELECT id FROM merge_queue_intake WHERE removal_node_id = $1`, nodeID).Scan(&id)
+	err = db.QueryRow(ctx, `SELECT id FROM merge_queue_intake WHERE workspace_id = $1 AND removal_node_id = $2`, in.WS, nodeID).Scan(&id)
 	return id, false, err
 }
 

@@ -177,10 +177,18 @@ func (w *Worker) log() *slog.Logger {
 func (w *Worker) process(ctx context.Context, row intakeRow, items []TimelineItem) (bool, error) {
 	idx := -1 // position of this row's removal in items
 	if row.Node == "" {
-		for i, it := range items {
-			if it.Kind == ItemRemoval {
-				idx = i // the newest removal wins
+		var err error
+		idx, err = w.pickRemoval(ctx, row, items)
+		if err != nil {
+			return false, err
+		}
+		if idx == errAmbiguous {
+			// Several deliveries point at one removal: no evidence says which
+			// is whose, so none is bound by a guess (plan 4.5).
+			if w.Now().Sub(row.CreatedAt) < noRemovalGrace {
+				return false, nil
 			}
+			return w.settle(ctx, row.ID, StatusInconclusive, nil, nil)
 		}
 		if idx < 0 {
 			if w.Now().Sub(row.CreatedAt) < noRemovalGrace {
@@ -240,6 +248,63 @@ func (w *Worker) process(ctx context.Context, row intakeRow, items []TimelineIte
 	return w.settle(ctx, row.ID, StatusProcessed, run, &col)
 }
 
+const (
+	errAmbiguous = -2
+	// clockSkew is how far GitHub's removal time may follow our receipt of the
+	// delivery that reports it.
+	clockSkew = 5 * time.Second
+)
+
+// removalFor is the removal a delivery that arrived at arrived reports: the
+// latest removal at or before that time, else the first one within clockSkew
+// after it. -1 when the timeline shows none.
+func removalFor(items []TimelineItem, arrived time.Time) int {
+	idx := -1
+	for i, it := range items {
+		if it.Kind == ItemRemoval && !it.At.After(arrived) {
+			idx = i
+		}
+	}
+	if idx >= 0 {
+		return idx
+	}
+	for i, it := range items {
+		if it.Kind == ItemRemoval && !it.At.After(arrived.Add(clockSkew)) {
+			return i
+		}
+	}
+	return -1
+}
+
+// pickRemoval names the removal an unbound delivery row reports, from the
+// delivery's arrival time. It returns errAmbiguous when another unbound
+// delivery of the same PR (one still pending, or already left inconclusive
+// for this reason) points at the same removal.
+func (w *Worker) pickRemoval(ctx context.Context, row intakeRow, items []TimelineItem) (int, error) {
+	idx := removalFor(items, row.CreatedAt)
+	if idx < 0 {
+		return idx, nil
+	}
+	rows, err := w.Pool.Query(ctx, `
+		SELECT created_at FROM merge_queue_intake
+		WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
+		  AND status IN ('pending', 'inconclusive') AND removal_node_id IS NULL AND id <> $5`, row.WS, row.Owner, row.Repo, row.PR, row.ID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var at time.Time
+		if err := rows.Scan(&at); err != nil {
+			return 0, err
+		}
+		if removalFor(items, at) == idx {
+			return errAmbiguous, nil
+		}
+	}
+	return idx, rows.Err()
+}
+
 // bind ties the row to its removal node under the repo lock. When the record
 // already stored a row for that node, the delivery attaches to it: the
 // delivery's row is removed, its delivery id moves over, and the stored row is
@@ -257,7 +322,7 @@ func (w *Worker) bind(ctx context.Context, row intakeRow, rem TimelineItem) (int
 	target := row.ID
 	if row.Node == "" {
 		var existing uuid.UUID
-		err := tx.QueryRow(ctx, `SELECT id FROM merge_queue_intake WHERE removal_node_id = $1`, rem.NodeID).Scan(&existing)
+		err := tx.QueryRow(ctx, `SELECT id FROM merge_queue_intake WHERE workspace_id = $1 AND removal_node_id = $2`, row.WS, rem.NodeID).Scan(&existing)
 		switch {
 		case err == nil:
 			target = existing
@@ -266,11 +331,11 @@ func (w *Worker) bind(ctx context.Context, row intakeRow, rem TimelineItem) (int
 				FROM merge_queue_intake d WHERE t.id = $1 AND d.id = $2`, existing, row.ID); err != nil {
 				return row, err
 			}
-			if _, err := tx.Exec(ctx, `DELETE FROM merge_queue_intake WHERE id = $1 AND status = 'pending' AND removal_node_id IS NULL`, row.ID); err != nil {
+			if _, err := tx.Exec(ctx, `DELETE FROM merge_queue_intake WHERE id = $1 AND workspace_id = $2 AND status = 'pending' AND removal_node_id IS NULL`, row.ID, row.WS); err != nil {
 				return row, err
 			}
 		case errors.Is(err, pgx.ErrNoRows):
-			if _, err := tx.Exec(ctx, `UPDATE merge_queue_intake SET removal_node_id = $2, updated_at = now() WHERE id = $1 AND removal_node_id IS NULL`, row.ID, rem.NodeID); err != nil {
+			if _, err := tx.Exec(ctx, `UPDATE merge_queue_intake SET removal_node_id = $2, updated_at = now() WHERE id = $1 AND workspace_id = $3 AND removal_node_id IS NULL`, row.ID, rem.NodeID, row.WS); err != nil {
 				return row, err
 			}
 		default:

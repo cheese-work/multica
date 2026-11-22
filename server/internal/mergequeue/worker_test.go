@@ -42,6 +42,22 @@ func (f *fakeEvidence) QueueBuild(context.Context, Repo, BuildRun) (Collected, e
 	return Collected{Signature: "sig", Failing: []TestID{{Package: "example.com/p", Name: "TestA"}}}, nil
 }
 
+// multiSource serves several workspaces, each from its own fake.
+type multiSource map[uuid.UUID]*fakeSource
+
+func (m multiSource) Timeline(ctx context.Context, r Repo, pr int) ([]TimelineItem, error) {
+	if f := m[r.WS]; f != nil {
+		return f.Timeline(ctx, r, pr)
+	}
+	return nil, nil
+}
+func (m multiSource) QueueRuns(ctx context.Context, r Repo, sha string) ([]BuildRun, error) {
+	if f := m[r.WS]; f != nil {
+		return f.QueueRuns(ctx, r, sha)
+	}
+	return nil, nil
+}
+
 var t0 = time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
 
 func removal(node string, at time.Time) TimelineItem {
@@ -274,5 +290,121 @@ func TestWorkerSweepTwiceCollectsOnce(t *testing.T) {
 	}
 	if n := count(t, p, "merge_queue_evidence", ws); n != 1 || ev.calls != 1 {
 		t.Errorf("evidence rows %d, collections %d; want 1 and 1", n, ev.calls)
+	}
+}
+
+// pendingAt stores a pending delivery row that arrived at a chosen time with a
+// chosen routing value.
+func pendingAt(t *testing.T, p *pgxpool.Pool, ws uuid.UUID, delivery, routing string, arrived time.Time) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	inTx(t, p, func(tx pgx.Tx) {
+		var err error
+		if id, _, err = InsertIntake(context.Background(), tx, input(ws, delivery, routing)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := p.Exec(context.Background(), `UPDATE merge_queue_intake SET created_at = $2 WHERE id = $1`, id, arrived); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+// Each delivery binds to its own removal (plan 4.5): two removals before one
+// sweep must not collapse both deliveries onto the newer one, and a delivery
+// keeps the routing of its own commit.
+func TestWorkerBindsEachDeliveryToItsOwnRemoval(t *testing.T) {
+	for _, routes := range [][2]string{{"block", "warn"}, {"warn", "block"}} {
+		p, ws := pool(t)
+		first := pendingAt(t, p, ws, "d1", routes[0], t0.Add(5*time.Minute))
+		second := pendingAt(t, p, ws, "d2", routes[1], t0.Add(time.Hour+5*time.Minute))
+		src := &fakeSource{ws: ws, items: []TimelineItem{removal("n1", t0), removal("n2", t0.Add(time.Hour))}, runs: []BuildRun{failedRun(t0)}}
+		w, _ := newWorker(p, src, t0.Add(2*time.Hour))
+		if _, err := w.Sweep(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if n := count(t, p, "merge_queue_intake", ws); n != 2 {
+			t.Fatalf("routes %v: intake rows = %d; want 2, one per removal", routes, n)
+		}
+		a, b := view(t, p, first), view(t, p, second)
+		if a.Node != "n1" || a.Delivery != "d1" || a.Routing != routes[0] || a.Status != "stale" {
+			t.Errorf("routes %v: first delivery row = %+v; want stale, n1, d1, routing %s", routes, a, routes[0])
+		}
+		if b.Node != "n2" || b.Delivery != "d2" || b.Routing != routes[1] || b.Status != "processed" {
+			t.Errorf("routes %v: second delivery row = %+v; want processed, n2, d2, routing %s", routes, b, routes[1])
+		}
+	}
+}
+
+// When two deliveries point at the same removal there is no evidence which one
+// belongs to it, so neither is bound by a guess; after the grace they settle
+// inconclusive and write no evidence.
+func TestWorkerLeavesAmbiguousDeliveriesUnboundThenInconclusive(t *testing.T) {
+	p, ws := pool(t)
+	first := pendingAt(t, p, ws, "d1", "block", t0.Add(2*time.Hour))
+	second := pendingAt(t, p, ws, "d2", "warn", t0.Add(2*time.Hour+time.Minute))
+	src := &fakeSource{ws: ws, items: []TimelineItem{removal("n1", t0), removal("n2", t0.Add(time.Hour))}, runs: []BuildRun{failedRun(t0)}}
+	w, ev := newWorker(p, src, t0.Add(2*time.Hour+2*time.Minute))
+	if _, err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uuid.UUID{first, second} {
+		if v := view(t, p, id); v.Status != "pending" || v.Node != "" {
+			t.Errorf("inside the grace: %+v; want pending and unbound", v)
+		}
+	}
+	w.Now = func() time.Time { return t0.Add(2*time.Hour + 10*time.Minute) }
+	if _, err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []uuid.UUID{first, second} {
+		if v := view(t, p, id); v.Status != "inconclusive" || v.Node != "" {
+			t.Errorf("after the grace: %+v; want inconclusive and unbound", v)
+		}
+	}
+	if n := count(t, p, "merge_queue_evidence", ws); n != 0 || ev.calls != 0 {
+		t.Errorf("evidence rows %d, collections %d; want none", n, ev.calls)
+	}
+}
+
+// The same repository and removal in two workspaces stay independent: own row,
+// own routing, own evidence (workspace isolation).
+func TestWorkerKeepsTheSameRemovalOfTwoWorkspacesApart(t *testing.T) {
+	p, ws1 := pool(t)
+	ws2 := uuid.New()
+	t.Cleanup(func() {
+		for _, table := range []string{"merge_queue_evidence", "merge_queue_intake"} {
+			_, _ = p.Exec(context.Background(), "DELETE FROM "+table+" WHERE workspace_id = $1", ws2)
+		}
+	})
+	var recorded uuid.UUID
+	inTx(t, p, func(tx pgx.Tx) {
+		var err error
+		if recorded, _, err = EnsureIntakeForRemoval(context.Background(), tx, input(ws1, "", "block"), "n1", t0); err != nil {
+			t.Fatal(err)
+		}
+	})
+	delivered := pendingAt(t, p, ws2, "d2", "warn", t0.Add(time.Minute))
+	items := []TimelineItem{removal("n1", t0)}
+	src := multiSource{
+		ws1: {ws: ws1, items: items, runs: []BuildRun{failedRun(t0)}},
+		ws2: {ws: ws2, items: items, runs: []BuildRun{failedRun(t0)}},
+	}
+	ev := &fakeEvidence{}
+	w := &Worker{Pool: p, Src: src, Ev: ev, Now: func() time.Time { return t0.Add(time.Hour) }}
+	if _, err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if v := view(t, p, delivered); v.Status != "processed" || v.Node != "n1" || v.Routing != "warn" || v.Delivery != "d2" {
+		t.Errorf("workspace 2 row = %+v; want its own processed row, n1, warn, d2", v)
+	}
+	if v := view(t, p, recorded); v.Status != "processed" || v.Routing != "block" || v.Delivery != "" {
+		t.Errorf("workspace 1 row = %+v; want its own processed row, block, no delivery attached from workspace 2", v)
+	}
+	if n1, n2 := count(t, p, "merge_queue_intake", ws1), count(t, p, "merge_queue_intake", ws2); n1 != 1 || n2 != 1 {
+		t.Errorf("intake rows %d/%d; want 1 each", n1, n2)
+	}
+	if n1, n2 := count(t, p, "merge_queue_evidence", ws1), count(t, p, "merge_queue_evidence", ws2); n1 != 1 || n2 != 1 || ev.calls != 2 {
+		t.Errorf("evidence rows %d/%d, collections %d; want 1 each and 2", n1, n2, ev.calls)
 	}
 }
