@@ -27,7 +27,7 @@
  *                                   "  \n" (canonical CommonMark hard
  *                                   break)
  *     ↓ splitMarkdown               marked.lexer → segments[]
- *     ↓ render per-segment          prose / code / image components
+ *     ↓ render per-segment          prose / code / image / details components
  *
  * Mention chip note: mobile renders `mention://` links via enriched's
  * default link styling (brand-colored, underlined), except the viewer's own
@@ -58,10 +58,11 @@ import {
 } from "./comment-ids";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
-import { splitMarkdown } from "./split-markdown";
+import { splitMarkdown, type MarkdownSegment } from "./split-markdown";
 import { SELF_MENTION_COLORS, emphasizeSelfMentionSegments, selfMentionLinkVariants } from "./self-mention";
 import { CodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
+import { DetailsDisclosure } from "./details-disclosure-view";
 
 const COMMENT_CHIP_WAIT_MS = 1500;
 
@@ -278,6 +279,50 @@ export function Markdown({
 
   if (segments.length === 0) return null;
 
+  const renderSegment = (seg: MarkdownSegment, key: number, held: boolean) => {
+    switch (seg.type) {
+      case "prose":
+        return (
+          // Always wrapped so toggling the hold-back never remounts the text.
+          <View key={key} style={held ? { opacity: 0 } : undefined}>
+            <EnrichedMarkdownText
+              flavor="github"
+              markdown={seg.content}
+              markdownStyle={markdownStyle}
+              onLinkPress={onLinkPress}
+              selectable={selectable}
+            />
+          </View>
+        );
+      case "code":
+        return (
+          <CodeBlock
+            key={key}
+            code={seg.code}
+            lang={seg.lang}
+            selectable={selectable}
+          />
+        );
+      case "image":
+        return (
+          <MarkdownImage
+            key={key}
+            uri={seg.uri}
+            alt={seg.alt}
+            attachments={attachments}
+          />
+        );
+      case "details":
+        return (
+          <DetailsDisclosure
+            key={key}
+            segment={seg}
+            renderBody={(body) => body.map((b, j) => renderSegment(b, j, false))}
+          />
+        );
+    }
+  };
+
   return (
     // `gap-3` enforces 12px between every segment sibling (prose ↔ code,
     // code ↔ code, image ↔ anything). Going through gap instead of
@@ -286,41 +331,7 @@ export function Markdown({
     // would suggest — `gap` is layout-level spacing that doesn't depend
     // on margin behaviour.
     <View className="gap-3">
-      {segments.map((seg, i) => {
-        switch (seg.type) {
-          case "prose":
-            return (
-              // Always wrapped so toggling the hold-back never remounts the text.
-              <View key={i} style={holdBack(i) ? { opacity: 0 } : undefined}>
-                <EnrichedMarkdownText
-                  flavor="github"
-                  markdown={seg.content}
-                  markdownStyle={markdownStyle}
-                  onLinkPress={onLinkPress}
-                  selectable={selectable}
-                />
-              </View>
-            );
-          case "code":
-            return (
-              <CodeBlock
-                key={i}
-                code={seg.code}
-                lang={seg.lang}
-                selectable={selectable}
-              />
-            );
-          case "image":
-            return (
-              <MarkdownImage
-                key={i}
-                uri={seg.uri}
-                alt={seg.alt}
-                attachments={attachments}
-              />
-            );
-        }
-      })}
+      {segments.map((seg, i) => renderSegment(seg, i, holdBack(i)))}
     </View>
   );
 }
