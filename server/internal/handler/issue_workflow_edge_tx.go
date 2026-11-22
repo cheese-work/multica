@@ -174,7 +174,7 @@ func (h *Handler) moveIssueOnEdgeTxAs(ctx context.Context, q *db.Queries, issue 
 		duplicateRun = errors.Is(err, service.ErrDuplicatePendingTask)
 		switch {
 		case err == nil:
-		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrReviewHeadAnswered), errors.Is(err, service.ErrIssueInTriage), errors.Is(err, service.ErrAgentPaused),
+		case duplicateRun, errors.Is(err, service.ErrRunBudgetExhausted), errors.Is(err, service.ErrStageQueueFull), errors.Is(err, service.ErrAdmissionDeferred), errors.Is(err, service.ErrReviewHeadAnswered), errors.Is(err, service.ErrIssueInTriage), errors.Is(err, service.ErrIntakeHold), errors.Is(err, service.ErrAgentPaused),
 			errors.Is(err, service.ErrRecoveryCaused), errors.Is(err, errSquadLeaderNotAdmitted):
 			runRefused = err
 		default:
