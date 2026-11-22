@@ -255,54 +255,44 @@ const (
 	clockSkew = 5 * time.Second
 )
 
-// removalFor is the removal a delivery that arrived at arrived reports: the
-// latest removal at or before that time, else the first one within clockSkew
-// after it. -1 when the timeline shows none.
-func removalFor(items []TimelineItem, arrived time.Time) int {
-	idx := -1
-	for i, it := range items {
-		if it.Kind == ItemRemoval && !it.At.After(arrived) {
-			idx = i
-		}
-	}
-	if idx >= 0 {
-		return idx
-	}
-	for i, it := range items {
-		if it.Kind == ItemRemoval && !it.At.After(arrived.Add(clockSkew)) {
-			return i
-		}
-	}
-	return -1
-}
-
-// pickRemoval names the removal an unbound delivery row reports, from the
-// delivery's arrival time. It returns errAmbiguous when another unbound
-// delivery of the same PR (one still pending, or already left inconclusive
-// for this reason) points at the same removal.
+// pickRemoval names the removal an unbound delivery row reports. Arrival order
+// proves nothing about which event a delivery describes (a late webhook for an
+// older removal arrives after a newer removal exists), so the row binds only
+// when exactly one removal can be its own: one that happened no later than the
+// delivery arrived and that no other delivery of this workspace has claimed.
+// -1 when there is none yet; errAmbiguous when there are several, so the row
+// stays unbound rather than take a guess (plan 4.5).
 func (w *Worker) pickRemoval(ctx context.Context, row intakeRow, items []TimelineItem) (int, error) {
-	idx := removalFor(items, row.CreatedAt)
-	if idx < 0 {
-		return idx, nil
-	}
 	rows, err := w.Pool.Query(ctx, `
-		SELECT created_at FROM merge_queue_intake
+		SELECT removal_node_id FROM merge_queue_intake
 		WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
-		  AND status IN ('pending', 'inconclusive') AND removal_node_id IS NULL AND id <> $5`, row.WS, row.Owner, row.Repo, row.PR, row.ID)
+		  AND removal_node_id IS NOT NULL AND delivery_id IS NOT NULL`, row.WS, row.Owner, row.Repo, row.PR)
 	if err != nil {
 		return 0, err
 	}
 	defer rows.Close()
+	claimed := map[string]bool{}
 	for rows.Next() {
-		var at time.Time
-		if err := rows.Scan(&at); err != nil {
+		var node string
+		if err := rows.Scan(&node); err != nil {
 			return 0, err
 		}
-		if removalFor(items, at) == idx {
+		claimed[node] = true
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	idx := -1
+	for i, it := range items {
+		if it.Kind != ItemRemoval || claimed[it.NodeID] || it.At.After(row.CreatedAt.Add(clockSkew)) {
+			continue
+		}
+		if idx >= 0 {
 			return errAmbiguous, nil
 		}
+		idx = i
 	}
-	return idx, rows.Err()
+	return idx, nil
 }
 
 // bind ties the row to its removal node under the repo lock. When the record

@@ -103,11 +103,16 @@ func view(t *testing.T, p *pgxpool.Pool, id uuid.UUID) rowView {
 
 func TestWorkerBindsTheNewestRemovalToItsQueueBuild(t *testing.T) {
 	p, ws := pool(t)
+	inTx(t, p, func(tx pgx.Tx) { // n1 already belongs to an earlier delivery
+		if _, _, err := EnsureIntakeForRemoval(context.Background(), tx, input(ws, "d0", "warn"), "n1", t0); err != nil {
+			t.Fatal(err)
+		}
+	})
 	id := pending(t, p, ws, "d1")
 	src := &fakeSource{ws: ws, items: []TimelineItem{removal("n1", t0), removal("n2", t0.Add(time.Hour))}, runs: []BuildRun{failedRun(t0)}}
 	w, _ := newWorker(p, src, t0.Add(2*time.Hour))
-	if n, err := w.Sweep(context.Background()); err != nil || n != 1 {
-		t.Fatalf("sweep = %d, %v; want 1", n, err)
+	if n, err := w.Sweep(context.Background()); err != nil || n != 2 {
+		t.Fatalf("sweep = %d, %v; want 2 (n1's row goes stale, the delivery's row is processed)", n, err)
 	}
 	v := view(t, p, id)
 	if v.Status != "processed" || v.Node != "n2" || v.Before != "oid-n2" || v.Run == nil || *v.Run != 99 {
@@ -406,5 +411,40 @@ func TestWorkerKeepsTheSameRemovalOfTwoWorkspacesApart(t *testing.T) {
 	}
 	if n1, n2 := count(t, p, "merge_queue_evidence", ws1), count(t, p, "merge_queue_evidence", ws2); n1 != 1 || n2 != 1 || ev.calls != 2 {
 		t.Errorf("evidence rows %d/%d, collections %d; want 1 each and 2", n1, n2, ev.calls)
+	}
+}
+
+// Arrival order does not identify the event. R1's webhook arrives after R2
+// exists and is swept before R2's webhook: it must not bind to R2, take R2's
+// build evidence or leave with the wrong routing.
+func TestWorkerDoesNotBindALateDeliveryOfAnOlderRemovalToTheNewerOne(t *testing.T) {
+	p, ws := pool(t)
+	late := pendingAt(t, p, ws, "d1", "block", t0.Add(time.Hour+30*time.Minute)) // reports R1, arrives after R2
+	src := &fakeSource{ws: ws, items: []TimelineItem{removal("n1", t0), removal("n2", t0.Add(time.Hour))}, runs: []BuildRun{failedRun(t0)}}
+	w, ev := newWorker(p, src, t0.Add(time.Hour+31*time.Minute))
+	if _, err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if v := view(t, p, late); v.Status != "pending" || v.Node != "" || v.Routing != "block" {
+		t.Errorf("inside the grace: %+v; want pending, unbound, routing untouched", v)
+	}
+	w.Now = func() time.Time { return t0.Add(time.Hour + 40*time.Minute) }
+	if _, err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if v := view(t, p, late); v.Status != "inconclusive" || v.Node != "" || v.Run != nil {
+		t.Errorf("after the grace: %+v; want inconclusive, unbound, no build", v)
+	}
+	// R2's own webhook then arrives; with R1 still unclaimed it cannot be told apart either.
+	own := pendingAt(t, p, ws, "d2", "warn", t0.Add(time.Hour+45*time.Minute))
+	w.Now = func() time.Time { return t0.Add(2 * time.Hour) }
+	if _, err := w.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if v := view(t, p, own); v.Node != "" || v.Run != nil || v.Status == "processed" {
+		t.Errorf("R2's delivery = %+v; want no binding to a guessed removal", v)
+	}
+	if n := count(t, p, "merge_queue_evidence", ws); n != 0 || ev.calls != 0 {
+		t.Errorf("evidence rows %d, collections %d; want none", n, ev.calls)
 	}
 }
