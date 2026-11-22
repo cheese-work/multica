@@ -28,7 +28,7 @@ func TestWrapRunsFakeBinaryInSandbox(t *testing.T) {
 	agent := fakeAgent(t, ly.work, "echo \"task=$MULTICA_TASK_ID\"\ncat "+sentinel+" 2>&1 || echo unreadable\n")
 	cmd := exec.Command(agent)
 	cmd.Env = []string{"PATH=/usr/bin:/bin", "MULTICA_TASK_ID=t1"}
-	run, err := l.Wrap(cmd, Spec{WorkDir: ly.work, TempDir: ly.tmp, Home: ly.home})
+	run, err := l.Wrap(cmd, Spec{WorkDir: ly.work, TempDir: ly.tmp, Home: ly.home, NoDaemonAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestWrapDirInsideWorkDirIsTheWorkingDirectory(t *testing.T) {
 	}
 	cmd := exec.Command(fakeAgent(t, ly.work, "pwd\n"))
 	cmd.Dir = sub
-	run, err := l.Wrap(cmd, Spec{WorkDir: ly.work, TempDir: ly.tmp, Home: ly.home})
+	run, err := l.Wrap(cmd, Spec{WorkDir: ly.work, TempDir: ly.tmp, Home: ly.home, NoDaemonAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}
