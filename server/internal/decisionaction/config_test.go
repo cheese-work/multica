@@ -69,6 +69,8 @@ func TestCheckConfigChangeDeniesByDefault(t *testing.T) {
 		{"design card guard", "workspace.settings", []string{"design_card_guard"}, false},
 		{"auto close mode", "workspace.settings", []string{"auto_close"}, false},
 		{"blocked run skip mode", "workspace.settings", []string{"blocked_run_skip"}, false},
+		{"run guard mode", "workspace.settings", []string{"run_guard"}, false},
+		{"run budget mode", "workspace.settings", []string{"run_budget"}, false},
 		{"both run-cutting modes", "workspace.settings", []string{"auto_close", "blocked_run_skip"}, false},
 		{"project description is out of scope", "project.description", nil, true},
 		{"members and roles", "member.role", nil, true},

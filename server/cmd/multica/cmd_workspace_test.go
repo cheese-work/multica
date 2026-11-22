@@ -538,7 +538,7 @@ func TestResolveWorkspaceByIDOrSlug(t *testing.T) {
 func resetWorkspaceUpdateFlags(t *testing.T) {
 	t.Helper()
 	flags := workspaceUpdateCmd.Flags()
-	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "ask-guard-mode", "compact-agent", "merge-queue-routing", "merge-queue-bindings", "merge-queue-watch-issue", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
+	for _, name := range []string{"name", "description", "context", "context-file", "issue-prefix", "expected-before-digest", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "run-guard-mode", "run-budget-mode", "ask-guard-mode", "compact-agent", "merge-queue-routing", "merge-queue-bindings", "merge-queue-watch-issue", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
 		_ = flags.Set(name, "")
 		if f := flags.Lookup(name); f != nil {
 			f.Changed = false
@@ -1503,6 +1503,42 @@ func TestBuildWorkspaceUpdateBodyBlockedRunSkipMode(t *testing.T) {
 		setStringFlag(t, other, "warn")
 		if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil || !strings.Contains(err.Error(), "--blocked-run-skip-mode") {
 			t.Errorf("with --%s: err = %v, want a conflict naming --blocked-run-skip-mode", other, err)
+		}
+	}
+}
+
+// CHE-9026: --run-guard-mode and --run-budget-mode each send only their own
+// settings key and refuse any other update flag.
+func TestBuildWorkspaceUpdateBodyRunModes(t *testing.T) {
+	for flag, key := range map[string]string{"run-guard-mode": "run_guard", "run-budget-mode": "run_budget"} {
+		for _, mode := range []string{"off", "warn", "block"} {
+			resetWorkspaceUpdateFlags(t)
+			setStringFlag(t, flag, mode)
+			body, err := buildWorkspaceUpdateBody(workspaceUpdateCmd)
+			if err != nil {
+				t.Fatalf("%s %s: %v", flag, mode, err)
+			}
+			if want := map[string]any{key: map[string]any{"mode": mode}}; !reflect.DeepEqual(body, want) {
+				t.Errorf("%s %s: body = %#v, want %#v", flag, mode, body, want)
+			}
+		}
+		for _, mode := range []string{"on", "", "WARN"} {
+			resetWorkspaceUpdateFlags(t)
+			setStringFlag(t, flag, mode)
+			if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil {
+				t.Errorf("%s %q: expected an error", flag, mode)
+			}
+		}
+		for _, other := range []string{"run-guard-mode", "run-budget-mode", "ask-guard-mode", "name"} {
+			if other == flag {
+				continue
+			}
+			resetWorkspaceUpdateFlags(t)
+			setStringFlag(t, flag, "warn")
+			setStringFlag(t, other, "warn")
+			if _, err := buildWorkspaceUpdateBody(workspaceUpdateCmd); err == nil || !strings.Contains(err.Error(), "--"+flag) {
+				t.Errorf("--%s with --%s: err = %v, want a conflict naming --%s", flag, other, err, flag)
+			}
 		}
 	}
 }
