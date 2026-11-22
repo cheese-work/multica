@@ -35,6 +35,9 @@ type handoffOperationSeed struct {
 	actorType   string
 	actorID     pgtype.UUID
 	hash        string
+	// prefix is the issue prefix of the replay response written in the
+	// transaction.
+	prefix string
 }
 
 var errOperationKeyReused = errors.New("operation_key was already used for a different request or actor")
@@ -44,25 +47,19 @@ type errOperationReplay struct{ op db.IssueHandoffOperation }
 
 func (errOperationReplay) Error() string { return "operation already applied" }
 
-// handoffOperationHash binds an operation_key to one request: the fields that
-// make up the handoff move, in a fixed order.
+// handoffOperationHash binds an operation_key to one request: the whole body
+// except the key itself. Every field the request can change is bound, so a
+// retry with any field changed is refused instead of dropping the change.
 func handoffOperationHash(req UpdateIssueRequest) string {
-	body, _ := json.Marshal(struct {
-		Status           *string                 `json:"status"`
-		HandoffAssignee  *HandoffAssigneeRequest `json:"handoff_assignee"`
-		KeepForStep      bool                    `json:"keep_for_step"`
-		HandoffComment   *HandoffCommentRequest  `json:"handoff_comment"`
-		HandoffCommentID *string                 `json:"handoff_comment_id"`
-		AttachCommentIDs []string                `json:"attach_comment_ids"`
-		HandoffPreview   *HandoffPreviewBinding  `json:"handoff_preview"`
-	}{req.Status, req.HandoffAssignee, req.KeepForStep, req.HandoffComment, req.HandoffCommentID, req.AttachCommentIDs, req.HandoffPreview})
+	req.OperationKey = nil
+	body, _ := json.Marshal(req)
 	sum := sha256.Sum256(body)
 	return hex.EncodeToString(sum[:])
 }
 
 // newHandoffOperationSeed returns nil when the request has no key or is not a
 // status move.
-func newHandoffOperationSeed(w http.ResponseWriter, req UpdateIssueRequest, issue db.Issue, actorType, actorID string) (*handoffOperationSeed, bool) {
+func newHandoffOperationSeed(w http.ResponseWriter, req UpdateIssueRequest, issue db.Issue, prefix, actorType, actorID string) (*handoffOperationSeed, bool) {
 	if req.OperationKey == nil || req.Status == nil {
 		return nil, true
 	}
@@ -72,7 +69,7 @@ func newHandoffOperationSeed(w http.ResponseWriter, req UpdateIssueRequest, issu
 	}
 	return &handoffOperationSeed{
 		workspaceID: issue.WorkspaceID, issueID: issue.ID, key: key,
-		actorType: actorType, actorID: optionalActorUUID(actorID), hash: handoffOperationHash(req),
+		actorType: actorType, actorID: optionalActorUUID(actorID), hash: handoffOperationHash(req), prefix: prefix,
 	}, true
 }
 
@@ -120,11 +117,18 @@ func claimHandoffOperation(ctx context.Context, q *db.Queries) error {
 }
 
 // recordWrites names what the move wrote, in the same transaction as the receipt.
-func (s *handoffOperationSeed) recordWrites(ctx context.Context, q *db.Queries, rec *statusRecord) error {
+// It also stores the replayable response: the moved issue as the transaction
+// leaves it, so a retry returns the first result even if the process stops
+// after the commit.
+func (s *handoffOperationSeed) recordWrites(ctx context.Context, q *db.Queries, rec *statusRecord, moved db.Issue) error {
 	if s == nil {
 		return nil
 	}
-	params := db.RecordHandoffOperationWritesParams{IssueID: s.issueID, OperationKey: s.key, DispatchID: rec.intentID}
+	response, err := json.Marshal(issueToResponse(moved, s.prefix))
+	if err != nil {
+		return fmt.Errorf("marshal handoff operation response: %w", err)
+	}
+	params := db.RecordHandoffOperationWritesParams{IssueID: s.issueID, OperationKey: s.key, DispatchID: rec.intentID, Response: response}
 	if rec.activity != nil {
 		params.StatusHistoryID = rec.activity.ID
 	}
@@ -134,7 +138,9 @@ func (s *handoffOperationSeed) recordWrites(ctx context.Context, q *db.Queries, 
 	return q.RecordHandoffOperationWrites(ctx, params)
 }
 
-// storeResponse keeps the first response for replays. Written once, after the commit.
+// storeHandoffOperationResponse replaces the in-transaction response with the
+// full one the first request sent (step brief, hints). A failure is harmless:
+// the receipt already holds the moved issue.
 func (h *Handler) storeHandoffOperationResponse(ctx context.Context, s *handoffOperationSeed, resp any) {
 	if s == nil {
 		return
@@ -163,13 +169,19 @@ func (h *Handler) writeHandoffOperationError(ctx context.Context, w http.Respons
 	return true
 }
 
-// writeStoredHandoffResult sends the first response. A receipt whose response
-// was never stored (the process stopped after the commit) gets the issue as it
-// is now.
+// writeStoredHandoffResult sends the first response. The transaction stores it
+// with the move, so it survives a stop after the commit. A custom status
+// category is resolved now, as for any response. A receipt with no response
+// (the write moved nothing) gets the issue as it is now.
 func (h *Handler) writeStoredHandoffResult(ctx context.Context, w http.ResponseWriter, op db.IssueHandoffOperation) {
 	if len(op.Response) > 0 {
-		writeJSON(w, http.StatusOK, json.RawMessage(op.Response))
-		return
+		var stored IssueResponse
+		if err := json.Unmarshal(op.Response, &stored); err == nil {
+			h.fillStatusCategory(ctx, op.WorkspaceID, &stored)
+			writeJSON(w, http.StatusOK, stored)
+			return
+		}
+		slog.Warn("stored handoff operation response unreadable", "issue_id", uuidToString(op.IssueID))
 	}
 	issue, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: op.IssueID, WorkspaceID: op.WorkspaceID})
 	if err != nil {

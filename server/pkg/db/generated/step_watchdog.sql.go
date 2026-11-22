@@ -45,6 +45,60 @@ func (q *Queries) ClaimStepWatchdogAction(ctx context.Context, arg ClaimStepWatc
 	return id, err
 }
 
+const listOwedStepWatchdogNotices = `-- name: ListOwedStepWatchdogNotices :many
+SELECT a.id, a.workspace_id, a.issue_id, a.occurrence_key, a.action, a.outcome, a.details, a.created_at FROM issue_step_watchdog_action a
+JOIN workspace w ON w.id = a.workspace_id
+WHERE a.action IN ('block_budget', 'redispatch', 'notify_only')
+  AND w.settings #>> '{step_watchdog,mode}' IS DISTINCT FROM 'off'
+  AND ($1::uuid IS NULL OR (a.created_at, a.id) > ($2::timestamptz, $1::uuid))
+  AND NOT EXISTS (
+    SELECT 1 FROM issue_step_watchdog_action n
+    WHERE n.issue_id = a.issue_id AND n.occurrence_key = a.occurrence_key AND n.action = 'notify')
+ORDER BY a.created_at, a.id
+LIMIT $3::int
+`
+
+type ListOwedStepWatchdogNoticesParams struct {
+	AfterID        pgtype.UUID        `json:"after_id"`
+	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
+	RowLimit       int32              `json:"row_limit"`
+}
+
+// CHE-6116 S3. Ledger rows of an action that owes a notice to requested_by and
+// have no notify row for the same status occurrence, oldest first. It never
+// looks at the issue's current status: a status change cannot cancel a notice.
+// A workspace whose step_watchdog.mode is off, or that is gone, is left alone.
+// The caller pages by keyset (after_created_at, after_id) so rows it cannot
+// deliver now do not hold back the rows behind them.
+func (q *Queries) ListOwedStepWatchdogNotices(ctx context.Context, arg ListOwedStepWatchdogNoticesParams) ([]IssueStepWatchdogAction, error) {
+	rows, err := q.db.Query(ctx, listOwedStepWatchdogNotices, arg.AfterID, arg.AfterCreatedAt, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueStepWatchdogAction{}
+	for rows.Next() {
+		var i IssueStepWatchdogAction
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.OccurrenceKey,
+			&i.Action,
+			&i.Outcome,
+			&i.Details,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStepWatchdogCandidates = `-- name: ListStepWatchdogCandidates :many
 SELECT i.id,
        COALESCE(chg.act_key, 'created:' || i.id::text)::text AS occurrence_key,

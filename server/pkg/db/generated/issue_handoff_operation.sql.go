@@ -96,13 +96,15 @@ func (q *Queries) InsertHandoffOperation(ctx context.Context, arg InsertHandoffO
 
 const recordHandoffOperationWrites = `-- name: RecordHandoffOperationWrites :exec
 UPDATE issue_handoff_operation
-SET status_history_id = $1,
-    created_comment_id = $2,
-    dispatch_id = $3
-WHERE issue_id = $4 AND operation_key = $5
+SET response = $1,
+    status_history_id = $2,
+    created_comment_id = $3,
+    dispatch_id = $4
+WHERE issue_id = $5 AND operation_key = $6
 `
 
 type RecordHandoffOperationWritesParams struct {
+	Response         []byte      `json:"response"`
 	StatusHistoryID  pgtype.UUID `json:"status_history_id"`
 	CreatedCommentID pgtype.UUID `json:"created_comment_id"`
 	DispatchID       pgtype.UUID `json:"dispatch_id"`
@@ -110,9 +112,10 @@ type RecordHandoffOperationWritesParams struct {
 	OperationKey     pgtype.UUID `json:"operation_key"`
 }
 
-// Same transaction as the insert: what the move wrote.
+// Same transaction as the insert: what the move wrote, and the replayable response.
 func (q *Queries) RecordHandoffOperationWrites(ctx context.Context, arg RecordHandoffOperationWritesParams) error {
 	_, err := q.db.Exec(ctx, recordHandoffOperationWrites,
+		arg.Response,
 		arg.StatusHistoryID,
 		arg.CreatedCommentID,
 		arg.DispatchID,
@@ -124,7 +127,7 @@ func (q *Queries) RecordHandoffOperationWrites(ctx context.Context, arg RecordHa
 
 const storeHandoffOperationResponse = `-- name: StoreHandoffOperationResponse :exec
 UPDATE issue_handoff_operation SET response = $1
-WHERE issue_id = $2 AND operation_key = $3 AND response IS NULL
+WHERE issue_id = $2 AND operation_key = $3 AND response IS NOT NULL
 `
 
 type StoreHandoffOperationResponseParams struct {
@@ -133,7 +136,8 @@ type StoreHandoffOperationResponseParams struct {
 	OperationKey pgtype.UUID `json:"operation_key"`
 }
 
-// Written once, after the commit, with the response the first request sent.
+// After the commit: the full response the first request sent replaces the one
+// the transaction stored.
 func (q *Queries) StoreHandoffOperationResponse(ctx context.Context, arg StoreHandoffOperationResponseParams) error {
 	_, err := q.db.Exec(ctx, storeHandoffOperationResponse, arg.Response, arg.IssueID, arg.OperationKey)
 	return err

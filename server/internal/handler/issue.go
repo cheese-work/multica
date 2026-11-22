@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -442,6 +443,11 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 			return db.Issue{}, nil, fmt.Errorf("record status change: %w", err)
 		}
 		rec.activity = &row
+		if rec.waitNotice != nil {
+			if err := rec.waitNotice(ctx, q, fromStatus, issue); err != nil {
+				return db.Issue{}, nil, fmt.Errorf("record typed ask notice: %w", err)
+			}
+		}
 		rec.eventID, rec.routingExit = pgtype.UUID{}, false // spent: a reused record must not reuse the id
 	}
 	if rec != nil && recordStatus {
@@ -464,7 +470,7 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 		}
 	}
 	if rec != nil && recordStatus {
-		if err := rec.operation.recordWrites(ctx, q, rec); err != nil {
+		if err := rec.operation.recordWrites(ctx, q, rec, issue); err != nil {
 			return db.Issue{}, nil, fmt.Errorf("record handoff operation writes: %w", err)
 		}
 	}
@@ -803,6 +809,7 @@ func issueListRowToResponse(i db.ListIssuesRow, issuePrefix string) IssueRespons
 		Stage:              int4ToPtr(i.Stage),
 		StartDate:          dateToPtr(i.StartDate),
 		DueDate:            dateToPtr(i.DueDate),
+		CreatedVia:         i.CreatedVia.String,
 		CreatedAt:          timestampToString(i.CreatedAt),
 		UpdatedAt:          timestampToString(i.UpdatedAt),
 		Revision:           i.Revision,
@@ -875,6 +882,7 @@ func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueRes
 		Stage:              int4ToPtr(i.Stage),
 		StartDate:          dateToPtr(i.StartDate),
 		DueDate:            dateToPtr(i.DueDate),
+		CreatedVia:         i.CreatedVia.String,
 		CreatedAt:          timestampToString(i.CreatedAt),
 		UpdatedAt:          timestampToString(i.UpdatedAt),
 		Revision:           i.Revision,
@@ -1906,11 +1914,45 @@ func (h *Handler) QueryIssues(w http.ResponseWriter, r *http.Request) {
 	h.ListIssues(w, r)
 }
 
+// createdViaFilterValues are the values the created_via list param accepts:
+// the stored v1 values plus "unknown", which matches rows with no value (NULL).
+var createdViaFilterValues = []string{
+	issuecreatedvia.Dialog, issuecreatedvia.DM, issuecreatedvia.Comment, issuecreatedvia.Agent,
+	issuecreatedvia.Autopilot, issuecreatedvia.CLI, issuecreatedvia.Form, createdViaUnknown,
+}
+
+const createdViaUnknown = "unknown"
+
+// parseCreatedViaParam reads the comma-list created_via param. An empty param
+// means no filter (nil). An invalid value writes a 400 naming the valid list.
+func parseCreatedViaParam(w http.ResponseWriter, raw string) ([]string, bool) {
+	values := splitCommaParam(raw)
+	for _, v := range values {
+		if !slices.Contains(createdViaFilterValues, v) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("invalid created_via %q; valid values: %s", v, strings.Join(createdViaFilterValues, ", ")))
+			return nil, false
+		}
+	}
+	return values, true
+}
+
+// appendCreatedViaFilter adds the created_via predicate; "unknown" also matches NULL.
+func appendCreatedViaFilter(where []string, addArg func(any) string, values []string) []string {
+	if len(values) == 0 {
+		return where
+	}
+	pred := fmt.Sprintf("i.created_via = ANY(%s::text[])", addArg(values))
+	if slices.Contains(values, createdViaUnknown) {
+		pred = "(" + pred + " OR i.created_via IS NULL)"
+	}
+	return append(where, pred)
+}
+
 // listIssueColumns is the full ListIssues select list.
 const listIssueColumns = `i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read`
+       i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read, i.created_via`
 
 var narrowColumns = strings.NewReplacer(
 	"i.title,", "''::text,", // Title scans into a string, so empty rather than NULL
@@ -1936,7 +1978,7 @@ func scanListIssueRows(rows pgx.Rows) ([]db.ListIssuesRow, error) {
 			&row.AssigneeType, &row.AssigneeID, &row.CreatorType, &row.CreatorID,
 			&row.ParentIssueID, &row.Position, &row.StartDate, &row.DueDate,
 			&row.CreatedAt, &row.UpdatedAt, &row.LastActivityAt, &row.Number, &row.ProjectID,
-			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.WorkflowID, &row.RequestedByID, &row.DescriptionExternalRead,
+			&row.Metadata, &row.Stage, &row.Properties, &row.Revision, &row.DuplicateOfIssueID, &row.WorkflowID, &row.RequestedByID, &row.DescriptionExternalRead, &row.CreatedVia,
 		); err != nil {
 			return nil, err
 		}
@@ -2066,6 +2108,10 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	createdViaFilter, ok := parseCreatedViaParam(w, r.URL.Query().Get("created_via"))
+	if !ok {
+		return
+	}
 
 	// open_only=true returns all non-done/cancelled issues (no limit).
 	if r.URL.Query().Get("open_only") == "true" {
@@ -2097,6 +2143,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 			InvolvesUserID:     involvesUserFilter,
 			MetadataFilter:     metadataFilter,
 			PropertiesFilter:   openPropertiesFilter,
+			CreatedVia:         createdViaFilter,
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list issues")
@@ -2394,6 +2441,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		where = append(where, propertiesFilterPredicate(propertiesFilter, addArg))
 	}
 	where = appendIssueDateFilter(where, addArg, dateFilter)
+	where = appendCreatedViaFilter(where, addArg, createdViaFilter)
 	if involvesUserFilter.Valid {
 		ref := addArg(involvesUserFilter)
 		where = append(where, fmt.Sprintf(`(
@@ -2477,7 +2525,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read
+	   i.revision, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.description_external_read, i.created_via
 FROM issue i
 WHERE %s
 ORDER BY %s
@@ -2987,6 +3035,11 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	where = appendIssueDateFilter(where, addArg, dateFilter)
+	createdViaFilter, ok := parseCreatedViaParam(w, r.URL.Query().Get("created_via"))
+	if !ok {
+		return
+	}
+	where = appendCreatedViaFilter(where, addArg, createdViaFilter)
 
 	if groupAssigneeType := r.URL.Query().Get("group_assignee_type"); groupAssigneeType != "" {
 		if groupAssigneeType == "none" {
@@ -3101,7 +3154,7 @@ WITH ranked AS (
 		i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
 		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
 		i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at,
-		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.duplicate_of_issue_id, i.description_external_read,
+		i.number, i.project_id, i.metadata, i.stage, i.properties, i.revision, i.duplicate_of_issue_id, i.description_external_read, i.created_via,
 		COUNT(*) OVER (PARTITION BY i.assignee_type, i.assignee_id) AS group_total,
 		ROW_NUMBER() OVER (
 			PARTITION BY i.assignee_type, i.assignee_id
@@ -3114,7 +3167,7 @@ SELECT
 	id, workspace_id, title, description, status, priority,
 	assignee_type, assignee_id, creator_type, creator_id,
 	parent_issue_id, position, start_date, due_date, created_at, updated_at, last_activity_at,
-	number, project_id, metadata, stage, properties, revision, duplicate_of_issue_id, description_external_read, group_total
+	number, project_id, metadata, stage, properties, revision, duplicate_of_issue_id, description_external_read, created_via, group_total
 FROM ranked
 WHERE rn > %s AND rn <= %s + %s
 ORDER BY
@@ -3165,6 +3218,7 @@ ORDER BY
 			&row.Revision,
 			&row.DuplicateOfIssueID,
 			&row.DescriptionExternalRead,
+			&row.CreatedVia,
 			&row.GroupTotal,
 		); err != nil {
 			slog.Warn("ListGroupedIssues scan failed", "error", err)
@@ -4973,7 +5027,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	opActorType, opActorID := h.resolveActor(r, userID, workspaceID)
-	operation, ok := newHandoffOperationSeed(w, req, prevIssue, opActorType, opActorID)
+	operation, ok := newHandoffOperationSeed(w, req, prevIssue, h.getIssuePrefix(r.Context(), prevIssue.WorkspaceID), opActorType, opActorID)
 	if !ok {
 		return
 	}
@@ -5333,6 +5387,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		statusRec.comment, statusRec.attach = commentSeed, attached
 		statusRec.operation = operation
+		if actorType == "agent" {
+			statusRec.waitNotice = h.typedWaitingMoveNotice(r, prevIssue, req.WaitingOn)
+		}
 		if handoff != nil && handed.agent != "" {
 			armHandoffIntent(statusRec, r, actorType, actorID, existingContext, req.HandoffNote, handed.write)
 		}

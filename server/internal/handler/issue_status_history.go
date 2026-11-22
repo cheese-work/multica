@@ -53,6 +53,9 @@ type statusRecord struct {
 	attach *attachedComments
 	// operation is the receipt the transaction inserts first (CHE-5491).
 	operation *handoffOperationSeed
+	// waitNotice, when set, stores the typed-ask notice of a move that named a
+	// member, in the write's transaction (CHE-7292).
+	waitNotice func(ctx context.Context, q *db.Queries, prevStatus string, moved db.Issue) error
 }
 
 func withStatusRecord(ctx context.Context, rec *statusRecord) context.Context {

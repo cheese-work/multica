@@ -222,3 +222,78 @@ func TestHandoffOperation_ExpiredReceiptPrunedRetryIsNewMove(t *testing.T) {
 		})
 	}
 }
+
+// failPostCommitStore makes the update that stores the full response after the
+// commit fail for one issue: only the in-transaction write (which sets
+// status_history_id) may change the receipt. It stands in for a process that
+// stops, or a store that fails, between the commit and the response.
+func failPostCommitStore(t *testing.T, issueID string) {
+	t.Helper()
+	fn := "che5491_fail_store_" + issueID[:8]
+	trg := fn + "_trg"
+	dbfx.Exec(t, `CREATE OR REPLACE FUNCTION `+fn+`() RETURNS trigger AS $$
+		BEGIN
+			IF OLD.issue_id = '`+issueID+`' AND NEW.status_history_id IS NOT DISTINCT FROM OLD.status_history_id THEN
+				RAISE EXCEPTION 'simulated lost response store';
+			END IF;
+			RETURN NEW;
+		END $$ LANGUAGE plpgsql`)
+	dbfx.Exec(t, `CREATE TRIGGER `+trg+` BEFORE UPDATE ON issue_handoff_operation FOR EACH ROW EXECUTE FUNCTION `+fn+`()`)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DROP TRIGGER IF EXISTS `+trg+` ON issue_handoff_operation`)
+		testPool.Exec(context.Background(), `DROP FUNCTION IF EXISTS `+fn+`()`)
+	})
+}
+
+// Review finding P1 (failure-path): the first result must not depend on a write
+// after the commit. With the post-commit store lost and the issue changed since,
+// a retry still returns the first result.
+func TestHandoffOperation_RetryAfterLostStoreAndLaterChangeReturnsFirstResult(t *testing.T) {
+	for _, kind := range opKinds {
+		t.Run(kind, func(t *testing.T) {
+			f := newOpFixture(t, kind)
+			failPostCommitStore(t, f.issueID)
+			key := uuid.NewString()
+			body := commentBody(key, "window move")
+
+			first := f.move(t, body, nil).Want(http.StatusOK)
+			dbfx.Exec(t, `UPDATE issue SET title = 'changed later', status = 'in_review' WHERE id = $1`, f.issueID)
+			retry := f.move(t, body, nil).Want(http.StatusOK)
+
+			if retry.Map()["status"] != "in_progress" || retry.Map()["title"] != first.Map()["title"] {
+				t.Fatalf("retry = status %v title %v, want the first result (in_progress, %v)", retry.Map()["status"], retry.Map()["title"], first.Map()["title"])
+			}
+			runs := 0
+			if kind == "agent" {
+				runs = 1
+			}
+			f.wantCounts(t, 1, 1, runs)
+		})
+	}
+}
+
+// Review finding P1 (silent-guard): a changed field outside the handoff block
+// must not be dropped silently. Any changed body field with the same key is refused.
+func TestHandoffOperation_ChangedAnyFieldRefused(t *testing.T) {
+	changes := map[string]map[string]any{
+		"title":        {"title": "another title"},
+		"priority":     {"priority": "urgent"},
+		"suppress_run": {"suppress_run": true},
+		"description":  {"description": "another description"},
+	}
+	for name, extra := range changes {
+		t.Run(name, func(t *testing.T) {
+			f := newOpFixture(t, "member")
+			key := uuid.NewString()
+			f.move(t, commentBody(key, "same text"), nil).Want(http.StatusOK)
+			c, h, r := f.counts(t)
+
+			changed := commentBody(key, "same text")
+			for k, v := range extra {
+				changed[k] = v
+			}
+			wantOpError(t, f.move(t, changed, nil), http.StatusConflict, "operation_key_reused")
+			f.wantCounts(t, c, h, r)
+		})
+	}
+}
