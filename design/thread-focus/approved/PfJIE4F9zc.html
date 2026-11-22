@@ -1,0 +1,14 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Ask thread (S-b) · doc</title><style>
+*{margin:0;box-sizing:border-box}:root{--s:#fff;--fg:oklch(.141 .005 285.8);--m:oklch(.505 .016 285.9);--sb:oklch(.92 .004 286.3);--br:oklch(.56079497 .19449888 256.41258418)}
+body{width:960px;background:var(--s);color:var(--fg);font:14px/22px "Helvetica Neue",Helvetica,Arial,"Liberation Sans",sans-serif;padding:28px 40px}
+h1{font-size:20px;line-height:28px;font-weight:600}.meta{font-size:12px;line-height:16px;color:var(--m);margin:2px 0 14px}h2{font-size:14px;line-height:20px;font-weight:600;margin:16px 0 4px;padding-top:12px;border-top:1px solid var(--sb)}p,li{font-size:14px;line-height:22px;max-width:80ch}code{font:12px/16px ui-monospace,"Liberation Mono",monospace}
+.bk{height:44px;padding:0 16px;border:1px solid var(--sb);border-radius:6px;background:var(--s);font:inherit;font-size:14px;cursor:pointer;color:var(--fg)}.bk:focus-visible{outline:2px solid var(--br);outline-offset:2px}
+</style></head><body><h1>Ask thread (S-b) · doc</h1><p class="meta">Frame S-b, shared by both directions, desktop 1440 and phone 390. "Ask first" on the card opens a small ask thread.</p>
+<h2>Purpose</h2><p>Let you ask the agent a question before you pick, without losing the open card, and bring you back to the card when the agent has answered.</p>
+<h2>UX reasoning</h2><p>The ask thread names where it came from ("From thread"), leaves a one-line stub under the card in the original thread, and ends with an "Answered. Back to the card to pick." line. The original card stays open the whole time and the Submit pick button stays usable, with the hint "You asked a question. Pick when ready."</p>
+<h2>UI reasoning</h2><p>The ask thread is an ordinary thread with a Back button and a "From thread" label, so it needs no new pattern. The loop-back line is a tinted strip with one filled button, the same style as the link row in B-b.</p>
+<h2>Ergonomics</h2><p>On phone, the stub row is 56 px and Back is 44 px. The loop-back button is at the end of the thread, within thumb reach after reading the answer.</p>
+<h2>States</h2><p>Stub in the original thread, ask thread opened, answered with the loop-back line. The ask thread follows the view rules: shown in Focus (it has you in it), one line in Follow, but never folded while its card waits.</p>
+<h2>Motion</h2><p>Opening the ask thread and going back use the 150 ms dissolve. With reduced motion, the swap is instant.</p>
+<h2>Accessibility</h2><p>Back is a button with a text label. The stub is a button with <code>aria-expanded</code> and the question in its name. The loop-back line is <code>role=status</code>, so the answer is announced. Focus returns to the stub after Back.</p>
+<p style="margin-top:18px"><button type="button" class="bk" data-doop-id="doc-back" data-doop-on="click" data-doop-action="navigate:kpQ01u8mPy">Back to the index</button></p></body></html>

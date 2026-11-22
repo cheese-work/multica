@@ -1,12 +1,16 @@
 "use client";
 
 import { type Ref, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
+import { decisionActionOutcomeOptions } from "@multica/core/chat/queries";
+import { useCurrentWorkspace } from "@multica/core/paths";
 import { ApiError } from "@multica/core/api/client";
 import type { PasskeyDecisionOutcome } from "@multica/core/api/passkey-schema";
 import { signPasskeyChallenge } from "@multica/core/auth/webauthn";
 import { Button } from "@multica/ui/components/ui/button";
 import { useT } from "../i18n";
+import { budgetReceiptLines } from "./budget-receipt";
 
 type View =
   | { step: "loading" | "idle" | "busy" | "rejecting" | "no_passkey" | "retry" | "reject_retry" | "lost" }
@@ -65,6 +69,50 @@ function executedEffect(result: unknown): { token: string; change?: string } | n
   return { token: outcome, change: typeof from === "number" && typeof to === "number" ? `${from} → ${to}` : undefined };
 }
 
+/** The done view reads the outcome through a query so a run or status event can refresh it (CHE-6943 D8). */
+function LiveDone({ initial, issueId, actionId }: { initial: PasskeyDecisionOutcome; issueId: string; actionId: string }) {
+  const wsId = useCurrentWorkspace()?.id ?? "";
+  const qc = useQueryClient();
+  const options = decisionActionOutcomeOptions(wsId, issueId, actionId);
+  const { data } = useQuery({ ...options, initialData: initial });
+  // A newer read of the same action (card state change, read-back) replaces what the query holds.
+  useEffect(() => { qc.setQueryData(options.queryKey, initial); }, [qc, initial]); // eslint-disable-line react-hooks/exhaustive-deps -- key is a function of the props above
+  return <DoneView outcome={data} />;
+}
+
+function DoneView({ outcome }: { outcome: PasskeyDecisionOutcome }) {
+  const { t } = useT("common");
+  const { state, error_code: code, error_message: reason } = outcome;
+  const detail =
+    code === "stale_cap" ? t(($) => $.decision_action.failed_code.stale_cap)
+    : code === "stale_window" ? t(($) => $.decision_action.failed_code.stale_window)
+    : code === "not_budgeted" ? t(($) => $.decision_action.failed_code.not_budgeted)
+    : code === "stale_base" ? t(($) => $.decision_action.failed_code.stale_base)
+    : reason ? reason
+    : code ? t(($) => $.decision_action.failed_code.other, { code })
+    : null;
+  const executed = state === "executed";
+  const effect = executed ? executedEffect(outcome.result) : null;
+  // A receipt exists only for an executed run-budget action, so its primary line is the applied cap.
+  const lines = executed && outcome.receipt ? budgetReceiptLines(outcome.receipt, t) : null;
+  const token = lines ? "cap_applied" : effect?.token;
+  return (
+    <div role="status" data-state={state} className="space-y-1 text-label">
+      <p className="font-medium">
+        {token === "cap_applied" ? t(($) => $.decision_action.outcome.cap_applied)
+          : token === "run_queued" ? t(($) => $.decision_action.outcome.run_queued)
+          : token?.startsWith("still_blocked:") ? t(($) => $.decision_action.outcome.still_blocked, { reason: token.slice("still_blocked:".length) })
+          : t(($) => $.decision_action.state[state as Terminal])}
+      </p>
+      {lines?.runs
+        ? <p className="text-caption text-muted-foreground">{lines.runs.label} <span>{lines.runs.change}</span></p>
+        : effect?.change && <p className="text-caption text-muted-foreground">{effect.change}</p>}
+      {lines?.outcome && <p className="text-caption">{lines.outcome}</p>}
+      {state === "failed" && detail && <p className="text-caption text-muted-foreground">{detail}</p>}
+    </div>
+  );
+}
+
 /** What a card with its own button reads and presses: Approve or Reject, once `ready`. */
 export type ApprovalHandle = { approve: () => void; reject: () => void };
 export type ApprovalControls = { ready: boolean; mayApprove: boolean; approveDisabled: boolean };
@@ -79,6 +127,7 @@ export type ApprovalControls = { ready: boolean; mayApprove: boolean; approveDis
  */
 export function DecisionActionApproval({
   actionId,
+  issueId,
   payloadSha256,
   previewSha256,
   canApprove = true,
@@ -91,6 +140,8 @@ export function DecisionActionApproval({
   onControls,
 }: {
   actionId: string;
+  /** The issue the action belongs to. With it, the done view keeps its outcome live (budget receipt); without it the view shows what it read once. */
+  issueId?: string;
   payloadSha256: string;
   /** The digest of the preview the person was shown. The server refuses the approval when it differs from the stored one. */
   previewSha256?: string;
@@ -194,28 +245,9 @@ export function DecisionActionApproval({
   }));
 
   if (view.step === "done") {
-    const { state, error_code: code, error_message: reason } = view.outcome;
-    const detail =
-      code === "stale_cap" ? t(($) => $.decision_action.failed_code.stale_cap)
-      : code === "stale_window" ? t(($) => $.decision_action.failed_code.stale_window)
-      : code === "not_budgeted" ? t(($) => $.decision_action.failed_code.not_budgeted)
-      : code === "stale_base" ? t(($) => $.decision_action.failed_code.stale_base)
-      : reason ? reason
-      : code ? t(($) => $.decision_action.failed_code.other, { code })
-      : null;
-    const effect = state === "executed" ? executedEffect(view.outcome.result) : null;
-    return (
-      <div role="status" data-state={state} className="space-y-1 text-label">
-        <p className="font-medium">
-          {effect?.token === "cap_applied" ? t(($) => $.decision_action.outcome.cap_applied)
-            : effect?.token === "run_queued" ? t(($) => $.decision_action.outcome.run_queued)
-            : effect?.token.startsWith("still_blocked:") ? t(($) => $.decision_action.outcome.still_blocked, { reason: effect.token.slice("still_blocked:".length) })
-            : t(($) => $.decision_action.state[state as Terminal])}
-        </p>
-        {effect?.change && <p className="text-caption text-muted-foreground">{effect.change}</p>}
-        {state === "failed" && detail && <p className="text-caption text-muted-foreground">{detail}</p>}
-      </div>
-    );
+    return issueId
+      ? <LiveDone initial={view.outcome} issueId={issueId} actionId={actionId} />
+      : <DoneView outcome={view.outcome} />;
   }
   if (view.step === "lost") {
     return (

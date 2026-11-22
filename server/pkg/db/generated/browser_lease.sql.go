@@ -213,20 +213,27 @@ func (q *Queries) CreateBrowserInstance(ctx context.Context, arg CreateBrowserIn
 
 const createBrowserProfile = `-- name: CreateBrowserProfile :one
 
-INSERT INTO browser_profile (workspace_id, name, class)
-VALUES ($1, $2, $3)
-RETURNING id, workspace_id, name, class, created_at
+INSERT INTO browser_profile (workspace_id, name, class, hosts)
+VALUES ($1, $2, $3, COALESCE($4::text[], '{}'))
+RETURNING id, workspace_id, name, class, created_at, hosts
 `
 
 type CreateBrowserProfileParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	Name        string      `json:"name"`
 	Class       string      `json:"class"`
+	Hosts       []string    `json:"hosts"`
 }
 
 // Browser lease storage (CHE-4731, W3-2). Mint, renew and queue logic arrives in W3-3.
+// hosts are the site hosts a login profile reaches, recorded once at creation (CHE-4782, W3-19).
 func (q *Queries) CreateBrowserProfile(ctx context.Context, arg CreateBrowserProfileParams) (BrowserProfile, error) {
-	row := q.db.QueryRow(ctx, createBrowserProfile, arg.WorkspaceID, arg.Name, arg.Class)
+	row := q.db.QueryRow(ctx, createBrowserProfile,
+		arg.WorkspaceID,
+		arg.Name,
+		arg.Class,
+		arg.Hosts,
+	)
 	var i BrowserProfile
 	err := row.Scan(
 		&i.ID,
@@ -234,6 +241,7 @@ func (q *Queries) CreateBrowserProfile(ctx context.Context, arg CreateBrowserPro
 		&i.Name,
 		&i.Class,
 		&i.CreatedAt,
+		&i.Hosts,
 	)
 	return i, err
 }
@@ -327,6 +335,7 @@ WHERE workspace_id = $1
   AND ($4::uuid IS NULL OR user_id = $4)
   AND ($5::uuid IS NULL OR agent_id = $5)
   AND ($6::uuid IS NULL OR profile_id = $6)
+  AND ($7::uuid IS NULL OR decision_id = $7)
 RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
 `
 
@@ -337,6 +346,7 @@ type DeleteQueuedBrowserLeasesParams struct {
 	UserID      pgtype.UUID `json:"user_id"`
 	AgentID     pgtype.UUID `json:"agent_id"`
 	ProfileID   pgtype.UUID `json:"profile_id"`
+	DecisionID  pgtype.UUID `json:"decision_id"`
 }
 
 // Revoke and auto-revoke (CHE-4734, W3-5), step 1: drop every queued lease that matches the
@@ -351,6 +361,7 @@ func (q *Queries) DeleteQueuedBrowserLeases(ctx context.Context, arg DeleteQueue
 		arg.UserID,
 		arg.AgentID,
 		arg.ProfileID,
+		arg.DecisionID,
 	)
 	if err != nil {
 		return nil, err
@@ -449,6 +460,7 @@ WHERE workspace_id = $2
   AND ($5::uuid IS NULL OR user_id = $5)
   AND ($6::uuid IS NULL OR agent_id = $6)
   AND ($7::uuid IS NULL OR profile_id = $7)
+  AND ($8::uuid IS NULL OR decision_id = $8)
 RETURNING id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at
 `
 
@@ -460,6 +472,7 @@ type EndBrowserLeasesParams struct {
 	UserID      pgtype.UUID `json:"user_id"`
 	AgentID     pgtype.UUID `json:"agent_id"`
 	ProfileID   pgtype.UUID `json:"profile_id"`
+	DecisionID  pgtype.UUID `json:"decision_id"`
 }
 
 // Revoke and auto-revoke, step 2 (run after step 1, so a grant that races step 1 is still
@@ -477,6 +490,7 @@ func (q *Queries) EndBrowserLeases(ctx context.Context, arg EndBrowserLeasesPara
 		arg.UserID,
 		arg.AgentID,
 		arg.ProfileID,
+		arg.DecisionID,
 	)
 	if err != nil {
 		return nil, err
@@ -690,8 +704,46 @@ func (q *Queries) GetBrowserLeaseForTask(ctx context.Context, arg GetBrowserLeas
 	return i, err
 }
 
+const getBrowserLoginLeaseForUser = `-- name: GetBrowserLoginLeaseForUser :one
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+WHERE id = $1 AND workspace_id = $2 AND user_id = $3 AND class = 'H'
+`
+
+type GetBrowserLoginLeaseForUserParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+func (q *Queries) GetBrowserLoginLeaseForUser(ctx context.Context, arg GetBrowserLoginLeaseForUserParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, getBrowserLoginLeaseForUser, arg.ID, arg.WorkspaceID, arg.UserID)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getBrowserProfile = `-- name: GetBrowserProfile :one
-SELECT id, workspace_id, name, class, created_at FROM browser_profile
+SELECT id, workspace_id, name, class, created_at, hosts FROM browser_profile
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -709,6 +761,7 @@ func (q *Queries) GetBrowserProfile(ctx context.Context, arg GetBrowserProfilePa
 		&i.Name,
 		&i.Class,
 		&i.CreatedAt,
+		&i.Hosts,
 	)
 	return i, err
 }
@@ -727,6 +780,47 @@ type GetOpenBrowserLeaseForTaskParams struct {
 
 func (q *Queries) GetOpenBrowserLeaseForTask(ctx context.Context, arg GetOpenBrowserLeaseForTaskParams) (BrowserLease, error) {
 	row := q.db.QueryRow(ctx, getOpenBrowserLeaseForTask, arg.WorkspaceID, arg.TaskID)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
+const getOpenBrowserLoginLeaseForUser = `-- name: GetOpenBrowserLoginLeaseForUser :one
+
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+WHERE workspace_id = $1 AND user_id = $2 AND class = 'H' AND state <> 'ended'
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetOpenBrowserLoginLeaseForUserParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	UserID      pgtype.UUID `json:"user_id"`
+}
+
+// Class H login lease held by a member (CHE-5989, W3-3b).
+func (q *Queries) GetOpenBrowserLoginLeaseForUser(ctx context.Context, arg GetOpenBrowserLoginLeaseForUserParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, getOpenBrowserLoginLeaseForUser, arg.WorkspaceID, arg.UserID)
 	var i BrowserLease
 	err := row.Scan(
 		&i.ID,
@@ -789,6 +883,30 @@ func (q *Queries) HeadQueuedBrowserLease(ctx context.Context, arg HeadQueuedBrow
 		&i.CreatedAt,
 	)
 	return i, err
+}
+
+const isBrowserGrantIssueClosed = `-- name: IsBrowserGrantIssueClosed :one
+SELECT COALESCE((
+    SELECT i.status IN ('done', 'cancelled') OR EXISTS (
+        SELECT 1 FROM issue_status s
+        WHERE s.workspace_id = i.workspace_id AND s.key = i.status AND s.category IN ('done', 'closed', 'cancelled')
+    )
+    FROM issue i WHERE i.id = $1 AND i.workspace_id = $2
+), true)::bool AS closed
+`
+
+type IsBrowserGrantIssueClosedParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// A once-per-issue grant ends when its issue reaches a done or closed status (CHE-4782, W3-19).
+// A missing issue counts as closed: the grant covers nothing.
+func (q *Queries) IsBrowserGrantIssueClosed(ctx context.Context, arg IsBrowserGrantIssueClosedParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isBrowserGrantIssueClosed, arg.ID, arg.WorkspaceID)
+	var closed bool
+	err := row.Scan(&closed)
+	return closed, err
 }
 
 const listBrowserInstances = `-- name: ListBrowserInstances :many
@@ -868,6 +986,43 @@ func (q *Queries) ListBrowserInstancesForGateway(ctx context.Context, credential
 	return items, nil
 }
 
+const listExpiredDecisionBrowserLeases = `-- name: ListExpiredDecisionBrowserLeases :many
+SELECT DISTINCT lease.workspace_id, lease.decision_id
+FROM browser_lease lease
+JOIN decision_request request ON request.id = lease.decision_id AND request.workspace_id = lease.workspace_id
+WHERE lease.state IN ('queued', 'active')
+  AND request.expires_at IS NOT NULL AND request.expires_at <= clock_timestamp()
+ORDER BY lease.workspace_id, lease.decision_id
+LIMIT LEAST(GREATEST($1::int, 0), 100)
+`
+
+type ListExpiredDecisionBrowserLeasesRow struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	DecisionID  pgtype.UUID `json:"decision_id"`
+}
+
+// Decisions that passed their expires_at while a queued or active lease still names them
+// (CHE-4742, W3-13). The worker revokes each pair; a revoked lease drops out of this list.
+func (q *Queries) ListExpiredDecisionBrowserLeases(ctx context.Context, batchSize int32) ([]ListExpiredDecisionBrowserLeasesRow, error) {
+	rows, err := q.db.Query(ctx, listExpiredDecisionBrowserLeases, batchSize)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListExpiredDecisionBrowserLeasesRow{}
+	for rows.Next() {
+		var i ListExpiredDecisionBrowserLeasesRow
+		if err := rows.Scan(&i.WorkspaceID, &i.DecisionID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockBrowserInstance = `-- name: LockBrowserInstance :one
 SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
 WHERE id = $1 AND workspace_id = $2
@@ -907,6 +1062,23 @@ SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 func (q *Queries) LockBrowserLeaseQueue(ctx context.Context, dollar_1 string) error {
 	_, err := q.db.Exec(ctx, lockBrowserLeaseQueue, dollar_1)
 	return err
+}
+
+const nextDecisionBrowserLeaseDeadline = `-- name: NextDecisionBrowserLeaseDeadline :one
+SELECT CASE WHEN MIN(request.expires_at) IS NULL THEN -1
+            ELSE GREATEST(EXTRACT(EPOCH FROM (MIN(request.expires_at) - clock_timestamp())), 0) END::float8 AS wait_seconds
+FROM browser_lease lease
+JOIN decision_request request ON request.id = lease.decision_id AND request.workspace_id = lease.workspace_id
+WHERE lease.state IN ('queued', 'active') AND request.expires_at IS NOT NULL
+`
+
+// Seconds until the earliest expires_at among decisions that still have a queued or active
+// lease (CHE-4742). -1 when none; 0 when one is already due.
+func (q *Queries) NextDecisionBrowserLeaseDeadline(ctx context.Context) (float64, error) {
+	row := q.db.QueryRow(ctx, nextDecisionBrowserLeaseDeadline)
+	var wait_seconds float64
+	err := row.Scan(&wait_seconds)
+	return wait_seconds, err
 }
 
 const registerBrowserInstance = `-- name: RegisterBrowserInstance :one

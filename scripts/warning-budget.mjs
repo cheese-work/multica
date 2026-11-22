@@ -49,6 +49,9 @@ export function warningCounts(jobs) {
       // CHE-6346: backend-agent-tests fixtures log expected slog rejections (only the `script rejected` and `script timed out` messages) that
       // appear as new warnings against a main baseline that predates the fixture. They are test inputs, not diagnostics.
       if (job.name === "backend-agent-tests" && /^(?:\d{4}-\d\d-\d\dT\S+\s+)?time=\S+ level=WARN msg="script (?:rejected|timed out)"/.test(line)) continue
+      // CHE-7000: decision-card-e2e has no main baseline yet. These two notices come from the Postgres service image and Next's CI
+      // check, not from our code; any other warning in the job still counts.
+      if (job.name === "decision-card-e2e" && /^(?:\d{4}-\d\d-\d\dT\S+\s+)?(?:initdb: warning: enabling "trust" authentication for local connections|\s*\u26a0 No build cache found\.)/.test(line)) continue
       const message = normalize(line)
       if (/^(?:\/|[A-Za-z]:\/|(?:\.\.?\/)?(?:apps|packages|server|scripts)\/).+\.[cm]?[jt]sx?$/.test(message)) {
         eslintFile = sourcePath(message)
@@ -151,6 +154,11 @@ function isServerError(error) {
   return typeof error?.stderr === "string" && /\bHTTP 5\d\d\b/.test(error.stderr)
 }
 
+// CHE-8843: GitHub can lose a job log blob; its read then returns "gh: Not Found (HTTP 404)".
+function isNotFound(error) {
+  return typeof error?.stderr === "string" && /\bHTTP 404\b/.test(error.stderr)
+}
+
 function isRateLimit(error) {
   return typeof error?.stderr === "string" && /\bHTTP (?:403|429)\b/.test(error.stderr) && /rate limit/i.test(error.stderr)
 }
@@ -175,7 +183,15 @@ export function scanBaselines(runs, { pending, jobBaselines, baselineJobs, listJ
       const renamed = pending.has(job.name) ? job.name : job.name.replace(/^(cursor-background-lifecycle|installer) \(ubuntu-latest\)$/, "$1 (ubuntu-24.04)")
       if (pending.has(renamed)) names.push(renamed)
       if (!names.length) continue
-      const collected = collect(job)
+      // A baseline whose log is gone is skipped; the name stays pending for an older run. The current run's own logs are not read here.
+      let collected
+      try {
+        collected = collect(job)
+      } catch (error) {
+        if (!isNotFound(error)) throw error
+        log(`Skipping baseline run ${run.id}: log for job ${job.name} is missing (HTTP 404)`)
+        continue
+      }
       for (const name of names) {
         baselineJobs.push({ ...collected, name })
         jobBaselines[name] = { run: run.html_url, sha: run.head_sha, job: job.name }
@@ -209,13 +225,15 @@ export function runBudget() {
     return { name: job.name, log: api(`${prefix}/actions/jobs/${job.id}/logs`, false), annotations: pages(`${prefix}/check-runs/${checkId}/annotations`) }
   }
   const currentJobs = jobs(current).map(collect)
-  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint", "upstream-update-source-guard", "locale-parity", "gitleaks", "dependency-review", "migration-checks"])
+  const zeroBaselineJobs = new Set(["migration-prefix-check", "image-budget", "go-lint", "upstream-update-source-guard", "locale-parity", "gitleaks", "dependency-review", "migration-checks", "decision-card-e2e"])
   const pending = new Set(currentJobs.map(({ name }) => name).filter((name) => !zeroBaselineJobs.has(name)))
   const jobBaselines = Object.fromEntries(currentJobs.map(({ name }) => [name, null]))
   const baselineJobs = []
   let baseline
   for (let page = 1; pending.size && page <= 10; page++) {
-    const runs = api(`${prefix}/actions/workflows/${current.workflow_id}/runs?branch=main&status=success&created=${encodeURIComponent(`<${current.created_at}`)}&per_page=100&page=${page}`).workflow_runs
+    // CHE-7171: list completed runs, not only successful ones. The job's own conclusion is checked per job, and a
+    // new job's first main run can end `failure` because this very check had no baseline for it.
+    const runs = api(`${prefix}/actions/workflows/${current.workflow_id}/runs?branch=main&status=completed&created=${encodeURIComponent(`<${current.created_at}`)}&per_page=100&page=${page}`).workflow_runs
     const trusted = runs.filter((run) => String(run.id) !== runId && run.created_at < current.created_at && run.head_branch === "main" && ["push", "schedule", "workflow_dispatch"].includes(run.event))
       .sort((first, second) => second.created_at.localeCompare(first.created_at))
     const first = scanBaselines(trusted, { pending, jobBaselines, baselineJobs, listJobs: jobs, collect, log: console.error })

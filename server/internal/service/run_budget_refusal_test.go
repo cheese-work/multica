@@ -59,7 +59,7 @@ func TestFindOpenRunBudgetRefusalSkipsTerminalRows(t *testing.T) {
 	issue := uuid.New()
 	for window, state := range map[string]string{"a": "open", "b": "resume_pending", "c": "still_blocked", "d": "run_queued", "e": "status_restored", "f": "superseded"} {
 		id := insertRefusal(t, issue, window, state, "intent")
-		got, err := FindOpenRunBudgetRefusal(context.Background(), q, pgtype.UUID{Bytes: issue, Valid: true}, window)
+		got, _, err := FindOpenRunBudgetRefusal(context.Background(), q, pgtype.UUID{Bytes: issue, Valid: true}, window)
 		terminal := state == "run_queued" || state == "status_restored" || state == "superseded"
 		switch {
 		case terminal && !errors.Is(err, ErrRunBudgetRefusalNotFound):
@@ -68,7 +68,7 @@ func TestFindOpenRunBudgetRefusalSkipsTerminalRows(t *testing.T) {
 			t.Fatalf("%s: got %v, %v want %v", state, got, err, id)
 		}
 	}
-	if _, err := FindOpenRunBudgetRefusal(context.Background(), q, pgtype.UUID{Bytes: issue, Valid: true}, "none"); !errors.Is(err, ErrRunBudgetRefusalNotFound) {
+	if _, _, err := FindOpenRunBudgetRefusal(context.Background(), q, pgtype.UUID{Bytes: issue, Valid: true}, "none"); !errors.Is(err, ErrRunBudgetRefusalNotFound) {
 		t.Fatalf("missing window: %v", err)
 	}
 }

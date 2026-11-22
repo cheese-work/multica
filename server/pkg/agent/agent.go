@@ -287,6 +287,11 @@ type TokenUsage struct {
 	OutputTokens     int64
 	CacheReadTokens  int64
 	CacheWriteTokens int64
+	// CacheWrite1hTokens is how many of CacheWriteTokens Anthropic wrote with
+	// the 1-hour TTL (billed 2x input, not 1.25x). nil means the run carried
+	// no TTL split, so the price stays at the 5-minute rate; 0 is a real
+	// "all 5-minute". Only the Claude backend fills it.
+	CacheWrite1hTokens *int64
 	// CostUSDTicks is the provider's own statement of what this usage cost,
 	// in ticks of 1e-10 USD. Zero means "not reported" — only a few agents
 	// return it (xAI Grok Build does, via `_meta.usage.costUsdTicks`).
@@ -390,6 +395,10 @@ type Config struct {
 	RuntimeID                  string
 	DaemonVersion              string
 	CodexVersion               string
+	// Launch, when set, sees every process this Config starts, just before
+	// Start. Nil keeps the plain launch. Refused together with
+	// CredentialBoundary (ErrLaunchHookCredentialBoundary).
+	Launch LaunchHook
 	// BuiltinRuntime reports that ExecutablePath is the provider's own
 	// discovered binary rather than a custom runtime profile's command. A
 	// custom profile keeps its protocol family as the provider, so the
@@ -511,6 +520,9 @@ func ResumeRejectionUndetectable(agentType string) bool {
 }
 
 func New(agentType string, cfg Config) (Backend, error) {
+	if cfg.Launch != nil && (cfg.RequireCredentialIsolation || cfg.CredentialBoundary != nil) {
+		return nil, ErrLaunchHookCredentialBoundary
+	}
 	if cfg.RequireCredentialIsolation || cfg.CredentialBoundary != nil {
 		if !cfg.RequireCredentialIsolation || !cfg.BuiltinRuntime || len(cfg.LaunchPrefix) != 0 || agentType != "claude" && agentType != "codex" {
 			return nil, fmt.Errorf("%w: unsupported credential-exclusive runtime", credentialexec.ErrUnavailable)

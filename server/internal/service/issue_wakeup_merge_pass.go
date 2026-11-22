@@ -33,11 +33,12 @@ func parseVerdict(content string) (word, head string, ok bool) {
 	return strings.ToUpper(strings.TrimSpace(m[1])), m[2], true
 }
 
-// labOf names the lab behind an agent from its model, else its runtime
-// provider. An agent it cannot place has no lab, and then it is neither a
-// signer nor an author the evaluator accepts. ponytail: closed set, add a lab
-// here when a new provider joins.
-func labOf(model, provider string) string {
+// LabOf names the lab behind an agent from its model, else its runtime
+// provider. An agent it cannot place has no lab (""), and then it is neither a
+// signer nor an author the evaluator accepts. The merge gate and reviewer
+// routing share it. ponytail: closed set, add a lab here when a new provider
+// joins.
+func LabOf(model, provider string) string {
 	if price, ok := obsmetrics.PriceForModelAlias(model); ok {
 		return price.Provider
 	}
@@ -62,7 +63,7 @@ func agentLab(ctx context.Context, tx pgx.Tx, workspaceID, agentID pgtype.UUID) 
 	if err != nil {
 		return "", err
 	}
-	return labOf(model, provider), nil
+	return LabOf(model, provider), nil
 }
 
 // A verdict takes effect when it was written or last edited, whichever is

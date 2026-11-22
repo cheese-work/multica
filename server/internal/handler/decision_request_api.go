@@ -35,6 +35,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		Footer          string              `json:"footer"`
 		ParentID        string              `json:"parent_id"`
 		EscalationClass string              `json:"escalation_class"`
+		Wait            bool                `json:"wait"`
 		Action          *decisionActionWire `json:"action"`
 		Kind            string              `json:"kind"`
 		ExpiresIn       string              `json:"expires_in"`
@@ -99,6 +100,18 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to load workspace")
 		return
 	}
+	typedWhy := ""
+	switch {
+	case input.Action != nil:
+		typedWhy = "an action request"
+	case parsed.Topic != "":
+		typedWhy = "a topic ask"
+	case len(input.CoversRequestIDs) > 0:
+		typedWhy = "a batch card"
+	}
+	if !handler.checkTypedOptions(writer, request, &parsed, workspace, issue, typedWhy) {
+		return
+	}
 	heldHints, ok := checkHeldSettingsAsk(writer, parsed, workspace.Settings)
 	if !ok {
 		return
@@ -106,7 +119,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	hints = append(hints, heldHints...)
 	lintMode := "off"
 	if input.Action == nil && kind == decisiontx.KindDecision && parsed.Topic == "" {
-		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings)
+		cannotDoHints, ok := checkAgentCannotDo(writer, parsed, workspace.Settings, request.Header.Get("X-Agent-ID"))
 		if !ok {
 			return
 		}
@@ -188,7 +201,7 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeError(writer, http.StatusInternalServerError, "failed to encode ask")
 		return
 	}
-	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{CardLintMode: lintMode, AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers})
+	result, err := handler.createDecisionRequest(request, issue, decisionRequestInput{CardLintMode: lintMode, AskJSON: askJSON, SessionID: sessionID, NewDM: input.NewDM, HumanUserID: humanID, Ask: ask, Options: parsed.Options, Footer: input.Footer, ParentID: parentID, EscalationClass: input.EscalationClass, SourceCommentID: sourceCommentID, Action: draft, DMSession: dmSession, Parsed: &parsed, Slug: workspace.Slug, Kind: kind, ExpiresInSeconds: expiresInSeconds, Covers: covers, Recovers: recovers, Wait: input.Wait})
 	if err != nil {
 		writeDecisionError(writer, err, "decision request")
 		return
@@ -248,6 +261,7 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 		return
 	}
 	handler.publishDecisionResult(request, issue, &result)
+	hints = append(hints, result.Warnings...)
 	var action *decisionActionResponse
 	if result.Action != nil {
 		action = newDecisionActionResponse(*result.Action)
@@ -260,7 +274,7 @@ func (handler *Handler) writeDecisionResult(writer http.ResponseWriter, request 
 // that does not lead its card has no message to announce.
 func (handler *Handler) publishDecisionResult(request *http.Request, issue db.Issue, result *decisionRequestResult) {
 	workspaceID, agentID := uuidToString(issue.WorkspaceID), uuidToString(result.Request.AskingAgentID)
-	if result.CreatedSession != nil {
+	if result.CreatedSession != nil && !result.BackingLane {
 		session := result.CreatedSession
 		handler.publishChatFor(protocol.EventChatSessionCreated, workspaceID, "agent", agentID, uuidToString(session.CreatorID), uuidToString(session.ID), protocol.ChatSessionCreatedPayload{
 			WorkspaceID: workspaceID, ChatSessionID: uuidToString(session.ID), AgentID: agentID, CreatorID: uuidToString(session.CreatorID), Title: session.Title,
@@ -299,7 +313,7 @@ func (handler *Handler) publishDecisionResult(request *http.Request, issue db.Is
 		handler.publishDecisionStatusChange(request.Context(), issue, result.ParkedIssue, result.ParkedActivity, "decision_request")
 	}
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
-	if result.Message.ID.Valid {
+	if result.Message.ID.Valid && !result.BackingLane {
 		handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 			MessageKind:   result.Message.MessageKind,
 			ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID),
@@ -358,6 +372,8 @@ type decisionAnswerRead struct {
 	// WokenAt and WakeOutcome say when and how the answer reached the agent; null until it did.
 	WokenAt     *string `json:"woken_at"`
 	WakeOutcome *string `json:"wake_outcome"`
+	// UndoUntil is set only while the undo grace runs (section 3.11 of the decision screen plan).
+	UndoUntil *string `json:"undo_until,omitempty"`
 }
 
 func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Request) {
@@ -391,6 +407,7 @@ func (handler *Handler) GetDecision(writer http.ResponseWriter, request *http.Re
 			ChosenOptionIndex: int4ToPtr(answer.ChosenOptionIndex), ContentSnapshot: answer.ContentSnapshot, CreatedAt: timestampToPtr(answer.CreatedAt),
 			DisclaimedAt: timestampToPtr(answer.DisclaimedAt), DisclaimReason: textToPtr(answer.DisclaimReason),
 			WokenAt: timestampToPtr(answer.WokenAt), WakeOutcome: textToPtr(answer.WakeOutcome),
+			UndoUntil: runningUndoUntil(answer.UndoUntil, answer.DisclaimedAt),
 		}
 		receipt, err := handler.answerReceiptState(request.Context(), stored)
 		if err != nil {

@@ -31,7 +31,10 @@ type Service struct {
 	Decisions Decisions
 	Registry  Registry
 	Signer    Signer
+	Class3    *Class3Deny
 	Now       func() time.Time
+	// Audit records start and end events inside the transition's transaction (CHE-4744).
+	Audit AuditFunc
 }
 
 // MintRequest is a running task's ask for a lease. The caller resolves task, agent, issue and
@@ -46,6 +49,14 @@ type MintRequest struct {
 	DecisionID  pgtype.UUID
 }
 
+// audit records a lease event through q, the transition's transaction.
+func (s *Service) audit(ctx context.Context, q *db.Queries, kind string, l db.BrowserLease) error {
+	if s.Audit == nil {
+		return nil
+	}
+	return s.Audit(ctx, q, kind, l)
+}
+
 func (s *Service) now() time.Time {
 	if s.Now != nil {
 		return s.Now().UTC()
@@ -56,19 +67,38 @@ func (s *Service) now() time.Time {
 func ts(t time.Time) pgtype.Timestamptz { return pgtype.Timestamptz{Time: t, Valid: true} }
 
 func isHookDenial(err error) bool {
-	return errors.Is(err, ErrGateDenied) || errors.Is(err, ErrDecisionRequired) || errors.Is(err, ErrDecisionInvalid)
+	return errors.Is(err, ErrGateDenied) || errors.Is(err, ErrClassNotMintable) || errors.Is(err, ErrDecisionRequired) || errors.Is(err, ErrDecisionInvalid) ||
+		errors.Is(err, ErrClass3Denied) || errors.Is(err, ErrClass3Unchecked)
 }
 
-// check runs the user gate, then the decision for a class that needs one (S0 asks no one), and
-// returns when the lease must end at the latest.
-func (s *Service) check(ctx context.Context, subj Subject) (time.Time, error) {
+// check applies the class rules, runs the user gate, the class-3 check for a login profile, then the
+// decision for a class that needs one (S0 asks no one), and returns when the lease must end at the
+// latest. Mint, renew and the queued grant all come through here, so a profile moved to a class that
+// is not leased (H, S1) ends or drops its leases. leaseClass is the class the lease was granted
+// under: a profile that changed class since (S0 to S2 or back) would otherwise keep the old host,
+// token and decision rule, so any change ends or drops the lease.
+func (s *Service) check(ctx context.Context, subj Subject, leaseClass string) (time.Time, error) {
 	now := s.now()
 	limit := now.Add(MaxLeaseDuration)
+	// A member's login lease (no task) is class H only; an agent lease is never H.
+	member := !subj.TaskID.Valid
+	if member != (subj.Profile.Class == ClassH) || (!member && !mintable(subj.Profile.Class)) ||
+		subj.Profile.Class != leaseClass {
+		return limit, ErrClassNotMintable
+	}
 	if err := s.Gate.Check(ctx, subj); err != nil {
 		return limit, err
 	}
-	if subj.Profile.Class == ClassS0 {
+	if !needsDecision(subj.Profile.Class) {
 		return limit, nil
+	}
+	// Class 3 is forbidden to every agent lease: no decision can allow it, so it is checked
+	// before one is asked for, and again at every renew and queued grant. A member's own login
+	// is not an agent lease.
+	if !member {
+		if err := s.Class3.checkClass3(subj.Profile.Hosts); err != nil {
+			return limit, err
+		}
 	}
 	exp, err := s.Decisions.Validate(ctx, subj)
 	if err != nil {
@@ -113,6 +143,32 @@ func (s *Service) inTx(ctx context.Context, fn func(q *db.Queries) error) error 
 }
 
 func (s *Service) Mint(ctx context.Context, r MintRequest) (Result, error) {
+	// H is Cheese's login lease through the viewer (member auth, MintMember); S1 is deferred and
+	// has no row.
+	return s.mint(ctx, r, func(class string) bool { return class == ClassS0 || class == ClassS2 })
+}
+
+// MemberMintRequest is a member's ask for a class H login lease (CHE-5989). The caller is the
+// authenticated member; there is no agent, task or issue.
+type MemberMintRequest struct {
+	WorkspaceID pgtype.UUID
+	UserID      pgtype.UUID
+	ProfileID   pgtype.UUID
+	DecisionID  pgtype.UUID
+}
+
+// MintMember grants or queues a class H lease for a member. It runs the same gate, decision,
+// registry, queue and token code as Mint; the registry serves class H on C00 only, so the token
+// audience is the C00 host.
+func (s *Service) MintMember(ctx context.Context, r MemberMintRequest) (Result, error) {
+	return s.mint(ctx, MintRequest{
+		WorkspaceID: r.WorkspaceID, UserID: r.UserID, ProfileID: r.ProfileID, DecisionID: r.DecisionID,
+	}, func(class string) bool { return class == ClassH })
+}
+
+// mint is the shared mint path. mintable says which profile classes the caller may lease. A
+// request without a task is a member's login lease and holds one open lease per member.
+func (s *Service) mint(ctx context.Context, r MintRequest, mintable func(class string) bool) (Result, error) {
 	if s.Signer == nil {
 		return Result{}, ErrSignerMissing
 	}
@@ -123,15 +179,14 @@ func (s *Service) Mint(ctx context.Context, r MintRequest) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	// H is Cheese's login lease through the viewer (member auth); S1 is deferred and has no row.
-	if profile.Class != ClassS0 && profile.Class != ClassS2 {
+	if !mintable(profile.Class) {
 		return Result{}, ErrClassNotMintable
 	}
 	subj := Subject{
 		WorkspaceID: r.WorkspaceID, UserID: r.UserID, AgentID: r.AgentID, IssueID: r.IssueID,
 		TaskID: r.TaskID, Profile: profile, DecisionID: r.DecisionID,
 	}
-	limit, err := s.check(ctx, subj)
+	limit, err := s.check(ctx, subj, profile.Class)
 	if err != nil {
 		return Result{}, err
 	}
@@ -145,10 +200,19 @@ func (s *Service) Mint(ctx context.Context, r MintRequest) (Result, error) {
 
 	var queued db.BrowserLease
 	err = s.inTx(ctx, func(q *db.Queries) error {
-		if err := lockKey(ctx, q, "browser-lease-task:"+uuid.UUID(r.TaskID.Bytes).String()); err != nil {
-			return err
+		var err error
+		if r.TaskID.Valid {
+			if err := lockKey(ctx, q, "browser-lease-task:"+uuid.UUID(r.TaskID.Bytes).String()); err != nil {
+				return err
+			}
+			_, err = q.GetOpenBrowserLeaseForTask(ctx, db.GetOpenBrowserLeaseForTaskParams{WorkspaceID: r.WorkspaceID, TaskID: r.TaskID})
+		} else {
+			if err := lockKey(ctx, q, "browser-lease-member:"+uuid.UUID(r.UserID.Bytes).String()); err != nil {
+				return err
+			}
+			_, err = q.GetOpenBrowserLoginLeaseForUser(ctx, db.GetOpenBrowserLoginLeaseForUserParams{WorkspaceID: r.WorkspaceID, UserID: r.UserID})
 		}
-		if _, err := q.GetOpenBrowserLeaseForTask(ctx, db.GetOpenBrowserLeaseForTaskParams{WorkspaceID: r.WorkspaceID, TaskID: r.TaskID}); err == nil {
+		if err == nil {
 			return ErrLeaseExists
 		} else if !errors.Is(err, pgx.ErrNoRows) {
 			return err
@@ -167,12 +231,19 @@ func (s *Service) Mint(ctx context.Context, r MintRequest) (Result, error) {
 	if err := s.AdvanceQueue(ctx, r.WorkspaceID, profile.Class); err != nil {
 		return Result{}, err
 	}
-	return s.statusOf(ctx, queued.ID, r.WorkspaceID, r.TaskID, true)
+	return s.statusOf(ctx, queued.ID, r.WorkspaceID, r.TaskID, r.UserID, true)
 }
 
-// statusOf reads the lease back; a granted lease gets its token only when issueToken is set.
-func (s *Service) statusOf(ctx context.Context, id, ws, task pgtype.UUID, issueToken bool) (Result, error) {
-	l, err := s.Queries.GetBrowserLeaseForTask(ctx, db.GetBrowserLeaseForTaskParams{ID: id, WorkspaceID: ws, TaskID: task})
+// statusOf reads the lease back; a granted lease gets its token only when issueToken is set. An
+// agent lease is looked up by its task, a member's login lease by its member.
+func (s *Service) statusOf(ctx context.Context, id, ws, task, user pgtype.UUID, issueToken bool) (Result, error) {
+	var l db.BrowserLease
+	var err error
+	if task.Valid {
+		l, err = s.Queries.GetBrowserLeaseForTask(ctx, db.GetBrowserLeaseForTaskParams{ID: id, WorkspaceID: ws, TaskID: task})
+	} else {
+		l, err = s.Queries.GetBrowserLoginLeaseForUser(ctx, db.GetBrowserLoginLeaseForUserParams{ID: id, WorkspaceID: ws, UserID: user})
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		// A queued lease that failed revalidation at its grant leaves the queue.
 		return Result{}, ErrGateDenied
@@ -192,6 +263,11 @@ func (s *Service) statusOf(ctx context.Context, id, ws, task pgtype.UUID, issueT
 		return res, nil
 	}
 	return s.issueTokenEnding(ctx, res)
+}
+
+// Status reads a lease back without signing: no token, whatever the state.
+func (s *Service) Status(ctx context.Context, ws, task, lease pgtype.UUID) (Result, error) {
+	return s.statusOf(ctx, lease, ws, task, pgtype.UUID{}, false)
 }
 
 // issueToken signs with the lease row it is given, so the caller must pass the persisted
@@ -223,6 +299,10 @@ func (s *Service) issueToken(ctx context.Context, q *db.Queries, res Result) (Re
 		Epoch: l.Epoch.Int64, TaskID: uuid.UUID(l.TaskID.Bytes).String(), IssueID: uuid.UUID(l.IssueID.Bytes).String(),
 		UserID: uuid.UUID(l.UserID.Bytes).String(), Profile: uuid.UUID(l.ProfileID.Bytes).String(),
 		Class: l.Class, Instance: uuid.UUID(l.InstanceID.Bytes).String(), Iat: now.Unix(), Exp: exp.Unix(), JTI: jti,
+	}
+	if !l.TaskID.Valid {
+		// A member's login lease: the member is the subject, and there is no task or issue.
+		claims.Sub, claims.TaskID, claims.IssueID = claims.UserID, "", ""
 	}
 	if l.DecisionID.Valid {
 		claims.DecisionID = uuid.UUID(l.DecisionID.Bytes).String()
@@ -270,6 +350,9 @@ func (s *Service) endActive(ctx context.Context, l db.BrowserLease, reason strin
 		if err != nil {
 			return err
 		}
+		if err := s.audit(ctx, q, AuditEnd, ended); err != nil {
+			return err
+		}
 		return q.SetBrowserInstancePhase(ctx, db.SetBrowserInstancePhaseParams{
 			ID: ended.InstanceID, WorkspaceID: ended.WorkspaceID, Phase: "draining",
 		})
@@ -277,10 +360,19 @@ func (s *Service) endActive(ctx context.Context, l db.BrowserLease, reason strin
 }
 
 func (s *Service) Renew(ctx context.Context, ws, task, lease pgtype.UUID) (Result, error) {
+	return s.renew(ctx, lease, ws, task, pgtype.UUID{})
+}
+
+// RenewMember renews a member's own class H lease.
+func (s *Service) RenewMember(ctx context.Context, ws, user, lease pgtype.UUID) (Result, error) {
+	return s.renew(ctx, lease, ws, pgtype.UUID{}, user)
+}
+
+func (s *Service) renew(ctx context.Context, lease, ws, task, user pgtype.UUID) (Result, error) {
 	if s.Signer == nil {
 		return Result{}, ErrSignerMissing
 	}
-	res, err := s.statusOf(ctx, lease, ws, task, false)
+	res, err := s.statusOf(ctx, lease, ws, task, user, false)
 	if errors.Is(err, ErrGateDenied) {
 		return Result{}, ErrNotFound // statusOf reports a missing row as a dropped lease
 	}
@@ -298,7 +390,7 @@ func (s *Service) Renew(ctx context.Context, ws, task, lease pgtype.UUID) (Resul
 	if err != nil {
 		return res, err
 	}
-	limit, err := s.check(ctx, subj)
+	limit, err := s.check(ctx, subj, l.Class)
 	if err != nil {
 		if isHookDenial(err) {
 			if endErr := s.endActive(ctx, l, endRevalidation); endErr != nil {
@@ -396,7 +488,7 @@ func (s *Service) advanceOne(ctx context.Context, ws pgtype.UUID, class string) 
 		if err != nil {
 			return err
 		}
-		limit, err := s.check(ctx, subj)
+		limit, err := s.check(ctx, subj, head.Class)
 		if isHookDenial(err) {
 			// The lease never held an instance and has no epoch, so it cannot be 'ended'.
 			_, err = q.DeleteQueuedBrowserLease(ctx, db.DeleteQueuedBrowserLeaseParams{ID: head.ID, WorkspaceID: ws})
@@ -418,12 +510,18 @@ func (s *Service) advanceOne(ctx context.Context, ws pgtype.UUID, class string) 
 			if err != nil {
 				return err
 			}
-			_, err = q.ActivateBrowserLease(ctx, db.ActivateBrowserLeaseParams{
+			granted, err := q.ActivateBrowserLease(ctx, db.ActivateBrowserLeaseParams{
 				ID: head.ID, WorkspaceID: ws, InstanceID: claimed.ID, Epoch: pgtype.Int8{Int64: claimed.Epoch, Valid: true},
 				GrantedAt: ts(s.now()), ExpiresAt: ts(limit),
 			})
-			more = err == nil
-			return err
+			if err != nil {
+				return err
+			}
+			if err := s.audit(ctx, q, AuditStart, granted); err != nil {
+				return err
+			}
+			more = true
+			return nil
 		}
 		return nil
 	})

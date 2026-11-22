@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS issue_step_watchdog_action_occurrence_uidx;

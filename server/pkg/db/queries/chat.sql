@@ -478,6 +478,8 @@ LEFT JOIN LATERAL (
    LIMIT 1
 ) lm ON true
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
+  -- A decision backing lane is never the member's chat (plan r4 3.7).
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = cs.id)
   AND (
     cs.explicitly_created_at IS NOT NULL
     OR
@@ -548,6 +550,7 @@ LEFT JOIN LATERAL (
    LIMIT 1
 ) lm ON true
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2
+  AND NOT EXISTS (SELECT 1 FROM decision_backing_lane backing WHERE backing.session_id = cs.id)
   AND (
     cs.explicitly_created_at IS NOT NULL
     OR
@@ -798,7 +801,9 @@ WHERE id = sqlc.arg('id')
 -- backwards onto the turn the user interrupted.
 --
 -- A task dispatched before an in-place /compact (older compaction epoch) never
--- moves the pointer: its session predates the boundary.
+-- moves the pointer: its session predates the boundary. A compaction task
+-- (purpose = 'compaction') never moves it either, and its session never counts
+-- as a newer owner of it (SEC-2).
 --
 -- The newer-task lookup depends on
 -- idx_agent_task_queue_chat_session (migration 472). Neither chat_pending_v3
@@ -814,6 +819,7 @@ FROM agent_task_queue t
 WHERE t.id = sqlc.arg('task_id')
   AND t.chat_session_id = cs.id
   AND t.status = 'cancelled'
+  AND t.purpose IS DISTINCT FROM 'compaction'
   AND t.session_id IS NOT NULL
   AND t.runtime_id IS NOT NULL
   AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
@@ -821,6 +827,7 @@ WHERE t.id = sqlc.arg('task_id')
       SELECT 1 FROM agent_task_queue newer
       WHERE newer.chat_session_id = t.chat_session_id
         AND newer.id <> t.id
+        AND newer.purpose IS DISTINCT FROM 'compaction'
         AND newer.session_id IS NOT NULL
         AND newer.created_at > t.created_at
   );
@@ -1733,7 +1740,7 @@ INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, chat_session_id,
     initiator_user_id, originator_user_id, accountable_user_id, force_fresh_session, runtime_mcp_overlay,
     runtime_connected_apps, originator_source, trigger_evidence_kind, trigger_evidence_ref_id,
-    fire_at, channel_context_revision, id
+    fire_at, channel_context_revision, purpose, source_chat_session_id, context, id
 )
 SELECT
     $1, $2, NULL,
@@ -1749,6 +1756,9 @@ SELECT
     sqlc.narg(trigger_evidence_ref_id),
     sqlc.narg('fire_at')::timestamptz,
     sqlc.narg('channel_context_revision')::bigint,
+    sqlc.narg('purpose')::text,
+    sqlc.narg('source_chat_session_id')::uuid,
+    sqlc.narg('context')::jsonb,
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
 WHERE lock_task_owner_rows($1, NULL, $2)
 RETURNING *;
@@ -1799,6 +1809,7 @@ SELECT EXISTS (
   JOIN chat_session cs ON cs.id = t.chat_session_id
   WHERE cs.id = $1
     AND t.session_id = cs.session_id
+    AND t.purpose IS DISTINCT FROM 'compaction'
     AND COALESCE(t.chat_compaction_epoch, 0) = cs.compaction_epoch
 ) AS current;
 
@@ -1835,6 +1846,10 @@ SELECT EXISTS (
 -- both track emptyContentRe / historyMessageLocatorRe in
 -- pkg/taskfailure/resume.go (GH #6066).
 --
+-- Every CTE skips compaction tasks (purpose = 'compaction'): their sessions
+-- belong to the background job, not to the DM, and a failed one stays in the
+-- current epoch (SEC-2).
+--
 -- Every CTE reads the DM's current compaction epoch only: a session recorded
 -- before an in-place compact is the history the compact summarised away and
 -- must not seed the next turn, and a retirement or overflow of that old
@@ -1857,6 +1872,7 @@ WITH retired_sessions AS (
         OR COALESCE(r.channel_context_revision, 1) = sqlc.narg('channel_context_revision')::bigint
       )
       AND r.retired_session_id IS NOT NULL
+      AND r.purpose IS DISTINCT FROM 'compaction'
       AND COALESCE(r.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = sqlc.arg('chat_session_id'))
 ), resume_overflow_at AS (
     -- completed_at alone, where the issue-side twin coalesces four columns:
@@ -1871,6 +1887,7 @@ WITH retired_sessions AS (
         OR COALESCE(t.channel_context_revision, 1) = sqlc.narg('channel_context_revision')::bigint
       )
       AND t.status = 'failed'
+      AND t.purpose IS DISTINCT FROM 'compaction'
       AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = sqlc.arg('chat_session_id'))
       AND (
         COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
@@ -1887,6 +1904,7 @@ WITH retired_sessions AS (
         OR COALESCE(t.channel_context_revision, 1) = sqlc.narg('channel_context_revision')::bigint
       )
       AND t.session_id IS NOT NULL
+      AND t.purpose IS DISTINCT FROM 'compaction'
       AND t.status IN ('completed', 'failed', 'cancelled')
       AND COALESCE(t.chat_compaction_epoch, 0) = (SELECT cs.compaction_epoch FROM chat_session cs WHERE cs.id = sqlc.arg('chat_session_id'))
     ORDER BY t.session_id, t.completed_at DESC

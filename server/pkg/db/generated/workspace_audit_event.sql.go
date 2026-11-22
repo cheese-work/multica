@@ -68,6 +68,84 @@ func (q *Queries) InsertWorkspaceAuditEvent(ctx context.Context, arg InsertWorks
 	return err
 }
 
+const listMachineAuditEvents = `-- name: ListMachineAuditEvents :many
+SELECT id, at, actor_type, actor_id, task_id, kind, target_type, target_id,
+       "before", "after", external_requested
+FROM workspace_audit_event
+WHERE workspace_id = $1
+  AND target_id = ANY($2::uuid[])
+  AND kind = ANY($3::text[])
+  AND ($4::timestamptz IS NULL
+       OR (at, id) < ($4::timestamptz, $5::uuid))
+ORDER BY at DESC, id DESC
+LIMIT $6
+`
+
+type ListMachineAuditEventsParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RuntimeIds  []pgtype.UUID      `json:"runtime_ids"`
+	Kinds       []string           `json:"kinds"`
+	CursorAt    pgtype.Timestamptz `json:"cursor_at"`
+	CursorID    pgtype.UUID        `json:"cursor_id"`
+	RowLimit    int32              `json:"row_limit"`
+}
+
+type ListMachineAuditEventsRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	At                pgtype.Timestamptz `json:"at"`
+	ActorType         string             `json:"actor_type"`
+	ActorID           pgtype.UUID        `json:"actor_id"`
+	TaskID            pgtype.UUID        `json:"task_id"`
+	Kind              string             `json:"kind"`
+	TargetType        string             `json:"target_type"`
+	TargetID          pgtype.UUID        `json:"target_id"`
+	Before            []byte             `json:"before"`
+	After             []byte             `json:"after"`
+	ExternalRequested []string           `json:"external_requested"`
+}
+
+// Audit rows about the runtimes of one machine (CHE-5709). Same keyset page and
+// columns as ListWorkspaceAuditEvents; the caller passes the machine's runtime
+// ids and the kinds the machine tab shows.
+func (q *Queries) ListMachineAuditEvents(ctx context.Context, arg ListMachineAuditEventsParams) ([]ListMachineAuditEventsRow, error) {
+	rows, err := q.db.Query(ctx, listMachineAuditEvents,
+		arg.WorkspaceID,
+		arg.RuntimeIds,
+		arg.Kinds,
+		arg.CursorAt,
+		arg.CursorID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMachineAuditEventsRow{}
+	for rows.Next() {
+		var i ListMachineAuditEventsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.At,
+			&i.ActorType,
+			&i.ActorID,
+			&i.TaskID,
+			&i.Kind,
+			&i.TargetType,
+			&i.TargetID,
+			&i.Before,
+			&i.After,
+			&i.ExternalRequested,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspaceAuditEvents = `-- name: ListWorkspaceAuditEvents :many
 SELECT id, at, actor_type, actor_id, task_id, kind, target_type, target_id,
        "before", "after", external_requested

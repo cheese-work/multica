@@ -62,6 +62,23 @@ multica me background-agents set <job> [--agent <id|name|none>] [--fallback <id|
   reads, edits one job and writes back). Writes are human-only: a task token gets
   403 `background_agents_human_only`, printed with exit code 3.
 
+## Run queue order
+
+```bash
+multica workspace queue-order show [workspace] --output json
+multica workspace queue-order set [workspace] [--order priority|project_rank] [--aging-minutes 5..720]
+```
+
+- `show` prints the effective `queue_order` (`priority` default) and
+  `queue_aging_minutes` (30 default).
+- `set` changes only the flags you pass. A value outside the allowed set is
+  refused with an error that lists the allowed values, before any request.
+- Writes need owner or admin; a member gets 403. Each change is audited as kind
+  `workspace.queue_order` (actor, old, new, time): read it with
+  `multica audit list --kind workspace.queue_order`.
+- Roll back with `--order priority`. Claim-path use of the setting arrives in a
+  later release; today it is stored and audited.
+
 ## Audit trail
 
 ```bash
@@ -139,6 +156,20 @@ Every scope flag is explicit: `--workspace` (exactly one) never falls back to
 `--workspace-id`, `MULTICA_WORKSPACE_ID` or the saved config. Each successful
 export writes an audit row.
 
+## GitHub stack auto-link mode
+
+```bash
+multica github stack-autolink status --repo owner/repo               # read-only; final mode and per-workspace modes
+multica github stack-autolink set [--repo owner/repo] --mode off|report|link   # owner or admin only
+```
+
+- `status` is open to any member. The final mode is the lowest effective mode
+  across every workspace bound to the same GitHub App installation, so read it
+  before you expect stack links on a PR.
+- `set` without `--repo` changes the workspace default; with `--repo` it
+  changes that repo only. Workspace `off` is a shutdown a repo entry cannot
+  raise. Run it only when a person asked for it.
+
 ## GitHub kill switch
 
 ```bash
@@ -180,3 +211,16 @@ Workspace admin. Settings are per repo (`<owner/name>`).
   `--max-owner-wakes`.
 - `multica ci-watch events <owner/name> [--limit N]` lists recent watcher
   events (1 to 200, server default 50).
+
+## Per-issue token usage
+
+```bash
+multica issue usage <issue-id> --output json
+```
+
+Returns aggregated token usage across the issue's runs. In table output `RUNS`
+counts terminal runs only — one still in flight is not yet reflected. A total
+prefixed with `>=` is a lower bound, not the real total: one or more terminal
+runs did not report usage (aborted or infra-failed), so the true figure is at
+least that but unknown above it. Do not compare an unprefixed total with a
+`>=`-prefixed one without checking which you have.

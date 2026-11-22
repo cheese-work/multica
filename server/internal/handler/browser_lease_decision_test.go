@@ -1,0 +1,127 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"github.com/google/uuid"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/multica-ai/multica/server/internal/browserlease"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+)
+
+// s2Fixture is a running task on an issue with an S2 profile, the real decision hook and an
+// open user gate.
+func s2Fixture(t *testing.T) (browserLeaseFixture, string) {
+	t.Helper()
+	f := newBrowserLeaseFixture(t, "running")
+	q := db.New(testPool)
+	prof, err := q.CreateBrowserProfile(context.Background(), db.CreateBrowserProfileParams{
+		WorkspaceID: parseUUID(testWorkspaceID), Name: "figma-login", Class: "S2", Hosts: []string{"figma.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The default fixture name embeds a UUID, which an ask refuses as a bare ID.
+	dbfx.Exec(t, `UPDATE agent SET name = 'Browser Lease Tester' WHERE id = $1`, f.agentID)
+	deny, err := browserlease.ParseClass3Deny(strings.NewReader("[hosts]\npaypal.com\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.h.BrowserLeases.Class3 = deny
+	f.h.BrowserLeases.Decisions = f.h.BrowserLeaseDecisions(browserlease.NewDecisions(db.New(testPool)))
+	t.Cleanup(func() {
+		dbfx.Exec(t, `DELETE FROM decision_request WHERE workspace_id = $1 AND request_fingerprint LIKE 'server:browser_lease:%'`, testWorkspaceID)
+	})
+	return f, uuidToString(prof.ID)
+}
+
+type decisionRequiredBody struct {
+	Code              string `json:"code"`
+	DecisionRequestID string `json:"decision_request_id"`
+}
+
+func mintS2(t *testing.T, f browserLeaseFixture, profile string) decisionRequiredBody {
+	t.Helper()
+	w := f.call(t, f.h.MintBrowserLease, "/x", map[string]string{"profile_id": profile})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("S2 mint without a decision: %d %s", w.Code, w.Body.String())
+	}
+	var out decisionRequiredBody
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func TestBrowserLeaseMintS2CreatesTheDecisionRequest(t *testing.T) {
+	f, profile := s2Fixture(t)
+	out := mintS2(t, f, profile)
+	if out.Code != "decision_required" || out.DecisionRequestID == "" {
+		t.Fatalf("body = %+v, want decision_required with a request id", out)
+	}
+	req, err := db.New(testPool).GetDecisionRequest(context.Background(), db.GetDecisionRequestParams{
+		WorkspaceID: parseUUID(testWorkspaceID), ID: parseUUID(out.DecisionRequestID),
+	})
+	if err != nil {
+		t.Fatalf("request %s not stored: %v", out.DecisionRequestID, err)
+	}
+	if req.Status != "open" || uuidToString(req.HumanUserID) != testUserID {
+		t.Fatalf("request = status %q, human %s", req.Status, uuidToString(req.HumanUserID))
+	}
+	var agentName, issueID string
+	dbfx.QueryRow(t, `SELECT a.name, t.issue_id::text FROM agent_task_queue t JOIN agent a ON a.id = t.agent_id WHERE t.id = $1`, f.taskID).Scan(&agentName, &issueID)
+	if uuidToString(req.IssueID) != issueID {
+		t.Fatalf("request issue %s, want %s", uuidToString(req.IssueID), issueID)
+	}
+	for _, want := range []string{agentName, "/issues/" + issueID, "figma-login", "S2", "2 hours"} {
+		if !strings.Contains(req.Ask, want) {
+			t.Errorf("ask does not name %q:\n%s", want, req.Ask)
+		}
+	}
+}
+
+func TestBrowserLeaseMintS2FindsTheOpenRequest(t *testing.T) {
+	f, profile := s2Fixture(t)
+	first := mintS2(t, f, profile)
+	second := mintS2(t, f, profile)
+	if first.DecisionRequestID == "" || first.DecisionRequestID != second.DecisionRequestID {
+		t.Fatalf("second mint opened %q, want the first request %q", second.DecisionRequestID, first.DecisionRequestID)
+	}
+	var n int
+	dbfx.QueryRow(t, `SELECT count(*) FROM decision_request WHERE workspace_id = $1 AND request_fingerprint LIKE 'server:browser_lease:%'`, testWorkspaceID).Scan(&n)
+	if n != 1 {
+		t.Fatalf("%d requests, want 1", n)
+	}
+}
+
+// The request is asked as the minting agent, not as the built-in agent or the issue's assignee:
+// the validator accepts only a decision that agent asked. After the user approves, the same
+// agent's mint with that ID succeeds, and another agent's mint is refused.
+func TestBrowserLeaseMintS2DecisionIsAskedAsTheMintingAgent(t *testing.T) {
+	f, profile := s2Fixture(t)
+	other := dbfx.Agent(t, "Other Assignee "+uuid.NewString(), dbfx.Runtime(t, "other runtime"))
+	dbfx.Exec(t, `UPDATE issue SET assignee_type = 'agent', assignee_id = $2 WHERE id = (SELECT issue_id FROM agent_task_queue WHERE id = $1)`, f.taskID, other)
+	// S2 runs on a C00 instance; the fixture's X99 instance serves S0 only.
+	if _, err := db.New(testPool).CreateBrowserInstance(context.Background(), db.CreateBrowserInstanceParams{WorkspaceID: parseUUID(testWorkspaceID), Name: "c00-1"}); err != nil {
+		t.Fatal(err)
+	}
+	out := mintS2(t, f, profile)
+
+	var asking string
+	dbfx.QueryRow(t, `SELECT asking_agent_id::text FROM decision_request WHERE id = $1`, out.DecisionRequestID).Scan(&asking)
+	if asking != f.agentID {
+		t.Fatalf("request asked as %s, want the minting agent %s", asking, f.agentID)
+	}
+
+	dbfx.Exec(t, `UPDATE decision_request SET status = 'answered' WHERE id = $1`, out.DecisionRequestID)
+	dbfx.Exec(t, `INSERT INTO decision_answer (id, decision_request_id, content_snapshot, chat_message_ids, effective_at, answered_by_user_id, chosen_option_index, answer_source)
+		VALUES ($1, $2, $3, '{}', now() - interval '1 minute', $4, 0, 'card')`, uuid.NewString(), out.DecisionRequestID, browserlease.ApproveLabel, testUserID)
+
+	w := f.call(t, f.h.MintBrowserLease, "/x", map[string]string{"profile_id": profile, "decision_id": out.DecisionRequestID})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("mint with the approved decision: %d %s", w.Code, w.Body.String())
+	}
+}

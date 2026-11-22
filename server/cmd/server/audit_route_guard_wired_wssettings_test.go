@@ -10,6 +10,7 @@ func init() {
 		"POST /api/workspaces/":                                   "workspace.create",
 		"PUT /api/workspaces/{id}/qoder":                          "qoder.save",
 		"POST /api/workspaces/{id}/qoder/resume":                  "qoder.resume",
+		"PUT /api/github/stack-autolink":                          "workspace.update",
 		"PUT /api/projects/{id}/workflow-split":                   "project.workflow_split.update",
 		"DELETE /api/projects/{id}/workflow-split":                "project.workflow_split.clear",
 	} {

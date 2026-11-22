@@ -48,6 +48,7 @@ Vous devez aussi choisir un service d'e-mail ; sinon, les codes de vérification
 | `MULTICA_SHUTDOWN_HOLD_DURATION` | `0` | Délai d'attente, après un signal d'arrêt, avant le début de l'arrêt propre |
 | `MULTICA_RUNTIME_RECONNECT_GRACE` | `3h` | Durée pendant laquelle un runtime hors ligne peut se reconnecter avant que ses exécutions en cours n'échouent ; les valeurs inférieures à `150s` sont relevées à ce plancher |
 | `MULTICA_REVIEW_GUARD_AGENT_IDS` | vide (garde désactivée) | ID d'agents relecteurs séparés par des virgules. Une exécution de relecture est ignorée, avec la raison `review_head_answered`, quand cet agent a déjà publié PASS, FAIL, BLOCKED ou NOT-RUN pour le head de la PR et que le ticket a exactement une PR liée ouverte ; un nouveau head relance l'exécution. Un verdict est une ligne `Verdict: PASS/FAIL/CHANGES REQUESTED/BLOCKED/NOT-RUN` (ou une ligne commençant par `BLOCKED` ou `NOT-RUN`) plus une ligne `Candidate:` ou `Head:` donnant le SHA du head. L'exécution ignorée apparaît dans la liste des exécutions comme annulée. Les points de suivi planifiés ne sont pas concernés |
+| `MULTICA_TASK_ASSERTION_SIGNING_KEY` | vide (désactivé) | `<kid>:<graine Ed25519 en base64>`. Si défini, une prise en charge de tâche renvoie aussi `doop_task_assertion` : une identité de tâche signée, valable 24 h (tâche, agent, issue, projet, fournisseur du runtime, modèle réclamé), que doop vérifie avec la clé publique correspondante. Non défini : aucun champ, prise en charge inchangée. Une valeur mal formée est journalisée une seule fois et ne produit rien ; la prise en charge réussit quand même. Rien n'est stocké |
 
 Lorsque vous définissez un délai de maintien avant arrêt sur Kubernetes, `terminationGracePeriodSeconds` doit dépasser ce délai plus le temps nécessaire à l'arrêt proprement dit.
 
@@ -231,6 +232,17 @@ Lorsque la clé d'API et l'URL de base sont toutes deux vides, cette couche est 
 Ceci ne concerne que la couche d'assistance. L'exécution d'un agent suit un chemin de données distinct : lorsqu'un agent répond dans une discussion, votre daemon exécute l'outil de codage IA de cet agent avec les propres identifiants de l'outil, et ne lui transmet pas les paramètres `MULTICA_LLM_*` ci-dessus. (Les variables de connexion à Multica propres à l'exécution, dont l'agent a besoin, sont injectées séparément par le daemon.) Vider les variables ci-dessus n'a aucun effet sur ce chemin — contrôlez-le via la configuration du runtime de l'agent.
 </Callout>
 
+## Garde de conception (doop)
+
+Ce groupe configure la façon dont Multica lit les attestations de conception de doop pour le paramètre d'espace de travail `design_card_guard`. Un seul GET HTTPS avec un jeton porteur partagé lit une attestation.
+
+| Variable | Défaut | Description |
+|---|---|---|
+| `MULTICA_DOOP_API_URL` | vide | Origine de doop, par exemple `https://doop.example.com`. Elle doit être en `https` et sans chemin |
+| `MULTICA_DOOP_ATTESTATION_TOKEN` | vide | Jeton partagé d'au moins 32 caractères. Il doit être égal à `DOOP_ATTESTATION_READ_TOKEN` côté doop |
+
+Si l'une des variables est absente ou inutilisable, le lecteur n'est pas configuré et chaque lecture échoue comme non configurée. Chaque lecture a un délai de 3 secondes, ne suit aucune redirection et accepte un corps de 256 Kio au plus.
+
 ## Configuration du daemon
 
 Les variables ci-dessous sont lues sur l'ordinateur qui exécute vos agents, et non dans le conteneur de l'API.
@@ -244,6 +256,7 @@ Les variables ci-dessous sont lues sur l'ordinateur qui exécute vos agents, et 
 | `MULTICA_DAEMON_WS_CLAIM_POLL_INTERVAL` | `3m` | Borne supérieure des interrogations de sécurité de la prise en charge via WebSocket lorsque celle-ci est saine, configurée indépendamment de `MULTICA_DAEMON_POLL_INTERVAL` ; une gigue à la baisse ramène la valeur par défaut effective à `2m30s`–`2m45s`, tandis que les anciens serveurs et les prises en charge incertaines conservent l'intervalle d'interrogation ordinaire |
 | `MULTICA_DAEMON_HEARTBEAT_INTERVAL` | `15s` | Intervalle des signaux de vie (heartbeat) |
 | `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` | `20` | Plafond d'exécutions simultanées par daemon |
+| `MULTICA_DAEMON_RESERVED_CHAT_SLOTS` | `0` | Emplacements réservés aux seules exécutions de chat (DM) ; les exécutions d'issue en utilisent au plus `max_concurrent_tasks - reserved_chat_slots` |
 | `MULTICA_AGENT_TIMEOUT` | `0` | Durée maximale absolue par exécution ; `0` signifie aucune limite |
 | `MULTICA_AGENT_IDLE_WATCHDOG` | `2h` | Durée maximale de silence, sans sortie ni exécution d'outil ; `0` désactive entièrement le watchdog |
 | `MULTICA_AGENT_TOOL_WATCHDOG` | identique à `MULTICA_AGENT_IDLE_WATCHDOG` | Durée maximale de silence pour un seul appel d'outil ; ne la définissez que pour laisser aux outils plus de marge qu'au modèle, `0` n'arrête jamais de force un appel d'outil. Les shells d'arrière-plan de Cursor restent en cours tant que les processus qui leur appartiennent ne se sont pas terminés ; à cette limite, le daemon arrête ces processus et accorde à Cursor un nouveau budget de watchdog pour produire son résultat final. Si l'appartenance des processus ou leur nettoyage ne peut pas être vérifié, la politique ordinaire d'annulation des exécutions s'applique |
@@ -381,6 +394,7 @@ Clés prises en charge :
 | `runtime_name` | `Local Agent` | Nom d'affichage du runtime |
 | `workspaces_root` | chemin sous `~` dépendant du profil | Répertoire racine des répertoires de travail des exécutions |
 | `max_concurrent_tasks` | `20` | Plafond d'exécutions simultanées ; `0` ou une valeur vide signifie non défini |
+| `reserved_chat_slots` | `0` | Emplacements gardés libres pour les exécutions de chat (DM) ; les exécutions d'issue en utilisent au plus `max_concurrent_tasks - reserved_chat_slots`. `0` ou une valeur vide signifie aucune réservation |
 | `poll_interval` | `30s` | Intervalle d'interrogation des exécutions |
 | `ws_claim_poll_interval` | `3m` | Borne supérieure des interrogations de sécurité de la prise en charge via WebSocket lorsque celle-ci est saine, indépendante de `poll_interval` ; le daemon applique une gigue uniquement à la baisse |
 | `heartbeat_interval` | `15s` | Intervalle des signaux de vie (heartbeat) |
@@ -396,6 +410,7 @@ Quelques règles concernant les valeurs :
 - Les clés de durée acceptent des durées Go positives (comme `10s`, `2h`) ; `0s` et les valeurs négatives sont refusées. La seule exception est `agent_timeout` : `0s` est valide et désactive explicitement la limite de durée des exécutions.
 - Passer une chaîne vide efface une valeur persistée et revient à la variable d'environnement ou à la valeur par défaut intégrée, par exemple `multica config set poll_interval ""`.
 - `max_concurrent_tasks` exige un entier positif ou nul.
+- `reserved_chat_slots` exige un entier supérieur ou égal à `0` et inférieur à `max_concurrent_tasks` ; toute autre valeur est refusée avec une erreur qui nomme les deux valeurs.
 - Les valeurs relatives de `workspaces_root` sont converties en chemins absolus lors de l'enregistrement.
 
 ## Observabilité et analytique

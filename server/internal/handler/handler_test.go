@@ -56,7 +56,15 @@ func TestMain(m *testing.M) {
 		dbURL = "postgres://multica:multica@localhost:5432/multica_test?sslmode=disable"
 	}
 
-	pool, err := pgxpool.New(ctx, dbURL)
+	poolConfig, err := pgxpool.ParseConfig(dbURL)
+	if err != nil {
+		testutil.ExitWithoutDatabase(err)
+	}
+	// CHE-7000: pgxpool defaults to max(4, NumCPU). The lock-wait tests hold
+	// four or five connections at once, so on a 4-vCPU runner they starved the
+	// pool and hung to the shard timeout. A floor keeps them off the core count.
+	poolConfig.MaxConns = max(poolConfig.MaxConns, 16)
+	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 	if err != nil {
 		testutil.ExitWithoutDatabase(err)
 	}
@@ -1742,8 +1750,8 @@ func TestCreateCommentRejectsMalformedParentID(t *testing.T) {
 }
 
 func TestGetChatSessionRejectsMalformedSessionID(t *testing.T) {
-	req := newRequest("GET", "/api/chat/sessions/not-a-uuid", nil)
-	req.Header.Set("X-Actor-Source", "interactive_jwt")
+	// The workspace middleware runs first in production, so the caller is a member.
+	req := withChatTestWorkspaceCtx(t, newRequest("GET", "/api/chat/sessions/not-a-uuid", nil))
 	req = withURLParam(req, "sessionId", "not-a-uuid")
 	testutil.Call(t, testHandler.GetChatSession, req).Want(http.StatusBadRequest)
 }

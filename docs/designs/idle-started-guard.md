@@ -57,8 +57,8 @@ flowchart TD
   F[Finding: idle in a watched status] --> T{Target}
   T -->|open decision request, no need_decision step| W[Legitimate wait: no move, no receipt]
   T -->|neither need_decision nor blocked in workflow| R[refused]
-  T -->|human wait| N[need_decision]
-  T -->|no continuation| B[blocked, blocked_reason idle-no-continuation]
+  T -->|open decision request| N[need_decision]
+  T -->|human wait or no continuation| B[blocked, blocked_reason names the wait]
   N --> M[moved + system comment]
   B --> M
   M --> A{Notice}
@@ -80,7 +80,9 @@ flowchart TD
    nothing, writes nothing and ends an older refused receipt.
 2. Human-wait evidence: an enabled member-filtered event wakeup, a newest
    comment from an agent that mentions a member, Readiness `gated-human`, or a
-   workflow step handled by a person. The target is `need_decision`.
+   workflow step handled by a person. The target is `blocked`, never
+   `need_decision`: no person was asked a question. `blocked_reason` is
+   `idle-human-wait: <wait>` and the guard comment names the wait.
 3. Otherwise nothing is left to continue the issue. The target is `blocked`
    and `blocked_reason` is `idle-no-continuation`.
 
@@ -200,8 +202,8 @@ someone has been told. Skip rules key on `notified`.
 
 - A task enqueue that does not take the issue run-budget lock is not serialised
   with the move. All enqueue paths found take that lock.
-- A `mention://member/` in the newest agent comment can misjudge `need_decision`
-  against `blocked`. Both reach the same leader, so the cost is a wrong label.
+- A `mention://member/` in the newest agent comment can misjudge a human wait
+  against no continuation. Both land in `blocked` and reach the same leader, so the cost is a wrong reason.
 - Long waits on an external system with no wakeup, PR snapshot or child look
   idle. An agent that waits registers an `at` or `github_run` wakeup, which
   counts as a continuation.

@@ -78,7 +78,7 @@ const run = promisify(execFile);
 
 // psql reads the connection from PG* variables, so the URL never appears in argv
 // (visible in `ps`) or in an execFile error message.
-export async function queryRows(databaseUrl, days, exec = run) {
+export async function psqlJson(databaseUrl, sql, exec = run) {
   let url;
   try {
     url = new URL(databaseUrl);
@@ -97,13 +97,15 @@ export async function queryRows(databaseUrl, days, exec = run) {
   });
   for (const k of Object.keys(env)) if (env[k] === '' && k.startsWith('PG')) delete env[k];
   try {
-    const { stdout } = await exec('psql', ['-At', '-c', QUERY(days)], { env });
+    const { stdout } = await exec('psql', ['-At', '-c', sql], { env });
     return JSON.parse(stdout);
   } catch (e) {
     const detail = String(e.stderr ?? '').trim().split('\n').pop();
     throw new Error(`psql failed${detail ? `: ${detail}` : ''}`);
   }
 }
+
+export const queryRows = (databaseUrl, days, exec = run) => psqlJson(databaseUrl, QUERY(days), exec);
 
 async function main(argv) {
   const days = argv.includes('--days') ? argv[argv.indexOf('--days') + 1] : '3';

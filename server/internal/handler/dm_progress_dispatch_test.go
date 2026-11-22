@@ -32,6 +32,7 @@ type dispatchEnv struct {
 func newDispatchEnv(t *testing.T) *dispatchEnv {
 	t.Helper()
 	e := &dispatchEnv{capWorld: newCapWorld(t), base: time.Now().UTC().Add(-48 * time.Hour).Truncate(time.Second)}
+	e.backdateWatermarks(t, e.issue)
 	bus := events.New()
 	var mu sync.Mutex
 	bus.Subscribe(protocol.EventChatMessage, func(ev events.Event) {
@@ -43,9 +44,16 @@ func newDispatchEnv(t *testing.T) *dispatchEnv {
 		e.events = append(e.events, ev)
 		e.seen = append(e.seen, map[bool]string{true: "visible", false: "missing"}[visible == 1])
 	})
-	e.d = &service.DMProgressDispatcher{Pool: testPool, Queries: testHandler.Queries, Bus: bus}
+	e.d = &service.DMProgressDispatcher{Pool: testPool, Queries: testHandler.Queries, Bus: bus, DeliverCards: true}
 	t.Cleanup(func() { dbfx.Exec(t, `DELETE FROM dm_progress_delivery WHERE lineage_id = $1`, e.lane) })
 	return e
+}
+
+// backdateWatermarks puts the event watermark of issue's follows before the
+// virtual clock, so rows stamped on it count as events, not as snapshot.
+func (e *dispatchEnv) backdateWatermarks(t *testing.T, issue string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE dm_progress_follow SET event_watermark = $2 WHERE issue_id = $1`, issue, e.base.Add(-time.Hour))
 }
 
 func (e *dispatchEnv) at(min float64) time.Time {
@@ -85,6 +93,7 @@ func (e *dispatchEnv) child(t *testing.T) string {
 		t.Fatal(err)
 	}
 	dbfx.Exec(t, `DELETE FROM dm_progress_pending WHERE issue_id = $1`, child)
+	e.backdateWatermarks(t, child)
 	return child
 }
 
@@ -177,6 +186,36 @@ func TestDMProgressDispatch_TenOrdinaryChangesInFifteenMinutesGiveOneCard(t *tes
 	dbfx.QueryRow(t, `SELECT last_card_at, next_seq FROM dm_progress_lane WHERE lineage_id = $1`, e.lane).Scan(&lastCard, &next)
 	if !lastCard.Equal(e.at(15)) || next != 2 {
 		t.Errorf("lane = last_card_at %v next_seq %d, want %v and 2", lastCard, next, e.at(15))
+	}
+}
+
+// CHE-7568: the web DM has no card or mute control yet, so with the delivery
+// switch off a due lane posts nothing and keeps every pending row. Turning the
+// switch on later sends the held rows as one card.
+func TestDMProgressDispatch_SwitchOffPostsNoCardAndKeepsRows(t *testing.T) {
+	e := newDispatchEnv(t)
+	e.d.DeliverCards = false
+	e.status(t, e.issue, "in_progress", 0)
+	e.status(t, e.issue, "in_review", 1)
+
+	e.run(t, 15)
+	e.run(t, 60)
+	e.wantCards(t, 0)
+	if n := e.pending(t); n != 2 {
+		t.Errorf("pending rows with the switch off = %d, want 2 kept", n)
+	}
+	if len(e.events) != 0 {
+		t.Errorf("published events with the switch off = %d, want 0", len(e.events))
+	}
+
+	e.d.DeliverCards = true
+	e.run(t, 61)
+	got := e.wantCards(t, 1)
+	if len(got[0].Payload.Items) != 1 || got[0].Payload.Items[0].Status != "in_review" {
+		t.Errorf("card after the switch turns on = %+v, want one item in_review", got[0])
+	}
+	if n := e.pending(t); n != 0 {
+		t.Errorf("pending rows after the held card = %d, want 0", n)
 	}
 }
 
@@ -285,6 +324,7 @@ func TestDMProgressDispatch_RevokedMemberRowsAreDeletedAndLoggedWithoutContent(t
 	member := dbfx.Member(t, testWorkspaceID, user, "member")
 	lane := e.dm.dm(t, user)
 	issue := e.dm.agentIssue(t, e.dm.task(t, lane, user), map[string]any{"title": "revoked secret title"})
+	e.backdateWatermarks(t, issue)
 	e.status(t, issue, "in_progress", 0)
 	if n := dbfx.Count(t, `SELECT count(*) FROM dm_progress_pending WHERE issue_id = $1`, issue); n == 0 {
 		t.Fatal("no pending row captured before the member is revoked")

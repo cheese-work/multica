@@ -113,8 +113,17 @@ func (h *Handler) dispatchIssueRun(ctx context.Context, issue db.Issue, trigger 
 		h.skipHandoffIntent(ctx, intentID, "stop_not_confirmed")
 		return false
 	}
-	if issue.Status == statusAgentAccepted {
-		closed, after := h.autoCloseOnAccept(ctx, issue, intentID)
+	if trigger.BlockedEntry {
+		skip, after := h.blockedEntryOnDispatch(ctx, issue, trigger.AgentID, intentID)
+		if skip {
+			return false
+		}
+		if after != nil {
+			defer func() { after(started) }()
+		}
+	}
+	if entersAutoCloseStep(issue.Status) {
+		closed, after := h.autoCloseOnEntry(ctx, issue, intentID)
 		if closed {
 			return false
 		}
@@ -398,7 +407,7 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 			if projectUUID, err := util.ParseUUID(*req.ProjectID); err == nil {
 				if def, project, err := issueworkflow.ForProject(r.Context(), h.Queries, wsUUID, projectUUID); err == nil && def != nil {
 					if step, ok := def.Step(candidate.Status); ok && step.HandsOff() && !hasNewAssignee {
-						humans, err := h.workflowHumans(r.Context(), h.Queries, step, project, wsUUID, previewRequester(actorType, actorID))
+						humans, err := h.workflowHumans(r.Context(), h.Queries, step, project, wsUUID, previewRequester(actorType, actorID), workflowSubject{})
 						if err != nil {
 							writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
 							return
@@ -469,22 +478,28 @@ func (h *Handler) PreviewIssueTrigger(w http.ResponseWriter, r *http.Request) {
 // recordStopNotConfirmed leaves the reason a run did not start where people
 // read the issue: the gate is closed until the old run's daemon acks.
 func (h *Handler) recordStopNotConfirmed(ctx context.Context, issue db.Issue, actorType, actorID string, e *service.StopNotConfirmedError) {
-	details, _ := json.Marshal(map[string]string{"message": e.Error(), "task_id": uuidToString(e.TaskID)})
+	h.recordIssueActivity(ctx, issue.WorkspaceID, issue.ID, actorType, actorID, "stop_not_confirmed",
+		map[string]string{"message": e.Error(), "task_id": uuidToString(e.TaskID)})
+}
+
+// recordIssueActivity writes one timeline entry on the issue and publishes it.
+func (h *Handler) recordIssueActivity(ctx context.Context, workspaceID, issueID pgtype.UUID, actorType, actorID, action string, detail map[string]string) {
+	details, _ := json.Marshal(detail)
 	activity, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
 		ID:          dbid.NewV7(),
-		WorkspaceID: issue.WorkspaceID,
-		IssueID:     issue.ID,
+		WorkspaceID: workspaceID,
+		IssueID:     issueID,
 		ActorType:   strToText(actorType),
 		ActorID:     optionalActorUUID(actorID),
-		Action:      "stop_not_confirmed",
+		Action:      action,
 		Details:     details,
 	})
 	if err != nil {
-		slog.Warn("record stop-not-confirmed activity failed", "err", err, "issue_id", uuidToString(issue.ID))
+		slog.Warn("record issue activity failed", "err", err, "action", action, "issue_id", uuidToString(issueID))
 		return
 	}
-	h.publish(protocol.EventActivityCreated, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{
-		"issue_id": uuidToString(issue.ID),
+	h.publish(protocol.EventActivityCreated, uuidToString(workspaceID), actorType, actorID, map[string]any{
+		"issue_id": uuidToString(issueID),
 		"entry": map[string]any{
 			"type": "activity", "id": uuidToString(activity.ID), "action": activity.Action,
 			"actor_type": actorType, "actor_id": actorID, "details": json.RawMessage(details),

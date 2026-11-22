@@ -60,6 +60,14 @@ const (
 // handler deletion graph must then implement that decision before CI passes.
 var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"cloud_agent_connection":             workspaceDelete,
+	"merge_queue_intake":                 workspaceDelete,
+	"merge_queue_epoch":                  workspaceDelete,
+	"merge_queue_association":            workspaceDelete,
+	"merge_queue_wait":                   workspaceDelete,
+	"merge_queue_pr_close":               workspaceDelete,
+	"merge_queue_enqueue_event":          workspaceDelete,
+	"merge_queue_state":                  workspaceDelete,
+	"merge_queue_evidence":               workspaceDelete,
 	"daemon_pause":                       workspaceDelete,
 	"activity_log":                       workspaceDelete,
 	"workspace_audit_event":              workspaceDelete,
@@ -187,6 +195,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"dm_progress_pending":                workspaceDelete, // CHE-3404 unsent progress events; no FK, swept by DeleteWorkspaceIssueRoots.
 	"issue_wakeup_pr_event":              workspaceDelete,
 	"issue_ci_advance":                   workspaceDelete,
+	"issue_workflow_switch_pending":      workspaceDelete, // CHE-7669 deferred workflow switch; no FK, swept by DeleteWorkspaceIssueRoots and the issue delete.
 	"stage_queue_waiting":                workspaceDelete, // CHE-3611 refused-PR ledger; issue_id and agent_id FKs ON DELETE CASCADE remove its rows with the workspace.
 	"issue_decision_park":                workspaceDelete, // CHE-3946 decision park; issue_id FK ON DELETE CASCADE removes its rows with the workspace.
 	"issue_wakeup_receipt":               workspaceDelete,
@@ -228,6 +237,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"browser_instance":                   workspaceDelete,
 	"browser_lease":                      workspaceDelete,
 	"browser_profile":                    workspaceDelete,
+	"browser_profile_agent":              workspaceDelete,
+	"browser_profile_member":             workspaceDelete,
 	"review_admission_deferral":          workspaceDeleteKeep, // no workspace_id; rows expire after 24 h (CHE-4650)
 	"host_sample":                        workspaceDeleteKeep, // host telemetry keyed by daemon_id, no workspace_id; outlives workspaces by design
 	"host_sample_hourly":                 workspaceDeleteKeep, // hourly rollup of host_sample; same reason

@@ -144,8 +144,18 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
+	"999z_decision_backing_lane_uidx":                           "decision_backing_lane_member_topic_uidx",
+	"999r_merge_queue_intake_removal_uidx":                      "merge_queue_intake_removal_uidx",
+	"999s_merge_queue_epoch_key_uidx":                           "merge_queue_epoch_key_uidx",
+	"999t_merge_queue_association_active_uidx":                  "merge_queue_association_active_uidx",
+	"999u_merge_queue_wait_unmet_uidx":                          "merge_queue_wait_unmet_uidx",
+	"999v_merge_queue_pr_close_uidx":                            "merge_queue_pr_close_uidx",
+	"999w_merge_queue_enqueue_event_node_uidx":                  "merge_queue_enqueue_event_node_uidx",
+	"999x_merge_queue_state_pr_uidx":                            "merge_queue_state_pr_uidx",
+	"999l_agent_task_queue_task_key_idx":                        "idx_agent_task_queue_task_key",
 	"942_issue_workflow_lint_override_log_idx":                  "idx_issue_workflow_lint_override_workflow",
 	"999l_issue_wakeup_receipt_pr_event_id_idx":                 "idx_issue_wakeup_receipt_pr_event_id",
+	"99g_issue_wakeup_receipt_started_pr_event_idx":             "idx_issue_wakeup_receipt_pr_event_id_task",
 	"9999918_skill_version_index":                               "idx_skill_version_skill_version",
 	"962_agent_task_queue_one_active_per_chat":                  "idx_agent_task_queue_one_active_per_chat",
 	"901_workspace_audit_event_workspace_at_index":              "idx_workspace_audit_event_workspace_at",
@@ -188,6 +198,8 @@ var concurrentIndexCleanups = map[string]string{
 	"99973_system1_epoch_open_idx":                              "system1_epoch_open",
 	"99964_browser_lease_epoch_idx":                             "browser_lease_instance_epoch_uidx",
 	"99964b_browser_gateway_credential_hash_idx":                "browser_gateway_credential_hash_uidx",
+	"99964d_browser_profile_member_idx":                         "browser_profile_member_uidx",
+	"99964e_browser_profile_agent_idx":                          "browser_profile_agent_uidx",
 	"975_chat_session_chain_root_idx":                           "idx_chat_session_chain_root",
 	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
 	"977_chat_attention_item_open_idx":                          "chat_attention_item_open_idx",
@@ -568,6 +580,51 @@ type requiredConcurrentIndex struct {
 }
 
 var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
+	"999r_merge_queue_intake_removal_uidx": {
+		IndexRegclass: "merge_queue_intake_removal_uidx",
+		TableRegclass: "merge_queue_intake",
+		Unique:        true,
+		Columns:       []string{"removal_node_id"},
+		Predicate:     "removal_node_id IS NOT NULL",
+	},
+	"999s_merge_queue_epoch_key_uidx": {
+		IndexRegclass: "merge_queue_epoch_key_uidx",
+		TableRegclass: "merge_queue_epoch",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "cause_key", "epoch_no"},
+	},
+	"999t_merge_queue_association_active_uidx": {
+		IndexRegclass: "merge_queue_association_active_uidx",
+		TableRegclass: "merge_queue_association",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "pr_number", "cause_key"},
+		Predicate:     "ended_at IS NULL",
+	},
+	"999u_merge_queue_wait_unmet_uidx": {
+		IndexRegclass: "merge_queue_wait_unmet_uidx",
+		TableRegclass: "merge_queue_wait",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "pr_number", "issue_id"},
+		Predicate:     "state = 'unmet'::text",
+	},
+	"999v_merge_queue_pr_close_uidx": {
+		IndexRegclass: "merge_queue_pr_close_uidx",
+		TableRegclass: "merge_queue_pr_close",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "pr_number", "closed_at"},
+	},
+	"999w_merge_queue_enqueue_event_node_uidx": {
+		IndexRegclass: "merge_queue_enqueue_event_node_uidx",
+		TableRegclass: "merge_queue_enqueue_event",
+		Unique:        true,
+		Columns:       []string{"node_id"},
+	},
+	"999x_merge_queue_state_pr_uidx": {
+		IndexRegclass: "merge_queue_state_pr_uidx",
+		TableRegclass: "merge_queue_state",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "pr_number"},
+	},
 	"962_agent_task_queue_one_active_per_chat": {
 		IndexRegclass: "idx_agent_task_queue_one_active_per_chat",
 		TableRegclass: "agent_task_queue",

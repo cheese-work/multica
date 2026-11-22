@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/capabilityrouting"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/workflowlint"
@@ -103,6 +104,17 @@ func (h *Handler) workflowLintEnv(ctx context.Context, wsUUID pgtype.UUID, rows 
 			la.RuntimeVersion = runtimeVersion(rt.Metadata)
 		}
 		env.Agents[uuidToString(a.ID)] = la
+	}
+
+	ws, err := h.Queries.GetWorkspace(ctx, wsUUID)
+	if err != nil {
+		return env, nil, err
+	}
+	var settings map[string]any
+	_ = json.Unmarshal(ws.Settings, &settings)
+	env.AuthorRoutes = map[string]bool{}
+	for typ := range capabilityrouting.FromSettings(settings) {
+		env.AuthorRoutes[typ] = true
 	}
 
 	byWorkflow, err := h.projectIDsByWorkflow(ctx, wsUUID, rows)

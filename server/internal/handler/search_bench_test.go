@@ -105,6 +105,9 @@ func benchPercentile(sorted []float64, p float64) float64 {
 //     n%60==4 title "dang nhap ...".
 //   - comment m: m%200==0 "login bug", m%150==1 "login", m%130==2 "bug",
 //     m%180==3 "đăng nhập", m%240==4 "dang nhap".
+//   - typing sequence (CHE-7336): issue title n%40==5 "fuzzy search", n%53==6 "fuzzy";
+//     description n%31==7 "local", n%11==8 "db"; comment m%170==5 "fuzzy", m%140==6
+//     "search", m%160==7 "local db", m%9==8 "db".
 func seedSearchBench(t *testing.T, ctx context.Context, slug string, issues int) string {
 	t.Helper()
 	return seedSearchBenchShaped(t, ctx, slug, issues, issues*4)
@@ -152,8 +155,10 @@ func seedSearchBenchShaped(t *testing.T, ctx context.Context, slug string, issue
 	issueSQL := fmt.Sprintf(`
 		INSERT INTO issue (workspace_id, title, description, status, priority, creator_type, creator_id, number, created_at, updated_at)
 		SELECT $1::uuid,
-			CASE WHEN n %% 50 = 0 THEN 'login bug ' WHEN n %% 45 = 3 THEN 'Đăng nhập ' WHEN n %% 60 = 4 THEN 'dang nhap ' ELSE '' END || %s,
-			CASE WHEN n %% 37 = 1 THEN 'login ' ELSE '' END || CASE WHEN n %% 29 = 2 THEN 'bug ' ELSE '' END || %s,
+			CASE WHEN n %% 50 = 0 THEN 'login bug ' WHEN n %% 45 = 3 THEN 'Đăng nhập ' WHEN n %% 60 = 4 THEN 'dang nhap ' ELSE '' END ||
+				CASE WHEN n %% 40 = 5 THEN 'fuzzy search ' WHEN n %% 53 = 6 THEN 'fuzzy ' ELSE '' END || %s,
+			CASE WHEN n %% 37 = 1 THEN 'login ' ELSE '' END || CASE WHEN n %% 29 = 2 THEN 'bug ' ELSE '' END ||
+			CASE WHEN n %% 31 = 7 THEN 'local ' ELSE '' END || CASE WHEN n %% 11 = 8 THEN 'db ' ELSE '' END || %s,
 			(ARRAY['backlog','todo','in_progress','in_review','done','cancelled'])[1 + n %% 6],
 			'none', 'member', gen_random_uuid(), n,
 			now() - make_interval(mins => n), now() - make_interval(mins => n)
@@ -180,7 +185,8 @@ func seedSearchBenchShaped(t *testing.T, ctx context.Context, slug string, issue
 		SELECT $1::uuid, i.id,
 			'member', gen_random_uuid(),
 			CASE WHEN n %% 200 = 0 THEN 'login bug ' WHEN n %% 150 = 1 THEN 'login ' WHEN n %% 130 = 2 THEN 'bug '
-				WHEN n %% 180 = 3 THEN 'đăng nhập ' WHEN n %% 240 = 4 THEN 'dang nhap ' ELSE '' END || %s,
+				WHEN n %% 180 = 3 THEN 'đăng nhập ' WHEN n %% 240 = 4 THEN 'dang nhap ' ELSE '' END ||
+			CASE WHEN n %% 170 = 5 THEN 'fuzzy ' WHEN n %% 140 = 6 THEN 'search ' WHEN n %% 160 = 7 THEN 'local db ' WHEN n %% 9 = 8 THEN 'db ' ELSE '' END || %s,
 			now() - make_interval(secs => n), now() - make_interval(secs => n)
 		FROM generate_series(1, %d) n
 		JOIN issue i ON i.workspace_id = $1 AND i.number = 1 + (n %% %d)`,
@@ -407,5 +413,134 @@ func TestSearchBenchExplain(t *testing.T) {
 			t.Fatalf("fallback %q: %v", bq.class, err)
 		}
 		t.Logf("fallback q=%q\n%s", bq.class, strings.Join(plan, "\n"))
+	}
+}
+
+// typingSequence is the Cmd+K keystroke sequence of CHE-7336: the second word of
+// a two-word query is typed one letter at a time, and a 1 or 2 character term
+// matches almost every row.
+var typingSequence = []string{
+	"f", "fu", "fuz", "fuzz", "fuzzy", "fuzzy s", "fuzzy se", "fuzzy sea", "fuzzy search",
+	"local d", "local db",
+}
+
+// TestSearchTypingSequence runs typingSequence against the production-shape
+// corpus and fails when a query errors (the 8 s statement timeout is a 503 in
+// production) or its p95 exceeds BENCH_P95_MS (default 300). It prints median
+// and p95 per query and, with BENCH_IDS_OUT, writes the ordered issue ids per
+// query so two revisions can be diffed for result parity.
+//
+//	MULTICA_SEARCH_BENCH=1 BENCH_ISSUES=3200 BENCH_COMMENTS=62000 BENCH_RUNS=20 \
+//	  BENCH_IDS_OUT=/tmp/ids-before.json go test ./internal/handler -run TestSearchTypingSequence -count=1 -v
+func TestSearchTypingSequence(t *testing.T) {
+	if os.Getenv("MULTICA_SEARCH_BENCH") != "1" {
+		t.Skip("set MULTICA_SEARCH_BENCH=1 to run the search latency harness")
+	}
+	ctx := context.Background()
+	issues := benchEnvInt("BENCH_ISSUES", benchDefaultIssues)
+	runs := benchEnvInt("BENCH_RUNS", 20)
+	budget := float64(benchEnvInt("BENCH_P95_MS", 300))
+	wsID := seedSearchBenchShaped(t, ctx, benchWorkspaceSlug, issues, benchEnvInt("BENCH_COMMENTS", issues*4))
+	wsUUID := util.MustParseUUID(wsID)
+	idsByQuery := map[string][]string{}
+	for _, q := range typingSequence {
+		ids, err := runBenchSearch(ctx, wsUUID, q) // warm-up, and the parity record
+		if err != nil {
+			t.Errorf("%q: %v", q, err)
+			continue
+		}
+		idsByQuery[q] = ids
+		var ms []float64
+		for i := 0; i < runs; i++ {
+			start := time.Now()
+			if _, err := runBenchSearch(ctx, wsUUID, q); err != nil {
+				t.Errorf("%q: %v", q, err)
+				break
+			}
+			ms = append(ms, float64(time.Since(start).Microseconds())/1000)
+		}
+		sort.Float64s(ms)
+		p95 := benchPercentile(ms, .95)
+		t.Logf("q=%-14q results %2d  median %8.2fms  p95 %8.2fms", q, len(ids), benchPercentile(ms, .5), p95)
+		if len(ms) > 0 && p95 > budget {
+			t.Errorf("%q: p95 %.0fms exceeds %.0fms", q, p95, budget)
+		}
+	}
+	if out := os.Getenv("BENCH_IDS_OUT"); out != "" {
+		raw, err := json.MarshalIndent(idsByQuery, "", " ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(out, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// TestSearchTitleTierTypingSequence times the instant title tier (CHE-7337) over
+// typingSequence on the production-shape corpus and fails when a query errors or
+// its p95 exceeds BENCH_P95_MS (default 50).
+//
+//	MULTICA_SEARCH_BENCH=1 BENCH_ISSUES=3200 BENCH_COMMENTS=62000 BENCH_RUNS=50 \
+//	  go test ./internal/handler -run TestSearchTitleTierTypingSequence -count=1 -v
+func TestSearchTitleTierTypingSequence(t *testing.T) {
+	if os.Getenv("MULTICA_SEARCH_BENCH") != "1" {
+		t.Skip("set MULTICA_SEARCH_BENCH=1 to run the search latency harness")
+	}
+	ctx := context.Background()
+	issues := benchEnvInt("BENCH_ISSUES", benchDefaultIssues)
+	runs := benchEnvInt("BENCH_RUNS", 50)
+	budget := float64(benchEnvInt("BENCH_P95_MS", 50))
+	wsID := seedSearchBenchShaped(t, ctx, benchWorkspaceSlug, issues, benchEnvInt("BENCH_COMMENTS", issues*4))
+	wsUUID := util.MustParseUUID(wsID)
+	// run mirrors SearchIssues: the newest-window query, then the trigram query
+	// when the window came back short.
+	exec := func(sql string, args []any) (int, error) {
+		n := 0
+		err := runSearchQuery(ctx, testPool, sql, args, func(rows pgx.Rows) error {
+			for rows.Next() {
+				if _, err := scanSearchIssue(rows); err != nil {
+					return err
+				}
+				n++
+			}
+			return rows.Err()
+		})
+		return n, err
+	}
+	run := func(q string) (int, error) {
+		terms := splitSearchTerms(q)
+		sql, args := buildTitleSearchQuery(terms, true, nil)
+		args[0], args[len(args)-2], args[len(args)-1] = wsUUID, 8, 0
+		n, err := exec(sql, args)
+		if err != nil || n >= 8 {
+			return n, err
+		}
+		sql, args = buildTitleTailQuery(terms, true, nil)
+		args[0], args[len(args)-2], args[len(args)-1] = wsUUID, 8, 0
+		return exec(sql, args)
+	}
+	// The short rare terms (no title holds them) must stay flat as the corpus grows.
+	for _, q := range append(append([]string{}, typingSequence...), "zq", "q", "qz xq") {
+		n, err := run(q) // warm-up
+		if err != nil {
+			t.Errorf("%q: %v", q, err)
+			continue
+		}
+		var ms []float64
+		for i := 0; i < runs; i++ {
+			start := time.Now()
+			if _, err := run(q); err != nil {
+				t.Errorf("%q: %v", q, err)
+				break
+			}
+			ms = append(ms, float64(time.Since(start).Microseconds())/1000)
+		}
+		sort.Float64s(ms)
+		p95 := benchPercentile(ms, .95)
+		t.Logf("q=%-14q results %2d  median %7.2fms  p95 %7.2fms", q, n, benchPercentile(ms, .5), p95)
+		if len(ms) > 0 && p95 > budget {
+			t.Errorf("%q: p95 %.0fms exceeds %.0fms", q, p95, budget)
+		}
 	}
 }

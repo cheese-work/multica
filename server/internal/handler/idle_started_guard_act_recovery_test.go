@@ -127,10 +127,10 @@ func (fixture idleActFixture) alertDue(test *testing.T) {
 func (fixture idleActFixture) archiveLeaderSquad(test *testing.T, archived bool) {
 	test.Helper()
 	if archived {
-		dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, fixture.squad)
+		fixture.breakRoute(test)
 		return
 	}
-	dbfx.Exec(test, `UPDATE squad SET archived_at = NULL WHERE id = $1`, fixture.squad)
+	fixture.fixRoute(test)
 }
 
 func TestIdleStartedGuardActGiveUpRevalidatesUnderTheLock(test *testing.T) {
