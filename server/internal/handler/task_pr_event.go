@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -82,6 +83,7 @@ func (h *Handler) AckTaskPREvent(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if errors.Is(err, pgx.ErrNoRows) {
+		h.logLateAckAfterFallback(r, taskID, eventID)
 		writeError(w, http.StatusConflict, "PR event is no longer deliverable")
 		return
 	}
@@ -90,4 +92,15 @@ func (h *Handler) AckTaskPREvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"event_id": uuidToString(eventID), "delivered": req.Delivered})
+}
+
+// logLateAckAfterFallback records an ack that lost to the dispatcher's fallback
+// (CHE-6971). The text may have reached the host run just before it ended, so
+// the fallback run can repeat it: one extra run, never a lost or double count.
+func (h *Handler) logLateAckAfterFallback(r *http.Request, taskID string, eventID pgtype.UUID) {
+	item, err := h.Queries.GetTaskPREventDelivery(r.Context(), db.GetTaskPREventDeliveryParams{TaskID: parseUUID(taskID), EventID: eventID})
+	if err != nil || item.ItemKind != "wakeup" || item.Status != "fallback" {
+		return
+	}
+	slog.Warn("late_ack_after_fallback", "task_id", taskID, "event_id", uuidToString(eventID), "wakeup_id", uuidToString(item.WakeupID))
 }
