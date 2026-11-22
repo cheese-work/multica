@@ -176,6 +176,7 @@ var concurrentIndexCleanups = map[string]string{
 	"999c_ci_watch_event_notify_uidx":                           "ci_watch_event_notify_uidx",
 	"9999939_agent_task_handoff_dispatch_idx":                   "agent_task_queue_handoff_dispatch_uidx",
 	"9999969_activity_log_status_moves_idx":                     "idx_activity_log_status_moves",
+	"9999971_issue_handoff_operation_created_idx":               "idx_issue_handoff_operation_created",
 	"910_ask_guard_event_intent_target_index":                   "idx_ask_guard_event_intent_target",
 	"911_ask_guard_event_request_index":                         "idx_ask_guard_event_cleared_by_request",
 	"915_ask_recovery_notice_event_index":                       "idx_ask_recovery_notice_event",
