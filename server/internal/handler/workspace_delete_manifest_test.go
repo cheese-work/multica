@@ -55,7 +55,7 @@ func TestWorkspaceKeyedNoFKTablesHaveExplicitTeardown(t *testing.T) {
 	for _, table := range []string{
 		"ask_recovery_notice", "ask_repair_root", "browser_gateway_credential",
 		"issue_handoff_dispatch", "issue_step_assignee", "issue_step_watchdog_action",
-		"merge_receipt_fact", "merge_veto", "merge_veto_deadline",
+		"merge_receipt_fact", "merge_veto", "merge_veto_deadline", "decision_backing_lane",
 		"weekly_run_guard_allowance", "weekly_run_guard_refusal",
 	} {
 		if workspaceDeletionManifest[table] != workspaceDelete {
@@ -383,6 +383,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"system1_epoch":                      workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
 	"weekly_run_guard_allowance":         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
 	"weekly_run_guard_refusal":           workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"claim_poll_stats":                   workspaceDeleteKeep, // CHE-7545 global per-minute claim poll histogram; no workspace_id.
+	"decision_backing_lane":              workspaceDelete,     // CHE-7545 workspace_id column, no FK; explicit teardown in DeleteWorkspaceAdministration.
+	"decision_pick":                      workspaceDeleteKeep, // CHE-7545 UNSURE: keyed by decision_request_id and member_id, no FK, no workspace_id; rows orphan after request cleanup. Decision-worker owner should add cleanup.
+	"decision_snooze":                    workspaceDeleteKeep, // CHE-7545 UNSURE: same as decision_pick.
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
 }
@@ -483,8 +487,9 @@ func TestDecisionWorkspaceDeletionRemainsWorkerOwned(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	// decision_wait (L5b) is workspace-scoped with no FK, so baseline deletion owns it.
-	if strings.Contains(strings.ReplaceAll(string(queries), "decision_wait", ""), "decision_") {
+	// decision_wait (L5b) and decision_backing_lane (CHE-7545) are workspace-scoped with no FK, so baseline deletion owns them.
+	baseline := strings.NewReplacer("decision_wait", "", "decision_backing_lane", "").Replace(string(queries))
+	if strings.Contains(baseline, "decision_") {
 		test.Error("baseline workspace deletion must not run a decision statement")
 	}
 }

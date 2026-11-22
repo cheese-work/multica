@@ -207,6 +207,9 @@ deleted_weekly_run_guard_allowance AS (
 ),
 deleted_weekly_run_guard_refusal AS (
     DELETE FROM weekly_run_guard_refusal WHERE workspace_id = $1
+),
+deleted_decision_backing_lane AS (
+    DELETE FROM decision_backing_lane WHERE workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1
