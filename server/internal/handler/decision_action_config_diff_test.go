@@ -128,7 +128,7 @@ func TestPreviewCarriesDiffKindAndMetaInsideTheDigest(test *testing.T) {
 	}
 }
 
-func TestJSONPreviewKeepsItsDiffAndHasNoMeta(test *testing.T) {
+func TestJSONPreviewKeepsItsDiffAndHasOnlyItsSectionInMeta(test *testing.T) {
 	read := configChangeRead{
 		Field: decisionaction.SettingsField, TargetID: "t", Keys: []string{"auto_compact"},
 		Before: map[string]any{"auto_compact": false}, After: map[string]any{"auto_compact": true},
@@ -138,8 +138,9 @@ func TestJSONPreviewKeepsItsDiffAndHasNoMeta(test *testing.T) {
 	if string(preview["diff_kind"]) != `"json"` {
 		test.Fatalf("diff_kind = %s, want json", preview["diff_kind"])
 	}
-	if _, has := preview["meta"]; has {
-		test.Fatalf("settings preview has meta %s", preview["meta"])
+	var meta map[string]any
+	if err := json.Unmarshal(preview["meta"], &meta); err != nil || len(meta) != 1 || meta["section"] == nil {
+		test.Fatalf("settings preview meta %s (%v); want only the key section", preview["meta"], err)
 	}
 	if got := changedLines(decodeHunks(test, preview)); len(got) != 2 || got[0] != `-  "auto_compact": false` || got[1] != `+  "auto_compact": true` {
 		test.Fatalf("changed lines %q", got)
@@ -239,5 +240,143 @@ func TestTextConfigReadCountsCodePoints(test *testing.T) {
 	}
 	if read.AfterSHA256 != decisionaction.TextDigest("ab"+marks) || *read.AfterText != "ab"+marks {
 		test.Fatal("digest or text does not match the after text")
+	}
+}
+
+// CHE-5703: the preview names the section a change lands in, so Show full opens
+// that section and not the whole value. The scope is inside the preview digest.
+
+func sectionOf(test *testing.T, preview map[string]json.RawMessage) map[string]any {
+	test.Helper()
+	var meta map[string]any
+	if raw, has := preview["meta"]; has {
+		if err := json.Unmarshal(raw, &meta); err != nil {
+			test.Fatal(err)
+		}
+	}
+	section, _ := meta["section"].(map[string]any)
+	return section
+}
+
+func sectionItems(test *testing.T, section map[string]any) []map[string]any {
+	test.Helper()
+	raw, _ := section["items"].([]any)
+	items := make([]map[string]any, len(raw))
+	for i, item := range raw {
+		items[i], _ = item.(map[string]any)
+	}
+	return items
+}
+
+const sectionedText = "intro\n# Alpha\na1\na2\n# Review exception\nuntil 13 Nov\nkeep\n## Sub\ns1\n# Omega\no1\n"
+
+func TestTextPreviewScopesAChangeToItsHeadingSection(test *testing.T) {
+	after := strings.Replace(sectionedText, "until 13 Nov", "until 14 Nov\nOpus signs Tier 0-2 code", 1)
+	_, preview := previewOf(test, textRead(sectionedText, after))
+	section := sectionOf(test, preview)
+	if section["kind"] != "heading" {
+		test.Fatalf("section = %v, want kind heading", section)
+	}
+	items := sectionItems(test, section)
+	if len(items) != 1 || items[0]["name"] != "Review exception" || items[0]["start_line"] != float64(5) || items[0]["end_line"] != float64(8) {
+		test.Fatalf("items = %v, want Review exception lines 5 to 8 of the after text (heading included, up to the next heading)", items)
+	}
+}
+
+func TestTextPreviewScopesARemovedLineToTheSectionItLeft(test *testing.T) {
+	after := strings.Replace(sectionedText, "a2\n", "", 1)
+	_, preview := previewOf(test, textRead(sectionedText, after))
+	items := sectionItems(test, sectionOf(test, preview))
+	if len(items) != 1 || items[0]["name"] != "Alpha" {
+		test.Fatalf("items = %v, want Alpha only", items)
+	}
+}
+
+func TestTextPreviewListsEveryChangedSectionOnce(test *testing.T) {
+	after := strings.Replace(strings.Replace(sectionedText, "a1", "a1x", 1), "o1", "o1x", 1)
+	_, preview := previewOf(test, textRead(sectionedText, after))
+	items := sectionItems(test, sectionOf(test, preview))
+	if len(items) != 2 || items[0]["name"] != "Alpha" || items[1]["name"] != "Omega" {
+		test.Fatalf("items = %v, want Alpha then Omega", items)
+	}
+}
+
+func TestTextPreviewHasNoScopeWhenAChangeSitsOutsideAnyHeading(test *testing.T) {
+	_, preview := previewOf(test, textRead(sectionedText, strings.Replace(sectionedText, "intro", "intro2", 1)))
+	if section := sectionOf(test, preview); section != nil {
+		test.Fatalf("section = %v, want none: the intro has no heading", section)
+	}
+}
+
+func TestTextPreviewIgnoresHeadingsInsideCodeFences(test *testing.T) {
+	before := "# Real\nx\n```\n# not a heading\ny\n```\n"
+	_, preview := previewOf(test, textRead(before, strings.Replace(before, "y", "z", 1)))
+	items := sectionItems(test, sectionOf(test, preview))
+	if len(items) != 1 || items[0]["name"] != "Real" {
+		test.Fatalf("items = %v, want Real", items)
+	}
+}
+
+func TestStepsPreviewScopesAChangeToTheChangedStep(test *testing.T) {
+	step := func(key, handler string) IssueWorkflowStepPayload {
+		return IssueWorkflowStepPayload{StatusKey: key, Handler: IssueWorkflowHandlerPayload{Type: "agent", ID: handler}}
+	}
+	read := configChangeRead{
+		Field: "workflow.steps", TargetID: "t", LiveSHA256: "l", AfterSHA256: "a", HumanBlocksIntact: true,
+		Before: []IssueWorkflowStepPayload{step("todo", "x"), step("agent_review", "old")},
+		After:  []IssueWorkflowStepPayload{step("todo", "x"), step("agent_review", "new")},
+	}
+	_, preview := previewOf(test, read)
+	section := sectionOf(test, preview)
+	items := sectionItems(test, section)
+	if section["kind"] != "step" || len(items) != 1 || items[0]["name"] != "agent_review" {
+		test.Fatalf("section = %v, want step agent_review", section)
+	}
+}
+
+func TestStepInstructionsPreviewNamesItsStep(test *testing.T) {
+	read := configChangeRead{
+		Field: "workflow.instructions", TargetID: "t", LiveSHA256: "l", AfterSHA256: "a", HumanBlocksIntact: true,
+		Before: map[string]string{"status_key": "in_review", "instructions": "a"},
+		After:  map[string]string{"status_key": "in_review", "instructions": "b"},
+	}
+	_, preview := previewOf(test, read)
+	items := sectionItems(test, sectionOf(test, preview))
+	if len(items) != 1 || items[0]["name"] != "in_review" {
+		test.Fatalf("items = %v, want in_review", items)
+	}
+}
+
+func TestSettingsPreviewScopesToItsKeys(test *testing.T) {
+	read := configChangeRead{
+		Field: decisionaction.SettingsField, TargetID: "t", Keys: []string{"auto_compact"},
+		Before: map[string]any{"auto_compact": false}, After: map[string]any{"auto_compact": true},
+		LiveSHA256: "l", AfterSHA256: "a", HumanBlocksIntact: true,
+	}
+	_, preview := previewOf(test, read)
+	section := sectionOf(test, preview)
+	items := sectionItems(test, section)
+	if section["kind"] != "key" || len(items) != 1 || items[0]["name"] != "auto_compact" {
+		test.Fatalf("section = %v, want key auto_compact", section)
+	}
+}
+
+func TestSectionIsCoveredByThePreviewDigest(test *testing.T) {
+	scoped, preview := previewOf(test, textRead(sectionedText, strings.Replace(sectionedText, "a1", "a1x", 1)))
+	if sectionOf(test, preview) == nil {
+		test.Fatal("section is not inside the stored preview")
+	}
+	canonical, _ := json.Marshal(scoped["preview"])
+	if len(canonical) == 0 || scoped["preview_sha256"] == "" {
+		test.Fatal("preview is not digested")
+	}
+	var withoutSection map[string]any
+	if err := json.Unmarshal(scoped["preview"].(json.RawMessage), &withoutSection); err != nil {
+		test.Fatal(err)
+	}
+	delete(withoutSection["meta"].(map[string]any), "section")
+	raw, _ := json.Marshal(withoutSection)
+	if previewDigest(raw) == scoped["preview_sha256"] {
+		test.Fatal("dropping the section does not change the digest")
 	}
 }
