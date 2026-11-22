@@ -69,6 +69,7 @@ const (
 	ReasonAlreadyActive                       = dispatch.ReasonAlreadyActive
 	ReasonSelfTriggerSuppressed               = dispatch.ReasonSelfTriggerSuppressed
 	ReasonIssueInTriage                       = dispatch.ReasonIssueInTriage
+	ReasonIntakeHold                          = dispatch.ReasonIntakeHold
 	ReasonAgentCommentImplicitRouteSuppressed = dispatch.ReasonAgentCommentImplicitRouteSuppressed
 	ReasonAgentCommentRequiresAgentMention    = dispatch.ReasonAgentCommentRequiresAgentMention
 	ReasonCommentTriggerRateLimited           = dispatch.ReasonCommentTriggerRateLimited
@@ -149,6 +150,8 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "a run is already active for this target"
 	case ReasonIssueInTriage:
 		return "the issue is in Triage and has no owner to run yet; accept it out of Triage first"
+	case ReasonIntakeHold:
+		return "the issue is held in backlog by the intake hold; a person moves it out of backlog to release it"
 	case ReasonRunBudgetExhausted:
 		return "the issue used its workflow's run budget; move it on to give it a new one"
 	case ReasonStageQueueFull:

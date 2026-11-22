@@ -26,7 +26,7 @@ func wrapKill(t *testing.T, kill func(cmd *exec.Cmd, cancel context.CancelFunc))
 	defer cancel()
 	cmd := exec.CommandContext(ctx, agent)
 	cmd.WaitDelay = 3 * time.Second
-	run, err := l.Wrap(cmd, Spec{WorkDir: ly.work, TempDir: ly.tmp, Home: ly.home})
+	run, err := l.Wrap(cmd, Spec{WorkDir: ly.work, TempDir: ly.tmp, Home: ly.home, NoDaemonAPI: true})
 	if err != nil {
 		t.Fatal(err)
 	}

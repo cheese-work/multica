@@ -9,6 +9,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/dispatch"
+	"github.com/multica-ai/multica/server/internal/intakehold"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -66,6 +68,11 @@ const (
 // waiting in Triage. Handlers render it as 403 issue_in_triage; background
 // callers log it and drop the trigger.
 var ErrIssueInTriage = errors.New("the issue is in triage, so nothing derived from it runs")
+
+// ErrIntakeHold is returned by a derived enqueue path when the issue is held by
+// the workspace's intake_hold setting (CHE-6911 E2). The text starts with the
+// dispatch reason code, so a wakeup's last_error names it.
+var ErrIntakeHold = errors.New("intake_hold: the issue is held in backlog, so nothing derived from it runs")
 
 // ErrAgentPaused is returned by every enqueue path for an agent whose
 // scheduling is paused (CHE-5066). The pause already stops claims; this stops
@@ -155,6 +162,11 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 	if state.Valid {
 		return ReviewGate{}, ErrIssueInTriage
 	}
+	// Beside the Triage check: a held issue runs nothing that was derived from
+	// it. The row checks run first; the setting is read only when they pass.
+	if err := guardIntakeHold(ctx, q, issueID, target); err != nil {
+		return ReviewGate{}, err
+	}
 	// Before the budget: a skipped run is no task row and takes no stage slot.
 	if err := guardReviewHeadAnswered(ctx, q, issueID, target); err != nil {
 		return ReviewGate{}, err
@@ -183,6 +195,23 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 		return ReviewGate{}, err
 	}
 	return admittedGate(ctx, gate, decision)
+}
+
+// guardIntakeHold refuses a derived run on an issue the intake hold owns. A
+// read error refuses: a run that cannot be shown to be allowed must not start.
+// A missing issue is not held.
+func guardIntakeHold(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
+	loaded, err := intakehold.Load(ctx, q.Conn(), util.UUIDToString(issueID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("intake hold: %w", err)
+	}
+	if err := intakehold.Enforce(loaded, "run:"+target.Trigger, "agent", util.UUIDToString(target.AgentID)); err != nil {
+		return ErrIntakeHold
+	}
+	return nil
 }
 
 // admittedGate folds the admission decision into the gate the enqueue applies,

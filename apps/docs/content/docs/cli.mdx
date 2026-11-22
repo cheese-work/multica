@@ -149,6 +149,12 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 
 A comment from an agent on an issue in `in_review`, `blocked` or `need_decision` must name who acts next: `--ask <member-id>` if a person acts next, or `--no-ask` if no one does. A member mention, `--notify-only` or a decision request also counts. The two flags cannot combine with each other, with `--notify-only` or with the decision flags. The same move needs `--waiting-on member:<member-id>` or `--waiting-on none` on `multica issue status`, accepted only with `in_review`, `blocked` or `need_decision`. The workspace settings `waiting_audience_guard` and `waiting_on_guard` decide whether a missing audience is allowed, counted or refused.
 
+To ask a short question without growing a long thread, open an ask thread: `--from-thread <comment-id>` creates the comment as a new root that links back to the thread of that comment, which must be on the same issue (otherwise `400 thread_issue_mismatch`). The server adds one line to the source thread, `Asked <names> in thread <id>.`; it mentions nobody, starts no run and leaves the source thread's resolution as it is. `--from-thread` cannot combine with `--parent`. An agent task cannot resolve the root of an ask thread (`409 ask_root_not_resolvable`): resolve the source thread with a reply there. A member can resolve it as usual.
+
+```bash
+multica issue comment add MUL-123 --content-file ask.md --from-thread <comment-id>
+```
+
 ## Forking a web DM
 
 From the source DM's running chat task, copy the DM into a new child DM:

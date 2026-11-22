@@ -3,6 +3,8 @@
 // rows: the acting agent's own task, its trigger comment and the parent issue.
 package issuecreatedvia
 
+import "github.com/jackc/pgx/v5/pgtype"
+
 // The values stored in issue.created_via. Integration-channel issues
 // (rule 7) store NULL and never reach the classifier.
 const (
@@ -35,6 +37,9 @@ type TaskFacts struct {
 	// TriggerCommentByMember is true when trigger_comment_id names a comment
 	// whose author_type is member.
 	TriggerCommentByMember bool
+	// TriggerCommentID is the trigger_comment_id of the task the facts came from
+	// (after any retry or rerun hop). The backfill reports it for legacy rows.
+	TriggerCommentID pgtype.UUID
 }
 
 // Input is everything Classify reads.

@@ -406,8 +406,8 @@ WITH touched_issue AS (
     WHERE issue.id = $1 AND issue.workspace_id = $2
     RETURNING issue.id, issue.workspace_id, issue.revision
 ), inserted_comment AS (
-    INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, source_task_id, quick_action_id, via_plugin_id, suppressed_agent_ids, id, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, notify_only)
-    SELECT ti.id, ti.workspace_id, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid[], COALESCE($12::uuid, gen_random_uuid()), $13::uuid, $14::uuid, $15::uuid, $16::text, COALESCE($17::boolean, false)
+    INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, source_task_id, quick_action_id, via_plugin_id, suppressed_agent_ids, id, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, notify_only, ask_source_root_id)
+    SELECT ti.id, ti.workspace_id, $3, $4, $5, $6, $7, $8, $9, $10, $11::uuid[], COALESCE($12::uuid, gen_random_uuid()), $13::uuid, $14::uuid, $15::uuid, $16::text, COALESCE($17::boolean, false), $18::uuid
     FROM touched_issue ti
     RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read, notify_only, ask_source_root_id
 )
@@ -434,6 +434,7 @@ type CreateCommentParams struct {
 	DecisionIntentID    pgtype.UUID   `json:"decision_intent_id"`
 	DecisionCommentKind pgtype.Text   `json:"decision_comment_kind"`
 	NotifyOnly          pgtype.Bool   `json:"notify_only"`
+	AskSourceRootID     pgtype.UUID   `json:"ask_source_root_id"`
 }
 
 type CreateCommentRow struct {
@@ -504,6 +505,7 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (C
 		arg.DecisionIntentID,
 		arg.DecisionCommentKind,
 		arg.NotifyOnly,
+		arg.AskSourceRootID,
 	)
 	var i CreateCommentRow
 	err := row.Scan(

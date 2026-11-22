@@ -269,6 +269,10 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonIssueInTriage)
 		return
 	}
+	if errors.Is(err, service.ErrIntakeHold) {
+		h.writeDispatchBlocked(w, http.StatusConflict, ReasonIntakeHold)
+		return
+	}
 	if errors.Is(err, service.ErrStageQueueFull) {
 		h.writeDispatchBlocked(w, http.StatusConflict, ReasonStageQueueFull)
 		return
