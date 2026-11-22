@@ -128,6 +128,12 @@ var actionFixtures = map[string]string{
 	"workflow.step.instructions.set": `{"workflow_id":"` + fixtureID + `","status_key":"in_progress","base_sha256":"` + decisionaction.TextDigest("") + `","instructions":"x"}`,
 	"workspace.routing_agent.set":    `{"workspace_id":"` + fixtureID + `","routing_agent":{},"base_sha256":"` + decisionaction.TextDigest("") + `","after_sha256":"` + decisionaction.TextDigest("") + `"}`,
 	"workspace.delegated_writes.set": `{}`,
+	"doop.deploy_lift":               `{"marker_value":"train-1","repo":"cheese-work/doop"}`,
+	"issue.project.set":              `{"issue_id":"` + fixtureID + `","project_id":"` + fixtureID + `"}`,
+	"issue.run_guard.allow":          `{"issue_id":"` + fixtureID + `","guard_refusal_id":"` + fixtureID + `","runs":10}`,
+	"issue.workflow.set":             `{"issue_id":"` + fixtureID + `","workflow_id":null,"explicit_workflow_id":null,"before":{"workflow_id":"","source":"none","budgeted":false,"cap":0},"after":{"workflow_id":"","source":"none","budgeted":false,"cap":0}}`,
+	"issue.project.quick_set":        `{"issue_id":"` + fixtureID + `","project_id":"` + fixtureID + `","explicit_workflow_id":null,"before":{"workflow_id":"","source":"none","budgeted":false,"cap":0},"after":{"workflow_id":"","source":"none","budgeted":false,"cap":0}}`,
+	"project.workflow.quick_set":     `{"project_id":"` + fixtureID + `","workflow_id":"` + fixtureID + `","status_mapping":{},"required":[],"total_issues":0,"overrides":[],"before":{"workflow_id":"","source":"none","budgeted":false,"cap":0},"after":{"workflow_id":"","source":"none","budgeted":false,"cap":0}}`,
 	"workspace.settings.patch":       `{"workspace_id":"` + fixtureID + `","settings":{"idle_started_guard":{"mode":"act"}},"base_sha256":"` + decisionaction.TextDigest("") + `","after_sha256":"` + decisionaction.TextDigest("") + `"}`,
 }
 

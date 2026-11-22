@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
@@ -112,6 +113,19 @@ func linkRefusal(t *testing.T, id pgtype.UUID, window string) pgtype.UUID {
 func raiseCap(t *testing.T, c budgetCase) {
 	t.Helper()
 	dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue=30 WHERE id=$1`, c.workflowID)
+}
+
+// raiseCapAsApproved raises the cap the way an approved raise does: the ledger
+// entry of a real raise re-enables the wakeups the budget paused (CHE-6193),
+// which the raw UPDATE in raiseCap skips. A native-source resume needs the
+// paused rule back on; a blocked-issue resume must not have it (it would
+// capture a second receipt), so raiseCap stays as it was.
+func raiseCapAsApproved(t *testing.T, c budgetCase) {
+	t.Helper()
+	raiseCap(t, c)
+	if _, err := testHandler.Queries.ResumeGuardPausedWakeups(context.Background(), db.ResumeGuardPausedWakeupsParams{IssueID: parseUUID(c.issueID), PausedReason: pgtype.Text{String: "run_budget", Valid: true}}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // topUp opens a new window and returns its id.
