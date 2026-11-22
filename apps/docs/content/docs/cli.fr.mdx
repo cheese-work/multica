@@ -221,6 +221,20 @@ multica issue comment list MUL-123 --thread <comment-id> --tail 5 --output json 
 - `--recent N` renvoie les N fils les plus récemment actifs avec toutes leurs réponses, ce qui peut être long.
 - Les fils résolus sont repliés par défaut sur le premier commentaire et la conclusion ; ajoutez `--full` pour le texte complet.
 
+Pour ne lire que les fils qui vous concernent (ou concernent un autre membre ou agent), ajoutez un indicateur de relation :
+
+```bash
+multica issue comment list MUL-123 --roots-only --summary --with-me --output json --compact
+multica issue comment list MUL-123 --roots-only --summary --waiting-on <member> --output json --compact
+```
+
+- `--with-me` ne renvoie que les fils où vous avez écrit, où vous êtes mentionné directement, ou qui contiennent une demande de décision qui vous est adressée. `--without-me` renvoie les autres.
+- `--waiting-on <member>` ne renvoie que les fils qui attendent ce membre : une demande de décision ouverte le vise, ou une mention directe de lui est restée sans réponse de sa part. Il accepte un identifiant ou un nom de membre.
+- `--for <id>` calcule la relation du point de vue de ce membre ou agent au lieu du vôtre. Seul, il ajoute `thread_relation` à chaque racine sans filtrer.
+- Ces indicateurs filtrent des fils entiers : ils fonctionnent avec `--roots-only`, `--summary` et `--thread`. Chaque racine porte alors `thread_relation`.
+- Sans indicateur de relation, la sortie de `--compact` et `--summary` ne contient pas `thread_relation` : les lectures existantes ne grossissent pas.
+- Si le serveur ne peut pas calculer la relation, la commande échoue au lieu d'afficher une liste non filtrée.
+
 Les listes peuvent aussi se limiter aux champs utiles : `multica issue list --output json --fields id,identifier,title,status`. Le filtrage a lieu dans la CLI : il réduit la sortie et le contexte, pas la requête.
 
 ### Réveils
@@ -566,7 +580,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | | `search <query>` | Rechercher des tâches | `--limit`, `--include-closed` |
 | | `children <id>` | Lister les sous-tâches regroupées par étape | |
 | | `pull-requests <id>` | Lister les PR associées | |
-| | `comment list/add/update/delete/resolve/unresolve` | Gérer les commentaires | `add` : `--content` / `--content-stdin` / `--content-file`, `--parent`, `--attachment` ; `update` : `--expected-revision` (obligatoire), `--content` / `--content-stdin` / `--content-file` ; `list` : `--since`, `--thread`, `--tail`, `--recent`, `--roots-only`, `--summary`, `--compact`, `--full` |
+| | `comment list/add/update/delete/resolve/unresolve` | Gérer les commentaires | `add` : `--content` / `--content-stdin` / `--content-file`, `--parent`, `--attachment` ; `update` : `--expected-revision` (obligatoire), `--content` / `--content-stdin` / `--content-file` ; `list` : `--since`, `--thread`, `--tail`, `--recent`, `--roots-only`, `--summary`, `--compact`, `--full`, `--with-me`, `--without-me`, `--waiting-on`, `--for` |
 | | `timeline <id>` | Lister l'activité et les commentaires dans l'ordre chronologique | `--action` (répétable), `--activity-only`, `--since`, `--tail` |
 | | `wakeup events/list/get/create/update/disable/trigger/delete/checkin/runs` | Gérer les réveils de tâche ; voir [Réveils de tâche](/issue-wakeups) | `create` / `update` : `--agent-id`, `--kind` (`event`, `at`, `every`, `cron`), `--event`, `--at` / `--after`, `--every`, `--cron`, `--timezone`, conditions `--until-*`, `--expires-in` / `--expires-at`, `--instruction` / `--instruction-file` ; `checkin` : `--note` |
 | | `subscriber list/add/remove <issue-id>` | Gérer les abonnés | `--user`, `--user-id` (par défaut, l'utilisateur actuel) |
