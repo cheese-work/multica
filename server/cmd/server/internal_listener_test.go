@@ -24,7 +24,7 @@ var gatewayFacingPaths = []string{
 	controlplane.Prefix + "/instances/inst-1/events",
 	controlplane.Prefix + "/introspect",
 	controlplane.Prefix + "/instances/inst-1/cleanup-ack",
-	controlplane.Prefix + "/lease-summary",
+	controlplane.Prefix + "/leases/lease-1/summary",
 }
 
 // CHE-4746 (W3-17): the public and tailnet routers are the same router; neither
@@ -125,6 +125,46 @@ func TestPublicRouterDoesNotServeCleanupAckOrQuarantine(t *testing.T) {
 		router.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, controlplane.Prefix+"/instances/inst-1/"+route, nil))
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("public POST %s = %d, want 404", route, rec.Code)
+		}
+	}
+}
+
+// CHE-4745 (W3-16): the lease summary route is served on the internal listener behind the
+// install-token authenticator, and nowhere else. The pool is nil: every case below ends before
+// the database is reached.
+func TestInternalListenerServesLeaseSummaryBehindTheInstallToken(t *testing.T) {
+	ws := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	auth := installTokenAuthenticator(func(_ context.Context, token string) (pgtype.UUID, error) {
+		if token != "mpi_good" {
+			return pgtype.UUID{}, errors.New("unknown token")
+		}
+		return ws, nil
+	})
+	t.Setenv("MULTICA_INTERNAL_LISTEN_ADDR", "172.30.0.2:9000")
+	srv, err := newInternalServer("8080", browserlease.NewSummaryService(nil).Mount(auth))
+	if err != nil || srv == nil {
+		t.Fatalf("newInternalServer: (%v, %v)", srv, err)
+	}
+	path := controlplane.Prefix + "/leases/6f1d3b8e-1b6e-4f0e-9d0a-0c1c2b3a4d5e/summary"
+	cases := []struct {
+		name, method, auth string
+		want               int
+	}{
+		{"no header", http.MethodPost, "", http.StatusUnauthorized},
+		{"wrong scheme", http.MethodPost, "Basic mpi_good", http.StatusUnauthorized},
+		{"unknown token", http.MethodPost, "Bearer mpi_bad", http.StatusUnauthorized},
+		{"good token reaches the handler", http.MethodPost, "Bearer mpi_good", http.StatusBadRequest}, // epoch missing
+		{"GET is not served", http.MethodGet, "Bearer mpi_good", http.StatusMethodNotAllowed},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(c.method, path, strings.NewReader(`{}`))
+		if c.auth != "" {
+			req.Header.Set("Authorization", c.auth)
+		}
+		rec := httptest.NewRecorder()
+		srv.Handler.ServeHTTP(rec, req)
+		if rec.Code != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, rec.Code, c.want)
 		}
 	}
 }

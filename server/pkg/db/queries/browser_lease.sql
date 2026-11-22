@@ -31,6 +31,16 @@ RETURNING *;
 SELECT * FROM browser_lease
 WHERE id = $1 AND workspace_id = $2;
 
+-- name: SetBrowserLeaseSummary :one
+-- Gateway lease summary (CHE-4745, W3-16): write-once, only on an ended lease at the epoch the
+-- gateway served. No row means the lease is missing, not ended, at another epoch, or already has
+-- a summary; the caller reads the lease to tell which.
+UPDATE browser_lease
+SET summary = $3, summary_at = clock_timestamp()
+WHERE id = $1 AND workspace_id = $2 AND epoch = $4
+  AND state = 'ended' AND summary IS NULL
+RETURNING *;
+
 -- name: GetBrowserInstanceHolder :one
 -- The lease that holds the instance: granted, or ended and not yet cleanup-acked.
 SELECT * FROM browser_lease
