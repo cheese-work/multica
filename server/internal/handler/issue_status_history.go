@@ -51,6 +51,8 @@ type statusRecord struct {
 	// attach is the existing comments the move carries; the transaction checks
 	// them again under the issue lock.
 	attach *attachedComments
+	// operation is the receipt the transaction inserts first (CHE-5491).
+	operation *handoffOperationSeed
 }
 
 func withStatusRecord(ctx context.Context, rec *statusRecord) context.Context {

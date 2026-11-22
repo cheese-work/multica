@@ -321,6 +321,9 @@ func (h *Handler) updateIssueWithStatusGuard(ctx context.Context, workspaceID pg
 	var cancelledWakeups []db.AgentTaskQueue
 	moveGuard := issueMoveGuardFrom(ctx)
 	err := h.runWithIssueStatusGuard(ctx, workspaceID, statusKey, wf != nil || moveGuard != nil || statusRecordFrom(ctx) != nil || routeCaptureFrom(ctx) != nil || memberRouteOverrideArmed(ctx) || len(issueWriteTaint(ctx)) > 0 || ctx.Value(issueWriteExternalReadKey{}) != nil, func(q *db.Queries) error {
+		if err := claimHandoffOperation(ctx, q); err != nil {
+			return err
+		}
 		var err error
 		issue, cancelledWakeups, err = h.writeIssueLocked(ctx, q, workspaceID, params, wf)
 		return err
@@ -458,6 +461,11 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 	if rec != nil && rec.intent != nil {
 		if err := writeHandoffIntent(ctx, q, rec, issue); err != nil {
 			return db.Issue{}, nil, err
+		}
+	}
+	if rec != nil && recordStatus {
+		if err := rec.operation.recordWrites(ctx, q, rec); err != nil {
+			return db.Issue{}, nil, fmt.Errorf("record handoff operation writes: %w", err)
 		}
 	}
 	// Same transaction as the write: a claim that reads the committed write
@@ -4633,6 +4641,12 @@ type UpdateIssueRequest struct {
 	// of the step's handler. Valid only with a status change into a step that
 	// hands off, and not with assignee_id. Single updates only. (CHE-5487)
 	HandoffAssignee *HandoffAssigneeRequest `json:"handoff_assignee,omitempty"`
+	// OperationKey (a UUID) makes a status move safe to retry: a retry with the
+	// same key and body returns the first result and writes nothing; the same
+	// key with another body or actor is refused 409 operation_key_reused. The
+	// receipt is kept 7 days: a retry after that is a new move. Ignored without
+	// a status change. Single updates only. (CHE-5491)
+	OperationKey *string `json:"operation_key,omitempty"`
 	// KeepForStep keeps HandoffAssignee for the target step on this issue:
 	// later entries of the step go to it. Needs HandoffAssignee. (CHE-5490)
 	KeepForStep bool `json:"keep_for_step,omitempty"`
@@ -4803,6 +4817,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	if err := assertIssueStatusStillActive(ctx, qtx, workspaceID, statusKey); err != nil {
 		return db.Issue{}, db.Issue{}, false, err
 	}
+	if err := claimHandoffOperation(ctx, qtx); err != nil {
+		return db.Issue{}, db.Issue{}, false, err
+	}
 	if err := wf.lockProject(ctx, qtx); err != nil {
 		return db.Issue{}, db.Issue{}, false, err
 	}
@@ -4953,6 +4970,15 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			writeIssueInTriage(w, field)
 			return
 		}
+	}
+
+	opActorType, opActorID := h.resolveActor(r, userID, workspaceID)
+	operation, ok := newHandoffOperationSeed(w, req, prevIssue, opActorType, opActorID)
+	if !ok {
+		return
+	}
+	if h.replayHandoffOperation(w, r, operation) {
+		return
 	}
 
 	duplicateOfID, ok := parseDuplicateMark(w, &req, rawFields, prevIssue.ID)
@@ -5306,6 +5332,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			statusRec.trigger.HandoffCommentID = *req.HandoffCommentID
 		}
 		statusRec.comment, statusRec.attach = commentSeed, attached
+		statusRec.operation = operation
 		if handoff != nil && handed.agent != "" {
 			armHandoffIntent(statusRec, r, actorType, actorID, existingContext, req.HandoffNote, handed.write)
 		}
@@ -5342,7 +5369,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		h.flushRefusedIntakeCall(r.Context(), workflowWrite)
-		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeHandoffCommentError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
+		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeHandoffCommentError(w, err) || h.writeHandoffOperationError(r.Context(), w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
 			return
 		}
 		var approval quickMoveApproval
@@ -5555,6 +5582,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		h.notifyParentOfChildDone(r.Context(), prevIssue, issue)
 	}
 
+	if statusRec != nil {
+		h.storeHandoffOperationResponse(r.Context(), statusRec.operation, resp)
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
