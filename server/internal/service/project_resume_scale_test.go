@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -14,16 +16,24 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// countingTxStarter counts every statement a transaction sends to the database.
+// countingTxStarter counts every statement the first transaction it starts
+// sends to the database. Later transactions (the background condition pass)
+// are not counted.
 type countingTxStarter struct {
 	TxStarter
 	statements *int
+	once       *sync.Once
 }
 
 func (c countingTxStarter) Begin(ctx context.Context) (pgx.Tx, error) {
 	tx, err := c.TxStarter.Begin(ctx)
 	if err != nil {
 		return nil, err
+	}
+	counted := false
+	c.once.Do(func() { counted = true })
+	if !counted {
+		return tx, nil
 	}
 	return countingTx{Tx: tx, statements: c.statements}, nil
 }
@@ -99,19 +109,41 @@ func TestProjectStatusChangeCostIsIndependentOfWakeupCount(test *testing.T) {
 	const rules = 2000
 	seedProjectWakeups(test, fixture, template, projectID, 100, rules/100)
 
-	var statements int
-	tasks := *wakeups.Tasks
-	tasks.TxStarter = countingTxStarter{TxStarter: tasks.TxStarter, statements: &statements}
 	for _, status := range []string{"paused", "in_progress"} {
-		statements = 0
+		var statements int
+		tasks := &TaskService{Queries: wakeups.Tasks.Queries, Bus: wakeups.Tasks.Bus,
+			TxStarter: countingTxStarter{TxStarter: wakeups.Tasks.TxStarter, statements: &statements, once: new(sync.Once)}}
+		started := time.Now()
 		_, err := tasks.UpdateProject(ctx, util.MustParseUUID(fixture.WorkspaceID), db.UpdateProjectParams{
 			ID: util.MustParseUUID(projectID), Status: pgtype.Text{String: status, Valid: true},
 		}, false, nil)
 		if err != nil {
 			test.Fatalf("flip to %s: %v", status, err)
 		}
+		test.Logf("flip to %s: %d statements, %s", status, statements, time.Since(started))
 		if statements > 50 {
 			test.Errorf("flip to %s sent %d statements for %d rules; want a constant handful", status, statements, rules)
 		}
+	}
+	// The rules settle as before: overdue slots skipped, due one-shots off, and
+	// every condition rule baselined by the pass after the commit.
+	var stale int
+	fixture.QueryRow(test, `SELECT count(*) FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id
+		WHERE i.project_id=$1 AND w.enabled AND w.condition IS NULL AND w.next_fire_at<=now()`, projectID).Scan(&stale)
+	if stale != 0 {
+		test.Errorf("%d enabled non-condition rules are still overdue after the flips", stale)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		var held int
+		fixture.QueryRow(test, `SELECT count(*) FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id
+			WHERE i.project_id=$1 AND w.enabled AND w.condition IS NOT NULL AND w.next_fire_at>now()+interval '1 minute'`, projectID).Scan(&held)
+		if held == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			test.Fatalf("%d condition rules were never baselined after the flips", held)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
