@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -406,6 +407,12 @@ type UpdateWorkspaceRequest struct {
 	// BlockedRunSkip sets settings.blocked_run_skip alone (CHE-6973): the
 	// object {"mode": off|warn|block}. Owner only.
 	BlockedRunSkip json.RawMessage `json:"blocked_run_skip"`
+	// RunGuard sets settings.run_guard alone (CHE-9026): the object
+	// {"mode": off|warn|block}. Owner only.
+	RunGuard json.RawMessage `json:"run_guard"`
+	// RunBudget sets settings.run_budget alone (CHE-9026): the object
+	// {"mode": off|warn|block}. Owner only.
+	RunBudget json.RawMessage `json:"run_budget"`
 	// AskGuardMode sets settings.ask_guard_mode alone (CHE-6123): the string
 	// off|warn|block. Owner only.
 	AskGuardMode json.RawMessage `json:"ask_guard_mode"`
@@ -694,6 +701,26 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.BlockedRunSkip = req.BlockedRunSkip
+	}
+	for _, mode := range []struct {
+		key  string
+		raw  json.RawMessage
+		dest *[]byte
+	}{
+		{"run_guard", req.RunGuard, &params.RunGuard},
+		{"run_budget", req.RunBudget, &params.RunBudget},
+	} {
+		if mode.raw == nil {
+			continue
+		}
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := decisionaction.ValidateModeSetting(mode.key, mode.raw); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		*mode.dest = mode.raw
 	}
 	if req.AskGuardMode != nil {
 		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
