@@ -9,6 +9,7 @@ import sys
 
 QUEUE_REF_PREFIX = "refs/heads/gh-readonly-queue/"
 QUEUE_REF_IDLE = datetime.timedelta(hours=1)
+REBUILDABLE_PREFIXES = ("buildkit-blob-", "index-")
 
 
 def parse_time(value):
@@ -45,7 +46,13 @@ def plan_deletions(
             deleted.append(cache["id"])
         else:
             newest[group] = cache
-    protected = {cache["id"] for cache in newest.values() if cache["ref"] == default_ref}
+    # BuildKit layer blobs and indexes are rebuilt by the next web build, so a main entry is
+    # never protected: LRU deletes the oldest first (CHE-9063).
+    protected = {
+        cache["id"]
+        for cache in newest.values()
+        if cache["ref"] == default_ref and not cache["key"].startswith(REBUILDABLE_PREFIXES)
+    }
     required = sum(cache["size_in_bytes"] for cache in newest.values() if cache["id"] in protected)
     if required > limit:
         raise ValueError(
