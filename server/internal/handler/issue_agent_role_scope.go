@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -109,19 +111,41 @@ func (h *Handler) agentOutOfScopeMessage(ctx context.Context, ws pgtype.UUID, se
 		return id
 	}
 	msg := fmt.Sprintf("agent_role_scope: %s takes %s work only; this issue is %s work.", name(targetID), strings.Join(scope, ", "), class)
-	typ, ok := issueworkflow.TitleType(title)
-	entry, routed := capabilityrouting.FromSettings(settings)[typ]
-	if !ok || !routed {
+	codeReview := class == agentrolescope.CodeReview
+	table := capabilityrouting.FromSettings(settings)
+	typ, _ := issueworkflow.TitleType(title)
+	if entry, routed := table[typ]; routed {
+		if codeReview {
+			return msg + fmt.Sprintf(" Request review from %s (capability_routing[%s].reviewers).", strings.Join(names(name, entry.Reviewers), " or "), typ)
+		}
+		return msg + fmt.Sprintf(" Assign %s (capability_routing[%s].author).", name(entry.Author), typ)
+	}
+	// The issue's own type is not routed (for example review(code)): name the
+	// distinct targets the table lists for any type.
+	var ids []string
+	for _, key := range slices.Sorted(maps.Keys(table)) {
+		if codeReview {
+			ids = append(ids, table[key].Reviewers...)
+		} else {
+			ids = append(ids, table[key].Author)
+		}
+	}
+	ids = slices.Compact(slices.Sorted(slices.Values(ids)))
+	if len(ids) == 0 {
 		return msg + " Assign the author or reviewer your workspace routes for this type (capability_routing)."
 	}
-	if class == agentrolescope.CodeReview {
-		names := make([]string, 0, len(entry.Reviewers))
-		for _, id := range entry.Reviewers {
-			names = append(names, name(id))
-		}
-		return msg + fmt.Sprintf(" Request review from %s (capability_routing[%s].reviewers).", strings.Join(names, " or "), typ)
+	if codeReview {
+		return msg + fmt.Sprintf(" Request review from %s (capability_routing reviewers).", strings.Join(names(name, ids), " or "))
 	}
-	return msg + fmt.Sprintf(" Assign %s (capability_routing[%s].author).", name(entry.Author), typ)
+	return msg + fmt.Sprintf(" Assign %s (capability_routing authors).", strings.Join(names(name, ids), " or "))
+}
+
+func names(name func(string) string, ids []string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, name(id))
+	}
+	return out
 }
 
 // checkAgentRoleScopeAgents refuses a patch whose agent_role_scope names an id

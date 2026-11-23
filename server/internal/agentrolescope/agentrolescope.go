@@ -37,7 +37,6 @@ var classes = []string{Plan, PlanReview, Decision, Debate, SecurityCosign, CodeR
 // title) to its work class. A type not listed is execution work.
 var typeClass = map[string]string{
 	"plan": Plan, "design": Plan, "spec": Plan,
-	"review":   PlanReview,
 	"decision": Decision,
 	"debate":   Debate,
 	"security": SecurityCosign,
@@ -47,10 +46,6 @@ var typeClass = map[string]string{
 type Config struct {
 	// Agents maps a lowercase agent id to the classes that agent may be given.
 	Agents map[string][]string `json:"agents"`
-	// SecurityPaths are substrings that make an issue security co-sign work when
-	// its title names one (the D8 path list: auth, secrets, CD/deploy, DB
-	// migrations, permissions).
-	SecurityPaths []string `json:"security_paths,omitempty"`
 }
 
 // Parse validates raw and returns the setting with canonical agent ids.
@@ -59,7 +54,7 @@ func Parse(raw []byte) (Config, error) {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&in); err != nil || in.Agents == nil {
-		return Config{}, fmt.Errorf("%s must be {agents: {agent id: [class]}, security_paths: [string]}", SettingsKey)
+		return Config{}, fmt.Errorf("%s must be {agents: {agent id: [class]}}", SettingsKey)
 	}
 	cfg := Config{Agents: make(map[string][]string, len(in.Agents))}
 	for rawID, list := range in.Agents {
@@ -76,12 +71,6 @@ func Parse(raw []byte) (Config, error) {
 			}
 		}
 		cfg.Agents[id.String()] = slices.Compact(slices.Sorted(slices.Values(list)))
-	}
-	for _, p := range in.SecurityPaths {
-		if strings.TrimSpace(p) == "" {
-			return Config{}, fmt.Errorf("%s.security_paths must not hold an empty path", SettingsKey)
-		}
-		cfg.SecurityPaths = append(cfg.SecurityPaths, p)
 	}
 	return cfg, nil
 }
@@ -114,19 +103,52 @@ func (c Config) AgentIDs() []string {
 	return ids
 }
 
-// ClassOf is the work class of an issue: its type prefix, else a security path
-// named in the title, else execution.
+// ClassOf is the work class of an issue, read from its title:
+//   - plan/design/spec, decision, debate and security(...) by type;
+//   - review(plan|design|spec|decision|debate) is a plan review, review(security)
+//     a co-sign, and any other review (review, review(code), review(pr)) a code
+//     review;
+//   - "security gate: ..." is the title of a security gate issue, the D8
+//     co-sign request that the project's Review gates line creates;
+//   - everything else is execution. A path in the title never makes work a
+//     co-sign: the server holds no changed-file list to judge D8 paths by.
 func (c Config) ClassOf(title string) string {
 	typ, _ := issueworkflow.TitleType(title)
+	if typ == "review" {
+		return reviewClass(titleScope(title))
+	}
 	if class, ok := typeClass[typ]; ok {
 		return class
 	}
-	for _, p := range c.SecurityPaths {
-		if strings.Contains(title, p) {
-			return SecurityCosign
-		}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(title)), "security gate:") {
+		return SecurityCosign
 	}
 	return Execution
+}
+
+// reviewClass is the class of a review(scope) issue.
+func reviewClass(scope string) string {
+	switch scope {
+	case "plan", "design", "spec", "decision", "debate":
+		return PlanReview
+	case "security":
+		return SecurityCosign
+	}
+	return CodeReview
+}
+
+// titleScope is the lowercase text in the first parentheses right after the type.
+func titleScope(title string) string {
+	open := strings.Index(title, "(")
+	colon := strings.IndexAny(title, ":!")
+	if open < 0 || (colon >= 0 && colon < open) {
+		return ""
+	}
+	end := strings.Index(title[open:], ")")
+	if end < 0 {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(title[open+1 : open+end]))
 }
 
 // ReviewClassOf is the class of a review of the issue: a planning-seat issue is

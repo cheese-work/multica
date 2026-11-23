@@ -8,7 +8,7 @@ import (
 const sol = "11111111-1111-4111-8111-111111111111"
 
 func TestParseSeedAndClasses(t *testing.T) {
-	cfg, err := Parse([]byte(`{"agents":{"` + sol + `":["plan","plan_review","decision","debate","security_cosign"]},"security_paths":["server/migrations/"]}`))
+	cfg, err := Parse([]byte(`{"agents":{"` + sol + `":["plan","plan_review","decision","debate","security_cosign"]}}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -17,9 +17,15 @@ func TestParseSeedAndClasses(t *testing.T) {
 		"decision: pick":                    Decision,
 		"debate(x): weigh":                  Debate,
 		"security(auth): cosign":            SecurityCosign,
-		"fix: edit server/migrations/1.sql": SecurityCosign,
+		"security gate: CHE-9192":           SecurityCosign,
+		"fix: edit server/migrations/1.sql": Execution,
 		"feat(x): ship":                     Execution,
 		"no type here":                      Execution,
+		"review(plan): the rollout plan":    PlanReview,
+		"review(design): the schema":        PlanReview,
+		"review(code): review PR 2121":      CodeReview,
+		"review: review PR 2121":            CodeReview,
+		"review(security): co-sign auth":    SecurityCosign,
 	} {
 		if got := cfg.ClassOf(title); got != want {
 			t.Errorf("ClassOf(%q) = %q, want %q", title, got, want)
@@ -47,7 +53,7 @@ func TestParseRejects(t *testing.T) {
 		"empty list":    `{"agents":{"` + sol + `":[]}}`,
 		"unknown class": `{"agents":{"` + sol + `":["coding"]}}`,
 		"unknown field": `{"agents":{"` + sol + `":["plan"]},"extra":1}`,
-		"empty path":    `{"agents":{"` + sol + `":["plan"]},"security_paths":[" "]}`,
+		"paths removed": `{"agents":{"` + sol + `":["plan"]},"security_paths":["server/migrations/"]}`,
 	} {
 		if _, err := Parse([]byte(raw)); err == nil {
 			t.Errorf("%s: Parse accepted %s", name, raw)

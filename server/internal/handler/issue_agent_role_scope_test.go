@@ -65,8 +65,7 @@ func TestAgentRoleScopeAssign_CHE9192(t *testing.T) {
 	settings, _ := json.Marshal(map[string]any{
 		"capability_routing": map[string]any{"feat": map[string]any{"author": authorID, "reviewers": []string{reviewerID}}},
 		"agent_role_scope": map[string]any{
-			"agents":         map[string]any{solID: solScope},
-			"security_paths": []string{"server/migrations/"},
+			"agents": map[string]any{solID: solScope},
 		},
 	})
 	setWorkspaceSettings(t, string(settings))
@@ -111,6 +110,34 @@ func TestAgentRoleScopeAssign_CHE9192(t *testing.T) {
 			}
 		})
 
+		for title, wantHint := range map[string]string{
+			// A path in a title is execution work, not a D8 co-sign.
+			"fix: touch server/migrations/001_x.sql": "scope-author",
+			// A code review is routed to the capability_routing reviewers.
+			"review(code): review PR 2121": "scope-reviewer",
+			"review: review PR 2121":       "scope-reviewer",
+		} {
+			t.Run(writer.name+"/agent assigning "+title+" to Sol is refused", func(t *testing.T) {
+				actor, issueID := newIssue(t, title)
+				resp := writer.write(t, issueID, toSol, agentHeaders(t, actor, issueID))
+				if writer.name == "single" {
+					resp.Want(http.StatusForbidden)
+					var body struct {
+						Error string `json:"error"`
+					}
+					resp.JSON(&body)
+					for _, want := range []string{"agent_role_scope", "scope-sol", wantHint} {
+						if !strings.Contains(body.Error, want) {
+							t.Fatalf("refusal %q must name %q", body.Error, want)
+						}
+					}
+				}
+				if got := assignee(t, issueID); got != actor {
+					t.Fatalf("assignee = %s, want the issue to stay with %s", got, actor)
+				}
+			})
+		}
+
 		t.Run(writer.name+"/human assigning the same issue to Sol succeeds", func(t *testing.T) {
 			_, issueID := newIssue(t, "feat(x): ship the thing")
 			writer.write(t, issueID, toSol, nil).Want(http.StatusOK)
@@ -127,7 +154,6 @@ func TestAgentRoleScopeAssign_CHE9192(t *testing.T) {
 			"decision(x): pick one",
 			"debate(x): weigh it",
 			"security(auth): co-sign the change",
-			"fix: touch server/migrations/001_x.sql",
 		} {
 			t.Run(writer.name+"/agent assigning "+title+" to Sol succeeds", func(t *testing.T) {
 				actor, issueID := newIssue(t, title)

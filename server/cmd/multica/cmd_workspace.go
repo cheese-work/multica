@@ -90,8 +90,8 @@ var workspaceAgentRoleScopeCmd = &cobra.Command{
 	Short: "Show the agent_role_scope setting (agent to the work classes it may be given)",
 	Long: "Prints the workspace setting agent_role_scope: per agent, the work classes another " +
 		"agent may assign it (plan, plan_review, decision, debate, security_cosign, code_review, " +
-		"execution), and the security_paths that make an issue security co-sign work. An agent " +
-		"with no entry is unrestricted. Prints {} when it is unset. Read-only; change it with " +
+		"execution). A review(code) issue is code review; a path in a title never makes work a " +
+		"co-sign. An agent with no entry is unrestricted. Prints {} when it is unset. Read-only; change it with " +
 		"'multica config propose workspace.settings --set agent_role_scope:=<json>'. " +
 		"'multica agent get <agent>' shows one agent's scope.",
 	Args: cobra.MaximumNArgs(1),
