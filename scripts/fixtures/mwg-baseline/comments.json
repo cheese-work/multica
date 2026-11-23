@@ -75,6 +75,26 @@
    "content": "Verdict: PASS \u2014 human note, not a signed agent verdict.",
    "parent_id": null,
    "type": "comment"
+  },
+  {
+   "id": "c-9004-c",
+   "issue_id": "00000000-0000-4000-8000-000000009004",
+   "author_type": "agent",
+   "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
+   "created_at": "2026-11-07T12:00:00Z",
+   "content": "**Verdict: NOT-RUN \u2014 cross-lab review incomplete.**\nHead SHA: 4444444444444444444444444444444444444444. No review was done.",
+   "parent_id": null,
+   "type": "comment"
+  },
+  {
+   "id": "c-9004-d",
+   "issue_id": "00000000-0000-4000-8000-000000009004",
+   "author_type": "agent",
+   "author_id": "df7da71b-a937-4eb1-bf52-b12ac5ee657f",
+   "created_at": "2026-11-07T13:00:00Z",
+   "content": "Verdict: BLOCKED / NOT-RUN \u2014 exact-head CI has an unwaived failure.",
+   "parent_id": null,
+   "type": "comment"
   }
  ],
  "CHE-9005": [],
