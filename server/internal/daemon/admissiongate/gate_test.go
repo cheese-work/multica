@@ -1,6 +1,7 @@
 package admissiongate
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -242,7 +243,5 @@ func TestValidate(t *testing.T) {
 
 func TestNaNSignalFailsClosed(t *testing.T) {
 	g := New(testCfg())
-	nan := 0.0
-	nan = nan / nan
-	wantClosed(t, feed(g, sample(0, nan, 0, 30*gib)), ReasonSignal)
+	wantClosed(t, feed(g, sample(0, math.NaN(), 0, 30*gib)), ReasonSignal)
 }
