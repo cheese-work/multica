@@ -112,6 +112,18 @@ for (const source of ["github", "multica", "transcripts"]) {
   });
 }
 
+test("a metric that does not need the failed source keeps its exact fixture value", async () => {
+  const sources = fixtureSources(DIR);
+  const noGithub = await measure(base({ ...sources, prList: failing("github"), prFiles: failing("github") }));
+  const noTranscripts = await measure(base(sources, { transcriptRoot: join(DIR, "does-not-exist") }));
+  for (const name of AGENTS) {
+    assert.deepEqual(noGithub.agents[name].metrics.M3p, expected.agents[name].metrics.M3p, `${name} M3p without github`);
+    for (const metric of ["M1s", "M2", "M3"]) {
+      assert.deepEqual(noTranscripts.agents[name].metrics[metric], expected.agents[name].metrics[metric], `${name} ${metric} without transcripts`);
+    }
+  }
+});
+
 test("a transcript file that cannot be read is a source failure; a missing run transcript is only coverage", async () => {
   const result = await measure(base(fixtureSources(DIR)));
   assert.equal(result.sources.transcripts.ok, true);
