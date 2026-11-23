@@ -294,12 +294,12 @@ func (h *Handler) collectCloseVerdict(ctx context.Context, issue db.Issue, in *c
 		return
 	}
 	v.Findings, v.HeadSHA = details.Findings, details.HeadSHA
-	if voided, err := q.CountIssueVerdictBreaksSince(ctx, db.CountIssueVerdictBreaksSinceParams{IssueID: issue.ID, Since: verdict.CreatedAt}); err != nil {
+	voided, err := q.CountIssueVerdictBreaksSince(ctx, db.CountIssueVerdictBreaksSinceParams{IssueID: issue.ID, Since: verdict.CreatedAt})
+	if err != nil {
 		v.Error = err.Error()
 		return
-	} else {
-		v.VoidedSince = voided
 	}
+	v.VoidedSince = voided
 	if in.PRs.Error == "" && len(in.PRs.Linked) == 0 {
 		newer, err := q.CountIssueTextCandidateChangesSince(ctx, db.CountIssueTextCandidateChangesSinceParams{IssueID: issue.ID, Since: verdict.CreatedAt, ReviewerID: verdict.ActorID})
 		if err != nil {
