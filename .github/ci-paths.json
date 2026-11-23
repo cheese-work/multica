@@ -147,7 +147,7 @@
     "design/*/approved/**",
     "tests/fidelity/**",
     "DESIGN.md",
-    "scripts/check-ui-wildcard-exports.test.sh",
+    "scripts/check-ui-wildcard-exports.test.mjs",
     "scripts/brand/*.mjs",
     "scripts/pr-shots",
     "server/cmd/multica/cmd_auth.go",
