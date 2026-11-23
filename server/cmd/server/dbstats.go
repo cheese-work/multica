@@ -49,6 +49,16 @@ const (
 	// Five minutes bounds how long a pooled replica connection can survive a
 	// promotion without being revalidated, instead of pgx's one-hour default.
 	defaultReplicaMaxConnLifetime = 5 * time.Minute
+
+	// defaultPrimaryStatementCacheCapacity trims pgx's per-connection prepared
+	// statement cache (pgx default 512) on the primary pool. Every cached
+	// statement keeps its plan in that backend's CacheMemoryContext, so the
+	// cache size multiplies by the pool size on the Postgres host (CHE-7639).
+	// 128 won the X99 A/B against 512 and 256: backend CacheMemoryContext
+	// 20.3 -> 15.4 MiB and Pss_Anon 22.9 -> 19.0 MiB on a one-pass replay of
+	// the C00 query mix, with CPU not higher beyond run-to-run spread.
+	// An explicit statement_cache_capacity URL param on DATABASE_URL wins.
+	defaultPrimaryStatementCacheCapacity = 128
 )
 
 type dbPoolSizing struct {
@@ -57,6 +67,9 @@ type dbPoolSizing struct {
 	defaultMaxConns        int32
 	defaultMinConns        int32
 	defaultMaxConnLifetime time.Duration
+	// statementCacheCapacity > 0 overrides pgx's default of 512 unless the
+	// DATABASE_URL sets statement_cache_capacity. 0 leaves pgx's default.
+	statementCacheCapacity int
 	allowZeroMin           bool
 	requireReadOnly        bool
 }
@@ -67,6 +80,8 @@ var (
 		minConnsEnv:     "DATABASE_MIN_CONNS",
 		defaultMaxConns: defaultMaxConns,
 		defaultMinConns: defaultMinConns,
+
+		statementCacheCapacity: defaultPrimaryStatementCacheCapacity,
 	}
 	replicaPoolSizing = dbPoolSizing{
 		maxConnsEnv:            "DATABASE_REPLICA_MAX_CONNS",
@@ -126,6 +141,9 @@ func applyPoolSizing(cfg *pgxpool.Config, dbURL string, sizing dbPoolSizing) {
 	}
 	if sizing.defaultMaxConnLifetime > 0 && !urlParams["pool_max_conn_lifetime"] {
 		cfg.MaxConnLifetime = sizing.defaultMaxConnLifetime
+	}
+	if sizing.statementCacheCapacity > 0 && !urlParams["statement_cache_capacity"] {
+		cfg.ConnConfig.StatementCacheCapacity = sizing.statementCacheCapacity
 	}
 
 	// Compute the non-env fallback first: honor URL pool_* params if the
@@ -223,6 +241,7 @@ func logPoolConfig(role string, pool *pgxpool.Pool) {
 		"max_conn_lifetime", cfg.MaxConnLifetime.String(),
 		"max_conn_idle_time", cfg.MaxConnIdleTime.String(),
 		"health_check_period", cfg.HealthCheckPeriod.String(),
+		"statement_cache_capacity", cfg.ConnConfig.StatementCacheCapacity,
 	)
 }
 
