@@ -94,8 +94,8 @@ The workspace setting `wakeup_live_join` decides what happens when a condition w
 A firing joins only when all of these hold. If one fails or cannot be read, the firing starts a run as today.
 
 - Every receipt of the firing is a condition receipt (`condition.met`). Time, comment, reaction and manual firings never join.
-- An agent created the wakeup. It is not tied to a decision, is not a system rule or a custom-rule instance, and is not paused.
-- The target agent has exactly one running run on the issue and no waiting run, and the run acts for the same user as the wakeup.
+- An agent created the wakeup. It is not tied to a decision, is not a system rule or a custom-rule instance, is not a merge-eligibility rule, and is not paused.
+- The target agent has exactly one running run on the issue and no waiting run, and the run acts for the same user as the wakeup. The run does not carry another rule's isolated firing.
 - The running run accepts wakeup items, and none of the firing's receipts is already in an item.
 - No skip rule (for example the paused-agent skip) already consumed the firing.
 - The run is still running when the item is queued.
