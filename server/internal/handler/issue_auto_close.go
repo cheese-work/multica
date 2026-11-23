@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -425,4 +426,9 @@ func metadataString(metadata []byte, key string) string {
 	}
 	s, _ := m[key].(string)
 	return s
+}
+
+// GetIssueCloseCheck is a stub until close-check is built.
+func (h *Handler) GetIssueCloseCheck(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusNotImplemented, "close-check is not built")
 }
