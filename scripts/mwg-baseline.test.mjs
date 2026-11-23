@@ -185,6 +185,7 @@ test("the script calls only read-only subcommands (S3a AC 7)", async () => {
   await sources.agents().catch(() => {});
   await sources.prList("cheese-work/multica", new Date(0), new Date(1), 10).catch(() => {});
   await sources.prFiles("cheese-work/multica", 1).catch(() => {});
+  await sources.prBody("cheese-work/multica", 1).catch(() => {});
   await sources.issue("CHE-1").catch(() => {});
   await sources.comments("CHE-1").catch(() => {});
   await sources.tasks("agent-id", null).catch(() => {});
@@ -195,7 +196,7 @@ test("the script calls only read-only subcommands (S3a AC 7)", async () => {
     assert.ok(allowed.some((a) => joined.startsWith(a)), `unexpected command: ${joined}`);
   }
   const used = new Set(calls.map((c) => c.slice(0, c[0] === "gh" ? 3 : c[0] === "multica" && c[1] === "issue" ? 4 : 3).join(" ")));
-  assert.ok(used.size >= 6, "every source call maps to a listed read-only subcommand");
+  assert.ok(used.size >= 7, "every source call maps to a listed read-only subcommand");
   for (const forbidden of ["create", "update", "delete", "add", "set", "status", "assign", "import", "merge", "edit", "close"]) {
     assert.ok(!READ_ONLY_COMMANDS.flat().includes(forbidden), `${forbidden} is not in the allowlist`);
   }

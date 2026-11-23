@@ -33,6 +33,7 @@ export class SourceError extends Error {
 // Every external command the script may run. liveSources refuses anything else (S3a AC 7).
 export const READ_ONLY_COMMANDS = [
   ["gh", "pr", "list"],
+  ["gh", "pr", "view"],
   ["gh", "api"],
   ["multica", "agent", "list"],
   ["multica", "agent", "tasks"],
@@ -240,8 +241,12 @@ export function liveSources({ exec, env = {} } = {}) {
     // PRs created in [start, end). The search takes whole seconds and is inclusive on both ends.
     async prList(repo, start, end, limit) {
       const range = `created:${iso(start)}..${iso(new Date(end.getTime() - 1000))}`;
-      const args = ["pr", "list", "--repo", repo, "--state", "all", "--search", range, "--json", "number,headRefName,createdAt,body,files", "--limit", String(limit)];
+      const args = ["pr", "list", "--repo", repo, "--state", "all", "--search", range, "--json", "number,headRefName,createdAt,files", "--limit", String(limit)];
       return (await json("github", "gh", args)).data;
+    },
+    async prBody(repo, number) {
+      const args = ["pr", "view", String(number), "--repo", repo, "--json", "body"];
+      return (await json("github", "gh", args)).data.body ?? "";
     },
     async prFiles(repo, number) {
       const args = ["api", `repos/${repo}/pulls/${number}/files`, "--paginate", "--jq", ".[].filename"];
@@ -285,6 +290,11 @@ export function fixtureSources(dir, opts = {}) {
         .filter((p) => Date.parse(p.createdAt) >= start.getTime() && Date.parse(p.createdAt) < end.getTime())
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
         .slice(0, Math.min(limit, cap));
+    },
+    async prBody(repo, number) {
+      const pr = (load("gh-prs.json")[repo] ?? []).find((p) => p.number === number);
+      if (!pr) throw new SourceError("github", `fixture: no PR ${repo}#${number}`);
+      return pr.body ?? "";
     },
     async prFiles(repo, number) {
       const pr = (load("gh-prs.json")[repo] ?? []).find((p) => p.number === number);
@@ -353,6 +363,7 @@ export async function measure(opts) {
     agents: count("multica", raw.agents),
     prList: count("github", raw.prList),
     prFiles: count("github", raw.prFiles),
+    prBody: count("github", raw.prBody),
     issue: count("multica", raw.issue),
     comments: count("multica", raw.comments),
     tasks: count("multica", raw.tasks),
@@ -429,18 +440,27 @@ export async function measure(opts) {
   const data = new Map();
   for (const name of names) {
     const agent = me.get(name);
-    const d = { units: [], runs: [], taskPages: false };
+    const d = { units: [], runs: [] };
     data.set(name, d);
-    if (!agent || failed.github || failed.agents) continue;
-
-    // Units
+    if (!agent || failed.agents) continue;
+    if (!failed.github) await collectUnits(name, agent, d);
+    await collectRuns(agent, d);
+  }
+  async function collectUnits(name, agent, d) {
     const mine = [...prPool.values()].filter((p) => {
       const at = Date.parse(p.createdAt);
       return at >= start.getTime() && at < end.getTime() && String(p.headRefName).startsWith(`agent/${name}/`) && (p.files ?? []).some((f) => isWebFile(p.repo, f.path));
     });
     mine.sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number);
+    const bodies = new Map();
+    try {
+      for (const pr of mine) bodies.set(pr, await src.prBody(pr.repo, pr.number));
+    } catch (e) {
+      fail("github", e);
+      return;
+    }
     for (const pr of mine) {
-      const unit = { pr, repo: pr.repo, number: pr.number, issue: null, issueId: null, reviewed: false, findings: [], section: guidanceSection(pr.body), runs: [] };
+      const unit = { repo: pr.repo, number: pr.number, issue: null, issueId: null, reviewed: false, findings: [], section: guidanceSection(bodies.get(pr)), runs: [] };
       d.units.push(unit);
       const ident = /^agent\/[^/]+\/([a-z]+-\d+)\b/i.exec(pr.headRefName)?.[1]?.toUpperCase();
       if (!ident || failed.issues) continue;
@@ -461,8 +481,8 @@ export async function measure(opts) {
         fail("issues", e);
       }
     }
-
-    // Runs
+  }
+  async function collectRuns(agent, d) {
     if (!failed.tasks) {
       try {
         const tasks = [];
@@ -666,7 +686,7 @@ export function render(result) {
 // CLI
 
 const USAGE = `usage: mwg-baseline.mjs --agent NAME [--agent NAME ...] [--days 14] [--start ISO --end ISO] [--review-cutoff ISO] [--mwg-end ISO]
-  [--repo OWNER/REPO ...] [--transcript-root DIR] [--pr-limit 500] [--fixture-dir DIR] [--json] [--commands]
+  [--repo OWNER/REPO ...] [--transcript-root DIR] [--pr-limit 100] [--fixture-dir DIR] [--json] [--commands]
 Exit 0 when every source answered, 2 when any source failed (affected metrics print "unavailable", never a count), 64 on bad arguments.`;
 
 function parseArgs(argv) {
@@ -713,7 +733,7 @@ export async function main(argv, env = process.env, io = { write: (s) => process
       mwgEnd: o["mwg-end"] ? date(o["mwg-end"], "--mwg-end") : end,
       transcriptRoot: o["transcript-root"] ?? join(env.HOME ?? "", ".claude", "projects"),
       repos: o.repo.length ? o.repo : ["cheese-work/multica", "cheese-work/doop"],
-      prLimit: Number(o["pr-limit"] ?? 500),
+      prLimit: Number(o["pr-limit"] ?? 100),
     });
     io.write(o.json ? `${JSON.stringify(result, null, 2)}\n` : render(result));
     return result.exitCode;
