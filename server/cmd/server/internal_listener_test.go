@@ -15,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/controlplane"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/realtime"
 )
 
@@ -126,5 +127,79 @@ func TestPublicRouterDoesNotServeCleanupAckOrQuarantine(t *testing.T) {
 		if rec.Code != http.StatusNotFound {
 			t.Errorf("public POST %s = %d, want 404", route, rec.Code)
 		}
+	}
+}
+
+const jwksTestSeed = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=" // 32 bytes of 0x01
+
+func jwksTestKeyring(t *testing.T) *browserlease.Keyring {
+	t.Helper()
+	kr, err := browserlease.ParseKeyring("k1:" + jwksTestSeed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return kr
+}
+
+// CHE-8829 A1a: the JWKS route needs the signer, not the plugin service. With no plugin service
+// the listener serves the JWKS and still serves no cleanup-ack route.
+func TestInternalListenerServesJWKSWithoutThePluginService(t *testing.T) {
+	t.Setenv("MULTICA_INTERNAL_LISTEN_ADDR", "172.30.0.2:9000")
+	h := &handler.Handler{BrowserLeases: &browserlease.Service{Signer: jwksTestKeyring(t)}}
+	srv, err := newInternalServer("8080", internalMounts(h)...)
+	if err != nil || srv == nil {
+		t.Fatalf("newInternalServer: (%v, %v)", srv, err)
+	}
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, controlplane.Prefix+"/jwks", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"kid":"k1"`) {
+		t.Fatalf("GET jwks = %d %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), jwksTestSeed) {
+		t.Fatal("jwks leaks the seed")
+	}
+	rec = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, controlplane.Prefix+"/instances/inst-1/cleanup-ack", strings.NewReader(`{}`)))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("cleanup-ack without the plugin service = %d, want 404", rec.Code)
+	}
+}
+
+func TestInternalMountsServeNothingWithoutASigner(t *testing.T) {
+	for name, h := range map[string]*handler.Handler{
+		"nil handler": nil,
+		"no service":  {},
+		"nil signer":  {BrowserLeases: &browserlease.Service{}},
+	} {
+		if got := internalMounts(h); len(got) != 0 {
+			t.Errorf("%s: %d mounts, want none", name, len(got))
+		}
+	}
+}
+
+func TestLoadBrowserSigner(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	if s := loadBrowserSigner(env(nil)); s != nil {
+		t.Fatalf("unset keys: signer %v, want nil (no signer)", s)
+	}
+	if s := loadBrowserSigner(env(map[string]string{browserlease.SigningKeysEnv: "k1:!!!"})); s != nil {
+		t.Fatalf("malformed keys: signer %v, want nil", s)
+	}
+	if s := loadBrowserSigner(env(map[string]string{
+		browserlease.SigningKeysEnv: "k1:" + jwksTestSeed, browserlease.AudiencesEnv: "c00",
+	})); s != nil {
+		t.Fatalf("malformed allowlist: signer %v, want nil", s)
+	}
+	// Keys without an allowlist: a signer exists (the JWKS is served) and signs nothing.
+	s := loadBrowserSigner(env(map[string]string{browserlease.SigningKeysEnv: "k1:" + jwksTestSeed}))
+	kr, ok := s.(*browserlease.Keyring)
+	if !ok || kr == nil || len(kr.Audiences()) != 0 {
+		t.Fatalf("keys only: signer %T %v", s, s)
+	}
+	s = loadBrowserSigner(env(map[string]string{
+		browserlease.SigningKeysEnv: "k1:" + jwksTestSeed, browserlease.AudiencesEnv: "steel-gateway/c00,steel-gateway/x99",
+	}))
+	if kr, ok := s.(*browserlease.Keyring); !ok || len(kr.Audiences()) != 2 {
+		t.Fatalf("both set: signer %T %v", s, s)
 	}
 }

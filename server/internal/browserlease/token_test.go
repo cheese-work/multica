@@ -292,17 +292,33 @@ func TestParseKeyringErrorDoesNotLeakSecret(t *testing.T) {
 }
 
 func TestKeyringFromEnv(t *testing.T) {
-	if _, err := KeyringFromEnv(func(string) string { return "" }); err == nil {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	if _, err := KeyringFromEnv(env(nil)); err == nil {
 		t.Fatal("missing secret must fail closed")
 	}
-	kr, err := KeyringFromEnv(func(k string) string {
-		if k != SigningKeysEnv {
-			t.Fatalf("read %s", k)
-		}
-		return " k1:" + seed(1) + " "
-	})
+	if SigningKeysEnv != "MULTICA_BROWSER_SIGNING_KEYS" || AudiencesEnv != "MULTICA_BROWSER_GATEWAY_AUDIENCES" {
+		t.Fatalf("env names = %s, %s", SigningKeysEnv, AudiencesEnv)
+	}
+	kr, err := KeyringFromEnv(env(map[string]string{
+		SigningKeysEnv: " k1:" + seed(1) + " ",
+		AudiencesEnv:   " steel-gateway/c00 , steel-gateway/x99 ",
+	}))
 	if err != nil || kr == nil {
 		t.Fatalf("kr=%v err=%v", kr, err)
+	}
+	for _, c := range []Claims{claims(), s0Claims()} {
+		if _, err := kr.Sign(c); err != nil {
+			t.Errorf("aud %s: %v", c.Aud, err)
+		}
+	}
+	if got := kr.Audiences(); len(got) != 2 || got[0] != "steel-gateway/c00" || got[1] != "steel-gateway/x99" {
+		t.Errorf("Audiences() = %v", got)
+	}
+	if got := kr.KeyIDs(); len(got) != 1 || got[0] != "k1" {
+		t.Errorf("KeyIDs() = %v", got)
+	}
+	if _, err := KeyringFromEnv(env(map[string]string{SigningKeysEnv: "k1:" + seed(1), AudiencesEnv: "steel-gateway/c00,"})); err == nil {
+		t.Error("malformed allowlist accepted")
 	}
 }
 
@@ -333,6 +349,152 @@ func TestSignAcceptsAMemberLoginLeaseWithoutTaskOrIssue(t *testing.T) {
 		mut(&c)
 		if _, err := kr.Sign(c); err == nil {
 			t.Fatalf("S2 claims %+v signed without a task or issue", c)
+		}
+	}
+}
+
+// testAudiences is the two-host allowlist the signing tests run under.
+const testAudiences = "steel-gateway/c00,steel-gateway/x99"
+
+// testKeyring is ParseKeyring plus the c00 and x99 allowlist: a keyring signs nothing without one.
+func testKeyring(spec string) (*Keyring, error) {
+	kr, err := ParseKeyring(spec)
+	if err != nil {
+		return nil, err
+	}
+	return kr.WithAudienceSpec(testAudiences)
+}
+
+func mustAudiences(t *testing.T, spec string) AudienceSet {
+	t.Helper()
+	set, err := parseAudiences(spec)
+	if err != nil {
+		t.Fatalf("parseAudiences(%q): %v", spec, err)
+	}
+	return set
+}
+
+func TestEnvAllowlistRefusesAudOutsideIt(t *testing.T) {
+	allowed := mustAudiences(t, "steel-gateway/c00")
+	if err := validateClaims(claims(), allowed); err != nil {
+		t.Fatalf("aud in the allowlist refused: %v", err)
+	}
+	for name, aud := range map[string]string{
+		"other host":    "steel-gateway/x99",
+		"unlisted host": "steel-gateway/h3",
+		"generic":       "steel-gateway",
+		"empty":         "",
+	} {
+		c := claims()
+		c.Aud = aud
+		if err := validateClaims(c, allowed); err == nil {
+			t.Errorf("%s: aud %q accepted", name, aud)
+		}
+	}
+	// The Keyring applies the same rule: x99 is signed only when the allowlist names it.
+	kr, err := ParseKeyring("k1:" + seed(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c00Only, err := kr.WithAudienceSpec("steel-gateway/c00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c00Only.Sign(s0Claims()); err == nil {
+		t.Error("x99 token signed with an allowlist of c00 only")
+	}
+	if _, err := c00Only.Sign(claims()); err != nil {
+		t.Errorf("c00 token refused: %v", err)
+	}
+}
+
+func TestEmptyEnvAllowlistSignsNothing(t *testing.T) {
+	bare, err := ParseKeyring("k1:" + seed(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty, err := bare.WithAudienceSpec("")
+	if err != nil {
+		t.Fatalf("an empty allowlist is valid and signs nothing: %v", err)
+	}
+	spaces, err := bare.WithAudienceSpec("  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fromEnv, err := KeyringFromEnv(func(k string) string {
+		if k == SigningKeysEnv {
+			return "k1:" + seed(1)
+		}
+		return "" // MULTICA_BROWSER_GATEWAY_AUDIENCES unset
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, kr := range map[string]*Keyring{"no allowlist call": bare, "empty": empty, "blank": spaces, "env unset": fromEnv} {
+		for _, c := range []Claims{claims(), s0Claims()} {
+			if tok, err := kr.Sign(c); err == nil || tok != "" {
+				t.Errorf("%s: signed aud %s", name, c.Aud)
+			}
+		}
+	}
+	if err := validateClaims(claims(), nil); err == nil {
+		t.Error("validateClaims accepts any aud under a nil allowlist")
+	}
+	// The JWKS stays served: verification keys are not the allowlist.
+	if keys, _ := fetchJWKS(t, empty); len(keys) != 1 {
+		t.Errorf("jwks keys = %d", len(keys))
+	}
+}
+
+func TestEnvAllowlistPrefixLookalikeRefused(t *testing.T) {
+	kr, err := testKeyring("k1:" + seed(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, aud := range []string{
+		"steel-gateway/c00x", "steel-gateway/c00/", "steel-gateway/c0", "steel-gateway/c00 ", " steel-gateway/c00",
+		"Steel-Gateway/c00", "steel-gateway/C00", "steel-gateway/c00,steel-gateway/x99", "steel-gateway/c00\n",
+		"steel-gateway//c00", "xsteel-gateway/c00",
+	} {
+		c := claims()
+		c.Aud = aud
+		if tok, err := kr.Sign(c); err == nil || tok != "" {
+			t.Errorf("aud %q signed", aud)
+		}
+	}
+}
+
+// A third host is one entry in the allowlist: no code change, no other host affected.
+func TestThirdHostAudienceSigns(t *testing.T) {
+	bare, _ := ParseKeyring("k1:" + seed(1))
+	kr, err := bare.WithAudienceSpec("steel-gateway/c00,steel-gateway/x99,steel-gateway/h3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := s0Claims()
+	c.Aud, c.Instance = "steel-gateway/h3", "h3-1"
+	tok, err := kr.Sign(c)
+	if err != nil {
+		t.Fatalf("h3 token: %v", err)
+	}
+	keys, _ := fetchJWKS(t, kr)
+	verifyAud(t, tok, keys, time.Unix(tNow, 0), "steel-gateway/h3")
+}
+
+func TestParseAudiencesRejects(t *testing.T) {
+	for name, in := range map[string]string{
+		"no prefix":      "c00",
+		"generic":        "steel-gateway",
+		"empty host":     "steel-gateway/",
+		"upper host":     "steel-gateway/C00",
+		"inner slash":    "steel-gateway/c00/x",
+		"space in entry": "steel-gateway/c 00",
+		"trailing comma": "steel-gateway/c00,",
+		"empty entry":    "steel-gateway/c00,,steel-gateway/x99",
+		"duplicate":      "steel-gateway/c00,steel-gateway/c00",
+	} {
+		if _, err := parseAudiences(in); err == nil {
+			t.Errorf("%s: accepted", name)
 		}
 	}
 }
