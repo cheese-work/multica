@@ -191,9 +191,10 @@ func serverDeadline(t *testing.T, busy, withoutTransactionTimeout bool) (p backe
 	}
 	// End the session if the server has not: when the bound is missing (the
 	// control, or a regression) the backend is still alive, and the busy
-	// statement would otherwise run for 30 s. A session that is already gone
-	// makes this a no-op.
-	_, _ = pool.Exec(ctx, `SELECT pg_terminate_backend($1)`, pid)
+	// statement would otherwise run for 30 s. Selecting from pg_stat_activity keeps
+	// a session that is already gone from logging a server WARNING (the warning
+	// budget counts it).
+	_, _ = pool.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid = $1`, pid)
 	// Join the busy session's goroutine before the connection is closed: both
 	// use the same connection, and the session is over in every case.
 	select {
