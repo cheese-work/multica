@@ -40,8 +40,11 @@ type Admission struct {
 	charged  int64
 	held     bool // hold latched: no claim, accepts go to handing_back
 	seq      uint64
-	batches  map[string]*admissionBatch
-	ledger   map[string]*ledgerEntry
+	batches  map[string]*admissionBatch // pending and pending_held only
+	done     map[string]batchState      // bounded tombstones of settled and abandoned batches
+	doneFIFO []string
+	relFIFO  []AttemptRef // released ledger entries, oldest first, bounded
+	ledger   map[AttemptRef]*ledgerEntry
 	alert    func(kind, detail string)
 }
 
@@ -69,6 +72,13 @@ type ledgerState string
 const (
 	ledgerHeld     ledgerState = "held"
 	ledgerReleased ledgerState = "released"
+)
+
+// Retention caps. A reply for a batch older than the tombstone window is
+// dropped as an unknown batch, which is the same outcome as a tombstone hit.
+const (
+	maxBatchTombstones = 256
+	maxReleasedEntries = 1024
 )
 
 var (
@@ -104,21 +114,34 @@ type AdmissionBatch struct {
 	N  int
 }
 
-// AdmittedTask is one accepted task and what the caller must do with it.
-type AdmittedTask struct {
-	TaskID      string
-	Disposition attemptDisposition
+// AttemptRef names one delivery of a task: the task ID plus the claim
+// generation the server stamped on it. A re-delivery has a new generation, so
+// it gets its own ledger entry and cannot spend or release an earlier
+// attempt's charge.
+type AttemptRef struct {
+	TaskID     string
+	Generation string
 }
 
-// NewAdmission builds the mutex and ledger. held maps task ID to charge for
+// AdmittedTask is one accepted attempt and what the caller must do with it.
+// Fresh is false when the same attempt was already held (the same generation
+// delivered twice): its existing charge is the only one.
+type AdmittedTask struct {
+	Ref         AttemptRef
+	Disposition attemptDisposition
+	Fresh       bool
+}
+
+// NewAdmission builds the mutex and ledger. held maps attempt to charge for
 // every earlier-instance attempt that is still charged (rebuilt from durable
 // attempt records by the caller); nothing else survives a restart.
-func NewAdmission(cfg AdmissionConfig, held map[string]int64) *Admission {
+func NewAdmission(cfg AdmissionConfig, held map[AttemptRef]int64) *Admission {
 	a := &Admission{
 		budget:   cfg.Budget,
 		rDefault: cfg.RDefault,
 		batches:  map[string]*admissionBatch{},
-		ledger:   map[string]*ledgerEntry{},
+		done:     map[string]batchState{},
+		ledger:   map[AttemptRef]*ledgerEntry{},
 		alert:    cfg.Alert,
 	}
 	for id, amount := range held {
@@ -171,11 +194,11 @@ func (a *Admission) Reserve(freeSlots int) (*AdmissionBatch, bool) {
 // start anything from that reply. Otherwise n-k is refunded, the batch is
 // settled and each accepted task gets a ledger entry; the disposition is
 // handing_back when the hold is latched or the batch was marked pending_held.
-func (a *Admission) Accept(batchID string, taskIDs []string) (accepted []AdmittedTask, dropped bool) {
+func (a *Admission) Accept(batchID string, refs []AttemptRef) (accepted []AdmittedTask, dropped bool) {
 	if a == nil {
-		out := make([]AdmittedTask, 0, len(taskIDs))
-		for _, id := range taskIDs {
-			out = append(out, AdmittedTask{TaskID: id, Disposition: dispositionBound})
+		out := make([]AdmittedTask, 0, len(refs))
+		for _, r := range refs {
+			out = append(out, AdmittedTask{Ref: r, Disposition: dispositionBound, Fresh: true})
 		}
 		return out, false
 	}
@@ -189,24 +212,21 @@ func (a *Admission) Accept(batchID string, taskIDs []string) (accepted []Admitte
 	if a.held || b.state == batchPendingHeld {
 		disposition = dispositionHandingBack
 	}
-	k := len(taskIDs)
-	if k > b.n {
+	if k := len(refs); k > b.n {
 		a.raise("claim_overdelivery", fmt.Sprintf("batch %s asked %d, server returned %d; extras not accepted", b.id, b.n, k))
-		taskIDs = taskIDs[:b.n]
-		k = b.n
+		refs = refs[:b.n]
 	}
 	a.charged -= b.charge // refund the whole reservation ...
-	b.state = batchSettled
-	for _, id := range taskIDs {
-		if e := a.ledger[id]; e != nil && e.state == ledgerHeld {
-			// Re-delivery of a task this instance still holds: its existing
-			// entry is the one charge.
-			accepted = append(accepted, AdmittedTask{TaskID: id, Disposition: disposition})
+	a.retire(b, batchSettled)
+	for _, r := range refs {
+		if e := a.ledger[r]; e != nil && e.state == ledgerHeld {
+			// The same attempt delivered twice: its existing entry is the one charge.
+			accepted = append(accepted, AdmittedTask{Ref: r, Disposition: disposition})
 			continue
 		}
-		a.ledger[id] = &ledgerEntry{amount: a.rDefault, state: ledgerHeld}
-		a.charged += a.rDefault // ... then charge the k accepted tasks.
-		accepted = append(accepted, AdmittedTask{TaskID: id, Disposition: disposition})
+		a.ledger[r] = &ledgerEntry{amount: a.rDefault, state: ledgerHeld}
+		a.charged += a.rDefault // ... then charge the accepted attempts.
+		accepted = append(accepted, AdmittedTask{Ref: r, Disposition: disposition, Fresh: true})
 	}
 	return accepted, false
 }
@@ -223,8 +243,8 @@ func (a *Admission) Abandon(batchID string) {
 	if !ok || (b.state != batchPending && b.state != batchPendingHeld) {
 		return
 	}
-	b.state = batchAbandoned
 	a.charged -= b.charge
+	a.retire(b, batchAbandoned)
 }
 
 // MarkHeld is called by the latch (step 10a): every pending batch becomes
@@ -256,38 +276,41 @@ func (a *Admission) LatchHold(on bool) {
 // Charge takes one RDefault for a task that did not come through a batch
 // (for example a script task started locally). It competes with Reserve for
 // the same budget under the same mutex.
-func (a *Admission) Charge(taskID string) error {
+func (a *Admission) Charge(ref AttemptRef) error {
 	if a == nil {
 		return nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if e, ok := a.ledger[taskID]; ok && e.state == ledgerHeld {
-		return nil // already charged: one charge per task
+	if e, ok := a.ledger[ref]; ok && e.state == ledgerHeld {
+		return nil // already charged: one charge per attempt
 	}
 	if a.budget-a.charged < a.rDefault {
 		return errBudgetExhausted
 	}
-	a.ledger[taskID] = &ledgerEntry{amount: a.rDefault, state: ledgerHeld}
+	a.ledger[ref] = &ledgerEntry{amount: a.rDefault, state: ledgerHeld}
 	a.charged += a.rDefault
 	return nil
 }
 
-// Release returns a task's charge once. Releasing an entry that is already
+// Release returns an attempt's charge once. Releasing an entry that is already
 // released, or was never charged, is refused with errDoubleRelease and alerted.
-func (a *Admission) Release(taskID string) error {
+func (a *Admission) Release(ref AttemptRef) error {
 	if a == nil {
 		return nil
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	e, ok := a.ledger[taskID]
+	e, ok := a.ledger[ref]
 	if !ok || e.state != ledgerHeld {
-		a.raise("double_release", "task "+taskID)
+		a.raise("double_release", "task "+ref.TaskID+" generation "+ref.Generation)
 		return errDoubleRelease
 	}
+	// Released entries are kept (bounded) so a second release is recognised
+	// and alerted instead of looking like a never-charged attempt.
 	e.state = ledgerReleased
 	a.charged -= e.amount
+	a.noteReleased(ref)
 	return nil
 }
 
@@ -301,6 +324,27 @@ func (a *Admission) Charged() int64 {
 	return a.charged
 }
 
+// retire moves a finished batch out of the live map into the bounded
+// tombstone window, so storage stays flat while a repeated poll runs forever.
+func (a *Admission) retire(b *admissionBatch, state batchState) {
+	delete(a.batches, b.id)
+	a.done[b.id] = state
+	a.doneFIFO = append(a.doneFIFO, b.id)
+	if len(a.doneFIFO) > maxBatchTombstones {
+		delete(a.done, a.doneFIFO[0])
+		a.doneFIFO = a.doneFIFO[1:]
+	}
+}
+
+// noteReleased bounds the released ledger entries the same way.
+func (a *Admission) noteReleased(ref AttemptRef) {
+	a.relFIFO = append(a.relFIFO, ref)
+	if len(a.relFIFO) > maxReleasedEntries {
+		delete(a.ledger, a.relFIFO[0])
+		a.relFIFO = a.relFIFO[1:]
+	}
+}
+
 // BatchState reports a batch's state, or "" for an unknown batch.
 func (a *Admission) BatchState(id string) batchState {
 	if a == nil {
@@ -311,5 +355,12 @@ func (a *Admission) BatchState(id string) batchState {
 	if b, ok := a.batches[id]; ok {
 		return b.state
 	}
-	return ""
+	return a.done[id]
+}
+
+// retainedBatches is how many batch records (live plus tombstones) the ledger still holds.
+func (a *Admission) retainedBatches() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return len(a.batches) + len(a.done)
 }

@@ -5838,13 +5838,19 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 		// sees a zero-claims / zero-active window between claim and dispatch.
 		dispatched := 0
 		for i := range tasks {
-			if i >= len(slots) || tasks[i] == nil {
+			if i >= len(slots) || tasks[i].task == nil {
 				break
 			}
-			t := *tasks[i]
+			t := *tasks[i].task
+			ref := attemptRef(&t)
 			claim := d.inflight.begin(t.ID, t.DispatchedAt)
 			if claim == nil {
 				d.logger.Info("task already executing on this daemon; ignoring repeat delivery", "task", t.ID)
+				// The running attempt keeps its own charge. Free this delivery's
+				// charge only when it created one (never the running attempt's).
+				if tasks[i].fresh {
+					_ = d.admission.Release(ref)
+				}
 				continue
 			}
 			slot := slots[dispatched]
@@ -5866,7 +5872,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 				// direct Git operations cannot overlap it.
 				cache.CancelMaintenance()
 			}
-			go func(t Task, slot int, claim *inflightClaim, isNonDMTask bool) {
+			go func(t Task, ref AttemptRef, slot int, claim *inflightClaim, isNonDMTask bool) {
 				defer taskWG.Done()
 				defer d.taskDone()
 				defer func() {
@@ -5875,7 +5881,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 					}
 				}()
 				defer d.inflight.end(t.ID, claim)
-				defer func() { _ = d.admission.Release(t.ID) }()
+				defer func() { _ = d.admission.Release(ref) }()
 				defer func() {
 					// Release local capacity before waking the poller. The task's
 					// terminal callback and local cleanup have both finished at this
@@ -5886,7 +5892,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 					signalPollerWakeup(wakeup)
 				}()
 				d.handleTask(parentCtx, t, slot)
-			}(t, slot, claim, isNonDMTask)
+			}(t, ref, slot, claim, isNonDMTask)
 			dispatched++
 		}
 		d.exitClaim()
@@ -5908,37 +5914,56 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 	}
 }
 
+// attemptRef identifies one delivery of a task for the admission ledger.
+func attemptRef(t *Task) AttemptRef {
+	return AttemptRef{TaskID: t.ID, Generation: t.DispatchedAt}
+}
+
 // acceptClaimedTasks settles the claim batch under the admission mutex and
-// returns the tasks that may run. A reply for an abandoned or settled batch is
-// dropped whole. Tasks accepted under a hold (handing_back) are never returned:
-// they must not prep or start (hold hand-back itself is step 10a). With
-// admission off every task is returned unchanged.
-func (d *Daemon) acceptClaimedTasks(batchID string, tasks []*Task) []*Task {
+// returns the tasks that may run, with whether each holds a fresh charge. A
+// reply for an abandoned, settled or unknown batch is dropped whole. Tasks
+// accepted under a hold (handing_back) are never returned: they must not prep
+// or start (the hand-back itself is step 10a). With admission off every task is
+// returned unchanged.
+func (d *Daemon) acceptClaimedTasks(batchID string, tasks []*Task) []claimedTask {
 	if d.admission == nil {
-		return tasks
+		out := make([]claimedTask, 0, len(tasks))
+		for _, t := range tasks {
+			out = append(out, claimedTask{task: t})
+		}
+		return out
 	}
-	ids := make([]string, 0, len(tasks))
-	byID := make(map[string]*Task, len(tasks))
+	refs := make([]AttemptRef, 0, len(tasks))
+	byRef := make(map[AttemptRef]*Task, len(tasks))
 	for _, t := range tasks {
 		if t == nil {
 			continue
 		}
-		ids = append(ids, t.ID)
-		byID[t.ID] = t
+		r := attemptRef(t)
+		refs = append(refs, r)
+		byRef[r] = t
 	}
-	accepted, dropped := d.admission.Accept(batchID, ids)
+	accepted, dropped := d.admission.Accept(batchID, refs)
 	if dropped {
-		d.logger.Warn("claim reply dropped: batch no longer pending", "batch", batchID, "tasks", len(ids))
+		d.logger.Warn("claim reply dropped: batch no longer pending", "batch", batchID, "tasks", len(refs))
 		return nil
 	}
-	out := make([]*Task, 0, len(accepted))
+	out := make([]claimedTask, 0, len(accepted))
 	for _, a := range accepted {
 		if a.Disposition == dispositionHandingBack {
 			continue
 		}
-		out = append(out, byID[a.TaskID])
+		out = append(out, claimedTask{task: byRef[a.Ref], charged: true, fresh: a.Fresh})
 	}
 	return out
+}
+
+// claimedTask is a claimed task plus its admission charge state. charged is
+// false with admission off.
+type claimedTask struct {
+	task    *Task
+	charged bool
+	fresh   bool // this delivery created its own ledger entry
 }
 
 // nonDMClaimBudget is how many more non-chat tasks this daemon may claim:

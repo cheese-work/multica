@@ -30,6 +30,17 @@ func (l *alertLog) count(kind string) int {
 	return n
 }
 
+// ref and refs build first-generation attempt references for tests.
+func ref(taskID string) AttemptRef { return AttemptRef{TaskID: taskID, Generation: "g1"} }
+
+func refs(taskIDs ...string) []AttemptRef {
+	out := make([]AttemptRef, 0, len(taskIDs))
+	for _, id := range taskIDs {
+		out = append(out, ref(id))
+	}
+	return out
+}
+
 func newTestAdmission(budget, r int64) (*Admission, *alertLog) {
 	al := &alertLog{}
 	return NewAdmission(AdmissionConfig{Budget: budget, RDefault: r, Alert: al.add}, nil), al
@@ -63,7 +74,7 @@ func TestAdmissionLateReplyAfterAbandonmentIsDropped(t *testing.T) {
 	if got := a.Charged(); got != 0 {
 		t.Fatalf("charged after abandon = %d, want 0 (refund n)", got)
 	}
-	acc, dropped := a.Accept(b.ID, []string{"t1", "t2"})
+	acc, dropped := a.Accept(b.ID, refs("t1", "t2"))
 	if !dropped || len(acc) != 0 {
 		t.Fatalf("late reply: dropped=%v accepted=%v, want dropped and none accepted", dropped, acc)
 	}
@@ -75,7 +86,7 @@ func TestAdmissionLateReplyAfterAbandonmentIsDropped(t *testing.T) {
 		t.Fatalf("second abandon refunded again: charged=%d", got)
 	}
 	// An unknown batch is dropped too.
-	if _, dropped := a.Accept("nope", []string{"t9"}); !dropped {
+	if _, dropped := a.Accept("nope", refs("t9")); !dropped {
 		t.Fatalf("reply for an unknown batch must be dropped")
 	}
 }
@@ -84,10 +95,10 @@ func TestAdmissionLateReplyAfterAbandonmentIsDropped(t *testing.T) {
 func TestAdmissionSecondReplyForSettledBatchIsDropped(t *testing.T) {
 	a, _ := newTestAdmission(10, 2)
 	b, _ := a.Reserve(2)
-	if _, dropped := a.Accept(b.ID, []string{"t1", "t2"}); dropped {
+	if _, dropped := a.Accept(b.ID, refs("t1", "t2")); dropped {
 		t.Fatalf("first reply dropped")
 	}
-	acc, dropped := a.Accept(b.ID, []string{"t1", "t2"})
+	acc, dropped := a.Accept(b.ID, refs("t1", "t2"))
 	if !dropped || len(acc) != 0 {
 		t.Fatalf("second reply: dropped=%v accepted=%v", dropped, acc)
 	}
@@ -108,7 +119,7 @@ func TestAdmissionCrashBetweenServerCommitAndAccept(t *testing.T) {
 	if got := fresh.Charged(); got != 0 {
 		t.Fatalf("restarted instance charged = %d, want 0", got)
 	}
-	if _, dropped := fresh.Accept(b.ID, []string{"t1"}); !dropped {
+	if _, dropped := fresh.Accept(b.ID, refs("t1")); !dropped {
 		t.Fatalf("a reply for a batch the new instance never sent must be dropped")
 	}
 	// Re-delivery with a new generation arrives as a new charged claim.
@@ -116,7 +127,7 @@ func TestAdmissionCrashBetweenServerCommitAndAccept(t *testing.T) {
 	if !ok {
 		t.Fatalf("re-delivery claim not allowed")
 	}
-	acc, dropped := fresh.Accept(nb.ID, []string{"t1"})
+	acc, dropped := fresh.Accept(nb.ID, refs("t1"))
 	if dropped || len(acc) != 1 || acc[0].Disposition != dispositionBound {
 		t.Fatalf("re-delivered task: dropped=%v accepted=%v", dropped, acc)
 	}
@@ -128,11 +139,11 @@ func TestAdmissionCrashBetweenServerCommitAndAccept(t *testing.T) {
 // Restart rebuilds held charges from durable attempt records only.
 func TestAdmissionRestartRebuildsHeldChargesFromRecords(t *testing.T) {
 	al := &alertLog{}
-	a := NewAdmission(AdmissionConfig{Budget: 10, RDefault: 2, Alert: al.add}, map[string]int64{"old1": 2, "old2": 2})
+	a := NewAdmission(AdmissionConfig{Budget: 10, RDefault: 2, Alert: al.add}, map[AttemptRef]int64{ref("old1"): 2, ref("old2"): 2})
 	if got := a.Charged(); got != 4 {
 		t.Fatalf("charged = %d, want 4 from two durable records", got)
 	}
-	if err := a.Release("old1"); err != nil {
+	if err := a.Release(ref("old1")); err != nil {
 		t.Fatalf("release of a rebuilt entry: %v", err)
 	}
 	if got := a.Charged(); got != 2 {
@@ -148,7 +159,7 @@ func TestAdmissionPartialBatchRefundsUnused(t *testing.T) {
 	if got := a.Charged(); got != 6 {
 		t.Fatalf("charged = %d, want 6", got)
 	}
-	acc, dropped := a.Accept(b.ID, []string{"t1"})
+	acc, dropped := a.Accept(b.ID, refs("t1"))
 	if dropped || len(acc) != 1 {
 		t.Fatalf("accept: dropped=%v accepted=%v", dropped, acc)
 	}
@@ -158,7 +169,7 @@ func TestAdmissionPartialBatchRefundsUnused(t *testing.T) {
 	if got := a.BatchState(b.ID); got != batchSettled {
 		t.Fatalf("batch state = %q, want settled", got)
 	}
-	if err := a.Release("t1"); err != nil {
+	if err := a.Release(ref("t1")); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if got := a.Charged(); got != 0 {
@@ -183,7 +194,7 @@ func TestAdmissionEmptyReplyRefundsAll(t *testing.T) {
 func TestAdmissionOverdeliveryIsCappedAtN(t *testing.T) {
 	a, al := newTestAdmission(10, 2)
 	b, _ := a.Reserve(1)
-	acc, _ := a.Accept(b.ID, []string{"t1", "t2", "t3"})
+	acc, _ := a.Accept(b.ID, refs("t1", "t2", "t3"))
 	if len(acc) != 1 {
 		t.Fatalf("accepted %d tasks, want 1 (n)", len(acc))
 	}
@@ -212,7 +223,7 @@ func TestAdmissionLastBudgetRaceWithScriptTask(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			scriptWon = a.Charge("script-1") == nil
+			scriptWon = a.Charge(ref("script-1")) == nil
 		}()
 		close(start)
 		wg.Wait()
@@ -227,10 +238,10 @@ func TestAdmissionLastBudgetRaceWithScriptTask(t *testing.T) {
 
 func TestAdmissionChargeRefusedWhenBudgetExhausted(t *testing.T) {
 	a, _ := newTestAdmission(2, 2)
-	if err := a.Charge("s1"); err != nil {
+	if err := a.Charge(ref("s1")); err != nil {
 		t.Fatalf("first charge: %v", err)
 	}
-	if err := a.Charge("s2"); !errors.Is(err, errBudgetExhausted) {
+	if err := a.Charge(ref("s2")); !errors.Is(err, errBudgetExhausted) {
 		t.Fatalf("second charge err = %v, want errBudgetExhausted", err)
 	}
 }
@@ -261,13 +272,13 @@ func TestAdmissionCancelInClaimRefundsOnce(t *testing.T) {
 func TestAdmissionCancelInLaunchReleasesOnce(t *testing.T) {
 	a, al := newTestAdmission(10, 2)
 	b, _ := a.Reserve(1)
-	if _, dropped := a.Accept(b.ID, []string{"t1"}); dropped {
+	if _, dropped := a.Accept(b.ID, refs("t1")); dropped {
 		t.Fatalf("dropped")
 	}
-	if err := a.Release("t1"); err != nil { // cancel before fork
+	if err := a.Release(ref("t1")); err != nil { // cancel before fork
 		t.Fatalf("release: %v", err)
 	}
-	if err := a.Release("t1"); !errors.Is(err, errDoubleRelease) { // terminal path
+	if err := a.Release(ref("t1")); !errors.Is(err, errDoubleRelease) { // terminal path
 		t.Fatalf("second release err = %v, want errDoubleRelease", err)
 	}
 	if got := a.Charged(); got != 0 {
@@ -282,7 +293,7 @@ func TestAdmissionCancelInLaunchReleasesOnce(t *testing.T) {
 // not drive the charge negative.
 func TestAdmissionReleaseUnknownIsRefused(t *testing.T) {
 	a, al := newTestAdmission(10, 2)
-	if err := a.Release("ghost"); !errors.Is(err, errDoubleRelease) {
+	if err := a.Release(ref("ghost")); !errors.Is(err, errDoubleRelease) {
 		t.Fatalf("err = %v, want errDoubleRelease", err)
 	}
 	if got := a.Charged(); got != 0 {
@@ -302,7 +313,7 @@ func TestAdmissionHoldRoutesAcceptToHandingBack(t *testing.T) {
 	if got := a.BatchState(b.ID); got != batchPendingHeld {
 		t.Fatalf("batch state = %q, want pending_held", got)
 	}
-	acc, dropped := a.Accept(b.ID, []string{"t1"})
+	acc, dropped := a.Accept(b.ID, refs("t1"))
 	if dropped || len(acc) != 1 || acc[0].Disposition != dispositionHandingBack {
 		t.Fatalf("accept under hold: dropped=%v accepted=%v", dropped, acc)
 	}
@@ -319,7 +330,7 @@ func TestAdmissionHoldRoutesAcceptToHandingBack(t *testing.T) {
 		t.Fatalf("reserve after hold release")
 	}
 	a.LatchHold(true)
-	acc, _ = a.Accept(b2.ID, []string{"t2"}) // reply with hold latched, batch still pending
+	acc, _ = a.Accept(b2.ID, refs("t2")) // reply with hold latched, batch still pending
 	if len(acc) != 1 || acc[0].Disposition != dispositionHandingBack {
 		t.Fatalf("reply while hold latched: %v", acc)
 	}
@@ -343,14 +354,14 @@ func TestAdmissionConcurrentSoakQuiescesAtZero(t *testing.T) {
 				switch (w + i) % 3 {
 				case 0:
 					a.Abandon(b.ID)
-					a.Accept(b.ID, []string{"late"}) // late reply
+					a.Accept(b.ID, refs("late")) // late reply
 				case 1:
 					a.Accept(b.ID, nil)
 				default:
-					ids := []string{fmt.Sprintf("w%d-%d-a", w, i), fmt.Sprintf("w%d-%d-b", w, i)}
+					ids := refs(fmt.Sprintf("w%d-%d-a", w, i), fmt.Sprintf("w%d-%d-b", w, i))
 					acc, _ := a.Accept(b.ID, ids)
 					for _, t := range acc {
-						_ = a.Release(t.TaskID)
+						_ = a.Release(t.Ref)
 					}
 				}
 				if c := a.Charged(); c > 40 {
@@ -365,5 +376,91 @@ func TestAdmissionConcurrentSoakQuiescesAtZero(t *testing.T) {
 	}
 	if al.count("double_release") != 0 {
 		t.Fatalf("double_release alerts = %d", al.count("double_release"))
+	}
+}
+
+// Settled and abandoned claims must not pile up (empty polls settle a batch
+// every few seconds, forever), while a late or duplicate reply for any of them
+// is still dropped.
+func TestAdmissionBatchStorageIsBounded(t *testing.T) {
+	a, _ := newTestAdmission(10, 2)
+	var firstSettled, firstAbandoned string
+	for i := 0; i < 5000; i++ {
+		b, ok := a.Reserve(1)
+		if !ok {
+			t.Fatalf("iter %d: reserve refused; charge leaked (charged=%d)", i, a.Charged())
+		}
+		if i%2 == 0 {
+			a.Accept(b.ID, nil) // empty poll
+			if firstSettled == "" {
+				firstSettled = b.ID
+			}
+		} else {
+			a.Abandon(b.ID)
+			if firstAbandoned == "" {
+				firstAbandoned = b.ID
+			}
+		}
+	}
+	if got := a.retainedBatches(); got > 512 {
+		t.Fatalf("retained %d batches after 5000 polls, want a bounded number", got)
+	}
+	for _, id := range []string{firstSettled, firstAbandoned} {
+		if acc, dropped := a.Accept(id, refs("late")); !dropped || len(acc) != 0 {
+			t.Fatalf("late reply for old batch %s: dropped=%v accepted=%v", id, dropped, acc)
+		}
+	}
+	if got := a.Charged(); got != 0 {
+		t.Fatalf("charged = %d, want 0", got)
+	}
+}
+
+// A re-delivery has a new claim generation. It must get its own charge: it
+// cannot reuse an earlier attempt's unreconciled charge, and releasing it must
+// not free that earlier charge.
+func TestAdmissionRedeliveryHasItsOwnCharge(t *testing.T) {
+	a, al := newTestAdmission(10, 2)
+	first := AttemptRef{TaskID: "t1", Generation: "gen-1"}
+	again := AttemptRef{TaskID: "t1", Generation: "gen-2"}
+
+	b1, _ := a.Reserve(1)
+	acc, _ := a.Accept(b1.ID, []AttemptRef{first})
+	if len(acc) != 1 || !acc[0].Fresh {
+		t.Fatalf("first delivery: %v", acc)
+	}
+	b2, _ := a.Reserve(1)
+	acc, _ = a.Accept(b2.ID, []AttemptRef{again}) // earlier attempt not torn down yet
+	if len(acc) != 1 || !acc[0].Fresh {
+		t.Fatalf("re-delivery must be a fresh charge: %v", acc)
+	}
+	if got := a.Charged(); got != 4 {
+		t.Fatalf("charged = %d, want 4 (one R per attempt)", got)
+	}
+	if err := a.Release(again); err != nil {
+		t.Fatalf("release re-delivery: %v", err)
+	}
+	if got := a.Charged(); got != 2 {
+		t.Fatalf("charged = %d, want 2: the earlier attempt keeps its charge", got)
+	}
+	if err := a.Release(first); err != nil {
+		t.Fatalf("release first attempt: %v", err)
+	}
+	if got := a.Charged(); got != 0 || al.count("double_release") != 0 {
+		t.Fatalf("charged = %d, double_release = %d", got, al.count("double_release"))
+	}
+}
+
+// The same attempt (same generation) delivered twice is one charge.
+func TestAdmissionSameAttemptDeliveredTwiceChargesOnce(t *testing.T) {
+	a, _ := newTestAdmission(10, 2)
+	b1, _ := a.Reserve(1)
+	a.Accept(b1.ID, refs("t1"))
+	b2, _ := a.Reserve(1)
+	acc, _ := a.Accept(b2.ID, refs("t1"))
+	if len(acc) != 1 || acc[0].Fresh {
+		t.Fatalf("second delivery of one attempt: %v, want not fresh", acc)
+	}
+	if got := a.Charged(); got != 2 {
+		t.Fatalf("charged = %d, want 2", got)
 	}
 }

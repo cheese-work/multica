@@ -73,9 +73,13 @@ func admissionWaitFor(t *testing.T, what string, cond func() bool) {
 }
 
 func admissionTaskJSON(ids ...string) string {
+	return admissionTaskGenJSON("gen-1", ids...)
+}
+
+func admissionTaskGenJSON(gen string, ids ...string) string {
 	var parts []string
 	for _, id := range ids {
-		parts = append(parts, fmt.Sprintf(`{"id":%q,"runtime_id":"rt-1","issue_id":"i-%s","dispatched_at":"gen-1","agent":{"name":"a"}}`, id, id))
+		parts = append(parts, fmt.Sprintf(`{"id":%q,"runtime_id":"rt-1","issue_id":"i-%s","dispatched_at":%q,"agent":{"name":"a"}}`, id, id, gen))
 	}
 	return `{"tasks":[` + strings.Join(parts, ",") + `]}`
 }
@@ -121,7 +125,7 @@ func TestPollerChargesAtClaimAndReleasesWhenTaskEnds(t *testing.T) {
 
 // Budget fully charged: the poller sends no claim at all.
 func TestPollerSendsNoClaimWhenBudgetExhausted(t *testing.T) {
-	a := NewAdmission(AdmissionConfig{Budget: 2, RDefault: 2}, map[string]int64{"old": 2})
+	a := NewAdmission(AdmissionConfig{Budget: 2, RDefault: 2}, map[AttemptRef]int64{ref("old"): 2})
 	f, stop := newAdmissionPollerFixture(t, a, func(call int64, w http.ResponseWriter) {
 		w.Write([]byte(`{"tasks":[]}`))
 	}, func(ctx context.Context, task Task, provider string, slot int, log *slog.Logger) (TaskResult, error) {
@@ -182,5 +186,46 @@ func TestPollerFlagOffClaimsAllFreeSlots(t *testing.T) {
 	stop()
 	if got := f.maxReq.Load(); got != 4 {
 		t.Fatalf("max_tasks = %d, want 4", got)
+	}
+}
+
+// A re-delivery (new generation) of a task that is already running is ignored,
+// so it must not keep a charge of its own, and the running attempt's charge is
+// released exactly once when it ends.
+func TestPollerIgnoredRedeliveryHoldsNoCharge(t *testing.T) {
+	a, al := newTestAdmission(8, 2)
+	release := make(chan struct{})
+	var started atomic.Int64
+	f, stop := newAdmissionPollerFixture(t, a, func(call int64, w http.ResponseWriter) {
+		switch call {
+		case 1:
+			w.Write([]byte(admissionTaskGenJSON("gen-1", "t1")))
+		case 2:
+			w.Write([]byte(admissionTaskGenJSON("gen-2", "t1")))
+		default:
+			w.Write([]byte(`{"tasks":[]}`))
+		}
+	}, func(ctx context.Context, task Task, provider string, slot int, log *slog.Logger) (TaskResult, error) {
+		started.Add(1)
+		<-release
+		return TaskResult{Status: "completed"}, nil
+	})
+	defer stop()
+	defer func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	}()
+
+	admissionWaitFor(t, "redelivery claim", func() bool { return f.claims.Load() >= 3 })
+	if got := a.Charged(); got != 2 {
+		t.Fatalf("charged = %d, want 2: only the running attempt holds a charge", got)
+	}
+	close(release)
+	admissionWaitFor(t, "release", func() bool { return a.Charged() == 0 })
+	if started.Load() != 1 || al.count("double_release") != 0 {
+		t.Fatalf("started=%d double_release=%d", started.Load(), al.count("double_release"))
 	}
 }
