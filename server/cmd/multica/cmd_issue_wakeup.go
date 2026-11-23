@@ -58,7 +58,6 @@ func newIssueWakeupCommand() *cobra.Command {
 			c.Long += " Give waits an end with --expires-in or --expires-at; --on-timeout wake runs the target once if the deadline passes first."
 			c.Long += " For task events, use --task-id for one run or --filter-agent-id for its agent. For comment/issue/reaction/attachment changes, use --filter-actor-type member|agent with --filter-actor-id. To wait for a person to comment, use --event comment.created --filter-actor-type member --filter-actor-id USER_ID. When an agent registers a rule a member can trigger (a comment, issue, reaction or attachment event with no actor filter or a member filter), bind it with --decision REQUEST_ID, or use --purpose observe if no person is awaited, or use --filter-actor-type agent without an ID to watch agents only. Actor filters identify who made the change, not the original author of an edited comment. Without a source filter, all matching events on this issue can wake the target."
 			c.Flags().String("agent-id", "", "Agent to wake (defaults to authenticated agent)")
-			c.Flags().StringArray("finding", nil, "Review finding as <P0-P3>@<category>[@revision]:<summary>; repeatable. A reviewer's handoff wakeup in agent_review is a changes-requested verdict and needs at least one P0 or P1; from round 2 a new P0/P1 needs @revision")
 			c.Flags().String("instruction", "", "Instruction for the next run")
 			c.Flags().String("instruction-file", "", "Read instruction from a UTF-8 file")
 			c.Flags().String("kind", "event", "event, at, every or cron")
@@ -182,13 +181,6 @@ func runIssueWakeup(cmd *cobra.Command, args []string, action string) error {
 			return e
 		}
 		body["instruction"] = instruction
-		findings, e := findingFlags(cmd)
-		if e != nil {
-			return e
-		}
-		if len(findings) > 0 {
-			body["review_findings"] = findings
-		}
 		ev, _ := cmd.Flags().GetStringSlice("event")
 		if len(ev) > 0 {
 			body["event_types"] = ev

@@ -125,15 +125,7 @@ multica workflow webhook list <workflow-id>                    # never shows sec
   review. A reviewer tags every finding: `multica issue status <id> <status>
   --finding "P1@missing_rollback:<summary>"`. From round 2 on, a new P0 or P1
   that round 1 did not list needs `@revision` (the revision introduced it), or
-  the server refuses the verdict (`review_round_new_blocker`). A reviewer who
-  hands CHANGES to the author with a wakeup (the issue stays in agent_review)
-  passes the same findings: `multica issue wakeup create <id> ... --finding
-  "P1@missing_rollback:<summary>"`; the server applies the same rules and
-  records them. Workspace setting `review_findings_wakeup.mode` sets what a handoff
-  without `--finding` gets: `warn` (default) wakes the author and returns a
-  `review_findings_missing` warning, `block` refuses it
-  (`review_verdict_findings_required`), `off` accepts it silently. Findings that
-  are sent are always checked. Read-only.
+  the server refuses the verdict (`review_round_new_blocker`). Read-only.
 - `multica issue workflow escalate <id> --reason "<why>" [--output json]` moves
   an issue that follows Quick back to the full workflow it followed before.
   `--reason` is required; `--reason rollback` needs no Estimate. The server

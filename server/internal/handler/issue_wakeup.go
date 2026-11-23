@@ -212,18 +212,13 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, errRecoveryCaused)
 		return
 	}
-	// review_findings come with a reviewer's CHANGES handoff to the author.
-	var req struct {
-		service.WakeupInput
-		ReviewFindings []ReviewFinding `json:"review_findings,omitempty"`
-	}
+	var in service.WakeupInput
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := dec.Decode(&in); err != nil {
 		writeError(w, 400, "invalid wakeup body")
 		return
 	}
-	in := req.WakeupInput
 	actorType, actorID := h.resolveActor(r, requestUserID(r), uuidToString(issue.WorkspaceID))
 	if in.AgentID == "" && actorType == "agent" {
 		in.AgentID = actorID
@@ -250,23 +245,8 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	source := h.wakeupSourceTaskID(r)
 	var reviewRun db.AgentTaskQueue
 	handoff := false
-	handoffMode := "warn"
 	if !existingID.Valid && actorType == "agent" {
 		if reviewRun, handoff = h.reviewHandoffWakeup(r.Context(), issue, source, in); handoff {
-			// Rollout: workspace setting review_findings_wakeup decides what a
-			// handoff without findings gets: mode warn (default) accepts it with a
-			// warning, block refuses it, off accepts it silently. Findings that are
-			// sent are always checked.
-			handoffMode = reviewFindingsWakeupMode(r.Context(), h.Queries, issue.WorkspaceID)
-			if len(req.ReviewFindings) > 0 || handoffMode == "block" {
-				prID, _ := runReviewHead(&reviewRun)
-				if err := checkChangesFindings(r.Context(), h.Queries, issue.ID, prID, req.ReviewFindings); err != nil {
-					if !writeReviewLoopError(w, err) {
-						writeError(w, http.StatusInternalServerError, "could not check the review findings")
-					}
-					return
-				}
-			}
 			capped, err := h.capReviewHandoff(r.Context(), issue, reviewRun)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "could not count the review round")
@@ -284,22 +264,14 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if handoff {
-		h.recordReviewHandoff(r.Context(), issue, reviewRun, result, req.ReviewFindings)
+		h.recordReviewHandoff(r.Context(), issue, reviewRun, result)
 	}
 	status := http.StatusCreated
 	if existingID.Valid {
 		status = http.StatusOK
 	}
-	out := h.wakeupWithWarnings(r.Context(), result)
-	if handoff && len(req.ReviewFindings) == 0 && handoffMode == "warn" {
-		out.Warnings = append(out.Warnings, warnReviewFindingsMissing)
-	}
-	writeJSON(w, status, out)
+	writeJSON(w, status, h.wakeupWithWarnings(r.Context(), result))
 }
-
-// warnReviewFindingsMissing tells a reviewer that handed CHANGES to the author
-// without findings that the round was not categorized or checked.
-const warnReviewFindingsMissing = "review_findings_missing: pass --finding \"P1@<category>:<summary>\" so the round is categorized and the later-round rule applies; set workspace setting review_findings_wakeup.mode to block to require it"
 
 func (h *Handler) DisableIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
