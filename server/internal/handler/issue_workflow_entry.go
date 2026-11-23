@@ -48,6 +48,9 @@ type workflowHandoff struct {
 	// kept is true when the issue's sticky assignee for the step won over the
 	// step handler (CHE-5490).
 	kept bool
+	// signerMissing is set when the step landed in blocked for want of a PASS
+	// signer (CHE-9318): the reason to record with the move.
+	signerMissing string
 }
 
 // errHandoffAssigneeNotApplicable refuses a handoff_assignee on a write that
@@ -192,13 +195,22 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	if step.Handler.Type == issueworkflow.HandlerReviewer {
 		// The pick needs the issue's authors, so it is not ResolveHandler's.
 		var picked pgtype.UUID
-		picked, ok, pickRefusal = h.pickReviewer(ctx, q, prev, guard)
+		picked, ok, pickRefusal = h.pickReviewer(ctx, q, prev.WorkspaceID, prev.Title, guard)
 		if ok {
 			assigneeType, assigneeID = issueworkflow.HandlerAgent, picked
 		}
 	} else {
-		humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID, subjectOf(prev))
-		if err != nil {
+		subject := subjectOf(prev)
+		if explicitAgentMove(prev.Status, pgtype.Text{String: entering, Valid: true}, caller) && caller.run != nil &&
+			verdictOf(def, prev.Status, entering, caller.findings) == "PASS" {
+			subject.PassSigner = caller.run.AgentID
+		}
+		humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID, subject)
+		var noSigner *passSignerError
+		if errors.As(err, &noSigner) && caller.handoffAssignee == nil {
+			return h.recoverNoPassSigner(ctx, q, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller, def, entering, noSigner)
+		}
+		if err != nil && !errors.As(err, &noSigner) {
 			return nil, err
 		}
 		assigneeType, assigneeID, ok = issueworkflow.ResolveHandler(step, project, prev.CreatorType, prev.CreatorID, humans)
@@ -241,6 +253,36 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	params.AssigneeType = pgtype.Text{String: assignee.Type, Valid: true}
 	params.AssigneeID = assignee.ID
 	return &workflowHandoff{def: *def, step: step, project: project, stepHandler: stepHandler, override: overridden, kept: kept}, nil
+}
+
+// recoverNoPassSigner is the blocked recovery path of a same_as step on
+// agent_review that has no PASS signer for the exact head (CHE-9318): the move
+// lands in blocked instead, with an activity row that names why, and hands off
+// as blocked does. A workflow without a blocked step refuses the move.
+func (h *Handler) recoverNoPassSigner(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller, def *issueworkflow.Definition, entering string, cause *passSignerError) (*workflowHandoff, error) {
+	if entering == "blocked" || !def.Has("blocked") {
+		return nil, cause
+	}
+	params.Status = pgtype.Text{String: "blocked", Valid: true}
+	hand, err := h.decideWorkflowHandoff(ctx, q, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
+	if hand != nil {
+		hand.signerMissing = cause.Error() + "; moved to blocked instead of " + entering
+	}
+	return hand, err
+}
+
+// recordSignerMissing keeps why a same_as step on agent_review landed in
+// blocked, in the transaction that moves the issue.
+func (w *workflowWrite) recordSignerMissing(ctx context.Context, q *db.Queries, moved db.Issue) error {
+	if w == nil || w.handoff == nil || w.handoff.signerMissing == "" {
+		return nil
+	}
+	details, _ := json.Marshal(map[string]string{"message": w.handoff.signerMissing, "from": w.prev.Status, "to": moved.Status})
+	_, err := q.CreateActivity(ctx, db.CreateActivityParams{
+		ID: dbid.NewV7(), WorkspaceID: moved.WorkspaceID, IssueID: moved.ID, ActorType: strToText("system"),
+		Action: "review_signer_missing", Details: details,
+	})
+	return err
 }
 
 // keepsOtherAssignee reports whether a step flagged KeepOtherAssignee leaves

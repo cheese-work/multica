@@ -3,18 +3,22 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/capabilityrouting"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // The author handler (CHE-7677) resolves an issue's author in this order: the
-// sticky row under issueworkflow.AuthorStepKey, then capability_routing for the
-// issue's type, then nobody. The first resolution is written back as the
+// sticky row under issueworkflow.AuthorStepKey, then the agent that already
+// worked the issue as its author, then capability_routing for the issue's type
+// (else its "default" entry, for an untyped or unlisted title), then nobody. The first resolution is written back as the
 // sticky row, so a later change to the table keeps the author; a person who
 // reassigns the issue while it sits in an author step replaces it.
 
@@ -29,6 +33,9 @@ type workflowSubject struct {
 	Status                string
 	AssigneeType          string
 	AssigneeID            pgtype.UUID
+	// PassSigner is the agent whose write is itself the PASS verdict for the
+	// move being decided; invalid otherwise.
+	PassSigner pgtype.UUID
 }
 
 func subjectOf(issue db.Issue) workflowSubject {
@@ -60,17 +67,23 @@ func authorHumans(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, s
 			return issueworkflow.Humans{AuthorType: sticky.Type, AuthorID: sticky.ID}, nil
 		}
 	}
-	typ, ok := issueworkflow.TitleType(subject.Title)
-	if !ok {
-		return issueworkflow.Humans{}, nil
+	if subject.ID.Valid {
+		executor, err := liveExecutor(ctx, q, workspaceID, subject.ID)
+		if err != nil {
+			return issueworkflow.Humans{}, err
+		}
+		if executor.Valid {
+			return issueworkflow.Humans{AuthorType: issueworkflow.HandlerAgent, AuthorID: executor}, nil
+		}
 	}
+	typ, _ := issueworkflow.TitleType(subject.Title)
 	row, err := q.GetWorkspace(ctx, workspaceID)
 	if err != nil {
 		return issueworkflow.Humans{}, err
 	}
 	var settings map[string]any
 	_ = json.Unmarshal(row.Settings, &settings)
-	entry, ok := capabilityrouting.FromSettings(settings)[typ]
+	entry, ok := capabilityrouting.FromSettings(settings).For(typ)
 	if !ok {
 		return issueworkflow.Humans{}, nil
 	}
@@ -79,6 +92,32 @@ func authorHumans(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, s
 		return issueworkflow.Humans{}, nil
 	}
 	return issueworkflow.Humans{AuthorType: issueworkflow.HandlerAgent, AuthorID: id}, nil
+}
+
+// liveExecutor is the agent that most recently worked an issue as its author,
+// from the task evidence, when it can still take work. An issue already in
+// flight keeps it when it has no sticky author row (CHE-9318). Invalid when
+// there is none.
+func liveExecutor(ctx context.Context, q *db.Queries, workspaceID, issueID pgtype.UUID) (pgtype.UUID, error) {
+	authors, err := service.IssueAuthors(ctx, q, issueID, nil)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	for i := len(authors) - 1; i >= 0; i-- {
+		id, err := util.ParseUUID(authors[i].AgentID)
+		if err != nil {
+			continue
+		}
+		agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: id, WorkspaceID: workspaceID})
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && agent.ArchivedAt.Valid) {
+			continue
+		}
+		if err != nil {
+			return pgtype.UUID{}, err
+		}
+		return id, nil
+	}
+	return pgtype.UUID{}, nil
 }
 
 // recordAuthor keeps the issue's author in the transaction that moves it: the
