@@ -37,8 +37,16 @@ type signingKey struct {
 
 // Keyring holds the signing keys. It is immutable after construction.
 type Keyring struct {
-	keys []signingKey // keys[0] signs
-	jwks []byte
+	keys  []signingKey // keys[0] signs
+	jwks  []byte
+	allow AudienceSet // audiences this keyring may sign; empty signs nothing
+}
+
+// WithAudiences returns a copy of kr that signs only the given audiences.
+func (kr *Keyring) WithAudiences(allow AudienceSet) *Keyring {
+	c := *kr
+	c.allow = allow
+	return &c
 }
 
 // KeyringFromEnv reads SigningKeysEnv through getenv. A missing secret is an error: the caller
@@ -119,7 +127,7 @@ func (kr *Keyring) JWKSHandler() http.Handler {
 // `iss` and the `kid` header. It writes each claim by name, so `decision_id` is present and null
 // for class S0. The token carries the caller's `aud`, which must name a host.
 func (kr *Keyring) Sign(c Claims) (string, error) {
-	if err := validateClaims(c); err != nil {
+	if err := validateClaims(c, kr.allow); err != nil {
 		return "", err
 	}
 	var decision, task, issue *string
@@ -151,9 +159,10 @@ var _ Signer = (*Keyring)(nil)
 // validateClaims refuses what no gateway would accept: an `aud` other than the two host
 // audiences (each gateway accepts only its own), an empty required claim, a lifetime over
 // TokenTTL, and a class that is not mintable. Class S1 is deferred and never signed.
-func validateClaims(c Claims) error {
-	if c.Aud != Aud(HostC00) && c.Aud != Aud(HostX99) {
-		return fmt.Errorf("browserlease: aud %q is not %s or %s", c.Aud, Aud(HostC00), Aud(HostX99))
+func validateClaims(c Claims, allow AudienceSet) error {
+	// Exact membership: an empty allowlist signs nothing, and no prefix or case variant matches.
+	if !allow.Has(c.Aud) {
+		return fmt.Errorf("browserlease: aud %q is not on the allowlist", c.Aud)
 	}
 	switch {
 	case c.Sub == "", c.LeaseID == "", c.UserID == "", c.Profile == "", c.Instance == "":
