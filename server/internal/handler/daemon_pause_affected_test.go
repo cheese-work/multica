@@ -2,12 +2,16 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -604,4 +608,147 @@ func TestAffectedMachines_SwitchUnsetMeansNoDismissalFieldsAndPost409(t *testing
 	if n := bannerRowCount(t, daemonID); n != 0 {
 		t.Fatalf("%d rows stored while the switch is unset", n)
 	}
+}
+
+// holdBannerHook installs a hook that blocks its first call until release is closed.
+func holdBannerHook(t *testing.T, hook *func()) (reached <-chan struct{}, release func()) {
+	t.Helper()
+	var calls atomic.Int32
+	reachedCh, releaseCh := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(releaseCh) }) }
+	prev := *hook
+	*hook = func() {
+		if calls.Add(1) == 1 {
+			close(reachedCh)
+			<-releaseCh
+		}
+	}
+	t.Cleanup(func() { release(); *hook = prev })
+	return reachedCh, release
+}
+
+type bannerAsyncResult struct {
+	code int
+	body map[string][]string
+}
+
+// postBannerDismissAsync sends a dismiss from a goroutine and reports its result on the channel.
+func postBannerDismissAsync(userID string, ids ...string) <-chan bannerAsyncResult {
+	out := make(chan bannerAsyncResult, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		testHandler.DismissAffectedMachines(w, newRequestAs(userID, http.MethodPost, "/api/runtimes/affected/dismiss", map[string]any{"event_ids": ids}))
+		res := bannerAsyncResult{code: w.Code, body: map[string][]string{}}
+		_ = json.Unmarshal(w.Body.Bytes(), &res.body)
+		out <- res
+	}()
+	return out
+}
+
+func waitBannerResult(t *testing.T, what string, ch <-chan bannerAsyncResult) bannerAsyncResult {
+	t.Helper()
+	select {
+	case res := <-ch:
+		if res.code != http.StatusOK {
+			t.Fatalf("%s answered %d", what, res.code)
+		}
+		return res
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s did not finish within 5s", what)
+	}
+	return bannerAsyncResult{}
+}
+
+// waitBannerDoneOrLocked waits until the request finished (no lock in the code path)
+// or is queued on an advisory lock of this database.
+func waitBannerDoneOrLocked(t *testing.T, what string, ch <-chan bannerAsyncResult) (bannerAsyncResult, bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case res := <-ch:
+			return res, true
+		default:
+		}
+		waiting := dbfx.Count(t, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`)
+		if waiting > 0 {
+			return bannerAsyncResult{}, false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("%s neither finished nor queued on the advisory lock within 5s", what)
+	return bannerAsyncResult{}, false
+}
+
+// T10 (FP-01): a dismiss of an old offline period that is held across a
+// reconnect must not replace a newer period's dismissal made on another device.
+func TestAffectedMachines_StaleDismissDoesNotReplaceNewPeriod(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	setBannerCapability(t, "epoch-v1")
+
+	startNewPeriod := func(t *testing.T, runtimeID, daemonID, old string) string {
+		t.Helper()
+		setRuntimeOnline(t, runtimeID, 1800)
+		setRuntimeOffline(t, runtimeID, 600)
+		next := bannerRowOf(t, testUserID, daemonID).EventID
+		if next == old {
+			t.Fatalf("event id %q did not change for the new offline period", next)
+		}
+		return next
+	}
+
+	t.Run("device A is held after validation and before the write", func(t *testing.T) {
+		const daemonID = "dismiss-t10a"
+		runtimeID := seedOfflineMachine(t, daemonID, 3600)
+		oldID := bannerRowOf(t, testUserID, daemonID).EventID
+		reached, release := holdBannerHook(t, &bannerDismissAfterValidateHook)
+
+		a := postBannerDismissAsync(testUserID, oldID)
+		select {
+		case <-reached:
+		case <-time.After(5 * time.Second):
+			t.Fatal("device A never reached the hold point")
+		}
+		newID := startNewPeriod(t, runtimeID, daemonID, oldID)
+		b := postBannerDismissAsync(testUserID, newID)
+		resB, finished := waitBannerDoneOrLocked(t, "device B", b)
+		release()
+		waitBannerResult(t, "device A", a)
+		if !finished {
+			resB = waitBannerResult(t, "device B", b)
+		}
+		if len(resB.body["dismissed"]) != 1 {
+			t.Fatalf("device B response = %v, want its id dismissed", resB.body)
+		}
+		if !isDismissed(t, testUserID, daemonID) {
+			t.Fatal("the new period is not dismissed: device A's old-period write replaced device B's")
+		}
+	})
+
+	t.Run("device A is held before the lock and finds a newer period", func(t *testing.T) {
+		const daemonID = "dismiss-t10b"
+		runtimeID := seedOfflineMachine(t, daemonID, 3600)
+		oldID := bannerRowOf(t, testUserID, daemonID).EventID
+		reached, release := holdBannerHook(t, &bannerDismissBeforeLockHook)
+
+		a := postBannerDismissAsync(testUserID, oldID)
+		select {
+		case <-reached:
+		case <-time.After(5 * time.Second):
+			t.Fatal("device A never reached the hold point")
+		}
+		newID := startNewPeriod(t, runtimeID, daemonID, oldID)
+		waitBannerResult(t, "device B", postBannerDismissAsync(testUserID, newID))
+		release()
+		resA := waitBannerResult(t, "device A", a)
+		if len(resA.body["dismissed"]) != 0 || len(resA.body["ignored"]) != 1 || resA.body["ignored"][0] != oldID {
+			t.Fatalf("device A response = %v, want the old id ignored", resA.body)
+		}
+		if !isDismissed(t, testUserID, daemonID) {
+			t.Fatal("the new period is not dismissed after the stale request ran")
+		}
+	})
 }
