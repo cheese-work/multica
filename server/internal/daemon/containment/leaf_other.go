@@ -13,11 +13,12 @@ type Options struct {
 // Leaf does not exist off Linux.
 type Leaf struct{}
 
-func Create(Options) (*Leaf, error)  { return nil, ErrUnsupported }
-func (*Leaf) Record() Record         { return Record{} }
-func (*Leaf) Attach(*exec.Cmd) error { return ErrUnsupported }
-func (*Leaf) Wrap(*exec.Cmd) error   { return ErrUnsupported }
-func (*Leaf) End() error             { return nil }
-func (*Leaf) EventsFile() string     { return "" }
-func DefaultRoot() (string, error)   { return "", ErrUnsupported }
-func ReadBootID() (string, error)    { return "", ErrUnsupported }
+func Create(Options) (*Leaf, error)    { return nil, ErrUnsupported }
+func (*Leaf) Record() Record           { return Record{} }
+func (*Leaf) Attach(*exec.Cmd) error   { return ErrUnsupported }
+func (*Leaf) Wrap(*exec.Cmd) error     { return ErrUnsupported }
+func (*Leaf) RecordClaim(string) error { return ErrUnsupported }
+func (*Leaf) End() error               { return nil }
+func (*Leaf) EventsFile() string       { return "" }
+func DefaultRoot() (string, error)     { return "", ErrUnsupported }
+func ReadBootID() (string, error)      { return "", ErrUnsupported }

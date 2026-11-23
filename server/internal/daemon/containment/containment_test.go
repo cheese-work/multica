@@ -307,3 +307,39 @@ func TestCreateGenerationCountsEarlierAttemptsOfTheTask(t *testing.T) {
 		t.Fatalf("other task generation = %d, want 1", g)
 	}
 }
+
+// The claim can be refreshed after the leaf exists (a duplicate delivery during
+// prep). RecordClaim rewrites the durable record, fsynced, before it returns.
+func TestRecordClaimRewritesTheDurableRecord(t *testing.T) {
+	o := testOptions(t)
+	l, err := Create(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.End()
+	if err := l.RecordClaim("gen-2"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadRecord(o.StateDir, l.Record().Attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClaimGeneration != "gen-2" || got.CgroupID != l.Record().CgroupID || got.State != StateLeafCreated {
+		t.Fatalf("record after refresh = %+v", got)
+	}
+	if l.Record().ClaimGeneration != "gen-2" {
+		t.Fatalf("in-memory record = %q, want gen-2", l.Record().ClaimGeneration)
+	}
+	if err := l.RecordClaim(""); err == nil {
+		t.Fatal("an empty claim generation was accepted")
+	}
+	if err := l.End(); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.RecordClaim("gen-3"); err == nil {
+		t.Fatal("RecordClaim on an ended leaf must fail")
+	}
+	if ended, _ := ReadRecord(o.StateDir, l.Record().Attempt); ended.State != StateEnded || ended.ClaimGeneration != "gen-2" {
+		t.Fatalf("ended record = %+v", ended)
+	}
+}

@@ -4,13 +4,18 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/containment"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
@@ -228,5 +233,68 @@ func TestParseContainmentCharge(t *testing.T) {
 		if got != c.want || (err != nil) != c.wantErr {
 			t.Errorf("parseContainmentCharge(%q, %v) = %d, %v; want %d, err %v", c.in, c.on, got, err, c.want, c.wantErr)
 		}
+	}
+}
+
+// A duplicate delivery can refresh the claim while the task is preparing, and a
+// rejected start can refresh it again. The durable record must hold, before each
+// StartTask, exactly the claim that StartTask presents.
+func TestContainmentRecordMatchesTheClaimStartTaskPresents(t *testing.T) {
+	var d *Daemon
+	var run *containmentRun
+	var presented, recorded []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			DispatchedAt string `json:"dispatched_at"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		rec, err := containment.ReadRecord(d.cfg.ContainmentStateDir, run.leaf.Record().Attempt)
+		if err != nil {
+			t.Errorf("read record: %v", err)
+		}
+		presented = append(presented, body.DispatchedAt)
+		recorded = append(recorded, rec.ClaimGeneration)
+		if len(presented) == 1 {
+			d.inflight.begin(containmentTestTask, "gen-3") // refreshed while this start is in flight
+			http.Error(w, `{"error":"task claim is stale"}`, http.StatusConflict)
+			return
+		}
+		w.Write([]byte(`{}`))
+	}))
+	defer srv.Close()
+
+	base := t.TempDir()
+	d = New(Config{
+		ServerBaseURL: srv.URL, HeartbeatInterval: time.Hour,
+		Containment: true, ContainmentRoot: filepath.Join(base, "runs"),
+		ContainmentStateDir: filepath.Join(base, "state"), ContainmentCharge: 2 << 30,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	task := containmentTask()
+	task.RuntimeID, task.StartClaimSupported = "rt-1", true
+	d.inflight.begin(task.ID, task.DispatchedAt)
+	var err error
+	if run, _, err = d.beginContainment(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	defer run.End(slog.Default())
+	d.inflight.begin(task.ID, "gen-2") // duplicate delivery during prep, after the leaf exists
+
+	if _, err := d.startTaskRecordingClaim(context.Background(), task, run.claimRecorder()); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"gen-2", "gen-3"}
+	if len(presented) != 2 || presented[0] != want[0] || presented[1] != want[1] {
+		t.Fatalf("StartTask presented %v, want %v", presented, want)
+	}
+	if recorded[0] != presented[0] || recorded[1] != presented[1] {
+		t.Fatalf("durable record held %v when StartTask presented %v", recorded, presented)
+	}
+}
+
+// Flag off: no recorder, so the start path is today's.
+func TestContainmentClaimRecorderIsNilWhenOff(t *testing.T) {
+	var run *containmentRun
+	if run.claimRecorder() != nil {
+		t.Fatal("flag off produced a claim recorder")
 	}
 }

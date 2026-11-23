@@ -9114,7 +9114,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if supplementSupported {
 		taskCapabilities = append(taskCapabilities, taskSupplementCapabilities(task)...)
 	}
-	negotiation, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
+	negotiation, err := d.startTaskRecordingClaim(prepareCtx, task, contain.claimRecorder(), taskCapabilities...)
 	if err != nil {
 		stopPrepareLease()
 		return TaskResult{}, fmt.Errorf("start task failed: %w", err)

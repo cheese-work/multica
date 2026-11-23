@@ -121,6 +121,15 @@ func (r *containmentRun) frontShims(agentEnv map[string]string, taskTempDir stri
 	return nil
 }
 
+// claimRecorder persists a refreshed claim generation to the attempt record. It
+// is nil when the flag is off, which leaves the start path as it is today.
+func (r *containmentRun) claimRecorder() func(string) error {
+	if r == nil {
+		return nil
+	}
+	return r.leaf.RecordClaim
+}
+
 // End releases the leaf. Safe on nil and on repeat.
 func (r *containmentRun) End(log *slog.Logger) {
 	if r == nil {

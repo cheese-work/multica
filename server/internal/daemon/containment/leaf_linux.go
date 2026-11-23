@@ -167,6 +167,30 @@ func (l *Leaf) Attach(cmd *exec.Cmd) error {
 	return nil
 }
 
+// RecordClaim rewrites the durable record with a refreshed claim generation (a
+// duplicate delivery during prep) before it returns, so the record holds the
+// claim the next StartTask presents.
+func (l *Leaf) RecordClaim(generation string) error {
+	if generation == "" {
+		return errors.New("containment: claim generation is required")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.dir == nil {
+		return errors.New("containment: leaf already ended")
+	}
+	if l.rec.ClaimGeneration == generation {
+		return nil
+	}
+	next := l.rec
+	next.ClaimGeneration = generation
+	if err := WriteRecord(filepath.Dir(l.events), next); err != nil {
+		return err
+	}
+	l.rec = next
+	return nil
+}
+
 // Wrap is agent.LaunchHook: the agent CLI starts in the leaf.
 func (l *Leaf) Wrap(cmd *exec.Cmd) error { return l.Attach(cmd) }
 
