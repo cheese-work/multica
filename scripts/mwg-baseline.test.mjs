@@ -101,6 +101,13 @@ test("namesPr takes the target from the verdict header, not from a later mention
   assert.equal(namesPr("Verdict: PASS\nHead SHA: " + "5".repeat(40) + "\nHead SHA: " + "6".repeat(40), u111), false, "two heads is ambiguous");
 });
 
+test("namesPr reads a head labeled Head SHA, Reviewed head or Candidate", () => {
+  const unit = { number: 111, headOid: "5".repeat(40) };
+  assert.equal(namesPr("**Verdict:** PASS\nReviewer: x99-codex-terra\nCandidate: " + "5".repeat(40), unit), true);
+  assert.equal(namesPr("Verdict: PASS\nReviewed head: " + "5".repeat(40), unit), true);
+  assert.equal(namesPr("Verdict: PASS\nCandidate: " + "6".repeat(40), unit), false, "the head moved after the review");
+});
+
 test("isSignedVerdict needs a Reviewer line in the header", () => {
   assert.equal(isSignedVerdict("Verdict: PASS\nHead SHA: 5555555. Reviewer: x99-codex-terra (OpenAI)."), true);
   assert.equal(isSignedVerdict("**Verdict:** CHANGES\n**Reviewer:** x99-codex-terra"), true);
