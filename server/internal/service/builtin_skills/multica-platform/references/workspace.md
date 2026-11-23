@@ -100,6 +100,16 @@ workspace setting `capability_routing`: per issue type, the author agent and
 the ordered reviewer agents. It prints `{}` when unset. Read-only; change it
 with `multica config propose workspace.settings --set capability_routing:=<json>`.
 
+## Agent role scope
+
+`multica workspace agent-role-scope [workspace-id|slug|prefix]` prints the
+workspace setting `agent_role_scope`: per agent, the work classes another agent
+may assign it. An agent with no entry is unrestricted. An agent that assigns an
+issue, or requests a review, from an out-of-scope agent is refused with the
+`capability_routing` author or reviewers named; a person is not. Read-only;
+change it with `multica config propose workspace.settings --set agent_role_scope:=<json>`.
+`multica agent get <agent>` shows one agent's scope.
+
 ## Workspace MCP servers
 
 ```bash

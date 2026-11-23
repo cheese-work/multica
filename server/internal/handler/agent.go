@@ -52,6 +52,10 @@ type AgentConversationStarter struct {
 }
 
 type AgentResponse struct {
+	// RoleScope is the work classes the workspace's agent_role_scope limits this
+	// agent to (CHE-9192). It is set only on a single-agent read and omitted for
+	// an unrestricted agent.
+	RoleScope []string `json:"role_scope,omitempty"`
 	// StalePresets is set only on an agent update response: presets the
 	// update left unable to run (CHE-2249 E5).
 	StalePresets []stalePreset `json:"stale_presets,omitempty"`
@@ -1436,6 +1440,9 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := h.agentToResponse(agent)
+	if cfg, _, err := h.loadAgentRoleScope(r.Context(), h.Queries, agent.WorkspaceID); err == nil {
+		resp.RoleScope, _ = cfg.Scope(resp.ID)
+	}
 	viewerRole := ""
 	if member, ok := ctxMember(r.Context()); ok {
 		viewerRole = member.Role
