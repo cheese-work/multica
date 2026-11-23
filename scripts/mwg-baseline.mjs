@@ -125,16 +125,39 @@ const isVerdict = (content) => {
   return /\b(?:PASS|CHANGES|FAIL|APPROVED?|REJECT\w*)\b/i.test(first);
 };
 
-// A verdict signs one PR. It counts for a unit only when it names that PR's head SHA (7 or more hex digits) or the PR number.
-export function isSignedVerdict() { return true; }
-export function namesPr(content, unit) {
-  const text = String(content ?? "");
-  const oid = String(unit.headOid ?? "");
-  if (oid) {
-    for (const [token] of text.matchAll(/\b[0-9a-f]{7,40}\b/gi)) if (oid.startsWith(token.toLowerCase())) return true;
+// The header is the verdict's first block: its lines up to the first blank line. Later text (findings, context) never
+// names the review target and never signs.
+const headerOf = (content) => {
+  const lines = String(content ?? "").split(/\r?\n/);
+  const start = lines.findIndex((l) => l.trim() !== "");
+  if (start < 0) return "";
+  const out = [];
+  for (const l of lines.slice(start)) {
+    if (l.trim() === "") break;
+    out.push(l);
   }
-  const n = String(unit.number);
-  return new RegExp(`(?:\\bPR\\s*#?|/pull/|(?<![\\w/])#)${n}\\b`, "i").test(text);
+  return out.join("\n");
+};
+
+// A signed verdict carries a "Reviewer:" field with a name in its header.
+export function isSignedVerdict(content) {
+  return /(?:^|[\s*_-])Reviewer(?:\*\*)?\s*:(?:\*\*)?\s*[\w@]/i.test(headerOf(content));
+}
+
+// A verdict signs one PR, named in its header: by one labeled head SHA (7 or more hex digits) or, with no head SHA, by
+// exactly one PR number. A head SHA decides over a PR number. Two different heads or two different PRs are ambiguous
+// and sign nothing.
+export function namesPr(content, unit) {
+  const header = headerOf(content);
+  const heads = new Set(
+    [...header.matchAll(/\bhead(?:\s+sha)?\s*[:=]?\s*`?([0-9a-f]{7,40})\b/gi)].map((m) => m[1].toLowerCase()),
+  );
+  if (heads.size > 0) {
+    const oid = String(unit.headOid ?? "");
+    return heads.size === 1 && oid !== "" && oid.startsWith([...heads][0]);
+  }
+  const prs = new Set([...header.matchAll(/(?:\bPR\s*#?|\/pull\/|(?<![\w/])#)(\d+)\b/gi)].map((m) => m[1]));
+  return prs.size === 1 && prs.has(String(unit.number));
 }
 
 function guidanceSection(body) {
@@ -592,7 +615,7 @@ export async function measure(opts) {
         unit.issue = ident;
         unit.issueId = issue.id;
         const verdicts = (await commentsFor(ident)).filter((c) => {
-          if (c.author_type !== "agent" || !isVerdict(c.content) || !namesPr(c.content, unit)) return false;
+          if (c.author_type !== "agent" || !isVerdict(c.content) || !isSignedVerdict(c.content) || !namesPr(c.content, unit)) return false;
           if (Date.parse(c.created_at) >= reviewCutoff.getTime()) return false;
           const reviewer = agentById.get(c.author_id);
           return reviewer && lab(reviewer.model) !== "unknown" && lab(reviewer.model) !== lab(agent.model);
