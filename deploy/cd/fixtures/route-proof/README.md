@@ -11,3 +11,4 @@ Synthetic (no real run has the homedisk selector yet), shaped like the recorded 
 
 - `run-45999999001.json`, `jobs/45999999001.json`: completed run, both legs `success`, labels `self-hosted,linux,x64,cheese-x99,cheese-x99-homedisk`.
 - `runners.json`: org runners list shaped like `gh api orgs/cheese-work/actions/runners` (read-only labels are capitalised there, e.g. `X64`).
+- `run-45999999002.json`, `jobs/45999999002.json`: a run still `queued` (both legs queued, expected labels, no runner yet); used for the PENDING case.

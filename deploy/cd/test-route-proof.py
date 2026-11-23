@@ -27,6 +27,9 @@ REPLACED = 45066486281  # recorded: replaced by the concurrency group, 0 jobs
 WRONG_LABELS = 45114280355  # recorded: success, old selector
 FAILED_RUN = 45060386606  # recorded run (legs rewritten per test)
 GOOD = 45999999001  # synthetic: expected labels, both legs success
+QUEUED = 45999999002  # synthetic: expected labels, still queued
+DEADLINE = TARGET_TIME + dt.timedelta(hours=24)
+AFTER_DEADLINE = DEADLINE + dt.timedelta(seconds=1)
 
 
 def load(name):
@@ -53,6 +56,7 @@ def verdict(got):
 
 
 def bind(runs, by_run, commits, **kw):
+    kw.setdefault("now", AFTER_DEADLINE)  # never read the real clock: the fixtures are fixed in time
     return verdict(rp.bind_proof_run(runs, by_run, commits, TARGET_TIME, EXPECTED, **kw))
 
 
@@ -85,15 +89,35 @@ class BindProofRun(unittest.TestCase):
         self.assertEqual(bind(failed_runs, failed_by_run, failed_commits)["verdict"], "NOT-RUN")
 
     def test_fp02_no_qualifying_run_in_24h_is_not_run(self):
-        runs, by_run, commits = world(CANCELLED_ZERO_JOBS, WRONG_LABELS, GOOD)
-        late = bind(runs, by_run, commits, window_hours=9)  # GOOD (05:30 on 23 Nov) is outside 9 h
-        self.assertEqual(late["verdict"], "NOT-RUN")
-        self.assertEqual(late["run_ids_read"], [CANCELLED_ZERO_JOBS, WRONG_LABELS])
         runs, by_run, commits = world(CANCELLED_ZERO_JOBS, REPLACED, WRONG_LABELS)
-        got = bind(runs, by_run, commits)
+        got = bind(runs, by_run, commits)  # 24 h window, read one second after its end
         self.assertEqual(got["verdict"], "NOT-RUN")
         self.assertEqual(got["run_ids_read"], [REPLACED, CANCELLED_ZERO_JOBS, WRONG_LABELS])
         self.assertNotIn("run_id", got)
+
+    def test_not_run_waits_for_the_24h_deadline(self):
+        # Before the deadline an absent proof is PENDING, never NOT-RUN (the 2 h wakeup must not give up).
+        none = bind([], {}, set(), now=TARGET_TIME + dt.timedelta(hours=2))
+        self.assertEqual((none["verdict"], none["run_ids_read"]), ("PENDING", []))
+        runs, by_run, commits = world(CANCELLED_ZERO_JOBS, QUEUED)  # QUEUED is unfinished
+        self.assertEqual(by_run[QUEUED][0]["status"], "queued")
+        early = bind(runs, by_run, commits, now=TARGET_TIME + dt.timedelta(hours=10))
+        self.assertEqual(early["verdict"], "PENDING")
+        self.assertEqual(early["run_ids_read"], [CANCELLED_ZERO_JOBS, QUEUED])
+        self.assertEqual(early["open_run_ids"], [QUEUED])
+        self.assertEqual(bind(runs, by_run, commits, now=DEADLINE)["verdict"], "PENDING")
+        late = bind(runs, by_run, commits, now=AFTER_DEADLINE)  # the unfinished run is not proof either
+        self.assertEqual(late["verdict"], "NOT-RUN")
+        self.assertEqual(late["run_ids_read"], [CANCELLED_ZERO_JOBS, QUEUED])
+        # A proof beats the clock: BOUND even when read early.
+        runs, by_run, commits = world(GOOD)
+        self.assertEqual(bind(runs, by_run, commits, now=TARGET_TIME + dt.timedelta(hours=10))["verdict"], "BOUND")
+
+    def test_runs_created_after_the_window_are_not_read(self):
+        runs, by_run, commits = world(CANCELLED_ZERO_JOBS, WRONG_LABELS, GOOD)
+        got = bind(runs, by_run, commits, window_hours=9)  # GOOD (05:30 on 23 Nov) is created after 9 h
+        self.assertEqual(got["verdict"], "NOT-RUN")
+        self.assertEqual(got["run_ids_read"], [CANCELLED_ZERO_JOBS, WRONG_LABELS])
 
     def test_runs_before_the_target_never_bind(self):
         runs, by_run, _ = world(GOOD)
