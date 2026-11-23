@@ -193,7 +193,7 @@
      "state": "measured",
      "runs": 2,
      "listingBytesMedian": 934,
-     "runDurationSecMedian": 216570,
+     "runDurationSecMedian": 217170,
      "units": 2,
      "toolCallsPerUnitMean": 1,
      "toolCallsPerUnitMedian": 1
