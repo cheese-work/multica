@@ -21,13 +21,18 @@ runs:
         EVENT: ${{ github.event_name }}
         BASE_REF: ${{ github.base_ref }}
       run: |
-        node --test scripts/design/validate-patterns.test.mjs scripts/design/validate-fidelity-files.test.mjs scripts/design/check-lock-marks.test.mjs scripts/design/check-fidelity.test.mjs
+        # The map's legacy.seed_sha must be in the clone; a shallow checkout may lack it. The ui-map tests and check need it.
+        seed="$(sed -n 's/^  seed_sha: "\([0-9a-f]\{40\}\)".*/\1/p' design/ui-map.yml)"
+        git cat-file -e "$seed^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$seed"
+        node --test scripts/design/validate-patterns.test.mjs scripts/design/validate-fidelity-files.test.mjs scripts/design/check-lock-marks.test.mjs scripts/design/check-fidelity.test.mjs scripts/design/check-ui-map.test.mjs
         node scripts/design/validate-fidelity-files.mjs
         node scripts/design/check-lock-marks.mjs
+        node scripts/design/check-ui-map.mjs
         # frame.state moves compare with the PR base; push and merge_group runs check the file alone.
         if [ "$EVENT" = pull_request ]; then
           git fetch --no-tags --depth=1 origin "$BASE_REF"
           node scripts/design/validate-patterns.mjs --base FETCH_HEAD
+          node scripts/design/check-ui-map.mjs --base FETCH_HEAD
         else
           node scripts/design/validate-patterns.mjs
         fi
