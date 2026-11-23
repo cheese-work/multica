@@ -142,7 +142,7 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 		// A move that names the assignee itself still enters the step: a
 		// reviewer step holds that assignee to the independence rule.
 		if assigneeTouched && statusExplicit && statusChanging && !prev.TriageState.Valid {
-			if err := h.checkTouchedReviewer(ctx, q, prev, params, def); err != nil {
+			if err := h.checkTouchedReviewer(ctx, q, prev, params, def, caller.agent); err != nil {
 				return nil, err
 			}
 		}
@@ -236,6 +236,11 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	if guard != nil {
 		if err := h.checkReviewerAssignee(ctx, q, prev.WorkspaceID, guard, assignee); err != nil {
 			return nil, err
+		}
+		if overridden {
+			if err := h.checkReviewerScope(ctx, q, prev, prev.Title, assignee, caller.agent); err != nil {
+				return nil, err
+			}
 		}
 	}
 	params.AssigneeType = pgtype.Text{String: assignee.Type, Valid: true}
@@ -380,6 +385,11 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 			"from":          notAllowed.From,
 			"allowed_moves": notAllowed.Allowed,
 		})
+		return true
+	}
+	var outOfScope *AgentOutOfScopeError
+	if errors.As(err, &outOfScope) {
+		writeJSON(w, http.StatusForbidden, map[string]any{"error": outOfScope.Message, "code": agentRoleScopeCode})
 		return true
 	}
 	var notIndependent *ReviewIndependenceError

@@ -160,6 +160,7 @@ func (h *Handler) saveWorkspaceIn(r *http.Request, params db.UpdateWorkspacePara
 			reconcileAgentDecisionJev(stored, incoming)
 			reconcileRoutingAgent(stored, incoming)
 			reconcileCapabilityRouting(stored, incoming)
+			reconcileAgentRoleScope(stored, incoming)
 			reconcileSystem1Labellers(stored, incoming)
 			if err := reconcileBackgroundAgents(stored, incoming, machine); err != nil {
 				return db.Workspace{}, "", activity, err

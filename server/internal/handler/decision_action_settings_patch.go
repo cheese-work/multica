@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/agentrolescope"
 	"github.com/multica-ai/multica/server/internal/askguard"
 	"github.com/multica-ai/multica/server/internal/capabilityrouting"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
@@ -176,6 +177,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = issueworkflow.ValidateWorkflowByType(raw)
 	case key == capabilityrouting.SettingsKey:
 		err = capabilityrouting.Validate(raw)
+	case key == agentrolescope.SettingsKey:
+		_, err = agentrolescope.Parse(raw)
 	case key == intakehold.SettingKey:
 		err = intakehold.Validate(raw)
 	case key == issueworkflow.SettingsKeyQuickFirst:
@@ -305,6 +308,9 @@ func readSettingsPatch(ctx context.Context, queries *db.Queries, workspaceID pgt
 		return read, settingsInvalid("%v", err)
 	}
 	if err := checkCapabilityRoutingAgents(ctx, queries, workspaceID, params.Settings); err != nil {
+		return read, err
+	}
+	if err := checkAgentRoleScopeAgents(ctx, queries, workspaceID, params.Settings); err != nil {
 		return read, err
 	}
 	before := namedSettings(stored, keys)

@@ -613,7 +613,7 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, agent)
 	}
 
-	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION", "PAUSED"}
+	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION", "PAUSED", "ROLE_SCOPE"}
 	rows := [][]string{{
 		strVal(agent, "id"),
 		strVal(agent, "name"),
@@ -623,9 +623,26 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		strVal(agent, "avatar_url"),
 		strVal(agent, "description"),
 		strVal(agent, "scheduling_paused_at"),
+		roleScopeCell(agent),
 	}}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil
+}
+
+// roleScopeCell renders an agent's role_scope (CHE-9192); "all" is an agent with
+// no agent_role_scope entry.
+func roleScopeCell(agent map[string]any) string {
+	list, _ := agent["role_scope"].([]any)
+	if len(list) == 0 {
+		return "all"
+	}
+	names := make([]string, 0, len(list))
+	for _, v := range list {
+		if s, ok := v.(string); ok {
+			names = append(names, s)
+		}
+	}
+	return strings.Join(names, ",")
 }
 
 // applyAgentPermissionFlags translates the invocation-permission flags

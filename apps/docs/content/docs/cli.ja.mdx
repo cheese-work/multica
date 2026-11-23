@@ -452,6 +452,8 @@ multica me background-agents set dm_title --agent none   # ワークスペース
 
 `multica workspace capability-routing [workspace]` は、`capability_routing` 設定(課題タイプから作成者・レビュアーのエージェントへの対応)を JSON で表示します。未設定なら `{}` です。読み取り専用で、変更は `multica config propose workspace.settings --set 'capability_routing:=<json>'` で行います。[Workflows](/docs/workflows) を参照してください。
 
+`multica workspace agent-role-scope [workspace]` は、`agent_role_scope` 設定(エージェントから、他のエージェントが割り当てられる作業クラス `plan`、`plan_review`、`decision`、`debate`、`security_cosign`、`code_review`、`execution` への対応)を JSON で表示します。未設定なら `{}` です。エントリのないエージェントは制限されません。エージェントが、スコープに作業クラスを含まないエージェントへ課題を割り当てる、またはレビューを依頼すると、サーバーは `capability_routing` の作成者またはレビュアーを示すヒント付きで拒否します。人による割り当ては成功し、課題に監査メモが残ります。作業クラスは、タイトルのタイプ接頭辞(`plan`、`decision`、`debate`)、`review(...)` のスコープ(`plan`、`design`、`spec`、`decision`、`debate` は計画レビュー、`security` を含むそれ以外はコードレビュー)、ゲート対象の課題の下にある `security gate: <親の識別子>` というタイトルの子課題(D8 共同署名)、それ以外は `execution` で決まります。`security` タイプの作業、`security` レビュー、タイトル内のパスは共同署名の作業になりません。読み取り専用で、変更は `multica config propose workspace.settings --set 'agent_role_scope:=<json>'` で行います。`multica agent get <agent>` で個々のエージェントのスコープを確認できます。
+
 `multica workspace queue-order show [workspace]` は、`queue_order`(`priority` または `project_rank`)と `queue_aging_minutes`(5〜720)の有効な値を JSON で表示します。`multica workspace queue-order set [workspace] --order <mode> --aging-minutes <n>` は一方または両方を変更します(オーナーまたは管理者のみ。変更ごとに実行者・旧値・新値・時刻が監査記録に残ります)。既定の `priority` は従来のキュー順序のままです。`project_rank` は、プロジェクトの優先度、親課題の優先度、自身の優先度の順に待機中の実行を順位付けし、待機がエイジング期間続くごとに 1 段階上げます。クレーム処理がこの設定を読むのは後続のリリースからで、現時点では保存と監査記録のみです。不正な値は、許可される値を示して拒否されます。元に戻すには `--order priority` を指定します。
 
 ## ブラウザリース

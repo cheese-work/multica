@@ -452,6 +452,8 @@ multica me background-agents set dm_title --agent none   # 恢复为工作区默
 
 `multica workspace capability-routing [workspace]` 以 JSON 输出 `capability_routing` 设置（工单类型到作者和评审智能体的映射），未设置时输出 `{}`。它只读；修改请使用 `multica config propose workspace.settings --set 'capability_routing:=<json>'`。参见 [Workflows](/docs/workflows)。
 
+`multica workspace agent-role-scope [workspace]` 以 JSON 输出 `agent_role_scope` 设置（智能体到其他智能体可指派给它的工作类别的映射：`plan`、`plan_review`、`decision`、`debate`、`security_cosign`、`code_review`、`execution`），未设置时输出 `{}`。没有条目的智能体不受限制。当智能体把议题指派给、或请求评审的对象是范围不含该工作类别的智能体时，服务器会拒绝，并给出指向 `capability_routing` 作者或评审者的提示；人员的指派会成功，并在议题上留下审计备注。工作类别取决于标题的类型前缀（`plan`、`decision`、`debate`）、`review(...)` 的范围（`plan`、`design`、`spec`、`decision`、`debate` 为计划评审，包括 `security` 在内的其他为代码评审）、被把关议题之下标题为 `security gate: <父议题标识>` 的子议题（D8 联署），否则为 `execution`；`security` 类型的工作、`security` 评审和标题中的路径都不会使工作成为联署。它只读；修改请使用 `multica config propose workspace.settings --set 'agent_role_scope:=<json>'`。`multica agent get <agent>` 显示单个智能体的范围。
+
 `multica workspace queue-order show [workspace]` 以 JSON 输出 `queue_order`(`priority` 或 `project_rank`)和 `queue_aging_minutes`(5 到 720)的生效值。`multica workspace queue-order set [workspace] --order <mode> --aging-minutes <n>` 修改其中一项或两项(仅限所有者或管理员;每次修改都会记入审计,含操作者、旧值、新值和时间)。默认的 `priority` 保持现有的排队顺序;`project_rank` 按项目优先级、父议题优先级、自身优先级依次给排队的运行排序,等待每满一个老化周期就上升一级。领取路径会在后续版本中读取该设置,目前它只被保存并记入审计。被拒绝的值会列出允许的取值。用 `--order priority` 即可回滚。
 
 ## 浏览器租约
