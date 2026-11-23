@@ -115,9 +115,13 @@ const lab = (model) => {
   return "unknown";
 };
 
+// A signed verdict says PASS, CHANGES, FAIL, APPROVED or REJECTED on its first line. NOT-RUN, "not reviewed" and
+// "not signed" lines say no review happened, so they do not make a PR reviewed.
 const isVerdict = (content) => {
   const first = String(content ?? "").split(/\r?\n/).find((l) => l.trim() !== "") ?? "";
-  return /^\s*(?:\*\*)?Verdict(?:\*\*)?\s*:/i.test(first);
+  if (!/^\s*(?:\*\*)?Verdict(?:\*\*)?\s*:/i.test(first)) return false;
+  if (/\bNOT[- ]RUN\b|\bnot (?:reviewed|signed)\b/i.test(first)) return false;
+  return /\b(?:PASS|CHANGES|FAIL|APPROVED?|REJECT\w*)\b/i.test(first);
 };
 
 function guidanceSection(body) {
@@ -323,6 +327,25 @@ export function fixtureSources(dir, opts = {}) {
 // ---------------------------------------------------------------------------------------------------------------------
 // Measurement
 
+// Runs fn over items with at most `limit` in flight; stops starting new work after the first rejection.
+async function pool(items, limit, fn) {
+  let next = 0;
+  let error = null;
+  const worker = async () => {
+    while (error === null && next < items.length) {
+      const item = items[next++];
+      try {
+        await fn(item);
+      } catch (e) {
+        error ??= e;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  if (error !== null) throw error;
+}
+
+const CONCURRENCY = 6;
 const round4 = (x) => Math.round(x * 10_000) / 10_000;
 const ratio = (a, b) => (b === 0 ? null : round4(a / b));
 const median = (xs) => {
@@ -454,19 +477,19 @@ export async function measure(opts) {
     mine.sort((a, b) => a.repo.localeCompare(b.repo) || a.number - b.number);
     const bodies = new Map();
     try {
-      for (const pr of mine) bodies.set(pr, await src.prBody(pr.repo, pr.number));
+      await pool(mine, CONCURRENCY, async (pr) => bodies.set(pr, await src.prBody(pr.repo, pr.number)));
     } catch (e) {
       fail("github", e);
       return;
     }
-    for (const pr of mine) {
-      const unit = { repo: pr.repo, number: pr.number, issue: null, issueId: null, reviewed: false, findings: [], section: guidanceSection(bodies.get(pr)), runs: [] };
-      d.units.push(unit);
-      const ident = /^agent\/[^/]+\/([a-z]+-\d+)\b/i.exec(pr.headRefName)?.[1]?.toUpperCase();
-      if (!ident || failed.issues) continue;
+    const units = mine.map((pr) => ({ repo: pr.repo, number: pr.number, headRefName: pr.headRefName, issue: null, issueId: null, reviewed: false, findings: [], section: guidanceSection(bodies.get(pr)), runs: [] }));
+    d.units.push(...units);
+    const enrich = async (unit) => {
+      const ident = /^agent\/[^/]+\/([a-z]+-\d+)\b/i.exec(unit.headRefName)?.[1]?.toUpperCase();
+      if (!ident || failed.issues) return;
       try {
         const issue = await issueFor(ident);
-        if (!issue) continue;
+        if (!issue) return;
         unit.issue = ident;
         unit.issueId = issue.id;
         const verdicts = (await commentsFor(ident)).filter((c) => {
@@ -480,7 +503,8 @@ export async function measure(opts) {
       } catch (e) {
         fail("issues", e);
       }
-    }
+    };
+    await pool(units, CONCURRENCY, enrich);
   }
   async function collectRuns(agent, d) {
     if (!failed.tasks) {
