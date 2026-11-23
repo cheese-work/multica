@@ -39,7 +39,6 @@ var typeClass = map[string]string{
 	"plan": Plan, "design": Plan, "spec": Plan,
 	"decision": Decision,
 	"debate":   Debate,
-	"security": SecurityCosign,
 }
 
 // Config is the stored setting.
@@ -103,16 +102,19 @@ func (c Config) AgentIDs() []string {
 	return ids
 }
 
-// ClassOf is the work class of an issue, read from its title:
-//   - plan/design/spec, decision, debate and security(...) by type;
-//   - review(plan|design|spec|decision|debate) is a plan review, review(security)
-//     a co-sign, and any other review (review, review(code), review(pr)) a code
-//     review;
-//   - "security gate: ..." is the title of a security gate issue, the D8
-//     co-sign request that the project's Review gates line creates;
-//   - everything else is execution. A path in the title never makes work a
-//     co-sign: the server holds no changed-file list to judge D8 paths by.
-func (c Config) ClassOf(title string) string {
+// ClassOf is the work class of an issue, read from its title and its parent:
+//   - plan/design/spec, decision and debate by type;
+//   - review(plan|design|spec|decision|debate) is a plan review, and any other
+//     review (review, review(code), review(pr), review(security)) a code review;
+//   - a security co-sign is the "security gate: <parent identifier>" issue that
+//     the project's Review gates line opens under the work it gates. The parent
+//     link is the structural proof: the server holds no changed-file list to
+//     judge D8 paths by, so neither a path nor a bare "security" type in a
+//     title makes work a co-sign;
+//   - everything else is execution.
+//
+// parentIdentifier is the identifier of the issue's parent ("" without one).
+func (c Config) ClassOf(title, parentIdentifier string) string {
 	typ, _ := issueworkflow.TitleType(title)
 	if typ == "review" {
 		return reviewClass(titleScope(title))
@@ -120,10 +122,23 @@ func (c Config) ClassOf(title string) string {
 	if class, ok := typeClass[typ]; ok {
 		return class
 	}
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(title)), "security gate:") {
+	if isSecurityGate(title, parentIdentifier) {
 		return SecurityCosign
 	}
 	return Execution
+}
+
+// isSecurityGate reports whether title is "security gate: <parentIdentifier>".
+func isSecurityGate(title, parentIdentifier string) bool {
+	if parentIdentifier == "" {
+		return false
+	}
+	rest, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(title)), "security gate:")
+	if !ok {
+		return false
+	}
+	fields := strings.Fields(rest)
+	return len(fields) > 0 && fields[0] == strings.ToLower(parentIdentifier)
 }
 
 // reviewClass is the class of a review(scope) issue.
@@ -131,8 +146,6 @@ func reviewClass(scope string) string {
 	switch scope {
 	case "plan", "design", "spec", "decision", "debate":
 		return PlanReview
-	case "security":
-		return SecurityCosign
 	}
 	return CodeReview
 }
@@ -153,8 +166,8 @@ func titleScope(title string) string {
 
 // ReviewClassOf is the class of a review of the issue: a planning-seat issue is
 // reviewed as itself, any other issue is a code review.
-func (c Config) ReviewClassOf(title string) string {
-	if class := c.ClassOf(title); class != Execution {
+func (c Config) ReviewClassOf(title, parentIdentifier string) string {
+	if class := c.ClassOf(title, parentIdentifier); class != Execution {
 		return class
 	}
 	return CodeReview

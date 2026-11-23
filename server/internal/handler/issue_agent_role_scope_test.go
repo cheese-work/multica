@@ -116,6 +116,9 @@ func TestAgentRoleScopeAssign_CHE9192(t *testing.T) {
 			// A code review is routed to the capability_routing reviewers.
 			"review(code): review PR 2121": "scope-reviewer",
 			"review: review PR 2121":       "scope-reviewer",
+			// Security work is execution; only a gate issue is a co-sign.
+			"security(auth): implement login":        "scope-author",
+			"review(security): review the auth diff": "scope-reviewer",
 		} {
 			t.Run(writer.name+"/agent assigning "+title+" to Sol is refused", func(t *testing.T) {
 				actor, issueID := newIssue(t, title)
@@ -153,7 +156,7 @@ func TestAgentRoleScopeAssign_CHE9192(t *testing.T) {
 			"plan(x): shape the thing",
 			"decision(x): pick one",
 			"debate(x): weigh it",
-			"security(auth): co-sign the change",
+			"review(plan): the rollout plan",
 		} {
 			t.Run(writer.name+"/agent assigning "+title+" to Sol succeeds", func(t *testing.T) {
 				actor, issueID := newIssue(t, title)
@@ -163,6 +166,34 @@ func TestAgentRoleScopeAssign_CHE9192(t *testing.T) {
 				}
 			})
 		}
+
+		// A co-sign is the gate issue under the work it gates, titled with that
+		// work's identifier; with a plain title and no path.
+		t.Run(writer.name+"/agent assigning a security gate under its parent to Sol succeeds", func(t *testing.T) {
+			actor, _ := newIssue(t, "feat(x): the gated work")
+			parentID := dbfx.Issue(t, "feat(x): the gated parent", testutil.Cols{"status": "in_progress"})
+			var parentIdent string
+			dbfx.QueryRow(t, `SELECT w.issue_prefix || '-' || i.number FROM issue i JOIN workspace w ON w.id = i.workspace_id WHERE i.id = $1`, parentID).Scan(&parentIdent)
+			gateID := dbfx.Issue(t, "security gate: "+parentIdent, testutil.Cols{
+				"status": "in_progress", "assignee_type": "agent", "assignee_id": actor, "parent_issue_id": parentID,
+			})
+			dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id = $1", gateID)
+			writer.write(t, gateID, toSol, agentHeaders(t, actor, gateID)).Want(http.StatusOK)
+			if got := assignee(t, gateID); got != solID {
+				t.Fatalf("assignee = %s, want Sol", got)
+			}
+		})
+
+		t.Run(writer.name+"/agent assigning a security gate title with no parent to Sol is refused", func(t *testing.T) {
+			actor, issueID := newIssue(t, "security gate: CHE-9192")
+			resp := writer.write(t, issueID, toSol, agentHeaders(t, actor, issueID))
+			if writer.name == "single" {
+				resp.Want(http.StatusForbidden)
+			}
+			if got := assignee(t, issueID); got != actor {
+				t.Fatalf("assignee = %s, want the issue to stay with %s", got, actor)
+			}
+		})
 
 		t.Run(writer.name+"/an agent outside the scope map stays unrestricted", func(t *testing.T) {
 			actor, issueID := newIssue(t, "feat(x): ship the thing")
@@ -208,4 +239,35 @@ func TestAgentRoleScopeSettingValidation_CHE9192(t *testing.T) {
 	}); err == nil {
 		t.Fatal("a malformed id must be refused")
 	}
+}
+
+// The create path judges the same way: a gate issue created under its parent
+// may start with Sol, an implementation issue may not.
+func TestAgentRoleScopeCreate_CHE9192(t *testing.T) {
+	seedTestCatalog(t)
+	actor := createHandlerTestAgent(t, "scope-create-actor", nil)
+	solID := createHandlerTestAgent(t, "scope-create-sol", nil)
+	settings, _ := json.Marshal(map[string]any{
+		"agent_role_scope": map[string]any{"agents": map[string]any{solID: []string{"plan", "plan_review", "decision", "debate", "security_cosign"}}},
+	})
+	setWorkspaceSettings(t, string(settings))
+	parentID := dbfx.Issue(t, "feat(x): the gated parent", testutil.Cols{
+		"status": "in_progress", "assignee_type": "agent", "assignee_id": actor,
+	})
+	dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id = $1", parentID)
+	taskID := createHandlerTestTaskForAgentOnIssue(t, actor, parentID)
+	var parentIdent string
+	dbfx.QueryRow(t, `SELECT w.issue_prefix || '-' || i.number FROM issue i JOIN workspace w ON w.id = i.workspace_id WHERE i.id = $1`, parentID).Scan(&parentIdent)
+
+	// Fixture rows hold numbers the counter has not issued; move it past them.
+	dbfx.Exec(t, `UPDATE workspace SET issue_counter = GREATEST(issue_counter, (SELECT COALESCE(MAX(number), 0) FROM issue WHERE workspace_id = $1)) + 1 WHERE id = $1`, testWorkspaceID)
+
+	create := func(title string) *testutil.Response {
+		req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+			"title": title, "parent_issue_id": parentID, "assignee_type": "agent", "assignee_id": solID,
+		})
+		return testutil.Call(t, testHandler.CreateIssue, asAgentActor(req, actor, taskID))
+	}
+	create("security(auth): implement login").Want(http.StatusForbidden)
+	create("security gate: " + parentIdent).Want(http.StatusCreated)
 }

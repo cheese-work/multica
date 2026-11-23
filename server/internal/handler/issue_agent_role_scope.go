@@ -51,7 +51,7 @@ func (h *Handler) loadAgentRoleScope(ctx context.Context, q *db.Queries, workspa
 // never refused; an out-of-scope assignment by a person leaves an audit note on
 // the issue. issueID is invalid on create: no note can be written yet. A read
 // error fails open, because the setting only narrows who an agent may pick.
-func (h *Handler) refuseAgentOutOfScope(ctx context.Context, actorType, actorID, workspaceID string, issueID pgtype.UUID, current db.Issue, title string, assigneeType pgtype.Text, assigneeID pgtype.UUID) (int, string) {
+func (h *Handler) refuseAgentOutOfScope(ctx context.Context, actorType, actorID, workspaceID string, issueID pgtype.UUID, current db.Issue, title string, parentID pgtype.UUID, assigneeType pgtype.Text, assigneeID pgtype.UUID) (int, string) {
 	if !assigneeType.Valid || assigneeType.String != "agent" || !assigneeID.Valid {
 		return 0, ""
 	}
@@ -67,7 +67,7 @@ func (h *Handler) refuseAgentOutOfScope(ctx context.Context, actorType, actorID,
 		return 0, ""
 	}
 	target := util.UUIDToString(assigneeID)
-	class := cfg.ClassOf(title)
+	class := cfg.ClassOf(title, h.parentIdentifier(ctx, wsUUID, parentID))
 	scope, scoped := cfg.Scope(target)
 	if !scoped || cfg.Allows(target, class) {
 		return 0, ""
@@ -77,6 +77,19 @@ func (h *Handler) refuseAgentOutOfScope(ctx context.Context, actorType, actorID,
 		return 0, ""
 	}
 	return http.StatusForbidden, h.agentOutOfScopeMessage(ctx, wsUUID, settings, title, target, class, scope)
+}
+
+// parentIdentifier is the identifier of the parent issue ("" without one): a
+// security gate issue is named after the issue it gates.
+func (h *Handler) parentIdentifier(ctx context.Context, ws, parentID pgtype.UUID) string {
+	if !parentID.Valid {
+		return ""
+	}
+	parent, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: parentID, WorkspaceID: ws})
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%s-%d", h.getIssuePrefix(ctx, ws), parent.Number)
 }
 
 func (h *Handler) noteAgentRoleScopeOverride(ctx context.Context, ws, issueID pgtype.UUID, actorType, actorID, target, class string) {
@@ -192,7 +205,7 @@ func (h *Handler) checkReviewerScope(ctx context.Context, q *db.Queries, prev db
 		return nil
 	}
 	target := util.UUIDToString(assignee.ID)
-	class := cfg.ReviewClassOf(title)
+	class := cfg.ReviewClassOf(title, h.parentIdentifier(ctx, prev.WorkspaceID, prev.ParentIssueID))
 	scope, scoped := cfg.Scope(target)
 	if !scoped || cfg.Allows(target, class) {
 		return nil

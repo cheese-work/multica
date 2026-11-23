@@ -111,11 +111,13 @@ change it with `multica config propose workspace.settings --set agent_role_scope
 `multica agent get <agent>` shows one agent's scope.
 
 The work class is read from the issue title: `plan`/`design`/`spec`, `decision`,
-`debate` and `security` by type; `review(plan|design|spec|decision|debate)` is a
-plan review, `review(security)` and a `security gate:` title are co-signs, any
-other `review` is a code review; everything else is execution. A path in a title
-never makes work a co-sign. To get Sol's co-sign on D8 paths, create the security
-gate issue.
+and `debate` by type; `review(plan|design|spec|decision|debate)` is a plan
+review, any other `review` (including `review(security)`) is a code review;
+everything else is execution, security-typed implementation work included. A
+co-sign is only a child issue titled `security gate: <parent identifier>` under
+the work it gates. A path or a `security` type in a title never makes work a
+co-sign. To get Sol's co-sign on D8 paths, create that gate issue under the PR's
+issue.
 
 ## Workspace MCP servers
 

@@ -4259,7 +4259,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, msg)
 		return
 	}
-	if status, msg := h.refuseAgentOutOfScope(r.Context(), createActorType, createActorID, workspaceID, pgtype.UUID{}, db.Issue{}, req.Title, assigneeType, assigneeID); status != 0 {
+	if status, msg := h.refuseAgentOutOfScope(r.Context(), createActorType, createActorID, workspaceID, pgtype.UUID{}, db.Issue{}, req.Title, parentIssueID, assigneeType, assigneeID); status != 0 {
 		writeError(w, status, msg)
 		return
 	}
@@ -5305,7 +5305,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 				writeError(w, status, msg)
 				return
 			}
-			if status, msg := h.refuseAgentOutOfScope(r.Context(), actorType, actorID, workspaceID, prevIssue.ID, prevIssue, textOr(params.Title, prevIssue.Title), params.AssigneeType, params.AssigneeID); status != 0 {
+			if status, msg := h.refuseAgentOutOfScope(r.Context(), actorType, actorID, workspaceID, prevIssue.ID, prevIssue, textOr(params.Title, prevIssue.Title), prevIssue.ParentIssueID, params.AssigneeType, params.AssigneeID); status != 0 {
 				writeError(w, status, msg)
 				return
 			}
@@ -6446,7 +6446,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				if status, _ := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
 					continue
 				}
-				if status, _ := h.refuseAgentOutOfScope(r.Context(), actorType, actorID, workspaceID, prevIssue.ID, prevIssue, textOr(params.Title, prevIssue.Title), params.AssigneeType, params.AssigneeID); status != 0 {
+				if status, _ := h.refuseAgentOutOfScope(r.Context(), actorType, actorID, workspaceID, prevIssue.ID, prevIssue, textOr(params.Title, prevIssue.Title), prevIssue.ParentIssueID, params.AssigneeType, params.AssigneeID); status != 0 {
 					continue
 				}
 			}
