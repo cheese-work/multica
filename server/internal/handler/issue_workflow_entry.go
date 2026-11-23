@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -273,7 +274,17 @@ func (h *Handler) checkAgentMove(ctx context.Context, q *db.Queries, prev db.Iss
 	if err != nil || def == nil {
 		return err
 	}
-	return issueworkflow.CheckAgentMove(*def, prev.Status, params.Status.String)
+	if !def.HasConditionalExit(prev.Status, params.Status.String) {
+		return issueworkflow.CheckAgentMove(*def, prev.Status, params.Status.String)
+	}
+	// An exit gated by a stored fact (human_done, pr.all_merged) opens only when
+	// the fact holds now (CHE-9259).
+	step, _ := def.Step(prev.Status)
+	facts, err := h.loadEdgeFacts(ctx, q, prev, step.Edges, def, time.Now(), step.SubWorkflow)
+	if err != nil {
+		return err
+	}
+	return issueworkflow.CheckAgentMoveFacts(*def, prev.Status, params.Status.String, facts)
 }
 
 // createHandoffError is a handoff handler the caller may not use, found while

@@ -38,6 +38,8 @@ const GUARD_ARITY: Record<string, number> = {
   "pr.review_changes_requested": 0,
   "pr.review_approved": 0,
   children_done: 0,
+  human_done: 0,
+  "pr.all_merged": 0,
   issue_status: 2,
   webhook: 1,
 };
@@ -102,7 +104,7 @@ export function isValidGuard(guard: string): boolean {
 /** A guard on a PR fact or a webhook waits on the outside world, so it needs a timeout. */
 export function guardNeedsTimeout(guard: string): boolean {
   const g = guard.trim();
-  return g.startsWith("pr.") || g.split("(")[0] === "webhook";
+  return (g.startsWith("pr.") && g !== "pr.all_merged") || g.split("(")[0] === "webhook";
 }
 
 /** Milliseconds of a Go duration such as "72h" or "1h30m"; null when malformed. */

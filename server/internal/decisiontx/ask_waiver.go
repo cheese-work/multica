@@ -16,6 +16,8 @@ const TopicTestFirstWaiver = "test_first_waiver"
 const (
 	OptionKeyWaive  = "waive"
 	OptionKeyRefuse = "refuse"
+	// OptionKeyDone marks the option of any ask that means "close this issue as done" (CHE-9259). The human_done workflow guard reads it.
+	OptionKeyDone = "done"
 )
 
 // Waiver is the typed block of a waiver ask. Every field is a closed value the asking agent chooses; none is free text.
@@ -78,8 +80,8 @@ func (ask Ask) validateWaiverContract() error {
 			return &AskError{"ask.waiver", "requires ask.topic " + TopicTestFirstWaiver}
 		}
 		for index, option := range ask.Options {
-			if option.OptionKey != "" {
-				return &AskError{fmt.Sprintf("ask.options[%d].option_key", index), "requires ask.topic " + TopicTestFirstWaiver}
+			if option.OptionKey != "" && option.OptionKey != OptionKeyDone {
+				return &AskError{fmt.Sprintf("ask.options[%d].option_key", index), "must be " + OptionKeyDone + ", or requires ask.topic " + TopicTestFirstWaiver}
 			}
 		}
 		return nil
