@@ -109,18 +109,8 @@ WITH RECURSIVE chain AS (
   WHERE p.workspace_id = $1
 )
 SELECT EXISTS (
-  SELECT 1 FROM decision_request r
+  SELECT 1 FROM decision_request r JOIN chain ON r.issue_id = chain.id
   WHERE r.authority = 'human' AND r.workspace_id = $1 AND r.status = 'open'
-    AND (
-      r.issue_id IN (SELECT id FROM chain)
-      -- A grouped request on a linked, non-ancestor issue: one issue_dependency
-      -- hop from the issue or an ancestor, either direction, any type.
-      OR r.issue_id IN (
-        SELECT d.depends_on_issue_id FROM issue_dependency d JOIN chain ON d.issue_id = chain.id
-        UNION
-        SELECT d.issue_id FROM issue_dependency d JOIN chain ON d.depends_on_issue_id = chain.id
-      )
-    )
 )::boolean
 `
 
@@ -129,8 +119,8 @@ type HasOpenDecisionRequestOnIssueOrAncestorParams struct {
 	IssueID     pgtype.UUID `json:"issue_id"`
 }
 
-// A grouped request lives on a parent (CHE-3305) or a linked issue, so an issue
-// waiting on it is covered. UNION (not UNION ALL) stops a parent cycle from recursing forever.
+// A grouped request lives on a parent (CHE-3305), so a child waiting on it is
+// covered. UNION (not UNION ALL) stops a parent cycle from recursing forever.
 func (q *Queries) HasOpenDecisionRequestOnIssueOrAncestor(ctx context.Context, arg HasOpenDecisionRequestOnIssueOrAncestorParams) (bool, error) {
 	row := q.db.QueryRow(ctx, hasOpenDecisionRequestOnIssueOrAncestor, arg.WorkspaceID, arg.IssueID)
 	var column_1 bool

@@ -43,8 +43,8 @@ WHERE s.workspace_id = sqlc.arg('workspace_id') AND s.archived_at IS NULL
   );
 
 -- name: HasOpenDecisionRequestOnIssueOrAncestor :one
--- A grouped request lives on a parent (CHE-3305) or a linked issue, so an issue
--- waiting on it is covered. UNION (not UNION ALL) stops a parent cycle from recursing forever.
+-- A grouped request lives on a parent (CHE-3305), so a child waiting on it is
+-- covered. UNION (not UNION ALL) stops a parent cycle from recursing forever.
 WITH RECURSIVE chain AS (
   SELECT i.id, i.parent_issue_id FROM issue i
   WHERE i.id = sqlc.arg('issue_id') AND i.workspace_id = sqlc.arg('workspace_id')
@@ -53,18 +53,8 @@ WITH RECURSIVE chain AS (
   WHERE p.workspace_id = sqlc.arg('workspace_id')
 )
 SELECT EXISTS (
-  SELECT 1 FROM decision_request r
+  SELECT 1 FROM decision_request r JOIN chain ON r.issue_id = chain.id
   WHERE r.authority = 'human' AND r.workspace_id = sqlc.arg('workspace_id') AND r.status = 'open'
-    AND (
-      r.issue_id IN (SELECT id FROM chain)
-      -- A grouped request on a linked, non-ancestor issue: one issue_dependency
-      -- hop from the issue or an ancestor, either direction, any type.
-      OR r.issue_id IN (
-        SELECT d.depends_on_issue_id FROM issue_dependency d JOIN chain ON d.issue_id = chain.id
-        UNION
-        SELECT d.issue_id FROM issue_dependency d JOIN chain ON d.depends_on_issue_id = chain.id
-      )
-    )
 )::boolean;
 
 -- name: GetDecisionWaitGuardProjectSquad :one
