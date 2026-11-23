@@ -348,39 +348,36 @@ func TestDecisionWaitGuardCountsParentGroupedRequest(test *testing.T) {
 	requireNoWaitFlag(test, fixture.issueID)
 }
 
-// CHE-4029 criterion 1: a grouped request can live on a linked issue that is
-// not an ancestor (issue_dependency, either direction, any type).
-func TestDecisionWaitGuardCountsLinkedGroupedRequest(test *testing.T) {
-	for _, direction := range []string{"issue_to_linked", "linked_to_issue"} {
-		test.Run(direction, func(test *testing.T) {
-			fixture, _, _ := decisionWaitFixture(test)
-			linked := dbfx.Issue(test, "grouped linked issue", nil)
-			from, to := fixture.issueID, linked
-			if direction == "linked_to_issue" {
-				from, to = linked, fixture.issueID
-			}
-			dep := dbfx.Insert(test, "issue_dependency", testutil.Cols{"issue_id": from, "depends_on_issue_id": to, "type": "related"})
-			dbfx.Cleanup(test, `DELETE FROM issue_dependency WHERE id = $1`, dep)
-			seedWaitRequest(test, fixture, linked, "open")
-			if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
-				test.Fatal(err)
-			}
-			if got := decisionWaitAlerts(test, fixture.issueID); got != 0 {
-				test.Fatalf("issue linked to an open grouped request was alerted %d times", got)
-			}
-			requireNoWaitFlag(test, fixture.issueID)
-		})
+// CHE-4029 round 2: an ordinary issue_dependency link (related, blocks,
+// blocked_by, either direction) is not evidence that the linked issue's open
+// request covers this issue's wait, so the missing request is still alerted.
+func TestDecisionWaitGuardIgnoresOpenRequestOnLinkedIssue(test *testing.T) {
+	for _, linkType := range []string{"related", "blocks", "blocked_by"} {
+		for _, direction := range []string{"issue_to_linked", "linked_to_issue"} {
+			test.Run(linkType+"/"+direction, func(test *testing.T) {
+				fixture, _, _ := decisionWaitFixture(test)
+				linked := dbfx.Issue(test, "unrelated linked issue", nil)
+				from, to := fixture.issueID, linked
+				if direction == "linked_to_issue" {
+					from, to = linked, fixture.issueID
+				}
+				dep := dbfx.Insert(test, "issue_dependency", testutil.Cols{"issue_id": from, "depends_on_issue_id": to, "type": linkType})
+				dbfx.Cleanup(test, `DELETE FROM issue_dependency WHERE id = $1`, dep)
+				seedWaitRequest(test, fixture, linked, "open")
+				if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+					test.Fatal(err)
+				}
+				if got := decisionWaitAlerts(test, fixture.issueID); got != 1 {
+					test.Fatalf("alerts = %d, want 1: a linked issue's open request must not hide a missing request", got)
+				}
+			})
+		}
 	}
 }
 
-// A linked issue whose request is not open, or an unlinked issue with an open
-// request, does not cover the issue.
-func TestDecisionWaitGuardIgnoresClosedOrUnlinkedRequest(test *testing.T) {
+// An unlinked issue with an open request does not cover the issue.
+func TestDecisionWaitGuardIgnoresUnlinkedRequest(test *testing.T) {
 	fixture, _, _ := decisionWaitFixture(test)
-	linked := dbfx.Issue(test, "closed linked issue", nil)
-	dep := dbfx.Insert(test, "issue_dependency", testutil.Cols{"issue_id": fixture.issueID, "depends_on_issue_id": linked, "type": "related"})
-	dbfx.Cleanup(test, `DELETE FROM issue_dependency WHERE id = $1`, dep)
-	seedWaitRequest(test, fixture, linked, "cancelled")
 	unlinked := dbfx.Issue(test, "unlinked issue", nil)
 	seedWaitRequest(test, fixture, unlinked, "open")
 	if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
