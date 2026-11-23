@@ -1613,6 +1613,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		manual = manual && r.EventType == wakeupManualEventType
 		scheduled = scheduled && r.EventType == "time.due"
 	}
+	holdNext := next // a joined firing keeps the timers a live hold keeps
 	if w.Mode == "once" && !deferring {
 		enabled = false
 		next = pgtype.Timestamptz{}
@@ -1942,6 +1943,23 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				s.Tasks.notifyProviderFailureAttemptCap(ctx, recoveryAttempt)
 				return nil
 			}
+		}
+		// CHE-6992: a condition firing that meets a running run of its agent is
+		// delivered into it, behind wakeup_live_join. The join sits after every
+		// skip that consumes a firing. The receipts stay pending and unreserved
+		// until the host run ends; a once rule stays on until then.
+		if host, outcome, err := tryLiveJoin(ctx, q, issue, w, custom, receipts, note); err != nil {
+			return err
+		} else if outcome == liveJoinJoined {
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: holdNext, LastError: liveJoinReason(host)}); err != nil {
+				return err
+			}
+			if timedOut {
+				if err := markTimedOut(); err != nil {
+					return err
+				}
+			}
+			return commit()
 		}
 		taskContext := map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_chain": chain}
 		if deferring {
