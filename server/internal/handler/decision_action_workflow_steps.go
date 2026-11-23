@@ -210,17 +210,25 @@ func validateChangedHandlers(ctx context.Context, queries *db.Queries, workspace
 	for _, step := range steps {
 		switch step.Handler.Type {
 		case issueworkflow.HandlerAgent, issueworkflow.HandlerSquad, issueworkflow.HandlerMember:
+		case issueworkflow.HandlerSameAs:
+			if step.Handler.ID == "" {
+				continue
+			}
 		default:
 			continue
 		}
 		if before[step.Handler] {
 			continue
 		}
+		assigneeType := step.Handler.Type
+		if assigneeType == issueworkflow.HandlerSameAs {
+			assigneeType = issueworkflow.HandlerAgent
+		}
 		id, err := parseUUIDString(step.Handler.ID)
 		if err != nil {
 			return http.StatusBadRequest, "invalid handler id"
 		}
-		if status, message := checker.validateAssignee(ctx, uuidToString(workspaceID), pgtype.Text{String: step.Handler.Type, Valid: true}, id, canInvoke); status != 0 {
+		if status, message := checker.validateAssignee(ctx, uuidToString(workspaceID), pgtype.Text{String: assigneeType, Valid: true}, id, canInvoke); status != 0 {
 			return status, message
 		}
 	}

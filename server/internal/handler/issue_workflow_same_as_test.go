@@ -108,3 +108,18 @@ func TestSameAs_ArchivedAgentFallsBack(t *testing.T) {
 		t.Fatalf("assignee = %s, want the fallback agent %s once the reviewer is archived", id, c.fixed)
 	}
 }
+
+func TestSameAs_SaveRefusesAStepOfAnotherWorkflowAndACycle(t *testing.T) {
+	c := newSameAsCase(t, false)
+	for name, step := range map[string]string{"unknown step": "nowhere", "itself": "merged"} {
+		resp := setColumnHandoff(t, c.projectID, "merged", map[string]any{"handler": map[string]any{"type": "same_as", "step": step}})
+		if resp.Code != http.StatusBadRequest {
+			t.Errorf("%s: status %d, want 400", name, resp.Code)
+		}
+	}
+	// merged already follows in_review, so in_review cannot follow merged.
+	resp := setColumnHandoff(t, c.projectID, "in_review", map[string]any{"handler": map[string]any{"type": "same_as", "step": "merged"}})
+	if resp.Code != http.StatusBadRequest {
+		t.Errorf("cycle: status %d, want 400", resp.Code)
+	}
+}

@@ -88,6 +88,8 @@ The workspace setting `capability_routing` maps an issue type to an author agent
 
 A `reviewer` step hands the issue to the first reachable reviewer listed for the issue's type (the Conventional-Commit prefix of the title) whose lab is known, differs from every author's lab, and who is not an author. An override, a sticky assignee, or an assignee named in the same write is held to the same rule. When none qualifies, or the issue's type has no routing entry, the move is refused with `409 review_independence`, naming the labs, and the issue is left unchanged.
 
+A `same_as` step hands the issue to the agent that last handled another step of the workflow on this issue, so one agent can carry an issue through several steps. Set it with a handler of `{"type": "same_as", "step": "<status-key>"}`. The agent is the issue's assignee while it sits in that step, else the one it had when it last left that step. An agent that is archived or gone counts as not found. When none is found, the step uses the agent in the handler's optional `id`, else the handler of the named step. The `step` must be another step of the same workflow, and a step cannot lead back to itself through other `same_as` steps; a save that breaks either rule is refused. `multica workflow get` shows the handler as `same_as: <status-key>`.
+
 ## Move work to the next step
 
 Change an issue's status or drag its card to another column. If that step has a handoff, check who will receive it and, for an agent, the instructions it will receive.
