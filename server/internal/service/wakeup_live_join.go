@@ -158,7 +158,7 @@ func tryLiveJoin(ctx context.Context, q *db.Queries, issue db.Issue, w db.IssueW
 	for _, r := range receipts {
 		ids = append(ids, r.ID)
 	}
-	item, err := q.EnqueueTaskWakeupDelivery(ctx, db.EnqueueTaskWakeupDeliveryParams{
+	_, err = q.EnqueueTaskWakeupDelivery(ctx, db.EnqueueTaskWakeupDeliveryParams{
 		TaskID: host, WakeupID: w.ID, WakeupRevision: int32(w.Revision), ReceiptIds: ids, Note: liveJoinedWakeupNote(w, receipts),
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -168,6 +168,5 @@ func tryLiveJoin(ctx context.Context, q *db.Queries, issue db.Issue, w db.IssueW
 	if err != nil {
 		return pgtype.UUID{}, liveJoinNone, err
 	}
-	_ = item
 	return host, liveJoinJoined, nil
 }
