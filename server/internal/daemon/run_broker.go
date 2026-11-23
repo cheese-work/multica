@@ -294,7 +294,3 @@ func gitOut(dir string, args ...string) string {
 	}
 	return strings.TrimSpace(string(out))
 }
-
-// runIsolated is false (a var only so a test can flip it) until agent runs start through sandbox.Launcher with
-// Spec.BrokerSocket (no production path does today). Flip it with that wiring.
-var runIsolated = false

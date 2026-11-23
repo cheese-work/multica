@@ -71,6 +71,7 @@ func TestCheckConfigChangeDeniesByDefault(t *testing.T) {
 		{"blocked run skip mode", "workspace.settings", []string{"blocked_run_skip"}, false},
 		{"run guard mode", "workspace.settings", []string{"run_guard"}, false},
 		{"run budget mode", "workspace.settings", []string{"run_budget"}, false},
+		{"wakeup live join mode", "workspace.settings", []string{"wakeup_live_join"}, false},
 		{"both run-cutting modes", "workspace.settings", []string{"auto_close", "blocked_run_skip"}, false},
 		{"project description is out of scope", "project.description", nil, true},
 		{"members and roles", "member.role", nil, true},

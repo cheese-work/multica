@@ -75,6 +75,11 @@ for (const [name, files, selected] of [
   ["pattern ledger", ["design/patterns.yml"], ["quality"]],
   ["pattern validator", ["scripts/design/validate-patterns.mjs"], ["quality"]],
   ["design record", ["DESIGN.md"], ["quality"]],
+  // C3 ownership check (CHE-5793): every design input must reach frontend-quality, or a lock-only PR skips it.
+  ["lock-only design PR", ["design/decision-card/approved/direction-b.html", "design/decision-card/approved/LOCK.json"], ["quality"]],
+  ["ui ownership map only", ["design/ui-map.yml"], ["quality"]],
+  ["device profiles only", ["design/devices.yml"], ["quality"]],
+  ["fidelity blocks map only", ["tests/fidelity/decision-card.blocks.yml"], ["quality"]],
   ["shared quality action", [".github/actions/frontend-quality/action.yml"], ["frontend", "quality"]],
   ["new bitmap", ["apps/web/public/hero.png"], ["frontend", "quality", "images"]],
   ["mixed docs and migration", ["apps/docs/content/guide.mdx", "server/migrations/999_example.up.sql"], ["quality", "backend", "sqlc"]],

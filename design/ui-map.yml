@@ -1,0 +1,96 @@
+# UI ownership map (CHE-5793 C3). A gate path: a change waits 24 h after its last PASS.
+# Checked by scripts/design/check-ui-map.mjs (rules 1 to 4); the ui-fidelity job (steps 8, 8b) adds the trigger and the ratchet.
+#
+# legacy.seed_sha: the commit this map was seeded on. A UI file owned only by legacy must sit in a directory that
+#   exists there; a lock pin that equals the pin at that commit may stay `unmapped`.
+# entries: one per lock folder design/<topic>/approved/. state `building` (fidelity check runs), `shipped` (goldens), `unmapped`.
+#   lock_export_sha256 is the lock's LOCK.json export_sha256 (a per-file object is pinned as the sha256 of its sorted
+#   sha256sum lines). Whoever merges second of a design PR and a code PR updates the pin.
+legacy:
+  seed_sha: "7de674174fcabc671e1a2510bfdc1f275a13a8c2"
+
+entries:
+  - screen: artifact-viewer-dialog
+    paths: []
+    lock: artifact-viewer-dialog
+    lock_export_sha256: 34548102737651d8fc21f33c8fc4f9c64435ff2329957140c37f5cd827c00ae0
+    state: unmapped
+  - screen: background-agents
+    paths: []
+    lock: background-agents
+    lock_export_sha256: 60c3f9f23398088d228b1af77b3223328a967f93a85f6444c85e86ae56c50fb6
+    state: unmapped
+  - screen: chat-queued-reason
+    paths: []
+    lock: chat-queued-reason
+    lock_export_sha256: ecdc915a694c72cf526dafd24060268d25c89068574faac5c5e869c3faf30be6
+    state: unmapped
+  - screen: decision-card
+    paths:
+      - packages/views/chat/components/decision-*.tsx
+      - packages/views/chat/components/config-change-viewer.tsx
+      - packages/views/issues/components/issue-decision-banner.tsx
+    lock: decision-card
+    lock_export_sha256: 1562d5e4b36bc14f7a324c8e4f9ce7395300f0e9637cfc03caab9ad4eff64a7b
+    blocks_map: tests/fidelity/decision-card.blocks.yml
+    state: building
+  - screen: decision-screen
+    paths: []
+    lock: decision-screen
+    lock_export_sha256: e3f2e22f8bcbea9384bc02909e10f78a68f30a7274f10106ed38170448f83d90
+    state: unmapped
+  - screen: delegated-governed-writes
+    paths: []
+    lock: delegated-governed-writes
+    lock_export_sha256: 606990871c2a3b106ee6a084711f3a0071f561146e03f8af4c1e18550509aab8
+    state: unmapped
+  - screen: dm-attention
+    paths: []
+    lock: dm-attention
+    lock_export_sha256: 99e05cb225e499341708b8966b8f5dbebde91432d142ee940e4caa952df6a5ef
+    state: unmapped
+  - screen: dm-progress
+    paths: []
+    lock: dm-progress
+    lock_export_sha256: e2669cc8fbf5f81b625ae8be3a91a1eeb576eaf1ada110b4847cef37faa05f88
+    state: unmapped
+  - screen: dm-wakeup-event-row
+    paths: []
+    lock: dm-wakeup-event-row
+    lock_export_sha256: ea598afef7188401882a268ef2d19eefbd76d112d1c460b87f58f160151fa275
+    state: unmapped
+  - screen: machine-pause
+    paths: []
+    lock: machine-pause
+    lock_export_sha256: 17d8d1176487adc6ad4b3e6e54730d87b12efb154c80080490c32e282e89f7a1
+    state: unmapped
+  - screen: machine-pause-banner
+    paths: []
+    lock: machine-pause-banner
+    lock_export_sha256: dbe3d11c735799896c6ed67e13e212d50dbbf3803e14d97a4b236456003aed61
+    state: unmapped
+  - screen: run-mode-chip
+    paths: []
+    lock: run-mode-chip
+    lock_export_sha256: b265f7bd4ee077f5bf7b4033187c0adee408569b2907bea394547fb528974a7e
+    state: unmapped
+  - screen: thread-focus
+    paths: []
+    lock: thread-focus
+    lock_export_sha256: 0af1faa3f6dd2aabc36275f7345a3f647b3f680c89d1d45d29e368c29dcff418
+    state: unmapped
+  - screen: timeline-views
+    paths: []
+    lock: timeline-views
+    lock_export_sha256: e2d9848566dca2f9115e6e7b0e9066e995a9e559638bce2af316ac5dd467427e
+    state: unmapped
+  - screen: workflow-lint-ui
+    paths: []
+    lock: workflow-lint-ui
+    lock_export_sha256: 584781f5177abb78f6b41ede9b330d550342f3b9a294dfc34857bee23a945dd9
+    state: unmapped
+  - screen: you-are-approving-card
+    paths: []
+    lock: you-are-approving-card
+    lock_export_sha256: 09ead89b1b2e0199320a13dcc7671dbd99aac2ebfe79e123af3c147f171b6a32
+    state: unmapped

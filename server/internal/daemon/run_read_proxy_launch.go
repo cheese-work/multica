@@ -76,7 +76,7 @@ func (denyAdmit) Admitted(context.Context, readproxy.Check) (bool, error) { retu
 type restrictedLaunch func(agent.Backend, agent.ExecOptions) (agent.Backend, agent.ExecOptions, error)
 
 // restrictedSuccessorLaunch is nil until agent runs start through sandbox.Launcher
-// (the same wiring that flips runIsolated): only then is there a launch that
+// (the launcher wiring that makes Daemon.isolated true): only then is there a launch that
 // provably lacks the run's docker and device access. Until then a launch-scope
 // task is refused its downgrade rather than handed the text in a process that
 // still holds those grants.

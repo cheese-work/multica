@@ -413,6 +413,9 @@ type UpdateWorkspaceRequest struct {
 	// RunBudget sets settings.run_budget alone (CHE-9026): the object
 	// {"mode": off|warn|block}. Owner only.
 	RunBudget json.RawMessage `json:"run_budget"`
+	// WakeupLiveJoin sets settings.wakeup_live_join alone (CHE-6992): the object
+	// {"mode": off|warn|block}. Owner only.
+	WakeupLiveJoin json.RawMessage `json:"wakeup_live_join"`
 	// AskGuardMode sets settings.ask_guard_mode alone (CHE-6123): the string
 	// off|warn|block. Owner only.
 	AskGuardMode json.RawMessage `json:"ask_guard_mode"`
@@ -709,6 +712,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}{
 		{"run_guard", req.RunGuard, &params.RunGuard},
 		{"run_budget", req.RunBudget, &params.RunBudget},
+		{"wakeup_live_join", req.WakeupLiveJoin, &params.WakeupLiveJoin},
 	} {
 		if mode.raw == nil {
 			continue
