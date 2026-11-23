@@ -93,6 +93,13 @@ multica audit list [--kind agent.] [--target <agent name or id>] [--actor <id>] 
   `--output json` carries `next_cursor`. `--all` follows the cursor to the end.
 - Redacted fields show the stored `"changed"` marker, never the value.
 
+## Capability routing
+
+`multica workspace capability-routing [workspace-id|slug|prefix]` prints the
+workspace setting `capability_routing`: per issue type, the author agent and
+the ordered reviewer agents. It prints `{}` when unset. Read-only; change it
+with `multica config propose workspace.settings --set capability_routing:=<json>`.
+
 ## Workspace MCP servers
 
 ```bash

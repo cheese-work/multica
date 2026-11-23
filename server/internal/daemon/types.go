@@ -152,6 +152,8 @@ type Task struct {
 	TriggerThreadContext          string                 `json:"trigger_thread_context,omitempty"`           // CHE-2070: bounded plain-text transcript (root + last replies) of the triggering thread, excluding the trigger itself; empty on old servers
 	TriggerAuthorType             string                 `json:"trigger_author_type,omitempty"`              // "agent" or "member" — author kind for the triggering comment
 	TriggerAuthorName             string                 `json:"trigger_author_name,omitempty"`              // display name of the triggering comment author
+	TriggerRepeatCount            int                    `json:"trigger_repeat_count,omitempty"`             // CHE-9042: earlier identical comments by the same member; omitted for a first-time message or an old server
+	TriggerRepeatIDs              []string               `json:"trigger_repeat_ids,omitempty"`               // CHE-9042: those earlier comment ids, oldest first
 	TriggerCommentEditedAt        string                 `json:"trigger_comment_edited_at,omitempty"`        // MUL-8218: set when the trigger comment was edited after the resumed session's run started, so the resumed history may quote an earlier version. Empty on old servers / unedited comments
 	TriggerCommentRevision        int64                  `json:"trigger_comment_revision,omitempty"`         // MUL-8218: current revision of the trigger comment; sent alongside TriggerCommentEditedAt
 	NewCommentCount               int                    `json:"new_comment_count,omitempty"`                // issue-wide comments since this agent's last run (excludes its own and the injected trigger); 0/omitted for old daemons or cold start

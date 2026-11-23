@@ -1518,6 +1518,27 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	if err != nil {
 		return err
 	}
+	// A live-join item whose host run completed settles like a run that took
+	// its inputs; an open one holds the pass below.
+	live, err := readLiveItems(ctx, q, w, receipts)
+	if err != nil {
+		return err
+	}
+	receipts = live.withoutSettled(receipts)
+	taken = append(taken, live.settled...)
+	// An admitted fallback frees its receipts: they stay in the free list and
+	// take today's path below, in this transaction.
+	for _, fb := range live.fallbacks {
+		details := map[string]any{
+			"reason": fb.reason, "task_id": util.UUIDToString(fb.item.TaskID), "firing_id": util.UUIDToString(fb.item.EventID),
+		}
+		if fb.failureReason != "" {
+			details["failure_reason"] = fb.failureReason
+		}
+		if err := note(wakeupActivityJoinFallback, details); err != nil {
+			return err
+		}
+	}
 	for _, run := range taken {
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {
 			return err
@@ -1529,6 +1550,10 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		w.LastTaskID = run.task.ID
 		details := wakeupTriggerDetails(run.task, run.receipts)
 		details["outcome"] = wakeupOutcomeMerged
+		if run.outcome != "" {
+			details["outcome"] = run.outcome
+			details["firing_id"] = util.UUIDToString(run.firingID)
+		}
 		if err := note(wakeupActivityTriggered, details); err != nil {
 			return err
 		}
@@ -1575,6 +1600,19 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 			return err
 		}
 	}
+	if live.holdRun.Valid {
+		// As while a run of the agent waits: timers advance, inputs stay, and a
+		// once rule stays on until its firing is settled.
+		if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: next, LastError: liveHoldReason(live.holdRun)}); err != nil {
+			return err
+		}
+		if timedOut {
+			if err := markTimedOut(); err != nil {
+				return err
+			}
+		}
+		return commit()
+	}
 	if len(receipts) == 0 {
 		if timedOut {
 			if err := markTimedOut(); err != nil {
@@ -1591,6 +1629,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 		manual = manual && r.EventType == wakeupManualEventType
 		scheduled = scheduled && r.EventType == "time.due"
 	}
+	holdNext := next // a joined firing keeps the timers a live hold keeps
 	if w.Mode == "once" && !deferring {
 		enabled = false
 		next = pgtype.Timestamptz{}
@@ -1740,9 +1779,24 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				if err != nil {
 					return err
 				}
+				// CHE-8962: a one-shot `at --watch issue` wakeup is compared with the
+				// fence its creating run R stored at claim, not with the agent's last
+				// run: R's own comments moved the issue after any earlier snapshot.
+				details := map[string]any{"wakeup_id": util.UUIDToString(w.ID), "inputs": w.WatchInputs, "last_task_id": util.UUIDToString(lastTask), "rule": "declared_inputs", "baseline": "last_run"}
+				if !unchanged && atFenceApplies(w) {
+					res, err := atFenceCompare(ctx, tx, w)
+					if err != nil {
+						return err
+					}
+					if res.Defer {
+						unchanged, lastTask = true, res.RunID
+						details["last_task_id"], details["baseline"] = util.UUIDToString(res.RunID), "creating_run"
+						details["time_left_ms"] = res.TimeLeft.Milliseconds()
+					}
+				}
 				if unchanged && mode == "warn" {
 					slog.Info("time wakeup skip (warn): declared inputs unchanged, running", "wakeup_id", util.UUIDToString(w.ID), "issue_id", util.UUIDToString(issue.ID), "last_task_id", util.UUIDToString(lastTask))
-					wouldDefer = map[string]any{"wakeup_id": util.UUIDToString(w.ID), "inputs": w.WatchInputs, "last_task_id": util.UUIDToString(lastTask)}
+					wouldDefer = details
 				}
 				if unchanged && mode == "block" {
 					// CHE-6968: defer, never consume. The fire stays pending and the
@@ -1757,7 +1811,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 						return err
 					}
 					if fresh {
-						if err := note(wakeupActivityDeferred, map[string]any{"wakeup_id": util.UUIDToString(w.ID), "inputs": w.WatchInputs, "last_task_id": util.UUIDToString(lastTask)}); err != nil {
+						if err := note(wakeupActivityDeferred, details); err != nil {
 							return err
 						}
 					}
@@ -1920,6 +1974,23 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				s.Tasks.notifyProviderFailureAttemptCap(ctx, recoveryAttempt)
 				return nil
 			}
+		}
+		// CHE-6992: a condition firing that meets a running run of its agent is
+		// delivered into it, behind wakeup_live_join. The join sits after every
+		// skip that consumes a firing. The receipts stay pending and unreserved
+		// until the host run ends; a once rule stays on until then.
+		if host, outcome, err := tryLiveJoin(ctx, q, issue, w, custom, receipts, note); err != nil {
+			return err
+		} else if outcome == liveJoinJoined {
+			if err := q.AdvanceIssueWakeup(ctx, db.AdvanceIssueWakeupParams{ID: w.ID, Enabled: w.Enabled, NextFireAt: holdNext, LastError: liveJoinReason(host)}); err != nil {
+				return err
+			}
+			if timedOut {
+				if err := markTimedOut(); err != nil {
+					return err
+				}
+			}
+			return commit()
 		}
 		taskContext := map[string]any{"wakeup_id": util.UUIDToString(w.ID), "wakeup_revision": w.Revision, "wakeup_evidence": evidence, "wakeup_chain": chain}
 		if deferring {

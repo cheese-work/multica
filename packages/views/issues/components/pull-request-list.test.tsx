@@ -360,6 +360,27 @@ describe("PullRequestList sidebar rows", () => {
 
   // --- Collapse behaviour --------------------------------------------------
 
+  it("lists red, green, pending, draft, merged, closed, newest update first within a group", async () => {
+    const at = (d: number) => `2026-11-${String(d).padStart(2, "0")}T00:00:00Z`;
+    mockPRs = [
+      makePR({ id: "m", number: 1, title: "merged one", state: "merged", merged_at: at(2), pr_updated_at: at(2) }),
+      makePR({ id: "d", number: 2, title: "draft one", state: "draft", pr_updated_at: at(3) }),
+      makePR({ id: "g-old", number: 3, title: "green old", checks_rollup: "success", checks_total: 1, pr_updated_at: at(1) }),
+      makePR({ id: "r", number: 4, title: "red one", checks_rollup: "failure", checks_total: 1, checks_failed: 1, pr_updated_at: at(1) }),
+      makePR({ id: "g-new", number: 5, title: "green new", checks_rollup: "success", checks_total: 1, pr_updated_at: at(9) }),
+      makePR({ id: "p", number: 6, title: "pending one", checks_rollup: "pending", checks_total: 1, pr_updated_at: at(9) }),
+      makePR({ id: "c", number: 7, title: "closed one", state: "closed", closed_at: at(9), pr_updated_at: at(9) }),
+    ];
+    renderList();
+    await waitForRender();
+    expect(screen.queryByText("merged one")).not.toBeInTheDocument(); // merged sits in the collapsed tail
+    fireEvent.click(screen.getByText("Show 4 more"));
+    const titles = screen.getAllByTestId("pull-request-row").map((row) => row.querySelector("p")?.textContent);
+    expect(titles).toEqual([
+      "red one", "green new", "green old", "pending one", "draft one", "merged one", "closed one",
+    ]);
+  });
+
   it("collapses extra PR rows past the visible limit behind Show more toggle", async () => {
     mockPRs = [
       makePR({ id: "a", number: 1, title: "PR-A" }),

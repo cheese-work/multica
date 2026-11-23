@@ -28,14 +28,14 @@ jobs:
     env:
       SOURCE_SHA: ${{ inputs.namespace_source_sha }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Validate source and qualification verifier
         run: |
           python3 -m unittest discover -s scripts -p test_namespace_qualification.py -v
           python3 scripts/namespace-qualification.py check-source "$SOURCE_SHA"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.namespace_source_sha }}
           path: namespace-source
@@ -93,7 +93,7 @@ jobs:
       checks: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: '22'
@@ -139,7 +139,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -162,7 +162,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v7
@@ -205,7 +205,7 @@ jobs:
     env:
       BASE: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.pull_request.base.sha }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v7
@@ -244,7 +244,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Test the guard
@@ -286,7 +286,7 @@ jobs:
         os:
           - ${{ vars.RUNNER_CURSOR_BACKGROUND_LIFECYCLE || 'ubuntu-24.04' }} # macOS leg halted (CHE-1012): no free macOS runners
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
           go-version: "~1.27.3"
@@ -335,7 +335,7 @@ jobs:
       push_sqlc: ${{ steps.decide.outputs.push_sqlc }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Node.js
         uses: actions/setup-node@v7
@@ -343,7 +343,7 @@ jobs:
           node-version: 22
 
       - name: Test CI selection and gates
-        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/dockerfile-patches.test.mjs scripts/pr-changelog-line.test.mjs scripts/agent-adoption.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/identity-literals.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/pr-guards-guard-check.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-stale-cancel.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs scripts/background-agent-usage.test.mjs scripts/quick-ab-measure.test.mjs scripts/ci-backend-shards.test.mjs scripts/e2e-warmup-timeout.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs deploy/cd/quiescence.test.mjs
+        run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/dockerfile-patches.test.mjs scripts/pr-changelog-line.test.mjs scripts/agent-adoption.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/identity-literals.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/pr-guards-guard-check.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-stale-cancel.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs scripts/background-agent-usage.test.mjs scripts/quick-ab-measure.test.mjs scripts/ci-backend-shards.test.mjs scripts/e2e-warmup-timeout.test.mjs scripts/browser-config-manifest/manifest.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs deploy/cd/quiescence.test.mjs
 
       - name: Filter paths
         id: filter
@@ -374,7 +374,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_SQLC_CHECK || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -410,7 +410,7 @@ jobs:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
         run: bash scripts/setup-pnpm.sh
@@ -483,7 +483,7 @@ jobs:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
         run: bash scripts/setup-pnpm.sh
@@ -553,7 +553,7 @@ jobs:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Report runner CPU
         run: |
@@ -614,7 +614,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -673,7 +673,7 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_FRONTEND || 'ubuntu-24.04' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
@@ -811,7 +811,7 @@ jobs:
           fi
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         id: go
@@ -1043,7 +1043,7 @@ jobs:
       CI: "true"
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -1147,7 +1147,7 @@ jobs:
       GOFLAGS: -count=1
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         id: go
@@ -1214,7 +1214,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_GO_VULNERABILITY_SCAN || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Go
         uses: actions/setup-go@v7
@@ -1249,7 +1249,7 @@ jobs:
     steps:
       - name: Checkout
         if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.backend == 'true' }}
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # The diff-only lint mode needs the merge base, not just the tip commit.
           fetch-depth: 0
@@ -1307,7 +1307,7 @@ jobs:
     steps:
       - name: Review dependencies the PR adds
         if: ${{ github.event_name == 'pull_request' }}
-        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        uses: actions/dependency-review-action@bbc44d14a204704ccc493733616cd1e93a0321ec # v5.0.1
         with:
           fail-on-severity: high
           fail-on-scopes: runtime, development
@@ -1356,7 +1356,7 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_BACKEND || 'ubuntu-24.04' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
@@ -1398,7 +1398,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_IMAGE_BUDGET || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # The merge commit and both of its parents: the first parent is the
           # base the merge was made with (see check-image-budget.mjs).
@@ -1431,7 +1431,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Test shell installers
         run: bash scripts/install.test.sh
@@ -1465,7 +1465,7 @@ jobs:
     if: ${{ needs.changes.outputs.scripts == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
     runs-on: ${{ vars.RUNNER_SCRIPT_CHECKS || 'ubuntu-24.04' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -1550,7 +1550,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_DEPLOY_CD || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Test D2 deploy control flow
         run: bash deploy/cd/test-deploy.sh
@@ -1607,7 +1607,7 @@ jobs:
     if: ${{ needs.changes.outputs.quality_only == 'true' && !startsWith(github.head_ref || github.ref_name, 'upstream-sync/') }}
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: bash scripts/setup-pnpm.sh
       - uses: actions/setup-node@v7
         with:

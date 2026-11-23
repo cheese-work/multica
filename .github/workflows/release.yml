@@ -38,7 +38,7 @@ jobs:
           [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
           git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -134,7 +134,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -198,7 +198,7 @@ jobs:
           [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
           git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Use disposable build caches
         shell: bash
@@ -368,7 +368,7 @@ jobs:
           [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
           git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Use disposable build caches
         shell: bash
@@ -516,7 +516,7 @@ jobs:
       OCI_REGISTRY: oci://ghcr.io/${{ github.repository_owner }}/charts
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup Helm
         uses: azure/setup-helm@v5
@@ -565,7 +565,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 

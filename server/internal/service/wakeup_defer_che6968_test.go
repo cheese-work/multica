@@ -246,6 +246,13 @@ func TestDeferredThreadWakeupFiresOnRealReply(t *testing.T) {
 // A time wakeup one agent creates for another after the target's last run
 // carries a new instruction: it fires once in block even with --watch pr and
 // no PR change, because the wakeup itself never ran (CHE-6971 constraint).
+//
+// CHE-8962 narrows that constraint (Cheese decision "Allow, keep fail-open",
+// CHE-5458 comment 01a1fb5b-0648-708a-a032-b564085aeb9d): a same-agent
+// `at --watch issue` wakeup is now deferred when the issue is as its creating
+// run's claim fence recorded it (TestAtFenceF1DefersUnchangedIssue). The
+// constraint still holds here for every other input (`pr` below) and for a
+// wakeup created for another agent (TestAtFenceF7WakeupForAnotherAgentFiresOnce).
 func TestBlockFiresNewAtWakeupAgentCreatedForTarget(t *testing.T) {
 	e := newSkipEnv(t, true)
 	e.blockMode(t)

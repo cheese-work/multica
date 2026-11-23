@@ -42,6 +42,7 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `MULTICA_DATABASE_CONNECT_TIMEOUT` | `5s` | 起動時の接続試行ごとのフォールバックタイムアウト。pgx ネイティブの `connect_timeout`、`PGCONNECT_TIMEOUT`、service 設定が優先されます |
 | `PORT` | `8080` | API のリッスンポート |
 | `JWT_SECRET` | 本番環境で必須 | ログイン JWT と一部の署名フローに使うシークレット。本番では空または既知のプレースホルダーだと起動を拒否 |
+| `MULTICA_SECRETS_KEY` | 本番環境で必須 | スコープ付きシークレット用の Base64 エンコードされた 32 バイトの鍵（`openssl rand -base64 32`）。本番では未設定だと起動を拒否するため、バックアップを保管してください。任意の `MULTICA_SECRETS_KEY_PREVIOUS` はローテーション中に古いエンベロープを読めるようにします |
 | `APP_ENV` | 空 | プロダクションでは `production` を設定 |
 | `AUTH_TOKEN_TTL` | `720h`（30 日） | ブラウザ JWT と cookie の有効期間。Go duration または正の整数秒を受け付けます。セッションは有効期間の半分を過ぎるとスライド更新され、使い続けている限り失効しません。`60s` 未満は `60s` に補正されます |
 | `LOG_LEVEL` | アプリのデフォルト | ログレベル |

@@ -181,6 +181,8 @@ var concurrentIndexCleanups = map[string]string{
 	"999r_issue_step_watchdog_action_uidx":          "issue_step_watchdog_action_occurrence_uidx",
 	"975_chat_session_chain_root_idx":               "idx_chat_session_chain_root",
 	"999z_decision_backing_lane_uidx":               "decision_backing_lane_member_topic_uidx",
+	"898_issue_workspace_updated_at_idx":            "idx_issue_workspace_updated_at",
+	"899a_issue_search_text_title_grams_idx":        "idx_issue_search_text_title_grams",
 	// v0.10.0 merge (CHE-7023): migrations that build an index concurrently on up
 	// but were never registered. Without a hook an interrupted build leaves an
 	// INVALID index that `IF NOT EXISTS` skips on retry.
@@ -194,6 +196,7 @@ var concurrentIndexCleanups = map[string]string{
 	"999l_issue_wakeup_receipt_pr_event_id_idx":                 "idx_issue_wakeup_receipt_pr_event_id",
 	"99g_issue_wakeup_receipt_started_pr_event_idx":             "idx_issue_wakeup_receipt_pr_event_id_task",
 	"9999969_activity_log_status_moves_idx":                     "idx_activity_log_status_moves",
+	"9999971_issue_handoff_operation_created_idx":               "idx_issue_handoff_operation_created",
 	"910_ask_guard_event_intent_target_index":                   "idx_ask_guard_event_intent_target",
 	"911_ask_guard_event_request_index":                         "idx_ask_guard_event_cleared_by_request",
 	"915_ask_recovery_notice_event_index":                       "idx_ask_recovery_notice_event",

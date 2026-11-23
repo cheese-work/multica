@@ -42,6 +42,7 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `MULTICA_DATABASE_CONNECT_TIMEOUT` | `5s` | 시작 중 각 연결 시도의 폴백 제한 시간. pgx 기본 `connect_timeout`, `PGCONNECT_TIMEOUT` 또는 service 설정이 우선 적용됨 |
 | `PORT` | `8080` | API listen port |
 | `JWT_SECRET` | 프로덕션에서 필수 | 로그인 JWT와 일부 서명 절차에서 사용하는 키. 프로덕션에서는 비어 있거나 알려진 자리표시자 값으로 부팅 거부 |
+| `MULTICA_SECRETS_KEY` | 프로덕션에서 필수 | 범위별 시크릿용 Base64 인코딩 32바이트 키(`openssl rand -base64 32`). 프로덕션에서는 없으면 부팅을 거부하므로 백업본을 보관하세요. 선택 항목인 `MULTICA_SECRETS_KEY_PREVIOUS`는 키 교체 중 이전 봉투를 계속 읽을 수 있게 합니다 |
 | `APP_ENV` | 비어 있음 | 프로덕션 환경에서는 `production`으로 설정 |
 | `AUTH_TOKEN_TTL` | `720h`(30일) | 브라우저 JWT와 cookie 유효 기간. Go duration 또는 양의 정수 초 허용. 세션은 유효 기간의 절반이 지나면 슬라이딩 갱신되어, 계속 사용하는 동안에는 만료되지 않습니다. `60s` 미만은 `60s`로 조정됩니다 |
 | `LOG_LEVEL` | 앱 기본값 | 로그 수준 |

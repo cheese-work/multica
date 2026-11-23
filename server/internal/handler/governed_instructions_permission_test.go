@@ -405,7 +405,7 @@ func TestUpdateProject_AgentActorCanWriteOtherFields(t *testing.T) {
 	})
 
 	req := withURLParam(newRequest(http.MethodPut, "/api/projects/"+projectID, map[string]any{
-		"status": "in_progress",
+		"priority": "high",
 	}), "id", projectID)
 	req = asAgentActor(req, hostAgentID, hostTaskID)
 

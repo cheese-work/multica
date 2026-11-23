@@ -44,6 +44,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
+	"github.com/multica-ai/multica/server/internal/secrets"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/themestore"
@@ -482,13 +483,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
-	// Fail closed until W3-4 (signer) fills the seam. The user gate (W3-8/9) reads the permission tables.
+	// Scoped secrets keyring (CHE-989). Production already refused to boot
+	// without a usable key (exitOnSecretsKeyBootError); elsewhere nil disables the feature.
+	secretsKeyring, secretsKeyStatus, _ := secrets.LoadKeyring(os.Getenv)
+	h.SecretsKeyring = secretsKeyring
+	secrets.LogKeyStatus(slog.Default(), secretsKeyStatus)
+	// Fail closed: with no signer (MULTICA_BROWSER_SIGNING_KEYS unset) mint returns ErrSignerMissing. The user gate (W3-8/9) reads the permission tables.
 	// Decisions are live: an answered decision (per lease or once per issue) is validated at every
 	// mint, renew and queued grant, and a mint with no decision opens the decision request (W3-10).
 	h.BrowserLeases = &browserlease.Service{
 		Pool: pool, Queries: queries, Gate: browserlease.StoreGate(queries), Decisions: h.BrowserLeaseDecisions(browserlease.NewDecisions(queries)),
 		Registry: browserlease.NameRegistry{Queries: queries}, Audit: handler.BrowserLeaseAudit,
-		Class3: loadBrowserClass3Deny(),
+		Class3: loadBrowserClass3Deny(), Signer: loadBrowserSigner(os.Getenv),
 	}
 	h.SearchSuggestions = handler.NewSearchSuggestions(os.Getenv("SEARCH_SUGGESTIONS_ENABLED") != "false", envPositiveInt("SEARCH_SUGGESTIONS_MAX_CONCURRENT", 4), envPositiveInt("RATE_LIMIT_SEARCH_SUGGESTIONS", 120), rdb, opts.HTTPMetrics)
 	invitationRateLimits := handler.DefaultInvitationRateLimits()
@@ -1961,6 +1967,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner"))
 					r.With(handler.RequireHumanActor).Post("/decision-gate/challenge", h.ChallengeDecisionGate)
 					r.With(handler.RequireHumanActor).Put("/decision-gate", h.SetDecisionGate)
+					// Per-gateway browser credentials (CHE-8883): owner and person only.
+					r.With(handler.RequireHumanActor).Post("/browser-gateways/{gateway}/credentials", h.IssueBrowserGatewayCredential)
+					r.With(handler.RequireHumanActor).Delete("/browser-gateways/{gateway}/credentials/{credentialId}", h.RevokeBrowserGatewayCredential)
 					// The Guard settings page edits the guard policy with a passkey (CHE-5207).
 					r.With(handler.RequireHumanActor).Post("/guard-policy/challenge", h.ChallengeGuardPolicy)
 					r.With(handler.RequireHumanActor).Put("/guard-policy", h.SetGuardPolicy)

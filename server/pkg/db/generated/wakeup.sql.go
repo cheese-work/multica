@@ -1382,7 +1382,7 @@ SELECT w.id,w.workspace_id,w.issue_id,w.agent_id,w.created_by,w.source_task_id,w
  w.interval_seconds,w.cron_expression,w.timezone,w.next_fire_at,w.enabled,w.disabled_at,w.revision,
  w.last_task_id,w.last_error,w.created_at,w.updated_at,a.name AS agent_name,source.name AS filter_agent_name,t.status AS last_task_status,
  w.expires_at,w.expiry_seconds,w.on_timeout,w.timed_out_at,
- w.condition,w.max_fires,w.fire_count,w.paused_reason,w.default_rule_key,w.watch_inputs,
+ w.condition,w.max_fires,w.fire_count,w.paused_reason,w.default_rule_key,w.watch_inputs,w.purpose,w.decision_request_id,
  (w.source_task_id IS NOT NULL)::bool AS created_by_agent,creator.name AS created_by_name,
  (CASE WHEN creator_agent.id IS NOT NULL THEN creator_agent.id END)::uuid AS source_agent_id,creator_agent.name AS source_agent_name
 FROM issue_wakeup w JOIN agent a ON a.id=w.agent_id AND a.workspace_id=w.workspace_id
@@ -1404,50 +1404,52 @@ type ListIssueWakeupsParams struct {
 }
 
 type ListIssueWakeupsRow struct {
-	ID              pgtype.UUID        `json:"id"`
-	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
-	IssueID         pgtype.UUID        `json:"issue_id"`
-	AgentID         pgtype.UUID        `json:"agent_id"`
-	CreatedBy       pgtype.UUID        `json:"created_by"`
-	SourceTaskID    pgtype.UUID        `json:"source_task_id"`
-	ParentCommentID pgtype.UUID        `json:"parent_comment_id"`
-	Instruction     string             `json:"instruction"`
-	Kind            string             `json:"kind"`
-	Mode            string             `json:"mode"`
-	EventTypes      []string           `json:"event_types"`
-	FilterActorType pgtype.Text        `json:"filter_actor_type"`
-	FilterActorID   pgtype.UUID        `json:"filter_actor_id"`
-	FilterActorName string             `json:"filter_actor_name"`
-	FilterAgentID   pgtype.UUID        `json:"filter_agent_id"`
-	FilterTaskID    pgtype.UUID        `json:"filter_task_id"`
-	IntervalSeconds pgtype.Int8        `json:"interval_seconds"`
-	CronExpression  pgtype.Text        `json:"cron_expression"`
-	Timezone        string             `json:"timezone"`
-	NextFireAt      pgtype.Timestamptz `json:"next_fire_at"`
-	Enabled         bool               `json:"enabled"`
-	DisabledAt      pgtype.Timestamptz `json:"disabled_at"`
-	Revision        int64              `json:"revision"`
-	LastTaskID      pgtype.UUID        `json:"last_task_id"`
-	LastError       pgtype.Text        `json:"last_error"`
-	CreatedAt       pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
-	AgentName       string             `json:"agent_name"`
-	FilterAgentName pgtype.Text        `json:"filter_agent_name"`
-	LastTaskStatus  pgtype.Text        `json:"last_task_status"`
-	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
-	ExpirySeconds   pgtype.Int8        `json:"expiry_seconds"`
-	OnTimeout       pgtype.Text        `json:"on_timeout"`
-	TimedOutAt      pgtype.Timestamptz `json:"timed_out_at"`
-	Condition       json.RawMessage    `json:"condition"`
-	MaxFires        pgtype.Int4        `json:"max_fires"`
-	FireCount       int32              `json:"fire_count"`
-	PausedReason    pgtype.Text        `json:"paused_reason"`
-	DefaultRuleKey  pgtype.Text        `json:"default_rule_key"`
-	WatchInputs     []string           `json:"watch_inputs"`
-	CreatedByAgent  bool               `json:"created_by_agent"`
-	CreatedByName   pgtype.Text        `json:"created_by_name"`
-	SourceAgentID   pgtype.UUID        `json:"source_agent_id"`
-	SourceAgentName pgtype.Text        `json:"source_agent_name"`
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	CreatedBy         pgtype.UUID        `json:"created_by"`
+	SourceTaskID      pgtype.UUID        `json:"source_task_id"`
+	ParentCommentID   pgtype.UUID        `json:"parent_comment_id"`
+	Instruction       string             `json:"instruction"`
+	Kind              string             `json:"kind"`
+	Mode              string             `json:"mode"`
+	EventTypes        []string           `json:"event_types"`
+	FilterActorType   pgtype.Text        `json:"filter_actor_type"`
+	FilterActorID     pgtype.UUID        `json:"filter_actor_id"`
+	FilterActorName   string             `json:"filter_actor_name"`
+	FilterAgentID     pgtype.UUID        `json:"filter_agent_id"`
+	FilterTaskID      pgtype.UUID        `json:"filter_task_id"`
+	IntervalSeconds   pgtype.Int8        `json:"interval_seconds"`
+	CronExpression    pgtype.Text        `json:"cron_expression"`
+	Timezone          string             `json:"timezone"`
+	NextFireAt        pgtype.Timestamptz `json:"next_fire_at"`
+	Enabled           bool               `json:"enabled"`
+	DisabledAt        pgtype.Timestamptz `json:"disabled_at"`
+	Revision          int64              `json:"revision"`
+	LastTaskID        pgtype.UUID        `json:"last_task_id"`
+	LastError         pgtype.Text        `json:"last_error"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	AgentName         string             `json:"agent_name"`
+	FilterAgentName   pgtype.Text        `json:"filter_agent_name"`
+	LastTaskStatus    pgtype.Text        `json:"last_task_status"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	ExpirySeconds     pgtype.Int8        `json:"expiry_seconds"`
+	OnTimeout         pgtype.Text        `json:"on_timeout"`
+	TimedOutAt        pgtype.Timestamptz `json:"timed_out_at"`
+	Condition         json.RawMessage    `json:"condition"`
+	MaxFires          pgtype.Int4        `json:"max_fires"`
+	FireCount         int32              `json:"fire_count"`
+	PausedReason      pgtype.Text        `json:"paused_reason"`
+	DefaultRuleKey    pgtype.Text        `json:"default_rule_key"`
+	WatchInputs       []string           `json:"watch_inputs"`
+	Purpose           pgtype.Text        `json:"purpose"`
+	DecisionRequestID pgtype.UUID        `json:"decision_request_id"`
+	CreatedByAgent    bool               `json:"created_by_agent"`
+	CreatedByName     pgtype.Text        `json:"created_by_name"`
+	SourceAgentID     pgtype.UUID        `json:"source_agent_id"`
+	SourceAgentName   pgtype.Text        `json:"source_agent_name"`
 }
 
 func (q *Queries) ListIssueWakeups(ctx context.Context, arg ListIssueWakeupsParams) ([]ListIssueWakeupsRow, error) {
@@ -1500,6 +1502,8 @@ func (q *Queries) ListIssueWakeups(ctx context.Context, arg ListIssueWakeupsPara
 			&i.PausedReason,
 			&i.DefaultRuleKey,
 			&i.WatchInputs,
+			&i.Purpose,
+			&i.DecisionRequestID,
 			&i.CreatedByAgent,
 			&i.CreatedByName,
 			&i.SourceAgentID,

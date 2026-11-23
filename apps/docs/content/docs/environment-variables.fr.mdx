@@ -42,6 +42,7 @@ Vous devez aussi choisir un service d'e-mail ; sinon, les codes de vérification
 | `MULTICA_DATABASE_CONNECT_TIMEOUT` | `5s` | Délai de repli pour chaque tentative de connexion au démarrage ; le `connect_timeout` natif de pgx, `PGCONNECT_TIMEOUT` ou les paramètres de service sont prioritaires |
 | `PORT` | `8080` | Port d'écoute de l'API |
 | `JWT_SECRET` | obligatoire en production | Secret des JWT de connexion et de certains flux de signature ; en production, le démarrage est refusé si la valeur est vide ou correspond à une valeur d'exemple connue |
+| `MULTICA_SECRETS_KEY` | obligatoire en production | Clé de 32 octets encodée en base64 pour les secrets à portée (`openssl rand -base64 32`) ; en production, le démarrage est refusé sans elle, conservez donc une copie de sauvegarde. `MULTICA_SECRETS_KEY_PREVIOUS` (facultative) garde les anciennes enveloppes lisibles pendant la rotation |
 | `APP_ENV` | vide | Définissez `production` en production |
 | `AUTH_TOKEN_TTL` | `720h` (30 jours) | Durée de vie des JWT et des cookies du navigateur ; accepte une durée Go ou un nombre entier positif de secondes. Les sessions sont glissantes : une session utilisée en continu est réémise au lieu d'expirer, à partir de la moitié de sa durée de vie. Les valeurs inférieures à `60s` sont ramenées à `60s` |
 | `LOG_LEVEL` | valeur par défaut de l'application | Niveau de journalisation |

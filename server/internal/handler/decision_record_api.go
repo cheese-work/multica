@@ -61,6 +61,7 @@ func (handler *Handler) createDecisionRecordComment(writer http.ResponseWriter, 
 	handler.publish(protocol.EventCommentCreated, workspaceID, "agent", agentID, map[string]any{"comment": response, "issue_title": issue.Title, "issue_status": issue.Status})
 	handler.TaskService.PublishThreadUnresolvedOnReply(result.ClearedComments, workspaceID, "agent", agentID)
 	handler.publishDecisionAnswerUpdated(workspaceID, "agent", agentID, result.Answer.ID, issue.ID, decisionAnswerState(result.Answer.WokenAt, result.Answer.DisclaimedAt))
+	handler.loopBackDecisionAnswer(request.Context(), result.Request, result.Answer, result.Request.HumanUserID)
 	handler.publishChatFor(protocol.EventChatMessage, workspaceID, "agent", agentID, uuidToString(result.Request.HumanUserID), uuidToString(result.Message.ChatSessionID), protocol.ChatMessagePayload{
 		MessageKind:   result.Message.MessageKind,
 		ChatSessionID: uuidToString(result.Message.ChatSessionID), MessageID: uuidToString(result.Message.ID), Role: result.Message.Role, Content: result.Message.Content, CreatedAt: timestampToString(result.Message.CreatedAt),

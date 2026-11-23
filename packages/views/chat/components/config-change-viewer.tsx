@@ -6,10 +6,58 @@ import { useT } from "../../i18n";
 import { DiffRows } from "./diff-hunks";
 
 // The value that will be written, as the server stored it: text as is, lines one per row, JSON indented.
-function resultText({ diff_kind, after }: DecisionConfigChange): string {
+function wholeText({ diff_kind, after }: DecisionConfigChange): string {
   if (typeof after === "string") return after;
   if (diff_kind === "lines" && Array.isArray(after)) return after.map(String).join("\n");
   return JSON.stringify(after, null, 2) ?? "";
+}
+
+type SectionItem = { name: string; start_line?: number; end_line?: number };
+
+// The server's section scope (meta.section), or undefined when it is absent or malformed.
+function sectionScope(meta: DecisionConfigChange["meta"]): { kind: string; items: SectionItem[] } | undefined {
+  const section = meta?.section;
+  if (typeof section !== "object" || section === null) return undefined;
+  const { kind, items } = section as { kind?: unknown; items?: unknown };
+  if (typeof kind !== "string" || !Array.isArray(items) || items.length === 0) return undefined;
+  const wellFormed = items.every((item) => typeof item === "object" && item !== null && typeof (item as SectionItem).name === "string");
+  return wellFormed ? { kind, items: items as SectionItem[] } : undefined;
+}
+
+// Only the section the server says changed, as written. Anything the scope does not fit (a range past
+// the text, a step or key the value lacks, an unknown kind) opens the whole value: showing more is safe.
+function sectionText(change: DecisionConfigChange): string | undefined {
+  const scope = sectionScope(change.meta);
+  if (!scope) return undefined;
+  const { after } = change;
+  const names = new Set(scope.items.map((item) => item.name));
+  switch (scope.kind) {
+    case "heading": {
+      if (typeof after !== "string") return undefined;
+      const lines = after.replace(/\r\n/g, "\n").replace(/\n$/, "").split("\n");
+      const chunks = scope.items.map(({ start_line: start, end_line: end }) =>
+        Number.isInteger(start) && Number.isInteger(end) && start! >= 1 && start! <= end! && end! <= lines.length
+          ? lines.slice(start! - 1, end!).join("\n")
+          : undefined);
+      return chunks.every((chunk) => chunk !== undefined) ? chunks.join("\n\n") : undefined;
+    }
+    case "step": {
+      if (!Array.isArray(after)) return undefined;
+      const steps = after.filter((step) => typeof step === "object" && step !== null && names.has((step as { status_key?: string }).status_key ?? ""));
+      return steps.length === names.size ? JSON.stringify(steps, null, 2) : undefined;
+    }
+    case "key": {
+      if (typeof after !== "object" || after === null || Array.isArray(after)) return undefined;
+      const picked = Object.fromEntries(Object.entries(after).filter(([key]) => names.has(key)));
+      return Object.keys(picked).length === names.size ? JSON.stringify(picked, null, 2) : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+function resultText(change: DecisionConfigChange): string {
+  return sectionText(change) ?? wholeText(change);
 }
 
 // The server's counts of a text change, in the unit it counted in. Shown as sent, never recounted;
@@ -25,7 +73,8 @@ function serverCounts(meta: DecisionConfigChange["meta"]): { before: number; aft
  * The "you are approving" viewer for a config change (design direction B v9). It shows what the server
  * stored as the preview: the field, the target, the changed rows only (old struck through, new in a
  * chip; `DiffRows`, built on the same hunks as the artifact viewer) and a Show full button that opens
- * the value that will be written, with no − or + marks. Everything is rendered as text.
+ * the value that will be written, only the changed section when the server scoped one (CHE-5703),
+ * with no − or + marks. Everything is rendered as text.
  */
 export function ConfigChangeViewer({ change }: { change: DecisionConfigChange }) {
   const { t } = useT("chat");

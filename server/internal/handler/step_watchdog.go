@@ -19,7 +19,7 @@ import (
 
 // The step watchdog (CHE-6116) finds an issue that waited in a handler step
 // with no run, and says why no run came. The block and shadow actions are here;
-// re-dispatch is a later slice; the notice to requested_by is in step_watchdog_notice.go.
+// re-dispatch goes through a handoff intent; the notice to requested_by is in step_watchdog_notice.go.
 
 // stepWatchdogMinAge is how long an issue may sit in its status occurrence
 // before the watchdog looks at it.
@@ -202,8 +202,8 @@ func (h *Handler) sweepStepWatchdog(ctx context.Context, limit int32) error {
 		}
 		action := "would_act"
 		if mode == stepWatchdogOn {
-			if class.Case != stepCaseBlockBudget {
-				return false, nil // re-dispatch and notice are later slices
+			if class.Case == stepCaseNotifyOnly {
+				return false, nil // notify_only is a later slice
 			}
 			action = string(class.Case)
 		}
@@ -230,14 +230,16 @@ func (h *Handler) sweepStepWatchdog(ctx context.Context, limit int32) error {
 	return errors.Join(failures, h.deliverOwedStepNotices(ctx, limit))
 }
 
-// actOnStep acts once per (issue, status occurrence, action). Only the budget
-// block acts in on mode so far; sweepStepWatchdog keeps the other cases out.
+// actOnStep acts once per (issue, status occurrence, action). The budget block
+// and the re-dispatch act in on mode; sweepStepWatchdog keeps notify_only out.
 func (h *Handler) actOnStep(ctx context.Context, c stepCandidate, class stepClass, mode string) error {
 	switch {
 	case mode == stepWatchdogShadow:
 		return h.recordWouldAct(ctx, c, class)
 	case class.Case == stepCaseBlockBudget:
 		return h.blockBudgetRefused(ctx, c, class)
+	case class.Case == stepCaseRedispatch:
+		return h.redispatchStep(ctx, c, class)
 	}
 	return nil
 }
@@ -258,30 +260,31 @@ func stepOccurrenceKey(ctx context.Context, q *db.Queries, issueID pgtype.UUID) 
 // claimStepAction locks the issue, checks that it still sits in the occurrence
 // the candidate was read in, and claims the action in the caller's transaction.
 // A moved issue or a lost claim returns an error that stepWatchdogSkipped reads.
-func claimStepAction(ctx context.Context, q *db.Queries, c stepCandidate, action string, details map[string]any) (db.Issue, error) {
+func claimStepAction(ctx context.Context, q *db.Queries, c stepCandidate, action string, details map[string]any) (db.Issue, pgtype.UUID, error) {
 	locked, err := q.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{ID: c.Issue.ID, WorkspaceID: c.Issue.WorkspaceID})
 	if err != nil {
-		return db.Issue{}, err
+		return db.Issue{}, pgtype.UUID{}, err
 	}
 	key, err := stepOccurrenceKey(ctx, q, c.Issue.ID)
 	if err != nil {
-		return db.Issue{}, err
+		return db.Issue{}, pgtype.UUID{}, err
 	}
 	if key != c.OccurrenceKey || locked.Status != c.Issue.Status {
-		return db.Issue{}, fmt.Errorf("step watchdog: the issue left the status occurrence: %w", pgx.ErrNoRows)
+		return db.Issue{}, pgtype.UUID{}, fmt.Errorf("step watchdog: the issue left the status occurrence: %w", pgx.ErrNoRows)
 	}
 	body, err := json.Marshal(details)
 	if err != nil {
-		return db.Issue{}, err
+		return db.Issue{}, pgtype.UUID{}, err
 	}
-	if _, err := q.ClaimStepWatchdogAction(ctx, db.ClaimStepWatchdogActionParams{
+	id, err := q.ClaimStepWatchdogAction(ctx, db.ClaimStepWatchdogActionParams{
 		ID: dbid.NewV7(), WorkspaceID: c.Issue.WorkspaceID, IssueID: c.Issue.ID, OccurrenceKey: key, Action: action, Details: body,
-	}); errors.Is(err, pgx.ErrNoRows) {
-		return db.Issue{}, errStepWatchdogClaimed
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return db.Issue{}, pgtype.UUID{}, errStepWatchdogClaimed
 	} else if err != nil {
-		return db.Issue{}, err
+		return db.Issue{}, pgtype.UUID{}, err
 	}
-	return locked, nil
+	return locked, id, nil
 }
 
 // stepWatchdogSkipped reports a lost race, not a failure: another sweeper acted,
@@ -307,7 +310,7 @@ func (h *Handler) recordWouldAct(ctx context.Context, c stepCandidate, class ste
 	details := stepClassDetails(c, class)
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
-		if _, err := claimStepAction(ctx, q, c, "would_act", details); err != nil {
+		if _, _, err := claimStepAction(ctx, q, c, "would_act", details); err != nil {
 			return err
 		}
 		body, _ := json.Marshal(details)
@@ -349,7 +352,7 @@ func (h *Handler) blockBudgetRefused(ctx context.Context, c stepCandidate, class
 	reason, label := budgetBlockReason(class.Refusal)
 	var comment db.Comment
 	guard := func(ctx context.Context, q *db.Queries, params *db.UpdateIssueParams) error {
-		locked, err := claimStepAction(ctx, q, c, string(stepCaseBlockBudget), stepClassDetails(c, class))
+		locked, _, err := claimStepAction(ctx, q, c, string(stepCaseBlockBudget), stepClassDetails(c, class))
 		if err != nil {
 			return err
 		}
@@ -393,4 +396,41 @@ func (h *Handler) blockBudgetRefused(ctx context.Context, c stepCandidate, class
 		h.publishIdleGuardComment(ctx, issue.WorkspaceID, issue.ID, comment)
 	}
 	return nil
+}
+
+// redispatchStep starts the step's handler once more, through a persisted
+// handoff intent. The ledger claim and the intent commit together, so a crash
+// between them leaves neither; the unique run link on the intent makes the
+// dispatch start at most one run, however often it is tried. The notice this
+// action owes is delivered by the owed-notice pass, not by this function, so
+// it does not depend on what the run does.
+func (h *Handler) redispatchStep(ctx context.Context, c stepCandidate, class stepClass) error {
+	var intentID pgtype.UUID
+	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
+		q := h.Queries.WithTx(tx)
+		locked, ledgerID, err := claimStepAction(ctx, q, c, string(stepCaseRedispatch), stepClassDetails(c, class))
+		if err != nil {
+			return err
+		}
+		if locked.AssigneeType != c.Issue.AssigneeType || locked.AssigneeID != c.Issue.AssigneeID {
+			return fmt.Errorf("step watchdog: the issue changed hands: %w", pgx.ErrNoRows)
+		}
+		intent, err := q.CreateHandoffDispatch(ctx, db.CreateHandoffDispatchParams{
+			ID: dbid.NewV7(), WorkspaceID: locked.WorkspaceID, IssueID: locked.ID,
+			StatusHistoryID: optionalActorUUID(c.OccurrenceKey), // zero for a created:<id> key
+			TargetType:      locked.AssigneeType.String, TargetID: locked.AssigneeID,
+			ActorType: "system", ContextCommentIds: []pgtype.UUID{}, HandoffWrite: "watchdog:" + uuidToString(ledgerID),
+		})
+		intentID = intent.ID
+		return err
+	})
+	if stepWatchdogSkipped(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// A failed dispatch leaves the intent pending for the handoff recovery sweep.
+	_, err = h.dispatchHandoffIntent(ctx, intentID)
+	return err
 }

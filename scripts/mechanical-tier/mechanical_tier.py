@@ -21,7 +21,9 @@ Trust model
 Tiers (evaluated Tier 2 first, Tier 0 second, Tier 1 last; the highest match wins)
   2  protected path or capability, malformed path, incomplete coverage, untrusted classifier/registry, empty change
   0  every changed old/new path is on the inert allowlist, nothing else matched, no symlink/submodule, AND every
-     applicable required check reported success on the exact head SHA (at least one exists)
+     applicable required check reported success on the exact head SHA (at least one exists). A skipped check counts
+     only when the registry's `path_gated_checks` names its CI path filters (`.github/ci-paths.json` at the base) and
+     none matches a changed path; at least one required check must still have succeeded
   1  everything else with complete coverage (including Tier-0-eligible work whose CI evidence is not a clean success)
 
 Coverage limit: this classifier implements path rules only. It has no language scanner. Coverage is complete for a
@@ -41,6 +43,7 @@ from pathlib import Path
 SCHEMA = "mechanical-tier-receipt/1"
 CLASSIFIER_PATH = "scripts/mechanical-tier/mechanical_tier.py"
 REGISTRY_PATH = "scripts/mechanical-tier/registry.json"
+CI_PATHS_PATH = ".github/ci-paths.json"      # the path filters the CI workflow's `changes` job applies; read at the base revision
 POLICY_STATE = "proposed; no waiver is active until the CHE-1286 owner rollout is read back"
 # Built-in floor: the registry can add to it, never remove from it.
 FLOOR_RULES = [
@@ -107,7 +110,7 @@ class Registry:
         except ValueError as e:
             raise Malformed(f"registry is not JSON: {e}")
         if not isinstance(d, dict) or d.get("schema") != 1 or not set(d) <= {"schema", "note", "tier2", "sensitive_tokens",
-                                                                              "tier0_allowlist", "covered_scopes"}:
+                                                                              "tier0_allowlist", "covered_scopes", "path_gated_checks"}:
             raise Malformed("registry has an unknown schema or key")
         try:
             self.rules = []
@@ -122,6 +125,13 @@ class Registry:
                 raise Malformed("registry sensitive_tokens must be lowercase words")
             self.tokens = FLOOR_TOKENS | set(toks)
             self.allow = [glob_re(g) for g in _globs(d["tier0_allowlist"], "tier0_allowlist")]
+            self.path_gated = {}
+            for g in d.get("path_gated_checks", []):
+                if not isinstance(g, dict) or set(g) != {"check", "filters"} or not isinstance(g["check"], str) or not g["check"] \
+                        or not isinstance(g["filters"], list) or not g["filters"] \
+                        or not all(isinstance(f, str) and f for f in g["filters"]) or g["check"] in self.path_gated:
+                    raise Malformed(f"registry path_gated_checks entry is malformed: {g!r}")
+                self.path_gated[g["check"]] = g["filters"]
             self.covered = []
             for s in d["covered_scopes"]:
                 if set(s) != {"id", "glob", "analysis"} or s["analysis"] not in SUPPORTED_ANALYSES:
@@ -231,6 +241,45 @@ def _ci_block(ci, head):
     return ci
 
 
+def _path_filters(repo, base):
+    """{filter name: [compiled globs]} from the base revision's CI path filters. A filter that is missing or uses anything
+    but plain globs is left out, so a check that depends on it gets no acceptance."""
+    raw = blob(repo, base, CI_PATHS_PATH)
+    try:
+        doc = json.loads(raw.decode("utf-8")) if raw is not None else {}
+    except (ValueError, UnicodeDecodeError):
+        return {}
+    out = {}
+    for name, globs in (doc.items() if isinstance(doc, dict) else ()):
+        try:
+            if isinstance(globs, list) and globs and all(isinstance(g, str) and not g.startswith("!") for g in globs):
+                out[name] = [glob_re(g) for g in _globs(globs, name)]
+        except Malformed:
+            pass
+    return out
+
+
+def _accept_path_gated_skips(ci, reg, filters, paths):
+    """A skipped required check counts as acceptable only when the registry names its CI path filters and none of them
+    matches a changed path (the job was skipped because its scope did not change). Every other skip stays `skipped`.
+    At least one required check must still have succeeded. Returns `ci` itself when nothing was accepted."""
+    checks = ci.get("checks")
+    if ci.get("source") != "github-api" or not isinstance(checks, list):
+        return ci
+    accepted = set()
+    for c in checks:
+        names = reg.path_gated.get(c.get("name")) if c.get("state") == "skipped" else None
+        if names and all(n in filters for n in names) and not any(rx.match(p) for n in names for rx in filters[n] for p in paths):
+            accepted.add(c["name"])
+    if not accepted:
+        return ci
+    rest = {c["state"] for c in checks if c["name"] not in accepted}
+    state = next((s for s in CI_PRIORITY if s in rest), "skipped")      # every check accepted: none succeeded
+    return {**ci, "state": state, "passed": state == "success", "blocking_state": state if state in CI_BLOCKING else None,
+            "checks": [{**c, "path_gated": True} if c["name"] in accepted else c for c in checks],
+            "notes": ci.get("notes", []) + [f"skipped, and no changed path matches its CI path filter: {', '.join(sorted(accepted))}"]}
+
+
 def classify(repo, base, head, ci=None):
     """`ci` is evidence from fetch_ci, None, or a callable `head -> evidence`. A callable runs inside the fail-closed
     guard after both revisions validate, so a collection error still yields a Tier 2 receipt."""
@@ -324,7 +373,7 @@ def _classify(repo, base, head, r):
     uncovered = sorted({p for p, _ in uniq if not reg.covered_by_scope(p)})
     r["coverage"] = {"complete": not (uncovered or why_incomplete or reasons), "uncovered": uncovered,
                      "reasons": why_incomplete + reasons}
-    ci = r["ci"]
+    r["ci"] = ci = _accept_path_gated_skips(r["ci"], reg, _path_filters(repo, base), [p for p, _ in uniq])
     if reasons or effective or not r["coverage"]["complete"]:
         r["tier"] = 2
         if effective:
@@ -332,7 +381,7 @@ def _classify(repo, base, head, r):
         reasons += why_incomplete + ([f"no registered coverage: {', '.join(uncovered)}"] if uncovered else [])
     elif all_inert and not special and ci["passed"]:
         r["tier"] = 0
-        reasons.append("every old/new path is inert and every required check succeeded on the exact head")
+        reasons.append("every old/new path is inert and every required check succeeded on the exact head, or was skipped by a path filter that matches no changed path")
     else:
         r["tier"] = 1
         reasons.append("complete coverage, no Tier 2 match" if not all_inert or special else

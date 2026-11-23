@@ -466,7 +466,10 @@ type Daemon struct {
 	client     *Client
 	repoCache  repoCacheBackend
 	skillCache *SkillBundleCache
-	logger     *slog.Logger
+	// launcher starts agent runs in the sandbox under enforcement on (CHE-6504);
+	// nil under off and audit.
+	launcher runLauncher
+	logger   *slog.Logger
 
 	// gitCALastErr is the last applyGitCACerts failure, so a persistent one
 	// (e.g. on Windows) is logged once rather than on every repo refresh.
@@ -851,6 +854,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	agent.SetRestrictedEnv(cfg.SandboxMode == sandbox.ModeOn)
 	d := &Daemon{
 		cfg:                         cfg,
+		launcher:                    newRunLauncher(cfg.SandboxMode, logger),
 		startedAt:                   time.Now(),
 		hostSampler:                 newHostSampler(newProcHostCollector()),
 		client:                      client,
@@ -8613,6 +8617,14 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if task.WorkspaceID == "" {
 		return TaskResult{}, fmt.Errorf("refusing to spawn agent: task has no workspace_id (task_id=%s)", task.ID)
 	}
+	// Under enforcement on, a task that cannot start in the sandbox stops here,
+	// before the background early return below. Script tasks have no model
+	// provider and get their own sandbox path (CHE-6507).
+	if task.Script == nil {
+		if err := d.requireSandboxLaunch(ctx, provider); err != nil {
+			return TaskResult{}, err
+		}
+	}
 	// CHE-4101: an output_only background task never enters the full pipeline.
 	if task.BackgroundJob != "" {
 		return d.runBackgroundTask(ctx, task, provider, taskLog)
@@ -9655,7 +9667,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		return TaskResult{}, fmt.Errorf("prepare restricted home: %w", err)
 	}
 	defer homeDone()
-	runBrk, err := applyRunBroker(d.cfg.SandboxMode, runIsolated, d.cfg.Broker, agentEnv, taskLog)
+	runBrk, err := applyRunBroker(d.cfg.SandboxMode, d.isolated(ctx), d.cfg.Broker, agentEnv, taskLog)
 	if err != nil {
 		return TaskResult{}, fmt.Errorf("prepare run broker: %w", err)
 	}
@@ -9670,7 +9682,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// Front gh and git with the guard shims for every runtime (CHE-5194 T2).
 	// After applyRunBroker, so the guard hands over to the broker shims and
 	// never around them. A failure only costs the guard, never the run.
-	if _, err := frontGuardShims(agentEnv, taskTempDir, selfBin); err != nil {
+	guardShimDir, err := frontGuardShims(agentEnv, taskTempDir, selfBin)
+	if err != nil {
 		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
 	}
 	if provider == "reasonix" {
@@ -9716,6 +9729,21 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	// families go through New. This is the single production boundary — the
 	// daemon never calls agent.New or agent.NewRuntime directly, so the two
 	// factories stay meaning exactly one thing each.
+	// Under enforcement on the agent starts through sandbox.Launcher (CHE-6504):
+	// the hook wraps each process the backend starts. Off and audit leave
+	// Launch nil, so the launch is unchanged.
+	agentExe, lookErr := exec.LookPath(entry.Path)
+	if lookErr != nil {
+		agentExe = entry.Path
+	}
+	runLaunch, err := d.startRunLaunch(runLaunchInput{
+		Task: task, Provider: provider, WorkDir: env.WorkDir, TempDir: taskTempDir, Env: agentEnv,
+		AgentExe: agentExe, GuardShimDir: guardShimDir, Broker: runBrk, DaemonExe: selfBin,
+	}, taskLog)
+	if err != nil {
+		return TaskResult{}, fmt.Errorf("prepare sandbox launch: %w", err)
+	}
+	defer runLaunch.Close(taskLog)
 	backendConfig := agent.Config{
 		ExecutablePath: entry.Path,
 		LaunchPrefix:   profileFixedArgs,
@@ -9727,6 +9755,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		DaemonVersion:  d.cfg.CLIVersion,
 		CodexVersion:   codexVersion,
 		BuiltinRuntime: !usesCustomProfileCommand,
+	}
+	if runLaunch != nil {
+		backendConfig.Launch = runLaunch.hook
 	}
 	if provider == "codex" && d.cfg.RunBindingsDir != "" && task.IssueIdentifier != "" {
 		backendConfig.RunBinding = &runbinding.Spec{Dir: d.cfg.RunBindingsDir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}

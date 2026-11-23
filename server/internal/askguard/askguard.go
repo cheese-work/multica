@@ -44,6 +44,10 @@ const (
 	ModeOff   Mode = "off"
 	ModeWarn  Mode = "warn"
 	ModeBlock Mode = "block"
+	// ModeMove marks an operation the server routed instead of refusing (the
+	// long-thread route, CHE-6432). Never a workspace setting, so ParseMode
+	// does not accept it; the recovery and repair workers read block rows only.
+	ModeMove Mode = "move"
 )
 
 // ParseMode accepts exactly the three mode names.
@@ -174,6 +178,14 @@ func (g Guard) RecordWarn(ctx context.Context, workspaceID pgtype.UUID, op Op) e
 // same payload a no-op. It writes no metric: it is not a guard hit.
 func (g Guard) RecordNotice(ctx context.Context, workspaceID pgtype.UUID, op Op) error {
 	_, _, err := g.record(ctx, workspaceID, ModeBlock, op)
+	return err
+}
+
+// RecordMove stores a routed operation as a move event. Like RecordNotice,
+// Queries may be bound to the caller's transaction, so the event commits with
+// the comment it describes. It writes no metric: it is not a guard hit.
+func (g Guard) RecordMove(ctx context.Context, workspaceID pgtype.UUID, op Op) error {
+	_, _, err := g.record(ctx, workspaceID, ModeMove, op)
 	return err
 }
 

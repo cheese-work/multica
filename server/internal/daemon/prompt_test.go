@@ -2296,6 +2296,44 @@ func TestBuildCommentPromptEmbedsTriggerThreadContext(t *testing.T) {
 	}
 }
 
+// CHE-9042 (retro R10): a repeated member message says so, once, with the
+// earlier ids. A first-time message renders exactly what it rendered before.
+func TestBuildCommentPromptRendersTriggerRepeat(t *testing.T) {
+	task := Task{
+		IssueID:               "issue-repeat-1",
+		TriggerCommentID:      "c3",
+		TriggerThreadID:       "c3",
+		TriggerCommentContent: "please fix the routing",
+		TriggerAuthorType:     "member",
+		TriggerAuthorName:     "Cheese",
+	}
+	base := BuildPrompt(task, "codex")
+	if strings.Contains(base, "repeated") {
+		t.Fatalf("first-time message must render no repeat line:\n%s", base)
+	}
+	task.TriggerRepeatCount = 2
+	task.TriggerRepeatIDs = []string{"c1", "c2"}
+	out := BuildPrompt(task, "codex")
+	want := "Cheese repeated this message: it was sent 2 time(s) before (earlier comments: c1, c2)."
+	if strings.Count(out, "repeated this message") != 1 || !strings.Contains(out, want) {
+		t.Fatalf("prompt missing single repeat line %q:\n%s", want, out)
+	}
+	if strings.Replace(out, want+"\n\n", "", 1) != base {
+		t.Fatalf("repeat line must be the only change to the prompt:\n%s", out)
+	}
+}
+
+// The claim JSON the server sends decodes into the fields the prompt reads.
+func TestTaskDecodesTriggerRepeat(t *testing.T) {
+	var task Task
+	if err := json.Unmarshal([]byte(`{"trigger_repeat_count":2,"trigger_repeat_ids":["c1","c2"]}`), &task); err != nil {
+		t.Fatal(err)
+	}
+	if task.TriggerRepeatCount != 2 || len(task.TriggerRepeatIDs) != 2 {
+		t.Fatalf("decoded %d %v", task.TriggerRepeatCount, task.TriggerRepeatIDs)
+	}
+}
+
 // A sub-issue's run is pointed at its parent whatever started it (MUL-8441).
 // The claim JSON decodes into the block, a resumed session gets the short form
 // that still names the commands, and a run without a parent is unchanged.

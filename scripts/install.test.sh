@@ -269,6 +269,8 @@ FRONTEND_PORT=3000
 JWT_SECRET=change-me-in-production
 POSTGRES_PASSWORD=multica
 DATABASE_URL=postgres://multica:multica@localhost:5432/multica?sslmode=disable
+MULTICA_SECRETS_KEY=
+MULTICA_SECRETS_KEY_PREVIOUS=
 ENVFILE
   touch "$server_dir/docker-compose.selfhost.yml"
 
@@ -382,7 +384,15 @@ exit 0
 STUB
   chmod +x "$stub_bin/curl"
 
-  printf '#!/usr/bin/env bash\nhead -c 32 /dev/zero | od -An -tx1 | tr -d " \\n"\n' >"$stub_bin/openssl"
+  # openssl: `rand -base64 32` answers a 44-char base64 value with "/" and "="
+  # (the characters that break a "/"-delimited sed); `rand -hex` answers hex.
+  cat >"$stub_bin/openssl" <<'STUB'
+#!/usr/bin/env bash
+case "$*" in
+  *-base64*) printf 'ab/cdefghijklmnopqrstuvwxyz0123456789ABCDEF=\n' ;;
+  *) head -c 32 /dev/zero | od -An -tx1 | tr -d " \n" ;;
+esac
+STUB
   chmod +x "$stub_bin/openssl"
 }
 
@@ -470,6 +480,32 @@ empty env-file BACKEND_PORT falls through|s/^PORT=8080/PORT=9100/;s/^# BACKEND_P
     fi
     _require_server_ports "$tmp" "$label" "$expect_backend" "$expect_frontend" || return 1
   done <<<"$cases"
+}
+
+test_with_server_generates_secrets_key_once() {
+  local tmp line
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  _setup_server_sandbox "$tmp"
+  _run_with_server "$tmp" || return 1
+  line="$(grep -E '^MULTICA_SECRETS_KEY=' "$tmp/server/.env")"
+  if ! [[ "$line" =~ ^MULTICA_SECRETS_KEY=[A-Za-z0-9+/]{43}=$ ]]; then
+    echo "fresh .env must carry a 44-char base64 MULTICA_SECRETS_KEY, got: $line" >&2
+    return 1
+  fi
+  if grep -q '^MULTICA_SECRETS_KEY_PREVIOUS=.' "$tmp/server/.env"; then
+    echo "MULTICA_SECRETS_KEY_PREVIOUS must stay empty" >&2
+    return 1
+  fi
+
+  # An existing .env is left alone.
+  printf 'MULTICA_SECRETS_KEY=keep-me\n' >"$tmp/server/.env"
+  _run_with_server "$tmp" || return 1
+  if [ "$(cat "$tmp/server/.env")" != "MULTICA_SECRETS_KEY=keep-me" ]; then
+    echo "existing .env was modified" >&2
+    return 1
+  fi
 }
 
 test_with_server_fails_when_compose_port_is_unavailable() {
@@ -947,6 +983,7 @@ test_brew_tap_failure_falls_back_to_release_binary
 test_remote_ssh_install_prints_token_login_hint
 test_local_install_does_not_print_token_login_hint
 test_with_server_uses_compose_published_ports
+test_with_server_generates_secrets_key_once
 test_with_server_fails_when_compose_port_is_unavailable
 test_tty_download_renders_known_size_bar
 test_tty_download_renders_unknown_size_line

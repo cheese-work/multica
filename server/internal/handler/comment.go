@@ -18,6 +18,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/askguard"
 	"github.com/multica-ai/multica/server/internal/attribution"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/decisiontx"
@@ -110,6 +111,9 @@ type CommentResponse struct {
 	// can show "comment posted, but N targets were not triggered".
 	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes,omitempty"`
 	Hints           []string                `json:"hints,omitempty"`
+	// Placement is set when the server routed the comment away from the thread
+	// it named (long-thread route, CHE-6432).
+	Placement *CommentPlacement `json:"placement,omitempty"`
 	// StatusAnswer is populated only when this comment's content exactly
 	// matched one of the five reserved status-query phrases (CHE-487 Unit
 	// D1): "status", "eta", "active runs", "ci", "pr head". When set, agent
@@ -1523,6 +1527,9 @@ type CreateCommentRequest struct {
 	// FromThread opens the comment as a new root that links back to the thread
 	// of the named comment on this issue (T5a, CHE-6429).
 	FromThread string `json:"from_thread"`
+	// ResolveThread says the author will resolve the thread with its next call
+	// (`--resolve-thread`). The long-thread route then posts in place (T5b).
+	ResolveThread bool `json:"resolve_thread"`
 	// Ask and NoAsk are the typed audience of a comment on a waiting issue
 	// (S4, CHE-7289): the member who acts next, or none. They never combine.
 	Ask              string   `json:"ask"`
@@ -1832,6 +1839,27 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// decision_card_thread=on (T3): a decision-intent tag comment is the card's
+	// first comment, so it opens a new root. The parent it was given becomes the
+	// source thread, exactly as with from_thread.
+	cardThreadSource := ""
+	if req.DecisionIntent && req.FromThread == "" && req.ParentID != nil {
+		workspace, err := h.Queries.GetWorkspace(r.Context(), issue.WorkspaceID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to load workspace settings")
+			return
+		}
+		on, err := decisiontx.CardThreadOn(workspace.Settings)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to read decision_card_thread")
+			return
+		}
+		if on {
+			cardThreadSource = *req.ParentID
+			req.FromThread, req.ParentID = cardThreadSource, nil
+		}
+	}
+
 	var parentID pgtype.UUID
 	var parentComment *db.Comment
 	if req.ParentID != nil {
@@ -2002,6 +2030,26 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	askNoticeMember := h.typedAskCommentMember(r, issue, authorType, actorTask, req.Ask)
+
+	// Long-thread route (T5b, CHE-6432): an agent that tags a member deep in a
+	// long thread asks in a new thread instead. A move is a --from-thread ask:
+	// the comment becomes a root and the stub below links the source.
+	longThread := h.longThreadRoute(r.Context(), longThreadRouteInput{
+		Issue:              issue,
+		AuthorType:         authorType,
+		Content:            req.Content,
+		NotifyOnly:         req.NotifyOnly,
+		DecisionKind:       req.DecisionIntent || req.DecisionRecord || req.DecisionVeto,
+		HandoffParent:      handoffTask != nil,
+		ResolveOrSupersede: req.ResolveThread || len(req.Supersedes) > 0,
+		Parent:             parentComment,
+		FromThread:         askSourceRootID.Valid,
+	})
+	if longThread.Move {
+		askSourceRootID = longThread.SourceRootID
+		parentID = pgtype.UUID{}
+		parentComment = nil
+	}
 
 	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
 	// rendering layer (rehype-sanitize) and at the editor layer
@@ -2189,6 +2237,12 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if err == nil && askSourceRootID.Valid {
 		askStub, err = qtx.CreateComment(r.Context(), askSourceStubParams(issue, askSourceRootID, created.ID, req.Content))
 	}
+	if err == nil && longThread.Move {
+		// In the transaction, so the row exists exactly when the move does.
+		if op, hasTask := longThreadOp(issue, actorTask, uuidToString(longThread.SourceRootID)+":"+req.Content); hasTask {
+			err = askguard.Guard{Queries: qtx}.RecordMove(r.Context(), issue.WorkspaceID, op)
+		}
+	}
 	if err == nil {
 		err = annotateAgentDecision(r.Context(), tx, created.ID, decisionAnnotation)
 	}
@@ -2228,6 +2282,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if err == nil && answersNotice && authorType == "member" {
 		err = qtx.MarkAskRecoveryNoticeAnswered(r.Context(), notice.ID)
 	}
+	if err == nil && req.NotifyOnly && authorType == "agent" && actorTask != nil {
+		err = clearNotifyOnlyAskEvents(r.Context(), qtx, issue, actorTask.ID, created.ID)
+	}
 	if err == nil && askNoticeMember.Valid {
 		err = recordTypedAskComment(r, qtx, issue, actorTask, askNoticeMember, created.Comment())
 	}
@@ -2264,6 +2321,17 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	resp := commentToResponse(comment, nil, groupedAtt[uuidToString(comment.ID)])
 	resp.IssueRevision = created.IssueRevision
 	resp.Hints = commentDecisionHints(comment, req.DecisionIntent)
+	if cardThreadSource != "" && askSourceRootID.Valid {
+		resp.Hints = append(resp.Hints, fmt.Sprintf("Card placed in a new thread %s; thread %s got a link.", resp.ID, uuidToString(askSourceRootID)))
+	}
+	switch {
+	case longThread.Move:
+		resp.Placement = &CommentPlacement{Moved: true, SourceRootID: uuidToString(longThread.SourceRootID), Reason: longThreadPlacementWhy}
+		resp.Hints = append(resp.Hints, longThreadMovedHint(comment.ID, longThread))
+	case longThread.Warn:
+		resp.Hints = append(resp.Hints, longThread.Hint)
+		h.recordLongThreadWarn(r.Context(), issue, actorTask, uuidToString(longThread.SourceRootID)+":"+req.Content)
+	}
 	for _, o := range supersedeOutcomes {
 		resp.Supersedes = append(resp.Supersedes, o.result)
 	}
@@ -2294,6 +2362,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if askSourceRootID.Valid {
 		h.publishAskSourceStub(issue, askStub)
 	}
+	h.loopBackMemberComment(r.Context(), issue, comment)
 	h.publishSupersedeEvents(r, supersedeOutcomes, resp.ID, uuidToString(issue.WorkspaceID), authorType, authorID)
 
 	// Set after the websocket publish: web_url is for CLI callers, not the event.
@@ -4540,6 +4609,15 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	cid := uuidToString(comment.ID)
 	resp := h.withDecisionFields(r.Context(), comment, commentToResponse(comment, grouped[cid], groupedAtt[cid]))
 	resp.IssueRevision = issueRevision
+	if actorType == "agent" && oldContent != comment.Content {
+		var editTask *db.AgentTaskQueue
+		if task, ok := h.taskFromRequestHeader(r); ok {
+			editTask = &task
+		}
+		if hint := h.longThreadEditHint(r.Context(), issueForSource, existing, editTask, comment.Content); hint != "" {
+			resp.Hints = append(resp.Hints, hint)
+		}
+	}
 	slog.Info("comment updated", append(logger.RequestAttrs(r), "comment_id", commentId)...)
 	eventPayload := map[string]any{"comment": resp}
 	if issueRevision > 0 {

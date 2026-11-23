@@ -102,6 +102,25 @@ func validateCardLintSetting(value any) error {
 	return err
 }
 
+// validateCardThreadSetting checks decision_card_thread of a workspace settings
+// object with the reader the card placement uses. An absent key is valid; null is not.
+func validateCardThreadSetting(value any) error {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	mode, present := config[decisiontx.SettingCardThread]
+	if !present {
+		return nil
+	}
+	raw, err := json.Marshal(map[string]any{decisiontx.SettingCardThread: mode})
+	if err != nil {
+		return err
+	}
+	_, err = decisiontx.CardThreadOn(raw)
+	return err
+}
+
 // validateDesignGuardSetting checks design_card_guard of a workspace settings
 // object with the reader the design guard uses. An absent key is valid; null is not.
 func validateDesignGuardSetting(value any) error {

@@ -94,7 +94,7 @@ func writeBrowserLeaseError(w http.ResponseWriter, err error) {
 		writeErrorCode(w, http.StatusConflict, "lease_ended", err.Error())
 	case errors.Is(err, browserlease.ErrNotFound):
 		writeErrorCode(w, http.StatusNotFound, "not_found", err.Error())
-	case errors.Is(err, browserlease.ErrNoInstance), errors.Is(err, browserlease.ErrSignerMissing):
+	case errors.Is(err, browserlease.ErrNoInstance), errors.Is(err, browserlease.ErrSignerMissing), errors.Is(err, browserlease.ErrNotEligible):
 		writeErrorCode(w, http.StatusServiceUnavailable, "browser_unavailable", err.Error())
 	default:
 		slog.Warn("browser lease failed", "error", err)

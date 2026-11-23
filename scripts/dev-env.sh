@@ -222,8 +222,17 @@ EOF
 # The trailing `|| true` is load-bearing on macOS's bash 3.2: `x="$(fn)"` inside
 # a function aborts the script under `set -e` when fn's last command fails, and
 # "no process is listening" is the normal answer here, not an error.
+#
+# lsof can print nothing for a live listener on Linux (X99, where it cannot stat
+# some mounts), which made `up` refuse its own web server. When it is silent,
+# ss answers; an lsof answer still wins.
 port_listener_pid() {
-  lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1 || true
+  local pid
+  pid="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  if [ -z "$pid" ] && command -v ss >/dev/null 2>&1; then
+    pid="$(ss -ltnpH "sport = :$1" 2>/dev/null | grep -o 'pid=[0-9]*' | head -1 | cut -d= -f2 || true)"
+  fi
+  printf '%s' "$pid"
 }
 
 port_free() { [ -z "$(port_listener_pid "$1")" ]; }

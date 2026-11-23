@@ -71,8 +71,8 @@ var settingsKeys = []string{
 	"github_wake_on_pr_merge", "github_wake_on_ci_failure", "github_wake_on_ci_success", "github_wake_on_pr_attention",
 	"pr_event_capture", "system_wakeup_child_done", "system_wakeup_child_done_instruction",
 	"agent_comment_wake_policy_enabled", "mermaid_orientation",
-	"provider_breaker_max_hold_seconds", "guard_policy", "ask_guard_mode", "reversible_ask_guard", "owner_script_guard", "decision_ask_park", "held_setting_ask_mode", "agent_cannot_do_mode", "agent_cannot_do", "decision_card_lint_mode", "design_card_guard",
-	"auto_close", "blocked_run_skip",
+	"provider_breaker_max_hold_seconds", "guard_policy", "ask_guard_mode", "reversible_ask_guard", "owner_script_guard", "decision_ask_park", "held_setting_ask_mode", "agent_cannot_do_mode", "agent_cannot_do", "decision_card_lint_mode", "decision_card_thread", "design_card_guard",
+	"auto_close", "blocked_run_skip", "run_guard", "run_budget", "wakeup_live_join",
 	"workflow_by_type", "capability_routing",
 	"intake_hold", "quick_first", "decision_server_actions", "standing_answers",
 	"merge_queue_dequeue_routing", "merge_queue_actor_bindings", "merge_queue_watch_issue",
@@ -131,7 +131,7 @@ func WorkflowDigest(workflowID string, steps json.RawMessage) (string, error) {
 }
 
 // ModeSettingKeys are the settings whose value is exactly {"mode": "off"|"warn"|"block"}.
-var ModeSettingKeys = []string{"auto_close", "blocked_run_skip"}
+var ModeSettingKeys = []string{"auto_close", "blocked_run_skip", "run_guard", "run_budget", "wakeup_live_join"}
 
 // ValidateModeSetting checks a non-null value of a ModeSettingKeys key: an
 // object holding exactly a mode of off, warn or block. The server request path

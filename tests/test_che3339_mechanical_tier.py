@@ -73,14 +73,18 @@ def git(repo, *args):
     return r.stdout.decode().strip()
 
 
-def head_commit(files):
-    """(mt, repo, base, head): a base commit carrying this repo's classifier and registry, and a head that adds `files`."""
+def head_commit(files, base_files=None):
+    """(mt, repo, base, head): a base commit carrying this repo's classifier and registry (plus `base_files`), and a head
+    that adds `files`."""
     mt, d = load_classifier(), tempfile.mkdtemp(prefix="mt-")
     git(d, "init", "-q", "-b", "main")
     for rel in ("mechanical_tier.py", "registry.json"):
         dst = Path(d, "scripts/mechanical-tier", rel)
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(TIER_DIR / rel, dst)
+    for rel, text in (base_files or {}).items():
+        Path(d, rel).parent.mkdir(parents=True, exist_ok=True)
+        Path(d, rel).write_text(text)
     git(d, "add", "-A")
     git(d, "commit", "-q", "-m", "base")
     base = git(d, "rev-parse", "HEAD")
@@ -123,6 +127,99 @@ def fake_gh(base, head, ci_status, conclusion):
             return doc({"head": {"sha": head}, "base": {"ref": "main", "sha": base}})
         return 1, "", "unexpected path " + path
     return gh
+
+
+def fake_gh_checks(base, head, conclusions):
+    """Like `fake_gh`, for pull request 7 with one required check per `conclusions` key, each completed on `head`."""
+    def doc(obj):
+        return 0, json.dumps(obj), ""
+
+    def gh(path):
+        if "/rules/branches/" in path:
+            req = [{"context": n} for n in conclusions]
+            return doc([{"type": "required_status_checks", "parameters": {"required_status_checks": req}}])
+        if path.endswith("/branches/main"):
+            return doc({"protected": True, "protection": {"required_status_checks": {"checks": [], "contexts": []}}})
+        if "/check-runs" in path:
+            return doc({"check_runs": [{"id": i, "name": n, "status": "completed", "conclusion": c, "head_sha": head}
+                                       for i, (n, c) in enumerate(conclusions.items(), 1)]})
+        if "/status" in path:
+            return doc({"state": "success", "sha": head, "statuses": []})
+        if "/pulls/" in path:
+            return doc({"head": {"sha": head}, "base": {"ref": "main", "sha": base}})
+        return 1, "", "unexpected path " + path
+    return gh
+
+
+CI_PATHS = json.dumps({"backend": ["server/**", "Makefile"], "docs-gated": ["docs/**"]})
+
+
+class PathGatedSkippedCheck(unittest.TestCase):
+    """CHE-9034: a skipped required check is acceptable only when its workflow path filter matched none of the changed paths."""
+
+    def receipt(self, files, conclusions, base_files=None):
+        mt, d, base, head = head_commit(files, {".github/ci-paths.json": CI_PATHS} if base_files is None else base_files)
+        try:
+            ci = mt.fetch_ci(fake_gh_checks(base, head, conclusions), "o/r", head, None, pr=7)
+            r = mt.classify(d, base, head, ci=ci)
+            self.assertEqual(mt.verify(r, d, ci=mt.fetch_ci(fake_gh_checks(base, head, conclusions), "o/r", head, None, pr=7)),
+                             (True, []), "the receipt must recompute identically")
+            return r
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_a_docs_only_change_with_a_path_gated_skip_is_tier_0(self):
+        r = self.receipt({"docs/note.md": "x\n"}, {"backend-tests": "skipped", "frontend": "success"})
+        self.assertEqual(r["tier"], 0, r["tier_reasons"])
+        self.assertTrue(r["ci"]["passed"])
+        self.assertEqual({c["name"]: c.get("path_gated", False) for c in r["ci"]["checks"]},
+                         {"backend-tests": True, "frontend": False})
+
+    def test_the_same_skip_is_not_accepted_when_the_path_filter_matched_a_changed_path(self):
+        base = {".github/ci-paths.json": json.dumps({"backend": ["docs/**"]})}
+        r = self.receipt({"docs/note.md": "x\n"}, {"backend-tests": "skipped", "frontend": "success"}, base)
+        self.assertEqual((r["tier"], r["ci"]["state"], r["ci"]["passed"]), (1, "skipped", False))
+
+    def test_a_skipped_check_with_no_registered_path_filter_stays_skipped(self):
+        r = self.receipt({"docs/note.md": "x\n"}, {"lint": "skipped", "frontend": "success"})
+        self.assertEqual((r["tier"], r["ci"]["state"], r["ci"]["passed"]), (1, "skipped", False))
+
+    def test_a_registered_check_whose_filter_is_missing_from_the_base_ci_paths_stays_skipped(self):
+        for base_files in ({}, {".github/ci-paths.json": "not json"}, {".github/ci-paths.json": json.dumps({"backend": ["!server/**"]})},
+                           {".github/ci-paths.json": json.dumps({"other": ["server/**"]})}):
+            r = self.receipt({"docs/note.md": "x\n"}, {"backend-tests": "skipped", "frontend": "success"}, base_files)
+            self.assertEqual((r["tier"], r["ci"]["state"]), (1, "skipped"), base_files)
+
+    def test_a_skip_never_lifts_a_protected_path_out_of_tier_2(self):
+        r = self.receipt({".github/workflows/x.yml": "on: push\n"}, {"backend-tests": "skipped", "frontend": "success"})
+        self.assertEqual(r["tier"], 2, r["tier_reasons"])
+
+    def test_at_least_one_required_check_must_still_succeed(self):
+        r = self.receipt({"docs/note.md": "x\n"}, {"backend-tests": "skipped"})
+        self.assertEqual((r["tier"], r["ci"]["state"], r["ci"]["passed"]), (1, "skipped", False))
+
+    def test_a_failed_or_pending_check_beside_a_gated_skip_still_blocks(self):
+        for conclusion in ("failure", "cancelled", None):
+            r = self.receipt({"docs/note.md": "x\n"}, {"backend-tests": "skipped", "frontend": conclusion})
+            self.assertEqual(r["tier"], 1, conclusion)
+            self.assertFalse(r["ci"]["passed"], conclusion)
+
+    def test_the_registry_filters_exist_in_this_repositorys_ci_paths(self):
+        registry = json.loads((TIER_DIR / "registry.json").read_text())
+        paths = json.loads((ROOT / ".github/ci-paths.json").read_text())
+        gated = registry["path_gated_checks"]
+        self.assertIn("backend-tests", {g["check"] for g in gated})
+        for g in gated:
+            for f in g["filters"]:
+                self.assertIn(f, paths, g)
+
+    def test_a_malformed_path_gated_registry_entry_is_refused(self):
+        mt = load_classifier()
+        reg = json.loads((TIER_DIR / "registry.json").read_text())
+        for bad in ({"check": "x"}, {"check": "x", "filters": []}, {"check": "", "filters": ["a"]},
+                    {"check": "x", "filters": ["a"], "extra": 1}, "x"):
+            with self.assertRaises(mt.Malformed, msg=bad):
+                mt.Registry(json.dumps({**reg, "path_gated_checks": [bad]}))
 
 
 class WorkflowShape(unittest.TestCase):

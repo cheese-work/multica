@@ -43,7 +43,7 @@ jobs:
     # leaves room for build variance and still stops a run that has hung.
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Both refs must be reachable: the script builds each one in its own
           # worktree, and a shallow clone cannot produce them.

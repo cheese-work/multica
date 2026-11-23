@@ -90,6 +90,22 @@ class CachePolicyTests(unittest.TestCase):
         caches = [cache(1, 'buildkit-blob-1-' + 'a' * 64), cache(2, 'buildkit-blob-1-' + 'b' * 64)]
         self.assertEqual(policy.plan_deletions(caches), [])
 
+    def test_main_buildkit_blobs_and_indexes_are_trimmed_oldest_first(self):
+        # CHE-9063: every main buildkit-blob is its own family, so none could be deleted and
+        # their sum passed the free limit. They are rebuildable, so they are never protected.
+        keep = [
+            cache(1, 'turbo-build-Linux-X64-v22-refs/heads/main-' + 'a' * 64 + '-1', size=100_000_000),
+            cache(2, 'go-build-race-Linux-X64-refs/heads/main-' + 'a' * 64 + '-1', size=100_000_000),
+            cache(3, 'node-cache-Linux-x64-npm-' + 'a' * 64, size=100_000_000),
+            cache(4, 'setup-go-Linux-x64-ubuntu24-go-1.26.1-' + 'a' * 64, size=100_000_000),
+        ]
+        index = cache(5, 'index-cd-web-1-' + 'a' * 64 + '#7', size=1_000_000)
+        blobs = [cache(i, 'buildkit-blob-1-sha256:' + f'{i:064x}', size=1_000_000_000) for i in range(10, 22)]
+        deleted = policy.plan_deletions(keep + [index] + blobs)
+        self.assertEqual(deleted, [5, 10, 11, 12, 13])
+        left = sum(c['size_in_bytes'] for c in keep + [index] + blobs if c['id'] not in deleted)
+        self.assertLessEqual(left, 9_000_000_000)
+
     def test_unmanaged_archive_versions_remain_independent(self):
         caches = [dict(cache(1, 'modules'), version='one'), dict(cache(2, 'modules'), version='two')]
         self.assertEqual(policy.plan_deletions(caches), [])

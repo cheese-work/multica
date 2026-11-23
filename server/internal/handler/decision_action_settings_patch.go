@@ -131,12 +131,16 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = validateAgentCannotDoSetting(map[string]any{key: value})
 	case key == decisiontx.SettingCardLintMode:
 		err = validateCardLintSetting(map[string]any{key: value})
+	case key == decisiontx.SettingCardThread:
+		err = validateCardThreadSetting(map[string]any{key: value})
 	case key == decisiontx.SettingServerActions || key == decisiontx.SettingStandingAnswers:
 		err = validateServerActionSetting(map[string]any{key: value})
 	case key == "auto_close":
 		err = validateAutoClosePatch(raw)
 	case key == "blocked_run_skip":
 		err = validateBlockedRunSkipPatch(raw)
+	case key == "run_guard" || key == "run_budget" || key == "wakeup_live_join":
+		err = decisionaction.ValidateModeSetting(key, raw)
 	case key == designguard.SettingKey:
 		err = validateDesignGuardSetting(map[string]any{key: value})
 	case key == decisionAskParkKey:

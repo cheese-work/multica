@@ -599,6 +599,13 @@ func TestValidateSettingsPatchValueRunCuttingModes(test *testing.T) {
 		{"auto_close", `"block"`, true},
 		{"blocked_run_skip", `{"mode":"block"}`, false},
 		{"blocked_run_skip", `{"mode":"on"}`, true},
+		{"run_guard", `{"mode":"warn"}`, false},
+		{"run_guard", `{"mode":"on"}`, true},
+		{"run_budget", `{"mode":"warn"}`, false},
+		{"run_budget", `{"mode":"block","extra":1}`, true},
+		{"wakeup_live_join", `{"mode":"block"}`, false},
+		{"wakeup_live_join", `{"mode":"on"}`, true},
+		{"wakeup_live_join", `"block"`, true},
 		{"blocked_run_skip", `{"mode":"block","extra":1}`, true},
 	} {
 		err := validateSettingsPatchValue(tc.key, json.RawMessage(tc.value))

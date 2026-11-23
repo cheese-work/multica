@@ -177,6 +177,45 @@ deleted_merge_queue_state AS (
 ),
 deleted_merge_queue_evidence AS (
     DELETE FROM merge_queue_evidence WHERE workspace_id = $1
+),
+deleted_ask_recovery_notice AS (
+    DELETE FROM ask_recovery_notice WHERE workspace_id = $1
+),
+deleted_ask_repair_root AS (
+    DELETE FROM ask_repair_root WHERE workspace_id = $1
+),
+deleted_browser_gateway_credential AS (
+    DELETE FROM browser_gateway_credential WHERE workspace_id = $1
+),
+deleted_issue_handoff_dispatch AS (
+    DELETE FROM issue_handoff_dispatch WHERE workspace_id = $1
+),
+deleted_issue_step_assignee AS (
+    DELETE FROM issue_step_assignee WHERE workspace_id = $1
+),
+deleted_issue_step_watchdog_action AS (
+    DELETE FROM issue_step_watchdog_action WHERE workspace_id = $1
+),
+deleted_merge_receipt_fact AS (
+    DELETE FROM merge_receipt_fact WHERE workspace_id = $1
+),
+deleted_merge_veto AS (
+    DELETE FROM merge_veto WHERE workspace_id = $1
+),
+deleted_merge_veto_deadline AS (
+    DELETE FROM merge_veto_deadline WHERE workspace_id = $1
+),
+deleted_weekly_run_guard_allowance AS (
+    DELETE FROM weekly_run_guard_allowance WHERE workspace_id = $1
+),
+deleted_weekly_run_guard_refusal AS (
+    DELETE FROM weekly_run_guard_refusal WHERE workspace_id = $1
+),
+deleted_decision_backing_lane AS (
+    DELETE FROM decision_backing_lane WHERE workspace_id = $1
+),
+deleted_guard_decision AS (
+    DELETE FROM guard_decision WHERE workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1
@@ -185,6 +224,7 @@ WHERE workspace_invitation.workspace_id = $1
 // CHE-4731 browser lease storage: workspace-owned leaves, no FK (migration 99960).
 // CHE-4737 browser permission grants: workspace-owned leaves, no FK (migration 99964c).
 // CHE-7408 merge-queue storage: workspace-owned leaves, no FK (migration 999q).
+// CHE-7545 workspace-owned leaves with workspace_id and no FK.
 func (q *Queries) DeleteWorkspaceAdministration(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceAdministration, workspaceID)
 	return err

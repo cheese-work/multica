@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -24,6 +24,7 @@ import {
   derivePullRequestVerdict,
   formatPullRequestDiffCount,
   shouldShowPullRequestStats,
+  sortPullRequestsForDisplay,
   stripIssueKeyFromTitle,
   useLinkIssuePullRequest,
   useSetIssuePRAutoComplete,
@@ -70,7 +71,7 @@ export function PullRequestList({
   const { t } = useT("issues");
   const [expanded, setExpanded] = useState(false);
   const { data, isLoading, isError, refetch } = useQuery(issuePullRequestsOptions(issueId));
-  const prs = data?.pull_requests ?? [];
+  const prs = useMemo(() => sortPullRequestsForDisplay(data?.pull_requests ?? []), [data]);
   // Older backends send no auto-complete block and have no link/unlink
   // endpoints, so the row actions stay hidden with it.
   const autoComplete = data?.auto_complete ?? null;

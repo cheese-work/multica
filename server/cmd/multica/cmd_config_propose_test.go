@@ -434,7 +434,7 @@ func TestProposeCapabilityRoutingDryRunIsAccepted(t *testing.T) {
 // CHE-7716: a dry run must refuse a mode value the server refuses at request
 // time, before any read, and name the allowed modes.
 func TestProposeModeSettingsDryRunRefusesInvalidMode(t *testing.T) {
-	for _, key := range []string{"auto_close", "blocked_run_skip"} {
+	for _, key := range []string{"auto_close", "blocked_run_skip", "run_guard", "run_budget", "wakeup_live_join"} {
 		for name, value := range map[string]string{
 			"unknown mode":   `{"mode":"bogus"}`,
 			"not an object":  `"block"`,
@@ -466,7 +466,7 @@ func TestProposeModeSettingsDryRunRefusesInvalidMode(t *testing.T) {
 }
 
 func TestProposeModeSettingsDryRunAcceptsValidMode(t *testing.T) {
-	for _, key := range []string{"auto_close", "blocked_run_skip"} {
+	for _, key := range []string{"auto_close", "blocked_run_skip", "run_guard", "run_budget", "wakeup_live_join"} {
 		for _, mode := range []string{"off", "warn", "block"} {
 			t.Run(key+"/"+mode, func(t *testing.T) {
 				proposeServer(t, map[string]any{"/api/workspaces/ws-1": map[string]any{"settings": map[string]any{}}})

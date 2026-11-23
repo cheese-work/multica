@@ -1,10 +1,15 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"log/slog"
+	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -75,6 +80,9 @@ type issueStateSnapshot struct {
 	Version           int    `json:"v"`
 	TitleSHA256       string `json:"title_sha256"`
 	DescriptionSHA256 string `json:"description_sha256"`
+	// Watch is the claim-time fence for one-shot `at --watch issue` wakeups
+	// (CHE-8961). The MUL-7344 reader never looks at it.
+	Watch *issueWatchFence `json:"watch,omitempty"`
 }
 
 func sha256Hex(s string) string {
@@ -218,4 +226,55 @@ func triggerCommentEditedSince(c db.Comment, runStartedAt pgtype.Timestamptz) bo
 		return false
 	}
 	return true
+}
+
+const (
+	issueWatchFenceVersion = 2
+	// issueWatchFenceTimeout bounds the claim-time fence read. An error, a
+	// timeout or the comment cap leaves the key out and the claim proceeds.
+	issueWatchFenceTimeout = 300 * time.Millisecond
+	// issueWatchCommentCap is the most comment rows a fence may cover. The
+	// projection reads LIMIT cap+1, so cap+1 rows back means "over cap".
+	issueWatchCommentCap = 200
+)
+
+// issueWatchFence is the `watch` v2 key written into the claim snapshot. The
+// fire rule that reads it is a later change; until then the key is inert.
+type issueWatchFence struct {
+	Version  int       `json:"v"`
+	Row      string    `json:"row"`
+	Revision int64     `json:"revision"`
+	Comments string    `json:"comments"`
+	At       time.Time `json:"at"`
+}
+
+// issueWatchFenceRead runs the projection. A variable so tests can fail it.
+var issueWatchFenceRead = func(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (db.IssueWatchFenceRow, error) {
+	return q.IssueWatchFence(ctx, db.IssueWatchFenceParams{IssueID: issueID})
+}
+
+// loadIssueWatchFence reads the fence for a claim on the pool. It returns nil
+// when the fence cannot be trusted: a read error or timeout, more than
+// issueWatchCommentCap comments, or anything attached that the projection does
+// not cover (labels, attachments, reactions, source context).
+func (h *Handler) loadIssueWatchFence(ctx context.Context, issueID pgtype.UUID) *issueWatchFence {
+	ctx, cancel := context.WithTimeout(ctx, issueWatchFenceTimeout)
+	defer cancel()
+	row, err := issueWatchFenceRead(ctx, h.Queries, issueID)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("claim: issue watch fence not recorded", "issue_id", uuidToString(issueID), "error", err)
+		}
+		return nil
+	}
+	if row.Attached || row.CommentRows > issueWatchCommentCap {
+		return nil
+	}
+	return &issueWatchFence{
+		Version:  issueWatchFenceVersion,
+		Row:      row.RowHash,
+		Revision: row.Revision,
+		Comments: row.CommentHash,
+		At:       row.ReadAt.Time,
+	}
 }

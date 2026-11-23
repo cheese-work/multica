@@ -43,6 +43,32 @@ func (h *Handler) buildTriggerThreadContext(ctx context.Context, trigger db.Comm
 	return strings.Join(lines, "\n\n")
 }
 
+// earlierIdenticalMemberComments returns the ids of earlier live comments by the
+// trigger's member author on the same issue whose text equals the trigger's once
+// trimmed and whitespace-collapsed, oldest first (CHE-9042). Best-effort: a read
+// error or empty text yields nil, so no repeat is claimed.
+func (h *Handler) earlierIdenticalMemberComments(ctx context.Context, trigger db.Comment) []string {
+	if strings.TrimSpace(trigger.Content) == "" || !trigger.AuthorID.Valid {
+		return nil
+	}
+	ids, err := h.Queries.ListEarlierIdenticalMemberCommentIDs(ctx, db.ListEarlierIdenticalMemberCommentIDsParams{
+		WorkspaceID:     trigger.WorkspaceID,
+		IssueID:         trigger.IssueID,
+		AuthorID:        trigger.AuthorID,
+		AnchorCreatedAt: trigger.CreatedAt,
+		AnchorID:        trigger.ID,
+		Content:         trigger.Content,
+	})
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, uuidToString(id))
+	}
+	return out
+}
+
 func (h *Handler) commentAuthorLabel(ctx context.Context, c db.Comment, cache map[pgtype.UUID]string) string {
 	if name, ok := cache[c.AuthorID]; ok {
 		return name

@@ -23,6 +23,9 @@ backend_port=$((18080 + offset))
 frontend_port=$((13000 + offset))
 frontend_origin="http://localhost:${frontend_port}"
 
+# Fresh dev key per worktree (base64 of 32 bytes).
+secrets_key="$(openssl rand -base64 32)"
+
 cat > "$ENV_FILE" <<EOF
 POSTGRES_DB=${postgres_db}
 POSTGRES_USER=multica
@@ -32,6 +35,7 @@ DATABASE_URL=postgres://multica:multica@localhost:${postgres_port}/${postgres_db
 
 PORT=${backend_port}
 JWT_SECRET=change-me-in-production
+MULTICA_SECRETS_KEY=${secrets_key}
 MULTICA_DEV_VERIFICATION_CODE=888888
 MULTICA_SERVER_URL=ws://localhost:${backend_port}/ws
 MULTICA_PUBLIC_URL=http://localhost:${backend_port}

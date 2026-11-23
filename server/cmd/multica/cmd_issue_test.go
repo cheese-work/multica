@@ -3499,6 +3499,10 @@ func newIssueCommentListTestCmd() *cobra.Command {
 	cmd.Flags().Int("tail", 0, "")
 	cmd.Flags().String("before", "", "")
 	cmd.Flags().String("before-id", "", "")
+	cmd.Flags().Bool("with-me", false, "")
+	cmd.Flags().Bool("without-me", false, "")
+	cmd.Flags().String("waiting-on", "", "")
+	cmd.Flags().String("for", "", "")
 	return cmd
 }
 

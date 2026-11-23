@@ -147,7 +147,15 @@ func (s *IssueWakeupService) childDoneRunAs(ctx context.Context, issue db.Issue,
 // joinedWakeupNote is what the run is told about a rule that joined it.
 func joinedWakeupNote(w db.IssueWakeup, instruction string, receipts []db.IssueWakeupReceipt) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Wakeup %s fired while this run was waiting to start, so it did not start a run of its own; handle it in this run. Instruction:\n%s\nTrigger facts (read current state before deciding what to do):\n", util.UUIDToString(w.ID), instruction)
+	fmt.Fprintf(&b, "Wakeup %s fired while this run was waiting to start, so it did not start a run of its own; handle it in this run. Instruction:\n%s\n", util.UUIDToString(w.ID), instruction)
+	writeTriggerFacts(&b, receipts)
+	return b.String()
+}
+
+// writeTriggerFacts appends the receipts' facts to a joined-wakeup note, up to
+// the note's size cap.
+func writeTriggerFacts(b *strings.Builder, receipts []db.IssueWakeupReceipt) {
+	b.WriteString("Trigger facts (read current state before deciding what to do):\n")
 	for _, r := range receipts {
 		line := r.EventType + " " + string(canonicalWakeupPayload(r.Payload)) + "\n"
 		if b.Len()+len(line) > maxJoinedWakeupNote {
@@ -156,7 +164,6 @@ func joinedWakeupNote(w db.IssueWakeup, instruction string, receipts []db.IssueW
 		}
 		b.WriteString(line)
 	}
-	return b.String()
 }
 
 type joinedWakeup struct {
@@ -308,7 +315,15 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 	var receipts []db.IssueWakeupReceipt
 	var held, free, back []pgtype.UUID
 	blocking := anyDeferred(pending) && timeWakeupSkipMode(ctx, q, issue.WorkspaceID) == "block"
+	inItem, err := receiptsInLiveItems(ctx, q, w.ID)
+	if err != nil {
+		return nil, nil, err
+	}
 	for _, r := range pending {
+		if inItem[r.ID] {
+			// A live-join item holds this input; its ack settles the firing.
+			continue
+		}
 		if blocking && anyDeferred([]db.IssueWakeupReceipt{r}) {
 			// CHE-6968: a deferred fire waits for its own change or expiry; a run
 			// claimed for another reason must not consume it.
@@ -523,6 +538,10 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 type takenRun struct {
 	task     db.AgentTaskQueue
 	receipts []db.IssueWakeupReceipt
+	// outcome and firingID are set for a live-join item settled by its host
+	// run; outcome is empty for a run that started with the inputs.
+	outcome  string
+	firingID pgtype.UUID
 }
 
 // takenReceipts sorts a rule's pending inputs by the run a claim reserved them
