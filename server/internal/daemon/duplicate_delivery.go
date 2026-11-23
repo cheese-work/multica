@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 )
 
@@ -92,8 +93,21 @@ func (d *Daemon) latestClaimGeneration(task Task) string {
 // duplicate delivery can refresh the claim while the start is in flight, so a
 // rejection is retried with the refreshed generation.
 func (d *Daemon) startTaskWithCurrentClaim(ctx context.Context, task Task, capabilities ...string) (TaskNegotiation, error) {
+	return d.startTaskRecordingClaim(ctx, task, nil, capabilities...)
+}
+
+// startTaskRecordingClaim is startTaskWithCurrentClaim that first hands each
+// claim generation it is about to present to onClaim (the containment attempt
+// record), so a durable record never lags the claim StartTask uses. An onClaim
+// error stops the start. A nil onClaim is the plain path.
+func (d *Daemon) startTaskRecordingClaim(ctx context.Context, task Task, onClaim func(string) error, capabilities ...string) (TaskNegotiation, error) {
 	for {
 		task.DispatchedAt = d.latestClaimGeneration(task)
+		if onClaim != nil {
+			if err := onClaim(task.DispatchedAt); err != nil {
+				return TaskNegotiation{}, fmt.Errorf("record claim generation: %w", err)
+			}
+		}
 		negotiated, err := d.client.StartTask(ctx, task, capabilities...)
 		if errors.Is(err, errStartClaimRejected) && d.inflight.supersededBy(task.ID, task.DispatchedAt) {
 			continue
