@@ -375,6 +375,42 @@ func TestDecisionWaitGuardIgnoresOpenRequestOnLinkedIssue(test *testing.T) {
 	}
 }
 
+// CHE-4029 criterion 1 (linked groups): an open request whose ask names this
+// issue in covers_issue_ids covers its wait. The link is the ask's own list,
+// so only a request that names the issue counts, and only while it is open.
+func TestDecisionWaitGuardCountsRequestThatCoversIssue(test *testing.T) {
+	cases := []struct {
+		name       string
+		status     string
+		coversSelf bool
+		want       int
+	}{
+		{"open and names the issue", "open", true, 0},
+		{"open but names another issue", "open", false, 1},
+		{"names the issue but answered", "answered", true, 1},
+		{"names the issue but cancelled", "cancelled", true, 1},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			fixture, _, _ := decisionWaitFixture(test)
+			group := dbfx.Issue(test, "group card issue", nil)
+			other := dbfx.Issue(test, "other covered issue", nil)
+			covered := other
+			if tc.coversSelf {
+				covered = fixture.issueID
+			}
+			request := seedWaitRequest(test, fixture, group, tc.status)
+			dbfx.Exec(test, `UPDATE decision_request SET ask_json = jsonb_build_object('covers_issue_ids', jsonb_build_array($1::text)) WHERE id = $2`, covered, request)
+			if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+				test.Fatal(err)
+			}
+			if got := decisionWaitAlerts(test, fixture.issueID); got != tc.want {
+				test.Fatalf("alerts = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // An unlinked issue with an open request does not cover the issue.
 func TestDecisionWaitGuardIgnoresUnlinkedRequest(test *testing.T) {
 	fixture, _, _ := decisionWaitFixture(test)
