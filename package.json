@@ -109,7 +109,7 @@
     "@tailwindcss/postcss": "catalog:",
     "@types/node": "catalog:",
     "@types/pg": "^8.20.0",
-    "esbuild": "^0.25.12",
+    "esbuild": "catalog:",
     "knip": "^6.32.2",
     "pg": "^8.20.0",
     "postcss": "catalog:",
