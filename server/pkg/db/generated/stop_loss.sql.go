@@ -55,13 +55,15 @@ func (q *Queries) SumIssueTokens(ctx context.Context, issueID pgtype.UUID) (int6
 	return column_1, err
 }
 
-const sumWeeklyRunGuardAllowanceEver = `-- name: SumWeeklyRunGuardAllowanceEver :one
-SELECT COALESCE(SUM(runs), 0)::bigint FROM weekly_run_guard_allowance WHERE issue_id = $1
+const sumStopLossAllowance = `-- name: SumStopLossAllowance :one
+SELECT COALESCE(SUM(a.runs), 0)::bigint
+FROM weekly_run_guard_allowance a JOIN decision_action d ON d.id = a.action_id
+WHERE a.issue_id = $1 AND d.params->>'stop_loss' = 'true'
 `
 
-// Runs the issue's approved cards ever added: the stop-loss counts the issue's whole life.
-func (q *Queries) SumWeeklyRunGuardAllowanceEver(ctx context.Context, issueID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, sumWeeklyRunGuardAllowanceEver, issueID)
+// Runs the issue's approved stop-loss cards added to its limits (CHE-9340). A weekly guard approval is no stop-loss release.
+func (q *Queries) SumStopLossAllowance(ctx context.Context, issueID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, sumStopLossAllowance, issueID)
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err

@@ -120,7 +120,7 @@ func (h *Handler) openWeeklyRunGuardCard(ctx context.Context, issue db.Issue, e 
 		if e.StopLoss {
 			ask = stopLossCardAsk(issue, e, trigger, agentName)
 		}
-		raw, err := json.Marshal(decisionaction.RunGuardAllowParams{IssueID: uuidToString(issue.ID), RefusalID: uuidToString(refusal.ID), Runs: decisionaction.RunGuardAllowRuns})
+		raw, err := json.Marshal(decisionaction.RunGuardAllowParams{IssueID: uuidToString(issue.ID), RefusalID: uuidToString(refusal.ID), Runs: decisionaction.RunGuardAllowRuns, StopLoss: e.StopLoss})
 		if err != nil {
 			return err
 		}
@@ -234,6 +234,15 @@ func executeRunGuardAllowAction(ctx context.Context, execution decisionActionExe
 			return nil, err
 		}
 		runs += max(used-limit, 0)
+	}
+	if params.StopLoss {
+		// CHE-9340: the limits after the release exceed the issue's actual use
+		// by the grant, however far over them it went.
+		release, err := service.StopLossRelease(ctx, q, issueID, int64(params.Runs))
+		if err != nil {
+			return nil, err
+		}
+		runs = max(runs, release)
 	}
 	if err := q.CreateWeeklyRunGuardAllowance(ctx, db.CreateWeeklyRunGuardAllowanceParams{
 		ID: dbid.NewV7(), WorkspaceID: refusal.WorkspaceID, IssueID: issueID, Runs: int32(runs), ActionID: execution.Action.ID,

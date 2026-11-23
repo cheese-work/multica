@@ -18,6 +18,8 @@ WHERE child.parent_issue_id = $1 AND child.status NOT IN ('done', 'cancelled')
     SELECT 1 FROM issue_status s
     WHERE s.workspace_id = child.workspace_id AND s.key = child.status AND s.category IN ('done', 'closed'));
 
--- name: SumWeeklyRunGuardAllowanceEver :one
--- Runs the issue's approved cards ever added: the stop-loss counts the issue's whole life.
-SELECT COALESCE(SUM(runs), 0)::bigint FROM weekly_run_guard_allowance WHERE issue_id = $1;
+-- name: SumStopLossAllowance :one
+-- Runs the issue's approved stop-loss cards added to its limits (CHE-9340). A weekly guard approval is no stop-loss release.
+SELECT COALESCE(SUM(a.runs), 0)::bigint
+FROM weekly_run_guard_allowance a JOIN decision_action d ON d.id = a.action_id
+WHERE a.issue_id = $1 AND d.params->>'stop_loss' = 'true';

@@ -78,12 +78,15 @@ func EvaluateStopLoss(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (
 	if state.Runs, err = q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: issueID, Since: pgtype.Timestamptz{Time: time.Unix(0, 0), Valid: true}}); err != nil {
 		return StopLossState{}, fmt.Errorf("stop-loss: count runs: %w", err)
 	}
-	released, err := q.SumWeeklyRunGuardAllowanceEver(ctx, issueID)
+	// Only an approved stop-loss card raises the limits; a weekly guard grant,
+	// automatic or not, does not.
+	released, err := q.SumStopLossAllowance(ctx, issueID)
 	if err != nil {
 		return StopLossState{}, fmt.Errorf("stop-loss: allowance: %w", err)
 	}
 	runLimit := StopLossRuns + released
-	// The token sum is the dearer read: only an issue under its run limit needs it.
+	// The token sum is the dearer read: an issue under its run limit needs it to
+	// pass, and a tripped one needs it for the card.
 	if state.Runs < runLimit {
 		if state.Tokens, err = q.SumIssueTokens(ctx, issueID); err != nil {
 			return StopLossState{}, fmt.Errorf("stop-loss: sum tokens: %w", err)
@@ -108,8 +111,36 @@ func EvaluateStopLoss(ctx context.Context, q *db.Queries, issueID pgtype.UUID) (
 			return state, nil
 		}
 	}
+	if state.Runs >= runLimit {
+		if state.Tokens, err = q.SumIssueTokens(ctx, issueID); err != nil {
+			return StopLossState{}, fmt.Errorf("stop-loss: sum tokens: %w", err)
+		}
+	}
 	state.Tripped = true
 	return state, nil
+}
+
+// StopLossRelease is the run allowance an approved card adds to an issue: the
+// limits after it exceed what the issue already used by grant runs, so the
+// refused trigger resumes. An issue far over its limits (100 runs, 100 M
+// tokens) gets more than grant, a fresh slice of grant runs on top of its use.
+func StopLossRelease(ctx context.Context, q *db.Queries, issueID pgtype.UUID, grant int64) (int64, error) {
+	runs, err := q.CountIssueRunsSince(ctx, db.CountIssueRunsSinceParams{IssueID: issueID, Since: pgtype.Timestamptz{Time: time.Unix(0, 0), Valid: true}})
+	if err != nil {
+		return 0, fmt.Errorf("stop-loss: count runs: %w", err)
+	}
+	tokens, err := q.SumIssueTokens(ctx, issueID)
+	if err != nil {
+		return 0, fmt.Errorf("stop-loss: sum tokens: %w", err)
+	}
+	released, err := q.SumStopLossAllowance(ctx, issueID)
+	if err != nil {
+		return 0, fmt.Errorf("stop-loss: allowance: %w", err)
+	}
+	limit := StopLossRuns + released
+	// The run limit whose token limit the issue's tokens just reach, rounded up.
+	byTokens := (tokens*StopLossRuns + StopLossTokens - 1) / StopLossTokens
+	return max(runs, byTokens, limit) + grant - limit, nil
 }
 
 // guardStopLoss refuses the run when the stop-loss blocks, and in warn mode
