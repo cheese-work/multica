@@ -23,10 +23,28 @@ import (
 type workflowSubject struct {
 	ID    pgtype.UUID
 	Title string
+	// The rest is what a same_as step reads: the workflow the issue follows,
+	// its status and its assignee.
+	WorkflowID, ProjectID pgtype.UUID
+	Status                string
+	AssigneeType          string
+	AssigneeID            pgtype.UUID
 }
 
 func subjectOf(issue db.Issue) workflowSubject {
-	return workflowSubject{ID: issue.ID, Title: issue.Title}
+	return workflowSubject{
+		ID: issue.ID, Title: issue.Title, WorkflowID: issue.WorkflowID, ProjectID: issue.ProjectID,
+		Status: issue.Status, AssigneeType: issue.AssigneeType.String, AssigneeID: issue.AssigneeID,
+	}
+}
+
+// projectOr is the subject's project, else the given one: an issue being
+// created has no project of its own yet.
+func (s workflowSubject) projectOr(project db.Project) pgtype.UUID {
+	if s.ProjectID.Valid {
+		return s.ProjectID
+	}
+	return project.ID
 }
 
 // authorHumans fills Humans.Author for an author step. A failed read is an

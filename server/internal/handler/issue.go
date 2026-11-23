@@ -381,6 +381,9 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 	if err := wf.recordAuthor(ctx, q, issue); err != nil {
 		return issue, cancelledWakeups, err
 	}
+	if err := wf.recordLeft(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
 	return issue, cancelledWakeups, wf.recordStepAssignee(ctx, q, issue)
 }
 
@@ -4318,7 +4321,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		// in place of it.
 		if step, ok := createWorkflow.Step(status); ok && step.HandsOff() && req.AssigneeType == nil && req.AssigneeID == nil {
 			handoffCreatorType, handoffCreatorID := h.resolveActor(r, creatorID, workspaceID)
-			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID, workflowSubject{Title: req.Title})
+			humans, err := h.workflowHumans(r.Context(), h.Queries, step, createWorkflowProject, wsUUID, requestedByID, workflowSubject{Title: req.Title, ProjectID: createWorkflowProject.ID})
 			if err != nil {
 				slog.Error("create issue: resolve workflow handler", append(logger.RequestAttrs(r), "error", err)...)
 				writeError(w, http.StatusInternalServerError, "failed to resolve workflow handler")
@@ -4957,6 +4960,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	}
 	if err := wf.recordAuthor(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record author: %w", err)
+	}
+	if err := wf.recordLeft(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record left assignee: %w", err)
 	}
 	if err := wf.recordStepAssignee(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record step assignee: %w", err)

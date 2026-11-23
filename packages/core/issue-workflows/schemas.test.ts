@@ -85,6 +85,14 @@ describe("workflow schemas (MUL-7420)", () => {
     expect(IssueWorkflowSchema.parse(parsed).steps).toEqual(parsed.steps);
   });
 
+  it("keeps the same_as handler type and its step (CHE-9114)", () => {
+    const steps = [
+      { status_key: "merged", handler: { type: "same_as", step: "in_review" }, instructions: "" },
+    ];
+    const parsed = IssueWorkflowSchema.parse({ ...baseWorkflow, steps });
+    expect(parsed.steps[0]?.handler).toEqual({ type: "same_as", step: "in_review" });
+  });
+
   it("still degrades an unknown handler type to none (CHE-7673)", () => {
     const parsed = IssueWorkflowSchema.parse({
       ...baseWorkflow,

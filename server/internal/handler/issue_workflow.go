@@ -75,6 +75,7 @@ func canManageProjectWorkflow(member db.Member, project db.Project) bool {
 type IssueWorkflowHandlerPayload struct {
 	Type   string `json:"type"`
 	ID     string `json:"id,omitempty"`
+	Step   string `json:"step,omitempty"`
 	Preset string `json:"preset,omitempty"`
 }
 
@@ -170,7 +171,7 @@ type workflowMappingPlan struct {
 func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 	p := IssueWorkflowStepPayload{
 		StatusKey:     s.StatusKey,
-		Handler:       IssueWorkflowHandlerPayload{Type: s.Handler.Type, ID: s.Handler.ID, Preset: s.Handler.Preset},
+		Handler:       IssueWorkflowHandlerPayload{Type: s.Handler.Type, ID: s.Handler.ID, Step: s.Handler.Step, Preset: s.Handler.Preset},
 		Instructions:  s.Instructions,
 		NextStatusKey: s.NextStatusKey,
 		BackStatusKey: s.BackStatusKey,
@@ -196,7 +197,7 @@ func stepToPayload(s issueworkflow.Step) IssueWorkflowStepPayload {
 func payloadToStep(statusKey string, in IssueWorkflowStepPayload) issueworkflow.Step {
 	return issueworkflow.Step{
 		StatusKey:     statusKey,
-		Handler:       issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID, Preset: in.Handler.Preset},
+		Handler:       issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID, Step: in.Handler.Step, Preset: in.Handler.Preset},
 		Instructions:  in.Instructions,
 		NextStatusKey: in.NextStatusKey,
 		BackStatusKey: in.BackStatusKey,
@@ -541,7 +542,7 @@ func resolveStepInputs(ctx context.Context, qtx *db.Queries, wsUUID pgtype.UUID,
 			AutoClose:           in.AutoClose,
 		}
 		if in.Handler != nil {
-			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID}
+			step.Handler = issueworkflow.Handler{Type: in.Handler.Type, ID: in.Handler.ID, Step: in.Handler.Step}
 		}
 		if in.NewStatus != nil {
 			entry, isNew, msg, err := createWorkflowStatus(ctx, qtx, wsUUID, *in.NewStatus, allowCreate)
@@ -666,6 +667,16 @@ func (h *Handler) validateHandoffHandler(ctx context.Context, r *http.Request, w
 			return http.StatusBadRequest, "invalid handler id"
 		}
 		return h.validateAssigneePair(ctx, r, workspaceID, pgtype.Text{String: s.Handler.Type, Valid: true}, id)
+	case issueworkflow.HandlerSameAs:
+		// The id is the fallback agent; it is optional.
+		if s.Handler.ID == "" {
+			return 0, ""
+		}
+		id, err := parseUUIDString(s.Handler.ID)
+		if err != nil {
+			return http.StatusBadRequest, "invalid handler id"
+		}
+		return h.validateAssigneePair(ctx, r, workspaceID, pgtype.Text{String: issueworkflow.HandlerAgent, Valid: true}, id)
 	}
 	return 0, ""
 }

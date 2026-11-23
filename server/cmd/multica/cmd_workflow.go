@@ -82,8 +82,11 @@ var workflowUpdateCmd = &cobra.Command{
 	Long: `Update a workflow's name, description, steps or run rules.
 
 --steps-file replaces all steps (same JSON shape as "workflow create" and the
-"steps" array "workflow get --output json" prints: status_key, handler,
-instructions, next_status_key, back_status_key, edges (guarded exits:
+"steps" array "workflow get --output json" prints: status_key, handler
+(type none, agent, member, project_lead, human_by_role, author, reviewer, or
+same_as with "step": a status key, so the step takes the agent that last handled
+that step on the issue, else the handler's optional agent "id", else that
+step's own handler), instructions, next_status_key, back_status_key, edges (guarded exits:
 [{"to","guard","timeout","on_timeout"}]; PR guards need a timeout), entry (gates
 a status write must meet to enter the step: [{"guard","mode":"off|warn|block",
 "member_override"}]; omit to keep the stored gates, [] to clear them)). When the
@@ -360,6 +363,19 @@ func workflowSteps(wf map[string]any) []map[string]any {
 	return out
 }
 
+// workflowHandlerLabel is a step's handler as the table shows it: the type,
+// then its id, or for a same_as handler the step it follows.
+func workflowHandlerLabel(h map[string]any) string {
+	handler := strVal(h, "type")
+	if step := strVal(h, "step"); handler == "same_as" && step != "" {
+		handler += ": " + step
+	}
+	if id := strVal(h, "id"); id != "" {
+		handler += ":" + id
+	}
+	return handler
+}
+
 func printWorkflowTable(wf map[string]any) {
 	fmt.Printf("%s  %s (version %s)\n", strVal(wf, "id"), strVal(wf, "name"), strVal(wf, "version"))
 	printWorkflowRules(wf)
@@ -369,11 +385,7 @@ func printWorkflowTable(wf map[string]any) {
 	for _, raw := range steps {
 		s, _ := raw.(map[string]any)
 		h, _ := s["handler"].(map[string]any)
-		handler := strVal(h, "type")
-		if id := strVal(h, "id"); id != "" {
-			handler += ":" + id
-		}
-		rows = append(rows, []string{strVal(s, "status_key"), handler, strVal(s, "next_status_key"), strVal(s, "back_status_key")})
+		rows = append(rows, []string{strVal(s, "status_key"), workflowHandlerLabel(h), strVal(s, "next_status_key"), strVal(s, "back_status_key")})
 		if text := strVal(s, "instructions"); text != "" {
 			fmt.Fprintf(&instructions, "\n--- %s ---\n%s\n", strVal(s, "status_key"), text)
 		}

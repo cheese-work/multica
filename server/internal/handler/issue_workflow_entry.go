@@ -183,12 +183,14 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 		guard        *reviewerGuard
 		pickRefusal  error
 	)
-	if step.Handler.Type == issueworkflow.HandlerReviewer {
-		// The pick needs the issue's authors, so it is not ResolveHandler's.
+	if holdsReviewerRule(step) {
 		var err error
 		if guard, err = h.loadReviewerGuard(ctx, q, prev.ID); err != nil {
 			return nil, err
 		}
+	}
+	if step.Handler.Type == issueworkflow.HandlerReviewer {
+		// The pick needs the issue's authors, so it is not ResolveHandler's.
 		var picked pgtype.UUID
 		picked, ok, pickRefusal = h.pickReviewer(ctx, q, prev, guard)
 		if ok {
@@ -209,6 +211,12 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	// or the issue keeps one for the step. A reviewer step whose table lists
 	// no qualified reviewer refuses instead.
 	if !ok && caller.handoffAssignee == nil && sticky == nil {
+		if pickRefusal == nil && guard != nil && prev.AssigneeType.Valid && prev.AssigneeID.Valid {
+			// The step finds nobody and keeps the current assignee, who could
+			// be an author.
+			kept := issueworkflow.StepAssignee{Type: prev.AssigneeType.String, ID: prev.AssigneeID}
+			return nil, h.checkReviewerAssignee(ctx, q, prev.WorkspaceID, guard, kept)
+		}
 		return nil, pickRefusal
 	}
 	if ok && step.KeepOtherAssignee {
@@ -290,7 +298,7 @@ func (e *createHandoffError) Error() string { return e.message }
 // calls it under the catalog and project locks.
 func (h *Handler) createHandoffResolver(r *http.Request, workspaceID, creatorType string, creatorID, requestedByID pgtype.UUID, title string) service.CreateHandoffResolver {
 	return func(ctx context.Context, step issueworkflow.Step, project db.Project) (pgtype.Text, pgtype.UUID, error) {
-		humans, err := h.workflowHumans(ctx, h.Queries, step, project, project.WorkspaceID, requestedByID, workflowSubject{Title: title})
+		humans, err := h.workflowHumans(ctx, h.Queries, step, project, project.WorkspaceID, requestedByID, workflowSubject{Title: title, ProjectID: project.ID})
 		if err != nil {
 			return pgtype.Text{}, pgtype.UUID{}, err
 		}
@@ -889,6 +897,9 @@ func (h *Handler) workflowHumans(ctx context.Context, q *db.Queries, step issuew
 	if step.Handler.Type == issueworkflow.HandlerAuthor {
 		return authorHumans(ctx, q, workspaceID, subject)
 	}
+	if step.Handler.Type == issueworkflow.HandlerSameAs {
+		return h.sameAsHumans(ctx, q, step, project, workspaceID, requestedByID, subject)
+	}
 	if step.Handler.Type == issueworkflow.HandlerAgent {
 		return issueworkflow.Humans{RoutingAgent: routingAgentFor(ctx, q, workspaceID, project, step.StatusKey)}, nil
 	}
@@ -947,6 +958,8 @@ func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project d
 			return "the author (none set)"
 		case issueworkflow.HandlerReviewer:
 			return "a reviewer of another lab (from capability routing)"
+		case issueworkflow.HandlerSameAs:
+			return "the agent that handled " + step.Handler.Step + " (none found)"
 		}
 		return ""
 	}
@@ -960,6 +973,8 @@ func (h *Handler) stepHandlerName(ctx context.Context, issue db.Issue, project d
 		return name + " (requester, project lead or workspace owner)"
 	case issueworkflow.HandlerAuthor:
 		return name + " (author)"
+	case issueworkflow.HandlerSameAs:
+		return name + " (same agent as " + step.Handler.Step + ")"
 	}
 	return name
 }
