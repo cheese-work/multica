@@ -8337,6 +8337,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		returnErr = fmt.Errorf("%w after %s", errTaskPrepareTimeout, prepareTimeout)
 	}()
 
+	// Containment (CHE-7168 step 5): behind the flag, the attempt gets its cgroup
+	// leaf, and its record, before any process of the attempt exists. The prep
+	// helper is forked into it through prepareCtx; the agent CLI follows through
+	// backendConfig.Launch. Flag off: contain is nil and nothing below changes.
+	contain, prepareCtx, err := d.beginContainment(prepareCtx, task)
+	if err != nil {
+		return TaskResult{}, err
+	}
+	defer contain.End(taskLog)
+
 	// task.Repos is the authoritative repo list for this task — when the
 	// claimed task belongs to a project with github_repo resources the server
 	// has already narrowed it to project repos only. Make sure those URLs are
@@ -9371,6 +9381,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err != nil {
 		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
 	}
+	// Contained runs cannot start docker, tmux, ssh and the like through PATH.
+	// After the guard shims so it is first on PATH.
+	if err := contain.frontShims(agentEnv, taskTempDir); err != nil {
+		return TaskResult{}, fmt.Errorf("containment: install shims: %w", err)
+	}
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -9443,6 +9458,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	if runLaunch != nil {
 		backendConfig.Launch = runLaunch.hook
+	}
+	if hook := contain.Hook(); hook != nil {
+		backendConfig.Launch = hook
 	}
 	if provider == "codex" && d.cfg.RunBindingsDir != "" && task.IssueIdentifier != "" {
 		backendConfig.RunBinding = &runbinding.Spec{Dir: d.cfg.RunBindingsDir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}
