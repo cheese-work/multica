@@ -32,7 +32,7 @@ type Record struct {
 	BootID          string    `json:"boot_id"`
 	DaemonInstance  string    `json:"daemon_instance"`
 	TaskID          string    `json:"task_id"`
-	ClaimGeneration int64     `json:"claim_generation"`
+	ClaimGeneration string    `json:"claim_generation"`
 	Attempt         string    `json:"attempt"`
 	Generation      int64     `json:"generation"`
 	LaunchProfileID string    `json:"launch_profile_id"`

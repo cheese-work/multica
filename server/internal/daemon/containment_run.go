@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/cli"
@@ -30,6 +31,21 @@ func parseContainmentMode(v string, sbx sandbox.Mode) (bool, error) {
 	default:
 		return false, fmt.Errorf("unknown value %q (want off or on)", v)
 	}
+}
+
+// parseContainmentCharge reads the per-attempt memory charge in bytes. With
+// containment on it is required and positive, because the attempt record must
+// carry a real charge; admission (CHE-7168 step 7) supplies it later.
+func parseContainmentCharge(v string, on bool) (int64, error) {
+	v = strings.TrimSpace(v)
+	if !on {
+		return 0, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return 0, fmt.Errorf("%q is not a positive byte count (required when MULTICA_CONTAINMENT=on)", v)
+	}
+	return n, nil
 }
 
 // containmentRun is one attempt's cgroup leaf and the glue the daemon needs
@@ -66,6 +82,11 @@ func (d *Daemon) beginContainment(ctx context.Context, task Task) (*containmentR
 		StateDir:       stateDir,
 		DaemonInstance: fmt.Sprintf("%s:%d:%d", d.cfg.DaemonID, os.Getpid(), d.startedAt.Unix()),
 		TaskID:         task.ID,
+		// The claim StartTask presents, which a duplicate delivery may have refreshed.
+		ClaimGeneration: d.latestClaimGeneration(task),
+		// The run profile; CHE-7235 replaces it with the frozen launch-profile ID.
+		LaunchProfileID: task.EffectiveProfile(),
+		Charge:          d.cfg.ContainmentCharge,
 	})
 	if err != nil {
 		return nil, ctx, fmt.Errorf("containment: %w", err)

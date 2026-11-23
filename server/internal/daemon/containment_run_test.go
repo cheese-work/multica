@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -23,7 +24,13 @@ func containmentTestDaemon(t *testing.T, on bool) (*Daemon, string) {
 	d.cfg.Containment = on
 	d.cfg.ContainmentRoot = filepath.Join(base, "runs")
 	d.cfg.ContainmentStateDir = filepath.Join(base, "state")
+	d.cfg.ContainmentCharge = 2 << 30
 	return d, base
+}
+
+// containmentTask is a claimed task as the server delivers it.
+func containmentTask() Task {
+	return Task{ID: containmentTestTask, DispatchedAt: "2026-11-23T07:00:00Z", Profile: "elevated"}
 }
 
 const containmentTestTask = "11111111-2222-3333-4444-555555555555"
@@ -33,7 +40,7 @@ const containmentTestTask = "11111111-2222-3333-4444-555555555555"
 func TestContainmentFlagOffIsTodaysLaunchPath(t *testing.T) {
 	d, base := containmentTestDaemon(t, false)
 	ctx := context.Background()
-	run, outCtx, err := d.beginContainment(ctx, Task{ID: containmentTestTask})
+	run, outCtx, err := d.beginContainment(ctx, containmentTask())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +68,7 @@ func TestContainmentFlagOffIsTodaysLaunchPath(t *testing.T) {
 // attach to that leaf.
 func TestContainmentOnCreatesLeafAndPrepAttachesToIt(t *testing.T) {
 	d, _ := containmentTestDaemon(t, true)
-	run, ctx, err := d.beginContainment(context.Background(), Task{ID: containmentTestTask})
+	run, ctx, err := d.beginContainment(context.Background(), containmentTask())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +104,7 @@ func TestContainmentOnCreatesLeafAndPrepAttachesToIt(t *testing.T) {
 
 func TestContainmentOnFrontsBlockedLaunchShims(t *testing.T) {
 	d, _ := containmentTestDaemon(t, true)
-	run, _, err := d.beginContainment(context.Background(), Task{ID: containmentTestTask})
+	run, _, err := d.beginContainment(context.Background(), containmentTask())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +121,8 @@ func TestContainmentOnFrontsBlockedLaunchShims(t *testing.T) {
 		t.Fatalf("PATH = %q", env["PATH"])
 	}
 	out, err := exec.Command(filepath.Join(first, "docker")).CombinedOutput()
-	if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 126 {
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 126 {
 		t.Fatalf("docker shim: %v %s", err, out)
 	}
 	ev, err := containment.ReadEvents(run.leaf.EventsFile())
@@ -141,6 +149,84 @@ func TestParseContainmentMode(t *testing.T) {
 		got, err := parseContainmentMode(c.in, c.sbx)
 		if (err != nil) != c.wantErr || got != c.want {
 			t.Errorf("parseContainmentMode(%q, %q) = %v, %v; want %v, err %v", c.in, c.sbx, got, err, c.want, c.wantErr)
+		}
+	}
+}
+
+// The persisted record carries the real claim generation, attempt generation,
+// run profile and charge of the attempt, not zero values.
+func TestContainmentRecordCarriesRealIdentityAndCharge(t *testing.T) {
+	d, _ := containmentTestDaemon(t, true)
+	task := containmentTask()
+	d.inflight.begin(task.ID, "2026-11-23T07:00:05Z") // a duplicate delivery refreshed the claim
+	run, _, err := d.beginContainment(context.Background(), task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer run.End(slog.Default())
+	rec, err := containment.ReadRecord(d.cfg.ContainmentStateDir, run.leaf.Record().Attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.ClaimGeneration != "2026-11-23T07:00:05Z" {
+		t.Fatalf("claim generation = %q, want the current claim", rec.ClaimGeneration)
+	}
+	if rec.Generation != 1 || rec.LaunchProfileID != "elevated" || rec.Charge != 2<<30 {
+		t.Fatalf("record = %+v", rec)
+	}
+	if !strings.Contains(rec.DaemonInstance, ":") || rec.BootID == "" {
+		t.Fatalf("record identity = %+v", rec)
+	}
+	second, _, err := d.beginContainment(context.Background(), task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.End(slog.Default())
+	if g := second.leaf.Record().Generation; g != 2 {
+		t.Fatalf("second attempt generation = %d, want 2", g)
+	}
+}
+
+// A required value that is unavailable fails the attempt closed: no leaf.
+func TestContainmentFailsClosedWithoutClaimOrCharge(t *testing.T) {
+	for name, mutate := range map[string]func(*Daemon, *Task){
+		"no claim generation": func(_ *Daemon, task *Task) { task.DispatchedAt = "" },
+		"no charge":           func(d *Daemon, _ *Task) { d.cfg.ContainmentCharge = 0 },
+	} {
+		d, base := containmentTestDaemon(t, true)
+		task := containmentTask()
+		mutate(d, &task)
+		run, _, err := d.beginContainment(context.Background(), task)
+		if err == nil {
+			run.End(slog.Default())
+			t.Fatalf("%s: beginContainment succeeded", name)
+		}
+		if entries, _ := os.ReadDir(filepath.Join(base, "runs")); len(entries) != 0 {
+			t.Fatalf("%s: leaf left behind: %v", name, entries)
+		}
+	}
+}
+
+func TestParseContainmentCharge(t *testing.T) {
+	cases := []struct {
+		in      string
+		on      bool
+		want    int64
+		wantErr bool
+	}{
+		{"", false, 0, false},
+		{"junk", false, 0, false}, // flag off ignores the knob
+		{"1073741824", true, 1 << 30, false},
+		{" 2048 ", true, 2048, false},
+		{"", true, 0, true},
+		{"0", true, 0, true},
+		{"-5", true, 0, true},
+		{"1GiB", true, 0, true},
+	}
+	for _, c := range cases {
+		got, err := parseContainmentCharge(c.in, c.on)
+		if got != c.want || (err != nil) != c.wantErr {
+			t.Errorf("parseContainmentCharge(%q, %v) = %d, %v; want %d, err %v", c.in, c.on, got, err, c.want, c.wantErr)
 		}
 	}
 }

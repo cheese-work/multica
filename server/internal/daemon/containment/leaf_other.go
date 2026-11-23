@@ -6,8 +6,8 @@ import "os/exec"
 
 // Options is the input to Create.
 type Options struct {
-	Root, StateDir, BootID, DaemonInstance, TaskID, LaunchProfileID string
-	ClaimGeneration, Generation                                     int64
+	Root, StateDir, BootID, DaemonInstance, TaskID, ClaimGeneration, LaunchProfileID string
+	Charge                                                                           int64
 }
 
 // Leaf does not exist off Linux.

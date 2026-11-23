@@ -3,6 +3,7 @@
 package containment
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,9 +21,9 @@ func testOptions(t *testing.T) Options {
 		BootID:          "boot-1",
 		DaemonInstance:  "inst-1",
 		TaskID:          "11111111-2222-3333-4444-555555555555",
-		ClaimGeneration: 3,
-		Generation:      1,
+		ClaimGeneration: "2026-11-23T07:00:00Z",
 		LaunchProfileID: "profile-a",
+		Charge:          1 << 30,
 	}
 }
 
@@ -73,7 +74,7 @@ func TestRecordCarriesEveryPlanField(t *testing.T) {
 		t.Fatal(err)
 	}
 	if r.BootID != "boot-1" || r.DaemonInstance != "inst-1" || r.TaskID != o.TaskID ||
-		r.ClaimGeneration != 3 || r.Generation != 1 || r.LaunchProfileID != "profile-a" ||
+		r.ClaimGeneration != o.ClaimGeneration || r.Generation != 1 || r.LaunchProfileID != "profile-a" || r.Charge != 1<<30 ||
 		r.Attempt == "" || r.LeafPath == "" || r.CgroupID == 0 || r.State != StateLeafCreated {
 		t.Fatalf("record is missing a field: %+v", r)
 	}
@@ -217,8 +218,8 @@ func TestShimsExit126AndRecordBlockedLaunch(t *testing.T) {
 	for _, name := range ShimNames {
 		cmd := exec.Command(filepath.Join(bin, name), "arg")
 		out, err := cmd.CombinedOutput()
-		ee, ok := err.(*exec.ExitError)
-		if !ok || ee.ExitCode() != 126 {
+		var ee *exec.ExitError
+		if !errors.As(err, &ee) || ee.ExitCode() != 126 {
 			t.Fatalf("%s: err = %v, want exit 126", name, err)
 		}
 		if !strings.Contains(string(out), name) {
@@ -249,5 +250,60 @@ func TestShimNamesAreThePlanList(t *testing.T) {
 func TestInstallShimsRejectsUnsafePaths(t *testing.T) {
 	if err := InstallShims(t.TempDir(), "/tmp/it's"); err == nil {
 		t.Fatal("events path with a quote accepted")
+	}
+}
+
+// A production record must carry real identity and charge. A missing required
+// value fails closed: no leaf, no record.
+func TestCreateFailsClosedWhenARequiredFieldIsMissing(t *testing.T) {
+	for name, mutate := range map[string]func(*Options){
+		"claim generation": func(o *Options) { o.ClaimGeneration = "" },
+		"launch profile":   func(o *Options) { o.LaunchProfileID = "" },
+		"charge":           func(o *Options) { o.Charge = 0 },
+	} {
+		o := testOptions(t)
+		mutate(&o)
+		if l, err := Create(o); err == nil {
+			l.End()
+			t.Fatalf("%s missing: Create succeeded", name)
+		}
+		if entries, _ := os.ReadDir(o.Root); len(entries) != 0 {
+			t.Fatalf("%s missing: leaf left behind: %v", name, entries)
+		}
+		if entries, _ := os.ReadDir(o.StateDir); len(entries) != 0 {
+			t.Fatalf("%s missing: record left behind: %v", name, entries)
+		}
+	}
+}
+
+// Generation is the attempt's ordinal for its task: 1 for the first attempt,
+// then one more than the records already on disk for that task.
+func TestCreateGenerationCountsEarlierAttemptsOfTheTask(t *testing.T) {
+	o := testOptions(t)
+	first, err := Create(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.End()
+	second, err := Create(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.End()
+	other := o
+	other.TaskID = "99999999-2222-3333-4444-555555555555"
+	third, err := Create(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer third.End()
+	if g := first.Record().Generation; g != 1 {
+		t.Fatalf("first generation = %d, want 1", g)
+	}
+	if g := second.Record().Generation; g != 2 {
+		t.Fatalf("second generation = %d, want 2", g)
+	}
+	if g := third.Record().Generation; g != 1 {
+		t.Fatalf("other task generation = %d, want 1", g)
 	}
 }

@@ -5,6 +5,7 @@ package containment
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -23,13 +24,15 @@ type Options struct {
 	// Root is the directory that holds the attempt leaves (the runs/ cgroup).
 	Root string
 	// StateDir holds the attempt records and event logs.
-	StateDir        string
-	BootID          string // default: /proc/sys/kernel/random/boot_id
-	DaemonInstance  string
-	TaskID          string
-	ClaimGeneration int64
-	Generation      int64
+	StateDir       string
+	BootID         string // default: /proc/sys/kernel/random/boot_id
+	DaemonInstance string
+	TaskID         string
+	// ClaimGeneration is the server's claim generation of the task (dispatched_at).
+	ClaimGeneration string
 	LaunchProfileID string
+	// Charge is the memory charge, in bytes, held for the attempt.
+	Charge int64
 }
 
 // Leaf is one attempt's cgroup leaf. It holds the directory fd that
@@ -77,6 +80,16 @@ func Create(o Options) (*Leaf, error) {
 	if o.Root == "" || o.StateDir == "" {
 		return nil, errors.New("containment: root and state dir are required")
 	}
+	// The record is the authority for recovery: a missing identity or charge
+	// fails closed before any leaf exists.
+	switch {
+	case o.ClaimGeneration == "":
+		return nil, errors.New("containment: claim generation is required")
+	case o.LaunchProfileID == "":
+		return nil, errors.New("containment: launch profile id is required")
+	case o.Charge <= 0:
+		return nil, errors.New("containment: charge must be positive")
+	}
 	if o.BootID == "" {
 		id, err := ReadBootID()
 		if err != nil {
@@ -89,6 +102,10 @@ func Create(o Options) (*Leaf, error) {
 		return nil, err
 	}
 	attempt := o.TaskID + "-" + hex.EncodeToString(suffix)
+	generation, err := nextGeneration(o.StateDir, o.TaskID)
+	if err != nil {
+		return nil, err
+	}
 
 	if err := os.MkdirAll(o.Root, 0o755); err != nil {
 		return nil, fmt.Errorf("containment: runs cgroup: %w", err)
@@ -118,8 +135,8 @@ func Create(o Options) (*Leaf, error) {
 	events := filepath.Join(o.StateDir, attempt+".events.jsonl")
 	rec := Record{
 		BootID: o.BootID, DaemonInstance: o.DaemonInstance, TaskID: o.TaskID,
-		ClaimGeneration: o.ClaimGeneration, Attempt: attempt, Generation: o.Generation,
-		LaunchProfileID: o.LaunchProfileID, LeafPath: path, CgroupID: st.Ino,
+		ClaimGeneration: o.ClaimGeneration, Attempt: attempt, Generation: generation,
+		LaunchProfileID: o.LaunchProfileID, LeafPath: path, CgroupID: st.Ino, Charge: o.Charge,
 		State: StateLeafCreated, EventsFile: events, CreatedAt: time.Now().UTC(),
 	}
 	if err := WriteRecord(o.StateDir, rec); err != nil {
@@ -189,4 +206,28 @@ func (l *Leaf) End() error {
 	ended := l.rec
 	ended.State = StateEnded
 	return WriteRecord(filepath.Dir(l.events), ended)
+}
+
+// nextGeneration is one more than the attempt records already on disk for the
+// task: the attempt's ordinal, so a re-delivered task never reuses one.
+func nextGeneration(stateDir, taskID string) (int64, error) {
+	matches, err := filepath.Glob(filepath.Join(stateDir, taskID+"-*.json"))
+	if err != nil {
+		return 0, err
+	}
+	n := int64(1)
+	for _, m := range matches {
+		raw, err := os.ReadFile(m)
+		if err != nil {
+			return 0, fmt.Errorf("containment: read earlier record: %w", err)
+		}
+		var r Record
+		if err := json.Unmarshal(raw, &r); err != nil {
+			return 0, fmt.Errorf("containment: earlier record %s: %w", filepath.Base(m), err)
+		}
+		if r.TaskID == taskID {
+			n++
+		}
+	}
+	return n, nil
 }
