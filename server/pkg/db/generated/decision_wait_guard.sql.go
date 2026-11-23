@@ -11,6 +11,48 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getDecisionWaitGuardProjectSquad = `-- name: GetDecisionWaitGuardProjectSquad :one
+WITH candidate AS (
+  SELECT s.id FROM squad s
+  JOIN issue i ON i.id = $1 AND i.workspace_id = $2
+  JOIN project p ON p.id = i.project_id AND p.workspace_id = i.workspace_id
+  WHERE s.workspace_id = i.workspace_id AND s.archived_at IS NULL
+    AND p.lead_type = 'agent' AND s.leader_id = p.lead_id
+    AND (i.assignee_type IS DISTINCT FROM 'agent' OR s.leader_id = i.assignee_id OR EXISTS (
+      SELECT 1 FROM squad_member sm WHERE sm.squad_id = s.id AND sm.member_type = 'agent' AND sm.member_id = i.assignee_id))
+)
+SELECT s.id, s.workspace_id, s.name, s.description, s.leader_id, s.creator_id, s.created_at, s.updated_at, s.archived_at, s.archived_by, s.avatar_url, s.instructions FROM squad s WHERE s.id IN (SELECT id FROM candidate) AND (SELECT count(*) FROM candidate) = 1
+`
+
+type GetDecisionWaitGuardProjectSquadParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Fallback when GetDecisionWaitGuardSquad finds no single squad (CHE-4029). The
+// project's owning squad is the single active squad its lead agent leads.
+// When the issue's assignee is an agent in several squads, only the squad that
+// agent belongs to (or leads) counts.
+func (q *Queries) GetDecisionWaitGuardProjectSquad(ctx context.Context, arg GetDecisionWaitGuardProjectSquadParams) (Squad, error) {
+	row := q.db.QueryRow(ctx, getDecisionWaitGuardProjectSquad, arg.IssueID, arg.WorkspaceID)
+	var i Squad
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Description,
+		&i.LeaderID,
+		&i.CreatorID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ArchivedAt,
+		&i.ArchivedBy,
+		&i.AvatarUrl,
+		&i.Instructions,
+	)
+	return i, err
+}
+
 const getDecisionWaitGuardSquad = `-- name: GetDecisionWaitGuardSquad :one
 SELECT s.id, s.workspace_id, s.name, s.description, s.leader_id, s.creator_id, s.created_at, s.updated_at, s.archived_at, s.archived_by, s.avatar_url, s.instructions FROM squad s
 WHERE s.workspace_id = $1 AND s.archived_at IS NULL
@@ -56,6 +98,37 @@ func (q *Queries) GetDecisionWaitGuardSquad(ctx context.Context, arg GetDecision
 		&i.Instructions,
 	)
 	return i, err
+}
+
+const hasOpenDecisionRequestCoveringIssue = `-- name: HasOpenDecisionRequestCoveringIssue :one
+WITH RECURSIVE chain AS (
+  SELECT i.id, i.parent_issue_id FROM issue i
+  WHERE i.id = $2 AND i.workspace_id = $1
+  UNION
+  SELECT p.id, p.parent_issue_id FROM issue p JOIN chain c ON p.id = c.parent_issue_id
+  WHERE p.workspace_id = $1
+)
+SELECT EXISTS (
+  SELECT 1 FROM decision_request r
+  WHERE r.authority = 'human' AND r.workspace_id = $1 AND r.status = 'open'
+    AND (r.issue_id IN (SELECT id FROM chain)
+      OR r.ask_json -> 'covers_issue_ids' @> to_jsonb($2::uuid::text))
+)::boolean
+`
+
+type HasOpenDecisionRequestCoveringIssueParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+}
+
+// A grouped request lives on a parent (CHE-3305), so a child waiting on it is
+// covered. A request on any issue also covers the issues its ask names in
+// covers_issue_ids (CHE-4029); an ordinary issue link covers nothing. UNION (not UNION ALL) stops a parent cycle from recursing forever.
+func (q *Queries) HasOpenDecisionRequestCoveringIssue(ctx context.Context, arg HasOpenDecisionRequestCoveringIssueParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasOpenDecisionRequestCoveringIssue, arg.WorkspaceID, arg.IssueID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const listDecisionWaitGuardIssues = `-- name: ListDecisionWaitGuardIssues :many

@@ -78,6 +78,14 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 		return err
 	}
 	hasOpen := slices.ContainsFunc(requests, func(request db.DecisionRequest) bool { return request.Status == "open" })
+	// CHE-4029: a grouped request lives on a parent, and an answered request
+	// leaves nothing to ask. Only an agent or human action remains then.
+	if !hasOpen {
+		if hasOpen, err = queries.HasOpenDecisionRequestCoveringIssue(ctx, db.HasOpenDecisionRequestCoveringIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID}); err != nil {
+			return err
+		}
+	}
+	answered := len(requests) > 0 && requests[len(requests)-1].Status == "answered"
 	// A request cancelled outside the answer path (lane archived, recipient
 	// removed, expired, withdrawn) leaves its park behind; undo it here.
 	if restored, recorded, err := unparkIssueAfterDecision(ctx, queries, issue, nil); err != nil {
@@ -93,7 +101,7 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	if err != nil {
 		return err
 	}
-	if hasOpen || settings.Guard.Enabled != nil && !*settings.Guard.Enabled {
+	if hasOpen || answered || settings.Guard.Enabled != nil && !*settings.Guard.Enabled {
 		eligible = false
 	}
 	if !eligible {
@@ -145,6 +153,10 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	var recipient db.Agent
 	var squadID pgtype.UUID
 	squad, err := queries.GetDecisionWaitGuardSquad(ctx, db.GetDecisionWaitGuardSquadParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		// CHE-4029: before the assignee fallback, try the project's owning squad.
+		squad, err = queries.GetDecisionWaitGuardProjectSquad(ctx, db.GetDecisionWaitGuardProjectSquadParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		if recipient, err = guardAssigneeAgent(ctx, queries, issue); errors.Is(err, pgx.ErrNoRows) {
 			if err := setDecisionWaitMetadata(ctx, queries, issue, "decision_wait_route_error", "owning squad is missing or ambiguous"); err != nil {
