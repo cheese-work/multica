@@ -452,6 +452,9 @@ type RunGuardAllowParams struct {
 	IssueID   string `json:"issue_id"`
 	RefusalID string `json:"guard_refusal_id"`
 	Runs      int    `json:"runs"`
+	// StopLoss marks the card of a stop-loss refusal (CHE-9340): its approval
+	// sizes the allowance from the issue's use and counts as a stop-loss release.
+	StopLoss bool `json:"stop_loss,omitempty"`
 }
 
 func normalizeRunGuardAllow(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {

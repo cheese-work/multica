@@ -100,6 +100,25 @@ workspace setting `capability_routing`: per issue type, the author agent and
 the ordered reviewer agents. It prints `{}` when unset. Read-only; change it
 with `multica config propose workspace.settings --set capability_routing:=<json>`.
 
+## Agent role scope
+
+`multica workspace agent-role-scope [workspace-id|slug|prefix]` prints the
+workspace setting `agent_role_scope`: per agent, the work classes another agent
+may assign it. An agent with no entry is unrestricted. An agent that assigns an
+issue, or requests a review, from an out-of-scope agent is refused with the
+`capability_routing` author or reviewers named; a person is not. Read-only;
+change it with `multica config propose workspace.settings --set agent_role_scope:=<json>`.
+`multica agent get <agent>` shows one agent's scope.
+
+The work class is read from the issue title: `plan`/`design`/`spec`, `decision`,
+and `debate` by type; `review(plan|design|spec|decision|debate)` is a plan
+review, any other `review` (including `review(security)`) is a code review;
+everything else is execution, security-typed implementation work included. A
+co-sign is only a child issue titled `security gate: <parent identifier>` under
+the work it gates. A path or a `security` type in a title never makes work a
+co-sign. To get Sol's co-sign on D8 paths, create that gate issue under the PR's
+issue.
+
 ## Workspace MCP servers
 
 ```bash

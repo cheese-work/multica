@@ -41,3 +41,37 @@ WHERE s.workspace_id = sqlc.arg('workspace_id') AND s.archived_at IS NULL
       WHERE i.assignee_type = 'agent' AND sm.member_type = 'agent' AND sm.member_id = i.assignee_id
       HAVING count(*) = 1)
   );
+
+-- name: HasOpenDecisionRequestCoveringIssue :one
+-- A grouped request lives on a parent (CHE-3305), so a child waiting on it is
+-- covered. A request on any issue also covers the issues its ask names in
+-- covers_issue_ids (CHE-4029); an ordinary issue link covers nothing. UNION (not UNION ALL) stops a parent cycle from recursing forever.
+WITH RECURSIVE chain AS (
+  SELECT i.id, i.parent_issue_id FROM issue i
+  WHERE i.id = sqlc.arg('issue_id') AND i.workspace_id = sqlc.arg('workspace_id')
+  UNION
+  SELECT p.id, p.parent_issue_id FROM issue p JOIN chain c ON p.id = c.parent_issue_id
+  WHERE p.workspace_id = sqlc.arg('workspace_id')
+)
+SELECT EXISTS (
+  SELECT 1 FROM decision_request r
+  WHERE r.authority = 'human' AND r.workspace_id = sqlc.arg('workspace_id') AND r.status = 'open'
+    AND (r.issue_id IN (SELECT id FROM chain)
+      OR r.ask_json -> 'covers_issue_ids' @> to_jsonb(sqlc.arg('issue_id')::uuid::text))
+)::boolean;
+
+-- name: GetDecisionWaitGuardProjectSquad :one
+-- Fallback when GetDecisionWaitGuardSquad finds no single squad (CHE-4029). The
+-- project's owning squad is the single active squad its lead agent leads.
+-- When the issue's assignee is an agent in several squads, only the squad that
+-- agent belongs to (or leads) counts.
+WITH candidate AS (
+  SELECT s.id FROM squad s
+  JOIN issue i ON i.id = sqlc.arg('issue_id') AND i.workspace_id = sqlc.arg('workspace_id')
+  JOIN project p ON p.id = i.project_id AND p.workspace_id = i.workspace_id
+  WHERE s.workspace_id = i.workspace_id AND s.archived_at IS NULL
+    AND p.lead_type = 'agent' AND s.leader_id = p.lead_id
+    AND (i.assignee_type IS DISTINCT FROM 'agent' OR s.leader_id = i.assignee_id OR EXISTS (
+      SELECT 1 FROM squad_member sm WHERE sm.squad_id = s.id AND sm.member_type = 'agent' AND sm.member_id = i.assignee_id))
+)
+SELECT s.* FROM squad s WHERE s.id IN (SELECT id FROM candidate) AND (SELECT count(*) FROM candidate) = 1;

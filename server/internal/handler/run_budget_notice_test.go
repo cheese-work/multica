@@ -31,6 +31,13 @@ func newBudgetCase(t *testing.T, installationID int64, steps []map[string]any, m
 	c := newEdgeCase(t, installationID, steps)
 	agentID := seededReadyAgentID(t)
 	ctx := context.Background()
+	// These cases seed many runs without a PR; the stop-loss (CHE-9340) has its own tests.
+	var previous string
+	dbfx.QueryRow(t, `SELECT settings::text FROM workspace WHERE id=$1`, testWorkspaceID).Scan(&previous)
+	dbfx.Exec(t, `UPDATE workspace SET settings=jsonb_set(COALESCE(settings,'{}'), '{run_guard}', COALESCE(settings->'run_guard','{}') || '{"stop_loss":{"mode":"off"}}') WHERE id=$1`, testWorkspaceID)
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `UPDATE workspace SET settings=$2::jsonb WHERE id=$1`, testWorkspaceID, previous)
+	})
 	if _, err := testPool.Exec(ctx, `UPDATE issue_workflow SET max_runs_per_issue=$2, run_budget_since=now()-interval '1 hour' WHERE id=$1`, c.workflowID, max); err != nil {
 		t.Fatal(err)
 	}

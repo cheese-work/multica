@@ -35,8 +35,12 @@ func (h *Handler) onWeeklyRunGuardTripped(ctx context.Context, e service.WeeklyR
 		slog.Warn("weekly run guard: load issue failed", "err", err, "issue_id", uuidToString(e.IssueID))
 		return
 	}
-	details, err := json.Marshal(map[string]any{"runs": e.Runs, "outcomes": e.Outcomes})
+	details, err := json.Marshal(map[string]any{"runs": e.Runs, "outcomes": e.Outcomes, "tokens": e.Tokens})
 	if err != nil {
+		return
+	}
+	if e.StopLoss {
+		h.onStopLossTripped(ctx, issue, e, details)
 		return
 	}
 	// Warn mode refused nothing: count it for the brief and open no card (CHE-6248).
@@ -88,7 +92,7 @@ func (h *Handler) weeklyRunGuardBrief(ctx context.Context, workspaceID pgtype.UU
 		return "", err
 	}
 	prefix := h.getIssuePrefix(ctx, workspaceID)
-	var stopped, warned []string
+	var stopped, warned, stopWarned []string
 	for _, r := range rows {
 		var d struct {
 			Runs     int64    `json:"runs"`
@@ -98,7 +102,13 @@ func (h *Handler) weeklyRunGuardBrief(ctx context.Context, workspaceID pgtype.UU
 			continue
 		}
 		item := fmt.Sprintf("%s-%d %d runs in 7 days, last 3: %s", prefix, r.Number, d.Runs, strings.Join(d.Outcomes, ", "))
-		if r.Action == weeklyRunGuardWarnedAction {
+		if r.Action == stopLossWarnedAction {
+			var tokens struct {
+				Tokens int64 `json:"tokens"`
+			}
+			_ = json.Unmarshal(r.Details, &tokens)
+			stopWarned = append(stopWarned, fmt.Sprintf("%s-%d %d runs, %.1f M tokens", prefix, r.Number, d.Runs, float64(tokens.Tokens)/1e6))
+		} else if r.Action == weeklyRunGuardWarnedAction {
 			warned = append(warned, item)
 		} else {
 			stopped = append(stopped, item)
@@ -110,6 +120,9 @@ func (h *Handler) weeklyRunGuardBrief(ctx context.Context, workspaceID pgtype.UU
 	}
 	if len(warned) > 0 {
 		lines = append(lines, "Run guard (warn mode) would have stopped runs on: "+strings.Join(warned, "; ")+".")
+	}
+	if len(stopWarned) > 0 {
+		lines = append(lines, "Stop-loss (warn mode) would have stopped runs on: "+strings.Join(stopWarned, "; ")+".")
 	}
 	return strings.Join(lines, " "), nil
 }

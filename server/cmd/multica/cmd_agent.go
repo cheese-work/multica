@@ -137,6 +137,13 @@ var agentSkillsAddCmd = &cobra.Command{
 	RunE:  runAgentSkillsAdd,
 }
 
+var agentSkillsRemoveCmd = &cobra.Command{
+	Use:   "remove <agent-id>",
+	Short: "Remove one skill from an agent without touching its other assignments",
+	Args:  exactArgs(1),
+	RunE:  runAgentSkillsRemove,
+}
+
 func init() {
 	agentCmd.AddCommand(agentListCmd)
 	agentCmd.AddCommand(agentGetCmd)
@@ -152,6 +159,7 @@ func init() {
 	agentSkillsCmd.AddCommand(agentSkillsListCmd)
 	agentSkillsCmd.AddCommand(agentSkillsSetCmd)
 	agentSkillsCmd.AddCommand(agentSkillsAddCmd)
+	agentSkillsCmd.AddCommand(agentSkillsRemoveCmd)
 
 	agentEnvCmd.AddCommand(agentEnvGetCmd)
 	agentEnvCmd.AddCommand(agentEnvSetCmd)
@@ -250,6 +258,10 @@ func init() {
 	// agent skills add
 	agentSkillsAddCmd.Flags().StringSlice("skill-ids", nil, "Skill IDs to add (comma-separated)")
 	agentSkillsAddCmd.Flags().String("output", "json", "Output format: table or json")
+
+	// agent skills remove
+	agentSkillsRemoveCmd.Flags().String("skill-id", "", "Skill ID to remove")
+	agentSkillsRemoveCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// agent env get
 	agentEnvGetCmd.Flags().String("output", "json", "Output format: json or table")
@@ -617,7 +629,7 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, agent)
 	}
 
-	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION", "PAUSED"}
+	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION", "PAUSED", "ROLE_SCOPE"}
 	rows := [][]string{{
 		strVal(agent, "id"),
 		strVal(agent, "name"),
@@ -627,9 +639,26 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		strVal(agent, "avatar_url"),
 		strVal(agent, "description"),
 		strVal(agent, "scheduling_paused_at"),
+		roleScopeCell(agent),
 	}}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil
+}
+
+// roleScopeCell renders an agent's role_scope (CHE-9192); "all" is an agent with
+// no agent_role_scope entry.
+func roleScopeCell(agent map[string]any) string {
+	list, _ := agent["role_scope"].([]any)
+	if len(list) == 0 {
+		return "all"
+	}
+	names := make([]string, 0, len(list))
+	for _, v := range list {
+		if s, ok := v.(string); ok {
+			names = append(names, s)
+		}
+	}
+	return strings.Join(names, ",")
 }
 
 // applyAgentPermissionFlags translates the invocation-permission flags
@@ -1148,6 +1177,29 @@ func runAgentSkillsAdd(cmd *cobra.Command, args []string) error {
 	var result json.RawMessage
 	if err := client.PostJSON(ctx, "/api/agents/"+args[0]+"/skills/add", body, &result); err != nil {
 		return fmt.Errorf("add agent skills: %w", err)
+	}
+
+	return printAgentSkillsMutationResult(cmd, args[0], result)
+}
+
+func runAgentSkillsRemove(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	skillID, _ := cmd.Flags().GetString("skill-id")
+	skillID = strings.TrimSpace(skillID)
+	if skillID == "" {
+		return fmt.Errorf("--skill-id is required")
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	var result json.RawMessage
+	if err := client.DeleteJSONResponse(ctx, "/api/agents/"+args[0]+"/skills/"+url.PathEscape(skillID), &result); err != nil {
+		return fmt.Errorf("remove agent skill: %w", err)
 	}
 
 	return printAgentSkillsMutationResult(cmd, args[0], result)

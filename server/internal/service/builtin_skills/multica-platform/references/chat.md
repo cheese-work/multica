@@ -100,6 +100,19 @@ with an interactive sign-in, a PAT or a CLI sign-in and returns metadata only
 (no message preview). A task token gets a 403. `multica chat sessions` rows
 also carry `unseen` (JSON) and an `UNSEEN` column (table).
 
+## Count progress cards in a member's DMs
+
+```bash
+multica chat count --member <user-id> --kind progress-card --since 2026-11-23T00:00:00Z --output json
+# {"count": 3, "since": "...", "until": "..."}
+```
+
+Count only: no message text, session id or other member's data. A member counts
+their own DMs; an agent run counts for the named member only when the run is the
+member's or the calling agent is owned by the member. Anyone else gets 403.
+Feed flow metric 7 (`FLOW_METRICS_DM_JSON`, a list of `{content, created_at}`)
+with: `jq --arg s "$SINCE" '[range(.count) | {content: "Progress update", created_at: $s}]'`.
+
 ## Schedule a wakeup in this DM
 
 ```bash

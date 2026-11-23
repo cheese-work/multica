@@ -55,8 +55,11 @@ func (h *Handler) openWeeklyRunGuardCard(ctx context.Context, issue db.Issue, e 
 	var results []decisionRequestResult
 	var comment db.Comment
 	var revision int64
+	var parked db.Issue
+	var parkedActivity *db.ActivityLog
 	err := h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		results, comment, revision = nil, db.Comment{}, 0
+		parked, parkedActivity = issue, nil
 		q := h.Queries.WithTx(tx)
 		recipients, err := runBudgetRecipients(ctx, q, issue)
 		if err != nil {
@@ -114,7 +117,10 @@ func (h *Handler) openWeeklyRunGuardCard(ctx context.Context, issue db.Issue, e 
 		}
 		ask := fmt.Sprintf("**Weekly run guard**\nThe platform refused a run on [Issue](mention://issue/%s): it started %d runs in 7 days.\nRefused trigger: %s, for %s.\nApprove with your passkey to allow %d more runs for 7 days and run that trigger once, or decline to keep it stopped.",
 			uuidToString(issue.ID), e.Runs, trigger, agentName, decisionaction.RunGuardAllowRuns)
-		raw, err := json.Marshal(decisionaction.RunGuardAllowParams{IssueID: uuidToString(issue.ID), RefusalID: uuidToString(refusal.ID), Runs: decisionaction.RunGuardAllowRuns})
+		if e.StopLoss {
+			ask = stopLossCardAsk(issue, e, trigger, agentName)
+		}
+		raw, err := json.Marshal(decisionaction.RunGuardAllowParams{IssueID: uuidToString(issue.ID), RefusalID: uuidToString(refusal.ID), Runs: decisionaction.RunGuardAllowRuns, StopLoss: e.StopLoss})
 		if err != nil {
 			return err
 		}
@@ -145,6 +151,9 @@ func (h *Handler) openWeeklyRunGuardCard(ctx context.Context, issue db.Issue, e 
 		}
 		content := fmt.Sprintf("Weekly run guard: this issue started %d runs in 7 days, so the platform refused a run (%s, for %s). Nothing runs on it until a workspace owner approves.\n\n[Approve %d more runs](%s)",
 			e.Runs, trigger, agentName, decisionaction.RunGuardAllowRuns, approveURL)
+		if e.StopLoss {
+			content = stopLossComment(issue, e, trigger, agentName, approveURL)
+		}
 		created, err := q.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
 			AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Content: content, Type: "system",
@@ -153,10 +162,19 @@ func (h *Handler) openWeeklyRunGuardCard(ctx context.Context, issue db.Issue, e 
 			return err
 		}
 		comment, revision = created.Comment(), created.IssueRevision
+		if e.StopLoss {
+			// The cost card moves the issue to need_decision (CHE-9340).
+			if parked, parkedActivity, err = parkIssueForDecision(ctx, q, issue); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+	if parkedActivity != nil {
+		h.publishDecisionStatusChange(ctx, issue, parked, parkedActivity, "stop_loss")
 	}
 	if comment.ID.Valid {
 		h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), "system", "", map[string]any{
@@ -216,6 +234,15 @@ func executeRunGuardAllowAction(ctx context.Context, execution decisionActionExe
 			return nil, err
 		}
 		runs += max(used-limit, 0)
+	}
+	if params.StopLoss {
+		// CHE-9340: the limits after the release exceed the issue's actual use
+		// by the grant, however far over them it went.
+		release, err := service.StopLossRelease(ctx, q, issueID, int64(params.Runs))
+		if err != nil {
+			return nil, err
+		}
+		runs = max(runs, release)
 	}
 	if err := q.CreateWeeklyRunGuardAllowance(ctx, db.CreateWeeklyRunGuardAllowanceParams{
 		ID: dbid.NewV7(), WorkspaceID: refusal.WorkspaceID, IssueID: issueID, Runs: int32(runs), ActionID: execution.Action.ID,
