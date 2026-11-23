@@ -214,21 +214,31 @@ function defaultExec(env) {
   };
 }
 
-export function liveSources({ exec, env = {} } = {}) {
+// Server errors, rate limits and timeouts are retried (twice); auth failures and 4xx answers are not.
+const TRANSIENT = /\b(?:50[0234]|429)\b|timed? ?out|ETIMEDOUT|ECONNRESET|EAI_AGAIN|temporar|rate limit/i;
+
+export function liveSources({ exec, env = {}, retryDelayMs = 3000 } = {}) {
   const run = exec ?? defaultExec(env);
   const bins = { gh: env.GH_BIN || "gh", multica: env.MULTICA_CLI_PATH || "multica" };
   const call = async (source, prog, args) => {
     const allowed = READ_ONLY_COMMANDS.some((c) => c[0] === prog && c.slice(1).every((w, i) => args[i] === w));
     if (!allowed) throw new Error(`refusing a command outside READ_ONLY_COMMANDS: ${prog} ${args.join(" ")}`);
-    try {
-      const r = await run(bins[prog], args);
-      return typeof r === "string" ? { stdout: r, stderr: "" } : { stdout: r?.stdout ?? "", stderr: r?.stderr ?? "" };
-    } catch (e) {
-      const detail = String(e?.stderr || e?.message || e).split("\n").find((l) => l.trim()) ?? "failed";
-      const err = new SourceError(source, `${prog} ${args.slice(0, 3).join(" ")} failed: ${detail.slice(0, 240)}`);
-      err.stderr = String(e?.stderr ?? "");
-      throw err;
+    let last;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const r = await run(bins[prog], args);
+        return typeof r === "string" ? { stdout: r, stderr: "" } : { stdout: r?.stdout ?? "", stderr: r?.stderr ?? "" };
+      } catch (e) {
+        last = e;
+        const text = `${e?.stderr ?? ""} ${e?.message ?? ""}`;
+        if (!TRANSIENT.test(text) || attempt === 3) break;
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt));
+      }
     }
+    const detail = String(last?.stderr || last?.message || last).replace(/\s+/g, " ").trim() || "failed";
+    const err = new SourceError(source, `${prog} ${args.slice(0, 3).join(" ")} failed: ${detail.slice(0, 240)}`);
+    err.stderr = String(last?.stderr ?? "");
+    throw err;
   };
   const json = async (source, prog, args) => {
     const r = await call(source, prog, args);
