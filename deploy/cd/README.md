@@ -548,6 +548,22 @@ Temporary-to-durable transition (operator, on C00; no value is printed):
 Source tests (`test-jev-overlay.sh`, `test-cutover.sh`) use synthetic values
 and mocked Docker. They are not production or shadow acceptance.
 
+### Deferred preflight signal (CHE-9367, CHE-9223 S1)
+
+Producer contract. Nothing reads it yet: `authorize-c00` still reads job
+conclusions only, so every run is authorized or suspended exactly as before.
+
+| Step | Contract |
+| --- | --- |
+| `quiescence.mjs preflight` | Prints one JSON line. `admit:false` with `decision:"deferred_contention"` means live contention. An unreadable database is `decision:"observation_failed"`. |
+| `cutover.sh` step 1 (before drain) | Exits **75** only for `admit=false` and `decision="deferred_contention"`. Every other case exits **1**: `observation_failed`, a crash, no or bad JSON, any other decision, and every later gate (final-gate denials after drain, CHE-6850). |
+| `cd-deploy.yml` deploy step | Keeps `deploy_status`. Writes `outcome=deferred` to `$GITHUB_OUTPUT` only when `deploy_status` is still 75 after `ab-health-check.sh --window 0` passed. It still exits non-zero, so the job conclusion stays `failure`. |
+| Marker step `C00 deploy deferred by quiescence preflight` | Runs when `failure() && steps.deploy.outcome == 'failure' && steps.deploy.outputs.outcome == 'deferred'`. Prints one `::notice`. No workspace file. |
+
+A candidate that does not contain this change still exits 1 on a deferral and
+records no marker, so a consumer must treat a missing marker as an ordinary
+failure.
+
 ### A/B outage runbook
 
 For public 502s, a `Multica A/B cutover outage` annotation, or a failing
