@@ -31,6 +31,8 @@ const (
 	wakeupActivityRearmed   = "wakeup_rearmed"
 	// CHE-6991: a live-joined firing fell back to today's run.
 	wakeupActivityJoinFallback = "wakeup_join_fallback"
+	// CHE-6992: warn-mode preview of a condition firing that block would join live.
+	wakeupActivityWouldJoinLive = "would_join_live"
 	// CHE-6968: time_wakeup_skip deferral and its warn-mode previews.
 	wakeupActivityDeferred     = "wake_deferred"
 	wakeupActivityWouldDefer   = "wake_would_defer"

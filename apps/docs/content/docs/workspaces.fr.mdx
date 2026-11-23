@@ -81,6 +81,29 @@ L'exécution n'est sautée que si tout ce qui suit est vrai. Si une condition é
 
 Si le réveil lié est ensuite désactivé ou supprimé, reçoit un `last_error`, se termine sans exécution (expiré ou refusé par la garde) ou ne correspond plus à `blocked_on`, le serveur lance l'exécution de l'étape bloquée et enregistre une ligne d'activité `blocked_entry_rearmed`. Si le budget d'exécutions est épuisé ou si l'agent est en pause, cette exécution est refusée aussi et la ligne l'indique.
 
+### Jonction en direct des réveils
+
+Le paramètre d'espace de travail `wakeup_live_join` décide ce qui se passe quand un réveil conditionnel se déclenche alors que son agent a déjà une exécution en cours sur le même ticket. Au lieu de lancer une seconde exécution, le serveur peut remettre le déclenchement à l'exécution en cours sous forme d'élément de réveil.
+
+| Valeur | Effet |
+| --- | --- |
+| `off` | Rien ne change. Le déclenchement lance sa propre exécution. |
+| `warn` (par défaut) | Le déclenchement lance une exécution comme aujourd'hui. Chaque déclenchement qui aurait rejoint l'exécution consigne aussi une ligne d'activité `would_join_live` qui nomme l'exécution en cours. |
+| `block` | Le serveur remet le déclenchement à l'exécution en cours, ne met aucune exécution en file et place `last_error` du réveil à `Delivering into running run <id>; inputs retained`. |
+
+Un déclenchement ne rejoint l'exécution que si toutes ces conditions sont réunies. Si l'une échoue ou ne peut pas être lue, le déclenchement lance une exécution comme aujourd'hui.
+
+- Tous les reçus du déclenchement sont des reçus de condition (`condition.met`). Les déclenchements horaires, de commentaire, de réaction et manuels ne rejoignent jamais.
+- Un agent a créé le réveil. Il n'est pas lié à une décision, n'est ni une règle système ni une instance de règle personnalisée, et n'est pas en pause.
+- L'agent cible a exactement une exécution en cours sur le ticket et aucune en attente, et cette exécution agit pour le même utilisateur que le réveil.
+- L'exécution en cours accepte les éléments de réveil, et aucun reçu du déclenchement n'est déjà dans un élément.
+- Aucune règle de saut (par exemple le saut d'agent en pause) n'a déjà consommé le déclenchement.
+- L'exécution est toujours en cours quand l'élément est mis en file.
+
+Les reçus restent en attente jusqu'au règlement de l'élément, et un réveil `once` reste activé jusque-là. Quand l'exécution se termine en `completed`, le déclenchement se règle en `joined_live`. Si l'exécution est annulée ou échoue, ou si l'élément est rejeté ou jamais pris en charge, le réveil lance une exécution à lui et consigne une ligne d'activité `wakeup_join_fallback`. Un élément PR typé dans la même exécution se règle par son propre élément et ne consomme jamais le reçu de condition.
+
+Définissez le mode avec `multica workspace update --wakeup-live-join-mode off|warn|block`. Une valeur illisible compte comme `off`.
+
 ### Limites d'exécutions
 
 Deux paramètres d'espace de travail décident de ce qui se passe quand une tâche épuise son plafond d'exécutions. Chacun vaut `{"mode": "off" | "warn" | "block"}` ; la valeur par défaut est `block`, le comportement actuel.

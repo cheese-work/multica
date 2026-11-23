@@ -20,7 +20,7 @@ func TestWorkspaceRunModeFields(t *testing.T) {
 		request := withURLParam(newRequest(http.MethodPatch, "/api/workspaces/"+testWorkspaceID, map[string]any{field: map[string]any{"mode": mode}}), "id", testWorkspaceID)
 		return testutil.Call(t, testHandler.UpdateWorkspace, request).Want(want).Body.String()
 	}
-	for _, field := range []string{"run_guard", "run_budget"} {
+	for _, field := range []string{"run_guard", "run_budget", "wakeup_live_join"} {
 		for _, mode := range []string{"warn", "block", "off"} {
 			patch(field, mode, http.StatusOK)
 			stored := storedSettings(t)
@@ -61,7 +61,7 @@ func TestWorkspaceRunModeFields(t *testing.T) {
 	// An admin is not the owner.
 	setRuntimeTestMemberRole(t, testUserID, "admin")
 	t.Cleanup(func() { setRuntimeTestMemberRole(t, testUserID, "owner") })
-	for _, field := range []string{"run_guard", "run_budget"} {
+	for _, field := range []string{"run_guard", "run_budget", "wakeup_live_join"} {
 		patch(field, "block", http.StatusForbidden)
 	}
 	both := withURLParam(newRequest(http.MethodPatch, "/api/workspaces/"+testWorkspaceID, map[string]any{

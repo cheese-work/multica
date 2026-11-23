@@ -147,7 +147,15 @@ func (s *IssueWakeupService) childDoneRunAs(ctx context.Context, issue db.Issue,
 // joinedWakeupNote is what the run is told about a rule that joined it.
 func joinedWakeupNote(w db.IssueWakeup, instruction string, receipts []db.IssueWakeupReceipt) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Wakeup %s fired while this run was waiting to start, so it did not start a run of its own; handle it in this run. Instruction:\n%s\nTrigger facts (read current state before deciding what to do):\n", util.UUIDToString(w.ID), instruction)
+	fmt.Fprintf(&b, "Wakeup %s fired while this run was waiting to start, so it did not start a run of its own; handle it in this run. Instruction:\n%s\n", util.UUIDToString(w.ID), instruction)
+	writeTriggerFacts(&b, receipts)
+	return b.String()
+}
+
+// writeTriggerFacts appends the receipts' facts to a joined-wakeup note, up to
+// the note's size cap.
+func writeTriggerFacts(b *strings.Builder, receipts []db.IssueWakeupReceipt) {
+	b.WriteString("Trigger facts (read current state before deciding what to do):\n")
 	for _, r := range receipts {
 		line := r.EventType + " " + string(canonicalWakeupPayload(r.Payload)) + "\n"
 		if b.Len()+len(line) > maxJoinedWakeupNote {
@@ -156,7 +164,6 @@ func joinedWakeupNote(w db.IssueWakeup, instruction string, receipts []db.IssueW
 		}
 		b.WriteString(line)
 	}
-	return b.String()
 }
 
 type joinedWakeup struct {
