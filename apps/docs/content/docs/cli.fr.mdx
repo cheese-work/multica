@@ -201,6 +201,8 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` retire les commentaires et garde tous les enregistrements d'activité ; `--action` ne renvoie que les actions indiquées, peut être répété et implique `--activity-only`. Le serveur limite l'historique qu'il lit ; si le résultat est tronqué, un avertissement s'affiche sur stderr, et il ne faut pas en déduire de durée.
 
+`multica issue close-check <issue>` montre pourquoi une tâche s'est ou ne s'est pas clôturée automatiquement, sans la modifier : chaque prédicat de clôture sur la tâche telle qu'elle est maintenant avec sa valeur, le premier qui échoue, et le mode `auto_close` effectif avec son origine (espace de travail ou étape). `--activity <row>` exécute les mêmes prédicats sur les entrées stockées dans une ligne `auto_close_skipped` et renvoie donc le premier échec enregistré alors, même si la tâche a changé. Trouvez les lignes avec `multica issue timeline <issue> --action auto_close_skipped`.
+
 ```bash
 multica issue description history MUL-123
 multica issue description diff MUL-123 --from 30 --to 35

@@ -201,6 +201,8 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` 去掉评论，保留全部活动记录；`--action` 只返回指定的动作，可重复，并隐含 `--activity-only`。服务器读取的历史有上限，被截断时 stderr 会打印警告，这时不要据此推算停留时长。
 
+`multica issue close-check <issue>` 在不修改议题的前提下，说明议题为何自动关闭或未自动关闭：按议题当前状态列出每个关闭条件及其取值、第一个失败的条件，以及生效的 `auto_close` 模式及其来源（工作区或步骤）。`--activity <row>` 对某条 `auto_close_skipped` 行中保存的输入运行同一组条件，因此即使议题之后发生变化，也会返回当时记录的第一个失败。可用 `multica issue timeline <issue> --action auto_close_skipped` 查找这些行。
+
 ```bash
 multica issue description history MUL-123
 multica issue description diff MUL-123 --from 30 --to 35

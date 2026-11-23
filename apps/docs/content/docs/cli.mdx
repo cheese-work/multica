@@ -240,6 +240,8 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` drops comments and keeps every activity record; `--action` returns only the given actions, is repeatable, and implies `--activity-only`. The server caps how far back it reads; when the result is truncated, a warning goes to stderr, and durations should not be inferred from it.
 
+`multica issue close-check <issue>` shows why an issue did or would not auto-close, without changing it: each close predicate on the issue as it is now with its value, the first one that fails, and the effective `auto_close` mode with its source (workspace or step). `--activity <row>` runs the same predicates over the inputs stored in one `auto_close_skipped` row, so it returns the first failure recorded then, even after the issue changed. Find rows with `multica issue timeline <issue> --action auto_close_skipped`.
+
 ```bash
 multica issue description history MUL-123
 multica issue description diff MUL-123 --from 30 --to 35
