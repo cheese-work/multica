@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -130,5 +131,74 @@ func TestCodexEmitsContextCompactedOnContextCompactionItem(t *testing.T) {
 	// Codex reports no post-compaction size on the item; it is omitted, not zero.
 	if want := NewContextCompactedMessage("auto", 250_000, 0); !reflect.DeepEqual(got[0], want) {
 		t.Fatalf("got %#v, want %#v", got[0], want)
+	}
+}
+
+func TestSendReliableWaitsForRoomAndStopsOnCancel(t *testing.T) {
+	t.Parallel()
+	ch := make(chan Message, 1)
+	ch <- Message{Type: MessageText}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan bool, 1)
+	go func() { done <- sendReliable(ctx, ch, NewContextCompactedMessage("auto", 1, 0)) }()
+	select {
+	case <-done:
+		t.Fatal("sendReliable returned while the channel was full")
+	case <-time.After(50 * time.Millisecond):
+	}
+	<-ch // make room: the pending send must now land
+	if !<-done {
+		t.Fatal("sendReliable should deliver once there is room")
+	}
+	if got := <-ch; got.Type != MessageContextCompacted {
+		t.Fatalf("got %#v", got)
+	}
+	ch <- Message{Type: MessageText}
+	cancel()
+	if sendReliable(ctx, ch, NewContextCompactedMessage("auto", 1, 0)) {
+		t.Fatal("must give up when ctx is done and the channel is full")
+	}
+}
+
+// A saturated message channel must not drop the compaction record (CHE-9299 review P1).
+// The consumer starts reading only after 300 log frames have overflowed the 256-slot channel.
+func TestClaudeCompactionSurvivesSaturatedChannel(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	var sb strings.Builder
+	sb.WriteString(`{"type":"system","subtype":"init","session_id":"s1"}` + "\n")
+	for i := 0; i < 300; i++ {
+		sb.WriteString(`{"type":"log","log":{"level":"info","message":"x"}}` + "\n")
+	}
+	sb.WriteString(`{"type":"system","subtype":"compact_boundary","session_id":"s1","compact_metadata":{"trigger":"auto","pre_tokens":9,"post_tokens":3}}` + "\n")
+	sb.WriteString(`{"type":"result","subtype":"success","session_id":"s1","result":"ok"}` + "\n")
+
+	fixturePath := filepath.Join(t.TempDir(), "frames.jsonl")
+	if err := os.WriteFile(fixturePath, []byte(sb.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakePath := filepath.Join(t.TempDir(), "claude")
+	writeTestExecutable(t, fakePath, []byte("#!/bin/sh\nIFS= read -r _\ncat "+fixturePath+"\n"))
+	backend, err := New("claude", Config{ExecutablePath: fakePath, Env: map[string]string{"IS_SANDBOX": "1"}, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt", ExecOptions{Timeout: 15 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(500 * time.Millisecond) // let the channel fill before anyone reads
+	found := 0
+	for m := range session.Messages {
+		if m.Type == MessageContextCompacted {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("context_compacted messages = %d, want 1 (dropped on a saturated channel)", found)
 	}
 }

@@ -1485,6 +1485,10 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		},
 		onMessage: func(msg Message) {
 			observeMessage(msg)
+			if msg.Type == MessageContextCompacted {
+				sendReliable(runCtx, msgCh, msg)
+				return
+			}
 			trySend(msgCh, msg)
 		},
 		onAgentMessageChunk: func(text string) bool {

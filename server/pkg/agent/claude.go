@@ -357,7 +357,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				}
 				if msg.Subtype == "compact_boundary" && msg.CompactMetadata != nil {
 					cm := msg.CompactMetadata
-					trySend(msgCh, NewContextCompactedMessage(cm.Trigger, cm.PreTokens, cm.PostTokens))
+					sendReliable(runCtx, msgCh, NewContextCompactedMessage(cm.Trigger, cm.PreTokens, cm.PostTokens))
 				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
@@ -1269,6 +1269,18 @@ type claudeControlRequestPayload struct {
 }
 
 // ── Shared helpers ──
+
+// sendReliable delivers a message that must not be lost (for example a
+// context_compacted record, where a drop reads as "no compaction happened").
+// It waits for room in the channel and gives up only when ctx ends.
+func sendReliable(ctx context.Context, ch chan<- Message, msg Message) bool {
+	select {
+	case ch <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
 
 func trySend(ch chan<- Message, msg Message) bool {
 	select {
