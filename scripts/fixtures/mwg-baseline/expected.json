@@ -9,9 +9,9 @@
   "x99-claude-sonnet-200k": {
    "units": {
     "state": "measured",
-    "web": 10,
-    "reviewed": 5,
-    "unreviewed": 5,
+    "web": 13,
+    "reviewed": 6,
+    "unreviewed": 7,
     "unlinked": 0,
     "list": [
      {
@@ -93,6 +93,30 @@
       "reviewed": false,
       "m2": null,
       "transcript": "missing"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 115,
+      "issue": "CHE-9013",
+      "reviewed": true,
+      "m2": 0,
+      "transcript": "missing"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 116,
+      "issue": "CHE-9013",
+      "reviewed": false,
+      "m2": null,
+      "transcript": "missing"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 117,
+      "issue": "CHE-9014",
+      "reviewed": false,
+      "m2": null,
+      "transcript": "missing"
      }
     ]
    },
@@ -105,15 +129,15 @@
     },
     "M1s": {
      "state": "measured",
-     "n": 10,
+     "n": 13,
      "hits": 1,
-     "value": 0.1
+     "value": 0.0769
     },
     "M2": {
      "state": "insufficient",
-     "n": 5,
+     "n": 6,
      "findings": 2,
-     "perReviewedPr": 0.4
+     "perReviewedPr": 0.3333
     },
     "M2f": {
      "state": "not_run",
@@ -121,7 +145,7 @@
     },
     "M3": {
      "state": "insufficient",
-     "n": 5,
+     "n": 6,
      "unitsWithHarm": 0
     },
     "M3p": {

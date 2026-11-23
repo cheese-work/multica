@@ -126,6 +126,7 @@ const isVerdict = (content) => {
 };
 
 // A verdict signs one PR. It counts for a unit only when it names that PR's head SHA (7 or more hex digits) or the PR number.
+export function isSignedVerdict() { return true; }
 export function namesPr(content, unit) {
   const text = String(content ?? "");
   const oid = String(unit.headOid ?? "");

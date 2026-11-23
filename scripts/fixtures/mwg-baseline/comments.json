@@ -171,5 +171,29 @@
    "parent_id": null,
    "type": "comment"
   }
+ ],
+ "CHE-9013": [
+  {
+   "id": "c-9013-a",
+   "issue_id": "00000000-0000-4000-8000-000000009013",
+   "author_type": "agent",
+   "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
+   "created_at": "2026-11-13T11:00:00Z",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nPR #115, head SHA: 1212121212121212121212121212121212121212. Reviewer: x99-codex-terra (OpenAI).\n\nContext: PR #116 touches the same area and is not reviewed here.\n",
+   "parent_id": null,
+   "type": "comment"
+  }
+ ],
+ "CHE-9014": [
+  {
+   "id": "c-9014-a",
+   "issue_id": "00000000-0000-4000-8000-000000009014",
+   "author_type": "agent",
+   "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
+   "created_at": "2026-11-13T12:00:00Z",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nPR #117, head SHA: 1414141414141414141414141414141414141414. No reviewer line, so nothing is signed.\n",
+   "parent_id": null,
+   "type": "comment"
+  }
  ]
 }

@@ -12,6 +12,7 @@ import {
   liveSources,
   main,
   measure,
+  isSignedVerdict,
   namesPr,
   parseFindings,
   render,
@@ -51,7 +52,7 @@ test("fixture suite: exclusions are exact (non-web, outside window, other agent,
   for (const excluded of ["cheese-work/multica#105", "cheese-work/multica#106", "cheese-work/multica#107", "cheese-work/doop#202"]) {
     assert.ok(!listed.includes(excluded), `${excluded} must not be a unit`);
   }
-  assert.equal(listed.length, 12);
+  assert.equal(listed.length, 15);
 });
 
 test("a PR list that hits the page limit is split by date, never truncated", async () => {
@@ -76,6 +77,36 @@ test("two PRs on one issue: only the PR the verdict names is reviewed", async ()
   assert.equal(by(112).reviewed, false, "same issue, no verdict for this PR");
   assert.equal(by(113).reviewed, false, "a verdict that names no PR and no head signs nothing");
   assert.equal(by(114).reviewed, false);
+});
+
+// Review round 2, finding 1: the verdict's own header names the target; a later mention is context, and an unsigned verdict signs nothing.
+test("a PR mentioned only as context, or named by an unsigned verdict, is not reviewed", async () => {
+  const result = await measure(base(fixtureSources(DIR)));
+  const list = result.agents["x99-claude-sonnet-200k"].units.list;
+  const by = (n) => list.find((u) => u.repo === "cheese-work/multica" && u.number === n);
+  assert.equal(by(115).reviewed, true, "the header names PR #115 and its head, and the verdict is signed");
+  assert.equal(by(116).reviewed, false, "the body mentions PR #116 for context only");
+  assert.equal(by(117).reviewed, false, "an agent verdict with no Reviewer line is unsigned");
+});
+
+test("namesPr takes the target from the verdict header, not from a later mention", () => {
+  const u112 = { number: 112, headOid: "6".repeat(40) };
+  const u111 = { number: 111, headOid: "5".repeat(40) };
+  assert.equal(namesPr("Verdict: PASS PR #111. See PR #112 for context", u112), false);
+  assert.equal(namesPr("Verdict: PASS PR #111. See PR #112 for context", u111), false, "two PRs in the header is ambiguous");
+  assert.equal(namesPr("Verdict: PASS\nPR #111\n\nSee PR #112 for context", u112), false, "a body mention is context");
+  assert.equal(namesPr("Verdict: PASS\nPR #111\n\nSee PR #112 for context", u111), true);
+  assert.equal(namesPr("Verdict: PASS\nHead SHA: " + "5".repeat(40) + " (PR #112)", u112), false, "the head SHA decides over a PR number");
+  assert.equal(namesPr("Verdict: PASS\nHead SHA: " + "5".repeat(40) + " (PR #112)", u111), true);
+  assert.equal(namesPr("Verdict: PASS\nHead SHA: " + "5".repeat(40) + "\nHead SHA: " + "6".repeat(40), u111), false, "two heads is ambiguous");
+});
+
+test("isSignedVerdict needs a Reviewer line in the header", () => {
+  assert.equal(isSignedVerdict("Verdict: PASS\nHead SHA: 5555555. Reviewer: x99-codex-terra (OpenAI)."), true);
+  assert.equal(isSignedVerdict("**Verdict:** CHANGES\n**Reviewer:** x99-codex-terra"), true);
+  assert.equal(isSignedVerdict("Verdict: PASS\nHead SHA: 5555555."), false);
+  assert.equal(isSignedVerdict("Verdict: PASS\nHead SHA: 5555555.\n\nReviewer: x99-codex-terra"), false, "a Reviewer line outside the header does not sign");
+  assert.equal(isSignedVerdict("Verdict: PASS\nReviewer:"), false, "an empty reviewer name");
 });
 
 test("namesPr matches the PR number or a head SHA prefix, not a longer number or another SHA", () => {
