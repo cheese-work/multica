@@ -90,3 +90,19 @@ func eventID(state, machineKey string, since pgtype.Timestamptz) string {
 	}
 	return fmt.Sprintf("%s:%s:%d", state, machineKey, micros)
 }
+
+// bannerDismissalCapability is the switch for server-stored banner dismissals
+// (CHE-9190). While it is empty the feature is off: the GET carries no
+// dismissal fields and both POST routes answer 409. Stage 2 sets "epoch-v1"
+// next to the epoch eventID producer (CHE-9254).
+var bannerDismissalCapability = ""
+
+// DismissAffectedMachines is a stub until the table and handlers land.
+func (h *Handler) DismissAffectedMachines(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusConflict, "banner_dismissal_unavailable")
+}
+
+// ReopenAffectedMachines is a stub until the table and handlers land.
+func (h *Handler) ReopenAffectedMachines(w http.ResponseWriter, r *http.Request) {
+	writeError(w, http.StatusConflict, "banner_dismissal_unavailable")
+}
