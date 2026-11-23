@@ -4096,6 +4096,18 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 			})
 		}
 
+	case method == "item/completed" && itemType == "contextCompaction":
+		// Count completed compactions only: item/started fires first and the
+		// legacy thread/compacted notification would double-count. The item
+		// carries no sizes, so tokens_before is the prompt size of the last
+		// model call and tokens_after is left unknown.
+		c.usageMu.Lock()
+		before := c.contextTokens
+		c.usageMu.Unlock()
+		if c.onMessage != nil {
+			c.onMessage(NewContextCompactedMessage("auto", before, 0))
+		}
+
 	case method == "item/completed" && itemType == "agentMessage":
 		text, _ := item["text"].(string)
 		phase, _ := item["phase"].(string)

@@ -10804,6 +10804,13 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					if msg.Content != "" {
 						flushFirstVisible()
 					}
+				case agent.MessageContextCompacted:
+					taskLog.Info("context compacted", "input", msg.Input)
+					mu.Lock()
+					sealPendingLocked()
+					batch = append(batch, contextCompactedTaskMessage(msg, int(msgSeq.Add(1)), observedAt))
+					mu.Unlock()
+					flushFirstVisible()
 				case agent.MessageError:
 					taskLog.Error("agent error", "content", msg.Content)
 					mu.Lock()
