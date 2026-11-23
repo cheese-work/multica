@@ -52,13 +52,13 @@ jobs:
         run: find "$GITHUB_WORKSPACE" -mindepth 1 -delete
       - name: Check out the default branch (trusted scripts)
         if: steps.gate.outputs.go == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: trusted
           persist-credentials: false
       - name: Check out a work tree with full history
         if: steps.gate.outputs.go == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           path: work
           fetch-depth: 0
