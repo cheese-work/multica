@@ -126,7 +126,7 @@ describe("Quick move actions (CHE-7734)", () => {
     fields: [{ label: "Run cap", current: "10", proposed: "40" }],
   };
 
-  it.each(["issue.project.quick_set", "project.workflow.quick_set"])("approves %s against the server preview", (type) => {
+  it.each(["issue.project.quick_set", "project.workflow.quick_set", "project.status.set"])("approves %s against the server preview", (type) => {
     expect(approvablePreview({ action_type: type, preview })).toEqual(preview);
   });
 

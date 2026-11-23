@@ -580,6 +580,14 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	// lookup here previously let a case-varied key ("Description") through
 	// both this guard and the identically-keyed write condition below.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	// CHE-9125: a project status moves only on a member's own write or on an
+	// approved project.status.set card. Checked on the decoded struct field, as
+	// CHE-455 requires, and before the inactive-project refusal so the agent
+	// is told the card path whatever the current status.
+	if isGovernedFieldMachineActor(r, actorType) && req.Status != nil {
+		writeError(w, http.StatusForbidden, "agents may not change a project status; propose it with `multica decision propose project.status.set` and the owner approves it with a passkey")
+		return
+	}
 	if !h.allowProjectWrite(w, r, wsUUID, prevProject.ID) {
 		return
 	}

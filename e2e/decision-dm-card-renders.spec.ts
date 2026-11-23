@@ -73,6 +73,7 @@ const TYPES: Record<string, Propose> = {
   },
   "issue.project.quick_set": async () => ({}),
   "project.workflow.quick_set": async () => ({}),
+  "project.status.set": async (_seed, api) => ({ project_id: (await api.createProject("CHE-9125 card")).id, status: "paused" }),
   "agent.env.patch": async (seed) => ({ agent_id: seed.agentId, set: { CARD_RENDER_CHECK: "1" } }),
   "agent.copy": async (seed) => ({ source_agent_id: seed.agentId, name: "Card copy", runtime_id: await runtimeOf(seed), description: "" }),
   "issue.run_guard.allow": async (seed) => {
