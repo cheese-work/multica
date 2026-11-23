@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -101,11 +100,3 @@ const (
 // prEventSeam is called inside the transaction before the read (events nil) and
 // before the bridge (events set). Nil in production.
 type prEventSeam func(ctx context.Context, tx pgx.Tx, stage string, events []db.ListNextTurnPREventsRow) error
-
-func prEventIDs(events []db.ListNextTurnPREventsRow) []pgtype.UUID {
-	ids := make([]pgtype.UUID, len(events))
-	for i, e := range events {
-		ids[i] = e.ID
-	}
-	return ids
-}

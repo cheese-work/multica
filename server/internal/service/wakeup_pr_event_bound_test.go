@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -40,7 +41,7 @@ func watchBackend(t *testing.T, pool *pgx.Conn, pid int32, start time.Time, unti
 		err := pool.QueryRow(context.Background(),
 			`SELECT EXTRACT(EPOCH FROM clock_timestamp() - xact_start)::float8 FROM pg_stat_activity WHERE pid=$1`, pid).Scan(&ageSeconds)
 		alive := err == nil
-		if err != nil && err != pgx.ErrNoRows {
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			t.Fatalf("probe pg_stat_activity: %v", err)
 		}
 		if alive {
@@ -168,8 +169,14 @@ func serverDeadline(t *testing.T, busy, withoutTransactionTimeout bool) (p backe
 		t.Fatal(err)
 	}
 	pid := int32(conn.PgConn().PID())
+	busyDone := make(chan struct{})
 	if busy {
-		go func() { _, _ = tx.Exec(ctx, `SELECT pg_sleep(30)`) }()
+		go func() {
+			defer close(busyDone)
+			_, _ = tx.Exec(ctx, `SELECT pg_sleep(30)`)
+		}()
+	} else {
+		close(busyDone)
 	}
 	until := 13 * time.Second
 	p = watchBackend(t, pool, pid, start, until, !withoutTransactionTimeout)
@@ -186,6 +193,13 @@ func serverDeadline(t *testing.T, busy, withoutTransactionTimeout bool) (p backe
 		// The control leaves its session running on purpose; end it now rather
 		// than wait for pg_sleep(30) or the connection close.
 		_, _ = pool.Exec(ctx, `SELECT pg_terminate_backend($1)`, pid)
+	}
+	// Join the busy session's goroutine before the connection is closed: both
+	// use the same connection, and the server ends the session in either case.
+	select {
+	case <-busyDone:
+	case <-time.After(10 * time.Second):
+		t.Error("the busy session's statement did not return after its backend ended")
 	}
 	return p, nowaitOK, nowaitAt
 }
