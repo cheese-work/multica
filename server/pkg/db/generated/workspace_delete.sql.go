@@ -187,6 +187,9 @@ deleted_browser_gateway_credential AS (
 deleted_issue_handoff_dispatch AS (
     DELETE FROM issue_handoff_dispatch WHERE workspace_id = $1
 ),
+deleted_issue_handoff_operation AS (
+    DELETE FROM issue_handoff_operation WHERE workspace_id = $1
+),
 deleted_issue_step_assignee AS (
     DELETE FROM issue_step_assignee WHERE workspace_id = $1
 ),
