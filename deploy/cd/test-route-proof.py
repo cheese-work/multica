@@ -86,7 +86,7 @@ class BindProofRun(unittest.TestCase):
 
     def test_fp02_no_qualifying_run_in_24h_is_not_run(self):
         runs, by_run, commits = world(CANCELLED_ZERO_JOBS, WRONG_LABELS, GOOD)
-        late = bind(runs, by_run, commits, window_hours=1)  # GOOD is outside a 1 h window
+        late = bind(runs, by_run, commits, window_hours=9)  # GOOD (05:30 on 23 Nov) is outside 9 h
         self.assertEqual(late["verdict"], "NOT-RUN")
         self.assertEqual(late["run_ids_read"], [CANCELLED_ZERO_JOBS, WRONG_LABELS])
         runs, by_run, commits = world(CANCELLED_ZERO_JOBS, REPLACED, WRONG_LABELS)
