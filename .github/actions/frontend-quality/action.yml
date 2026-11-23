@@ -72,8 +72,6 @@ runs:
             node scripts/design/check-ui-pattern-ref.mjs --base FETCH_HEAD
         fi
 
-    # Keep existing knip findings advisory in either caller.
     - name: Check for dead code and phantom dependencies (knip)
-      continue-on-error: true
       shell: bash
       run: pnpm knip

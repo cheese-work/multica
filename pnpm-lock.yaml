@@ -243,6 +243,7 @@ overrides:
   ws@>=8.0.0 <8.21.0: ^8.21.0
   zod@>=4.0.0 <4.6.6: ^4.6.6
   expo-modules-core: 57.0.24
+  '@rollup/pluginutils>estree-walker': 3.0.3
 
 patchedDependencies:
   decode-uri-component@0.2.2:
@@ -268,6 +269,9 @@ importers:
       '@types/pg':
         specifier: ^8.20.0
         version: 8.20.0
+      esbuild:
+        specifier: ^0.25.12
+        version: 0.25.12
       knip:
         specifier: ^6.32.2
         version: 6.32.2
@@ -7537,9 +7541,6 @@ packages:
 
   estree-util-visit@2.0.0:
     resolution: {integrity: sha512-m5KgiH85xAhhW8Wta0vShLcUvOsh3LLPI2YVwcbio1l7E09NTLL1EyMZFM1OyWowoH0skScNbhOPl4kcBgzTww==}
-
-  estree-walker@2.0.2:
-    resolution: {integrity: sha512-Rfkk/Mp/DL7JVje3u18FxFujQlTNR2q6QfMSMB7AvCBx91NGj/ba3kCfza0f6dVDbw7YlRf/nDrn7pQrCCyQ/w==}
 
   estree-walker@3.0.3:
     resolution: {integrity: sha512-7RUKfXgSMMkzt6ZuXmqapOurLGPPfgj6l9uRZ7lRGolvk0y2yocc35LdcxKC5PQZdn2DMqioAQ2NoWcrTKmm6g==}
@@ -15552,7 +15553,7 @@ snapshots:
   '@rollup/pluginutils@5.5.1':
     dependencies:
       '@types/estree': 1.0.8
-      estree-walker: 2.0.2
+      estree-walker: 3.0.3
       picomatch: 4.0.7
 
   '@rtsao/scc@1.1.0': {}
@@ -18850,8 +18851,6 @@ snapshots:
     dependencies:
       '@types/estree-jsx': 1.0.5
       '@types/unist': 3.0.3
-
-  estree-walker@2.0.2: {}
 
   estree-walker@3.0.3:
     dependencies:

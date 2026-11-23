@@ -63,7 +63,11 @@
       ],
       // Consumed by `extends` in tsconfig.node.json / tsconfig.web.json.
       // knip follows `extends` from the default tsconfig.json only.
-      "ignoreDependencies": ["@multica/tsconfig"]
+      // @multica/tsconfig: consumed by `extends` above.
+      // electron-builder-squirrel-windows: peer of electron-builder, pinned
+      // here so the security bump (CHE-4667) holds. electron-builder loads it
+      // by name, so no import names it.
+      "ignoreDependencies": ["@multica/tsconfig", "electron-builder-squirrel-windows"]
     },
 
     "apps/docs": {
