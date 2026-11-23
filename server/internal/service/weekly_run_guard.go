@@ -60,6 +60,10 @@ type WeeklyRunGuardTripped struct {
 	Target RunTarget
 	// Warn marks a would-be refusal in warn mode: the run was not refused.
 	Warn bool
+	// StopLoss marks a stop-loss refusal (CHE-9340) rather than the weekly limit;
+	// Tokens is the issue's token total then.
+	StopLoss bool
+	Tokens   int64
 }
 
 // Guard modes (workspace setting settings.run_guard.mode). Block is the default.
@@ -141,6 +145,10 @@ func WithProgressEvent(ctx context.Context) context.Context {
 // guardWeeklyRuns refuses the run when the issue already started its limit of
 // runs in the window.
 func guardWeeklyRuns(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
+	// A progress event does not release the stop-loss: only an approved card does.
+	if err := guardStopLoss(ctx, q, issueID, target); err != nil {
+		return err
+	}
 	if progress, _ := ctx.Value(weeklyGuardProgressKey{}).(bool); progress {
 		return nil
 	}
