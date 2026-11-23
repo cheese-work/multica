@@ -642,6 +642,10 @@ type Daemon struct {
 	// directly. Reset when the WS (re)connects, so a server upgrade that
 	// bounces the connection re-probes the batch route (MUL-4257).
 	batchClaimUnsupported atomic.Bool
+
+	// admission is the charge ledger and mutex (CHE-7236, plan r13 3.4). nil
+	// means the flag is off and the claim path is unchanged.
+	admission *Admission
 	// wsClaimHTTPFallbackAfter is set after an uncertain WS claim outcome. Once
 	// the safety delay elapses, the next claim bypasses WS once and uses HTTP so
 	// a flaky reconnecting WS cannot starve queued tasks indefinitely.
@@ -5795,8 +5799,28 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			continue
 		}
 
+		// Admission (plan r13 3.4): charge n x R_default before the claim is
+		// sent; n is bounded by the remaining budget as well as free slots.
+		batch, admitted := d.admission.Reserve(len(slots))
+		if !admitted {
+			d.exitClaim()
+			releaseSlots(slots)
+			if err := sleepWithContextOrWakeup(pollerCtx, capacityBackoff(d.cfg.PollInterval), wakeup); err != nil {
+				return
+			}
+			continue
+		}
+		if batch.N < len(slots) {
+			releaseSlots(slots[batch.N:])
+			slots = slots[:batch.N]
+		}
+
 		claimResult, err := d.claimTasksWSFirst(pollerCtx, d.cfg.DaemonID, runtimeIDs, len(slots), d.nonDMClaimBudget())
 		if err != nil {
+			// Ambiguous outcome: abandon the batch and refund. A reply that
+			// still arrives is dropped; rows the server committed start only
+			// through a later, separately charged delivery.
+			d.admission.Abandon(batch.ID)
 			d.exitClaim()
 			releaseSlots(slots)
 			if pollerCtx.Err() == nil {
@@ -5807,7 +5831,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			}
 			continue
 		}
-		tasks := claimResult.Tasks
+		tasks := d.acceptClaimedTasks(batch.ID, claimResult.Tasks)
 
 		// Dispatch each claimed task into a slot. activeTasks is incremented for
 		// every dispatched task BEFORE exitClaim so the auto-update barrier never
@@ -5851,6 +5875,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 					}
 				}()
 				defer d.inflight.end(t.ID, claim)
+				defer func() { _ = d.admission.Release(t.ID) }()
 				defer func() {
 					// Release local capacity before waking the poller. The task's
 					// terminal callback and local cleanup have both finished at this
@@ -5881,6 +5906,39 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			return
 		}
 	}
+}
+
+// acceptClaimedTasks settles the claim batch under the admission mutex and
+// returns the tasks that may run. A reply for an abandoned or settled batch is
+// dropped whole. Tasks accepted under a hold (handing_back) are never returned:
+// they must not prep or start (hold hand-back itself is step 10a). With
+// admission off every task is returned unchanged.
+func (d *Daemon) acceptClaimedTasks(batchID string, tasks []*Task) []*Task {
+	if d.admission == nil {
+		return tasks
+	}
+	ids := make([]string, 0, len(tasks))
+	byID := make(map[string]*Task, len(tasks))
+	for _, t := range tasks {
+		if t == nil {
+			continue
+		}
+		ids = append(ids, t.ID)
+		byID[t.ID] = t
+	}
+	accepted, dropped := d.admission.Accept(batchID, ids)
+	if dropped {
+		d.logger.Warn("claim reply dropped: batch no longer pending", "batch", batchID, "tasks", len(ids))
+		return nil
+	}
+	out := make([]*Task, 0, len(accepted))
+	for _, a := range accepted {
+		if a.Disposition == dispositionHandingBack {
+			continue
+		}
+		out = append(out, byID[a.TaskID])
+	}
+	return out
 }
 
 // nonDMClaimBudget is how many more non-chat tasks this daemon may claim:
