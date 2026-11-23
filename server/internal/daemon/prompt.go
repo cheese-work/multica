@@ -563,7 +563,11 @@ func buildQuickCreatePrompt(task Task) string {
 			fmt.Fprintf(&b, "- **parent**: required for this run. Pass `--parent %q` so the new issue is filed as a sub-issue of the parent the user picked in the quick-create modal. Do not infer a different parent from the prompt text — the modal entry point is authoritative.\n", task.ParentIssueID)
 		}
 	}
-	b.WriteString("- **status**: omit (defaults to `todo`).\n")
+	if task.QuickCreateDiscovery {
+		writeQuickCreateDiscoveryRule(&b)
+	} else {
+		b.WriteString("- **status**: omit (defaults to `todo`).\n")
+	}
 	b.WriteString("- **attachments**: `--attachment` takes LOCAL file paths, never URLs. Image URLs in the user input are already markdown — keep them inline. Files you produced: see `## Output`.\n\n")
 
 	// How to run the create and what to print is stated once, in the brief's
@@ -572,6 +576,20 @@ func buildQuickCreatePrompt(task Task) string {
 	// the brief is their home; this function renders only the field VALUES the
 	// modal picked, which change every run.
 	return b.String()
+}
+
+// writeQuickCreateDiscoveryRule renders the status rule when the workspace
+// setting quick_create_discovery is on (CHE-9075). It applies the entry rule of
+// the Default `todo` step at creation time: a clear request keeps the default
+// status, an unclear one asks for `investigating` with a one-line reason. The
+// run cannot tell which workflow the issue will follow, so the server keeps
+// `investigating` only when that workflow has the step, and posts the Discovery
+// comment itself; the brief's one-create rule stays unchanged.
+func writeQuickCreateDiscoveryRule(b *strings.Builder) {
+	b.WriteString("- **status**: first decide whether the request is clear. It is clear only when ALL hold: it has a checkable done-when; it has no open product-direction choice; the work is 2 hours or less; every input it needs is named and readable; a UI change names its design lock or says none is needed.\n")
+	b.WriteString("    - clear request: omit `--status` (defaults to `todo`).\n")
+	b.WriteString("    - unclear request: pass `--status investigating` and `--discovery-reason \"<one line: why the request is unclear>\"` on the same create. Do not invent the missing facts. The platform files the issue in Discovery and posts the one-line Discovery comment itself when the issue's workflow has that step, and otherwise files it as it does today. Do not add a comment yourself.\n")
+	b.WriteString("\n")
 }
 
 // buildCommentPrompt constructs a prompt for comment-triggered tasks.

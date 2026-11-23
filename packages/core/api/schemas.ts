@@ -702,11 +702,12 @@ const IssueWorkflowHandlerSchema = z.lazy(() => z.object({
     ISSUE_WORKFLOW_HANDLER_TYPES.has(value) ? (value as IssueWorkflowHandlerType) : "none",
   ),
   id: z.string().optional(),
+  step: z.string().optional(),
 }).loose());
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
   "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role", "human_in_charge",
-  "author", "reviewer",
+  "author", "reviewer", "same_as",
 ]);
 
 const IssueWorkflowEdgeSchema = z.lazy(() => z.object({

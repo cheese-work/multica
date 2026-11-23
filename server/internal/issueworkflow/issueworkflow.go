@@ -61,7 +61,18 @@ const (
 	// (CHE-7678). It carries no id: the pick needs the issue's author history,
 	// so the server resolves it, not ResolveHandler.
 	HandlerReviewer = "reviewer"
+	// HandlerSameAs hands the issue to the agent that last handled another step
+	// of the workflow on this issue (CHE-9114). Handler.Step names that step.
+	// Handler.ID, when set, is the agent to use when none is found; without it
+	// the named step's own handler is. The server resolves it, since it needs
+	// the issue's history.
+	HandlerSameAs = "same_as"
 )
+
+// LeftStepKey is the reserved issue_step_assignee key that holds who an issue
+// had when it last left a status, for a same_as step to read. It is not a
+// status key, so no status can collide with it.
+func LeftStepKey(status string) string { return "$left:" + status }
 
 // AuthorStepKey is the reserved issue_step_assignee key that holds an issue's
 // author. It is not a status key, so no status can collide with it.
@@ -173,6 +184,8 @@ func BuiltInDefaultKeys() []string {
 type Handler struct {
 	Type string `json:"type"`
 	ID   string `json:"id,omitempty"`
+	// Step is the status a same_as handler takes its agent from (CHE-9114).
+	Step string `json:"step,omitempty"`
 	// Preset names the agent preset a run on this step uses (CHE-2249); "base"
 	// forces the agent row. Only an agent or squad handler carries one.
 	Preset string `json:"preset,omitempty"`
@@ -323,7 +336,7 @@ func ValidateStartStatus(key string, steps []Step, catalog map[string]CatalogEnt
 // HandsOff reports whether entering the step reassigns the issue.
 func (s Step) HandsOff() bool {
 	switch s.Handler.Type {
-	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole, HandlerAuthor, HandlerReviewer:
+	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole, HandlerAuthor, HandlerReviewer, HandlerSameAs:
 		return true
 	}
 	return false
@@ -594,11 +607,15 @@ func NormalizeHandoff(s Step) Step {
 		s.Handler.Type = HandlerNone
 	}
 	switch s.Handler.Type {
-	case HandlerAgent, HandlerSquad, HandlerMember:
+	case HandlerAgent, HandlerSquad, HandlerMember, HandlerSameAs:
 	default:
 		// Only the concrete handler types carry an id; a stale one left
 		// by a type switch in the form would otherwise be stored.
 		s.Handler.ID = ""
+	}
+	s.Handler.Step = strings.TrimSpace(s.Handler.Step)
+	if s.Handler.Type != HandlerSameAs {
+		s.Handler.Step = ""
 	}
 	s.Handler.Preset = strings.TrimSpace(s.Handler.Preset)
 	if s.Handler.Type != HandlerAgent && s.Handler.Type != HandlerSquad {
@@ -638,6 +655,10 @@ func ValidateHandoff(s Step, def Definition) error {
 	case HandlerAgent, HandlerSquad, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
+		}
+	case HandlerSameAs:
+		if err := validateSameAs(s, def); err != nil {
+			return err
 		}
 	case HandlerCreator:
 		return invalid("hand off to an agent, a squad, a member or the project lead")
@@ -787,6 +808,10 @@ type Humans struct {
 	WorkspaceOwner pgtype.UUID
 	// RoutingAgent, when valid, replaces an agent handler (CHE-3627).
 	RoutingAgent pgtype.UUID
+	// SameAsType and SameAsID are the agent a same_as handler resolved to,
+	// fallbacks applied, by the caller (CHE-9114). An invalid id means none.
+	SameAsType string
+	SameAsID   pgtype.UUID
 	// AuthorType and AuthorID are the issue's author, resolved by the caller
 	// for an author handler (CHE-7677). An invalid id means none.
 	AuthorType string
@@ -807,6 +832,14 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
 			return "", pgtype.UUID{}, false
 		}
 		return step.Handler.Type, id, true
+	case HandlerSameAs:
+		if humans.SameAsID.Valid && humans.SameAsType != "" {
+			return humans.SameAsType, humans.SameAsID, true
+		}
+		var id pgtype.UUID
+		if err := id.Scan(step.Handler.ID); err == nil && id.Valid {
+			return HandlerAgent, id, true
+		}
 	case HandlerAuthor:
 		if humans.AuthorID.Valid && humans.AuthorType != "" {
 			return humans.AuthorType, humans.AuthorID, true

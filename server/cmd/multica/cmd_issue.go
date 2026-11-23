@@ -739,6 +739,7 @@ func init() {
 	issueCreateCmd.Flags().String("description-file", "", "Read issue description from a UTF-8 file (preserves multi-line content verbatim; use this on Windows when stdin piping mangles non-ASCII bytes). The path must be inside the current working directory unless --allow-external-file is set.")
 	issueCreateCmd.Flags().Bool("allow-external-file", false, "Allow --description-file / --attachment to read a path outside the current working directory. Off by default so a stale file from another run/environment can't be picked up (MUL-4252).")
 	issueCreateCmd.Flags().String("status", "", "Issue status")
+	issueCreateCmd.Flags().String("discovery-reason", "", "Quick-create only: why the request is unclear, used with --status investigating. The server posts the one-line Discovery comment when the issue is filed in Discovery; ignored otherwise")
 	issueCreateCmd.Flags().String("priority", "", "Issue priority")
 	issueCreateCmd.Flags().String("pr-auto-complete", "", "Change status when linked PRs merge: on or off (saved atomically on supported servers)")
 	issueCreateCmd.Flags().String("assignee", "", "Assignee name (member, agent, or squad; fuzzy match)")
@@ -2069,6 +2070,9 @@ func runIssueCreate(cmd *cobra.Command, _ []string) error {
 	}
 	if statusFlag != "" {
 		body["status"] = statusFlag
+	}
+	if v, _ := cmd.Flags().GetString("discovery-reason"); strings.TrimSpace(v) != "" {
+		body["discovery_reason"] = v
 	}
 	if priorityFlag != "" {
 		body["priority"] = priorityFlag

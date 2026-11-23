@@ -22,12 +22,15 @@ export type IssueWorkflowHandlerType =
   | "human_by_role"
   | "human_in_charge"
   | "author"
-  | "reviewer";
+  | "reviewer"
+  | "same_as";
 
 export interface IssueWorkflowHandler {
   type: IssueWorkflowHandlerType;
-  /** Set only for agent, squad and member handlers. */
+  /** Set for agent, squad and member handlers; for same_as, the fallback agent. */
   id?: string;
+  /** Set only for same_as: the status whose last handler the step takes. */
+  step?: string;
 }
 
 /** A column with its handoff; handler "none" keeps the assignee. */

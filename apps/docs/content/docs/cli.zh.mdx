@@ -663,7 +663,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | --- | --- | --- | --- |
 | `issue` | `list` | 列出任务 | `--status`、`--priority`、`--assignee`、`--project`、`--updated-since` / `--updated-until`（配套的 RFC3339 时间范围）、`--metadata`（可重复）、`--property`（可重复，`"名称=值"` 或 `"Score>=3"`、`"Due<2026-01-01"`、`"Notes~=text"` 这样的比较；`__none__` 匹配未设置）、`--limit`、`--offset`、`--sort`（支持 `effective_due`：有日期的任务按继承的最早截止日期排在前；以及 `property:<名称或 id>`）、`--full-id`、`--fields`（仅 JSON；逗号分隔，只输出这些字段）、`--resolve-properties`（仅 JSON；在保存的 id 旁附上属性、选项和成员名称） |
 | | `get <id>` | 查看单个任务 | `--resolve-properties`（仅 JSON；在保存的 id 旁附上属性、选项和成员名称） |
-| | `create` | 创建任务 | `--title`（必填）、`--description` / `--description-stdin` / `--description-file`、`--pr-auto-complete on/off`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（可重复）、`--property`（可重复）、`--allow-duplicate`（已有同名未关闭任务时仍创建） |
+| | `create` | 创建任务 | `--title`（必填）、`--description` / `--description-stdin` / `--description-file`、`--pr-auto-complete on/off`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（可重复）、`--property`（可重复）、`--allow-duplicate`（已有同名未关闭任务时仍创建）、`--discovery-reason`（仅快速创建：需求不清晰的原因，与 `--status investigating` 搭配使用） |
 | | `update <id>` | 更新任务字段 | 与 `create` 同类字段，另有 `--position`、`--no-start`、`--duplicate-of` |
 | | `batch update <id>...` | 对多条任务应用相同修改 | `--ids-stdin`, `--status`, `--priority`, `--assignee` / `--assignee-id` / `--unassign`, `--project`, `--start-date`, `--due-date`, `--parent`, `--stage`, `--add-label`, `--remove-label`, `--clear-labels`, `--property`, `--unset-property`, `--no-start`, `--dry-run` |
 | | `delete <id>...` | 永久删除一条或多条任务 | `--yes` 跳过确认；接受任务编号或完整 UUID; `--dry-run` |

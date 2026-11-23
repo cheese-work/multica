@@ -4363,6 +4363,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			if ws, wsErr := h.Queries.GetWorkspace(r.Context(), parseUUID(qc.WorkspaceID)); wsErr == nil {
 				resp.QuickCreateFill = issueworkflow.QuickCreateFill(ws.Settings)
 				resp.QuickCreateTitleTypes = issueworkflow.WorkflowTypeKeys(ws.Settings)
+				resp.QuickCreateDiscovery = issueworkflow.QuickCreateDiscovery(ws.Settings)
 			}
 			resp.QuickCreateAttachmentIDs = append([]string(nil), qc.AttachmentIDs...)
 			resp.ThreadName = qc.Prompt

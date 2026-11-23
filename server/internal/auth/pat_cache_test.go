@@ -52,9 +52,27 @@ func TestPATCache_NilSafe(t *testing.T) {
 	c.Invalidate(ctx, "any-hash")                  // no panic
 }
 
-func TestNewPATCache_NilRedisReturnsNil(t *testing.T) {
-	if c := NewPATCache(nil); c != nil {
-		t.Fatalf("NewPATCache(nil) must return nil, got %#v", c)
+// CHE-7639: no Redis means an in-process cache, not "no cache".
+func TestNewPATCache_NilRedisReturnsLocalCache(t *testing.T) {
+	c := NewPATCache(nil)
+	if c == nil {
+		t.Fatal("NewPATCache(nil) must return an in-process cache")
+	}
+	ctx := context.Background()
+	if _, ok := c.Get(ctx, "h"); ok {
+		t.Fatal("expected miss before set")
+	}
+	c.Set(ctx, "h", "user-1", AuthCacheTTL)
+	if v, ok := c.Get(ctx, "h"); !ok || v != "user-1" {
+		t.Fatalf("Get after Set = (%q, %v)", v, ok)
+	}
+	c.Set(ctx, "zero-ttl", "user-2", 0)
+	if _, ok := c.Get(ctx, "zero-ttl"); ok {
+		t.Fatal("ttl<=0 must not be cached")
+	}
+	c.Invalidate(ctx, "h")
+	if _, ok := c.Get(ctx, "h"); ok {
+		t.Fatal("entry must be gone after Invalidate")
 	}
 }
 
