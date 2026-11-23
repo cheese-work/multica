@@ -4154,12 +4154,17 @@ func discoveryNoteContent(reason string) string {
 }
 
 // postDiscoveryNote writes the Discovery comment (CHE-9075) as the creator. It
-// exists exactly when the issue was filed in Discovery and starts no run. An
-// agent author passes the agent comment guard like any plain comment
-// (askGuardAllowsComment, askGuardAllowsWaitingComment); a refusal or a guard
-// failure drops the note. A failure is logged and never fails the create.
+// exists exactly when the issue was filed in Discovery and starts no run. A
+// failure is logged and never fails the create.
 func (h *Handler) postDiscoveryNote(r *http.Request, issue db.Issue, authorType, authorID, reason string) {
-	content := discoveryNoteContent(reason)
+	h.postGuardedComment(r, issue, authorType, authorID, discoveryNoteContent(reason))
+}
+
+// postGuardedComment stores content as a plain comment of the creator, after an
+// agent author passes the agent comment guard like any plain comment
+// (askGuardAllowsComment, askGuardAllowsWaitingComment). A refusal or a guard
+// failure drops the comment: nothing is stored and no run starts.
+func (h *Handler) postGuardedComment(r *http.Request, issue db.Issue, authorType, authorID, content string) {
 	var task *db.AgentTaskQueue
 	if t, ok := h.taskFromRequestHeader(r); ok {
 		task = &t

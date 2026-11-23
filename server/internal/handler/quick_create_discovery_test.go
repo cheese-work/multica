@@ -212,3 +212,38 @@ func TestQuickCreateDiscoveryRouting(t *testing.T) {
 		wantNoComment()
 	})
 }
+
+// CHE-9075: the Discovery note goes through the agent comment guard. The reason
+// is sanitised before it gets there, so only a direct call can hand the guard
+// content it refuses; this test does, and fails if the guard calls are removed.
+func TestPostGuardedCommentHonorsTheAgentCommentGuard(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	setAskGuardMode(t, "block")
+	f := newAskGuardCommentFixture(t)
+	issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(f.issueID))
+	if err != nil {
+		t.Fatalf("load issue: %v", err)
+	}
+	post := func(content string) {
+		req := newRequest(http.MethodPost, "/api/issues", nil)
+		req.Header.Set("X-Actor-Source", "task_token")
+		req.Header.Set("X-Agent-ID", f.agentID)
+		req.Header.Set("X-Task-ID", f.taskID)
+		testHandler.postGuardedComment(req, issue, "agent", f.agentID, content)
+	}
+
+	post("Discovery: " + f.mention() + " the scope is unclear. Reply to veto.")
+	if n := f.comments(t); n != 0 {
+		t.Fatalf("a note the guard refuses saved %d comment rows, want 0", n)
+	}
+	if n := f.events(t, "block"); n != 1 {
+		t.Fatalf("block events = %d, want 1: the guard was not asked", n)
+	}
+
+	post("Discovery: no checkable done-when. Reply to veto.")
+	if n := f.comments(t); n != 1 {
+		t.Fatalf("a note the guard allows saved %d comment rows, want 1", n)
+	}
+}
