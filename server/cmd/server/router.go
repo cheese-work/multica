@@ -2751,6 +2751,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
 				r.Get("/affected", h.ListAffectedMachines)
+				r.Post("/affected/dismiss", h.DismissAffectedMachines)
+				r.Post("/affected/reopen", h.ReopenAffectedMachines)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
 					r.Get("/usage", h.GetRuntimeUsage)
