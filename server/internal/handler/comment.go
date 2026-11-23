@@ -2342,6 +2342,7 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	if askSourceRootID.Valid {
 		h.publishAskSourceStub(issue, askStub)
 	}
+	h.loopBackMemberComment(r.Context(), issue, comment)
 	h.publishSupersedeEvents(r, supersedeOutcomes, resp.ID, uuidToString(issue.WorkspaceID), authorType, authorID)
 
 	// Set after the websocket publish: web_url is for CLI callers, not the event.

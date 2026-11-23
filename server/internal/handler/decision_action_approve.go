@@ -72,18 +72,19 @@ type decisionActionExecutor func(ctx context.Context, execution decisionActionEx
 
 // decisionActionExecutors maps an allowlisted action type to its core.
 var decisionActionExecutors = map[string]decisionActionExecutor{
-	"agent.env.patch":        executeEnvPatchAction,
-	"agent.copy":             executeAgentCopyAction,
-	agentPauseAction:         executeAgentPauseAction,
-	agentResumeAction:        executeAgentResumeAction,
-	"issue.run_budget.raise": executeRunBudgetRaiseAction,
-	runBudgetTopUpType:       executeRunBudgetTopUpAction,
-	runGuardAllowType:        executeRunGuardAllowAction,
-	issueWorkflowSetType:     executeIssueWorkflowSetAction,
-	issueProjectSetType:      executeIssueProjectSetAction,
+	"agent.env.patch":                      executeEnvPatchAction,
+	"agent.copy":                           executeAgentCopyAction,
+	agentPauseAction:                       executeAgentPauseAction,
+	agentResumeAction:                      executeAgentResumeAction,
+	"issue.run_budget.raise":               executeRunBudgetRaiseAction,
+	runBudgetTopUpType:                     executeRunBudgetTopUpAction,
+	runGuardAllowType:                      executeRunGuardAllowAction,
+	issueWorkflowSetType:                   executeIssueWorkflowSetAction,
+	issueProjectSetType:                    executeIssueProjectSetAction,
 	decisionaction.IssueProjectQuickSet:    executeIssueProjectQuickSetAction,
 	decisionaction.ProjectWorkflowQuickSet: executeProjectWorkflowQuickSetAction,
-	doopDeployLiftAction:     executeDoopDeployLiftAction,
+	doopDeployLiftAction:                   executeDoopDeployLiftAction,
+	decisionaction.ProjectStatusSet:        executeProjectStatusSetAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -164,6 +165,9 @@ type approvePlan struct {
 	// targetProject is the project a Quick issue move lands in; projectSwitch
 	// the project a Quick switch changes, locked exclusively like a workflow edit.
 	targetProject, projectSwitch pgtype.UUID
+	// projectStatus is the project a project.status.set approval changes; its
+	// row is locked like UpdateProject locks it.
+	projectStatus pgtype.UUID
 }
 
 // planApprove runs the pre-transaction refusals of one action's approval.
@@ -232,6 +236,15 @@ func (handler *Handler) planApprove(ctx context.Context, caller decisionActionCa
 		}
 		var err error
 		if plan.projectSwitch, err = parseUUIDString(params.ProjectID); err != nil {
+			return approvePlan{}, errPreconditionDrift
+		}
+	case decisionaction.ProjectStatusSet:
+		var params decisionaction.ProjectStatusSetParams
+		if err := json.Unmarshal(preview.Params, &params); err != nil {
+			return approvePlan{}, errPreconditionDrift
+		}
+		var err error
+		if plan.projectStatus, err = parseUUIDString(params.ProjectID); err != nil {
 			return approvePlan{}, errPreconditionDrift
 		}
 	}
@@ -368,6 +381,11 @@ func (handler *Handler) lockApproveRows(ctx context.Context, transaction pgx.Tx,
 	}
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
 		return locked, atStep("workspace", err)
+	}
+	if plan.projectStatus.Valid {
+		if _, err := queries.LockProjectForDelete(ctx, db.LockProjectForDeleteParams{ID: plan.projectStatus, WorkspaceID: caller.workspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return locked, atStep("project", err)
+		}
 	}
 	var err error
 	if plan.runtimeID.Valid {
@@ -865,6 +883,9 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 	}
 	if action.ActionType == decisionaction.ProjectWorkflowQuickSet {
 		return handler.publishProjectWorkflowQuickSet(ctx, action)
+	}
+	if action.ActionType == decisionaction.ProjectStatusSet {
+		return handler.publishProjectStatusSet(ctx, action)
 	}
 	if action.ActionType == "agent.copy" {
 		return handler.publishAgentCopyCreated(ctx, action)

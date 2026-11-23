@@ -43,6 +43,34 @@ SELECT * FROM browser_instance
 WHERE id = $1 AND workspace_id = $2
 FOR UPDATE;
 
+-- name: LockBrowserInstanceShare :one
+-- Signing reads the instance row E checks and keeps it from changing until commit (plan r16, lock
+-- order level 3). Narrowing, registration and the grant claim take the row FOR UPDATE.
+SELECT * FROM browser_instance
+WHERE id = $1 AND workspace_id = $2
+FOR SHARE;
+
+-- name: LockBrowserInstancesForUpdate :many
+-- Grant locks every candidate in id order (lock order level 3), then reads them back as locked.
+SELECT * FROM browser_instance
+WHERE workspace_id = $1 AND id = ANY(@ids::uuid[])
+ORDER BY id
+FOR UPDATE;
+
+-- name: LockBrowserGatewayCredentialsShare :many
+-- The unrevoked credentials of the given gateways, locked in id order (lock order level 4). A
+-- revocation takes the row FOR UPDATE, so it waits for every grant and signing that read it.
+SELECT id, gateway FROM browser_gateway_credential
+WHERE workspace_id = $1 AND gateway = ANY(@gateways::text[]) AND revoked_at IS NULL
+ORDER BY id
+FOR SHARE;
+
+-- name: LockBrowserLeaseForUpdate :one
+-- Lock order level 5: the lease row, after its instance and credential rows.
+SELECT * FROM browser_lease
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE;
+
 -- name: AckBrowserLeaseCleanup :one
 -- Stamps cleanup-ack on the ended lease that still holds the instance, for the given epoch only.
 UPDATE browser_lease
@@ -65,6 +93,49 @@ RETURNING *;
 INSERT INTO browser_gateway_credential (workspace_id, gateway, credential_hash)
 VALUES ($1, $2, $3)
 RETURNING *;
+
+-- name: GetBrowserGatewayCredentialByHash :one
+-- Resolves a presented gateway credential (by its hash) to its workspace and gateway. A revoked
+-- or unknown credential returns no row.
+SELECT * FROM browser_gateway_credential
+WHERE credential_hash = $1 AND revoked_at IS NULL;
+
+-- name: LockBrowserGatewayCredential :one
+-- Shared lock on an unrevoked credential, taken after the instance row lock (plan r16 lock
+-- order): a revocation in flight waits for the ack, and an ack after it commits sees no row.
+SELECT * FROM browser_gateway_credential
+WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL
+FOR SHARE;
+
+-- name: RevokeBrowserGatewayCredential :one
+-- Marks one credential of the workspace and gateway revoked. No row when it does not exist
+-- there or is already revoked.
+UPDATE browser_gateway_credential
+SET revoked_at = clock_timestamp()
+WHERE id = $1 AND workspace_id = $2 AND gateway = $3 AND revoked_at IS NULL
+RETURNING *;
+
+-- name: GetBrowserGatewayCredential :one
+SELECT * FROM browser_gateway_credential
+WHERE id = $1 AND workspace_id = $2 AND gateway = $3;
+
+-- name: LockBrowserInstanceForGateway :one
+-- Locks one instance of the credential's own gateway and workspace. Another gateway's or
+-- workspace's instance returns no row, the same as a missing one.
+SELECT * FROM browser_instance
+WHERE id = $1 AND workspace_id = $2 AND gateway = $3
+FOR UPDATE;
+
+-- name: GetBrowserInstanceForCredential :one
+-- A credential's own gateway's instance by id, without a lock (events stream, introspection).
+SELECT i.* FROM browser_instance i
+JOIN browser_gateway_credential c ON c.workspace_id = i.workspace_id AND c.gateway = i.gateway
+WHERE c.id = $1 AND c.revoked_at IS NULL AND i.id = $2;
+
+-- name: ListLiveBrowserLeasesForInstance :many
+SELECT id, epoch, expires_at FROM browser_lease
+WHERE instance_id = $1 AND state = 'active'
+ORDER BY created_at, id;
 
 -- name: GetBrowserInstanceForGateway :one
 -- A gateway credential resolves only to its own gateway's instances: another gateway's instance
@@ -94,10 +165,14 @@ SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0));
 
 -- name: ClaimIdleBrowserInstance :one
 -- Grants the instance: raises the fence epoch and leaves idle_clean. No row when the instance
--- is not idle_clean or a lease still holds it.
+-- is not idle_clean, a lease still holds it, or its gateway has no unrevoked credential.
 UPDATE browser_instance bi
 SET epoch = bi.epoch + 1, phase = 'starting', updated_at = clock_timestamp()
 WHERE bi.id = $1 AND bi.workspace_id = $2 AND bi.phase = 'idle_clean'
+  AND EXISTS (
+      SELECT 1 FROM browser_gateway_credential c
+      WHERE c.workspace_id = bi.workspace_id AND c.gateway = bi.gateway AND c.revoked_at IS NULL
+  )
   AND NOT EXISTS (
       SELECT 1 FROM browser_lease l
       WHERE l.instance_id = bi.id AND l.state <> 'queued' AND l.cleanup_acked_at IS NULL

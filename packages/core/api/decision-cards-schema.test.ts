@@ -96,7 +96,7 @@ describe("DM decision cards", () => {
     it("drops the preview of an action type this client does not know", () => {
       expect(parse({ ...action, action_type: "future.thing" })?.preview).toBeUndefined();
       expect(parse({ ...action, action_type: undefined })?.preview).toBeUndefined();
-      for (const known of ["issue.run_budget.raise", "issue.run_budget.top_up", "issue.workflow.set", "issue.project.set", "issue.project.quick_set", "project.workflow.quick_set", "agent.env.patch", "agent.copy"]) {
+      for (const known of ["issue.run_budget.raise", "issue.run_budget.top_up", "issue.workflow.set", "issue.project.set", "issue.project.quick_set", "project.workflow.quick_set", "project.status.set", "agent.env.patch", "agent.copy"]) {
         expect(parse({ ...action, action_type: known })?.preview).toEqual(preview);
       }
     });

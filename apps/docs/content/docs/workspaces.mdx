@@ -81,6 +81,29 @@ A run is skipped only when all of these hold. If one fails or cannot be read, th
 
 If the linked wakeup is later disabled or deleted, gets a `last_error`, ends without a run (it expired or the guard refused it), or stops matching `blocked_on`, the server starts the blocked step's run and records a `blocked_entry_rearmed` activity row. If the run budget is spent or the agent is paused, that run is refused too and the row says so.
 
+### Live wakeup join
+
+The workspace setting `wakeup_live_join` decides what happens when a condition wakeup fires while its agent already has a run going on the same issue. Instead of starting a second run, the server can deliver the firing into the running run as a wakeup item.
+
+| Value | Effect |
+| --- | --- |
+| `off` | Nothing changes. The firing starts a run of its own. |
+| `warn` (default) | The firing starts a run as today. Each firing that would have joined also records one `would_join_live` activity row that names the running run. |
+| `block` | The server delivers the firing into the running run, queues no run, and sets the wakeup's `last_error` to `Delivering into running run <id>; inputs retained`. |
+
+A firing joins only when all of these hold. If one fails or cannot be read, the firing starts a run as today.
+
+- Every receipt of the firing is a condition receipt (`condition.met`). Time, comment, reaction and manual firings never join.
+- An agent created the wakeup. It is not tied to a decision, is not a system rule or a custom-rule instance, is not a merge-eligibility rule, and is not paused.
+- The target agent has exactly one running run on the issue and no waiting run, and the run acts for the same user as the wakeup. The run does not carry another rule's isolated firing.
+- The running run accepts wakeup items, and none of the firing's receipts is already in an item.
+- No skip rule (for example the paused-agent skip) already consumed the firing.
+- The run is still running when the item is queued.
+
+The receipts stay pending until the item settles, and a `once` wakeup stays enabled until then. When the run ends `completed`, the firing settles as `joined_live`. If the run is cancelled or fails, or the item is rejected or never claimed, the wakeup starts one run of its own and records a `wakeup_join_fallback` activity row. A typed PR item in the same run settles through its own item and never consumes the condition receipt.
+
+Set the mode with `multica workspace update --wakeup-live-join-mode off|warn|block`. An unreadable value counts as `off`.
+
 ### Run limits
 
 Two workspace settings decide what happens when an issue spends its run cap. Each is `{"mode": "off" | "warn" | "block"}`; the default is `block`, which is today's behavior.
@@ -145,6 +168,8 @@ An event that cannot be sent as a notice goes to the agent whose run produced it
 The guard also covers an agent registering a wakeup that a person can trigger. Bind it with `--decision`, mark it `--purpose observe`, or limit it to agents; see [Wakeups](/cli#wakeups).
 
 The workspace setting `long_thread_member_ask` (`off` by default, `warn`, `move`) covers an agent comment that mentions a member in a long thread. `long_thread_member_ask_min` (a whole number from 3 to 100, default 10) is the thread size, root included, from which the setting applies. `move` opens the comment as a new ask thread that links back to the source thread; `warn` posts it in place with a hint. The setting routes the comment and never refuses it. With the defaults nothing changes. Each hit writes one guard event with mode `move` or `warn`, which the recovery and repair passes never read. Both values are validated by the server, and a bad value is refused with `400`.
+
+The workspace setting `ask_loop_back` (`off` by default, `on`) brings a member's answer in an ask thread back to the thread it was opened from. When a member comments in an ask thread, the server adds one line to the source thread: `<member> answered in thread <ask thread id>:` and a quote of the first 280 characters, with `…` when it was cut. When a member answers a decision card whose ask is in an ask thread, the line is `<member> decided: <option> (thread <ask thread id>).` The line mentions nobody, starts no run and leaves the source thread's resolution as it is. One line per comment; an edit adds none. If the source thread was deleted, nothing is added. A failed loop-back never fails the member's comment. With the default nothing changes. The server validates the value, and a bad value is refused with `400`.
 
 ### Tool guard
 

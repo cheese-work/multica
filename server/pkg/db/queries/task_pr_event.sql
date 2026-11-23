@@ -20,6 +20,9 @@ ON CONFLICT DO NOTHING;
 -- name: GetTaskPREventCapability :one
 SELECT * FROM task_pr_event_capability WHERE task_id = @task_id;
 
+-- name: GetTaskPREventDelivery :one
+SELECT * FROM task_pr_event_delivery WHERE task_id = @task_id AND event_id = @event_id;
+
 -- name: EnqueueTaskPREventDelivery :one
 -- Locking the exact task serializes against terminal transitions: a run that
 -- ended first gets no row. Only an accepted event of the task's own issue is
@@ -318,6 +321,19 @@ FROM task_pr_event_delivery d
 JOIN agent_task_queue t ON t.id = d.task_id
 WHERE d.item_kind = 'wakeup' AND d.wakeup_id = @wakeup_id
 ORDER BY d.created_at, d.event_id;
+
+-- name: ListAgentIssueOpenRuns :many
+-- The agent's runs on the issue that are waiting, claimed or running, with
+-- whether each can take wakeup items (capability v2). The live join needs
+-- exactly one running run and nothing waiting (CHE-6992).
+SELECT t.id, t.status, t.originator_user_id,
+       COALESCE(cap.capability = 'task-supplement-pr-event-v2', false)::bool AS takes_wakeup_items
+FROM agent_task_queue t
+LEFT JOIN task_pr_event_capability cap ON cap.task_id = t.id
+WHERE t.issue_id = @issue_id
+  AND t.agent_id = @agent_id
+  AND t.status IN ('queued', 'dispatched', 'running')
+ORDER BY t.created_at, t.id;
 
 -- name: AdmitWakeupDeliveryFallback :one
 -- The dispatcher's only write to an item. The WHERE clause repeats the

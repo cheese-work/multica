@@ -3,7 +3,8 @@
 //
 // W3-3's Service signs through Keyring.Sign (the Signer interface); the internal listener (W3-17) mounts Keyring.JWKSHandler at
 // JWKSPath. The public and tailnet routers must not mount it. The private seeds come from the
-// C00 secret named by SigningKeysEnv, applied in W2-13 after Cheese's approval.
+// C00 secret named by SigningKeysEnv. The audiences the keyring may sign for come from
+// AudiencesEnv: a keyring with no allowlist signs nothing (CHE-8829 A1a).
 package browserlease
 
 import (
@@ -14,6 +15,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -24,11 +26,37 @@ const (
 	// SigningKeysEnv names the C00 secret: comma-separated `kid:base64(32-byte seed)`.
 	// The first entry signs; the rest stay in the JWKS so tokens signed before a rotation verify
 	// until they expire (drop an old entry after TokenTTL).
-	SigningKeysEnv = "MULTICA_BROWSER_LEASE_SIGNING_KEYS"
-	JWKSPath       = "/internal/browser/jwks"
+	SigningKeysEnv = "MULTICA_BROWSER_SIGNING_KEYS"
+	// AudiencesEnv is the gateway audience allowlist: comma-separated `steel-gateway/<host>`.
+	// Unset or empty: the keyring signs nothing.
+	AudiencesEnv = "MULTICA_BROWSER_GATEWAY_AUDIENCES"
+	JWKSPath     = "/internal/browser/jwks"
 )
 
-var kidPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var (
+	kidPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	audPattern = regexp.MustCompile(`^steel-gateway/[a-z0-9][a-z0-9-]{0,62}$`)
+)
+
+// parseAudiences parses AudiencesEnv into an AudienceSet. A token is signed only for an `aud`
+// that is a member, compared whole: no prefix match, no case folding.
+func parseAudiences(spec string) (AudienceSet, error) {
+	set := AudienceSet{}
+	if strings.TrimSpace(spec) == "" {
+		return set, nil
+	}
+	for i, entry := range strings.Split(spec, ",") {
+		aud := strings.TrimSpace(entry)
+		if !audPattern.MatchString(aud) {
+			return nil, fmt.Errorf("browserlease: audience %d: want steel-gateway/<host> with host [a-z0-9-]", i+1)
+		}
+		if _, dup := set[aud]; dup {
+			return nil, fmt.Errorf("browserlease: audience %q listed twice", aud)
+		}
+		set[aud] = struct{}{}
+	}
+	return set, nil
+}
 
 type signingKey struct {
 	kid  string
@@ -37,14 +65,56 @@ type signingKey struct {
 
 // Keyring holds the signing keys. It is immutable after construction.
 type Keyring struct {
-	keys []signingKey // keys[0] signs
-	jwks []byte
+	keys  []signingKey // keys[0] signs
+	jwks  []byte
+	allow AudienceSet // audiences this keyring may sign; empty signs nothing
 }
 
-// KeyringFromEnv reads SigningKeysEnv through getenv. A missing secret is an error: the caller
-// must not serve lease tokens unsigned.
+// KeyringFromEnv reads SigningKeysEnv and AudiencesEnv through getenv. A missing or malformed
+// secret is an error: the caller must not serve lease tokens unsigned. An unset allowlist is
+// valid and signs nothing.
 func KeyringFromEnv(getenv func(string) string) (*Keyring, error) {
-	return ParseKeyring(strings.TrimSpace(getenv(SigningKeysEnv)))
+	kr, err := ParseKeyring(strings.TrimSpace(getenv(SigningKeysEnv)))
+	if err != nil {
+		return nil, err
+	}
+	return kr.WithAudienceSpec(getenv(AudiencesEnv))
+}
+
+// WithAudiences returns a copy of kr that signs only the given audiences.
+func (kr *Keyring) WithAudiences(allow AudienceSet) *Keyring {
+	c := *kr
+	c.allow = allow
+	return &c
+}
+
+// WithAudienceSpec is WithAudiences for an AudiencesEnv value. An empty spec yields a keyring
+// that signs nothing; a malformed one is an error.
+func (kr *Keyring) WithAudienceSpec(spec string) (*Keyring, error) {
+	allow, err := parseAudiences(spec)
+	if err != nil {
+		return nil, err
+	}
+	return kr.WithAudiences(allow), nil
+}
+
+// Audiences lists the allowlist, sorted.
+func (kr *Keyring) Audiences() []string {
+	out := make([]string, 0, len(kr.allow))
+	for a := range kr.allow {
+		out = append(out, a)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// KeyIDs lists the signing key ids, signer first. Seeds are never exposed.
+func (kr *Keyring) KeyIDs() []string {
+	out := make([]string, 0, len(kr.keys))
+	for _, k := range kr.keys {
+		out = append(out, k.kid)
+	}
+	return out
 }
 
 // ParseKeyring parses `kid:base64seed[,kid:base64seed...]`. Errors never echo the input.
@@ -119,7 +189,7 @@ func (kr *Keyring) JWKSHandler() http.Handler {
 // `iss` and the `kid` header. It writes each claim by name, so `decision_id` is present and null
 // for class S0. The token carries the caller's `aud`, which must name a host.
 func (kr *Keyring) Sign(c Claims) (string, error) {
-	if err := validateClaims(c); err != nil {
+	if err := validateClaims(c, kr.allow); err != nil {
 		return "", err
 	}
 	var decision, task, issue *string
@@ -148,12 +218,13 @@ func (kr *Keyring) Sign(c Claims) (string, error) {
 
 var _ Signer = (*Keyring)(nil)
 
-// validateClaims refuses what no gateway would accept: an `aud` other than the two host
-// audiences (each gateway accepts only its own), an empty required claim, a lifetime over
-// TokenTTL, and a class that is not mintable. Class S1 is deferred and never signed.
-func validateClaims(c Claims) error {
-	if c.Aud != Aud(HostC00) && c.Aud != Aud(HostX99) {
-		return fmt.Errorf("browserlease: aud %q is not %s or %s", c.Aud, Aud(HostC00), Aud(HostX99))
+// validateClaims refuses what no gateway would accept: an `aud` outside the allowlist (each
+// gateway accepts only its own; an empty allowlist admits none), an empty required claim, a
+// lifetime over TokenTTL, and a class that is not mintable. Class S1 is deferred and never signed.
+func validateClaims(c Claims, allow AudienceSet) error {
+	// Exact membership: an empty allowlist signs nothing, and no prefix or case variant matches.
+	if !allow.Has(c.Aud) {
+		return fmt.Errorf("browserlease: aud %q is not in the gateway audience allowlist", c.Aud)
 	}
 	switch {
 	case c.Sub == "", c.LeaseID == "", c.UserID == "", c.Profile == "", c.Instance == "":

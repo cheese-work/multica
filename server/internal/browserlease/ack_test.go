@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-4736 (W3-7; plan W1 r3, "Lease handover (fenced)"): cleanup-ack(E) ends a handover, the
@@ -25,6 +26,7 @@ type ackEnv struct {
 	pool *pgxpool.Pool
 	svc  *AckService
 	ws   pgtype.UUID
+	cred Principal // an unrevoked c00 credential of ws
 }
 
 func newAckEnv(t *testing.T) *ackEnv {
@@ -34,7 +36,21 @@ func newAckEnv(t *testing.T) *ackEnv {
 		t.Skip("explicit disposable DATABASE_URL required")
 	}
 	pool := testutil.IsolatedDB(t, dsn)
-	return &ackEnv{pool: pool, svc: NewAckService(pool), ws: pgUUID(uuid.New())}
+	e := &ackEnv{pool: pool, svc: NewAckService(pool), ws: pgUUID(uuid.New())}
+	e.cred = e.credential(t, e.ws, "c00")
+	return e
+}
+
+// credential inserts an unrevoked credential and returns the principal it authenticates as.
+func (e *ackEnv) credential(t *testing.T, ws pgtype.UUID, gateway string) Principal {
+	t.Helper()
+	row, err := db.New(e.pool).CreateBrowserGatewayCredential(context.Background(), db.CreateBrowserGatewayCredentialParams{
+		WorkspaceID: ws, Gateway: gateway, CredentialHash: HashCredential("mbc_test_" + uuid.NewString()),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Principal{CredentialID: row.ID, WorkspaceID: ws, Gateway: gateway}
 }
 
 func pgUUID(u uuid.UUID) pgtype.UUID { return pgtype.UUID{Bytes: u, Valid: true} }
@@ -109,7 +125,7 @@ func TestCleanupAckAdvancesQueueOnlyAfterAck(t *testing.T) {
 	if e.canGrant(t, inst) {
 		t.Fatal("instance grantable while the ended lease has no cleanup-ack")
 	}
-	res, err := e.svc.CleanupAck(context.Background(), e.ws, inst, 3)
+	res, err := e.svc.CleanupAck(context.Background(), e.cred, inst, 3)
 	if err != nil {
 		t.Fatalf("CleanupAck: %v", err)
 	}
@@ -130,7 +146,7 @@ func TestCleanupAckRejectsStaleAndFutureEpoch(t *testing.T) {
 	held := e.lease(t, inst, "ended", 5)
 
 	for _, epoch := range []int64{4, 6} {
-		_, err := e.svc.CleanupAck(context.Background(), e.ws, inst, epoch)
+		_, err := e.svc.CleanupAck(context.Background(), e.cred, inst, epoch)
 		if !errors.Is(err, ErrStaleEpoch) {
 			t.Errorf("epoch %d: err = %v, want ErrStaleEpoch", epoch, err)
 		}
@@ -145,7 +161,7 @@ func TestCleanupAckRefusesActiveLease(t *testing.T) {
 	inst := e.instance(t, 2, "active")
 	held := e.lease(t, inst, "active", 2)
 
-	_, err := e.svc.CleanupAck(context.Background(), e.ws, inst, 2)
+	_, err := e.svc.CleanupAck(context.Background(), e.cred, inst, 2)
 	if !errors.Is(err, ErrLeaseActive) {
 		t.Fatalf("err = %v, want ErrLeaseActive", err)
 	}
@@ -159,7 +175,7 @@ func TestCleanupAckIsIdempotentForTheSameEpoch(t *testing.T) {
 	inst := e.instance(t, 1, "verifying")
 	e.lease(t, inst, "ended", 1)
 	for i := range 2 {
-		if _, err := e.svc.CleanupAck(context.Background(), e.ws, inst, 1); err != nil {
+		if _, err := e.svc.CleanupAck(context.Background(), e.cred, inst, 1); err != nil {
 			t.Fatalf("ack %d: %v", i+1, err)
 		}
 	}
@@ -171,7 +187,7 @@ func TestCleanupAckIsIdempotentForTheSameEpoch(t *testing.T) {
 func TestCleanupAckWithoutPendingLeaseIsRefused(t *testing.T) {
 	e := newAckEnv(t)
 	inst := e.instance(t, 1, "resetting")
-	_, err := e.svc.CleanupAck(context.Background(), e.ws, inst, 1)
+	_, err := e.svc.CleanupAck(context.Background(), e.cred, inst, 1)
 	if !errors.Is(err, ErrNoPendingLease) {
 		t.Fatalf("err = %v, want ErrNoPendingLease", err)
 	}
@@ -181,10 +197,10 @@ func TestCleanupAckUnknownOrForeignInstance(t *testing.T) {
 	e := newAckEnv(t)
 	inst := e.instance(t, 1, "verifying")
 	e.lease(t, inst, "ended", 1)
-	if _, err := e.svc.CleanupAck(context.Background(), e.ws, pgUUID(uuid.New()), 1); !errors.Is(err, ErrInstanceNotFound) {
+	if _, err := e.svc.CleanupAck(context.Background(), e.cred, pgUUID(uuid.New()), 1); !errors.Is(err, ErrInstanceNotFound) {
 		t.Errorf("unknown instance: err = %v, want ErrInstanceNotFound", err)
 	}
-	if _, err := e.svc.CleanupAck(context.Background(), pgUUID(uuid.New()), inst, 1); !errors.Is(err, ErrInstanceNotFound) {
+	if _, err := e.svc.CleanupAck(context.Background(), e.credential(t, pgUUID(uuid.New()), "c00"), inst, 1); !errors.Is(err, ErrInstanceNotFound) {
 		t.Errorf("other workspace: err = %v, want ErrInstanceNotFound", err)
 	}
 }
@@ -195,7 +211,7 @@ func TestQuarantineStopsGrants(t *testing.T) {
 	if !e.canGrant(t, inst) {
 		t.Fatal("clean instance without a holder must be grantable")
 	}
-	res, err := e.svc.Quarantine(context.Background(), e.ws, inst, 4)
+	res, err := e.svc.Quarantine(context.Background(), e.cred, inst, 4)
 	if err != nil {
 		t.Fatalf("Quarantine: %v", err)
 	}
@@ -210,7 +226,7 @@ func TestQuarantineStopsGrants(t *testing.T) {
 func TestQuarantineRejectsStaleEpoch(t *testing.T) {
 	e := newAckEnv(t)
 	inst := e.instance(t, 4, "verifying")
-	if _, err := e.svc.Quarantine(context.Background(), e.ws, inst, 3); !errors.Is(err, ErrStaleEpoch) {
+	if _, err := e.svc.Quarantine(context.Background(), e.cred, inst, 3); !errors.Is(err, ErrStaleEpoch) {
 		t.Fatalf("err = %v, want ErrStaleEpoch", err)
 	}
 	if e.phase(t, inst) != "verifying" {
@@ -222,24 +238,24 @@ func TestQuarantineKeepsStaleAckOutAndClearsOnFreshAck(t *testing.T) {
 	e := newAckEnv(t)
 	inst := e.instance(t, 2, "verifying")
 	held := e.lease(t, inst, "ended", 2)
-	if _, err := e.svc.Quarantine(context.Background(), e.ws, inst, 2); err != nil {
+	if _, err := e.svc.Quarantine(context.Background(), e.cred, inst, 2); err != nil {
 		t.Fatal(err)
 	}
 	if e.canGrant(t, inst) {
 		t.Fatal("quarantined instance grantable")
 	}
 	// The gateway reset and probed clean for epoch 2: the ack clears the quarantine.
-	if _, err := e.svc.CleanupAck(context.Background(), e.ws, inst, 2); err != nil {
+	if _, err := e.svc.CleanupAck(context.Background(), e.cred, inst, 2); err != nil {
 		t.Fatalf("ack after quarantine: %v", err)
 	}
 	if !e.acked(t, held) || !e.canGrant(t, inst) {
 		t.Error("ack for the current epoch must clear the quarantine")
 	}
 	// A late duplicate ack must not clear a later quarantine.
-	if _, err := e.svc.Quarantine(context.Background(), e.ws, inst, 2); err != nil {
+	if _, err := e.svc.Quarantine(context.Background(), e.cred, inst, 2); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.CleanupAck(context.Background(), e.ws, inst, 2); !errors.Is(err, ErrQuarantined) {
+	if _, err := e.svc.CleanupAck(context.Background(), e.cred, inst, 2); !errors.Is(err, ErrQuarantined) {
 		t.Fatalf("duplicate ack on quarantined instance: err = %v, want ErrQuarantined", err)
 	}
 	if e.canGrant(t, inst) {
@@ -249,9 +265,9 @@ func TestQuarantineKeepsStaleAckOutAndClearsOnFreshAck(t *testing.T) {
 
 // ---- HTTP ----
 
-func (e *ackEnv) server(t *testing.T, ok bool, ws pgtype.UUID) http.Handler {
+func (e *ackEnv) server(t *testing.T, ok bool, p Principal) http.Handler {
 	t.Helper()
-	return e.svc.Routes(func(*http.Request) (pgtype.UUID, bool) { return ws, ok })
+	return e.svc.Routes(func(*http.Request) (Principal, bool) { return p, ok })
 }
 
 func post(h http.Handler, path, body string) *httptest.ResponseRecorder {
@@ -274,7 +290,7 @@ func TestAckRouteStatusCodes(t *testing.T) {
 	e := newAckEnv(t)
 	inst := e.instance(t, 3, "verifying")
 	held := e.lease(t, inst, "ended", 3)
-	h := e.server(t, true, e.ws)
+	h := e.server(t, true, e.cred)
 
 	cases := []struct {
 		name, path, body string
@@ -289,7 +305,7 @@ func TestAckRouteStatusCodes(t *testing.T) {
 		{"unknown field", ackPath(inst), `{"epoch":3,"x":1}`, h, 400, "invalid_request"},
 		{"bad instance id", strings.Replace(CleanupAckPath, "{instance_id}", "nope", 1), `{"epoch":3}`, h, 400, "invalid_request"},
 		{"unknown instance", ackPath(pgUUID(uuid.New())), `{"epoch":3}`, h, 404, "not_found"},
-		{"unauthenticated", ackPath(inst), `{"epoch":3}`, e.server(t, false, pgtype.UUID{}), 401, "unauthorized"},
+		{"unauthenticated", ackPath(inst), `{"epoch":3}`, e.server(t, false, Principal{}), 401, "unauthorized"},
 	}
 	for _, tc := range cases {
 		rec := post(tc.handler, tc.path, tc.body)
@@ -329,7 +345,7 @@ func TestAckRouteStatusCodes(t *testing.T) {
 
 func TestAckRouteQuarantineAndActiveLeaseCodes(t *testing.T) {
 	e := newAckEnv(t)
-	h := e.server(t, true, e.ws)
+	h := e.server(t, true, e.cred)
 
 	active := e.instance(t, 1, "active")
 	e.lease(t, active, "active", 1)
@@ -384,7 +400,7 @@ func TestCleanupAckGrantsTheWaiterAfterTheCurrentEpochAck(t *testing.T) {
 	if l := e.lease(b.Lease.ID); l.State != "queued" {
 		t.Fatalf("b = %s before the ack, want queued", l.State)
 	}
-	if _, err := ack.CleanupAck(context.Background(), e.ws, a.Lease.InstanceID, 1); err != nil {
+	if _, err := ack.CleanupAck(context.Background(), e.cred, a.Lease.InstanceID, 1); err != nil {
 		t.Fatalf("CleanupAck: %v", err)
 	}
 	if l := e.lease(b.Lease.ID); l.State != "active" || l.Epoch.Int64 != 2 {
@@ -394,10 +410,10 @@ func TestCleanupAckGrantsTheWaiterAfterTheCurrentEpochAck(t *testing.T) {
 
 func TestStaleAckAndQuarantineGrantNothing(t *testing.T) {
 	e, ack, a, b := handover(t)
-	if _, err := ack.CleanupAck(context.Background(), e.ws, a.Lease.InstanceID, 2); !errors.Is(err, ErrStaleEpoch) {
+	if _, err := ack.CleanupAck(context.Background(), e.cred, a.Lease.InstanceID, 2); !errors.Is(err, ErrStaleEpoch) {
 		t.Fatalf("stale ack: err = %v, want ErrStaleEpoch", err)
 	}
-	if _, err := ack.Quarantine(context.Background(), e.ws, a.Lease.InstanceID, 1); err != nil {
+	if _, err := ack.Quarantine(context.Background(), e.cred, a.Lease.InstanceID, 1); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.svc.AdvanceQueue(context.Background(), e.ws, ClassS0); err != nil {
@@ -411,14 +427,14 @@ func TestStaleAckAndQuarantineGrantNothing(t *testing.T) {
 func TestRetriedAckAdvancesAQueueThatTheFirstAckLeftWaiting(t *testing.T) {
 	e, _, a, b := handover(t)
 	first := &AckService{pool: testPool} // the advance did not run (or failed) after the first ack
-	if _, err := first.CleanupAck(context.Background(), e.ws, a.Lease.InstanceID, 1); err != nil {
+	if _, err := first.CleanupAck(context.Background(), e.cred, a.Lease.InstanceID, 1); err != nil {
 		t.Fatal(err)
 	}
 	if l := e.lease(b.Lease.ID); l.State != "queued" {
 		t.Fatalf("b = %s, want queued", l.State)
 	}
 	retry := &AckService{pool: testPool, Queue: e.svc}
-	if _, err := retry.CleanupAck(context.Background(), e.ws, a.Lease.InstanceID, 1); err != nil {
+	if _, err := retry.CleanupAck(context.Background(), e.cred, a.Lease.InstanceID, 1); err != nil {
 		t.Fatal(err)
 	}
 	if l := e.lease(b.Lease.ID); l.State != "active" {
@@ -452,7 +468,7 @@ func TestFirstAckAdvancesAWaiterOfAnotherClassOnTheSameInstance(t *testing.T) {
 			if err := e.svc.Release(context.Background(), e.ws, a.Lease.TaskID, a.Lease.ID); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := ack.CleanupAck(context.Background(), e.ws, a.Lease.InstanceID, 1); err != nil {
+			if _, err := ack.CleanupAck(context.Background(), e.cred, a.Lease.InstanceID, 1); err != nil {
 				t.Fatalf("CleanupAck: %v", err)
 			}
 			if l := e.lease(b.Lease.ID); l.State != "active" || l.Epoch.Int64 != 2 {

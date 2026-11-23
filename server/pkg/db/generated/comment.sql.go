@@ -1959,6 +1959,63 @@ func (q *Queries) ListCommentsSinceForIssue(ctx context.Context, arg ListComment
 	return items, nil
 }
 
+const listEarlierIdenticalMemberCommentIDs = `-- name: ListEarlierIdenticalMemberCommentIDs :many
+SELECT c.id
+FROM comment c
+WHERE c.workspace_id = $1
+  AND c.issue_id = $2
+  AND c.author_type = 'member'
+  AND c.author_id = $3
+  AND c.type = 'comment'
+  AND c.deleted_at IS NULL
+  AND (c.created_at, c.id) < (
+    $4::timestamptz,
+    $5::uuid
+  )
+  AND regexp_replace(btrim(c.content), '\s+', ' ', 'g') =
+      regexp_replace(btrim($6::text), '\s+', ' ', 'g')
+ORDER BY c.created_at, c.id
+`
+
+type ListEarlierIdenticalMemberCommentIDsParams struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	AuthorID        pgtype.UUID        `json:"author_id"`
+	AnchorCreatedAt pgtype.Timestamptz `json:"anchor_created_at"`
+	AnchorID        pgtype.UUID        `json:"anchor_id"`
+	Content         string             `json:"content"`
+}
+
+// Live comments by the same member on the same issue, posted before the anchor,
+// whose text equals the given text once trimmed and whitespace-collapsed
+// (CHE-9042). Oldest first.
+func (q *Queries) ListEarlierIdenticalMemberCommentIDs(ctx context.Context, arg ListEarlierIdenticalMemberCommentIDsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listEarlierIdenticalMemberCommentIDs,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.AuthorID,
+		arg.AnchorCreatedAt,
+		arg.AnchorID,
+		arg.Content,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listMemberCommentsForIssue = `-- name: ListMemberCommentsForIssue :many
 SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read, notify_only, ask_source_root_id FROM comment
 WHERE issue_id = $1 AND workspace_id = $2 AND author_type = 'member'

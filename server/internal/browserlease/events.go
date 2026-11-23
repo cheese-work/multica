@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 
@@ -60,10 +59,11 @@ type Gateway struct {
 	Store     Store
 	Broker    *Broker
 	Heartbeat time.Duration // zero means DefaultHeartbeat
-	// Authenticate resolves a bearer install token (mpi_) to the calling gateway's id.
-	Authenticate func(ctx context.Context, bearer string) (gatewayID string, err error)
-	// Owns reports whether the gateway's credential is bound to the instance (W3-18).
-	Owns func(ctx context.Context, gatewayID, instanceID string) (bool, error)
+	// Authenticate resolves the request's gateway credential to the calling gateway (A1b). A
+	// plugin install token is not a credential and resolves to nothing.
+	Authenticate func(r *http.Request) (Principal, bool)
+	// Owns reports whether the instance belongs to the credential's own gateway and workspace.
+	Owns func(ctx context.Context, p Principal, instanceID string) (bool, error)
 	Now  func() time.Time
 }
 
@@ -124,21 +124,13 @@ func (g *Gateway) now() time.Time {
 	return time.Now()
 }
 
-// authorize returns the instance id when the caller holds an install token bound to it. It
-// writes the refusal itself otherwise. An unknown, malformed or foreign instance is one 404, so
-// a gateway cannot probe another host's instances.
+// authorize returns the instance id when the caller holds a gateway credential bound to it. It
+// writes the refusal itself otherwise. An unknown, malformed or foreign instance (another
+// gateway's or another workspace's) is one 404, so a gateway cannot probe another host's instances.
 func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request) (string, bool) {
-	bearer := ""
-	if h := strings.TrimSpace(r.Header.Get("Authorization")); len(h) > 7 && strings.EqualFold(h[:7], "Bearer ") {
-		bearer = strings.TrimSpace(h[7:])
-	}
-	if !strings.HasPrefix(bearer, "mpi_") {
-		http.Error(w, "install token required", http.StatusUnauthorized)
-		return "", false
-	}
-	gateway, err := g.Authenticate(r.Context(), bearer)
-	if err != nil {
-		http.Error(w, "invalid install token", http.StatusUnauthorized)
+	p, ok := g.Authenticate(r)
+	if !ok {
+		http.Error(w, "gateway credential required", http.StatusUnauthorized)
 		return "", false
 	}
 	id, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -146,7 +138,7 @@ func (g *Gateway) authorize(w http.ResponseWriter, r *http.Request) (string, boo
 		http.NotFound(w, r)
 		return "", false
 	}
-	owns, err := g.Owns(r.Context(), gateway, id.String())
+	owns, err := g.Owns(r.Context(), p, id.String())
 	switch {
 	case err != nil:
 		http.Error(w, "instance registry unavailable", http.StatusServiceUnavailable)

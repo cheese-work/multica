@@ -3240,6 +3240,10 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// Project context, repo precedence and the tenant/failure rules around both
 	// live in resolveClaimProjectContext, which every claim path shares.
 	if task.IssueID.Valid {
+		// Claim-time fence for one-shot `at --watch issue` wakeups (CHE-8961).
+		// Read before the payload issue read, so a change between the two
+		// reads is missing from the fence but visible at fire time.
+		watchFence := h.loadIssueWatchFence(r.Context(), task.IssueID)
 		issue, issueErr := h.Queries.GetIssue(r.Context(), task.IssueID)
 		if issueErr != nil {
 			return resp, deliveredCommentIDs, issueSnapshot, agentSkillCount, builtinSkillCount,
@@ -3276,6 +3280,7 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// was actually handed. Building it here, from the issue row already
 		// loaded, is what makes the snapshot mean "the issue as of this claim".
 		currentSnapshot := buildIssueStateSnapshot(issue)
+		currentSnapshot.Watch = watchFence
 		if encoded, err := json.Marshal(currentSnapshot); err != nil {
 			// A snapshot that cannot be encoded is simply not recorded; the
 			// next run reports "not compared" and reads the issue, which is
@@ -3511,6 +3516,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 							resp.TriggerAuthorName = u.Name
 						}
 					}
+					resp.TriggerRepeatIDs = h.earlierIdenticalMemberComments(r.Context(), comment)
+					resp.TriggerRepeatCount = len(resp.TriggerRepeatIDs)
 				}
 				// Count comments that arrived issue-wide since this agent's last
 				// run, so the daemon can tell it the full catch-up volume up front

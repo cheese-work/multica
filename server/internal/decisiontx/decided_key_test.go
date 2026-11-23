@@ -25,6 +25,15 @@ var wantExcludedAskFields = []string{
 // a re-ask carries a fresh one. The claim text and its readback command stay.
 var wantExcludedNestedFields = []string{"StateClaim.observed_at"}
 
+// wantOptionLeafFields is every AskOption leaf field, all in the key (CHE-9105).
+var wantOptionLeafFields = []string{
+	"Label", "WhatHappens", "Pros", "Cons", "CostOrTime",
+	"OptionKey", "AfterChoice", "AgentCommands", "AgentSurface",
+	"Action.Type", "Action.Params.Status", "Action.Params.AssigneeType", "Action.Params.AssigneeID",
+	"AfterWait.UntilPR.URL", "AfterWait.UntilPR.State", "AfterWait.UntilStatus.Status",
+	"AfterWait.UntilIssue.Issue", "AfterWait.UntilIssue.State",
+}
+
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func keyOf(test *testing.T, ask Ask, action *ActionKeyInput) string {
@@ -259,8 +268,16 @@ func TestMatchKeyStateClaims(test *testing.T) {
 // set stays the same except for the label field itself).
 func TestMatchKeyChangeOfEachOptionFieldAlone(test *testing.T) {
 	paths := leafPaths(reflect.TypeOf(AskOption{}))
-	if len(paths) != 9 {
-		test.Fatalf("AskOption leaf fields = %d, want 9; a new field must be reviewed", len(paths))
+	var got []string
+	for _, path := range paths {
+		got = append(got, strings.Join(path, "."))
+	}
+	// Reviewed in CHE-9105: every one is in the key. Each changes what a choice does
+	// (the command or action it runs, the event it waits on, who acts after it), so a
+	// change of one alone is a different ask. A new field fails here until it is
+	// reviewed and listed.
+	if !slices.Equal(got, wantOptionLeafFields) {
+		test.Fatalf("AskOption leaf fields = %v, want %v; a new field must be reviewed", got, wantOptionLeafFields)
 	}
 	base := keyOf(test, filledAsk(), nil)
 	for _, path := range paths {

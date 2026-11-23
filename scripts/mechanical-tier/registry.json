@@ -31,6 +31,9 @@
     "**/*_test.go", "**/test_*.py", "**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx",
     "**/*.test.sh", "**/*.test.mjs", "**/*.test.ps1"
   ],
+  "path_gated_checks": [
+    {"check": "backend-tests", "filters": ["backend"]}
+  ],
   "covered_scopes": [
     {"id": "apps-docs-content-docs-cli-fr-mdx", "glob": "apps/docs/content/docs/cli.fr.mdx", "analysis": "path-registry"},
     {"id": "apps-docs-content-docs-cli-ja-mdx", "glob": "apps/docs/content/docs/cli.ja.mdx", "analysis": "path-registry"},

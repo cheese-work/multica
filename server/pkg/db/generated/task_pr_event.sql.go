@@ -490,6 +490,38 @@ func (q *Queries) GetTaskPREventCapability(ctx context.Context, taskID pgtype.UU
 	return i, err
 }
 
+const getTaskPREventDelivery = `-- name: GetTaskPREventDelivery :one
+SELECT task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, item_kind, wakeup_id, wakeup_revision, receipt_ids, note FROM task_pr_event_delivery WHERE task_id = $1 AND event_id = $2
+`
+
+type GetTaskPREventDeliveryParams struct {
+	TaskID  pgtype.UUID `json:"task_id"`
+	EventID pgtype.UUID `json:"event_id"`
+}
+
+func (q *Queries) GetTaskPREventDelivery(ctx context.Context, arg GetTaskPREventDeliveryParams) (TaskPrEventDelivery, error) {
+	row := q.db.QueryRow(ctx, getTaskPREventDelivery, arg.TaskID, arg.EventID)
+	var i TaskPrEventDelivery
+	err := row.Scan(
+		&i.TaskID,
+		&i.EventID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.Status,
+		&i.FailureReason,
+		&i.AttemptCount,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeliveredAt,
+		&i.ItemKind,
+		&i.WakeupID,
+		&i.WakeupRevision,
+		&i.ReceiptIds,
+		&i.Note,
+	)
+	return i, err
+}
+
 const listAcceptedPRNoticeEvents = `-- name: ListAcceptedPRNoticeEvents :many
 SELECT id FROM issue_pr_event
 WHERE issue_id = $1
@@ -519,6 +551,57 @@ func (q *Queries) ListAcceptedPRNoticeEvents(ctx context.Context, arg ListAccept
 			return nil, err
 		}
 		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentIssueOpenRuns = `-- name: ListAgentIssueOpenRuns :many
+SELECT t.id, t.status, t.originator_user_id,
+       COALESCE(cap.capability = 'task-supplement-pr-event-v2', false)::bool AS takes_wakeup_items
+FROM agent_task_queue t
+LEFT JOIN task_pr_event_capability cap ON cap.task_id = t.id
+WHERE t.issue_id = $1
+  AND t.agent_id = $2
+  AND t.status IN ('queued', 'dispatched', 'running')
+ORDER BY t.created_at, t.id
+`
+
+type ListAgentIssueOpenRunsParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	AgentID pgtype.UUID `json:"agent_id"`
+}
+
+type ListAgentIssueOpenRunsRow struct {
+	ID               pgtype.UUID `json:"id"`
+	Status           string      `json:"status"`
+	OriginatorUserID pgtype.UUID `json:"originator_user_id"`
+	TakesWakeupItems bool        `json:"takes_wakeup_items"`
+}
+
+// The agent's runs on the issue that are waiting, claimed or running, with
+// whether each can take wakeup items (capability v2). The live join needs
+// exactly one running run and nothing waiting (CHE-6992).
+func (q *Queries) ListAgentIssueOpenRuns(ctx context.Context, arg ListAgentIssueOpenRunsParams) ([]ListAgentIssueOpenRunsRow, error) {
+	rows, err := q.db.Query(ctx, listAgentIssueOpenRuns, arg.IssueID, arg.AgentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListAgentIssueOpenRunsRow{}
+	for rows.Next() {
+		var i ListAgentIssueOpenRunsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Status,
+			&i.OriginatorUserID,
+			&i.TakesWakeupItems,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

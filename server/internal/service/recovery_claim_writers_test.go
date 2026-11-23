@@ -294,6 +294,78 @@ func TestRetryBudgetIsSharedByRecurringNativeAndWatchdog(t *testing.T) {
 	}
 }
 
+// The recurring writer, driven through its public dispatch, honours the shared
+// budget for a distinct failure: a lineage that already spent its two native
+// retries gets no third task when the wakeup fires for the next provider failure
+// (a different failed run than any earlier claim). With a retry left, the same
+// dispatch does mint one.
+func TestRecurringDispatchHonoursSharedBudgetForDistinctFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		nativeUsed int
+		wantNew    int
+	}{
+		{"budget spent by two native retries", 2, 0},
+		{"one retry left", 1, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o := newClaimWritersFixture(t)
+			ctx := context.Background()
+			o.svc.TaskSvc.ProviderFailureProbe = steadyProbe{}
+			wake := &IssueWakeupService{Tasks: o.svc.TaskSvc}
+			wakeup := wakeCreate(t, o.principalFixture, wake, parseTestUUID(t, o.issueID), WakeupInput{
+				AgentID: o.agentID, Kind: "every", Mode: "continuous", IntervalSeconds: 3600, Instruction: "Check current status",
+			})
+			wakeupID := util.UUIDToString(wakeup.ID)
+
+			// The native writer spends the lineage's retries one failed run at a time.
+			last := o.failedRun(t, testutil.Cols{"max_attempts": 3})
+			for range tc.nativeUsed {
+				parent, err := o.q.GetAgentTask(ctx, parseTestUUID(t, last))
+				if err != nil {
+					t.Fatal(err)
+				}
+				child, err := o.svc.TaskSvc.MaybeRetryFailedTask(ctx, parent)
+				if err != nil || child == nil {
+					t.Fatalf("native retry = %v err=%v, want a retry", child, err)
+				}
+				last = util.UUIDToString(child.ID)
+				o.Cleanup(t, "DELETE FROM agent_task_queue WHERE parent_task_id=$1 OR retry_of_task_id=$1 OR rerun_of_task_id=$1", last)
+				o.Exec(t, "UPDATE agent_task_queue SET status='failed', failure_reason='timeout', completed_at=now() WHERE id=$1", last)
+			}
+			// The last run now fails with the provider error the recurring
+			// recovery owns. It is a new failure: no claim exists for it.
+			o.Exec(t, `UPDATE agent_task_queue SET failure_reason=$2, completed_at=now()-interval '61 minutes', max_attempts=3,
+				context=COALESCE(context, '{}'::jsonb) || jsonb_build_object('wakeup_id', $3::text) WHERE id=$1`, last, providerFailureRecoveryReason, wakeupID)
+			o.Cleanup(t, "DELETE FROM provider_failure_recovery WHERE failed_task_id=$1", last)
+			if got := o.claimCount(t, last, "fresh_replay"); got != 0 {
+				t.Fatalf("fresh_replay claims before dispatch = %d, want 0", got)
+			}
+			before := o.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, o.issueID)
+
+			o.Exec(t, "UPDATE issue_wakeup SET next_fire_at=now()-interval '1 second' WHERE id=$1", wakeup.ID)
+			w, err := o.q.GetIssueWakeup(ctx, db.GetIssueWakeupParams{ID: wakeup.ID, WorkspaceID: wakeup.WorkspaceID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := wake.dispatch(ctx, w); err != nil {
+				t.Fatalf("dispatch: %v", err)
+			}
+
+			after := o.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id=$1`, o.issueID)
+			if got := after - before; got != tc.wantNew {
+				t.Fatalf("tasks minted by the recurring dispatch = %d, want %d", got, tc.wantNew)
+			}
+			if got := o.Count(t, `SELECT count(*) FROM provider_failure_recovery WHERE failed_task_id=$1`, last); got != tc.wantNew {
+				t.Fatalf("recovery reservations for the failed run = %d, want %d", got, tc.wantNew)
+			}
+			if got := o.Count(t, `SELECT count(*) FROM recovery_claim WHERE issue_id=$1 AND state<>'released'`, o.issueID); got != tc.nativeUsed+tc.wantNew {
+				t.Fatalf("live claims in the lineage = %d, want %d", got, tc.nativeUsed+tc.wantNew)
+			}
+		})
+	}
+}
+
 // seedClaim writes a claim row for a failed run, as if its writer had run
 // `age` ago and then stopped (crash or rollback) in the given state.
 func (o ownerFixture) seedClaim(t *testing.T, failed, state, successor string, age time.Duration) {

@@ -88,6 +88,7 @@ type env struct {
 	signer *fakeSigner
 	ws     pgtype.UUID
 	now    time.Time
+	cred   Principal // the unrevoked c00 credential every test workspace starts with
 }
 
 func newUUID() pgtype.UUID { return pgtype.UUID{Bytes: uuid.New(), Valid: true} }
@@ -102,19 +103,78 @@ func newEnv(t *testing.T, instances ...string) *env {
 	e.svc = &Service{
 		Pool: testPool, Queries: q, Gate: e.hooks, Decisions: e.hooks,
 		Registry: NameRegistry{Queries: q}, Signer: e.signer, Now: func() time.Time { return e.now },
-		Class3: testClass3(t),
+		Class3: testClass3(t), Audiences: NewAudienceSet(Aud(HostX99), Aud(HostC00)),
 	}
 	t.Cleanup(func() {
-		for _, tbl := range []string{"browser_lease", "browser_instance", "browser_profile"} {
+		for _, tbl := range []string{"browser_lease", "browser_instance", "browser_gateway_credential", "browser_profile"} {
 			testPool.Exec(context.Background(), "DELETE FROM "+tbl+" WHERE workspace_id = $1", e.ws)
 		}
 	})
+	gateways := map[string]bool{}
 	for _, name := range instances {
-		if _, err := q.CreateBrowserInstance(context.Background(), db.CreateBrowserInstanceParams{WorkspaceID: e.ws, Name: name}); err != nil {
-			t.Fatal(err)
+		e.registerLegacy(name)
+		gateways[hostOf(name)] = true
+	}
+	// e.cred is the credential of the first instance's gateway (c00 when there is none), so a
+	// test that revokes "the" credential of a gateway revokes the only one it has.
+	e.cred = Principal{WorkspaceID: e.ws, Gateway: "c00"}
+	if len(instances) > 0 {
+		e.cred.Gateway = hostOf(instances[0])
+	}
+	for gw := range gateways {
+		row := e.credential(gw)
+		if gw == e.cred.Gateway {
+			e.cred = e.principal(row)
 		}
 	}
 	return e
+}
+
+// legacyClassesOf is the class set the legacy host matrix gives a host.
+func legacyClassesOf(host string) []string {
+	if host == HostX99 {
+		return []string{ClassS0}
+	}
+	return []string{ClassS2, ClassH}
+}
+
+// registerLegacy registers name with the host, gateway and classes its name prefix implies: a
+// row that agrees with the legacy contract, so the parity reader serves it.
+func (e *env) registerLegacy(name string) db.BrowserInstance {
+	e.t.Helper()
+	host := hostOf(name)
+	if host == "" {
+		e.t.Fatalf("instance %q has no legacy host prefix", name)
+	}
+	return e.register(name, host, host, legacyClassesOf(host))
+}
+
+func (e *env) register(name, host, gateway string, classes []string) db.BrowserInstance {
+	e.t.Helper()
+	in, err := e.svc.Queries.RegisterBrowserInstance(context.Background(), db.RegisterBrowserInstanceParams{
+		WorkspaceID: e.ws, Name: name, Host: host, Gateway: gateway, AllowedClasses: classes,
+	})
+	if err != nil {
+		e.t.Fatalf("register %s: %v", name, err)
+	}
+	return in
+}
+
+// credential stores an unrevoked credential for the gateway.
+func (e *env) credential(gateway string) db.BrowserGatewayCredential {
+	e.t.Helper()
+	c, err := e.svc.Queries.CreateBrowserGatewayCredential(context.Background(), db.CreateBrowserGatewayCredentialParams{
+		WorkspaceID: e.ws, Gateway: gateway, CredentialHash: "h-" + uuid.NewString(),
+	})
+	if err != nil {
+		e.t.Fatalf("credential %s: %v", gateway, err)
+	}
+	return c
+}
+
+// principal is the identity a credential row authenticates as.
+func (e *env) principal(c db.BrowserGatewayCredential) Principal {
+	return Principal{CredentialID: c.ID, WorkspaceID: e.ws, Gateway: c.Gateway}
 }
 
 func (e *env) profile(class string) db.BrowserProfile {

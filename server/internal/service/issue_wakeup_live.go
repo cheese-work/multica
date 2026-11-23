@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -18,6 +19,24 @@ import (
 
 const wakeupOutcomeJoinedLive = "joined_live"
 
+// Fallback cutoffs of the disposition table. AdmitWakeupDeliveryFallback
+// repeats both in its WHERE clause and stays the authority; these only spare a
+// write on passes that cannot admit yet.
+const (
+	wakeupUnclaimedAfter = 120 * time.Second // a live run claims within one 5 s poll
+	wakeupLateAckGrace   = 60 * time.Second  // an ack can still land after turn_ended
+)
+
+// fallbackAdmission is an item this pass sent to fallback. Its receipts stay in
+// the free list and take today's path in the same transaction.
+type fallbackAdmission struct {
+	item   db.ListWakeupDeliveryItemsRow
+	reason string
+	// failureReason is the host run's failure_reason for a host-run end, or the
+	// item's own for a provider rejection.
+	failureReason string
+}
+
 // liveItems is what a pass learns from the wakeup's items.
 type liveItems struct {
 	// holdRun is the host run of an open item with a pending receipt; Valid
@@ -28,6 +47,8 @@ type liveItems struct {
 	settled []takenRun
 	// settledReceipts are the receipts of settled, to drop from the free list.
 	settledReceipts map[pgtype.UUID]bool
+	// fallbacks are items admitted to fallback in this pass.
+	fallbacks []fallbackAdmission
 }
 
 // readLiveItems sorts the wakeup's items. free are the pending, unreserved
@@ -40,11 +61,21 @@ func readLiveItems(ctx context.Context, q *db.Queries, w db.IssueWakeup, free []
 	if err != nil || len(items) == 0 {
 		return out, err
 	}
+	// A host run that ended by a path that skipped terminal settlement leaves
+	// its pending and delivering items open. Settle them first, then decide.
+	if settled, err := settleEndedHostItems(ctx, q, items); err != nil {
+		return out, err
+	} else if settled {
+		if items, err = q.ListWakeupDeliveryItems(ctx, w.ID); err != nil {
+			return out, err
+		}
+	}
 	byID := make(map[pgtype.UUID]db.IssueWakeupReceipt, len(free))
 	for _, r := range free {
 		byID[r.ID] = r
 	}
-	for _, item := range items {
+	for _, listed := range items {
+		item := listed
 		if item.Status == "fallback" {
 			continue
 		}
@@ -57,28 +88,98 @@ func readLiveItems(ctx context.Context, q *db.Queries, w db.IssueWakeup, free []
 		if len(mine) == 0 {
 			continue
 		}
-		if item.Status != "delivered" || item.TaskStatus != "completed" {
-			if !out.holdRun.Valid {
-				out.holdRun = item.TaskID
+		if item.Status == "delivered" && item.TaskStatus == "completed" {
+			host, err := q.GetAgentTask(ctx, item.TaskID)
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue
 			}
+			if err != nil {
+				return out, err
+			}
+			if out.settledReceipts == nil {
+				out.settledReceipts = map[pgtype.UUID]bool{}
+			}
+			for _, r := range mine {
+				out.settledReceipts[r.ID] = true
+			}
+			out.settled = append(out.settled, takenRun{task: host, receipts: mine, outcome: wakeupOutcomeJoinedLive, firingID: item.EventID})
 			continue
 		}
-		host, err := q.GetAgentTask(ctx, item.TaskID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			continue
+		reason := fallbackReason(item)
+		if reason != "" {
+			// No row means the ack won (or the cutoff is not reached): hold.
+			_, err := q.AdmitWakeupDeliveryFallback(ctx, db.AdmitWakeupDeliveryFallbackParams{
+				WakeupID: w.ID, EventID: item.EventID, SeenStatus: item.Status, Reason: reason})
+			if err == nil {
+				fb := fallbackAdmission{item: item, reason: reason}
+				switch reason {
+				case "host_cancelled", "host_failed":
+					fb.failureReason = item.TaskFailureReason.String
+				case "rejected":
+					fb.failureReason = item.FailureReason.String
+				}
+				out.fallbacks = append(out.fallbacks, fb)
+				continue
+			}
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return out, err
+			}
 		}
-		if err != nil {
-			return out, err
+		if !out.holdRun.Valid {
+			out.holdRun = item.TaskID
 		}
-		if out.settledReceipts == nil {
-			out.settledReceipts = map[pgtype.UUID]bool{}
-		}
-		for _, r := range mine {
-			out.settledReceipts[r.ID] = true
-		}
-		out.settled = append(out.settled, takenRun{task: host, receipts: mine, outcome: wakeupOutcomeJoinedLive, firingID: item.EventID})
 	}
 	return out, nil
+}
+
+// settleEndedHostItems applies terminal settlement to the host runs of open
+// items whose run already ended. It reports whether any run needed it.
+func settleEndedHostItems(ctx context.Context, q *db.Queries, items []db.ListWakeupDeliveryItemsRow) (bool, error) {
+	var ended []pgtype.UUID
+	for _, item := range items {
+		if (item.Status == "pending" || item.Status == "delivering") && hostEnded(item.TaskStatus) {
+			ended = append(ended, item.TaskID)
+		}
+	}
+	if len(ended) == 0 {
+		return false, nil
+	}
+	_, err := q.SettleTerminalTaskPREventDeliveries(ctx, ended)
+	return err == nil, err
+}
+
+func hostEnded(status string) bool {
+	return status == "completed" || status == "failed" || status == "cancelled"
+}
+
+// fallbackReason is the disposition table's admission reason for an item, or
+// "" when the pass holds. A candidate is only a request: the admission update
+// repeats the full condition and decides.
+func fallbackReason(item db.ListWakeupDeliveryItemsRow) string {
+	hostStatus := item.TaskStatus
+	switch item.Status {
+	case "pending":
+		if !hostEnded(hostStatus) && time.Since(item.CreatedAt.Time) >= wakeupUnclaimedAfter {
+			return "unclaimed"
+		}
+	case "failed":
+		switch {
+		case item.FailureReason.String != "turn_ended":
+			return "rejected"
+		case item.AttemptCount == 0:
+			return "turn_ended"
+		case time.Since(item.UpdatedAt.Time) >= wakeupLateAckGrace:
+			return "late_ack_cutoff"
+		}
+	case "delivered":
+		switch hostStatus {
+		case "cancelled":
+			return "host_cancelled"
+		case "failed":
+			return "host_failed"
+		}
+	}
+	return ""
 }
 
 // withoutSettled returns receipts minus the ones a settled item consumes.
