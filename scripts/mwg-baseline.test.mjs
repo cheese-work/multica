@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   READ_ONLY_COMMANDS,
   SourceError,
+  classifyCall,
   fixtureSources,
   liveSources,
   main,
@@ -49,7 +50,7 @@ test("fixture suite: exclusions are exact (non-web, outside window, other agent,
   for (const excluded of ["cheese-work/multica#105", "cheese-work/multica#106", "cheese-work/multica#107", "cheese-work/doop#202"]) {
     assert.ok(!listed.includes(excluded), `${excluded} must not be a unit`);
   }
-  assert.equal(listed.length, 8);
+  assert.equal(listed.length, 12);
 });
 
 test("a PR list that hits the page limit is split by date, never truncated", async () => {
@@ -59,10 +60,59 @@ test("a PR list that hits the page limit is split by date, never truncated", asy
   assert.ok(result.apiCalls.github > 2, "the window was split into several searches");
 });
 
-test("run pages are followed until the lookback ends", async () => {
+test("run pages are followed until the window start", async () => {
   const sources = fixtureSources(DIR, { taskPageSize: 3 });
   const result = await measure(base(sources));
   assert.deepEqual(result.agents, expected.agents);
+});
+
+// Review round 1, finding 1: a verdict counts only for the PR (or head) it names.
+test("two PRs on one issue: only the PR the verdict names is reviewed", async () => {
+  const result = await measure(base(fixtureSources(DIR)));
+  const list = result.agents["x99-claude-sonnet-200k"].units.list;
+  const by = (n) => list.find((u) => u.repo === "cheese-work/multica" && u.number === n);
+  assert.equal(by(111).reviewed, true, "the verdict names PR #111 and its head");
+  assert.equal(by(112).reviewed, false, "same issue, no verdict for this PR");
+  assert.equal(by(113).reviewed, false, "a verdict that names no PR and no head signs nothing");
+  assert.equal(by(114).reviewed, false);
+});
+
+// Review round 1, finding 2: every run of the issue counts; a missing older transcript is partial coverage.
+test("a unit's older run without a transcript makes the unit partial, never full", async () => {
+  const result = await measure(base(fixtureSources(DIR)));
+  const list = result.agents["x99-claude-sonnet-200k"].units.list;
+  assert.equal(list.find((u) => u.number === 102).transcript, "partial");
+  assert.equal(list.find((u) => u.number === 101).transcript, "full", "the older run of CHE-9001 has a transcript and is counted");
+  assert.equal(result.agents["x99-claude-sonnet-200k"].metrics.M1.n, 4);
+});
+
+// Review round 1, finding 3: direct entrypoint calls are M3p hits, reading or listing the files is not.
+test("classifyCall flags every way to run the package outside mwg.sh, and nothing else", () => {
+  const kinds = (command) => classifyCall({ name: "Bash", input: { command } }).kinds;
+  for (const command of [
+    "npx modern-web-guidance search x",
+    "pnpx modern-web-guidance@1.0.1 search x",
+    "npm exec modern-web-guidance -- search x",
+    "node /tmp/modern-web-guidance/modern-web.mjs search x",
+    "node modern-web.mjs search x",
+    "DISABLE_TELEMETRY=1 node --no-warnings ./pkg/skills/modern-web-guidance/modern-web.mjs search x",
+    'node "/tmp/p/modern-web.mjs" search x',
+    "cd /tmp/p && node modern-web.mjs search x",
+    "./modern-web.mjs search x",
+    "./node_modules/.bin/modern-web-guidance search x",
+  ]) {
+    assert.deepEqual(kinds(command), ["unsanctioned"], command);
+  }
+  for (const command of [
+    'echo "HS  $SKILL_DIR/scripts/mwg.sh" | sha256sum -c --status && sh "$SKILL_DIR/scripts/mwg.sh" search "x" --skill-version v',
+    "cat /tmp/modern-web-guidance/modern-web.mjs",
+    "ls /tmp/modern-web-guidance",
+    "cd /tmp/modern-web-guidance",
+    "grep -rn modern-web.mjs .",
+    "git log --oneline",
+  ]) {
+    assert.deepEqual(kinds(command), [], command);
+  }
 });
 
 test("a slice that cannot shrink below the limit is unavailable, not a low count", async () => {
@@ -189,6 +239,7 @@ test("the script calls only read-only subcommands (S3a AC 7)", async () => {
   await sources.issue("CHE-1").catch(() => {});
   await sources.comments("CHE-1").catch(() => {});
   await sources.tasks("agent-id", null).catch(() => {});
+  await sources.issueRuns("CHE-1").catch(() => {});
   await sources.runMessages("run-id").catch(() => {});
   const allowed = READ_ONLY_COMMANDS.map((c) => c.join(" "));
   for (const call of calls) {
@@ -196,7 +247,7 @@ test("the script calls only read-only subcommands (S3a AC 7)", async () => {
     assert.ok(allowed.some((a) => joined.startsWith(a)), `unexpected command: ${joined}`);
   }
   const used = new Set(calls.map((c) => c.slice(0, c[0] === "gh" ? 3 : c[0] === "multica" && c[1] === "issue" ? 4 : 3).join(" ")));
-  assert.ok(used.size >= 7, "every source call maps to a listed read-only subcommand");
+  assert.ok(used.size >= 8, "every source call maps to a listed read-only subcommand");
   for (const forbidden of ["create", "update", "delete", "add", "set", "status", "assign", "import", "merge", "edit", "close"]) {
     assert.ok(!READ_ONLY_COMMANDS.flat().includes(forbidden), `${forbidden} is not in the allowlist`);
   }

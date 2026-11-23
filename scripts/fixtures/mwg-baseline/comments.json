@@ -16,7 +16,7 @@
    "author_type": "agent",
    "author_id": "5029c4e4-f11c-4d16-9936-934b5666ddcd",
    "created_at": "2026-11-05T10:00:00Z",
-   "content": "Verdict: PASS \u2014 x99-claude-sonnet: see below.\nHead SHA: 1111111111111111111111111111111111111111. Reviewer: x99-claude-opus (Anthropic).\n",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nHead SHA: 1111111111111111111111111111111111111111. Reviewer: x99-claude-opus (Anthropic).\n",
    "parent_id": null,
    "type": "comment"
   },
@@ -26,7 +26,7 @@
    "author_type": "agent",
    "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
    "created_at": "2026-11-05T11:00:00Z",
-   "content": "Verdict: CHANGES \u2014 x99-claude-sonnet: see below.\nHead SHA: 1111111111111111111111111111111111111111. Reviewer: x99-codex-terra (OpenAI).\n\nFindings:\n1. **P1: The icon button has no accessible name.** `apps/web/features/x/button.tsx:12`\n   Class: a11y\n   Rule: Interactive controls need an accessible name.\n2. **P2: A 404 refetches on focus.** `apps/web/features/x/query.ts:40`\n   Class: failure-path\n   Rule: A permanent 404 must not retry or refetch on focus.\n3. **P2: The card overflows at 320px.** `apps/web/features/x/card.css:8`\n   Class: other\n   Rule: CSS grid tracks must not overflow the layout at narrow widths.\n",
+   "content": "Verdict: CHANGES — x99-claude-sonnet: see below.\nHead SHA: 1111111111111111111111111111111111111111. Reviewer: x99-codex-terra (OpenAI).\n\nFindings:\n1. **P1: The icon button has no accessible name.** `apps/web/features/x/button.tsx:12`\n   Class: a11y\n   Rule: Interactive controls need an accessible name.\n2. **P2: A 404 refetches on focus.** `apps/web/features/x/query.ts:40`\n   Class: failure-path\n   Rule: A permanent 404 must not retry or refetch on focus.\n3. **P2: The card overflows at 320px.** `apps/web/features/x/card.css:8`\n   Class: other\n   Rule: CSS grid tracks must not overflow the layout at narrow widths.\n",
    "parent_id": null,
    "type": "comment"
   }
@@ -38,7 +38,7 @@
    "author_type": "agent",
    "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
    "created_at": "2026-11-06T10:00:00Z",
-   "content": "Verdict: PASS \u2014 x99-claude-sonnet: see below.\nHead SHA: 2222222222222222222222222222222222222222. Reviewer: x99-codex-terra (OpenAI).\n",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nHead SHA: 2222222222222222222222222222222222222222. Reviewer: x99-codex-terra (OpenAI).\n",
    "parent_id": null,
    "type": "comment"
   }
@@ -50,7 +50,7 @@
    "author_type": "agent",
    "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
    "created_at": "2026-11-20T10:00:00Z",
-   "content": "Verdict: PASS \u2014 x99-claude-sonnet: see below.\nHead SHA: 3333333333333333333333333333333333333333. Reviewer: x99-codex-terra (OpenAI).\n",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nHead SHA: 3333333333333333333333333333333333333333. Reviewer: x99-codex-terra (OpenAI).\n",
    "parent_id": null,
    "type": "comment"
   }
@@ -62,7 +62,7 @@
    "author_type": "agent",
    "author_id": "5029c4e4-f11c-4d16-9936-934b5666ddcd",
    "created_at": "2026-11-07T10:00:00Z",
-   "content": "Verdict: PASS \u2014 x99-claude-sonnet: see below.\nHead SHA: 4444444444444444444444444444444444444444. Reviewer: x99-claude-opus (Anthropic).\n",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nHead SHA: 4444444444444444444444444444444444444444. Reviewer: x99-claude-opus (Anthropic).\n",
    "parent_id": null,
    "type": "comment"
   },
@@ -72,7 +72,7 @@
    "author_type": "member",
    "author_id": "f0c4c4cf-b6cd-4939-bfba-a5e14290c1ff",
    "created_at": "2026-11-07T11:00:00Z",
-   "content": "Verdict: PASS \u2014 human note, not a signed agent verdict.",
+   "content": "Verdict: PASS — human note, not a signed agent verdict.",
    "parent_id": null,
    "type": "comment"
   },
@@ -82,7 +82,7 @@
    "author_type": "agent",
    "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
    "created_at": "2026-11-07T12:00:00Z",
-   "content": "**Verdict: NOT-RUN \u2014 cross-lab review incomplete.**\nHead SHA: 4444444444444444444444444444444444444444. No review was done.",
+   "content": "**Verdict: NOT-RUN — cross-lab review incomplete.**\nHead SHA: 4444444444444444444444444444444444444444. No review was done.",
    "parent_id": null,
    "type": "comment"
   },
@@ -92,7 +92,7 @@
    "author_type": "agent",
    "author_id": "df7da71b-a937-4eb1-bf52-b12ac5ee657f",
    "created_at": "2026-11-07T13:00:00Z",
-   "content": "Verdict: BLOCKED / NOT-RUN \u2014 exact-head CI has an unwaived failure.",
+   "content": "Verdict: BLOCKED / NOT-RUN — exact-head CI has an unwaived failure.",
    "parent_id": null,
    "type": "comment"
   }
@@ -106,7 +106,7 @@
    "author_type": "agent",
    "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
    "created_at": "2026-11-09T10:00:00Z",
-   "content": "Verdict: PASS \u2014 x99-claude-sonnet: see below.\nHead SHA: 8888888888888888888888888888888888888888. Reviewer: x99-codex-terra (OpenAI).\n",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nHead SHA: 8888888888888888888888888888888888888888. Reviewer: x99-codex-terra (OpenAI).\n",
    "parent_id": null,
    "type": "comment"
   }
@@ -118,7 +118,7 @@
    "author_type": "agent",
    "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
    "created_at": "2026-11-11T10:00:00Z",
-   "content": "Verdict: PASS \u2014 x99-claude-sonnet: see below.\nHead SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Reviewer: x99-codex-terra (OpenAI).\n",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nHead SHA: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa. Reviewer: x99-codex-terra (OpenAI).\n",
    "parent_id": null,
    "type": "comment"
   }
@@ -130,7 +130,7 @@
    "author_type": "agent",
    "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
    "created_at": "2026-11-10T10:00:00Z",
-   "content": "Verdict: PASS \u2014 x99-claude-sonnet: see below.\nHead SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb. Reviewer: x99-codex-terra (OpenAI).\n",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nHead SHA: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb. Reviewer: x99-codex-terra (OpenAI).\n",
    "parent_id": null,
    "type": "comment"
   }
@@ -143,7 +143,31 @@
    "author_type": "agent",
    "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
    "created_at": "2026-11-10T10:00:00Z",
-   "content": "Verdict: CHANGES \u2014 x99-claude-sonnet: see below.\nHead SHA: cccccccccccccccccccccccccccccccccccccccc. Reviewer: x99-codex-terra (OpenAI).\n\nFindings:\n- **P1: The frame ignores the guide it cites.** `apps/web/features/design/frame.tsx:30`\n  The change follows Modern Web Guidance but breaks focus order.\n  Class: a11y\n  Rule: Focus order must follow the visual order.\n",
+   "content": "Verdict: CHANGES — x99-claude-sonnet: see below.\nHead SHA: cccccccccccccccccccccccccccccccccccccccc. Reviewer: x99-codex-terra (OpenAI).\n\nFindings:\n- **P1: The frame ignores the guide it cites.** `apps/web/features/design/frame.tsx:30`\n  The change follows Modern Web Guidance but breaks focus order.\n  Class: a11y\n  Rule: Focus order must follow the visual order.\n",
+   "parent_id": null,
+   "type": "comment"
+  }
+ ],
+ "CHE-9011": [
+  {
+   "id": "c-9011-a",
+   "issue_id": "00000000-0000-4000-8000-000000009011",
+   "author_type": "agent",
+   "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
+   "created_at": "2026-11-13T10:00:00Z",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nPR #111, head SHA: 5555555555555555555555555555555555555555. Reviewer: x99-codex-terra (OpenAI).\n",
+   "parent_id": null,
+   "type": "comment"
+  }
+ ],
+ "CHE-9012": [
+  {
+   "id": "c-9012-a",
+   "issue_id": "00000000-0000-4000-8000-000000009012",
+   "author_type": "agent",
+   "author_id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
+   "created_at": "2026-11-13T10:00:00Z",
+   "content": "Verdict: PASS — x99-claude-sonnet: see below.\nReviewer: x99-codex-terra (OpenAI).\n",
    "parent_id": null,
    "type": "comment"
   }

@@ -219,6 +219,19 @@
      ]
     }
    }
+  },
+  {
+   "id": "tA10",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009002",
+   "status": "completed",
+   "created_at": "2026-10-15T10:00:00Z",
+   "started_at": "2026-10-15T10:01:00Z",
+   "completed_at": "2026-10-15T10:11:00Z",
+   "result": {
+    "session_id": "sA10",
+    "work_dir": "/work/tA10/workdir"
+   }
   }
  ],
  "96744546-f5b7-462f-bfee-8816d42cd031": [

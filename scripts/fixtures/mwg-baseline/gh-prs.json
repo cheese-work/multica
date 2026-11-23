@@ -12,7 +12,8 @@
     {
      "path": "apps/web/features/x/card.css"
     }
-   ]
+   ],
+   "headRefOid": "1111111111111111111111111111111111111111"
   },
   {
    "number": 102,
@@ -23,7 +24,8 @@
     {
      "path": "packages/views/issues/list.tsx"
     }
-   ]
+   ],
+   "headRefOid": "2222222222222222222222222222222222222222"
   },
   {
    "number": 103,
@@ -34,7 +36,8 @@
     {
      "path": "apps/web/app/page.tsx"
     }
-   ]
+   ],
+   "headRefOid": "3333333333333333333333333333333333333333"
   },
   {
    "number": 104,
@@ -45,7 +48,8 @@
     {
      "path": "apps/web/app/layout.tsx"
     }
-   ]
+   ],
+   "headRefOid": "4444444444444444444444444444444444444444"
   },
   {
    "number": 105,
@@ -59,7 +63,8 @@
     {
      "path": "docs/readme.md"
     }
-   ]
+   ],
+   "headRefOid": "dddddddddddddddddddddddddddddddddddddddd"
   },
   {
    "number": 106,
@@ -70,7 +75,8 @@
     {
      "path": "apps/web/app/old.tsx"
     }
-   ]
+   ],
+   "headRefOid": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
   },
   {
    "number": 107,
@@ -81,7 +87,8 @@
     {
      "path": "apps/web/app/other.tsx"
     }
-   ]
+   ],
+   "headRefOid": "ffffffffffffffffffffffffffffffffffffffff"
   },
   {
    "number": 108,
@@ -92,7 +99,8 @@
     {
      "path": "packages/views/board/board.tsx"
     }
-   ]
+   ],
+   "headRefOid": "8888888888888888888888888888888888888888"
   },
   {
    "number": 203,
@@ -102,6 +110,55 @@
    "files": [
     {
      "path": "apps/web/features/design/frame.tsx"
+    }
+   ],
+   "headRefOid": "cccccccccccccccccccccccccccccccccccccccc"
+  },
+  {
+   "number": 111,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9011-aaaa",
+   "createdAt": "2026-11-11T09:00:00Z",
+   "body": "",
+   "headRefOid": "5555555555555555555555555555555555555555",
+   "files": [
+    {
+     "path": "apps/web/app/p111.tsx"
+    }
+   ]
+  },
+  {
+   "number": 112,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9011-aaaa",
+   "createdAt": "2026-11-11T09:00:00Z",
+   "body": "",
+   "headRefOid": "6666666666666666666666666666666666666666",
+   "files": [
+    {
+     "path": "apps/web/app/p112.tsx"
+    }
+   ]
+  },
+  {
+   "number": 113,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9012-aaaa",
+   "createdAt": "2026-11-12T09:00:00Z",
+   "body": "",
+   "headRefOid": "7777777777777777777777777777777777777777",
+   "files": [
+    {
+     "path": "apps/web/app/p113.tsx"
+    }
+   ]
+  },
+  {
+   "number": 114,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9012-aaaa",
+   "createdAt": "2026-11-12T09:00:00Z",
+   "body": "",
+   "headRefOid": "9999999999999999999999999999999999999999",
+   "files": [
+    {
+     "path": "apps/web/app/p114.tsx"
     }
    ]
   }
@@ -119,7 +176,8 @@
     {
      "path": "README.md"
     }
-   ]
+   ],
+   "headRefOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   },
   {
    "number": 201,
@@ -130,7 +188,8 @@
     {
      "path": "src/Card.tsx"
     }
-   ]
+   ],
+   "headRefOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   },
   {
    "number": 202,
@@ -141,7 +200,8 @@
     {
      "path": "docs/notes.md"
     }
-   ]
+   ],
+   "headRefOid": "0000000000000000000000000000000000000000"
   }
  ]
 }
