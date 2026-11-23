@@ -1,0 +1,276 @@
+{
+ "a05b54c4-0d0f-4468-94df-505b69216d31": [
+  {
+   "id": "tA1",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009001",
+   "status": "completed",
+   "created_at": "2026-11-03T09:10:00Z",
+   "started_at": "2026-11-03T09:11:00Z",
+   "completed_at": "2026-11-03T09:21:00Z",
+   "result": {
+    "session_id": "sA1",
+    "work_dir": "/work/tA1/workdir",
+    "init_context": {
+     "parts": [
+      {
+       "part": "skills",
+       "bytes": 934
+      },
+      {
+       "part": "tools",
+       "bytes": 4515
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "tA2",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009001",
+   "status": "completed",
+   "created_at": "2026-11-04T09:10:00Z",
+   "started_at": "2026-11-04T09:11:00Z",
+   "completed_at": "2026-11-04T09:16:00Z",
+   "result": {
+    "session_id": "sA2",
+    "work_dir": "/work/tA2/workdir",
+    "init_context": {
+     "parts": [
+      {
+       "part": "skills",
+       "bytes": 934
+      },
+      {
+       "part": "tools",
+       "bytes": 4515
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "tA3",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009002",
+   "status": "completed",
+   "created_at": "2026-11-04T10:00:00Z",
+   "started_at": "2026-11-04T10:01:00Z",
+   "completed_at": "2026-11-04T10:16:00Z",
+   "result": {
+    "session_id": "sA3",
+    "work_dir": "/work/tA3/workdir",
+    "init_context": {
+     "parts": [
+      {
+       "part": "skills",
+       "bytes": 1200
+      },
+      {
+       "part": "tools",
+       "bytes": 4515
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "tA4",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009003",
+   "status": "completed",
+   "created_at": "2026-11-05T10:00:00Z",
+   "started_at": "2026-11-05T10:01:00Z",
+   "completed_at": "2026-11-05T10:03:00Z",
+   "result": {
+    "session_id": "sA4",
+    "work_dir": "/work/tA4/workdir",
+    "init_context": {
+     "parts": [
+      {
+       "part": "skills",
+       "bytes": 934
+      },
+      {
+       "part": "tools",
+       "bytes": 4515
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "tA5",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009004",
+   "status": "completed",
+   "created_at": "2026-11-06T10:00:00Z",
+   "started_at": "2026-11-06T10:01:00Z",
+   "completed_at": "2026-11-06T10:05:00Z",
+   "result": {
+    "session_id": "sA5",
+    "work_dir": "/work/tA5/workdir",
+    "init_context": {
+     "parts": [
+      {
+       "part": "skills",
+       "bytes": 934
+      },
+      {
+       "part": "tools",
+       "bytes": 4515
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "tA6",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009008",
+   "status": "completed",
+   "created_at": "2026-11-08T10:00:00Z",
+   "started_at": "2026-11-08T10:01:00Z",
+   "completed_at": "2026-11-08T10:02:00Z",
+   "result": {
+    "session_id": "sA6-missing",
+    "work_dir": "/work/tA6/workdir",
+    "init_context": {
+     "parts": [
+      {
+       "part": "skills",
+       "bytes": 934
+      },
+      {
+       "part": "tools",
+       "bytes": 4515
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "tA7",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009099",
+   "status": "queued",
+   "created_at": "2026-11-08T11:00:00Z",
+   "started_at": null,
+   "completed_at": null,
+   "result": null
+  },
+  {
+   "id": "tA8",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009099",
+   "status": "cancelled",
+   "created_at": "2026-11-08T12:00:00Z",
+   "started_at": null,
+   "completed_at": null,
+   "result": null
+  },
+  {
+   "id": "tA9",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009010",
+   "status": "completed",
+   "created_at": "2026-11-10T10:00:00Z",
+   "started_at": "2026-11-10T10:01:00Z",
+   "completed_at": "2026-11-10T10:31:00Z",
+   "result": {
+    "session_id": "sA9",
+    "work_dir": "/work/tA9/workdir",
+    "init_context": {
+     "parts": [
+      {
+       "part": "skills",
+       "bytes": 934
+      },
+      {
+       "part": "tools",
+       "bytes": 4515
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "tA0",
+   "agent_id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+   "issue_id": "00000000-0000-4000-8000-000000009001",
+   "status": "completed",
+   "created_at": "2026-10-20T10:00:00Z",
+   "started_at": "2026-10-20T10:01:00Z",
+   "completed_at": "2026-10-20T10:11:00Z",
+   "result": {
+    "session_id": "sA0",
+    "work_dir": "/work/tA0/workdir",
+    "init_context": {
+     "parts": [
+      {
+       "part": "skills",
+       "bytes": 934
+      },
+      {
+       "part": "tools",
+       "bytes": 4515
+      }
+     ]
+    }
+   }
+  }
+ ],
+ "96744546-f5b7-462f-bfee-8816d42cd031": [
+  {
+   "id": "tD1",
+   "agent_id": "96744546-f5b7-462f-bfee-8816d42cd031",
+   "issue_id": "00000000-0000-4000-8000-000000009101",
+   "status": "completed",
+   "created_at": "2026-11-09T12:10:00Z",
+   "started_at": "2026-11-09T12:11:00Z",
+   "completed_at": "2026-11-09T12:21:00Z",
+   "result": {
+    "session_id": "sD1",
+    "work_dir": "/work/tD1/workdir",
+    "init_context": {
+     "parts": [
+      {
+       "part": "skills",
+       "bytes": 934
+      },
+      {
+       "part": "tools",
+       "bytes": 4515
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "tD2",
+   "agent_id": "96744546-f5b7-462f-bfee-8816d42cd031",
+   "issue_id": "00000000-0000-4000-8000-000000009103",
+   "status": "completed",
+   "created_at": "2026-11-09T10:00:00Z",
+   "started_at": "2026-11-09T10:01:00Z",
+   "completed_at": "2026-11-14T10:30:00Z",
+   "result": {
+    "session_id": "sD2",
+    "work_dir": "/work/tD2/workdir",
+    "init_context": {
+     "parts": [
+      {
+       "part": "skills",
+       "bytes": 934
+      },
+      {
+       "part": "tools",
+       "bytes": 4515
+      }
+     ]
+    }
+   }
+  }
+ ]
+}

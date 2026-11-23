@@ -1,0 +1,147 @@
+{
+ "cheese-work/multica": [
+  {
+   "number": 101,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9001-aaaa",
+   "createdAt": "2026-11-03T09:00:00Z",
+   "body": "## What\nCard fix.\n\n### Modern Web Guidance\nUsed guide `css-grid-overflow` for card.css.\n\n## Tests\nok\n",
+   "files": [
+    {
+     "path": "apps/web/features/x/button.tsx"
+    },
+    {
+     "path": "apps/web/features/x/card.css"
+    }
+   ]
+  },
+  {
+   "number": 102,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9002-aaaa",
+   "createdAt": "2026-11-04T09:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "packages/views/issues/list.tsx"
+    }
+   ]
+  },
+  {
+   "number": 103,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9003-aaaa",
+   "createdAt": "2026-11-05T09:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "apps/web/app/page.tsx"
+    }
+   ]
+  },
+  {
+   "number": 104,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9004-aaaa",
+   "createdAt": "2026-11-06T09:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "apps/web/app/layout.tsx"
+    }
+   ]
+  },
+  {
+   "number": 105,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9005-aaaa",
+   "createdAt": "2026-11-06T10:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "server/internal/handler/issue.go"
+    },
+    {
+     "path": "docs/readme.md"
+    }
+   ]
+  },
+  {
+   "number": 106,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9006-aaaa",
+   "createdAt": "2026-10-30T09:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "apps/web/app/old.tsx"
+    }
+   ]
+  },
+  {
+   "number": 107,
+   "headRefName": "agent/x99-codex-luna/che-9007-aaaa",
+   "createdAt": "2026-11-07T09:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "apps/web/app/other.tsx"
+    }
+   ]
+  },
+  {
+   "number": 108,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9008-aaaa",
+   "createdAt": "2026-11-08T09:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "packages/views/board/board.tsx"
+    }
+   ]
+  },
+  {
+   "number": 203,
+   "headRefName": "agent/x99-claude-sonnet-design/che-9103-aaaa",
+   "createdAt": "2026-11-09T09:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "apps/web/features/design/frame.tsx"
+    }
+   ]
+  }
+ ],
+ "cheese-work/doop": [
+  {
+   "number": 110,
+   "headRefName": "agent/x99-claude-sonnet-200k/che-9010-aaaa",
+   "createdAt": "2026-11-10T09:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "ui/Button.tsx"
+    },
+    {
+     "path": "README.md"
+    }
+   ]
+  },
+  {
+   "number": 201,
+   "headRefName": "agent/x99-claude-sonnet-design/che-9101-aaaa",
+   "createdAt": "2026-11-09T12:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "src/Card.tsx"
+    }
+   ]
+  },
+  {
+   "number": 202,
+   "headRefName": "agent/x99-claude-sonnet-design/che-9102-aaaa",
+   "createdAt": "2026-11-10T12:00:00Z",
+   "body": "",
+   "files": [
+    {
+     "path": "docs/notes.md"
+    }
+   ]
+  }
+ ]
+}

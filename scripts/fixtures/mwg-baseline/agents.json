@@ -1,0 +1,27 @@
+[
+ {
+  "id": "a05b54c4-0d0f-4468-94df-505b69216d31",
+  "name": "x99-claude-sonnet-200k",
+  "model": "claude-sonnet-5-5"
+ },
+ {
+  "id": "96744546-f5b7-462f-bfee-8816d42cd031",
+  "name": "x99-claude-sonnet-design",
+  "model": "claude-sonnet-5-5"
+ },
+ {
+  "id": "5e351ba5-00a2-47c3-aa78-aa13459788f6",
+  "name": "x99-codex-terra",
+  "model": "gpt-6.1-terra"
+ },
+ {
+  "id": "5029c4e4-f11c-4d16-9936-934b5666ddcd",
+  "name": "x99-claude-opus",
+  "model": "claude-opus-5-5[1m]"
+ },
+ {
+  "id": "df7da71b-a937-4eb1-bf52-b12ac5ee657f",
+  "name": "x99-codex-luna",
+  "model": "gpt-6-luna"
+ }
+]

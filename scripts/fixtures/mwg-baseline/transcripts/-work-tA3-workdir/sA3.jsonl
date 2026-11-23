@@ -1,0 +1,4 @@
+{"type": "user", "timestamp": "2026-11-01T00:00:00Z", "message": {"content": "start"}}
+{"type": "assistant", "timestamp": "2026-11-04T10:02:00Z", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "npx modern-web-guidance search \"aria label\""}}]}}
+{"type": "assistant", "timestamp": "2026-11-04T10:03:00Z", "message": {"content": [{"type": "tool_use", "id": "toolu_2", "name": "Bash", "input": {"command": "echo \"modern-web-guidance is a package name in this note\" > /dev/null"}}]}}
+{"type": "result", "sessionId": "sA3"}
