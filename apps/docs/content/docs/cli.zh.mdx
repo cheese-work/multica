@@ -305,6 +305,7 @@ multica skill list
 multica skill get <skill-id>
 multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
+multica agent skills remove <agent-id> --skill-id <skill-id>
 ```
 
 `multica agent get <agent-id> --output json` 还会返回 `background_use`：该智能体承担的后台任务，格式为 `{scope, job}` 列表（`scope` 为 `workspace` 或 `personal`）。你能看到所有工作区任务，以及仅属于你自己的个人选择。
@@ -613,7 +614,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | | `tasks <id>` | 查看智能体的运行 | |
 | | `avatar <id>` | 上传头像 | |
 | | `env get/set <agent-id>` | 写入自定义环境变量并列出其键（智能体所有者或工作区 owner/admin）。不会返回任何值：`get` 显示每个键及其来源，`set`/`patch` 的响应会遮蔽所有值 | `set`：`--custom-env` / `--custom-env-file` / `--custom-env-stdin`，整体替换，值为 `****` 的键保留原值 |
-| | `skills list/set/add <agent-id>` | 管理绑定的 skill | `--skill-ids`（`set` 全量替换，`add` 增量添加） |
+| | `skills list/set/add/remove <agent-id>` | 管理绑定的 skill | `--skill-ids`（`set` 全量替换，`add` 增量添加）；`remove` 接收单个 `--skill-id` |
 | | `mcp list/add/enable/disable/remove <agent-id>` | 给该 agent 分配工作区 MCP 服务 | server id 从 `workspace mcp list` 获取。库里的条目在这里添加之前不会生效；`disable` 只停止下发，保留分配 |
 | `autopilot` | `list/get/create/update/delete` | 管理自动化 | `create`：`--title`、`--agent`、`--mode`（均必填）、`--description`、`--issue-title-template`、`--project`、`--subscriber`（可重复）, `--script`, `--arg` |
 | | `trigger <id>` | 手动触发一次 | |

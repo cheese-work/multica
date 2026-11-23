@@ -305,6 +305,7 @@ multica skill list
 multica skill get <skill-id>
 multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
+multica agent skills remove <agent-id> --skill-id <skill-id>
 ```
 
 `multica agent get <agent-id> --output json` renvoie aussi `background_use` : les tâches d'arrière-plan que l'agent assure, sous forme de liste `{scope, job}` (`scope` vaut `workspace` ou `personal`). Vous voyez toutes les tâches de l'espace de travail et uniquement vos propres choix personnels.
@@ -611,7 +612,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | | `tasks <id>` | Afficher les exécutions d'un agent | |
 | | `avatar <id>` | Envoyer un avatar | |
 | | `env get/set <agent-id>` | Écrire les variables d'environnement personnalisées et lister leurs clés (propriétaire de l'agent ou owner/admin de l'espace de travail). Aucune valeur n'est renvoyée : `get` affiche chaque clé et sa source, et les réponses de `set`/`patch` masquent toutes les valeurs | `set` : `--custom-env` / `--custom-env-file` / `--custom-env-stdin` ; remplace l'ensemble, et les clés dont la valeur est `****` gardent leur valeur |
-| | `skills list/set/add <agent-id>` | Gérer les skills rattachés | `--skill-ids` (`set` remplace toute la liste, `add` ajoute à la suite) |
+| | `skills list/set/add/remove <agent-id>` | Gérer les skills rattachés | `--skill-ids` (`set` remplace toute la liste, `add` ajoute à la suite) ; `remove` prend un seul `--skill-id` |
 | | `mcp list/add/enable/disable/remove <agent-id>` | Assigner des serveurs MCP de l'espace de travail à cet agent | Récupérez l'ID du serveur avec `workspace mcp list`. Une entrée de la bibliothèque n'a aucun effet tant qu'elle n'est pas ajoutée ici ; `disable` cesse de l'envoyer sans supprimer l'assignation |
 | `autopilot` | `list/get/create/update/delete` | Gérer les automatisations | `create` : `--title`, `--agent`, `--mode` (tous obligatoires), `--description`, `--issue-title-template`, `--project`, `--subscriber` (répétable), `--script`, `--arg` |
 | | `trigger <id>` | Déclencher une exécution manuellement | |

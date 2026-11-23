@@ -305,6 +305,7 @@ multica skill list
 multica skill get <skill-id>
 multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
+multica agent skills remove <agent-id> --skill-id <skill-id>
 ```
 
 `multica agent get <agent-id> --output json` は `background_use` も返します。エージェントが担当するバックグラウンド作業を `{scope, job}` のリストで示します(`scope` は `workspace` または `personal`)。ワークスペースの作業はすべて、個人設定は自分の分のみ表示されます。
@@ -603,7 +604,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `tasks <id>` | エージェントの実行を表示 | |
 | | `avatar <id>` | アバターをアップロード | |
 | | `env get/set <agent-id>` | カスタム環境変数の書き込みとキーの一覧（エージェントの所有者、またはワークスペースの owner/admin）。値は返されません。`get` は各キーとそのソースを表示し、`set`/`patch` のレスポンスはすべての値をマスクします | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`。全体を置き換え、値が `****` のキーは元の値を保つ |
-| | `skills list/set/add <agent-id>` | 紐付けられたスキルを管理 | `--skill-ids`（`set` は全置換、`add` は追加） |
+| | `skills list/set/add/remove <agent-id>` | 紐付けられたスキルを管理 | `--skill-ids`（`set` は全置換、`add` は追加）。`remove` は `--skill-id` を 1 つ受け取る |
 | | `mcp list/add/enable/disable/remove <agent-id>` | ワークスペース MCP サーバーをこのエージェントに割り当て | server id は `workspace mcp list` から取得。ライブラリの項目はここで追加するまで機能しません。`disable` は割り当てを残したまま送信を停止します |
 | `autopilot` | `list/get/create/update/delete` | オートパイロットを管理 | `create`: `--title`、`--agent`、`--mode`（いずれも必須）、`--description`、`--issue-title-template`、`--project`、`--subscriber`（繰り返し可）, `--script`, `--arg` |
 | | `trigger <id>` | 手動で 1 回トリガー | |
