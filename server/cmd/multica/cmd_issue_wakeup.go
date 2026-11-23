@@ -90,7 +90,7 @@ func newIssueWakeupCommand() *cobra.Command {
 			c.Flags().String("until-gh-run-state", "completed", "With --until-gh-run: completed or waiting (a job waits at an environment gate)")
 			c.Flags().String("until-issue", "", "Condition: another issue in this workspace reaches --until-issue-state")
 			c.Flags().String("until-issue-state", "done", "With --until-issue: done, ended (done or cancelled), in_review or blocked")
-			c.Flags().StringArray("watch", nil, "Declare what this time wakeup watches: issue, pr, children, thread:<comment-uuid>, or always alone. When every declared input is unchanged since the last completed run, the server defers the fire (workspace time_wakeup_skip block). An agent must declare it in block mode.")
+			c.Flags().StringArray("watch", nil, "Declare what this time wakeup watches: issue, pr, children, thread:<comment-uuid>, or always alone. When every declared input is unchanged since the last completed run, the server defers the fire (workspace time_wakeup_skip block). An agent must declare it in block mode. An `at` wakeup that watches only issue is compared with the run that created it (its own comments excluded).")
 			c.Flags().Int32("max-fires", 0, "Repeating rules: stop after this many runs (1-1000; continuous event rules default to 20)")
 		}
 		wake.AddCommand(c)
