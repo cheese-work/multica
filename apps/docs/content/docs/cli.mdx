@@ -344,6 +344,7 @@ multica skill list
 multica skill get <skill-id>
 multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
+multica agent skills remove <agent-id> --skill-id <skill-id>
 ```
 
 `multica agent get <agent-id> --output json` also returns `background_use`: the background jobs the agent serves, as a list of `{scope, job}` (`scope` is `workspace` or `personal`). You see every workspace job and only your own personal picks.
@@ -786,7 +787,7 @@ Migration from CSV parsing: replace `--attachment a,b` with `--attachment a --at
 | | `tasks <id>` | View an agent's runs | |
 | | `avatar <id>` | Upload an avatar | |
 | | `env get/set <agent-id>` | Write custom environment variables and list their keys (agent owner or workspace owner/admin). Values are never returned: `get` shows each key and its source, and `set`/`patch` responses mask every value | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`; replaces the whole set, and keys whose value is `****` keep their existing value |
-| | `skills list/set/add <agent-id>` | Manage attached skills | `--skill-ids` (`set` replaces the full list, `add` appends) |
+| | `skills list/set/add/remove <agent-id>` | Manage attached skills | `--skill-ids` (`set` replaces the full list, `add` appends); `remove` takes one `--skill-id` |
 | | `mcp list/add/enable/disable/remove <agent-id>` | Assign workspace MCP servers to this agent | Take the server id from `workspace mcp list`. A library entry does nothing until it is added here; `disable` stops sending it without dropping the assignment |
 | `autopilot` | `list/get/create/update/delete` | Manage automations | `create`: `--title`, `--agent`, `--mode` (all required), `--description`, `--issue-title-template`, `--project`, `--subscriber` (repeatable), `--script`, `--arg` |
 | | `trigger <id>` | Trigger a run manually | |
