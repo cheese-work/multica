@@ -104,6 +104,20 @@ Les reçus restent en attente jusqu'au règlement de l'élément, et un réveil 
 
 Définissez le mode avec `multica workspace update --wakeup-live-join-mode off|warn|block`. Une valeur illisible compte comme `off`.
 
+### Reçus de déplacement
+
+Le paramètre d'espace de travail `auto_move_receipt` décide ce que le serveur laisse quand il déplace lui-même le statut d'une tâche : une arête de workflow, une PR fusionnée, la mise en attente ou la reprise d'une décision, la réinitialisation après une exécution échouée, un déplacement de projet approuvé ou une exécution Qoder. Un déplacement direct par une personne ou un agent via l'API et un remappage de workflow ne laissent rien.
+
+| Valeur | Effet |
+| --- | --- |
+| `off` | Rien n'est écrit. |
+| `warn` (par défaut) | Chaque déplacement enregistre une ligne d'activité `auto_move_receipt_would_post` qui nomme le déplacement. |
+| `block` | Chaque déplacement ajoute un commentaire système (de, vers, cause, acteur, et prédicats, nouvel assigné et révision le cas échéant, plus l'ID du déplacement) et une ligne d'activité `auto_move_receipt_posted` qui nomme le déplacement et le commentaire. |
+
+Le reçu est écrit dans la même transaction que le changement de statut : un reçu qui échoue fait échouer le déplacement. Il ne lance aucune exécution et n'analyse aucune mention. Une fusion qui clôt la tâche par une étape de clôture ajoute deux reçus, un pour `merged` et un pour `done`.
+
+Définissez le mode avec `multica workspace update --auto-move-receipt-mode off|warn|block`. Une valeur illisible compte comme `off`.
+
 ### Limites d'exécutions
 
 Deux paramètres d'espace de travail décident de ce qui se passe quand une tâche épuise son plafond d'exécutions. Chacun vaut `{"mode": "off" | "warn" | "block"}` ; la valeur par défaut est `block`, le comportement actuel.

@@ -104,6 +104,20 @@ PASS 所指 head 的 PR 仍未合并时，如果该步骤有到 `done` 的 `pr.m
 
 使用 `multica workspace update --wakeup-live-join-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
 
+### 移动回执
+
+工作区设置 `auto_move_receipt` 决定服务器自己移动事项状态时留下什么：工作流边、已合并的 PR、决策引起的挂起与恢复、运行失败后的重置、已批准的项目移动，以及 Qoder 运行。人或智能体通过事项 API 做的直接移动，以及工作流重映射，都不留下任何内容。
+
+| 值 | 效果 |
+| --- | --- |
+| `off` | 不写入任何内容。 |
+| `warn`（默认） | 每次移动记录一条指明该移动的 `auto_move_receipt_would_post` 活动行。 |
+| `block` | 每次移动添加一条系统评论（原状态、新状态、原因、操作者，适用时还有谓词、新负责人和修订号，以及移动 ID）和一条指明该移动与该评论的 `auto_move_receipt_posted` 活动行。 |
+
+回执与状态变更在同一个事务中写入，因此回执写入失败会使该移动一并失败。它不会启动运行，也不会解析提及。通过关闭步骤关闭事项的合并会留下两条回执，分别对应 `merged` 和 `done`。
+
+使用 `multica workspace update --auto-move-receipt-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
+
 ### 运行次数上限
 
 两个工作区设置决定任务用完运行次数上限后的行为。两者的值都是 `{"mode": "off" | "warn" | "block"}`，默认值为 `block`，即当前行为。
