@@ -120,6 +120,40 @@ func (e fenceEnv) ran(t *testing.T, id pgtype.UUID, want int) {
 	}
 }
 
+// fenceGuard proves one fail-open guard against the comparator: the same
+// eligible baseline defers (control), and with the one change applied the fire
+// runs. A case that also passes with the comparator removed proves nothing.
+func fenceGuard(t *testing.T, build func(t *testing.T, e fenceEnv, change bool) pgtype.UUID) {
+	t.Helper()
+	t.Run("control defers", func(t *testing.T) {
+		e := newFenceEnv(t)
+		e.mustDefer(t, build(t, e, false))
+	})
+	t.Run("change runs", func(t *testing.T) {
+		e := newFenceEnv(t)
+		e.mustRun(t, build(t, e, true))
+	})
+}
+
+func (e fenceEnv) dropLabel(t *testing.T, label string) {
+	t.Helper()
+	e.f.Exec(t, `DELETE FROM issue_to_label WHERE label_id=$1`, label)
+	e.f.Exec(t, `DELETE FROM issue_label WHERE id=$1`, label)
+}
+
+// armed is the plan's R after the claim: two own comments, arm, complete.
+func (e fenceEnv) armed(t *testing.T, mid func()) pgtype.UUID {
+	t.Helper()
+	e.claim(t)
+	if mid != nil {
+		mid()
+	}
+	e.say(t, 2)
+	id := e.arm(t)
+	e.complete(t)
+	return id
+}
+
 func (e fenceEnv) mustRun(t *testing.T, id pgtype.UUID) {
 	t.Helper()
 	wakeTick(t, e.f, e.s, id)
@@ -205,31 +239,34 @@ func TestAtFenceF1DefersUnchangedIssue(t *testing.T) {
 }
 
 func TestAtFenceF2MemberCommentRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	id := e.happy(t)
-	e.memberComment(t)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		id := e.happy(t)
+		if change {
+			e.memberComment(t)
+		}
+		return id
+	})
 }
 
 func TestAtFenceF3MetadataByAnotherActorRuns(t *testing.T) {
 	t.Run("set during R", func(t *testing.T) {
-		e := newFenceEnv(t)
-		e.claim(t)
-		e.bump(t, `metadata='{"k":"v"}'::jsonb`)
-		e.say(t, 2)
-		id := e.arm(t)
-		e.complete(t)
-		e.mustRun(t, id)
+		fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+			return e.armed(t, func() {
+				if change {
+					e.bump(t, `metadata='{"k":"v"}'::jsonb`)
+				}
+			})
+		})
 	})
 	t.Run("F3b deleted during R", func(t *testing.T) {
-		e := newFenceEnv(t)
-		e.bump(t, `metadata='{"k":"v"}'::jsonb`)
-		e.claim(t)
-		e.bump(t, `metadata='{}'::jsonb`)
-		e.say(t, 2)
-		id := e.arm(t)
-		e.complete(t)
-		e.mustRun(t, id)
+		fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+			e.bump(t, `metadata='{"k":"v"}'::jsonb`)
+			return e.armed(t, func() {
+				if change {
+					e.bump(t, `metadata='{}'::jsonb`)
+				}
+			})
+		})
 	})
 }
 
@@ -239,45 +276,45 @@ func TestAtFenceF4OwnStatusOrSummaryWriteRuns(t *testing.T) {
 		"status":         `status='in_review'`,
 	} {
 		t.Run(name, func(t *testing.T) {
-			e := newFenceEnv(t)
-			e.claim(t)
-			e.say(t, 1)
-			e.bump(t, set)
-			id := e.arm(t)
-			e.complete(t)
-			e.mustRun(t, id)
+			fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+				e.claim(t)
+				e.say(t, 1)
+				if change {
+					e.bump(t, set)
+				}
+				id := e.arm(t)
+				e.complete(t)
+				return id
+			})
 		})
 	}
 }
 
 func TestAtFenceF5ChangeRightAfterFenceReadRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	e.claim(t)
-	e.bump(t, `status='in_review'`) // another actor, before R's payload read
-	e.say(t, 2)
-	id := e.arm(t)
-	e.complete(t)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		return e.armed(t, func() {
+			if change {
+				e.bump(t, `status='in_review'`) // another actor, before R's payload read
+			}
+		})
+	})
 }
 
 func TestAtFenceF6NoFenceRuns(t *testing.T) {
-	cases := map[string]func(e fenceEnv, t *testing.T){
-		"NULL snapshot": func(e fenceEnv, t *testing.T) {
-			e.f.Exec(t, `UPDATE agent_task_queue SET issue_snapshot=NULL WHERE id=$1`, e.run)
-		},
-		"v is 1": func(e fenceEnv, t *testing.T) {
-			e.f.Exec(t, `UPDATE agent_task_queue SET issue_snapshot=jsonb_set(issue_snapshot,'{watch,v}','1') WHERE id=$1`, e.run)
-		},
-		"no watch key (failed fence read)": func(e fenceEnv, t *testing.T) {
-			e.f.Exec(t, `UPDATE agent_task_queue SET issue_snapshot=issue_snapshot-'watch' WHERE id=$1`, e.run)
-		},
+	cases := map[string]string{
+		"NULL snapshot":                    `UPDATE agent_task_queue SET issue_snapshot=NULL WHERE id=$1`,
+		"v is 1":                           `UPDATE agent_task_queue SET issue_snapshot=jsonb_set(issue_snapshot,'{watch,v}','1') WHERE id=$1`,
+		"no watch key (failed fence read)": `UPDATE agent_task_queue SET issue_snapshot=issue_snapshot-'watch' WHERE id=$1`,
 	}
-	for name, strip := range cases {
+	for name, sql := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := newFenceEnv(t)
-			id := e.happy(t)
-			strip(e, t)
-			e.mustRun(t, id)
+			fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+				id := e.happy(t)
+				if change {
+					e.f.Exec(t, sql, e.run)
+				}
+				return id
+			})
 		})
 	}
 }
@@ -287,18 +324,22 @@ func TestAtFenceF6NoFenceRuns(t *testing.T) {
 // SAME agent. Cheese chose "Allow, keep fail-open" for the same-agent case
 // (CHE-5458 comment 01a1fb5b-0648-708a-a032-b564085aeb9d).
 func TestAtFenceF7WakeupForAnotherAgentFiresOnce(t *testing.T) {
-	e := newFenceEnv(t)
-	other := e.f.privateAgentOwnedBy(t, e.f.UserID, "other")
-	e.claim(t)
-	e.say(t, 2)
-	w, err := e.s.Create(context.Background(), e.issue, parseTestUUID(t, e.f.UserID), e.run, WakeupInput{
-		AgentID: other, Kind: "at", AfterSeconds: 600, Instruction: "Fix the P1 findings", WatchInputs: []string{"issue"},
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		target := e.agent
+		if change {
+			target = e.f.privateAgentOwnedBy(t, e.f.UserID, "other")
+		}
+		e.claim(t)
+		e.say(t, 2)
+		w, err := e.s.Create(context.Background(), e.issue, parseTestUUID(t, e.f.UserID), e.run, WakeupInput{
+			AgentID: target, Kind: "at", AfterSeconds: 600, Instruction: "Fix the P1 findings", WatchInputs: []string{"issue"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.complete(t)
+		return w.ID
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	e.complete(t)
-	e.mustRun(t, w.ID)
 }
 
 func TestAtFenceF8WakeNowRuns(t *testing.T) {
@@ -311,13 +352,36 @@ func TestAtFenceF8WakeNowRuns(t *testing.T) {
 	e.ran(t, id, 1)
 }
 
-func TestAtFenceF9DeadlineFireOfRecurringWakeupRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	w := wakeCreate(t, e.f, e.s, e.issue, WakeupInput{AgentID: e.agent, Kind: "event", EventTypes: []string{"comment.created"}, ExpiresInSeconds: 7200, OnTimeout: "wake", Instruction: "Escalate"})
-	e.claim(t)
-	e.f.Exec(t, `UPDATE issue_wakeup SET source_task_id=$2, watch_inputs='{issue}', expires_at=now()-interval '1 second' WHERE id=$1`, w.ID, e.run)
-	e.complete(t)
-	e.mustRun(t, w.ID)
+// A deadline fire is never compared: the compare read is not sent for it, while
+// the same fixture as a plain one-shot does send it (control).
+func TestAtFenceF9DeadlineFireRunsWithoutCompare(t *testing.T) {
+	reads := 0
+	oldRead := atFenceRead
+	t.Cleanup(func() { atFenceRead = oldRead })
+	atFenceRead = func(ctx context.Context, sp pgx.Tx, arg db.IssueWatchFenceParams) (db.IssueWatchFenceRow, error) {
+		reads++
+		return oldRead(ctx, sp, arg)
+	}
+	t.Run("control: one-shot compares", func(t *testing.T) {
+		reads = 0
+		e := newFenceEnv(t)
+		e.mustDefer(t, e.happy(t))
+		if reads == 0 {
+			t.Fatal("the control must send the compare read")
+		}
+	})
+	t.Run("deadline fire", func(t *testing.T) {
+		reads = 0
+		e := newFenceEnv(t)
+		w := wakeCreate(t, e.f, e.s, e.issue, WakeupInput{AgentID: e.agent, Kind: "event", EventTypes: []string{"comment.created"}, ExpiresInSeconds: 7200, OnTimeout: "wake", Instruction: "Escalate"})
+		e.claim(t)
+		e.f.Exec(t, `UPDATE issue_wakeup SET source_task_id=$2, watch_inputs='{issue}', expires_at=now()-interval '1 second' WHERE id=$1`, w.ID, e.run)
+		e.complete(t)
+		e.mustRun(t, w.ID)
+		if reads != 0 {
+			t.Fatalf("compare reads = %d, want 0", reads)
+		}
+	})
 }
 
 func TestAtFenceF10WarnLogsWouldDeferAndRuns(t *testing.T) {
@@ -354,10 +418,13 @@ func TestAtFenceF11OffReplaysDeferredFire(t *testing.T) {
 
 func TestAtFenceF12RunOlderThanSixHoursRuns(t *testing.T) {
 	t.Run("never deferred", func(t *testing.T) {
-		e := newFenceEnv(t)
-		id := e.happy(t)
-		e.f.Exec(t, `UPDATE agent_task_queue SET completed_at=now()-interval '7 hours' WHERE id=$1`, e.run)
-		e.mustRun(t, id)
+		fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+			id := e.happy(t)
+			if change {
+				e.f.Exec(t, `UPDATE agent_task_queue SET completed_at=now()-interval '7 hours' WHERE id=$1`, e.run)
+			}
+			return id
+		})
 	})
 	t.Run("already deferred", func(t *testing.T) {
 		e := newFenceEnv(t)
@@ -370,20 +437,24 @@ func TestAtFenceF12RunOlderThanSixHoursRuns(t *testing.T) {
 }
 
 func TestAtFenceF13EditedOrRearmedWakeup(t *testing.T) {
-	in := WakeupInput{AgentID: "", Kind: "at", AfterSeconds: 600, Instruction: "Check back, edited", WatchInputs: []string{"issue"}}
+	in := WakeupInput{Kind: "at", AfterSeconds: 600, Instruction: "Check back, edited", WatchInputs: []string{"issue"}}
 	t.Run("member edit has no creating run", func(t *testing.T) {
-		e := newFenceEnv(t)
-		id := e.happy(t)
-		in.AgentID = e.agent
-		if _, err := e.s.Save(context.Background(), e.issue, parseTestUUID(t, e.f.UserID), pgtype.UUID{}, id, in); err != nil {
-			t.Fatal(err)
-		}
-		e.mustRun(t, id)
+		fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+			id := e.happy(t)
+			if change {
+				in.AgentID = e.agent
+				if _, err := e.s.Save(context.Background(), e.issue, parseTestUUID(t, e.f.UserID), pgtype.UUID{}, id, in); err != nil {
+					t.Fatal(err)
+				}
+			}
+			return id
+		})
 	})
 	t.Run("agent re-arm takes the new run's fence", func(t *testing.T) {
 		e := newFenceEnv(t)
 		id := e.happy(t)
 		e.memberComment(t) // a change R's fence does not cover
+		e.ran(t, id, 0)
 		r2 := e.newRun(t)
 		e.claimFor(t, r2)
 		in.AgentID = e.agent
@@ -401,22 +472,30 @@ func TestAtFenceF13EditedOrRearmedWakeup(t *testing.T) {
 func TestAtFenceF14CreatingRunNotCompletedRuns(t *testing.T) {
 	for _, status := range []string{"running", "failed", "cancelled"} {
 		t.Run(status, func(t *testing.T) {
-			e := newFenceEnv(t)
-			id := e.happy(t)
-			e.f.Exec(t, `UPDATE agent_task_queue SET status=$2 WHERE id=$1`, e.run, status)
-			e.mustRun(t, id)
+			fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+				id := e.happy(t)
+				if change {
+					e.f.Exec(t, `UPDATE agent_task_queue SET status=$2 WHERE id=$1`, e.run, status)
+				}
+				return id
+			})
 		})
 	}
 }
 
 func TestAtFenceF15MoreThanIssueUsesTodaysRule(t *testing.T) {
-	e := newFenceEnv(t)
-	root := e.memberComment(t)
-	e.claim(t)
-	e.say(t, 2)
-	id := e.arm(t, "issue", "thread:"+root)
-	e.complete(t)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		root := e.memberComment(t)
+		e.claim(t)
+		e.say(t, 2)
+		inputs := []string{"issue"}
+		if change {
+			inputs = append(inputs, "thread:"+root)
+		}
+		id := e.arm(t, inputs...)
+		e.complete(t)
+		return id
+	})
 }
 
 func TestAtFenceF16EditedOrDeletedFreshCommentRuns(t *testing.T) {
@@ -428,128 +507,174 @@ func TestAtFenceF16EditedOrDeletedFreshCommentRuns(t *testing.T) {
 	}
 	for name, sql := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := newFenceEnv(t)
-			e.claim(t)
-			ids := e.say(t, 2)
-			id := e.arm(t)
-			e.complete(t)
-			e.f.Exec(t, sql, ids[0])
-			e.mustRun(t, id)
+			fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+				e.claim(t)
+				ids := e.say(t, 2)
+				id := e.arm(t)
+				e.complete(t)
+				if change {
+					e.f.Exec(t, sql, ids[0])
+				}
+				return id
+			})
 		})
 	}
 }
 
 func TestAtFenceF17CreatingRunOnAnotherIssueRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	id := e.happy(t)
-	other := e.f.Issue(t, "Another issue")
-	e.f.Exec(t, `UPDATE agent_task_queue SET issue_id=$2 WHERE id=$1`, e.run, other)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		id := e.happy(t)
+		if change {
+			other := e.f.Issue(t, "Another issue")
+			e.f.Exec(t, `UPDATE agent_task_queue SET issue_id=$2 WHERE id=$1`, e.run, other)
+		}
+		return id
+	})
 }
 
 func TestAtFenceF18RestampedOlderCommentRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	old := e.memberComment(t)
-	e.claim(t)
-	e.say(t, 2)
-	id := e.arm(t)
-	e.complete(t)
-	// comment.go:4313: an edit re-stamps the comment to the editing run.
-	e.f.Exec(t, `UPDATE comment SET source_task_id=$2, content='edited', revision=revision+1, updated_at=now() WHERE id=$1`, old, e.run)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		old := e.memberComment(t)
+		id := e.armed(t, nil)
+		if change {
+			// comment.go:4313: an edit re-stamps the comment to the editing run.
+			e.f.Exec(t, `UPDATE comment SET source_task_id=$2, content='edited', revision=revision+1, updated_at=now() WHERE id=$1`, old, e.run)
+		}
+		return id
+	})
 }
 
 func TestAtFenceF19LabelCases(t *testing.T) {
 	t.Run("label at claim, workspace label deleted after", func(t *testing.T) {
-		e := newFenceEnv(t)
-		label := e.label(t)
-		id := e.happy(t) // attached at claim: no fence
-		e.f.Exec(t, `DELETE FROM issue_to_label WHERE label_id=$1`, label)
-		e.f.Exec(t, `DELETE FROM issue_label WHERE id=$1`, label)
-		e.mustRun(t, id)
+		fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+			label := e.label(t)
+			if !change {
+				e.dropLabel(t, label) // control: no label at the claim, so a fence is stored
+			}
+			id := e.happy(t) // change: a label at claim stores no fence
+			if change {
+				e.dropLabel(t, label)
+			}
+			return id
+		})
 	})
 	t.Run("F19b label added after claim", func(t *testing.T) {
-		e := newFenceEnv(t)
-		id := e.happy(t)
-		e.label(t)
-		e.mustRun(t, id)
+		fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+			id := e.happy(t)
+			if change {
+				e.label(t)
+			}
+			return id
+		})
 	})
 }
 
 func TestAtFenceF20AttachmentCases(t *testing.T) {
 	t.Run("attachment at claim, relinked to an older comment", func(t *testing.T) {
-		e := newFenceEnv(t)
-		old := e.memberComment(t)
-		e.attachment(t, true, "")
-		id := e.happy(t)
-		e.f.Exec(t, `UPDATE attachment SET issue_id=NULL, comment_id=$1 WHERE workspace_id=$2 AND filename='f.txt'`, old, e.f.WorkspaceID)
-		e.mustRun(t, id)
+		fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+			old := e.memberComment(t)
+			if change {
+				e.attachment(t, true, "")
+			}
+			id := e.happy(t)
+			if change {
+				e.f.Exec(t, `UPDATE attachment SET issue_id=NULL, comment_id=$1 WHERE workspace_id=$2 AND filename='f.txt'`, old, e.f.WorkspaceID)
+			}
+			return id
+		})
 	})
 	t.Run("F20b first attachment after claim", func(t *testing.T) {
-		e := newFenceEnv(t)
-		id := e.happy(t)
-		e.attachment(t, true, "")
-		e.mustRun(t, id)
+		fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+			id := e.happy(t)
+			if change {
+				e.attachment(t, true, "")
+			}
+			return id
+		})
 	})
 }
 
 func TestAtFenceF21LabelRenamedAfterClaimRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	label := e.label(t)
-	id := e.happy(t)
-	e.f.Exec(t, `UPDATE issue_label SET name=name||'-renamed', updated_at=now() WHERE id=$1`, label)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		label := e.label(t)
+		if !change {
+			e.dropLabel(t, label) // control: no label at the claim
+		}
+		id := e.happy(t)
+		if change {
+			e.f.Exec(t, `UPDATE issue_label SET name=name||'-renamed', updated_at=now() WHERE id=$1`, label)
+		}
+		return id
+	})
 }
 
 func TestAtFenceF22ReactionCases(t *testing.T) {
 	t.Run("reaction on a comment from before the claim", func(t *testing.T) {
-		e := newFenceEnv(t)
-		old := e.memberComment(t)
-		id := e.happy(t)
-		e.f.Exec(t, `INSERT INTO comment_reaction (comment_id, workspace_id, actor_type, actor_id, emoji) VALUES ($1,$2,'member',$3,'👍')`, old, e.f.WorkspaceID, e.f.UserID)
-		e.mustRun(t, id)
+		fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+			old := e.memberComment(t)
+			id := e.happy(t)
+			if change {
+				e.f.Exec(t, `INSERT INTO comment_reaction (comment_id, workspace_id, actor_type, actor_id, emoji) VALUES ($1,$2,'member',$3,'👍')`, old, e.f.WorkspaceID, e.f.UserID)
+			}
+			return id
+		})
 	})
 	t.Run("F22b reaction on the issue", func(t *testing.T) {
-		e := newFenceEnv(t)
-		id := e.happy(t)
-		e.f.Exec(t, `INSERT INTO issue_reaction (issue_id, workspace_id, actor_type, actor_id, emoji) VALUES ($1,$2,'member',$3,'👍')`, e.issue, e.f.WorkspaceID, e.f.UserID)
-		e.mustRun(t, id)
+		fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+			id := e.happy(t)
+			if change {
+				e.f.Exec(t, `INSERT INTO issue_reaction (issue_id, workspace_id, actor_type, actor_id, emoji) VALUES ($1,$2,'member',$3,'👍')`, e.issue, e.f.WorkspaceID, e.f.UserID)
+			}
+			return id
+		})
 	})
 }
 
 func TestAtFenceF23ResolvedOlderThreadRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	old := e.memberComment(t)
-	id := e.happy(t)
-	// ResolveComment does not bump issue.revision.
-	e.f.Exec(t, `UPDATE comment SET resolved_at=now(), resolved_by_type='member', resolved_by_id=$2 WHERE id=$1`, old, e.f.UserID)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		old := e.memberComment(t)
+		id := e.happy(t)
+		if change {
+			// ResolveComment does not bump issue.revision.
+			e.f.Exec(t, `UPDATE comment SET resolved_at=now(), resolved_by_type='member', resolved_by_id=$2 WHERE id=$1`, old, e.f.UserID)
+		}
+		return id
+	})
 }
 
 func TestAtFenceF24DecisionLinkOnOlderCommentRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	old := e.memberComment(t)
-	id := e.happy(t)
-	// decision.sql:18: no revision bump on either row.
-	e.f.Exec(t, `UPDATE comment SET decision_request_id=gen_random_uuid() WHERE id=$1`, old)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		old := e.memberComment(t)
+		id := e.happy(t)
+		if change {
+			// decision.sql:18: no revision bump on either row.
+			e.f.Exec(t, `UPDATE comment SET decision_request_id=gen_random_uuid() WHERE id=$1`, old)
+		}
+		return id
+	})
 }
 
 func TestAtFenceF25IssueColumnWriteWithoutRevisionRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	id := e.happy(t)
-	e.f.Exec(t, `UPDATE issue SET priority='high' WHERE id=$1`, e.issue)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		id := e.happy(t)
+		if change {
+			e.f.Exec(t, `UPDATE issue SET priority='high' WHERE id=$1`, e.issue)
+		}
+		return id
+	})
 }
 
 func TestAtFenceF26AttachedSourceContextRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	id := e.happy(t)
-	anchor := e.memberComment(t)
-	e.f.Exec(t, `INSERT INTO issue_source_context (id, workspace_id, issue_id, source_issue_id, anchor_comment_id, captured_by_user_id, snapshot_version, snapshot, capture_digest, state, attached_at)
-		VALUES (gen_random_uuid(), $1, $2, $2, $3, $4, 1, '{}'::jsonb, 'd', 'attached', now())`, e.f.WorkspaceID, e.issue, anchor, e.f.UserID)
-	e.f.Cleanup(t, `DELETE FROM issue_source_context WHERE issue_id=$1`, e.issue)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		anchor := e.memberComment(t)
+		id := e.happy(t)
+		if change {
+			e.f.Exec(t, `INSERT INTO issue_source_context (id, workspace_id, issue_id, source_issue_id, anchor_comment_id, captured_by_user_id, snapshot_version, snapshot, capture_digest, state, attached_at)
+				VALUES (gen_random_uuid(), $1, $2, $2, $3, $4, 1, '{}'::jsonb, 'd', 'attached', now())`, e.f.WorkspaceID, e.issue, anchor, e.f.UserID)
+			e.f.Cleanup(t, `DELETE FROM issue_source_context WHERE issue_id=$1`, e.issue)
+		}
+		return id
+	})
 }
 
 func TestAtFenceF27FreshDecisionCommentRuns(t *testing.T) {
@@ -559,13 +684,16 @@ func TestAtFenceF27FreshDecisionCommentRuns(t *testing.T) {
 	}
 	for name, sql := range cases {
 		t.Run(name, func(t *testing.T) {
-			e := newFenceEnv(t)
-			e.claim(t)
-			ids := e.say(t, 2)
-			id := e.arm(t)
-			e.complete(t)
-			e.f.Exec(t, sql, ids[0])
-			e.mustRun(t, id)
+			fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+				e.claim(t)
+				ids := e.say(t, 2)
+				id := e.arm(t)
+				e.complete(t)
+				if change {
+					e.f.Exec(t, sql, ids[0])
+				}
+				return id
+			})
 		})
 	}
 }
@@ -607,47 +735,69 @@ func TestAtFenceF28CompareTimeoutFallsThroughToNormalFire(t *testing.T) {
 }
 
 func TestAtFenceF29CommentsGrowPastCapRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	bulk := func(n int) {
-		e.f.Exec(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
-			SELECT $1, $2, 'member', $3, 'c'||g, 'comment' FROM generate_series(1,$4) g`, e.issue, e.f.WorkspaceID, e.f.UserID, n)
-		e.f.Exec(t, `UPDATE issue SET revision=revision+$2 WHERE id=$1`, e.issue, n)
-	}
-	bulk(150)
-	id := e.happy(t) // 150 comments at the claim: a fence is stored
-	bulk(60)         // 212 at fire
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		bulk := func(n int) {
+			e.f.Exec(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+				SELECT $1, $2, 'member', $3, 'c'||g, 'comment' FROM generate_series(1,$4) g`, e.issue, e.f.WorkspaceID, e.f.UserID, n)
+			e.f.Exec(t, `UPDATE issue SET revision=revision+$2 WHERE id=$1`, e.issue, n)
+		}
+		bulk(150)
+		id := e.happy(t) // 150 comments at the claim: a fence is stored
+		if change {
+			bulk(60) // 212 at fire
+		}
+		return id
+	})
 }
 
 func TestAtFenceF30SystemCommentCarryingRunIDRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	e.claim(t)
-	e.say(t, 2)
-	id := e.arm(t)
-	e.complete(t)
-	// agent.sql:2975: a platform recovery comment carries source_task_id = R.
-	e.f.Exec(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, source_task_id) VALUES ($1,$2,'system','00000000-0000-0000-0000-000000000000','recovery','system',$3)`, e.issue, e.f.WorkspaceID, e.run)
-	e.bump(t, `title=title`)
-	e.mustRun(t, id)
+	fenceGuard(t, func(t *testing.T, e fenceEnv, change bool) pgtype.UUID {
+		id := e.armed(t, nil)
+		if change {
+			// agent.sql:2975: a platform recovery comment carries source_task_id = R.
+			e.f.Exec(t, `INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, source_task_id) VALUES ($1,$2,'system','00000000-0000-0000-0000-000000000000','recovery','system',$3)`, e.issue, e.f.WorkspaceID, e.run)
+			e.bump(t, `title=title`)
+		}
+		return id
+	})
 }
 
 func TestAtFenceF31LowBudgetSendsNoCompareAndRuns(t *testing.T) {
-	e := newFenceEnv(t)
-	id := e.happy(t)
-	oldBudget, oldRead := atFenceMinBudget, atFenceRead
-	t.Cleanup(func() { atFenceMinBudget, atFenceRead = oldBudget, oldRead })
-	atFenceMinBudget = time.Minute // above the 2 s rule budget
-	reads := 0
-	atFenceRead = func(ctx context.Context, sp pgx.Tx, arg db.IssueWatchFenceParams) (db.IssueWatchFenceRow, error) {
-		reads++
-		return oldRead(ctx, sp, arg)
-	}
-	e.mustRun(t, id)
-	if reads != 0 {
-		t.Fatalf("compare queries sent = %d, want 0", reads)
-	}
-	if e.pendingDue(t, id) != 0 {
-		t.Fatal("the receipt must be consumed")
+	for _, tc := range []struct {
+		name   string
+		budget time.Duration // 0 keeps the default
+	}{
+		{"control: default budget compares and defers", 0},
+		{"budget above the 2 s rule budget", time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newFenceEnv(t)
+			id := e.happy(t)
+			oldBudget, oldRead := atFenceMinBudget, atFenceRead
+			t.Cleanup(func() { atFenceMinBudget, atFenceRead = oldBudget, oldRead })
+			if tc.budget > 0 {
+				atFenceMinBudget = tc.budget
+			}
+			reads := 0
+			atFenceRead = func(ctx context.Context, sp pgx.Tx, arg db.IssueWatchFenceParams) (db.IssueWatchFenceRow, error) {
+				reads++
+				return oldRead(ctx, sp, arg)
+			}
+			if tc.budget == 0 {
+				e.mustDefer(t, id)
+				if reads == 0 {
+					t.Fatal("the control must send the compare read")
+				}
+				return
+			}
+			e.mustRun(t, id)
+			if reads != 0 {
+				t.Fatalf("compare queries sent = %d, want 0", reads)
+			}
+			if e.pendingDue(t, id) != 0 {
+				t.Fatal("the receipt must be consumed")
+			}
+		})
 	}
 }
 
