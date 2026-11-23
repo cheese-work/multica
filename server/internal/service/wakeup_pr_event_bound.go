@@ -66,11 +66,6 @@ type prEventExecer interface {
 // the transaction: transaction_timeout, then statement_timeout. SET LOCAL takes
 // no bind parameters; the values are integer milliseconds built here.
 func setPREventBounds(ctx context.Context, tx prEventExecer, l prEventLimits) error {
-	if !l.withoutTransactionTimeout {
-		if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL transaction_timeout = '%dms'", l.Transaction.Milliseconds())); err != nil {
-			return fmt.Errorf("set transaction_timeout: %w", err)
-		}
-	}
 	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL statement_timeout = '%dms'", l.Statement.Milliseconds())); err != nil {
 		return fmt.Errorf("set statement_timeout: %w", err)
 	}
