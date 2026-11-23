@@ -137,6 +137,31 @@ func TestQuickCreateDiscoveryRouting(t *testing.T) {
 			t.Fatalf("comments = %q, want the default Discovery note", contents)
 		}
 	})
+	t.Run("on: a reason the comment guard would refuse gets the default reason", func(t *testing.T) {
+		setSettings("on", `{}`)
+		for _, reason := range []string{
+			"[@Cheese](mention://member/" + testUserID + ") please confirm the scope",
+			"run `multica issue update CHE-1 --status todo` to continue",
+		} {
+			body := unclear(projectWith, "feat(x): vague")
+			body["discovery_reason"] = reason
+			if got := status(create(body, true)); got != "investigating" {
+				t.Fatalf("reason %q: status = %q, want investigating", reason, got)
+			}
+			contents, authors := comments()
+			if len(contents) != 1 || contents[0] != "Discovery: the request is not clear enough to start. Reply to veto." {
+				t.Fatalf("reason %q: comments = %q, want the default Discovery note", reason, contents)
+			}
+			if want := "agent:" + agentID; authors[0] != want {
+				t.Fatalf("comment author = %q, want %q", authors[0], want)
+			}
+		}
+		var events int
+		dbfx.QueryRow(t, `SELECT count(*) FROM ask_guard_event WHERE workspace_id=$1 AND issue_id=$2`, testWorkspaceID, lastIssueID).Scan(&events)
+		if events != 0 {
+			t.Fatalf("guard events = %d, want 0: the note must pass the guard, not trip it", events)
+		}
+	})
 	t.Run("on: workflow without the step starts the issue as today, with no note", func(t *testing.T) {
 		setSettings("on", `{}`)
 		if got := status(create(unclear(projectWithout, "feat(x): vague"), true)); got != "todo" {

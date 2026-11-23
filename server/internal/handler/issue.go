@@ -22,7 +22,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/askguard"
 	"github.com/multica-ai/multica/server/internal/channelmedia"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/intakehold"
@@ -4129,18 +4131,52 @@ func (h *Handler) quickCreateDiscoveryOn(r *http.Request, wsUUID pgtype.UUID) bo
 	return err == nil && issueworkflow.QuickCreateDiscovery(ws.Settings)
 }
 
-// postDiscoveryNote writes the Discovery comment (CHE-9075) as the creator. The
-// server posts it, not the run, so it never meets the agent comment guard and
-// exists exactly when the issue was filed in Discovery. It starts no run. A
-// failure is logged and never fails the create.
+// discardResponse swallows what a guard writes on refusal. postDiscoveryNote
+// reads only the guard's verdict and decides itself what to do about it.
+type discardResponse struct{ header http.Header }
+
+func (d *discardResponse) Header() http.Header         { return d.header }
+func (d *discardResponse) Write(b []byte) (int, error) { return len(b), nil }
+func (d *discardResponse) WriteHeader(int)             {}
+
+// discoveryNoteContent is the Discovery note the agent comment guard lets an
+// agent author post (CHE-9075). The reason is free text from the run, so it
+// gets the same two content checks as a plain agent comment (askguard member
+// mention, decisiontx.CheckCommentAsk) before anything is stored. A reason
+// that trips either check is replaced by the default one-line reason, so the
+// veto line still reaches the issue and no guard event or recovery run opens.
+func discoveryNoteContent(reason string) string {
+	content := issueworkflow.DiscoveryNote(reason)
+	if len(askguard.MentionedMembers(content)) > 0 || decisiontx.CheckCommentAsk(content) != nil {
+		return issueworkflow.DiscoveryNote("")
+	}
+	return content
+}
+
+// postDiscoveryNote writes the Discovery comment (CHE-9075) as the creator. It
+// exists exactly when the issue was filed in Discovery and starts no run. An
+// agent author passes the agent comment guard like any plain comment
+// (askGuardAllowsComment, askGuardAllowsWaitingComment); a refusal or a guard
+// failure drops the note. A failure is logged and never fails the create.
 func (h *Handler) postDiscoveryNote(r *http.Request, issue db.Issue, authorType, authorID, reason string) {
+	content := discoveryNoteContent(reason)
+	var task *db.AgentTaskQueue
+	if t, ok := h.taskFromRequestHeader(r); ok {
+		task = &t
+	}
+	sink := &discardResponse{header: http.Header{}}
+	if !h.askGuardAllowsComment(sink, r, issue, authorType, task, nil, content) ||
+		!h.askGuardAllowsWaitingComment(sink, r, issue, authorType, task, nil, CreateCommentRequest{Content: content}) {
+		slog.Warn("quick-create discovery: comment guard refused the note", append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID))...)
+		return
+	}
 	created, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
 		ID:          dbid.NewV7(),
 		IssueID:     issue.ID,
 		WorkspaceID: issue.WorkspaceID,
 		AuthorType:  authorType,
 		AuthorID:    parseUUID(authorID),
-		Content:     issueworkflow.DiscoveryNote(reason),
+		Content:     content,
 		Type:        "comment",
 	})
 	if err != nil {
