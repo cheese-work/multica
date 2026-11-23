@@ -100,7 +100,7 @@ func (q *Queries) GetDecisionWaitGuardSquad(ctx context.Context, arg GetDecision
 	return i, err
 }
 
-const hasOpenDecisionRequestOnIssueOrAncestor = `-- name: HasOpenDecisionRequestOnIssueOrAncestor :one
+const hasOpenDecisionRequestCoveringIssue = `-- name: HasOpenDecisionRequestCoveringIssue :one
 WITH RECURSIVE chain AS (
   SELECT i.id, i.parent_issue_id FROM issue i
   WHERE i.id = $2 AND i.workspace_id = $1
@@ -109,20 +109,23 @@ WITH RECURSIVE chain AS (
   WHERE p.workspace_id = $1
 )
 SELECT EXISTS (
-  SELECT 1 FROM decision_request r JOIN chain ON r.issue_id = chain.id
+  SELECT 1 FROM decision_request r
   WHERE r.authority = 'human' AND r.workspace_id = $1 AND r.status = 'open'
+    AND (r.issue_id IN (SELECT id FROM chain)
+      OR r.ask_json -> 'covers_issue_ids' @> to_jsonb($2::uuid::text))
 )::boolean
 `
 
-type HasOpenDecisionRequestOnIssueOrAncestorParams struct {
+type HasOpenDecisionRequestCoveringIssueParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	IssueID     pgtype.UUID `json:"issue_id"`
 }
 
 // A grouped request lives on a parent (CHE-3305), so a child waiting on it is
-// covered. UNION (not UNION ALL) stops a parent cycle from recursing forever.
-func (q *Queries) HasOpenDecisionRequestOnIssueOrAncestor(ctx context.Context, arg HasOpenDecisionRequestOnIssueOrAncestorParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasOpenDecisionRequestOnIssueOrAncestor, arg.WorkspaceID, arg.IssueID)
+// covered. A request on any issue also covers the issues its ask names in
+// covers_issue_ids (CHE-4029); an ordinary issue link covers nothing. UNION (not UNION ALL) stops a parent cycle from recursing forever.
+func (q *Queries) HasOpenDecisionRequestCoveringIssue(ctx context.Context, arg HasOpenDecisionRequestCoveringIssueParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasOpenDecisionRequestCoveringIssue, arg.WorkspaceID, arg.IssueID)
 	var column_1 bool
 	err := row.Scan(&column_1)
 	return column_1, err

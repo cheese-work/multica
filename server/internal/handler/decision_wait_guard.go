@@ -81,7 +81,7 @@ func (handler *Handler) checkDecisionWait(ctx context.Context, candidate db.Issu
 	// CHE-4029: a grouped request lives on a parent, and an answered request
 	// leaves nothing to ask. Only an agent or human action remains then.
 	if !hasOpen {
-		if hasOpen, err = queries.HasOpenDecisionRequestOnIssueOrAncestor(ctx, db.HasOpenDecisionRequestOnIssueOrAncestorParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID}); err != nil {
+		if hasOpen, err = queries.HasOpenDecisionRequestCoveringIssue(ctx, db.HasOpenDecisionRequestCoveringIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID}); err != nil {
 			return err
 		}
 	}

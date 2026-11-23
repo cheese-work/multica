@@ -42,9 +42,10 @@ WHERE s.workspace_id = sqlc.arg('workspace_id') AND s.archived_at IS NULL
       HAVING count(*) = 1)
   );
 
--- name: HasOpenDecisionRequestOnIssueOrAncestor :one
+-- name: HasOpenDecisionRequestCoveringIssue :one
 -- A grouped request lives on a parent (CHE-3305), so a child waiting on it is
--- covered. UNION (not UNION ALL) stops a parent cycle from recursing forever.
+-- covered. A request on any issue also covers the issues its ask names in
+-- covers_issue_ids (CHE-4029); an ordinary issue link covers nothing. UNION (not UNION ALL) stops a parent cycle from recursing forever.
 WITH RECURSIVE chain AS (
   SELECT i.id, i.parent_issue_id FROM issue i
   WHERE i.id = sqlc.arg('issue_id') AND i.workspace_id = sqlc.arg('workspace_id')
@@ -53,8 +54,10 @@ WITH RECURSIVE chain AS (
   WHERE p.workspace_id = sqlc.arg('workspace_id')
 )
 SELECT EXISTS (
-  SELECT 1 FROM decision_request r JOIN chain ON r.issue_id = chain.id
+  SELECT 1 FROM decision_request r
   WHERE r.authority = 'human' AND r.workspace_id = sqlc.arg('workspace_id') AND r.status = 'open'
+    AND (r.issue_id IN (SELECT id FROM chain)
+      OR r.ask_json -> 'covers_issue_ids' @> to_jsonb(sqlc.arg('issue_id')::uuid::text))
 )::boolean;
 
 -- name: GetDecisionWaitGuardProjectSquad :one
