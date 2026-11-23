@@ -216,6 +216,44 @@ export function derivePullRequestVerdict(input: PullRequestVerdictInput): PullRe
   return { kind: "unknown" };
 }
 
+// List order
+
+// The group a linked PR sorts into on an issue (lower = earlier):
+//   1 red     — open, not draft, a check failed
+//   2 green   — open, not draft, checks passed
+//   3 open, checks pending / none / no result on the client
+//   4 draft
+//   5 merged
+//   6 closed without merge
+export type PullRequestOrderGroup = 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface PullRequestOrderInput extends PullRequestChecksInput {
+  state: GitHubPullRequestState;
+  pr_updated_at: string;
+}
+
+export function pullRequestOrderGroup(pr: PullRequestOrderInput): PullRequestOrderGroup {
+  if (pr.state === "merged") return 5;
+  if (pr.state === "closed") return 6;
+  if (pr.state === "draft") return 4;
+  const checks = deriveChecksStatus(pr).kind;
+  if (checks === "failed") return 1;
+  if (checks === "passed") return 2;
+  return 3;
+}
+
+// Needs-action first, finished work last; newest update first inside a group.
+// Returns a new array; `Array.prototype.sort` is stable, so ties keep API order.
+export function sortPullRequestsForDisplay<T extends PullRequestOrderInput>(prs: readonly T[]): T[] {
+  const updated = (pr: T) => {
+    const t = Date.parse(pr.pr_updated_at);
+    return Number.isNaN(t) ? 0 : t;
+  };
+  return [...prs].sort(
+    (a, b) => pullRequestOrderGroup(a) - pullRequestOrderGroup(b) || updated(b) - updated(a),
+  );
+}
+
 // Row copy
 
 function escapeRegExp(value: string): string {
