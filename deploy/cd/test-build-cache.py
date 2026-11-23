@@ -63,7 +63,7 @@ class BuildCacheTests(unittest.TestCase):
 
     def test_images_use_separate_x99_memory_budgets(self):
         build = self.workflow['jobs']['build-images']
-        self.assertEqual(build['runs-on'], ['self-hosted', 'linux', 'x64', 'cheese-x99'])
+        self.assertEqual(build['runs-on'], ['self-hosted', 'linux', 'x64', 'cheese-x99', 'cheese-x99-homedisk'])
         self.assertEqual(build['strategy']['matrix']['image'], ['backend', 'web'])
         self.assertEqual(build['strategy']['max-parallel'], 2)
         self.assertFalse(build['strategy']['fail-fast'])
