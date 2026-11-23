@@ -109,6 +109,10 @@ const claimIdleBrowserInstance = `-- name: ClaimIdleBrowserInstance :one
 UPDATE browser_instance bi
 SET epoch = bi.epoch + 1, phase = 'starting', updated_at = clock_timestamp()
 WHERE bi.id = $1 AND bi.workspace_id = $2 AND bi.phase = 'idle_clean'
+  AND EXISTS (
+      SELECT 1 FROM browser_gateway_credential c
+      WHERE c.workspace_id = bi.workspace_id AND c.gateway = bi.gateway AND c.revoked_at IS NULL
+  )
   AND NOT EXISTS (
       SELECT 1 FROM browser_lease l
       WHERE l.instance_id = bi.id AND l.state <> 'queued' AND l.cleanup_acked_at IS NULL
@@ -122,7 +126,7 @@ type ClaimIdleBrowserInstanceParams struct {
 }
 
 // Grants the instance: raises the fence epoch and leaves idle_clean. No row when the instance
-// is not idle_clean or a lease still holds it.
+// is not idle_clean, a lease still holds it, or its gateway has no unrevoked credential.
 func (q *Queries) ClaimIdleBrowserInstance(ctx context.Context, arg ClaimIdleBrowserInstanceParams) (BrowserInstance, error) {
 	row := q.db.QueryRow(ctx, claimIdleBrowserInstance, arg.ID, arg.WorkspaceID)
 	var i BrowserInstance
@@ -530,6 +534,52 @@ func (q *Queries) EndBrowserLeases(ctx context.Context, arg EndBrowserLeasesPara
 	return items, nil
 }
 
+const getBrowserGatewayCredential = `-- name: GetBrowserGatewayCredential :one
+SELECT id, workspace_id, gateway, credential_hash, created_at, revoked_at FROM browser_gateway_credential
+WHERE id = $1 AND workspace_id = $2 AND gateway = $3
+`
+
+type GetBrowserGatewayCredentialParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Gateway     string      `json:"gateway"`
+}
+
+func (q *Queries) GetBrowserGatewayCredential(ctx context.Context, arg GetBrowserGatewayCredentialParams) (BrowserGatewayCredential, error) {
+	row := q.db.QueryRow(ctx, getBrowserGatewayCredential, arg.ID, arg.WorkspaceID, arg.Gateway)
+	var i BrowserGatewayCredential
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Gateway,
+		&i.CredentialHash,
+		&i.CreatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
+const getBrowserGatewayCredentialByHash = `-- name: GetBrowserGatewayCredentialByHash :one
+SELECT id, workspace_id, gateway, credential_hash, created_at, revoked_at FROM browser_gateway_credential
+WHERE credential_hash = $1 AND revoked_at IS NULL
+`
+
+// Resolves a presented gateway credential (by its hash) to its workspace and gateway. A revoked
+// or unknown credential returns no row.
+func (q *Queries) GetBrowserGatewayCredentialByHash(ctx context.Context, credentialHash string) (BrowserGatewayCredential, error) {
+	row := q.db.QueryRow(ctx, getBrowserGatewayCredentialByHash, credentialHash)
+	var i BrowserGatewayCredential
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Gateway,
+		&i.CredentialHash,
+		&i.CreatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const getBrowserInstance = `-- name: GetBrowserInstance :one
 SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
 WHERE id = $1 AND workspace_id = $2
@@ -542,6 +592,36 @@ type GetBrowserInstanceParams struct {
 
 func (q *Queries) GetBrowserInstance(ctx context.Context, arg GetBrowserInstanceParams) (BrowserInstance, error) {
 	row := q.db.QueryRow(ctx, getBrowserInstance, arg.ID, arg.WorkspaceID)
+	var i BrowserInstance
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Epoch,
+		&i.Phase,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
+	)
+	return i, err
+}
+
+const getBrowserInstanceForCredential = `-- name: GetBrowserInstanceForCredential :one
+SELECT i.id, i.workspace_id, i.name, i.epoch, i.phase, i.created_at, i.updated_at, i.host, i.gateway, i.allowed_classes FROM browser_instance i
+JOIN browser_gateway_credential c ON c.workspace_id = i.workspace_id AND c.gateway = i.gateway
+WHERE c.id = $1 AND c.revoked_at IS NULL AND i.id = $2
+`
+
+type GetBrowserInstanceForCredentialParams struct {
+	ID   pgtype.UUID `json:"id"`
+	ID_2 pgtype.UUID `json:"id_2"`
+}
+
+// A credential's own gateway's instance by id, without a lock (events stream, introspection).
+func (q *Queries) GetBrowserInstanceForCredential(ctx context.Context, arg GetBrowserInstanceForCredentialParams) (BrowserInstance, error) {
+	row := q.db.QueryRow(ctx, getBrowserInstanceForCredential, arg.ID, arg.ID_2)
 	var i BrowserInstance
 	err := row.Scan(
 		&i.ID,
@@ -1023,6 +1103,65 @@ func (q *Queries) ListExpiredDecisionBrowserLeases(ctx context.Context, batchSiz
 	return items, nil
 }
 
+const listLiveBrowserLeasesForInstance = `-- name: ListLiveBrowserLeasesForInstance :many
+SELECT id, epoch, expires_at FROM browser_lease
+WHERE instance_id = $1 AND state = 'active'
+ORDER BY created_at, id
+`
+
+type ListLiveBrowserLeasesForInstanceRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	Epoch     pgtype.Int8        `json:"epoch"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+}
+
+func (q *Queries) ListLiveBrowserLeasesForInstance(ctx context.Context, instanceID pgtype.UUID) ([]ListLiveBrowserLeasesForInstanceRow, error) {
+	rows, err := q.db.Query(ctx, listLiveBrowserLeasesForInstance, instanceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListLiveBrowserLeasesForInstanceRow{}
+	for rows.Next() {
+		var i ListLiveBrowserLeasesForInstanceRow
+		if err := rows.Scan(&i.ID, &i.Epoch, &i.ExpiresAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockBrowserGatewayCredential = `-- name: LockBrowserGatewayCredential :one
+SELECT id, workspace_id, gateway, credential_hash, created_at, revoked_at FROM browser_gateway_credential
+WHERE id = $1 AND workspace_id = $2 AND revoked_at IS NULL
+FOR SHARE
+`
+
+type LockBrowserGatewayCredentialParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Shared lock on an unrevoked credential, taken after the instance row lock (plan r16 lock
+// order): a revocation in flight waits for the ack, and an ack after it commits sees no row.
+func (q *Queries) LockBrowserGatewayCredential(ctx context.Context, arg LockBrowserGatewayCredentialParams) (BrowserGatewayCredential, error) {
+	row := q.db.QueryRow(ctx, lockBrowserGatewayCredential, arg.ID, arg.WorkspaceID)
+	var i BrowserGatewayCredential
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Gateway,
+		&i.CredentialHash,
+		&i.CreatedAt,
+		&i.RevokedAt,
+	)
+	return i, err
+}
+
 const lockBrowserGatewayCredentialsShare = `-- name: LockBrowserGatewayCredentialsShare :many
 SELECT id, gateway FROM browser_gateway_credential
 WHERE workspace_id = $1 AND gateway = ANY($2::text[]) AND revoked_at IS NULL
@@ -1076,6 +1215,38 @@ type LockBrowserInstanceParams struct {
 // Serializes cleanup-ack, quarantine and grant on one instance (CHE-4736, W3-7).
 func (q *Queries) LockBrowserInstance(ctx context.Context, arg LockBrowserInstanceParams) (BrowserInstance, error) {
 	row := q.db.QueryRow(ctx, lockBrowserInstance, arg.ID, arg.WorkspaceID)
+	var i BrowserInstance
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Epoch,
+		&i.Phase,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
+	)
+	return i, err
+}
+
+const lockBrowserInstanceForGateway = `-- name: LockBrowserInstanceForGateway :one
+SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
+WHERE id = $1 AND workspace_id = $2 AND gateway = $3
+FOR UPDATE
+`
+
+type LockBrowserInstanceForGatewayParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Gateway     string      `json:"gateway"`
+}
+
+// Locks one instance of the credential's own gateway and workspace. Another gateway's or
+// workspace's instance returns no row, the same as a missing one.
+func (q *Queries) LockBrowserInstanceForGateway(ctx context.Context, arg LockBrowserInstanceForGatewayParams) (BrowserInstance, error) {
+	row := q.db.QueryRow(ctx, lockBrowserInstanceForGateway, arg.ID, arg.WorkspaceID, arg.Gateway)
 	var i BrowserInstance
 	err := row.Scan(
 		&i.ID,
@@ -1273,6 +1444,35 @@ func (q *Queries) RegisterBrowserInstance(ctx context.Context, arg RegisterBrows
 		&i.Host,
 		&i.Gateway,
 		&i.AllowedClasses,
+	)
+	return i, err
+}
+
+const revokeBrowserGatewayCredential = `-- name: RevokeBrowserGatewayCredential :one
+UPDATE browser_gateway_credential
+SET revoked_at = clock_timestamp()
+WHERE id = $1 AND workspace_id = $2 AND gateway = $3 AND revoked_at IS NULL
+RETURNING id, workspace_id, gateway, credential_hash, created_at, revoked_at
+`
+
+type RevokeBrowserGatewayCredentialParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Gateway     string      `json:"gateway"`
+}
+
+// Marks one credential of the workspace and gateway revoked. No row when it does not exist
+// there or is already revoked.
+func (q *Queries) RevokeBrowserGatewayCredential(ctx context.Context, arg RevokeBrowserGatewayCredentialParams) (BrowserGatewayCredential, error) {
+	row := q.db.QueryRow(ctx, revokeBrowserGatewayCredential, arg.ID, arg.WorkspaceID, arg.Gateway)
+	var i BrowserGatewayCredential
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Gateway,
+		&i.CredentialHash,
+		&i.CreatedAt,
+		&i.RevokedAt,
 	)
 	return i, err
 }

@@ -88,6 +88,7 @@ type env struct {
 	signer *fakeSigner
 	ws     pgtype.UUID
 	now    time.Time
+	cred   Principal // the unrevoked c00 credential every test workspace starts with
 }
 
 func newUUID() pgtype.UUID { return pgtype.UUID{Bytes: uuid.New(), Valid: true} }
@@ -114,8 +115,17 @@ func newEnv(t *testing.T, instances ...string) *env {
 		e.registerLegacy(name)
 		gateways[hostOf(name)] = true
 	}
+	// e.cred is the credential of the first instance's gateway (c00 when there is none), so a
+	// test that revokes "the" credential of a gateway revokes the only one it has.
+	e.cred = Principal{WorkspaceID: e.ws, Gateway: "c00"}
+	if len(instances) > 0 {
+		e.cred.Gateway = hostOf(instances[0])
+	}
 	for gw := range gateways {
-		e.credential(gw)
+		row := e.credential(gw)
+		if gw == e.cred.Gateway {
+			e.cred = e.principal(row)
+		}
 	}
 	return e
 }
@@ -160,6 +170,11 @@ func (e *env) credential(gateway string) db.BrowserGatewayCredential {
 		e.t.Fatalf("credential %s: %v", gateway, err)
 	}
 	return c
+}
+
+// principal is the identity a credential row authenticates as.
+func (e *env) principal(c db.BrowserGatewayCredential) Principal {
+	return Principal{CredentialID: c.ID, WorkspaceID: e.ws, Gateway: c.Gateway}
 }
 
 func (e *env) profile(class string) db.BrowserProfile {

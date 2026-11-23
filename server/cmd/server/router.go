@@ -1929,6 +1929,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner"))
 					r.With(handler.RequireHumanActor).Post("/decision-gate/challenge", h.ChallengeDecisionGate)
 					r.With(handler.RequireHumanActor).Put("/decision-gate", h.SetDecisionGate)
+					// Per-gateway browser credentials (CHE-8883): owner and person only.
+					r.With(handler.RequireHumanActor).Post("/browser-gateways/{gateway}/credentials", h.IssueBrowserGatewayCredential)
+					r.With(handler.RequireHumanActor).Delete("/browser-gateways/{gateway}/credentials/{credentialId}", h.RevokeBrowserGatewayCredential)
 					// The Guard settings page edits the guard policy with a passkey (CHE-5207).
 					r.With(handler.RequireHumanActor).Post("/guard-policy/challenge", h.ChallengeGuardPolicy)
 					r.With(handler.RequireHumanActor).Put("/guard-policy", h.SetGuardPolicy)

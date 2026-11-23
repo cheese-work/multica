@@ -18,8 +18,8 @@ import (
 const (
 	instA = "11111111-1111-1111-1111-111111111111"
 	instB = "22222222-2222-2222-2222-222222222222"
-	tokC  = "mpi_c00"
-	tokX  = "mpi_x99"
+	tokC  = "mbc_c00"
+	tokX  = "mbc_x99"
 )
 
 type fakeStore struct {
@@ -56,17 +56,17 @@ func newGateway(store Store, hb time.Duration) (*Gateway, http.Handler) {
 		Store:     store,
 		Broker:    &Broker{},
 		Heartbeat: hb,
-		Authenticate: func(_ context.Context, bearer string) (string, error) {
-			switch bearer {
+		Authenticate: func(r *http.Request) (Principal, bool) {
+			switch strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ") {
 			case tokC:
-				return "c00", nil
+				return Principal{Gateway: "c00"}, true
 			case tokX:
-				return "x99", nil
+				return Principal{Gateway: "x99"}, true
 			}
-			return "", errors.New("bad token")
+			return Principal{}, false
 		},
-		Owns: func(_ context.Context, gw, inst string) (bool, error) {
-			return (gw == "c00" && inst == instA) || (gw == "x99" && inst == instB), nil
+		Owns: func(_ context.Context, p Principal, inst string) (bool, error) {
+			return (p.Gateway == "c00" && inst == instA) || (p.Gateway == "x99" && inst == instB), nil
 		},
 	}
 	r := chi.NewRouter()
@@ -253,7 +253,7 @@ func TestAuthRefusals(t *testing.T) {
 		if w := get(h, path, "mpc_callback"); w.Code != http.StatusUnauthorized {
 			t.Errorf("%s non-install token: %d, want 401", path, w.Code)
 		}
-		if w := get(h, path, "mpi_unknown"); w.Code != http.StatusUnauthorized {
+		if w := get(h, path, "mbc_unknown"); w.Code != http.StatusUnauthorized {
 			t.Errorf("%s unknown token: %d, want 401", path, w.Code)
 		}
 	}
@@ -292,7 +292,7 @@ func TestGatewayCredentialIsScopedToItsInstances(t *testing.T) {
 
 func TestOwnsErrorFailsClosed(t *testing.T) {
 	g, h := newGateway(&fakeStore{}, time.Hour)
-	g.Owns = func(context.Context, string, string) (bool, error) { return true, errors.New("registry down") }
+	g.Owns = func(context.Context, Principal, string) (bool, error) { return true, errors.New("registry down") }
 	if w := get(h, "/internal/browser/instances/"+instA+"/leases/l1", tokC); w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", w.Code)
 	}

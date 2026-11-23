@@ -288,7 +288,7 @@ func TestEndAndRevokeAgainstAckAndGrant(t *testing.T) {
 	}
 	follows := map[string]func(e *env, l db.BrowserLease) error{
 		"cleanup-ack": func(e *env, l db.BrowserLease) error {
-			_, err := (&AckService{pool: testPool, Queue: e.svc}).CleanupAck(ctx, e.ws, l.InstanceID, l.Epoch.Int64)
+			_, err := (&AckService{pool: testPool, Queue: e.svc}).CleanupAck(ctx, e.cred, l.InstanceID, l.Epoch.Int64)
 			if errors.Is(err, ErrLeaseActive) {
 				return nil // the ack came before the end; the settle step acks again
 			}
@@ -315,7 +315,7 @@ func TestEndAndRevokeAgainstAckAndGrant(t *testing.T) {
 					}
 					// Settle: the ack that lands after the end releases the instance to the waiter.
 					if !leaseOf(t, e, first).CleanupAckedAt.Valid {
-						if _, err := (&AckService{pool: testPool, Queue: e.svc}).CleanupAck(ctx, e.ws, l1.InstanceID, l1.Epoch.Int64); err != nil {
+						if _, err := (&AckService{pool: testPool, Queue: e.svc}).CleanupAck(ctx, e.cred, l1.InstanceID, l1.Epoch.Int64); err != nil {
 							t.Fatalf("round %d settle: %v", round, err)
 						}
 					}
@@ -389,7 +389,7 @@ func TestLockOrderStress200(t *testing.T) {
 					record(err)
 				}
 			},
-			func() { _, err := ack.CleanupAck(ctx, e.ws, l1.InstanceID, l1.Epoch.Int64); record(err) },
+			func() { _, err := ack.CleanupAck(ctx, e.cred, l1.InstanceID, l1.Epoch.Int64); record(err) },
 			func() { record(e.svc.AdvanceQueue(ctx, e.ws, ClassS2)) },
 			func() {
 				err := revokeCredential(ctx, e)

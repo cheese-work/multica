@@ -151,7 +151,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/wakeup-definitions":       {4, byWorkspace},
 	"api/webhooks":                 {5, byPublic},
 	"api/wecom":                    {1, byPublic},
-	"api/workspaces":               {73, byWorkspace + "; the browser login lease routes (mint, renew, release), the guard-policy and decision-gate passkey edits and provider-breaker reset are RequireHumanActor, and the scheduling pause or resume and browser-lease revoke-all routes refuse agent and machine credentials in the handler"},
+	"api/workspaces":               {75, byWorkspace + "; the browser gateway credential issue and revoke routes are RequireHumanActor, the browser login lease routes (mint, renew, release), the guard-policy and decision-gate passkey edits and provider-breaker reset are RequireHumanActor, and the scheduling pause or resume and browser-lease revoke-all routes refuse agent and machine credentials in the handler"},
 	"auth/google":                  {1, byPublic},
 	"auth/logout":                  {1, byPublic},
 	"auth/send-code":               {1, byPublic},

@@ -25,8 +25,9 @@ import (
 // quarantine instead, and Multica grants nothing until a later ack clears it.
 //
 // W3-3 (mint and queue) must call CanGrant before every grant. Mount registers the routes on
-// the internal listener (cmd/server) with the install-token authenticator; the public and
-// tailnet routers do not mount it.
+// the internal listener (cmd/server) with the gateway-credential authenticator; the public and
+// tailnet routers do not mount it. A caller acts only on instances of its credential's own
+// gateway and workspace (A1b, CHE-8883): any other instance is the same 404 as a missing one.
 const internalPrefix = "/internal/browser" // controlplane.Prefix
 
 const (
@@ -47,8 +48,8 @@ var (
 	ErrNoPendingLease   = errors.New("browserlease: no lease is waiting for cleanup-ack")
 )
 
-// Authenticator resolves the workspace of a gateway request, or reports it unauthenticated.
-type Authenticator func(r *http.Request) (workspaceID pgtype.UUID, ok bool)
+// Authenticator resolves the calling gateway of a request, or reports it unauthenticated.
+type Authenticator func(r *http.Request) (Principal, bool)
 
 type AckResult struct {
 	InstanceID pgtype.UUID
@@ -69,21 +70,29 @@ type AckService struct {
 
 func NewAckService(pool *pgxpool.Pool) *AckService { return &AckService{pool: pool} }
 
-// withLockedInstance runs fn in a transaction holding the instance row lock, after checking that
-// epoch is the instance's current one.
-func (s *AckService) withLockedInstance(ctx context.Context, ws, instance pgtype.UUID, epoch int64,
+// withLockedInstance runs fn in a transaction holding the instance row lock, then the caller's
+// credential (shared), after checking that epoch is the instance's current one. Lock order is
+// instance, credential, lease (plan r16). The instance must belong to the caller's gateway and
+// workspace; the credential must still be unrevoked once the instance is locked.
+func (s *AckService) withLockedInstance(ctx context.Context, p Principal, instance pgtype.UUID, epoch int64,
 	fn func(q *db.Queries, inst db.BrowserInstance) (string, error)) (AckResult, error) {
+	ws := p.WorkspaceID
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return AckResult{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	q := db.New(tx)
-	inst, err := q.LockBrowserInstance(ctx, db.LockBrowserInstanceParams{ID: instance, WorkspaceID: ws})
+	inst, err := q.LockBrowserInstanceForGateway(ctx, db.LockBrowserInstanceForGatewayParams{ID: instance, WorkspaceID: ws, Gateway: p.Gateway})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return AckResult{}, ErrInstanceNotFound
 	}
 	if err != nil {
+		return AckResult{}, err
+	}
+	if _, err := q.LockBrowserGatewayCredential(ctx, db.LockBrowserGatewayCredentialParams{ID: p.CredentialID, WorkspaceID: ws}); errors.Is(err, pgx.ErrNoRows) {
+		return AckResult{}, ErrCredentialRevoked
+	} else if err != nil {
 		return AckResult{}, err
 	}
 	if inst.Epoch != epoch {
@@ -112,8 +121,9 @@ func (s *AckService) withLockedInstance(ctx context.Context, ws, instance pgtype
 // After the ack commits it advances every class queue, so the next waiter takes the instance at
 // once whatever its class. If the advance fails the ack stays committed and the error is returned: the gateway
 // retries, and the retry (an ack that already landed) advances again.
-func (s *AckService) CleanupAck(ctx context.Context, ws, instance pgtype.UUID, epoch int64) (AckResult, error) {
-	res, err := s.withLockedInstance(ctx, ws, instance, epoch, func(q *db.Queries, inst db.BrowserInstance) (string, error) {
+func (s *AckService) CleanupAck(ctx context.Context, p Principal, instance pgtype.UUID, epoch int64) (AckResult, error) {
+	ws := p.WorkspaceID
+	res, err := s.withLockedInstance(ctx, p, instance, epoch, func(q *db.Queries, inst db.BrowserInstance) (string, error) {
 		holder, err := q.GetBrowserInstanceHolder(ctx, db.GetBrowserInstanceHolderParams{InstanceID: inst.ID, WorkspaceID: inst.WorkspaceID})
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
@@ -149,8 +159,8 @@ func (s *AckService) CleanupAck(ctx context.Context, ws, instance pgtype.UUID, e
 
 // Quarantine records that the gateway could not prove instance empty for epoch (failed step,
 // non-empty probe, restart from a state that was not idle_clean). Grants stop until CleanupAck.
-func (s *AckService) Quarantine(ctx context.Context, ws, instance pgtype.UUID, epoch int64) (AckResult, error) {
-	res, err := s.withLockedInstance(ctx, ws, instance, epoch, func(*db.Queries, db.BrowserInstance) (string, error) {
+func (s *AckService) Quarantine(ctx context.Context, p Principal, instance pgtype.UUID, epoch int64) (AckResult, error) {
+	res, err := s.withLockedInstance(ctx, p, instance, epoch, func(*db.Queries, db.BrowserInstance) (string, error) {
 		return phaseQuarantined, nil
 	})
 	if err == nil {
@@ -204,10 +214,10 @@ type epochRequest struct {
 	Epoch int64 `json:"epoch"`
 }
 
-func (s *AckService) handle(auth Authenticator, op func(context.Context, pgtype.UUID, pgtype.UUID, int64) (AckResult, error)) http.HandlerFunc {
+func (s *AckService) handle(auth Authenticator, op func(context.Context, Principal, pgtype.UUID, int64) (AckResult, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ws, ok := auth(r)
-		if !ok || !ws.Valid {
+		p, ok := auth(r)
+		if !ok || !p.WorkspaceID.Valid || !p.CredentialID.Valid {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
 			return
 		}
@@ -223,7 +233,7 @@ func (s *AckService) handle(auth Authenticator, op func(context.Context, pgtype.
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 			return
 		}
-		res, err := op(r.Context(), ws, instance, req.Epoch)
+		res, err := op(r.Context(), p, instance, req.Epoch)
 		if status, code := ackError(err); err != nil {
 			if status == http.StatusInternalServerError {
 				slog.Error("browser lease ack", "error", err)
@@ -241,6 +251,8 @@ func ackError(err error) (int, string) {
 	switch {
 	case err == nil:
 		return http.StatusOK, ""
+	case errors.Is(err, ErrCredentialRevoked):
+		return http.StatusUnauthorized, "unauthorized"
 	case errors.Is(err, ErrInstanceNotFound):
 		return http.StatusNotFound, "not_found"
 	case errors.Is(err, ErrStaleEpoch):
