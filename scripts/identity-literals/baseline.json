@@ -3,16 +3,22 @@
     "person-name": 1
   },
   "apps/web/features/landing/i18n/en.ts": {
-    "person-name": 34
+    "person-name": 35
   },
   "apps/web/features/landing/i18n/ja.ts": {
-    "person-name": 29
+    "person-name": 30
   },
   "apps/web/features/landing/i18n/ko.ts": {
-    "person-name": 28
+    "person-name": 30
   },
   "apps/web/features/landing/i18n/zh.ts": {
-    "person-name": 32
+    "person-name": 34
+  },
+  "apps/web/features/landing/site/demo/mock-kit.tsx": {
+    "person-name": 1
+  },
+  "apps/web/features/landing/site/home-page.tsx": {
+    "person-name": 2
   },
   "packages/views/agents/components/agents-intro.tsx": {
     "host-token": 1
@@ -23,6 +29,9 @@
   "packages/views/locales/en/agents.json": {
     "person-name": 1
   },
+  "packages/views/locales/es/agents.json": {
+    "person-name": 1
+  },
   "packages/views/locales/fr/agents.json": {
     "person-name": 1
   },
@@ -30,6 +39,9 @@
     "person-name": 1
   },
   "packages/views/locales/ko/agents.json": {
+    "person-name": 1
+  },
+  "packages/views/locales/ru/agents.json": {
     "person-name": 1
   },
   "packages/views/locales/zh-Hans/agents.json": {
@@ -111,7 +123,10 @@
     "person-name": 3
   },
   "server/pkg/agent/hermes_gateway.go": {
-    "person-name": 2
+    "person-name": 4
+  },
+  "server/pkg/agent/hermes_gateway_windows.go": {
+    "person-name": 1
   },
   "server/pkg/db/generated/step_watchdog.sql.go": {
     "person-name": 1

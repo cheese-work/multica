@@ -94,8 +94,8 @@ Le paramètre d'espace de travail `wakeup_live_join` décide ce qui se passe qua
 Un déclenchement ne rejoint l'exécution que si toutes ces conditions sont réunies. Si l'une échoue ou ne peut pas être lue, le déclenchement lance une exécution comme aujourd'hui.
 
 - Tous les reçus du déclenchement sont des reçus de condition (`condition.met`). Les déclenchements horaires, de commentaire, de réaction et manuels ne rejoignent jamais.
-- Un agent a créé le réveil. Il n'est pas lié à une décision, n'est ni une règle système ni une instance de règle personnalisée, et n'est pas en pause.
-- L'agent cible a exactement une exécution en cours sur le ticket et aucune en attente, et cette exécution agit pour le même utilisateur que le réveil.
+- Un agent a créé le réveil. Il n'est pas lié à une décision, n'est ni une règle système, ni une instance de règle personnalisée, ni une règle d'éligibilité à la fusion, et n'est pas en pause.
+- L'agent cible a exactement une exécution en cours sur le ticket et aucune en attente, et cette exécution agit pour le même utilisateur que le réveil. L'exécution ne porte pas le déclenchement isolé d'une autre règle.
 - L'exécution en cours accepte les éléments de réveil, et aucun reçu du déclenchement n'est déjà dans un élément.
 - Aucune règle de saut (par exemple le saut d'agent en pause) n'a déjà consommé le déclenchement.
 - L'exécution est toujours en cours quand l'élément est mis en file.

@@ -21,7 +21,7 @@ jobs:
     outputs:
       merge_group_green: ${{ steps.green.outputs.merge_group_green }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v7
@@ -43,7 +43,7 @@ jobs:
       CI: "true"
       GOFLAGS: -count=1
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         id: go
         with:
@@ -92,7 +92,7 @@ jobs:
     env:
       TURBO_CACHE_DIR: .turbo/cache
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Setup pnpm
         run: bash scripts/setup-pnpm.sh
       - uses: actions/setup-node@v7
@@ -128,7 +128,7 @@ jobs:
       matrix:
         goarch: [amd64, arm64]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # commit history for version/commit stamping
       - uses: actions/setup-go@v7

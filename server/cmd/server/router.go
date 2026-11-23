@@ -1470,9 +1470,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	// Auth caches: PAT cache is shared between the regular Auth middleware,
 	// the DaemonAuth fallback (mul_) path, and the revoke handler
-	// (invalidate). DaemonTokenCache backs the DaemonAuth mdt_ path. Both
-	// constructors return nil when rdb is nil — every consumer handles that
-	// as "no cache, always hit DB".
+	// (invalidate). DaemonTokenCache backs the DaemonAuth mdt_ path. With a nil
+	// rdb both constructors return a bounded in-process cache (CHE-7639: C00
+	// has no REDIS_URL, and an uncached token is a DB read per request).
 	patCache := auth.NewPATCache(rdb)
 	daemonTokenCache := auth.NewDaemonTokenCache(rdb)
 	h.PATCache = patCache
@@ -2751,6 +2751,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/runtimes", func(r chi.Router) {
 				r.Get("/", h.ListAgentRuntimes)
 				r.Get("/affected", h.ListAffectedMachines)
+				r.Post("/affected/dismiss", h.DismissAffectedMachines)
+				r.Post("/affected/reopen", h.ReopenAffectedMachines)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Patch("/", h.UpdateAgentRuntime)
 					r.Get("/usage", h.GetRuntimeUsage)

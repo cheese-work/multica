@@ -218,6 +218,36 @@ func (service *TaskService) UpdateProject(ctx context.Context, workspaceID pgtyp
 	return project, nil
 }
 
+// ApplyProjectStatus sets a project's status inside the caller's transaction,
+// for an approved project.status.set action. The caller holds the project row
+// lock and the workspace key-share lock, as UpdateProject takes them. It runs
+// the same flip as UpdateProject: wakeup rules settle and, for an inactive
+// status, queued and dispatched runs end. The condition baseline pass is left
+// to the scheduler's ordinary poll, which takes over when the hold ends.
+// Cancelled runs are returned for the caller to broadcast after the commit.
+func ApplyProjectStatus(ctx context.Context, tx pgx.Tx, queries *db.Queries, previous db.Project, status string) (db.Project, []db.AgentTaskQueue, error) {
+	project, err := queries.UpdateProject(ctx, db.UpdateProjectParams{ID: previous.ID, Status: pgtype.Text{String: status, Valid: true}})
+	if err != nil {
+		return db.Project{}, nil, err
+	}
+	if ProjectInactive(project.Status) || ProjectInactive(previous.Status) {
+		if _, err := settleProjectWakeups(ctx, tx, queries, project); err != nil {
+			return db.Project{}, nil, err
+		}
+	}
+	var cancelled []db.AgentTaskQueue
+	if ProjectInactive(project.Status) {
+		cancelled, err = queries.CancelProjectAgentTasks(ctx, db.CancelProjectAgentTasksParams{ProjectID: project.ID, WorkspaceID: project.WorkspaceID, KeepRunning: project.Status == "paused"})
+		if err != nil {
+			return db.Project{}, nil, err
+		}
+		if err := SettleTerminalTaskState(ctx, queries, cancelled...); err != nil {
+			return db.Project{}, nil, err
+		}
+	}
+	return project, cancelled, nil
+}
+
 // projectConditionHold keeps a condition rule from coming due between the
 // status commit and its baseline pass. The pass moves it to the ordinary poll
 // interval; the hold only matters if the pass never runs (a crash).

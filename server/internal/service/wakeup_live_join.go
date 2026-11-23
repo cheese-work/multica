@@ -56,10 +56,14 @@ func wakeupLiveJoinMode(ctx context.Context, q *db.Queries, workspaceID pgtype.U
 
 // liveJoinRuleEligible is eligibility 3: an agent created the wakeup (it has a
 // source task), it is not bound to a decision, it is not a system rule, a
-// default rule or a custom-rule instance, and it is not paused.
+// default rule or a custom-rule instance, it is not paused, and it is not a
+// merge_eligibility rule: that candidate is judged again at claim and start
+// (CHE-5122) through the run's wakeup_merge context, which an item never
+// passes through (CHE-9123).
 func liveJoinRuleEligible(w db.IssueWakeup, custom *builtinWakeup) bool {
 	return custom == nil && w.SourceTaskID.Valid && !w.DecisionRequestID.Valid &&
-		!w.SystemRule.Valid && !w.DefaultRuleKey.Valid && !w.PausedReason.Valid
+		!w.SystemRule.Valid && !w.DefaultRuleKey.Valid && !w.PausedReason.Valid &&
+		!isMergeEligibilityCondition(w.Condition)
 }
 
 // onlyConditionReceipts is eligibility 2. Time, deadline, manual, comment,
@@ -77,7 +81,9 @@ func onlyConditionReceipts(receipts []db.IssueWakeupReceipt) bool {
 // 4 to 7. The target has exactly one run on the issue that is waiting, claimed
 // or running, and it is running (so nothing waits and the waiting-run join keeps
 // priority), it runs as the person the wakeup's own run would run as, it takes
-// wakeup items, and no receipt of the firing was ever in an item.
+// wakeup items, it carries no other rule's isolated firing (the waiting-run
+// join's mayJoin refuses the same run), and no receipt of the firing was ever
+// in an item.
 func liveJoinHost(ctx context.Context, q *db.Queries, w db.IssueWakeup, receipts []db.IssueWakeupReceipt) (pgtype.UUID, error) {
 	if !w.CreatedBy.Valid {
 		return pgtype.UUID{}, nil
@@ -88,6 +94,13 @@ func liveJoinHost(ctx context.Context, q *db.Queries, w db.IssueWakeup, receipts
 	}
 	r := runs[0]
 	if r.Status != "running" || !r.TakesWakeupItems || r.OriginatorUserID != w.CreatedBy {
+		return pgtype.UUID{}, nil
+	}
+	host, err := q.GetAgentTask(ctx, r.ID)
+	if err != nil {
+		return pgtype.UUID{}, err
+	}
+	if carrierOfOtherRule(host, w).isolated {
 		return pgtype.UUID{}, nil
 	}
 	items, err := q.ListWakeupDeliveryItems(ctx, w.ID)

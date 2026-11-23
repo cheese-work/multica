@@ -261,6 +261,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
 					return
 				}
+				fence := patCache.Begin() // before the read: a revoke in between must win
 				pat, err := queries.GetPersonalAccessTokenByHash(r.Context(), hash)
 				if err != nil {
 					slog.Warn("auth: invalid PAT", "path", r.URL.Path, "error", err)
@@ -291,7 +292,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					expiresAt = pat.ExpiresAt.Time
 				}
 				if len(pat.Scopes) == 0 {
-					patCache.Set(r.Context(), hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
+					patCache.SetIfNotInvalidated(r.Context(), fence, hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
 				}
 
 				// Cache miss = TTL expired (or first use after revoke /

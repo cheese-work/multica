@@ -655,6 +655,7 @@ type AgentTaskResponse struct {
 	QuickCreateDueDate       string               `json:"quick_create_due_date,omitempty"`       // explicit calendar due date selected in quick-create
 	QuickCreateFill          bool                 `json:"quick_create_fill,omitempty"`           // CHE-6090: workspace setting quick_create_fill is on
 	QuickCreateTitleTypes    []string             `json:"quick_create_title_types,omitempty"`    // CHE-6090: type keys of workflow_by_type
+	QuickCreateDiscovery     bool                 `json:"quick_create_discovery,omitempty"`      // CHE-9075: quick_create_discovery is on and the effective workflow has a Discovery step
 	QuickCreateAttachmentIDs []string             `json:"quick_create_attachment_ids,omitempty"` // attachment ids uploaded in the quick-create prompt and bound on issue create
 	QuickCreateSourceContext json.RawMessage      `json:"quick_create_source_context,omitempty"` // immutable historical context for source-context quick-create
 	BackgroundJob            string               `json:"background_job,omitempty"`              // output_only background task (CHE-4100): job name

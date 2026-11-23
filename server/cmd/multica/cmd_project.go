@@ -54,8 +54,10 @@ var projectDeleteCmd = &cobra.Command{
 var projectStatusCmd = &cobra.Command{
 	Use:   "status <id> <status>",
 	Short: "Change project status",
-	Args:  exactArgs(2),
-	RunE:  runProjectStatus,
+	Long: "Change a project's status. A person runs this directly. An agent's write is refused;\n" +
+		"an agent proposes the change with `multica decision propose project.status.set` and the owner approves it with a passkey.",
+	Args: exactArgs(2),
+	RunE: runProjectStatus,
 }
 
 var projectResourceCmd = &cobra.Command{
@@ -191,7 +193,7 @@ func init() {
 	// project update
 	projectUpdateCmd.Flags().String("title", "", "New title")
 	projectUpdateCmd.Flags().String("description", "", "New description")
-	projectUpdateCmd.Flags().String("status", "", "New status")
+	projectUpdateCmd.Flags().String("status", "", "New status (an agent proposes `project.status.set` instead)")
 	projectUpdateCmd.Flags().String("priority", "", "New priority: "+strings.Join(validProjectPriorities, ", "))
 	projectUpdateCmd.Flags().String("icon", "", "New icon (emoji)")
 	projectUpdateCmd.Flags().String("lead", "", "New lead name (member or agent)")

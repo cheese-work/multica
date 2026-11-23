@@ -74,7 +74,7 @@ var settingsKeys = []string{
 	"provider_breaker_max_hold_seconds", "guard_policy", "ask_guard_mode", "reversible_ask_guard", "owner_script_guard", "decision_ask_park", "held_setting_ask_mode", "agent_cannot_do_mode", "agent_cannot_do", "decision_card_lint_mode", "decision_card_thread", "design_card_guard",
 	"auto_close", "blocked_run_skip", "run_guard", "run_budget", "wakeup_live_join",
 	"workflow_by_type", "capability_routing", "agent_role_scope",
-	"intake_hold", "quick_first", "decision_server_actions", "standing_answers",
+	"intake_hold", "quick_first", "quick_create_discovery", "decision_server_actions", "standing_answers",
 	"merge_queue_dequeue_routing", "merge_queue_actor_bindings", "merge_queue_watch_issue",
 }
 

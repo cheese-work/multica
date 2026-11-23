@@ -78,7 +78,7 @@ jobs:
           { echo "sha=$CANDIDATE_SHA"; echo "run_id=$run_id"; echo "event=push"; echo "branch=main"; } >> "$GITHUB_OUTPUT"
 
       - name: Checkout the qualified commit
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.q.outputs.sha }}
           # Full history, not a shallow clone: the baseline step resolves the
