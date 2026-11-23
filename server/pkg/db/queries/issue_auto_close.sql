@@ -63,8 +63,12 @@ WHERE issue_id = $1 AND agent_id = $2
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
 
--- name: GetIssueStatusEnteredAt :one
--- When the issue last entered a status (CHE-9318): the newest status_changed
--- row that names it; null when none does.
-SELECT max(created_at)::timestamptz AS entered_at FROM activity_log
-WHERE issue_id = sqlc.arg('issue_id') AND action = 'status_changed' AND details->>'to' = sqlc.arg('status')::text;
+-- name: GetIssueLastReviewExit :one
+-- When the issue last left agent_review (CHE-9318): the newest status_changed
+-- row naming agent_review as the source; null when it never did. Later moves
+-- do not change it, so it fixes the issue's rollout cohort through close.
+SELECT (max(created_at))::timestamptz AS left_at
+FROM activity_log
+WHERE issue_id = sqlc.arg('issue_id')
+  AND action = 'status_changed'
+  AND details->>'from' = 'agent_review';

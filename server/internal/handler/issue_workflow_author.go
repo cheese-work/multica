@@ -36,6 +36,10 @@ type workflowSubject struct {
 	// PassSigner is the agent whose write is itself the PASS verdict for the
 	// move being decided; invalid otherwise.
 	PassSigner pgtype.UUID
+	// PassRunOffHead is set when the write is itself a PASS whose run did not
+	// review the exact head of every linked PR. No older PASS stands in for it:
+	// passSignerHumans refuses, so the issue is not handed to a stale signer.
+	PassRunOffHead bool
 }
 
 func subjectOf(issue db.Issue) workflowSubject {

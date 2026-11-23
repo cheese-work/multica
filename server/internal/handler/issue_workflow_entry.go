@@ -213,6 +213,7 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 			if err != nil {
 				return nil, err
 			}
+			subject.PassRunOffHead = !onHead
 			if onHead {
 				subject.PassSigner = caller.run.AgentID
 			}

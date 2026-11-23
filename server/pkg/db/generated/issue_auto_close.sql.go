@@ -96,23 +96,22 @@ func (q *Queries) CountIssueWakeupsLiveAtEntry(ctx context.Context, arg CountIss
 	return i, err
 }
 
-const getIssueStatusEnteredAt = `-- name: GetIssueStatusEnteredAt :one
-SELECT max(created_at)::timestamptz AS entered_at FROM activity_log
-WHERE issue_id = $1 AND action = 'status_changed' AND details->>'to' = $2::text
+const getIssueLastReviewExit = `-- name: GetIssueLastReviewExit :one
+SELECT (max(created_at))::timestamptz AS left_at
+FROM activity_log
+WHERE issue_id = $1
+  AND action = 'status_changed'
+  AND details->>'from' = 'agent_review'
 `
 
-type GetIssueStatusEnteredAtParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	Status  string      `json:"status"`
-}
-
-// When the issue last entered a status (CHE-9318): the newest status_changed
-// row that names it; null when none does.
-func (q *Queries) GetIssueStatusEnteredAt(ctx context.Context, arg GetIssueStatusEnteredAtParams) (pgtype.Timestamptz, error) {
-	row := q.db.QueryRow(ctx, getIssueStatusEnteredAt, arg.IssueID, arg.Status)
-	var entered_at pgtype.Timestamptz
-	err := row.Scan(&entered_at)
-	return entered_at, err
+// When the issue last left agent_review (CHE-9318): the newest status_changed
+// row naming agent_review as the source; null when it never did. Later moves
+// do not change it, so it fixes the issue's rollout cohort through close.
+func (q *Queries) GetIssueLastReviewExit(ctx context.Context, issueID pgtype.UUID) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getIssueLastReviewExit, issueID)
+	var left_at pgtype.Timestamptz
+	err := row.Scan(&left_at)
+	return left_at, err
 }
 
 const getLatestIssueVerdict = `-- name: GetLatestIssueVerdict :one

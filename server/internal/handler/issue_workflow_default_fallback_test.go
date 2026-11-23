@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -289,6 +290,115 @@ func TestSameAs_PreRolloutIssueKeepsItsRoute(t *testing.T) {
 
 	if status, _, id := issueStatusAndAssignee(t, issueID); status != "merged" || id != c.other {
 		t.Fatalf("issue = (%s, %s), want merged kept on the route %s", status, id, c.other)
+	}
+}
+
+// The cohort rests on the last exit from agent_review, so later moves after
+// the rule starts do not take a grandfathered issue off its route.
+func TestSameAs_PreRolloutIssueKeepsItsRouteThroughLaterMoves(t *testing.T) {
+	c := newSignerCase(t)
+	setPassSignerRuleSince(t, time.Now())
+	issueID := dbfx.Issue(t, "feat(x): pre-rollout moves", testutil.Cols{"project_id": c.projectID, "status": "in_review"})
+	dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details, created_at)
+		SELECT workspace_id, id, 'member', 'status_changed', '{"from":"agent_review","to":"in_review"}'::jsonb, now() - interval '1 day' FROM issue WHERE id = $1`, issueID)
+	dbfx.Exec(t, `INSERT INTO issue_step_assignee (issue_id, status_key, workspace_id, assignee_type, assignee_id, set_by_type)
+		SELECT id, $3, workspace_id, 'agent', $2, 'system' FROM issue WHERE id = $1`, issueID, c.other, issueworkflow.LeftStepKey("agent_review"))
+
+	for i, to := range []string{"merged", "in_review", "merged", "in_review", "merged"} {
+		updateIssueForTest(t, issueID, map[string]any{"status": to}).Want(http.StatusOK)
+		if status, _, id := issueStatusAndAssignee(t, issueID); status != to || id != c.other {
+			t.Fatalf("move %d to %s: issue = (%s, %s), want it kept on the route %s", i+1, to, status, id, c.other)
+		}
+	}
+}
+
+// An issue that goes back through agent_review after the rule starts joins
+// it: the signer, not the history agent, takes in_review.
+func TestSameAs_ReEnteringAgentReviewAfterRolloutBindsThePassSigner(t *testing.T) {
+	c := newSignerCase(t)
+	setPassSignerRuleSince(t, time.Now())
+	issueID := c.issue(t, "sha-pass-1")
+	dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details, created_at)
+		SELECT workspace_id, id, 'member', 'status_changed', '{"from":"agent_review","to":"in_progress"}'::jsonb, now() - interval '1 day' FROM issue WHERE id = $1`, issueID)
+	c.sign(t, issueID, c.signer, "sha-pass-1", "[]")
+
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+
+	if status, _, id := issueStatusAndAssignee(t, issueID); status != "in_review" || id != c.signer {
+		t.Fatalf("issue = (%s, %s), want in_review assigned to the PASS signer %s, not history agent %s", status, id, c.signer, c.other)
+	}
+	updateIssueForTest(t, issueID, map[string]any{"status": "merged"}).Want(http.StatusOK)
+	if status, _, id := issueStatusAndAssignee(t, issueID); status != "merged" || id != c.signer {
+		t.Fatalf("issue = (%s, %s), want merged assigned to the PASS signer %s", status, id, c.signer)
+	}
+}
+
+// signerLoopSteps is the review loop with in_review handing on to the PASS
+// signer; toBlocked adds the edge the blocked recovery needs.
+func signerLoopSteps(toBlocked bool) []map[string]any {
+	edges := []map[string]any{
+		{"to": "in_progress", "guard": "agent_verdict(CHANGES)"},
+		{"to": "in_review", "guard": "agent_verdict(PASS)"},
+	}
+	if toBlocked {
+		edges = append(edges, map[string]any{"to": "blocked", "guard": "agent_done"})
+	}
+	return []map[string]any{
+		{"status_key": "in_progress"},
+		{"status_key": "agent_review", "edges": edges},
+		{"status_key": "need_decision"},
+		{"status_key": "in_review"},
+		{"status_key": "blocked"},
+	}
+}
+
+// A PASS written by a run that did not review the exact head cannot make its
+// agent the signer, and an older valid PASS cannot stand in for it: the issue
+// goes to blocked and the headless PASS is not recorded. Without a blocked
+// edge the move is refused and nothing changes.
+func TestSameAs_PassFromRunOffTheHeadDoesNotFallBackToAnOlderPass(t *testing.T) {
+	stamps := map[string]func(t *testing.T, l reviewLoop){
+		"headless run": func(*testing.T, reviewLoop) {},
+		"stale head": func(t *testing.T, l reviewLoop) {
+			dbfx.Exec(t, `UPDATE agent_task_queue SET context = '{"head_sha":"sha-old"}'::jsonb WHERE id = $1`, l.run)
+		},
+	}
+	for name, stampRun := range stamps {
+		for _, toBlocked := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/blocked edge %v", name, toBlocked), func(t *testing.T) {
+				setPassSignerRuleSince(t, time.Time{})
+				l := newReviewLoopSteps(t, signerLoopSteps(toBlocked))
+				older := reviewerAgent(t, "codex", "gpt-5.5")
+				recovery := reviewerAgent(t, "codex", "gpt-5.5")
+				dbfx.Exec(t, `UPDATE agent_task_queue SET originator_user_id = $1, accountable_user_id = $1, originator_source = 'trigger_owner' WHERE id = $2`, testUserID, l.run)
+				setColumnHandoff(t, l.projectID, "in_review", map[string]any{"handler": map[string]any{"type": "same_as", "step": "agent_review"}, "instructions": "Merge it."}).Want(http.StatusOK)
+				setColumnHandoff(t, l.projectID, "blocked", handToAgent(recovery, "Recover it.")).Want(http.StatusOK)
+				l.newPR(t, "sha-head")
+				stampRun(t, l)
+				dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details)
+					SELECT workspace_id, id, 'agent', $2, 'review_passed', '{"findings":"[]","pull_request_id":"","head_sha":"sha-head"}'::jsonb FROM issue WHERE id = $1`, l.issueID, older)
+
+				resp := l.verdict(t, "in_review")
+
+				status, _, id := issueStatusAndAssignee(t, l.issueID)
+				if toBlocked {
+					resp.Want(http.StatusOK)
+					if status != "blocked" || id != recovery {
+						t.Fatalf("issue = (%s, %s), want blocked handed to %s, not in_review on the older signer %s or the headless run's agent %s", status, id, recovery, older, l.agentID)
+					}
+					if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_signer_missing'`, l.issueID); n != 1 {
+						t.Fatalf("review_signer_missing rows = %d, want 1", n)
+					}
+				} else if resp.Code == http.StatusOK || status != "agent_review" {
+					t.Fatalf("move without a blocked edge = %d, issue (%s, %s); want it refused and the issue left in agent_review", resp.Code, status, id)
+				}
+				var latest string
+				dbfx.QueryRow(t, `SELECT actor_id::text FROM activity_log WHERE issue_id = $1 AND action = 'review_passed' ORDER BY created_at DESC, id DESC LIMIT 1`, l.issueID).Scan(&latest)
+				if n := l.verdictsRecorded(t); n != 1 || latest != older {
+					t.Fatalf("verdict rows = %d, latest signer %s; want only the older PASS by %s", n, latest, older)
+				}
+			})
+		}
 	}
 }
 

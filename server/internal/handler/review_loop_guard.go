@@ -258,7 +258,10 @@ func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved 
 		return nil
 	}
 	action := map[string]string{"CHANGES": activityChangesRequested, "PASS": activityPassed}[verdictOf(def, prev.Status, w.pre.Status.String, w.caller.findings)]
-	if action == "" {
+	if action == "" || (action == activityPassed && w.handoff != nil && w.handoff.signerMissing != "") {
+		// A PASS the workflow could not route to its signer stands for
+		// nothing: recording it would make this agent the latest signer while
+		// the issue sits in blocked (CHE-9318).
 		return nil
 	}
 	prID, head := runReviewHead(w.caller.run)

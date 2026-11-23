@@ -86,13 +86,16 @@ func (h *Handler) sameAsReviewer(ctx context.Context, q *db.Queries, workspaceID
 }
 
 // passSignerRuleSince is when the PASS-signer rule starts (CHE-9318). An issue
-// that entered its current status before it, past agent_review, keeps the
-// route it had until it closes. Set it to the deploy time when the rule ships.
+// that left agent_review before it keeps the route it had until it closes. Set
+// it to the deploy time when the rule ships.
 var passSignerRuleSince = time.Date(2026, time.November, 24, 0, 0, 0, 0, time.UTC)
 
 // bindsPassSigner reports whether a step hands the issue to the PASS signer:
 // a same_as step that names agent_review, for an issue that is in agent_review
-// or entered its current status since passSignerRuleSince.
+// or did not leave it before passSignerRuleSince. The cohort rests on the last
+// exit from agent_review, so later moves never change it; an issue that
+// re-enters agent_review after the rule starts leaves it again after the
+// cutoff and joins the new rule.
 func bindsPassSigner(ctx context.Context, q *db.Queries, step issueworkflow.Step, subject workflowSubject) (bool, error) {
 	if step.Handler.Type != issueworkflow.HandlerSameAs || step.Handler.Step != statusAgentReview || !subject.ID.Valid {
 		return false, nil
@@ -100,11 +103,11 @@ func bindsPassSigner(ctx context.Context, q *db.Queries, step issueworkflow.Step
 	if subject.Status == statusAgentReview || subject.PassSigner.Valid {
 		return true, nil
 	}
-	entered, err := q.GetIssueStatusEnteredAt(ctx, db.GetIssueStatusEnteredAtParams{IssueID: subject.ID, Status: subject.Status})
+	left, err := q.GetIssueLastReviewExit(ctx, subject.ID)
 	if err != nil {
 		return false, err
 	}
-	return !entered.Valid || !entered.Time.Before(passSignerRuleSince), nil
+	return !left.Valid || !left.Time.Before(passSignerRuleSince), nil
 }
 
 // runHeadIsLinkedHead reports whether the run reviewed a head that every
@@ -138,12 +141,15 @@ func (e *passSignerError) Error() string { return "no PASS signer to hand the is
 
 // passSignerHumans fills Humans.SameAs with the agent that signed the PASS for
 // the issue's exact head (CHE-9318): the agent signing it in this very write,
-// else the agent of the newest verdict row when that is a PASS with no P0 or
+// else (when the write is no PASS) the agent of the newest verdict row when that is a PASS with no P0 or
 // P1 finding, nothing voided it, and it names the head of every linked PR.
 // The author never merges, since the signer reviewed it. Anything else is a
 // passSignerError, never the last agent on record.
 func passSignerHumans(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, subject workflowSubject) (issueworkflow.Humans, error) {
 	signer := subject.PassSigner
+	if subject.PassRunOffHead {
+		return issueworkflow.Humans{}, &passSignerError{Reason: "the PASS run did not review the exact head of the linked pull request"}
+	}
 	if !signer.Valid {
 		var err error
 		if signer, err = recordedPassSigner(ctx, q, subject.ID); err != nil {
