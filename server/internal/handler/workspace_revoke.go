@@ -243,6 +243,15 @@ func (h *Handler) removeMemberAudited(ctx context.Context, r *http.Request, audi
 		return empty, err
 	}
 
+	// machine_banner_dismissal carries no FK (CHE-9190): drop the departed
+	// member's offline-banner dismissals of this workspace in the same tx.
+	if err := qtx.DeleteMachineBannerDismissalsByMember(ctx, db.DeleteMachineBannerDismissalsByMemberParams{
+		WorkspaceID: workspaceID,
+		UserID:      userID,
+	}); err != nil {
+		return empty, err
+	}
+
 	// Member row deletion lives inside the same tx so a successful revoke is
 	// never followed by a failed member-delete (which would leave the user
 	// still a member with a dead runtime), and a failed revoke never leaves

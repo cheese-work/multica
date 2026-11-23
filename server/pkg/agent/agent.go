@@ -276,7 +276,29 @@ const (
 	MessageStatus     MessageType = "status"
 	MessageError      MessageType = "error"
 	MessageLog        MessageType = "log"
+	// MessageContextCompacted marks one compaction of the run's context. Its
+	// Input carries trigger, tokens_before and tokens_after (see
+	// NewContextCompactedMessage); the daemon stores it as a run message so
+	// compaction is measurable after the fact (CHE-9299).
+	MessageContextCompacted MessageType = "context_compacted"
 )
+
+// NewContextCompactedMessage builds the run message for one compaction. A
+// zero count means the backend did not report it and is omitted rather than
+// recorded as a misleading 0.
+func NewContextCompactedMessage(trigger string, tokensBefore, tokensAfter int64) Message {
+	in := map[string]any{}
+	if trigger != "" {
+		in["trigger"] = trigger
+	}
+	if tokensBefore > 0 {
+		in["tokens_before"] = tokensBefore
+	}
+	if tokensAfter > 0 {
+		in["tokens_after"] = tokensAfter
+	}
+	return Message{Type: MessageContextCompacted, Input: in}
+}
 
 // Message is a unified event emitted by an agent during execution.
 type Message struct {

@@ -138,7 +138,7 @@ var otherWriteFamilies = map[string]writeFamily{
 	"api/provenance":               {1, byHuman},
 	"api/push":                     {2, byHuman},
 	"api/quick-actions":            {3, byWorkspace},
-	"api/runtimes":                 {9, byWorkspace},
+	"api/runtimes":                 {11, byWorkspace},
 	"api/search-index":             {1, byHuman},
 	"api/share-links":              {1, byOwnRow},
 	"api/skills":                   {10, byWorkspace},

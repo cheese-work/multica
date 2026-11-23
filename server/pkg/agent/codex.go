@@ -1488,6 +1488,10 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 		},
 		onMessage: func(msg Message) {
 			observeMessage(msg)
+			if msg.Type == MessageContextCompacted {
+				sendReliable(runCtx, msgCh, msg)
+				return
+			}
 			trySend(msgCh, msg)
 		},
 		onAgentMessageChunk: func(text string) bool {
@@ -4116,6 +4120,18 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 				Output: codexMCPToolResultOutput(item),
 				Status: codexNormalizePatchStatus(status),
 			})
+		}
+
+	case method == "item/completed" && itemType == "contextCompaction":
+		// Count completed compactions only: item/started fires first and the
+		// legacy thread/compacted notification would double-count. The item
+		// carries no sizes, so tokens_before is the prompt size of the last
+		// model call and tokens_after is left unknown.
+		c.usageMu.Lock()
+		before := c.contextTokens
+		c.usageMu.Unlock()
+		if c.onMessage != nil {
+			c.onMessage(NewContextCompactedMessage("auto", before, 0))
 		}
 
 	case method == "item/completed" && itemType == "agentMessage":
