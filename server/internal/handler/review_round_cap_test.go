@@ -134,8 +134,17 @@ func TestRoundCap_PassOrEarlierCapRestartsTheCount(t *testing.T) {
 // author by wakeup.
 func (c roundCap) reviewerWakeup(t *testing.T, reviewRun, author string) *testutil.Response {
 	t.Helper()
-	req := withURLParams(newRequest(http.MethodPost, "/api/issues/"+c.issueID+"/wakeups",
-		map[string]any{"agent_id": author, "kind": "at", "after_seconds": 60, "instruction": "fix the findings"}), "id", c.issueID, "wakeupID", "")
+	return c.reviewerWakeupWith(t, reviewRun, author, finding("P1"))
+}
+
+// reviewerWakeupWith is reviewerWakeup with the findings the handoff carries.
+func (c roundCap) reviewerWakeupWith(t *testing.T, reviewRun, author string, findings ...map[string]any) *testutil.Response {
+	t.Helper()
+	body := map[string]any{"agent_id": author, "kind": "at", "after_seconds": 60, "instruction": "fix the findings"}
+	if findings != nil {
+		body["review_findings"] = findings
+	}
+	req := withURLParams(newRequest(http.MethodPost, "/api/issues/"+c.issueID+"/wakeups", body), "id", c.issueID, "wakeupID", "")
 	req.Header.Set("X-Actor-Source", "task_token")
 	req.Header.Set("X-Agent-ID", c.agentID)
 	req.Header.Set("X-Task-ID", reviewRun)

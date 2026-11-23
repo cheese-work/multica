@@ -384,3 +384,28 @@ func TestIssueWakeupCLISendsWatchInputs(t *testing.T) {
 		t.Fatalf("no --watch must omit watch_inputs: %v", bodies[2])
 	}
 }
+
+// CHE-9307: a reviewer's handoff wakeup is a CHANGES verdict, so the CLI sends
+// its categorized findings.
+func TestIssueWakeupCLISendsReviewFindings(t *testing.T) {
+	t.Chdir(t.TempDir())
+	const issue = "a57c0511-1ebc-471d-a314-438ca16cc75d"
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": "wake", "enabled": true, "kind": "at", "mode": "once"})
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	cmd := newIssueWakeupCommand()
+	cmd.SetArgs([]string{"create", issue, "--kind", "at", "--after", "1m", "--instruction", "fix", "--finding", "P1@missing_rollback:no rollback", "--finding", "P0@scope_creep@revision:new endpoint"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := body["review_findings"].([]any)
+	if len(got) != 2 || got[0].(map[string]any)["category"] != "missing_rollback" || got[1].(map[string]any)["introduced_by_revision"] != true {
+		t.Fatalf("review_findings = %+v", body["review_findings"])
+	}
+}

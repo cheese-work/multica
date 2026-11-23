@@ -212,13 +212,18 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, errRecoveryCaused)
 		return
 	}
-	var in service.WakeupInput
+	// review_findings come with a reviewer's CHANGES handoff to the author.
+	var req struct {
+		service.WakeupInput
+		ReviewFindings []ReviewFinding `json:"review_findings,omitempty"`
+	}
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&in); err != nil {
+	if err := dec.Decode(&req); err != nil {
 		writeError(w, 400, "invalid wakeup body")
 		return
 	}
+	in := req.WakeupInput
 	actorType, actorID := h.resolveActor(r, requestUserID(r), uuidToString(issue.WorkspaceID))
 	if in.AgentID == "" && actorType == "agent" {
 		in.AgentID = actorID
@@ -247,6 +252,13 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	handoff := false
 	if !existingID.Valid && actorType == "agent" {
 		if reviewRun, handoff = h.reviewHandoffWakeup(r.Context(), issue, source, in); handoff {
+			prID, _ := runReviewHead(&reviewRun)
+			if err := checkChangesFindings(r.Context(), h.Queries, issue.ID, prID, req.ReviewFindings); err != nil {
+				if !writeReviewLoopError(w, err) {
+					writeError(w, http.StatusInternalServerError, "could not check the review findings")
+				}
+				return
+			}
 			capped, err := h.capReviewHandoff(r.Context(), issue, reviewRun)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "could not count the review round")
@@ -264,7 +276,7 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if handoff {
-		h.recordReviewHandoff(r.Context(), issue, reviewRun, result)
+		h.recordReviewHandoff(r.Context(), issue, reviewRun, result, req.ReviewFindings)
 	}
 	status := http.StatusCreated
 	if existingID.Valid {

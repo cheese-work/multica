@@ -198,19 +198,9 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	if verdict != "CHANGES" {
 		return nil
 	}
-	if !blocking(caller.findings) {
-		return errFindingsRequired
-	}
-	if !validCategories(caller.findings) {
-		return errCategoryRequired
-	}
 	prID, _ := runReviewHead(caller.run)
-	prior, err := q.ListPriorChangesFindingsForPR(ctx, db.ListPriorChangesFindingsForPRParams{IssueID: prev.ID, PullRequestID: prID})
-	if err != nil {
+	if err := checkChangesFindings(ctx, q, prev.ID, prID, caller.findings); err != nil {
 		return err
-	}
-	if newLateBlocker(caller.findings, prior) {
-		return errNewBlockerLate
 	}
 	earlier, err := q.CountChangesRoundsForPR(ctx, db.CountChangesRoundsForPRParams{IssueID: prev.ID, PullRequestID: prID})
 	if err != nil {
@@ -218,6 +208,27 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	}
 	if earlier+1 >= maxChangesRounds && def.Has(statusNeedDecision) {
 		params.Status = pgtype.Text{String: statusNeedDecision, Valid: true}
+	}
+	return nil
+}
+
+// checkChangesFindings judges the findings of a CHANGES verdict, whether it
+// is a status move or a reviewer's wakeup to the author: a P0 or P1 among them,
+// a category on each, and from round 2 on no blocker that round 1 did not list
+// unless the revision introduced it.
+func checkChangesFindings(ctx context.Context, q *db.Queries, issueID pgtype.UUID, prID string, findings []ReviewFinding) error {
+	if !blocking(findings) {
+		return errFindingsRequired
+	}
+	if !validCategories(findings) {
+		return errCategoryRequired
+	}
+	prior, err := q.ListPriorChangesFindingsForPR(ctx, db.ListPriorChangesFindingsForPRParams{IssueID: issueID, PullRequestID: prID})
+	if err != nil {
+		return err
+	}
+	if newLateBlocker(findings, prior) {
+		return errNewBlockerLate
 	}
 	return nil
 }

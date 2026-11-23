@@ -192,9 +192,10 @@ func (h *Handler) capReviewHandoff(ctx context.Context, issue db.Issue, run db.A
 }
 
 // recordReviewHandoff counts the wakeup the reviewer made.
-func (h *Handler) recordReviewHandoff(ctx context.Context, issue db.Issue, run db.AgentTaskQueue, wakeup db.IssueWakeup) {
+func (h *Handler) recordReviewHandoff(ctx context.Context, issue db.Issue, run db.AgentTaskQueue, wakeup db.IssueWakeup, findings []ReviewFinding) {
 	prID, head := runReviewHead(&run)
-	details, _ := json.Marshal(map[string]string{"wakeup_id": uuidToString(wakeup.ID), "agent_id": uuidToString(wakeup.AgentID), "pull_request_id": prID, "head_sha": head})
+	findingsJSON, _ := json.Marshal(findings)
+	details, _ := json.Marshal(map[string]string{"wakeup_id": uuidToString(wakeup.ID), "agent_id": uuidToString(wakeup.AgentID), "pull_request_id": prID, "head_sha": head, "findings": string(findingsJSON)})
 	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
 		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: strToText("agent"),
 		ActorID: run.AgentID, Action: activityHandoffWakeup, Details: details,

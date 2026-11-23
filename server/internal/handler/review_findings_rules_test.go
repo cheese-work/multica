@@ -116,3 +116,78 @@ func TestReviewFindings_TopCategoriesLast14Days(t *testing.T) {
 		t.Fatalf("findings in window = %d, want 4", len(resp.Findings))
 	}
 }
+
+// The wakeup handoff (agent_review step 4b) is a CHANGES verdict too: it keeps
+// agent_review, so its findings are checked and recorded on the wakeup path.
+func TestReviewFindings_WakeupHandoffNeedsCategorizedBlocker(t *testing.T) {
+	c, run := newReviewRun(t)
+	author := otherReadyAgentID(t)
+	for name, f := range map[string][]map[string]any{
+		"no findings": nil,
+		"no category": {{"severity": "P1", "summary": "no rollback"}},
+		"only P2":     {categorized("P2", "scope_creep", "nit")},
+	} {
+		body := c.reviewerWakeupWith(t, run, author, f...).Want(http.StatusBadRequest).Map()
+		if body["code"] != "review_verdict_findings_required" && body["code"] != "review_finding_category_required" {
+			t.Fatalf("%s: refusal = %v", name, body)
+		}
+	}
+	if n := c.wakeups(t); n != 0 {
+		t.Fatalf("refused handoffs created %d wakeups, want 0", n)
+	}
+	c.reviewerWakeupWith(t, run, author, categorized("P1", "missing_rollback", "no rollback step")).Want(http.StatusCreated)
+	if n := c.wakeups(t); n != 1 {
+		t.Fatalf("wakeups = %d, want 1: the author is still woken", n)
+	}
+	var category string
+	dbfx.QueryRow(t, `SELECT (details->>'findings')::jsonb->0->>'category' FROM activity_log WHERE issue_id = $1 AND action = 'review_handoff_wakeup'`, c.issueID).Scan(&category)
+	if category != "missing_rollback" {
+		t.Fatalf("recorded category = %q, want missing_rollback", category)
+	}
+}
+
+func TestReviewFindings_WakeupRoundTwoNewBlockerIsRefused(t *testing.T) {
+	c, run := newReviewRun(t)
+	author := otherReadyAgentID(t)
+	c.reviewerWakeupWith(t, run, author, categorized("P1", "missing_rollback", "no rollback step")).Want(http.StatusCreated)
+
+	body := c.reviewerWakeupWith(t, run, author,
+		categorized("P1", "missing_rollback", "no rollback step"),
+		categorized("P1", "scope_creep", "adds an unrelated endpoint"),
+	).Want(http.StatusBadRequest).Map()
+	if body["code"] != "review_round_new_blocker" {
+		t.Fatalf("refusal = %v", body)
+	}
+	if n := c.wakeups(t); n != 1 {
+		t.Fatalf("wakeups = %d, want 1: the refused round wakes nobody", n)
+	}
+	c.reviewerWakeupWith(t, run, author,
+		categorized("P1", "scope_creep", "the fix added an unrelated endpoint", map[string]any{"introduced_by_revision": true}),
+	).Want(http.StatusCreated)
+}
+
+// A blocker listed by a wakeup round counts as a round-1 blocker for a later
+// status verdict, and the top categories include wakeup findings.
+func TestReviewFindings_WakeupFindingsCountForStatusRoundsAndTopCategories(t *testing.T) {
+	c, run := newReviewRun(t)
+	author := otherReadyAgentID(t)
+	c.reviewerWakeupWith(t, run, author, categorized("P1", "missing_rollback", "no rollback step")).Want(http.StatusCreated)
+	c.backToReview(t, run)
+	agentUpdateIssue(t, c.issueID, c.agentID, run, map[string]any{
+		"status": "in_progress", "review_findings": []map[string]any{categorized("P1", "scope_creep", "new unrelated blocker")},
+	}).Want(http.StatusBadRequest)
+
+	var resp struct {
+		Categories []struct {
+			Category string `json:"category"`
+		} `json:"top_categories"`
+	}
+	testutil.Call(t, testHandler.ListReviewFindingCategories, newRequest("GET", "/api/issues/review-findings", nil)).Want(http.StatusOK).JSON(&resp)
+	found := false
+	for _, cat := range resp.Categories {
+		found = found || cat.Category == "missing_rollback"
+	}
+	if !found {
+		t.Fatalf("top categories %+v lack the wakeup finding", resp.Categories)
+	}
+}
