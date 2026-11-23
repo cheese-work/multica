@@ -144,13 +144,13 @@ export function isSignedVerdict(content) {
   return /(?:^|[\s*_-])Reviewer(?:\*\*)?\s*:(?:\*\*)?\s*[\w@]/i.test(headerOf(content));
 }
 
-// A verdict signs one PR, named in its header: by one labeled head SHA (7 or more hex digits) or, with no head SHA, by
+// A verdict signs one PR, named in its header: by one labeled head SHA (Head SHA, Reviewed head or Candidate; 7 or more hex digits) or, with no head SHA, by
 // exactly one PR number. A head SHA decides over a PR number. Two different heads or two different PRs are ambiguous
 // and sign nothing.
 export function namesPr(content, unit) {
   const header = headerOf(content);
   const heads = new Set(
-    [...header.matchAll(/\bhead(?:\s+sha)?\s*[:=]?\s*`?([0-9a-f]{7,40})\b/gi)].map((m) => m[1].toLowerCase()),
+    [...header.matchAll(/\b(?:head(?:\s+sha)?|candidate)\s*[:=]?\s*`?([0-9a-f]{7,40})\b/gi)].map((m) => m[1].toLowerCase()),
   );
   if (heads.size > 0) {
     const oid = String(unit.headOid ?? "");
