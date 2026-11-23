@@ -2904,6 +2904,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// thread (?id for a specific one, else the thread the session is in).
 			r.Get("/api/chat/history", h.GetChatChannelHistory)
 			r.Get("/api/chat/thread", h.GetChatThread)
+			// Count-only read of one member's DM cards (CHE-9364): no message text.
+			r.Get("/api/chat/count", h.GetChatCount)
 			// Closed segments of the caller's own DM (CHE-2819 L2b): same handlers as
 			// /api/chat/sessions/{id}/segment(s); the task token names the DM.
 			r.Get("/api/chat/segments", h.ListChatSegments)
