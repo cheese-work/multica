@@ -163,3 +163,25 @@ func TestSameAs_AgentReviewHoldsTheResolvedAgentToIndependence(t *testing.T) {
 		}
 	})
 }
+
+// A same_as agent_review step that finds nobody keeps the issue's assignee;
+// when that is the author, the move is refused rather than leaving the author
+// on the review.
+func TestSameAs_AgentReviewWithNoResolutionRefusesAKeptAuthor(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	seedTestCatalog(t)
+	createTestCustomStatus(t, "agent_review", "started")
+	projectID := createWorkflowTestProject(t, "SameAs unresolved project "+workflowTestSuffix())
+	setColumnHandoff(t, projectID, "in_review", map[string]any{"handler": map[string]any{"type": "none"}}).Want(http.StatusOK)
+	setColumnHandoff(t, projectID, "agent_review", map[string]any{
+		"handler": map[string]any{"type": "same_as", "step": "in_review"}, "instructions": "Review it.",
+	}).Want(http.StatusOK)
+	issueID := dbfx.Issue(t, "feat(x): same_as unresolved "+workflowTestSuffix(), testutil.Cols{"project_id": projectID, "status": "in_progress"})
+	var runtimeID string
+	dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, author).Scan(&runtimeID)
+	dbfx.Task(t, author, testutil.Cols{"issue_id": issueID, "runtime_id": runtimeID, "status": "completed", "applied_model": "claude-sonnet-5-5"})
+	updateIssueForTest(t, issueID, map[string]any{"assignee_type": "agent", "assignee_id": author}).Want(http.StatusOK)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'cancelled' WHERE issue_id = $1 AND status = 'queued'`, issueID)
+
+	wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "agent_review"}), issueID, "in_progress")
+}

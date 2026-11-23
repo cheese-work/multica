@@ -211,6 +211,12 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	// or the issue keeps one for the step. A reviewer step whose table lists
 	// no qualified reviewer refuses instead.
 	if !ok && caller.handoffAssignee == nil && sticky == nil {
+		if pickRefusal == nil && guard != nil && prev.AssigneeType.Valid && prev.AssigneeID.Valid {
+			// The step finds nobody and keeps the current assignee, who could
+			// be an author.
+			kept := issueworkflow.StepAssignee{Type: prev.AssigneeType.String, ID: prev.AssigneeID}
+			return nil, h.checkReviewerAssignee(ctx, q, prev.WorkspaceID, guard, kept)
+		}
 		return nil, pickRefusal
 	}
 	if ok && step.KeepOtherAssignee {
