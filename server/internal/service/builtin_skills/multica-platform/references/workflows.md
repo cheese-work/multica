@@ -123,7 +123,9 @@ multica workflow webhook list <workflow-id>                    # never shows sec
   prints the most frequent review finding categories of the last days; `--list`
   prints each finding. Run the top categories as a pre-check before you ask for
   review. A reviewer tags every finding: `multica issue status <id> <status>
-  --finding "P1@missing_rollback:<summary>"`. From round 2 on, a new P0 or P1
+  --finding "P1@missing_rollback:<summary>"`; `P1:<summary>` without a category
+  still works until the workspace setting `review_findings_category.mode` is
+  `required` (default `optional`). From round 2 on, a new P0 or P1
   that round 1 did not list needs `@revision` (the revision introduced it), or
   the server refuses the verdict (`review_round_new_blocker`). Read-only.
 - `multica issue workflow escalate <id> --reason "<why>" [--output json]` moves

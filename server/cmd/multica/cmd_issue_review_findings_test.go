@@ -25,7 +25,14 @@ func TestFindingFlags(t *testing.T) {
 	if got[1]["introduced_by_revision"] != true {
 		t.Fatalf("second = %v", got[1])
 	}
-	for _, bad := range []string{"P1:no category", "P1@x@later:s", "P1@x:", "@x:s"} {
+	legacy, err := parse("P1:no category yet")
+	if err != nil || len(legacy) != 1 || legacy[0]["summary"] != "no category yet" {
+		t.Fatalf("legacy form: %v, %v", legacy, err)
+	}
+	if _, has := legacy[0]["category"]; has {
+		t.Fatalf("legacy form sent a category: %v", legacy[0])
+	}
+	for _, bad := range []string{"P1@x@later:s", "P1@x:", "@x:s"} {
 		if _, err := parse(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}

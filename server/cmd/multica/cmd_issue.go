@@ -2538,10 +2538,15 @@ func findingFlags(cmd *cobra.Command) ([]map[string]any, error) {
 		head, summary, ok := strings.Cut(f, ":")
 		parts := strings.Split(head, "@")
 		severity, summary := strings.TrimSpace(parts[0]), strings.TrimSpace(summary)
-		if !ok || severity == "" || summary == "" || len(parts) < 2 || len(parts) > 3 || (len(parts) == 3 && parts[2] != "revision") {
+		if !ok || severity == "" || summary == "" || len(parts) > 3 || (len(parts) == 3 && parts[2] != "revision") {
 			return nil, fmt.Errorf("--finding %q: want <P0-P3>@<category>[@revision]:<summary>", f)
 		}
-		item := map[string]any{"severity": severity, "summary": summary, "category": strings.TrimSpace(parts[1])}
+		item := map[string]any{"severity": severity, "summary": summary}
+		// A finding without @<category> is the form existing reviewer step text
+		// sends; the server accepts it until the workspace requires categories.
+		if len(parts) > 1 {
+			item["category"] = strings.TrimSpace(parts[1])
+		}
 		if len(parts) == 3 {
 			item["introduced_by_revision"] = true
 		}

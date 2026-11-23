@@ -21,22 +21,63 @@ func categorized(severity, category, summary string, extra ...map[string]any) ma
 	return f
 }
 
-func TestReviewFindings_CategoryIsRequiredAndStored(t *testing.T) {
+func setCategoryMode(t *testing.T, mode string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE workspace SET settings = jsonb_set(settings, '{review_findings_category}', jsonb_build_object('mode', $2::text)) WHERE id = $1`, testWorkspaceID, mode)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'review_findings_category' WHERE id = $1`, testWorkspaceID)
+	})
+}
+
+func TestReviewFindings_CategoryIsStoredAndMalformedOneIsRefused(t *testing.T) {
 	l := newReviewLoop(t)
-	for name, f := range map[string]map[string]any{
-		"missing":    {"severity": "P1", "summary": "no rollback"},
-		"not a slug": categorized("P1", "Missing Rollback!", "no rollback"),
-	} {
-		body := l.verdict(t, "in_progress", f).Want(http.StatusBadRequest).Map()
-		if body["code"] != "review_finding_category_required" {
-			t.Fatalf("%s: refusal = %v", name, body)
-		}
+	body := l.verdict(t, "in_progress", categorized("P1", "Missing Rollback!", "no rollback")).Want(http.StatusBadRequest).Map()
+	if body["code"] != "review_finding_category_required" {
+		t.Fatalf("refusal = %v", body)
 	}
 	l.verdict(t, "in_progress", categorized("P1", "missing_rollback", "no rollback")).Want(http.StatusOK)
 	var category string
 	dbfx.QueryRow(t, `SELECT (details->>'findings')::jsonb->0->>'category' FROM activity_log WHERE issue_id = $1 AND action = 'review_changes_requested'`, l.issueID).Scan(&category)
 	if category != "missing_rollback" {
 		t.Fatalf("stored category = %q, want missing_rollback", category)
+	}
+}
+
+// Rollout: reviewers whose step text still sends `--finding "P1:<summary>"` (no
+// category) keep handing changes back after the server deploys.
+func TestReviewFindings_FindingWithoutCategoryIsAcceptedUntilRequired(t *testing.T) {
+	l := newReviewLoop(t)
+	l.verdict(t, "in_progress", map[string]any{"severity": "P1", "summary": "no rollback"}).Want(http.StatusOK)
+	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status == "agent_review" {
+		t.Fatalf("legacy verdict left the issue in agent_review")
+	}
+}
+
+func TestReviewFindings_RequiredModeRefusesFindingWithoutCategory(t *testing.T) {
+	setCategoryMode(t, "required")
+	l := newReviewLoop(t)
+	body := l.verdict(t, "in_progress", map[string]any{"severity": "P1", "summary": "no rollback"}).Want(http.StatusBadRequest).Map()
+	if body["code"] != "review_finding_category_required" {
+		t.Fatalf("refusal = %v", body)
+	}
+	l.verdict(t, "in_progress", categorized("P1", "missing_rollback", "no rollback")).Want(http.StatusOK)
+}
+
+func TestValidateReviewFindingsCategorySetting(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in      any
+		wantErr bool
+	}{
+		"absent":   {map[string]any{}, false},
+		"optional": {map[string]any{"review_findings_category": map[string]any{"mode": "optional"}}, false},
+		"required": {map[string]any{"review_findings_category": map[string]any{"mode": "required"}}, false},
+		"bad mode": {map[string]any{"review_findings_category": map[string]any{"mode": "block"}}, true},
+		"bad key":  {map[string]any{"review_findings_category": map[string]any{"x": "required"}}, true},
+		"not map":  {map[string]any{"review_findings_category": "required"}, true},
+	} {
+		if err := validateReviewFindingsCategorySetting(tc.in); (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", name, err, tc.wantErr)
+		}
 	}
 }
 

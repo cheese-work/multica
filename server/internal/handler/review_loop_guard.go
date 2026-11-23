@@ -53,8 +53,12 @@ var errCategoryRequired = errors.New("every review finding needs a category tag 
 // errNewBlockerLate refuses a round-2 or later verdict that adds a blocker.
 var errNewBlockerLate = errors.New("a review lists every blocker in round 1; a later round may add a P0 or P1 finding only when the revision introduced it (set introduced_by_revision on that finding); a blocker that round 1 already listed must repeat its round-1 summary")
 
-func validCategories(findings []ReviewFinding) bool {
-	return !slices.ContainsFunc(findings, func(f ReviewFinding) bool { return !categoryPattern.MatchString(f.Category) })
+// validCategories reports whether every category is well formed. An empty one
+// passes unless the workspace requires categories (review_findings_category).
+func validCategories(findings []ReviewFinding, required bool) bool {
+	return !slices.ContainsFunc(findings, func(f ReviewFinding) bool {
+		return !(f.Category == "" && !required) && !categoryPattern.MatchString(f.Category)
+	})
 }
 
 func normSummary(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
@@ -189,8 +193,9 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	if caller.run == nil {
 		return errVerdictNeedsRun
 	}
+	required := reviewFindingsCategoryRequired(ctx, q, prev.WorkspaceID)
 	if verdict == "PASS" {
-		if !validCategories(caller.findings) {
+		if !validCategories(caller.findings, required) {
 			return errCategoryRequired
 		}
 		return h.guardReviewerIndependence(ctx, q, prev, def, caller)
@@ -201,7 +206,7 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	if !blocking(caller.findings) {
 		return errFindingsRequired
 	}
-	if !validCategories(caller.findings) {
+	if !validCategories(caller.findings, required) {
 		return errCategoryRequired
 	}
 	prID, _ := runReviewHead(caller.run)
