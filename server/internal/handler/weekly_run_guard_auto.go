@@ -202,11 +202,17 @@ func (h *Handler) sweepRunGuardAuto(ctx context.Context) {
 // warnWeeklyRunGuard records a warn-mode would-be refusal once per issue and
 // ICT day: an activity row the brief reads. Nothing is refused or opened.
 func (h *Handler) warnWeeklyRunGuard(ctx context.Context, issue db.Issue, details []byte) error {
+	return h.warnGuard(ctx, issue, details, weeklyRunGuardWarnedAction, "warn:")
+}
+
+// warnGuard writes the would-be refusal row named action, once per issue and
+// ICT day under the window prefix.
+func (h *Handler) warnGuard(ctx context.Context, issue db.Issue, details []byte, action, windowPrefix string) error {
 	return h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
 		_, err := q.ClaimWeeklyRunGuardIncident(ctx, db.ClaimWeeklyRunGuardIncidentParams{
 			ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID,
-			WindowID: "warn:" + time.Now().In(ictLocation).Format("2006-01-02"),
+			WindowID: windowPrefix + time.Now().In(ictLocation).Format("2006-01-02"),
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -216,7 +222,7 @@ func (h *Handler) warnWeeklyRunGuard(ctx context.Context, issue db.Issue, detail
 		}
 		_, err = q.CreateActivity(ctx, db.CreateActivityParams{
 			WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: pgtype.Text{String: "system", Valid: true},
-			Action: weeklyRunGuardWarnedAction, Details: details,
+			Action: action, Details: details,
 		})
 		return err
 	})
