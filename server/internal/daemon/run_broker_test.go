@@ -85,16 +85,13 @@ func TestRunBrokerUnchangedWhenOffOrUnconfigured(t *testing.T) {
 
 // Without enforced run isolation every run shares the daemon UID, so a broker
 // socket is reachable by other runs: no broker, no shims, env untouched. The
-// daemon passes runIsolated until the sandbox launcher is on the run path.
+// daemon passes Daemon.isolated, derived from the launcher (run_launch_test.go).
 func TestRunBrokerRefusedWithoutIsolation(t *testing.T) {
 	gh := gatesuite.NewGitHub(t, gatesuite.GitHubOptions{Repos: map[string]int64{"o/r": 42}})
 	env := map[string]string{}
 	rb, err := applyRunBroker(sandbox.ModeOn, false, brokerTestConfig(t, gh), env, quietLog())
 	if err != nil || rb != nil || len(env) != 0 {
 		t.Fatalf("rb=%v err=%v env=%v, want no broker and an untouched env", rb, err, env)
-	}
-	if runIsolated {
-		t.Fatal("runIsolated must stay false until runs go through sandbox.Launcher with the broker socket")
 	}
 }
 

@@ -425,9 +425,8 @@ func TestRunTaskFrontsBrokerShimsWithGuardShims(t *testing.T) {
 	origResolve, origExe := resolveSelfExecutable, multicaExe
 	resolveSelfExecutable = func() (string, error) { return mc, nil }
 	multicaExe = func() (string, error) { return mc, nil }
-	runIsolated = true
 	t.Cleanup(func() {
-		resolveSelfExecutable, multicaExe, runIsolated = origResolve, origExe, false
+		resolveSelfExecutable, multicaExe = origResolve, origExe
 	})
 	gh := gatesuite.NewGitHub(t, gatesuite.GitHubOptions{Repos: map[string]int64{"o/r": 42}})
 	seen := filepath.Join(t.TempDir(), "path")
@@ -449,6 +448,7 @@ func TestRunTaskFrontsBrokerShimsWithGuardShims(t *testing.T) {
 			SandboxMode: sandbox.ModeOn, Broker: brokerTestConfig(t, gh),
 			Agents: map[string]AgentEntry{"claude": {Path: fake}},
 		},
+		launcher: &recordingLauncher{}, // isolated, without needing bwrap
 	}
 	task := Task{
 		ID: "test-task", WorkspaceID: "test-ws", RuntimeID: "test-rt", IssueID: "test-issue",
