@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Fixture tests for the C00 deploy freshness alarm (CHE-3634): rerun-once, 90-minute and rate-limit rules."""
+"""Fixture tests for the C00 deploy freshness alarm (CHE-3634, CHE-9243): rerun-once, slot deadline, trusted release receipt and rate-limit rules."""
 import contextlib
 import datetime as dt
 import importlib.util
 import io
 import json
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -16,7 +17,18 @@ fresh = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fresh)
 
 SHA = "d2593932fc23ade672b8d1962041ef9086762473"
+OLD = "c" * 40
 NOW = dt.datetime(2026, 11, 5, 12, tzinfo=dt.timezone.utc)
+REPO = "cheese-work/multica"
+M = dt.timedelta(minutes=1)
+
+
+def at(h, m=0, day=5):
+    return dt.datetime(2026, 11, day, h, m, tzinfo=dt.timezone.utc)
+
+
+S = at(5, 17)  # a cd-deploy.yml slot
+S2 = S + dt.timedelta(hours=4)  # the next slot
 
 
 def head_at(minutes_ago):
@@ -28,98 +40,445 @@ def qual(conclusion, attempt=1, run_id=10, created="2026-11-05T10:00:00Z"):
             "run_attempt": attempt, "created_at": created, "html_url": f"https://example.test/run/{run_id}"}
 
 
-def deploy(conclusion, sha=SHA, job="success"):
-    # workflow_run deploys carry main's tip in head_sha; the qualified SHA is only in the run name (CHE-3634 review).
-    # `job` is the conclusion of the run's `deploy` job: a run can succeed with that job skipped (ineligible preflight).
-    return {"id": 20, "head_sha": SHA, "display_title": f"CD deploy to C00 · {sha}", "conclusion": conclusion, "status": "completed", "_job": job}
+def receipt_name(sha):
+    return f"release-receipt old={'1' * 40} new={sha} digest=sha256:{'a' * 64}"
 
 
-def ran(run):
-    return run["_job"] == "success"
-
-
-def decide(*args):
-    return fresh.decide(*args, ran)
+def deploy(sha=SHA, done="2026-11-05T05:40:00Z", run_id=20, branch="main", path=".github/workflows/cd-deploy.yml", repo=REPO,
+           deploy_job="success", receipt_job="success", receipt_branch="main", step="success", name=None, error=None):
+    """A successful `CD deploy to C00` run as the API lists it, plus its `jobs` payload under `_jobs` (CHE-9243).
+    The run title is `· schedule` or `· main`, never the SHA; only the receipt step names the deployed SHA."""
+    steps = [{"name": "Set up job", "conclusion": "success"}, {"name": name or receipt_name(sha), "conclusion": step}]
+    jobs = [{"name": "deploy", "conclusion": deploy_job},
+            {"name": "release-receipt", "conclusion": receipt_job, "head_branch": receipt_branch, "completed_at": done, "steps": steps}]
+    return {"id": run_id, "head_branch": branch, "path": path, "repository": {"full_name": repo}, "display_title": "CD deploy to C00 · schedule",
+            "conclusion": "success", "status": "completed", "_jobs": jobs, "_error": error}
 
 
 def commit_json(sha, minutes_ago):
     return {"sha": sha, "commit": {"committer": {"date": head_at(minutes_ago).isoformat()}}}
 
 
-class DecideTest(unittest.TestCase):
+def commit_at(sha, when):
+    return {"sha": sha, "commit": {"committer": {"date": when.isoformat()}}}
+
+
+def sched(created):
+    return {"id": 30, "event": "schedule", "created_at": created, "html_url": "https://example.test/run/30"}
+
+
+class AlarmCase(unittest.TestCase):
+    """Runs main() against a fake GitHub API."""
+
+    DISPATCH = ("workflow", "run", "cd-deploy.yml", "--ref", "main", "-f", "schedule_backup=true", "-R", REPO)
+    DEFAULT_LOG = "2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"
+
+    def run_main(self, qual_runs=(), deploy_runs=(), minutes_ago=None, older=(), commits=None, now=NOW, deploy_list_error=None,
+                 schedule_runs=(sched("2026-11-05T09:20:00Z"),), any_runs=(), dispatch_fails=False, log=DEFAULT_LOG, argv=(), live="unset"):
+        if commits is None:
+            commits = [commit_json(SHA, minutes_ago), *older]
+        qual_jobs = [{"id": 7, "name": "build-images", "conclusion": "failure"}, {"id": 8, "name": "cd-qualification", "conclusion": "skipped"}]
+        by_id = {r["id"]: r for r in deploy_runs}
+        seen = []
+
+        def fake(*args):
+            seen.append(args)
+            path = args[-1]
+            if args[:2] == ("workflow", "run") and dispatch_fails:
+                raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403")
+            if args[:2] in (("run", "rerun"), ("workflow", "run")):
+                return ""
+            if "/commits?" in path:
+                return json.dumps(commits)
+            if "workflows/cd-qualification.yml/runs" in path:
+                return json.dumps({"workflow_runs": list(qual_runs)})
+            if "workflows/cd-deploy.yml/runs" in path:
+                if "event=schedule" in path:
+                    return json.dumps({"workflow_runs": list(schedule_runs)})
+                if "status=success" in path:
+                    if deploy_list_error:
+                        raise deploy_list_error
+                    return json.dumps({"workflow_runs": [{k: v for k, v in r.items() if k != "_error"} for r in deploy_runs]})
+                if "branch=main" in path:
+                    return json.dumps({"workflow_runs": list(any_runs)})
+            m = re.search(r"/actions/runs/(\d+)/jobs\?", path)
+            if m:
+                run = by_id[int(m.group(1))]
+                if run["_error"]:
+                    raise run["_error"]
+                return json.dumps({"jobs": run["_jobs"]})
+            if path.endswith("/jobs?per_page=100"):
+                return json.dumps({"jobs": qual_jobs})
+            if path.endswith("/jobs/7/logs"):
+                return log
+            raise AssertionError(path)
+
+        out = io.StringIO()
+        env = {"GITHUB_REPOSITORY": REPO, "C00_API_URL": "https://c00.test"}
+        with patch.dict(fresh.os.environ, env), patch.object(fresh, "gh_api", side_effect=fake), patch.object(fresh, "utcnow", return_value=now), \
+                contextlib.ExitStack() as stack, contextlib.redirect_stdout(out):
+            if live != "unset":
+                stack.enter_context(patch.object(fresh, "live_commit", return_value=live))
+            rc = fresh.main(argv)
+        return rc, out.getvalue(), seen
+
+    @staticmethod
+    def dispatches(seen):
+        return [a for a in seen if a[:2] == ("workflow", "run")]
+
+    @staticmethod
+    def reruns(seen):
+        return [a for a in seen if a[:2] == ("run", "rerun")]
+
+    @staticmethod
+    def jobs_calls(seen):
+        return [a for a in seen if re.search(r"/actions/runs/\d+/jobs\?", a[-1])]
+
+
+class RerunTest(unittest.TestCase):
     def test_failed_first_attempt_is_rerun_once(self):
-        self.assertEqual(decide(SHA, head_at(10), NOW, [qual("failure")], [])["rerun"], 10)
+        self.assertEqual(fresh.rerun_id([qual("failure")]), 10)
 
     def test_second_attempt_failure_is_not_rerun_again(self):
-        self.assertIsNone(decide(SHA, head_at(10), NOW, [qual("failure", attempt=2)], [])["rerun"])
+        self.assertIsNone(fresh.rerun_id([qual("failure", attempt=2)]))
 
     def test_only_the_newest_qualification_run_counts(self):
         old = qual("failure", run_id=1, created="2026-11-05T09:00:00Z")
         new = qual("success", run_id=2, created="2026-11-05T10:00:00Z")
-        self.assertIsNone(decide(SHA, head_at(10), NOW, [old, new], [])["rerun"])
-        self.assertIsNone(decide(SHA, head_at(10), NOW, [new, old], [])["rerun"])
+        self.assertIsNone(fresh.rerun_id([old, new]))
+        self.assertIsNone(fresh.rerun_id([new, old]))
 
     def test_success_running_and_cancelled_are_not_rerun(self):
         for conclusion in ("success", None, "cancelled", "skipped"):
-            self.assertIsNone(decide(SHA, head_at(10), NOW, [qual(conclusion)], [])["rerun"], conclusion)
+            self.assertIsNone(fresh.rerun_id([qual(conclusion)]), conclusion)
 
-    def test_alert_exactly_at_90_minutes(self):
-        self.assertFalse(decide(SHA, head_at(89), NOW, [qual("success")], [])["alert"])
-        self.assertTrue(decide(SHA, head_at(90), NOW, [qual("success")], [])["alert"])
-
-    def test_successful_deploy_of_head_clears_the_alarm(self):
-        self.assertFalse(decide(SHA, head_at(600), NOW, [qual("success")], [deploy("success")])["alert"])
-
-    def test_skipped_failed_other_sha_or_job_not_run_deploy_is_not_deployed(self):
-        for runs in ([deploy("skipped")], [deploy("failure")], [deploy("success", sha="0" * 40)], [deploy("success", sha="07ce9f73b918f20d829c906fcb37db56e213e129")],
-                     [deploy("success", job="skipped")], [deploy("success", job="failure")], [deploy("success", job=None)]):
-            self.assertTrue(decide(SHA, head_at(600), NOW, [qual("success")], runs)["alert"], runs)
-
-    def test_no_qualification_run_at_all_alerts_after_90_minutes(self):
-        self.assertTrue(decide(SHA, head_at(91), NOW, [], [])["alert"])
-        self.assertFalse(decide(SHA, head_at(5), NOW, [], [])["alert"])
+    def test_no_qualification_run_is_not_rerun(self):
+        self.assertIsNone(fresh.rerun_id([]))
 
 
-class UndeployedSinceTest(unittest.TestCase):
-    """CHE-7522: the 90 min window starts at the oldest main commit newer than what runs, not at the newest commit."""
+class DeadlineTest(unittest.TestCase):
+    """CHE-9243 A1: the deadline is the first slot strictly after the merge, plus 90 min."""
+
+    def test_deadline_is_the_next_slot_plus_90_minutes(self):
+        self.assertEqual(fresh.deadline(S + 5 * M), S2 + 90 * M)
+        self.assertEqual(fresh.deadline(S - 60 * M), S + 90 * M)
+
+    def test_a_merge_exactly_at_a_slot_waits_for_the_following_slot(self):
+        self.assertEqual(fresh.deadline(S), S2 + 90 * M)
+
+    def test_slots_cross_midnight(self):
+        self.assertEqual(fresh.deadline(at(21, 30)), at(1, 17, day=6) + 90 * M)
+        self.assertEqual(fresh.deadline(at(23, 59, day=30)), dt.datetime(2026, 12, 1, 1, 17, tzinfo=dt.timezone.utc) + 90 * M)
+
+
+class UndeployedCommitTest(unittest.TestCase):
+    """CHE-7522: the window belongs to the oldest commit newer than what runs, not to the newest commit."""
 
     A, B = "a" * 40, "b" * 40
 
-    def test_window_starts_at_the_oldest_commit_newer_than_the_deployed_one(self):
-        commits = [(self.B, head_at(40)), (self.A, head_at(100)), ("c" * 40, head_at(300))]
-        self.assertEqual(fresh.undeployed_since(commits, lambda sha: sha == "c" * 40), head_at(100))
+    def test_oldest_commit_newer_than_the_deployed_one(self):
+        commits = [(self.B, head_at(40)), (self.A, head_at(100)), (OLD, head_at(300))]
+        self.assertEqual(fresh.undeployed_commit(commits, lambda sha: sha == OLD), (self.A, head_at(100)))
 
-    def test_head_deployed_starts_the_window_at_the_head(self):
+    def test_head_deployed_leaves_nothing_undeployed(self):
         commits = [(self.B, head_at(40)), (self.A, head_at(100))]
-        self.assertEqual(fresh.undeployed_since(commits, lambda sha: sha == self.B), head_at(40))
+        self.assertIsNone(fresh.undeployed_commit(commits, lambda sha: sha == self.B))
 
-    def test_nothing_deployed_in_the_list_starts_at_the_oldest_commit(self):
+    def test_nothing_deployed_in_the_list_gives_the_oldest_listed_commit(self):
         commits = [(self.B, head_at(40)), (self.A, head_at(100))]
-        self.assertEqual(fresh.undeployed_since(commits, lambda sha: False), head_at(100))
-
-    def test_a_second_merge_does_not_restart_the_alarm(self):
-        # A merged 100 min ago and never deployed, B merged 40 min ago: the alarm fires on A's age.
-        commits = [(self.B, head_at(40)), (self.A, head_at(100))]
-        since = fresh.undeployed_since(commits, lambda sha: False)
-        self.assertTrue(fresh.decide(self.B, since, NOW, [qual("success")], [], ran)["alert"])
-        self.assertTrue(fresh.decide_live(self.B, since, NOW, "d43d0c9")["alert"])
+        self.assertEqual(fresh.undeployed_commit(commits, lambda sha: False), (self.A, head_at(100)))
 
 
-class LiveTest(unittest.TestCase):
+class CreditedShaTest(AlarmCase):
+    def credited(self, runs):
+        by_id = {r["id"]: r for r in runs}
+        with patch.object(fresh, "gh_api", side_effect=lambda *a: json.dumps({"jobs": by_id[int(re.search(r"runs/(\d+)/jobs", a[-1]).group(1))]["_jobs"]})):
+            return fresh.credited_sha(REPO, runs)
+
+    def test_r1a_a_trusted_receipt_credits_the_sha_it_names(self):
+        self.assertEqual(self.credited([deploy(SHA)]), SHA)
+
+    def test_fp02_the_receipt_that_completed_last_wins_not_the_newest_run(self):
+        newest_created = deploy(OLD, run_id=21, done="2026-11-05T06:10:00Z")
+        older_created = deploy(SHA, run_id=20, done="2026-11-05T06:30:00Z")
+        self.assertEqual(self.credited([newest_created, older_created]), SHA)
+        self.assertEqual(self.credited([older_created, newest_created]), SHA)
+
+    def test_no_trusted_run_credits_nothing(self):
+        self.assertIsNone(self.credited([deploy(SHA, deploy_job="skipped")]))
+        self.assertIsNone(self.credited([]))
+
+
+class WindowTest(AlarmCase):
+    """R1 to R4, R6: red or green at the slot deadline. S = 05:17 UTC, S2 = S + 4 h."""
+
+    def alarm(self, merged, now, deploy_runs=(), qual_runs=(), older=()):
+        return self.run_main(qual_runs=qual_runs, deploy_runs=deploy_runs, commits=[commit_at(SHA, merged), *older], now=now)
+
+    def test_r1a_a_schedule_run_with_a_trusted_receipt_for_head_is_deployed(self):
+        rc, out, _ = self.alarm(S - 60 * M, S + 120 * M, deploy_runs=[deploy(SHA)])
+        self.assertEqual((rc, out), (0, "main %s is deployed to C00.\n" % SHA[:9]))
+
+    def test_r1b_the_same_history_without_a_receipt_alerts(self):
+        run = deploy(SHA, deploy_job="skipped")
+        rc, out, _ = self.alarm(S - 60 * M, S + 120 * M, deploy_runs=[run])
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+
+    def test_r2_a_merge_just_after_a_slot_is_not_late_before_the_next_slot_passes(self):
+        rc, out, _ = self.alarm(S + 5 * M, S + 125 * M)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("::error::", out)
+
+    def test_r3a_one_minute_before_the_next_slot_deadline_is_green(self):
+        rc, out, _ = self.alarm(S + 5 * M, S2 + 89 * M)
+        self.assertEqual(rc, 0, out)
+
+    def test_r3b_at_the_next_slot_deadline_is_red(self):
+        rc, out, _ = self.alarm(S + 5 * M, S2 + 90 * M)
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+
+    def test_r4_the_qualification_run_is_diagnostic_text_only(self):
+        # merged 05:07 UTC (12:07 ICT), qualified at 05:37: the 05:17 slot still sets the deadline at 06:47
+        late = dict(qual("success", created="2026-11-05T05:37:00Z"), html_url="https://example.test/run/qualified")
+        rc, out, _ = self.alarm(S - 10 * M, S + 90 * M, qual_runs=[late])
+        self.assertEqual(rc, 1)
+        self.assertIn("https://example.test/run/qualified", out)
+
+    def test_r4_just_before_the_deadline_is_green(self):
+        late = qual("success", created="2026-11-05T05:37:00Z")
+        self.assertEqual(self.alarm(S - 10 * M, S + 89 * M, qual_runs=[late])[0], 0)
+
+    def test_error_names_commit_merge_slot_and_deadline_in_utc_and_ict(self):
+        rc, out, _ = self.alarm(at(1, 58), at(7, 0))
+        self.assertEqual(rc, 1)
+        for text in (SHA[:9], "01:58 UTC", "08:58 ICT", "05:17 UTC", "12:17 ICT", "06:47 UTC", "13:47 ICT"):
+            self.assertIn(text, out)
+
+    def test_r6_a_second_merge_does_not_move_the_deadline(self):
+        # A merged 04:17 UTC and never deployed (deadline 06:47); B merged 06:30 (its own deadline is 10:47).
+        a, b = "a" * 40, "b" * 40
+        commits = [commit_at(b, at(6, 30)), commit_at(a, S - 60 * M), commit_at(OLD, S - 600 * M)]
+        rc, out, _ = self.run_main(deploy_runs=[deploy(OLD)], commits=commits, now=at(6, 50))
+        self.assertEqual(rc, 1)
+        self.assertIn(a[:9], out)
+        self.assertNotIn("main %s" % b[:9] + " is deployed", out)
+
+    def test_a_deployed_older_commit_leaves_only_the_newer_ones_on_the_clock(self):
+        a = "a" * 40
+        commits = [commit_at(SHA, S + 5 * M), commit_at(a, S - 60 * M)]
+        rc, out, _ = self.run_main(deploy_runs=[deploy(a)], commits=commits, now=S + 125 * M)
+        self.assertEqual(rc, 0, out)
+
+
+class ReceiptTrustTest(AlarmCase):
+    """R5: each rejected receipt leaves a stale head red."""
+
+    REJECTED = {
+        "run branch is not main": dict(branch="feature"),
+        "workflow path is not cd-deploy.yml": dict(path=".github/workflows/other.yml"),
+        "run is from another repository": dict(repo="evil/multica"),
+        "release-receipt job branch is not main": dict(receipt_branch="feature"),
+        "deploy job skipped": dict(deploy_job="skipped"),
+        "deploy job failed": dict(deploy_job="failure"),
+        "receipt job skipped": dict(receipt_job="skipped"),
+        "receipt job failed": dict(receipt_job="failure"),
+        "receipt step not success": dict(step="skipped"),
+        "short SHA": dict(name=f"release-receipt old={'1' * 40} new={SHA[:7]} digest=sha256:{'a' * 64}"),
+        "unevaluated expression": dict(name="release-receipt old=${{ needs.deploy.outputs.receipt_old }} new=${{ needs.deploy.outputs.receipt_new }} digest=${{ x }}"),
+        "extra text after the digest": dict(name=receipt_name(SHA) + " extra"),
+        "extra text before the receipt": dict(name="x " + receipt_name(SHA)),
+        "uppercase SHA": dict(name=receipt_name(SHA.upper())),
+        "bad digest": dict(name=f"release-receipt old={'1' * 40} new={SHA} digest=sha256:abc"),
+    }
+
+    def test_r5_every_rejected_receipt_leaves_a_stale_head_red(self):
+        for label, override in self.REJECTED.items():
+            with self.subTest(label):
+                rc, out, _ = self.run_main(deploy_runs=[deploy(SHA, **override)], commits=[commit_at(SHA, S - 60 * M)], now=S + 120 * M)
+                self.assertEqual(rc, 1)
+                self.assertIn("::error::", out)
+
+    def test_only_successful_main_runs_are_listed(self):
+        _, _, seen = self.run_main(deploy_runs=[deploy(SHA)], commits=[commit_at(SHA, S - 60 * M)], now=S + 120 * M)
+        listed = [a[-1] for a in seen if "cd-deploy.yml/runs" in a[-1] and "status=success" in a[-1]]
+        self.assertEqual(len(listed), 1)
+        self.assertIn("branch=main", listed[0])
+
+    def test_the_title_is_never_a_receipt(self):
+        run = deploy(SHA, deploy_job="skipped")
+        run["display_title"] = f"CD deploy to C00 · {SHA}"
+        self.assertEqual(self.run_main(deploy_runs=[run], commits=[commit_at(SHA, S - 60 * M)], now=S + 120 * M)[0], 1)
+
+    def test_a_trusted_receipt_for_a_head_older_run_still_credits_after_rejected_ones(self):
+        runs = [deploy(SHA, run_id=21, branch="feature"), deploy(SHA, run_id=22, deploy_job="failure"), deploy(SHA, run_id=23)]
+        self.assertEqual(self.run_main(deploy_runs=runs, commits=[commit_at(SHA, S - 60 * M)], now=S + 120 * M)[0], 0)
+
+
+class ScanBoundTest(AlarmCase):
+    def test_r8_the_scan_stops_within_30_jobs_calls(self):
+        runs = [deploy(SHA, run_id=100 + i, receipt_job="skipped") for i in range(40)]
+        rc, _, seen = self.run_main(deploy_runs=runs, commits=[commit_at(SHA, S - 60 * M)], now=S + 120 * M)
+        self.assertEqual(len(self.jobs_calls(seen)), fresh.SCAN_CAP)
+        self.assertEqual(fresh.SCAN_CAP, 30)
+        self.assertEqual(rc, 1)
+
+    def test_r8_a_trusted_receipt_past_the_scan_cap_credits_nothing(self):
+        runs = [deploy(SHA, run_id=100 + i, receipt_job="skipped") for i in range(30)] + [deploy(SHA, run_id=200)]
+        rc, _, _ = self.run_main(deploy_runs=runs, commits=[commit_at(SHA, S - 60 * M)], now=S + 120 * M)
+        self.assertEqual(rc, 1)
+
+    def test_r8_a_receipt_for_a_sha_outside_the_listed_commits_credits_nothing(self):
+        rc, out, _ = self.run_main(deploy_runs=[deploy("f" * 40)], commits=[commit_at(SHA, S - 60 * M), commit_at(OLD, S - 120 * M)], now=S + 120 * M)
+        self.assertEqual(rc, 1)
+        self.assertIn(OLD[:9], out)  # nothing credited: the oldest listed commit is the undeployed one
+
+
+class ReceiptOrderTest(AlarmCase):
+    def test_fp02_the_later_cutover_is_credited_and_rule_2_stays_green_past_the_deadline(self):
+        # cd-deploy.yml queues runs (FIFO lock, queue: max): the run created first can cut over last. The newest-created
+        # run deployed OLD at 06:10; the older-created run deployed the head at 06:30, so C00 runs the head.
+        runs = [deploy(OLD, run_id=21, done="2026-11-05T06:10:00Z"), deploy(SHA, run_id=20, done="2026-11-05T06:30:00Z")]
+        commits = [commit_at(SHA, S - 60 * M), commit_at(OLD, S - 600 * M)]
+        rc, out, _ = self.run_main(deploy_runs=runs, commits=commits, now=S + 120 * M)
+        self.assertEqual((rc, out), (0, "main %s is deployed to C00.\n" % SHA[:9]))
+
+    def test_fp02_the_older_cutover_is_not_credited_when_it_completed_first(self):
+        runs = [deploy(SHA, run_id=21, done="2026-11-05T06:10:00Z"), deploy(OLD, run_id=20, done="2026-11-05T06:30:00Z")]
+        commits = [commit_at(SHA, S - 60 * M), commit_at(OLD, S - 600 * M)]
+        rc, out, _ = self.run_main(deploy_runs=runs, commits=commits, now=S + 120 * M)
+        self.assertEqual(rc, 1)
+        self.assertIn(SHA[:9], out)
+
+
+class FailurePathTest(AlarmCase):
+    def test_fp01_r9_a_jobs_api_error_still_dispatches_reruns_and_reports_rule_2(self):
+        boom = subprocess.CalledProcessError(1, "gh", stderr="HTTP 500: Server Error")
+        runs = [deploy(SHA, error=boom)]
+        rc, out, seen = self.run_main(qual_runs=[qual("failure")], deploy_runs=runs, commits=[commit_at(SHA, at(11, 30))], now=at(12, 0),
+                                      schedule_runs=[], dispatch_fails=False)
+        self.assertEqual(self.dispatches(seen), [self.DISPATCH])
+        self.assertEqual(self.reruns(seen), [("run", "rerun", "10", "--failed", "-R", REPO)])
+        self.assertIn("::error::rule 2 could not read deploy receipts: ", out)
+        self.assertIn("HTTP 500", out)
+        self.assertEqual(rc, 1)
+
+    def test_a_deploy_run_list_error_is_reported_the_same_way(self):
+        boom = subprocess.CalledProcessError(1, "gh", stderr="HTTP 502")
+        rc, out, seen = self.run_main(qual_runs=[qual("failure")], deploy_list_error=boom, minutes_ago=30)
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::rule 2 could not read deploy receipts: ", out)
+        self.assertEqual(len(self.reruns(seen)), 1)
+
+    def test_a_malformed_jobs_payload_is_reported_the_same_way(self):
+        run = deploy(SHA)
+        run["_jobs"] = [{"name": "deploy"}]
+        rc, out, _ = self.run_main(deploy_runs=[run], minutes_ago=30)
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::rule 2 could not read deploy receipts: ", out)
+
+    def test_a_missing_run_field_is_reported_the_same_way(self):
+        run = deploy(SHA)
+        del run["id"]
+        run["id"] = 20
+        del run["path"]
+        rc, out, _ = self.run_main(deploy_runs=[run], minutes_ago=30)
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::rule 2 could not read deploy receipts: ", out)
+
+    def test_rule_3_and_rule_1_run_before_rule_2(self):
+        boom = subprocess.CalledProcessError(1, "gh", stderr="HTTP 500")
+        _, _, seen = self.run_main(qual_runs=[qual("failure")], deploy_runs=[deploy(SHA, error=boom)], minutes_ago=30, schedule_runs=[])
+        order = [i for i, a in enumerate(seen) if a[:2] in (("workflow", "run"), ("run", "rerun")) or self.jobs_calls([a])]
+        kinds = ["dispatch" if seen[i][:2] == ("workflow", "run") else "rerun" if seen[i][:2] == ("run", "rerun") else "jobs" for i in order]
+        self.assertEqual(kinds, ["dispatch", "rerun", "jobs"])
+
+
+class MainTest(AlarmCase):
+    def test_failed_build_is_rerun_once_and_not_yet_alerted(self):
+        rc, out, seen = self.run_main([qual("failure")], [], 30)
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.reruns(seen), [("run", "rerun", "10", "--failed", "-R", REPO)])
+
+    def test_second_attempt_failure_after_the_deadline_alerts_with_run_url_and_first_error(self):
+        rc, out, seen = self.run_main([qual("failure", attempt=2)], [], 400)
+        self.assertEqual(rc, 1)
+        self.assertEqual(self.reruns(seen), [])
+        self.assertIn("::error::", out)
+        self.assertIn("https://example.test/run/10", out)
+        self.assertIn("buildx failed: boom", out)
+
+    def test_healthy_deployed_head_is_silent(self):
+        rc, out, _ = self.run_main([qual("success")], [deploy(SHA)], 300)
+        self.assertEqual((rc, out), (0, "main %s is deployed to C00.\n" % SHA[:9]))
+
+    def test_head_inside_the_window_is_not_an_alert(self):
+        rc, out, _ = self.run_main([qual("success")], [], 30)
+        self.assertEqual(rc, 0)
+        self.assertIn("inside its window", out)
+
+    def test_successful_run_with_skipped_deploy_job_still_alerts(self):
+        rc, out, _ = self.run_main([qual("success")], [deploy(SHA, deploy_job="skipped")], 400)
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+
+    def test_old_undeployed_head_with_no_error_line_still_alerts(self):
+        rc, out, _ = self.run_main([qual("success")], [deploy(SHA, deploy_job="failure")], 400, log="nothing useful\n")
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+
+    def test_no_qualification_run_at_all_alerts_after_the_deadline(self):
+        rc, out, _ = self.run_main([], [], 400)
+        self.assertEqual(rc, 1)
+        self.assertIn("no qualification run found", out)
+
+    def test_missed_deploy_slot_alerts_even_when_main_is_deployed(self):
+        rc, out, _ = self.run_main([qual("success")], [deploy(SHA)], 300, schedule_runs=[])
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+        self.assertIn("09:17 UTC", out)
+        self.assertIn("16:17 ICT", out)
+
+    def test_missed_slot_dispatches_cd_deploy_once_and_stays_red(self):
+        rc, out, seen = self.run_main([qual("success")], [deploy(SHA)], 300, schedule_runs=[])
+        self.assertEqual(self.dispatches(seen), [self.DISPATCH])
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::cd-deploy.yml slot 09:17 UTC", out)
+        self.assertIn("backup dispatch", out)
+
+    def test_no_second_dispatch_when_a_cd_deploy_run_started_since_the_slot(self):
+        # the run an earlier alarm dispatched (or a workflow_run deploy) is created after 09:17 UTC
+        started = {"id": 40, "event": "workflow_dispatch", "created_at": "2026-11-05T09:50:00Z"}
+        rc, out, seen = self.run_main([qual("success")], [deploy(SHA)], 300, schedule_runs=[], any_runs=[started])
+        self.assertEqual(self.dispatches(seen), [])
+        self.assertEqual(rc, 1)
+        self.assertIn("::error::", out)
+
+    def test_a_run_from_before_the_slot_does_not_block_the_dispatch(self):
+        old = {"id": 41, "event": "schedule", "created_at": "2026-11-05T05:20:00Z"}
+        _, _, seen = self.run_main([qual("success")], [deploy(SHA)], 300, schedule_runs=[], any_runs=[old])
+        self.assertEqual(self.dispatches(seen), [self.DISPATCH])
+
+    def test_no_dispatch_when_the_slot_ran(self):
+        _, _, seen = self.run_main([qual("success")], [deploy(SHA)], 300)
+        self.assertEqual(self.dispatches(seen), [])
+
+    def test_failed_dispatch_keeps_the_alarm_and_the_rerun(self):
+        rc, out, seen = self.run_main([qual("failure")], [], 30, schedule_runs=[], dispatch_fails=True)
+        self.assertEqual(rc, 1)
+        self.assertIn("backup dispatch failed", out)
+        self.assertEqual(self.reruns(seen), [("run", "rerun", "10", "--failed", "-R", REPO)])
+
+
+class LiveTest(AlarmCase):
     """Run history cannot see a rollback done on C00, so the live revision is the only proof of what runs now."""
 
-    def test_running_the_head_clears_the_alarm(self):
-        self.assertEqual(fresh.decide_live(SHA, head_at(600), NOW, SHA[:7]), {"alert": False, "deployed": True})
+    def run_live(self, live, commits, now):
+        rc, out, _ = self.run_main(commits=commits, now=now, argv=["--live"], live=live)
+        return rc, out
 
-    def test_rolled_back_to_an_older_commit_alerts_after_90_minutes(self):
-        self.assertTrue(fresh.decide_live(SHA, head_at(120), NOW, "d43d0c9")["alert"])
-        self.assertFalse(fresh.decide_live(SHA, head_at(89), NOW, "d43d0c9")["alert"])
-
-    def test_unreadable_live_revision_alerts_after_90_minutes(self):
-        self.assertTrue(fresh.decide_live(SHA, head_at(120), NOW, None)["alert"])
-        self.assertFalse(fresh.decide_live(SHA, head_at(10), NOW, None)["alert"])
-
-    def test_live_commit_is_read_from_api_config_and_compared_with_the_short_head(self):
+    def test_live_commit_is_read_from_api_config(self):
         resp = MagicMock(); resp.read.return_value = json.dumps({"server_commit": "d43d0c9"}).encode()
         resp.__enter__.return_value = resp
         with patch.object(fresh.urllib.request, "urlopen", return_value=resp) as op:
@@ -130,75 +489,49 @@ class LiveTest(unittest.TestCase):
         with patch.object(fresh.urllib.request, "urlopen", side_effect=OSError("timed out")):
             self.assertIsNone(fresh.live_commit("https://c00.test:19444"))
 
-    def run_live(self, live, minutes_ago, older=()):
-        commit = [commit_json(SHA, minutes_ago), *older]
-        out = io.StringIO()
-        with patch.dict(fresh.os.environ, {"GITHUB_REPOSITORY": "cheese-work/multica", "C00_API_URL": "https://c00.test"}), \
-                patch.object(fresh, "gh_api", return_value=json.dumps(commit)), patch.object(fresh, "utcnow", return_value=NOW), \
-                patch.object(fresh, "live_commit", return_value=live), contextlib.redirect_stdout(out):
-            rc = fresh.main(["--live"])
-        return rc, out.getvalue()
+    def test_running_the_head_is_silent(self):
+        self.assertEqual(self.run_live(SHA[:7], [commit_at(SHA, S - 600 * M)], NOW), (0, "main %s runs on C00 (live revision %s).\n" % (SHA[:9], SHA[:7])))
 
-    def test_main_live_rollback_after_a_successful_deploy_alerts(self):
-        rc, out = self.run_live("d43d0c9", 120)
+    def test_r7_an_older_live_revision_inside_the_slot_window_is_green(self):
+        # live runs OLD; the head merged at S + 5 and the next slot is S2, so the deadline is S2 + 90, not S + 95.
+        rc, out = self.run_live(OLD[:7], [commit_at(SHA, S + 5 * M), commit_at(OLD, S - 600 * M)], S + 125 * M)
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("::error::", out)
+
+    def test_r7_an_older_live_revision_after_the_slot_deadline_is_red(self):
+        rc, out = self.run_live(OLD[:7], [commit_at(SHA, S + 5 * M), commit_at(OLD, S - 600 * M)], S2 + 90 * M)
         self.assertEqual(rc, 1)
         self.assertIn("::error::", out)
+        self.assertIn(OLD[:7], out)
+
+    def test_r7_rollback_control_alerts(self):
+        # C00 rolled back to d43d0c9 a day after the head merged
+        older = commit_at("d43d0c9" + "0" * 33, S - 3000 * M)
+        rc, out = self.run_live("d43d0c9", [commit_at(SHA, S - 1440 * M), older], S + 120 * M)
+        self.assertEqual(rc, 1)
         self.assertIn("d43d0c9", out)
 
-    def test_main_live_alerts_on_the_oldest_undeployed_commit_not_the_newest(self):
-        older = [commit_json("a" * 40, 100), commit_json("d43d0c9" + "0" * 33, 300)]
-        rc, out = self.run_live("d43d0c9", 40, older=older)
+    def test_live_alerts_on_the_oldest_undeployed_commit_not_the_newest(self):
+        a = "a" * 40
+        commits = [commit_at(SHA, S2 - 10 * M), commit_at(a, S - 60 * M), commit_at("d43d0c9" + "0" * 33, S - 300 * M)]
+        rc, out = self.run_live("d43d0c9", commits, S + 100 * M)
         self.assertEqual(rc, 1)
-        self.assertIn("100 min", out)
+        self.assertIn(a[:9], out)
 
-    def test_main_live_healthy_is_silent(self):
-        self.assertEqual(self.run_live(SHA[:7], 600), (0, "main %s runs on C00 (live revision %s).\n" % (SHA[:9], SHA[:7])))
+    def test_fp03_unreadable_revision_after_an_older_deadline_stays_red_when_a_fresh_merge_lands(self):
+        # A merged at S - 60 (deadline S + 90). C00 cannot be read. A fresh merge lands at S + 100 (deadline S2 + 90).
+        # The head's window must not hide A's missed deadline.
+        a = "a" * 40
+        commits = [commit_at(SHA, S + 100 * M), commit_at(a, S - 60 * M)]
+        rc, out = self.run_live(None, commits, S + 105 * M)
+        self.assertEqual(rc, 1)
+        self.assertIn("unreadable", out)
+        self.assertIn(a[:9], out)
 
-
-class RateLimitTest(unittest.TestCase):
-    def err(self, text):
-        return subprocess.CalledProcessError(1, "gh", stderr=text)
-
-    def test_rate_limit_waits_until_reset_then_retries(self):
-        reset = int(NOW.timestamp()) + 120
-        calls = [self.err("gh: API rate limit exceeded (HTTP 403)"), "42\n"]
-        sleeps = []
-        with patch.object(fresh, "_gh", side_effect=lambda *a: (_ for _ in ()).throw(calls.pop(0)) if isinstance(calls[0], Exception) else calls.pop(0)) as gh, \
-                patch.object(fresh, "_reset_epoch", return_value=reset), patch.object(fresh.time, "time", return_value=NOW.timestamp()):
-            self.assertEqual(fresh.gh_api("x", sleep=sleeps.append), "42\n")
-        self.assertEqual(sleeps, [121])
-        self.assertEqual(gh.call_count, 2)
-
-    def test_429_is_also_a_rate_limit(self):
-        calls = [self.err("HTTP 429: Too Many Requests"), "ok"]
-        sleeps = []
-        with patch.object(fresh, "_gh", side_effect=lambda *a: (_ for _ in ()).throw(calls.pop(0)) if isinstance(calls[0], Exception) else calls.pop(0)), \
-                patch.object(fresh, "_reset_epoch", return_value=int(NOW.timestamp()) + 5), patch.object(fresh.time, "time", return_value=NOW.timestamp()):
-            self.assertEqual(fresh.gh_api("x", sleep=sleeps.append), "ok")
-        self.assertEqual(len(sleeps), 1)
-
-    def test_other_errors_are_not_retried(self):
-        with patch.object(fresh, "_gh", side_effect=self.err("HTTP 404: Not Found")) as gh:
-            with self.assertRaises(subprocess.CalledProcessError):
-                fresh.gh_api("x", sleep=lambda s: None)
-        self.assertEqual(gh.call_count, 1)
-
-    def test_wait_is_capped_and_gives_up_after_two_retries(self):
-        sleeps = []
-        with patch.object(fresh, "_gh", side_effect=self.err("API rate limit exceeded")) as gh, \
-                patch.object(fresh, "_reset_epoch", return_value=int(NOW.timestamp()) + 99999), patch.object(fresh.time, "time", return_value=NOW.timestamp()):
-            with self.assertRaises(subprocess.CalledProcessError):
-                fresh.gh_api("x", sleep=sleeps.append)
-        self.assertEqual(sleeps, [fresh.MAX_WAIT, fresh.MAX_WAIT])
-        self.assertEqual(gh.call_count, 3)
-
-
-def sched(created):
-    return {"id": 30, "event": "schedule", "created_at": created, "html_url": "https://example.test/run/30"}
-
-
-def at(h, m=0, day=5):
-    return dt.datetime(2026, 11, day, h, m, tzinfo=dt.timezone.utc)
+    def test_unreadable_revision_inside_the_window_is_green(self):
+        rc, out = self.run_live(None, [commit_at(SHA, S - 60 * M)], S + 80 * M)
+        self.assertEqual(rc, 0)
+        self.assertIn("unreadable", out)
 
 
 class MissedSlotTest(unittest.TestCase):
@@ -225,124 +558,6 @@ class MissedSlotTest(unittest.TestCase):
 
     def test_off_slot_hours_use_the_latest_slot(self):
         self.assertEqual(self.missed(at(3, 0), []), at(1, 17))
-
-
-class MainTest(unittest.TestCase):
-    def run_main(self, qual_runs, deploy_runs, minutes_ago, older=(), deploy_job="success", schedule_runs=(sched("2026-11-05T09:20:00Z"),), any_runs=(), dispatch_fails=False, log="2026-11-05T10:01:02Z ok\n2026-11-05T10:01:03Z ##[error]buildx failed: boom\n"):
-        commit = [commit_json(SHA, minutes_ago), *older]
-        jobs = [{"id": 7, "name": "build-images", "conclusion": "failure"}, {"id": 8, "name": "cd-qualification", "conclusion": "skipped"}]
-        seen = []
-
-        def fake(*args):
-            seen.append(args)
-            path = args[-1]
-            if args[:2] == ("workflow", "run") and dispatch_fails:
-                raise subprocess.CalledProcessError(1, "gh", stderr="HTTP 403")
-            if args[:2] in (("run", "rerun"), ("workflow", "run")):
-                return ""
-            if "/commits?" in path:
-                return json.dumps(commit)
-            if "workflows/cd-qualification.yml/runs" in path:
-                return json.dumps({"workflow_runs": qual_runs})
-            if "workflows/cd-deploy.yml/runs" in path and "event=schedule" in path:
-                return json.dumps({"workflow_runs": list(schedule_runs)})
-            if "workflows/cd-deploy.yml/runs" in path and "branch=main" in path:
-                return json.dumps({"workflow_runs": list(any_runs)})
-            if "workflows/cd-deploy.yml/runs" in path:
-                self.assertIn("status=success", path)
-                return json.dumps({"workflow_runs": deploy_runs})
-            if "/actions/runs/20/jobs" in path:
-                return json.dumps({"jobs": [{"id": 9, "name": "deploy", "conclusion": deploy_job}]})
-            if path.endswith("/jobs?per_page=100"):
-                return json.dumps({"jobs": jobs})
-            if path.endswith("/jobs/7/logs"):
-                return log
-            raise AssertionError(path)
-
-        out = io.StringIO()
-        with patch.dict(fresh.os.environ, {"GITHUB_REPOSITORY": "cheese-work/multica"}), \
-                patch.object(fresh, "gh_api", side_effect=fake), patch.object(fresh, "utcnow", return_value=NOW), \
-                contextlib.redirect_stdout(out):
-            rc = fresh.main()
-        return rc, out.getvalue(), seen
-
-    def test_failed_build_is_rerun_once_and_not_yet_alerted(self):
-        rc, out, seen = self.run_main([qual("failure")], [], 30)
-        self.assertEqual(rc, 0)
-        self.assertEqual([a for a in seen if a[:2] == ("run", "rerun")], [("run", "rerun", "10", "--failed", "-R", "cheese-work/multica")])
-
-    def test_second_attempt_failure_after_90_minutes_alerts_with_run_url_and_first_error(self):
-        rc, out, seen = self.run_main([qual("failure", attempt=2)], [], 95)
-        self.assertEqual(rc, 1)
-        self.assertEqual([a for a in seen if a[:2] == ("run", "rerun")], [])
-        self.assertIn("::error::", out)
-        self.assertIn("https://example.test/run/10", out)
-        self.assertIn("buildx failed: boom", out)
-
-    def test_unmerged_deploy_of_an_older_commit_keeps_the_alarm_after_a_newer_merge(self):
-        # CHE-7522: A (100 min old) never deployed, head B is 40 min old; C00 runs older commit C.
-        older = [commit_json("a" * 40, 100), commit_json("c" * 40, 300)]
-        rc, out, _ = self.run_main([qual("failure", attempt=2)], [deploy("success", sha="c" * 40)], 40, older=older)
-        self.assertEqual(rc, 1)
-        self.assertIn("100 min after merge", out)
-
-    def test_healthy_deployed_head_is_silent(self):
-        rc, out, seen = self.run_main([qual("success")], [deploy("success")], 300)
-        self.assertEqual((rc, out), (0, "main %s is deployed to C00.\n" % SHA[:9]))
-
-    def test_successful_run_with_skipped_deploy_job_still_alerts(self):
-        rc, out, _ = self.run_main([qual("success")], [deploy("success")], 120, deploy_job="skipped")
-        self.assertEqual(rc, 1)
-        self.assertIn("::error::", out)
-
-    def test_old_undeployed_head_with_no_error_line_still_alerts(self):
-        rc, out, _ = self.run_main([qual("success")], [deploy("failure")], 120, log="nothing useful\n")
-        self.assertEqual(rc, 1)
-        self.assertIn("::error::", out)
-
-
-    def test_missed_deploy_slot_alerts_even_when_main_is_deployed(self):
-        rc, out, _ = self.run_main([qual("success")], [deploy("success")], 300, schedule_runs=[])
-        self.assertEqual(rc, 1)
-        self.assertIn("::error::", out)
-        self.assertIn("09:17 UTC", out)
-        self.assertIn("16:17 ICT", out)
-
-    DISPATCH = ("workflow", "run", "cd-deploy.yml", "--ref", "main", "-f", "schedule_backup=true", "-R", "cheese-work/multica")
-
-    @staticmethod
-    def dispatches(seen):
-        return [a for a in seen if a[:2] == ("workflow", "run")]
-
-    def test_missed_slot_dispatches_cd_deploy_once_and_stays_red(self):
-        rc, out, seen = self.run_main([qual("success")], [deploy("success")], 300, schedule_runs=[])
-        self.assertEqual(self.dispatches(seen), [self.DISPATCH])
-        self.assertEqual(rc, 1)
-        self.assertIn("::error::cd-deploy.yml slot 09:17 UTC", out)
-        self.assertIn("backup dispatch", out)
-
-    def test_no_second_dispatch_when_a_cd_deploy_run_started_since_the_slot(self):
-        # the run an earlier alarm dispatched (or a workflow_run deploy) is created after 09:17 UTC
-        started = {"id": 40, "event": "workflow_dispatch", "created_at": "2026-11-05T09:50:00Z"}
-        rc, out, seen = self.run_main([qual("success")], [deploy("success")], 300, schedule_runs=[], any_runs=[started])
-        self.assertEqual(self.dispatches(seen), [])
-        self.assertEqual(rc, 1)
-        self.assertIn("::error::", out)
-
-    def test_a_run_from_before_the_slot_does_not_block_the_dispatch(self):
-        old = {"id": 41, "event": "schedule", "created_at": "2026-11-05T05:20:00Z"}
-        _, _, seen = self.run_main([qual("success")], [deploy("success")], 300, schedule_runs=[], any_runs=[old])
-        self.assertEqual(self.dispatches(seen), [self.DISPATCH])
-
-    def test_no_dispatch_when_the_slot_ran(self):
-        _, _, seen = self.run_main([qual("success")], [deploy("success")], 300)
-        self.assertEqual(self.dispatches(seen), [])
-
-    def test_failed_dispatch_keeps_the_alarm_and_the_rerun(self):
-        rc, out, seen = self.run_main([qual("failure")], [], 30, schedule_runs=[], dispatch_fails=True)
-        self.assertEqual(rc, 1)
-        self.assertIn("backup dispatch failed", out)
-        self.assertEqual([a for a in seen if a[:2] == ("run", "rerun")], [("run", "rerun", "10", "--failed", "-R", "cheese-work/multica")])
 
 
 class WorkflowFileTest(unittest.TestCase):
@@ -374,6 +589,10 @@ class WorkflowFileTest(unittest.TestCase):
         self.assertIn("check-deploy-freshness.py --live", text)
         self.assertIn("permissions:\n  contents: read\n  actions: read", text)
         self.assertNotIn("actions: write", text)
+
+    def test_r10_step_labels_state_the_slot_deadline(self):
+        self.assertIn("- name: Rerun a failed main build once; alarm when main misses its deploy slot + 90 min\n", self.read("cd-freshness-watch.yml"))
+        self.assertIn("- name: Alarm when C00 does not run main's head 90 min after its deploy slot\n", self.read("cd-live-revision.yml"))
 
 
 if __name__ == "__main__":

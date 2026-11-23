@@ -663,6 +663,15 @@ there with "nothing new to deploy": no C00 runner, lock or approval is taken.
 The automatic path adds `candidate-preflight` and `prepare-release-candidate`, which the manual
 path does not need (CHE-4582: the automatic path deploys only for an
 authorized merger, below). The resolved candidate SHA is in the `schedule-resolve` job summary.
+The freshness alarm (CHE-9243) alarms when the oldest main commit that C00 does not run has missed its deploy slot:
+the deadline is the first slot (17 past 01/05/09/13/17/21 UTC) strictly after that commit's merge, plus 90 minutes,
+so a normal wait for the next slot is not red. C00 runs the SHA named by the `release-receipt` job that completed last,
+read from a successful `cd-deploy.yml` run on `main` in this repository whose `deploy` job and receipt job both
+succeeded (the same step-name rule as `ghrun.ParseReleaseReceipt`; run titles carry no SHA and are not read). The scan
+reads the jobs of the newest 30 runs. `--live` (`cd-live-revision.yml`) applies the same deadline to the revision
+C00 reports, and an unreadable revision counts the oldest listed commit as undeployed. The alarm acts in this order:
+missed-slot dispatch, rerun of a failed qualification build, then the receipt check, so a failed receipt lookup
+prints `rule 2 could not read deploy receipts` and cannot stop the first two.
 GitHub can drop a scheduled slot. When no `schedule` run exists 30 minutes after a slot,
 the freshness alarm (`cd-freshness-watch.yml`) stays red and sends one
 `gh workflow run cd-deploy.yml --ref main -f schedule_backup=true` (CHE-5353), skipped when any
