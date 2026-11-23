@@ -1070,6 +1070,26 @@ WHERE c.id IN (SELECT id FROM recent_replies)
        AND c.deleted_at IS NULL)
 ORDER BY c.created_at, c.id;
 
+-- name: ListEarlierIdenticalMemberCommentIDs :many
+-- Live comments by the same member on the same issue, posted before the anchor,
+-- whose text equals the given text once trimmed and whitespace-collapsed
+-- (CHE-9042). Oldest first.
+SELECT c.id
+FROM comment c
+WHERE c.workspace_id = sqlc.arg(workspace_id)
+  AND c.issue_id = sqlc.arg(issue_id)
+  AND c.author_type = 'member'
+  AND c.author_id = sqlc.arg(author_id)
+  AND c.type = 'comment'
+  AND c.deleted_at IS NULL
+  AND (c.created_at, c.id) < (
+    sqlc.arg(anchor_created_at)::timestamptz,
+    sqlc.arg(anchor_id)::uuid
+  )
+  AND regexp_replace(btrim(c.content), '\s+', ' ', 'g') =
+      regexp_replace(btrim(sqlc.arg(content)::text), '\s+', ' ', 'g')
+ORDER BY c.created_at, c.id;
+
 -- name: LockCommentAncestorPath :many
 WITH RECURSIVE ancestor_ids AS (
   SELECT c.id, c.parent_id, 1::integer AS depth, ARRAY[c.id]::uuid[] AS visited_ids
@@ -1184,3 +1204,59 @@ DO UPDATE SET superseding_comment_id = EXCLUDED.superseding_comment_id,
 SELECT superseded_comment_id, superseding_comment_id
 FROM comment_supersession
 WHERE issue_id = @issue_id AND workspace_id = @workspace_id;
+
+-- name: CountThreadLiveComments :one
+-- The live comments in @target_id's thread, root included (same walk as
+-- GetThreadLatestComment). The long-thread route (CHE-6432) compares it with
+-- long_thread_member_ask_min.
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = @target_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1)
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+)
+SELECT count(*) FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.deleted_at IS NULL;
+
+-- name: ListThreadLastAuthors :many
+-- The author of each of the newest @row_limit live comments in @target_id's
+-- thread (root plus every descendant), newest first. The long-thread route
+-- (CHE-6432) reads it to see whether a mentioned member is in the conversation.
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = @target_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+descendants AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1)
+    UNION
+    SELECT c.id
+    FROM comment c
+    JOIN descendants d ON c.parent_id = d.id
+    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
+)
+SELECT comment.author_type, comment.author_id FROM comment
+WHERE comment.id IN (SELECT id FROM descendants)
+  AND comment.deleted_at IS NULL
+ORDER BY comment.created_at DESC, comment.id DESC
+LIMIT @row_limit;

@@ -105,9 +105,7 @@ func TestBrowserLeaseMintS2DecisionIsAskedAsTheMintingAgent(t *testing.T) {
 	other := dbfx.Agent(t, "Other Assignee "+uuid.NewString(), dbfx.Runtime(t, "other runtime"))
 	dbfx.Exec(t, `UPDATE issue SET assignee_type = 'agent', assignee_id = $2 WHERE id = (SELECT issue_id FROM agent_task_queue WHERE id = $1)`, f.taskID, other)
 	// S2 runs on a C00 instance; the fixture's X99 instance serves S0 only.
-	if _, err := db.New(testPool).CreateBrowserInstance(context.Background(), db.CreateBrowserInstanceParams{WorkspaceID: parseUUID(testWorkspaceID), Name: "c00-1"}); err != nil {
-		t.Fatal(err)
-	}
+	registerBrowserInstance(t, db.New(testPool), parseUUID(testWorkspaceID), "c00-1")
 	out := mintS2(t, f, profile)
 
 	var asking string

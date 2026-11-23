@@ -322,6 +322,22 @@ daemon. Compare a PID with `multica daemon status --output json` first.
   state. Reset only when a person asked for it or the provider is confirmed
   healthy.
 
+## Browser leases
+
+A lease gives a run one browser profile through the gateway. Only the lease
+holder gets a token; no command prints a token except `lease` and `renew`.
+
+- `multica browser lease --profile <profile-id> [--decision <decision-id>]`
+  asks for a lease. A granted lease prints the gateway URL and a short-lived
+  token on stdout. A queued lease prints its queue position and no token. A
+  login profile needs `--decision`, the id of an answered decision request on
+  this issue.
+- `multica browser status <lease-id>` shows the lease state; it never prints a
+  token. Use it to see whether a queued lease was granted.
+- `multica browser renew <lease-id>` renews the lease and prints a fresh token.
+- `multica browser release <lease-id>` ends a lease you hold. Release when the
+  browser work ends; do not let a lease expire.
+
 ## Restricted-run git token
 
 `multica git read-token` is called by the `gh` wrapper in a restricted run. The

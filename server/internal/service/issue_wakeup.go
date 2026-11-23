@@ -1510,6 +1510,19 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 	}
 	receipts = live.withoutSettled(receipts)
 	taken = append(taken, live.settled...)
+	// An admitted fallback frees its receipts: they stay in the free list and
+	// take today's path below, in this transaction.
+	for _, fb := range live.fallbacks {
+		details := map[string]any{
+			"reason": fb.reason, "task_id": util.UUIDToString(fb.item.TaskID), "firing_id": util.UUIDToString(fb.item.EventID),
+		}
+		if fb.failureReason != "" {
+			details["failure_reason"] = fb.failureReason
+		}
+		if err := note(wakeupActivityJoinFallback, details); err != nil {
+			return err
+		}
+	}
 	for _, run := range taken {
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: receiptIDs(run.receipts), TaskID: run.task.ID}); err != nil {
 			return err

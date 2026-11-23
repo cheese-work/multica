@@ -490,6 +490,38 @@ func (q *Queries) GetTaskPREventCapability(ctx context.Context, taskID pgtype.UU
 	return i, err
 }
 
+const getTaskPREventDelivery = `-- name: GetTaskPREventDelivery :one
+SELECT task_id, event_id, workspace_id, issue_id, status, failure_reason, attempt_count, created_at, updated_at, delivered_at, item_kind, wakeup_id, wakeup_revision, receipt_ids, note FROM task_pr_event_delivery WHERE task_id = $1 AND event_id = $2
+`
+
+type GetTaskPREventDeliveryParams struct {
+	TaskID  pgtype.UUID `json:"task_id"`
+	EventID pgtype.UUID `json:"event_id"`
+}
+
+func (q *Queries) GetTaskPREventDelivery(ctx context.Context, arg GetTaskPREventDeliveryParams) (TaskPrEventDelivery, error) {
+	row := q.db.QueryRow(ctx, getTaskPREventDelivery, arg.TaskID, arg.EventID)
+	var i TaskPrEventDelivery
+	err := row.Scan(
+		&i.TaskID,
+		&i.EventID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.Status,
+		&i.FailureReason,
+		&i.AttemptCount,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeliveredAt,
+		&i.ItemKind,
+		&i.WakeupID,
+		&i.WakeupRevision,
+		&i.ReceiptIds,
+		&i.Note,
+	)
+	return i, err
+}
+
 const listAcceptedPRNoticeEvents = `-- name: ListAcceptedPRNoticeEvents :many
 SELECT id FROM issue_pr_event
 WHERE issue_id = $1

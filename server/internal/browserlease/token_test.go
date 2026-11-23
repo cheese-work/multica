@@ -21,6 +21,16 @@ func seed(b byte) string {
 	return base64.StdEncoding.EncodeToString(s)
 }
 
+// parseAllowing parses a keyring that may sign both legacy host audiences. A keyring with no
+// allowlist signs nothing (plan r16, "Eligibility E").
+func parseAllowing(spec string) (*Keyring, error) {
+	kr, err := ParseKeyring(spec)
+	if err != nil {
+		return nil, err
+	}
+	return kr.WithAudiences(NewAudienceSet(Aud(HostC00), Aud(HostX99))), nil
+}
+
 const tNow = int64(1_800_000_000)
 
 // claims is what W3-3's Service hands the signer for a C00 S2 lease.
@@ -97,7 +107,7 @@ func sign(t *testing.T, kr *Keyring, c Claims) string {
 }
 
 func TestSignClaimsAndJWKS(t *testing.T) {
-	kr, err := testKeyring("k1:" + seed(1))
+	kr, err := parseAllowing("k1:" + seed(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +145,7 @@ func TestSignClaimsAndJWKS(t *testing.T) {
 
 // The gateway on each host accepts only its own audience (shared-browser steel-gateway/verify.go).
 func TestAudienceIsHostSpecific(t *testing.T) {
-	kr, _ := testKeyring("k1:" + seed(1))
+	kr, _ := parseAllowing("k1:" + seed(1))
 	keys, _ := fetchJWKS(t, kr)
 	now := time.Unix(tNow, 0)
 	accepts := func(tok, aud string) bool {
@@ -164,7 +174,7 @@ func TestAudienceIsHostSpecific(t *testing.T) {
 }
 
 func TestDecisionNullOnlyForS0(t *testing.T) {
-	kr, _ := testKeyring("k1:" + seed(1))
+	kr, _ := parseAllowing("k1:" + seed(1))
 	keys, _ := fetchJWKS(t, kr)
 	tok, err := kr.Sign(s0Claims())
 	if err != nil {
@@ -184,7 +194,7 @@ func TestDecisionNullOnlyForS0(t *testing.T) {
 }
 
 func TestSignRejectsBadClaims(t *testing.T) {
-	kr, _ := testKeyring("k1:" + seed(1))
+	kr, _ := parseAllowing("k1:" + seed(1))
 	cases := map[string]func(*Claims){
 		"S1 class":       func(c *Claims) { c.Class = "S1" },
 		"unknown class":  func(c *Claims) { c.Class = "x" },
@@ -215,11 +225,11 @@ func TestSignRejectsBadClaims(t *testing.T) {
 }
 
 func TestRotationKeepsOldKeyVerifiable(t *testing.T) {
-	old, _ := testKeyring("k1:" + seed(1))
+	old, _ := parseAllowing("k1:" + seed(1))
 	now := time.Unix(tNow, 0)
 	oldTok := sign(t, old, claims())
 
-	rot, err := testKeyring("k2:" + seed(2) + ",k1:" + seed(1))
+	rot, err := parseAllowing("k2:" + seed(2) + ",k1:" + seed(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +246,7 @@ func TestRotationKeepsOldKeyVerifiable(t *testing.T) {
 }
 
 func TestJWKSHasNoPrivateMaterial(t *testing.T) {
-	kr, _ := testKeyring("k1:" + seed(1))
+	kr, _ := parseAllowing("k1:" + seed(1))
 	_, rec := fetchJWKS(t, kr)
 	if strings.Contains(rec.Body.String(), `"d"`) {
 		t.Fatalf("jwks leaks private member: %s", rec.Body.String())
@@ -244,7 +254,7 @@ func TestJWKSHasNoPrivateMaterial(t *testing.T) {
 }
 
 func TestJWKSMethods(t *testing.T) {
-	kr, _ := testKeyring("k1:" + seed(1))
+	kr, _ := parseAllowing("k1:" + seed(1))
 	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
 		rec := httptest.NewRecorder()
 		kr.JWKSHandler().ServeHTTP(rec, httptest.NewRequest(m, JWKSPath, nil))
@@ -320,7 +330,7 @@ func hClaims() Claims {
 }
 
 func TestSignAcceptsAMemberLoginLeaseWithoutTaskOrIssue(t *testing.T) {
-	kr, err := testKeyring("k1:" + seed(1))
+	kr, err := parseAllowing("k1:" + seed(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -352,10 +362,10 @@ func testKeyring(spec string) (*Keyring, error) {
 	if err != nil {
 		return nil, err
 	}
-	return kr.WithAudiences(testAudiences)
+	return kr.WithAudienceSpec(testAudiences)
 }
 
-func mustAudiences(t *testing.T, spec string) audienceSet {
+func mustAudiences(t *testing.T, spec string) AudienceSet {
 	t.Helper()
 	set, err := parseAudiences(spec)
 	if err != nil {
@@ -364,7 +374,7 @@ func mustAudiences(t *testing.T, spec string) audienceSet {
 	return set
 }
 
-func TestValidateClaimsRefusesAudOutsideAllowlist(t *testing.T) {
+func TestEnvAllowlistRefusesAudOutsideIt(t *testing.T) {
 	allowed := mustAudiences(t, "steel-gateway/c00")
 	if err := validateClaims(claims(), allowed); err != nil {
 		t.Fatalf("aud in the allowlist refused: %v", err)
@@ -386,7 +396,7 @@ func TestValidateClaimsRefusesAudOutsideAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c00Only, err := kr.WithAudiences("steel-gateway/c00")
+	c00Only, err := kr.WithAudienceSpec("steel-gateway/c00")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,16 +408,16 @@ func TestValidateClaimsRefusesAudOutsideAllowlist(t *testing.T) {
 	}
 }
 
-func TestEmptyAllowlistSignsNothing(t *testing.T) {
+func TestEmptyEnvAllowlistSignsNothing(t *testing.T) {
 	bare, err := ParseKeyring("k1:" + seed(1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	empty, err := bare.WithAudiences("")
+	empty, err := bare.WithAudienceSpec("")
 	if err != nil {
 		t.Fatalf("an empty allowlist is valid and signs nothing: %v", err)
 	}
-	spaces, err := bare.WithAudiences("  ")
+	spaces, err := bare.WithAudienceSpec("  ")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -436,7 +446,7 @@ func TestEmptyAllowlistSignsNothing(t *testing.T) {
 	}
 }
 
-func TestPrefixLookalikeAudRefused(t *testing.T) {
+func TestEnvAllowlistPrefixLookalikeRefused(t *testing.T) {
 	kr, err := testKeyring("k1:" + seed(1))
 	if err != nil {
 		t.Fatal(err)
@@ -457,7 +467,7 @@ func TestPrefixLookalikeAudRefused(t *testing.T) {
 // A third host is one entry in the allowlist: no code change, no other host affected.
 func TestThirdHostAudienceSigns(t *testing.T) {
 	bare, _ := ParseKeyring("k1:" + seed(1))
-	kr, err := bare.WithAudiences("steel-gateway/c00,steel-gateway/x99,steel-gateway/h3")
+	kr, err := bare.WithAudienceSpec("steel-gateway/c00,steel-gateway/x99,steel-gateway/h3")
 	if err != nil {
 		t.Fatal(err)
 	}

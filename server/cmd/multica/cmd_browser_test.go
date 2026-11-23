@@ -35,6 +35,9 @@ func runBrowser(t *testing.T, args ...string) (stdout, stderr string, err error)
 		c.Flags().VisitAll(func(f *pflag.Flag) { f.Value.Set(f.DefValue) })
 	}
 	var out, errb bytes.Buffer
+	// rootCmd is shared by the whole package: leave its writers and args as found, or
+	// every later test that prints through cmd.OutOrStdout() writes into this buffer.
+	t.Cleanup(func() { rootCmd.SetOut(nil); rootCmd.SetErr(nil); rootCmd.SetArgs(nil) })
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&errb)
 	rootCmd.SetArgs(append([]string{"browser"}, args...))

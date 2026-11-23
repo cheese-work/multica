@@ -74,6 +74,40 @@ test("missing-block: a mapped block absent on both sides is one instance, side b
   assert.ok(v.every((x) => x.side === "both"));
 });
 
+// Rule 3 per case (CHE-9088, contract C2). A case may carry `blocks`: the block ids the lock state draws. A mapped block
+// that is absent on both sides and not in the list is not judged; a listed block still fails, and a block present on one side fails whatever the list says.
+test("rule 3 per case: an unlisted block absent on both sides is not a violation", () => {
+  const v = compareBlocks({ ...CASE, blocks: ["a"] }, side([["a", "A"]]), side([["a", "A"]]), ["a", "folded", "title"]);
+  assert.deepEqual(v, []);
+});
+
+test("rule 3 per case: a listed block absent on both sides still fails, side both", () => {
+  const v = compareBlocks({ ...CASE, blocks: ["a", "title"] }, side([["a", "A"]]), side([["a", "A"]]), ["a", "folded", "title"]);
+  assert.deepEqual(ids(v), ["missing-block:title"]);
+  assert.equal(v[0].side, "both");
+});
+
+test("rule 3 per case: a listed block absent on one side still fails", () => {
+  const onlyLock = compareBlocks({ ...CASE, blocks: ["a", "b"] }, side([["a", "A"], ["b", "B"]]), side([["a", "A"]]), ["a", "b", "folded"]);
+  assert.deepEqual(ids(onlyLock), ["missing-block:b"]);
+  assert.equal(onlyLock[0].side, "code");
+  const onlyCode = compareBlocks({ ...CASE, blocks: ["a", "b"] }, side([["a", "A"]]), side([["a", "A"], ["b", "B"]]), ["a", "b", "folded"]);
+  assert.deepEqual(ids(onlyCode), ["missing-block:b"]);
+  assert.equal(onlyCode[0].side, "lock");
+});
+
+test("rule 3 per case: an unlisted block present on one side still fails", () => {
+  const v = compareBlocks({ ...CASE, blocks: ["a"] }, side([["a", "A"]]), side([["a", "A"], ["x", "X"]]), ["a", "x"]);
+  assert.deepEqual(ids(v), ["missing-block:x"]);
+  assert.equal(v[0].side, "lock");
+});
+
+test("rule 3 per case: a case without `blocks` judges every mapped block, as before", () => {
+  const v = compareBlocks(CASE, side([["a", "A"]]), side([["a", "A"]]), ["a", "folded"]);
+  assert.deepEqual(ids(v), ["missing-block:folded"]);
+  assert.equal(v[0].side, "both");
+});
+
 // Rules 1, 2 and 4 (CHE-5793 step 3). A side may also carry `unmapped` (items outside every mapped block, each
 // { kind, key }) and `dups` (block id -> element count, for a non-repeat block that matches more than one element).
 const withExtra = (s, extra) => ({ ...s, ...extra });

@@ -92,3 +92,8 @@ by pushing to the PR. Unlink only when the link is wrong.
   policy does not change until the decision is approved. `--dry-run` prints both
   digests and the action. Deeper layers override shallower ones key by key; a
   locked layer freezes the keys it sets.
+- `multica guard log [--action fixed|refused|plugin-error|shadow-hit|pass] [--plugin <name>] [--since 7d|24h|<RFC 3339>] [--limit 1..500]`
+  lists recent guard decisions, newest first (default: last 7 days, 50 rows).
+- `multica guard stats [--days 1..90]` counts decisions per plugin (fixed,
+  refused, errors) for the last days (default 7). Read these before you decide
+  a plugin is noisy or silent.

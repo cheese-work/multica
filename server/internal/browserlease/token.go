@@ -38,12 +38,10 @@ var (
 	audPattern = regexp.MustCompile(`^steel-gateway/[a-z0-9][a-z0-9-]{0,62}$`)
 )
 
-// audienceSet is the allowlist. A token is signed only for an `aud` that is a member, compared
-// whole: no prefix match, no case folding.
-type audienceSet map[string]struct{}
-
-func parseAudiences(spec string) (audienceSet, error) {
-	set := audienceSet{}
+// parseAudiences parses AudiencesEnv into an AudienceSet. A token is signed only for an `aud`
+// that is a member, compared whole: no prefix match, no case folding.
+func parseAudiences(spec string) (AudienceSet, error) {
+	set := AudienceSet{}
 	if strings.TrimSpace(spec) == "" {
 		return set, nil
 	}
@@ -67,9 +65,9 @@ type signingKey struct {
 
 // Keyring holds the signing keys. It is immutable after construction.
 type Keyring struct {
-	keys []signingKey // keys[0] signs
-	jwks []byte
-	auds audienceSet // empty: Sign refuses every token
+	keys  []signingKey // keys[0] signs
+	jwks  []byte
+	allow AudienceSet // audiences this keyring may sign; empty signs nothing
 }
 
 // KeyringFromEnv reads SigningKeysEnv and AudiencesEnv through getenv. A missing or malformed
@@ -80,25 +78,30 @@ func KeyringFromEnv(getenv func(string) string) (*Keyring, error) {
 	if err != nil {
 		return nil, err
 	}
-	return kr.WithAudiences(getenv(AudiencesEnv))
+	return kr.WithAudienceSpec(getenv(AudiencesEnv))
 }
 
-// WithAudiences returns a copy of kr that signs for the listed audiences only. An empty spec
-// yields a keyring that signs nothing.
-func (kr *Keyring) WithAudiences(spec string) (*Keyring, error) {
-	auds, err := parseAudiences(spec)
+// WithAudiences returns a copy of kr that signs only the given audiences.
+func (kr *Keyring) WithAudiences(allow AudienceSet) *Keyring {
+	c := *kr
+	c.allow = allow
+	return &c
+}
+
+// WithAudienceSpec is WithAudiences for an AudiencesEnv value. An empty spec yields a keyring
+// that signs nothing; a malformed one is an error.
+func (kr *Keyring) WithAudienceSpec(spec string) (*Keyring, error) {
+	allow, err := parseAudiences(spec)
 	if err != nil {
 		return nil, err
 	}
-	out := *kr
-	out.auds = auds
-	return &out, nil
+	return kr.WithAudiences(allow), nil
 }
 
 // Audiences lists the allowlist, sorted.
 func (kr *Keyring) Audiences() []string {
-	out := make([]string, 0, len(kr.auds))
-	for a := range kr.auds {
+	out := make([]string, 0, len(kr.allow))
+	for a := range kr.allow {
 		out = append(out, a)
 	}
 	sort.Strings(out)
@@ -186,7 +189,7 @@ func (kr *Keyring) JWKSHandler() http.Handler {
 // `iss` and the `kid` header. It writes each claim by name, so `decision_id` is present and null
 // for class S0. The token carries the caller's `aud`, which must name a host.
 func (kr *Keyring) Sign(c Claims) (string, error) {
-	if err := validateClaims(c, kr.auds); err != nil {
+	if err := validateClaims(c, kr.allow); err != nil {
 		return "", err
 	}
 	var decision, task, issue *string
@@ -218,8 +221,9 @@ var _ Signer = (*Keyring)(nil)
 // validateClaims refuses what no gateway would accept: an `aud` outside the allowlist (each
 // gateway accepts only its own; an empty allowlist admits none), an empty required claim, a
 // lifetime over TokenTTL, and a class that is not mintable. Class S1 is deferred and never signed.
-func validateClaims(c Claims, allowed audienceSet) error {
-	if _, ok := allowed[c.Aud]; !ok {
+func validateClaims(c Claims, allow AudienceSet) error {
+	// Exact membership: an empty allowlist signs nothing, and no prefix or case variant matches.
+	if !allow.Has(c.Aud) {
 		return fmt.Errorf("browserlease: aud %q is not in the gateway audience allowlist", c.Aud)
 	}
 	switch {

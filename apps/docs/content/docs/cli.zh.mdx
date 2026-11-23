@@ -155,6 +155,8 @@ multica issue comment add MUL-123 --content-file fyi.md --notify-only
 multica issue comment add MUL-123 --content-file ask.md --from-thread <comment-id>
 ```
 
+智能体的评论如果在很长的讨论串深处提及某位成员，服务器可以把它移到新的提问讨论串，效果等同于智能体传入了 `--from-thread`。由工作区设置 `long_thread_member_ask`（默认 `off`，可选 `warn`、`move`）决定；`long_thread_member_ask_min`（3 到 100，默认 10）是开始适用的讨论串大小（含根评论）。只有被提及的成员都没有写过该讨论串最近 3 条评论时才适用。带有 `--notify-only`、决策类型、`--supersedes` 或 `--resolve-thread` 的评论不会被移动。在 `move` 下，响应包含 `placement`（`moved`、`source_root_id`、`reason`）和一条提示；在 `warn` 下，评论原地发布，并附带指向 `--from-thread` 的提示。编辑评论不会移动它。
+
 `multica decision request` 的 `--recovers <event-id>` 表示该请求是对某个 ask 守卫事件的答复，例如被拒绝的操作或恢复通知中指明的事件。只有当事件属于该请求所在的任务、且是为请求所询问的那个人产生时，服务器才会在请求的同一事务中清除该事件。针对某人的请求不会清除另一个人的事件；不带 `--recovers` 的请求不会清除任何事件。其他任务或其他人的事件会以 `400` 拒绝。一个请求只恢复一个事件：同一请求的重试若指向第二个事件，会以 `400` 拒绝。
 
 `--wait`（用于 `multica decision request` 和 `multica decision ask`）请求服务器在该请求未关闭期间挂起任务。只有在没有其他事可做时才使用它。只有当工作区设置 `decision_ask_park` 为 `on_wait` 时，任务才会被挂起。默认值 `always` 下，每个请求都会挂起任务，`--wait` 不起作用。`blocked` 的任务无论如何都会被挂起。不带 `--wait` 时，任务的状态和负责人保持不变，答复会唤醒提问的智能体。
@@ -430,6 +432,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 第四个值 `server_action` 让服务器以选择该选项的人的身份执行操作。给选项加上 `action {type, params}`：`issue.status.set` 带 `params.status`（如 `in_review` 这样的状态键），`issue.assign` 带 `params.assignee_type`（`member` 或 `agent`）和 `params.assignee_id`（UUID）。服务器会把这些值转为小写并去掉首尾空白后保存，并在 `what_happens` 中追加一行，例如 "On pick: the server moves CHE-123 to in_review as you."。`after_choice` 为 `human_steps` 的选项可以加上 `after_wait`，只指定智能体等待的一个事件：`until_pr {url, state}`（`checks`、`merged`、`conflicts` 或 `dequeued`）、`until_status {status}`，或 `until_issue {issue, state}`（`done`、`ended`、`in_review` 或 `blocked`）。工作区设置 `decision_server_actions`（`off` 或 `on`，默认 `off`）允许卡片携带 `server_action`。设置为 `off` 或其他值时，服务器返回 `400`、代码 `server_actions_off` 和字段路径。主题询问、`--action-file` 请求、`--kind action` 卡片、`--covers` 批量卡片和 CI 卡片都会拒绝带类型的选项，并指出其字段路径。设置 `standing_answers`（默认 `{"review_cap":"off"}`，`review_cap` 为 `off` 或 `split`）格式错误时按 `off` 读取。只有工作区所有者可以修改 `decision_server_actions` 和 `standing_answers`。
 
 工作区设置 `decision_card_lint_mode`（`off`、`warn`、`block`；默认 `off`）检查选项卡片的措辞。`warn` 时创建卡片，并为每条发现在响应中附带一条提示。`block` 时服务器返回 `400`，附带原因代码和字段路径，且不创建卡片。代码如下：`weak_cons`，某个选项的每条缺点都只是你的时间（"takes 1 minute of your time"）或多一次检查或评审；`option_markdown`，`label`、`what_happens`、`pros` 或 `cons` 中含表格、标题、图片、HTML、代码块或 Mermaid 块（允许粗体、斜体、行内代码、列表和链接）；`option_leak`，选项文字暗示推荐项（"recommended"、"(rec)"，或只有一个标签加粗）；`default_leak`，在类别 `spend`、`deploy`、`publish`、`irreversible` 或 `product_direction` 下，`default_if_no_reply` 点名了某个选项（请写 "No action until you pick."）。英语和越南语措辞都会匹配。操作卡片和豁免主题卡片不受检查。 如果卡片的 issue 评论没有提及被询问的人，服务器会补上提及并记录 `mention_missing`，不会拒绝。
+
+工作区设置 `decision_card_thread`（`off`、`on`；默认 `off`）让每张新卡片拥有自己的线程。`on` 时，卡片的 issue 评论是新的根评论，无论 `decision_card_lint_mode` 为何值，服务器都会加上被询问者的提及。决定提醒仍是收件箱中唯一的条目；新增的提及不会产生条目。如果传入 `--parent`，该线程成为来源：新线程记录来源，来源线程得到一条带链接的系统回复，来源线程保持其已解决状态，CLI 输出 `Card placed in a new thread <id>; thread <source root> got a link.` 带父评论的决定意图评论以同样方式开启新线程，卡片放在该线程中。重新询问以及 DM 智能体在其 DM 中写的询问保持原位。`off` 时没有任何变化。
 
 工作区设置 `design_card_guard` 是一个对象，含 `mode`、`doop_origin`、`design_url_property_id` 和 `design_workflow_id`。`mode` 为 `off`、`warn` 或 `block`；键不存在或缺少 `mode` 时为 `off`。`warn` 或 `block` 时，`doop_origin`（不带路径的 `https` 源）和 `design_url_property_id`（UUID）必填；`design_workflow_id`（UUID）可选。服务器对其他字段、`null` 值或类型错误返回 `400`。通过决策动作修改设置时可以指定该键。目前只读取并校验该设置，尚不会对任何卡片发出警告或拒绝。
 

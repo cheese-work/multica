@@ -3394,6 +3394,11 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	if fromThread != "" {
 		body["from_thread"] = fromThread
 	}
+	if resolveThread {
+		// The resolve call below still resolves; this tells the server not to
+		// move the comment out of the thread first (long-thread route, CHE-6432).
+		body["resolve_thread"] = true
+	}
 	if askID != "" {
 		body["ask"] = askID
 	}

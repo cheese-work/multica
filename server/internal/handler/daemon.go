@@ -3511,6 +3511,8 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 							resp.TriggerAuthorName = u.Name
 						}
 					}
+					resp.TriggerRepeatIDs = h.earlierIdenticalMemberComments(r.Context(), comment)
+					resp.TriggerRepeatCount = len(resp.TriggerRepeatIDs)
 				}
 				// Count comments that arrived issue-wide since this agent's last
 				// run, so the daemon can tell it the full catch-up volume up front
