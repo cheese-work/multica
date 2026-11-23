@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -28,7 +29,9 @@ import (
 // sameAsHumans fills Humans.SameAs for a same_as step. A failed read is an
 // error, so the write fails instead of handing the issue to the wrong agent.
 func (h *Handler) sameAsHumans(ctx context.Context, q *db.Queries, step issueworkflow.Step, project db.Project, workspaceID, requestedByID pgtype.UUID, subject workflowSubject) (issueworkflow.Humans, error) {
-	if step.Handler.Step == statusAgentReview && subject.ID.Valid {
+	if bound, err := bindsPassSigner(ctx, q, step, subject); err != nil {
+		return issueworkflow.Humans{}, err
+	} else if bound {
 		return passSignerHumans(ctx, q, workspaceID, subject)
 	}
 	handled, err := h.lastHandler(ctx, q, workspaceID, subject, step.Handler.Step)
@@ -80,6 +83,50 @@ func (h *Handler) sameAsReviewer(ctx context.Context, q *db.Queries, workspaceID
 		return issueworkflow.Humans{}, refusal
 	}
 	return issueworkflow.Humans{SameAsType: issueworkflow.HandlerAgent, SameAsID: picked}, nil
+}
+
+// passSignerRuleSince is when the PASS-signer rule starts (CHE-9318). An issue
+// that entered its current status before it, past agent_review, keeps the
+// route it had until it closes. Set it to the deploy time when the rule ships.
+var passSignerRuleSince = time.Date(2026, time.November, 24, 0, 0, 0, 0, time.UTC)
+
+// bindsPassSigner reports whether a step hands the issue to the PASS signer:
+// a same_as step that names agent_review, for an issue that is in agent_review
+// or entered its current status since passSignerRuleSince.
+func bindsPassSigner(ctx context.Context, q *db.Queries, step issueworkflow.Step, subject workflowSubject) (bool, error) {
+	if step.Handler.Type != issueworkflow.HandlerSameAs || step.Handler.Step != statusAgentReview || !subject.ID.Valid {
+		return false, nil
+	}
+	if subject.Status == statusAgentReview || subject.PassSigner.Valid {
+		return true, nil
+	}
+	entered, err := q.GetIssueStatusEnteredAt(ctx, db.GetIssueStatusEnteredAtParams{IssueID: subject.ID, Status: subject.Status})
+	if err != nil {
+		return false, err
+	}
+	return !entered.Valid || !entered.Time.Before(passSignerRuleSince), nil
+}
+
+// runHeadIsLinkedHead reports whether the run reviewed a head that every
+// linked pull request stands at.
+func runHeadIsLinkedHead(ctx context.Context, q *db.Queries, issueID pgtype.UUID, run *db.AgentTaskQueue) (bool, error) {
+	_, head := runReviewHead(run)
+	return linkedHeadsAre(ctx, q, issueID, head)
+}
+
+// linkedHeadsAre reports whether head is non-empty and is the head of every
+// pull request linked to the issue.
+func linkedHeadsAre(ctx context.Context, q *db.Queries, issueID pgtype.UUID, head string) (bool, error) {
+	prs, err := q.ListIssuePullRequestHeads(ctx, issueID)
+	if err != nil {
+		return false, err
+	}
+	for _, pr := range prs {
+		if head == "" || pr.HeadSha != head {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // passSignerError says a same_as step that names agent_review found no PASS
@@ -141,14 +188,8 @@ func recordedPassSigner(ctx context.Context, q *db.Queries, issueID pgtype.UUID)
 	if err != nil || voided > 0 {
 		return pgtype.UUID{}, err
 	}
-	prs, err := q.ListIssuePullRequestHeads(ctx, issueID)
-	if err != nil {
+	if ok, err := linkedHeadsAre(ctx, q, issueID, details.HeadSHA); err != nil || !ok {
 		return pgtype.UUID{}, err
-	}
-	for _, pr := range prs {
-		if details.HeadSHA == "" || pr.HeadSha != details.HeadSHA {
-			return pgtype.UUID{}, nil
-		}
 	}
 	return verdict.ActorID, nil
 }

@@ -96,6 +96,25 @@ func (q *Queries) CountIssueWakeupsLiveAtEntry(ctx context.Context, arg CountIss
 	return i, err
 }
 
+const getIssueStatusEnteredAt = `-- name: GetIssueStatusEnteredAt :one
+SELECT max(created_at)::timestamptz AS entered_at FROM activity_log
+WHERE issue_id = $1 AND action = 'status_changed' AND details->>'to' = $2::text
+`
+
+type GetIssueStatusEnteredAtParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Status  string      `json:"status"`
+}
+
+// When the issue last entered a status (CHE-9318): the newest status_changed
+// row that names it; null when none does.
+func (q *Queries) GetIssueStatusEnteredAt(ctx context.Context, arg GetIssueStatusEnteredAtParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, getIssueStatusEnteredAt, arg.IssueID, arg.Status)
+	var entered_at pgtype.Timestamptz
+	err := row.Scan(&entered_at)
+	return entered_at, err
+}
+
 const getLatestIssueVerdict = `-- name: GetLatestIssueVerdict :one
 SELECT action, details, created_at, actor_id FROM activity_log
 WHERE issue_id = $1 AND action IN ('review_passed', 'review_changes_requested')

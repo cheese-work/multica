@@ -1,10 +1,14 @@
 package handler
 
 import (
+	"context"
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // CHE-9318: an untyped or unlisted title falls back to the "default" routing
@@ -120,6 +124,7 @@ func newSignerCase(t *testing.T) signerCase {
 	t.Helper()
 	createTestCustomStatus(t, "agent_review", "started")
 	createTestCustomStatus(t, "merged", "started")
+	setPassSignerRuleSince(t, time.Time{})
 	c := signerCase{
 		signer:         reviewerAgent(t, "codex", "gpt-5.5"),
 		other:          reviewerAgent(t, "codex", "gpt-5.5"),
@@ -222,5 +227,91 @@ func TestSameAs_NamedReviewerStepKeepsTheRoutedReviewer(t *testing.T) {
 
 	if status, typ, id := issueStatusAndAssignee(t, issueID); status != "approved" || typ != "agent" || id != openai {
 		t.Fatalf("issue = (%s, %s, %s), want approved assigned to the routed reviewer %s, not nobody", status, typ, id, openai)
+	}
+}
+
+func setPassSignerRuleSince(t *testing.T, since time.Time) {
+	t.Helper()
+	old := passSignerRuleSince
+	passSignerRuleSince = since
+	t.Cleanup(func() { passSignerRuleSince = old })
+}
+
+// The PASS signer is the only route: a sticky assignee for the step does not
+// replace it.
+func TestSameAs_StickyAssigneeDoesNotReplaceThePassSigner(t *testing.T) {
+	c := newSignerCase(t)
+	issueID := c.issue(t, "sha-pass-1")
+	c.sign(t, issueID, c.signer, "sha-pass-1", "[]")
+	dbfx.Exec(t, `INSERT INTO issue_step_assignee (issue_id, status_key, workspace_id, assignee_type, assignee_id, set_by_type)
+		SELECT id, 'in_review', workspace_id, 'agent', $2, 'member' FROM issue WHERE id = $1`, issueID, c.other)
+
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+
+	if status, _, id := issueStatusAndAssignee(t, issueID); status != "in_review" || id != c.signer {
+		t.Fatalf("issue = (%s, %s), want in_review assigned to the PASS signer %s, not the sticky %s", status, id, c.signer, c.other)
+	}
+}
+
+// A move that names another assignee cannot replace the PASS signer; naming
+// the signer itself is fine.
+func TestSameAs_OverrideDoesNotReplaceThePassSigner(t *testing.T) {
+	c := newSignerCase(t)
+	issueID := c.issue(t, "sha-pass-1")
+	c.sign(t, issueID, c.signer, "sha-pass-1", "[]")
+
+	resp := updateIssueForTest(t, issueID, map[string]any{"status": "in_review", "handoff_assignee": overrideTo(c.other)})
+	if resp.Code == http.StatusOK {
+		t.Fatalf("override of the PASS signer was accepted")
+	}
+	if status, _, id := issueStatusAndAssignee(t, issueID); status != "agent_review" || id != c.other {
+		t.Fatalf("refused move changed the issue to (%s, %s)", status, id)
+	}
+
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_review", "handoff_assignee": overrideTo(c.signer)}).Want(http.StatusOK)
+	if _, _, id := issueStatusAndAssignee(t, issueID); id != c.signer {
+		t.Fatalf("assignee = %s, want the PASS signer %s", id, c.signer)
+	}
+}
+
+// An issue already past agent_review when the rule starts keeps the route it
+// had: the agent that last left agent_review, not a blocked recovery.
+func TestSameAs_PreRolloutIssueKeepsItsRoute(t *testing.T) {
+	c := newSignerCase(t)
+	setPassSignerRuleSince(t, time.Now().Add(time.Hour))
+	issueID := dbfx.Issue(t, "feat(x): pre-rollout", testutil.Cols{"project_id": c.projectID, "status": "in_review"})
+	dbfx.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details, created_at)
+		SELECT workspace_id, id, 'member', 'status_changed', '{"from":"agent_review","to":"in_review"}'::jsonb, now() - interval '1 day' FROM issue WHERE id = $1`, issueID)
+	dbfx.Exec(t, `INSERT INTO issue_step_assignee (issue_id, status_key, workspace_id, assignee_type, assignee_id, set_by_type)
+		SELECT id, $3, workspace_id, 'agent', $2, 'system' FROM issue WHERE id = $1`, issueID, c.other, issueworkflow.LeftStepKey("agent_review"))
+
+	updateIssueForTest(t, issueID, map[string]any{"status": "merged"}).Want(http.StatusOK)
+
+	if status, _, id := issueStatusAndAssignee(t, issueID); status != "merged" || id != c.other {
+		t.Fatalf("issue = (%s, %s), want merged kept on the route %s", status, id, c.other)
+	}
+}
+
+// The agent whose run writes the PASS signs only when it reviewed the head
+// every linked PR stands at: a stale or headless run does not.
+func TestRunHeadIsLinkedHead(t *testing.T) {
+	c := newSignerCase(t)
+	issueID := c.issue(t, "sha-pass-1")
+	run := func(ctxJSON string) *db.AgentTaskQueue { return &db.AgentTaskQueue{Context: []byte(ctxJSON)} }
+	for name, tc := range map[string]struct {
+		run  *db.AgentTaskQueue
+		want bool
+	}{
+		"current head": {run(`{"head_sha":"sha-pass-1"}`), true},
+		"stale head":   {run(`{"head_sha":"sha-old"}`), false},
+		"headless":     {run(`{}`), false},
+		"no run":       {nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := runHeadIsLinkedHead(context.Background(), testHandler.Queries, parseUUID(issueID), tc.run)
+			if err != nil || got != tc.want {
+				t.Fatalf("runHeadIsLinkedHead = (%v, %v), want %v", got, err, tc.want)
+			}
+		})
 	}
 }

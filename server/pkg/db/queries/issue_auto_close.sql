@@ -62,3 +62,9 @@ SELECT id FROM agent_task_queue
 WHERE issue_id = $1 AND agent_id = $2
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+
+-- name: GetIssueStatusEnteredAt :one
+-- When the issue last entered a status (CHE-9318): the newest status_changed
+-- row that names it; null when none does.
+SELECT max(created_at)::timestamptz AS entered_at FROM activity_log
+WHERE issue_id = sqlc.arg('issue_id') AND action = 'status_changed' AND details->>'to' = sqlc.arg('status')::text;
