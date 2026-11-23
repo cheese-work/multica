@@ -88,10 +88,16 @@ type harness struct {
 func newHarness(t *testing.T, cursor string) *harness { return newHarnessSvc(t, cursor, svc) }
 
 func newHarnessSvc(t *testing.T, cursor, service string) *harness {
+	return newHarnessResume(t, cursor, service, time.Time{})
+}
+
+// newHarnessResume builds a reader that resumed from a checkpoint whose last
+// heartbeat was written at resumeFrom.
+func newHarnessResume(t *testing.T, cursor, service string, resumeFrom time.Time) *harness {
 	t.Helper()
 	h := &harness{t: t, mon: NewHeartbeatMonitor()}
 	h.r = NewReader(ReaderConfig{
-		Boot: testBoot, UID: testUID, Cursor: cursor,
+		Boot: testBoot, UID: testUID, Cursor: cursor, ResumeFrom: resumeFrom,
 		Classifier: Config{ServiceCgroup: service},
 		Monitor:    h.mon,
 		Sinks: Sinks{

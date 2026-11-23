@@ -340,3 +340,54 @@ func TestReaderRunHandlesAVeryLongLine(t *testing.T) {
 		t.Fatalf("a long ordinary kernel line is not a trigger: %v", h.holds)
 	}
 }
+
+// The resume gap is the interval from the last persisted heartbeat to the first
+// heartbeat the new reader sees (plan r13 section 3.5), not the restart time.
+func TestReaderResumeGapIsMeasuredToTheFirstNewHeartbeat(t *testing.T) {
+	cases := []struct {
+		name    string
+		firstAt time.Duration // first new heartbeat, after the last persisted one
+		gap     bool
+	}{
+		{"restart at 59 s, first heartbeat at 61 s", 61 * time.Second, true},
+		{"exactly 60 s", 60 * time.Second, false},
+		{"just over 60 s", 60*time.Second + time.Nanosecond, true},
+		{"first heartbeat at 59 s", 59 * time.Second, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarnessResume(t, cursorFor(40), svc, t0)
+			// the restart itself took 59 s: nothing is decided yet
+			h.r.Tick(t0.Add(59 * time.Second))
+			if len(h.gaps) != 0 {
+				t.Fatalf("a gap before the first heartbeat: %v", h.gaps)
+			}
+			at := t0.Add(tc.firstAt)
+			h.r.Process(hbEntry(41, h.beat(at)), at)
+			if tc.gap {
+				if len(h.gaps) != 1 || h.gaps[0].Reason != GapResume || !h.gaps[0].From.Equal(t0) || !h.gaps[0].To.Equal(at) {
+					t.Fatalf("want one resume_gap %v to %v, got %+v", t0, at, h.gaps)
+				}
+			} else if len(h.gaps) != 0 {
+				t.Fatalf("unexpected gap %+v", h.gaps)
+			}
+			if len(h.holds) != 0 {
+				t.Fatalf("a resume gap is telemetry, not a hold: %v", h.holds)
+			}
+			// only the first heartbeat is measured
+			later := at.Add(time.Hour)
+			h.r.Process(hbEntry(42, h.beat(later)), later)
+			if want := map[bool]int{true: 1, false: 0}[tc.gap]; len(h.gaps) != want {
+				t.Fatalf("gaps after a later heartbeat: %d, want %d", len(h.gaps), want)
+			}
+		})
+	}
+}
+
+func TestReaderWithoutResumeBoundaryEmitsNoResumeGap(t *testing.T) {
+	h := newHarness(t, "")
+	h.r.Process(hbEntry(1, h.beat(t0.Add(time.Hour))), t0.Add(time.Hour))
+	if len(h.gaps) != 0 {
+		t.Fatalf("unexpected gap %+v", h.gaps)
+	}
+}

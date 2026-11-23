@@ -22,6 +22,7 @@ func TestPlanStart(t *testing.T) {
 		gap         GapReason // "" means no gap
 		hold        HoldCause // "" means no hold
 		restoreCtrs bool
+		resumeFrom  bool // the plan carries the last heartbeat time to the reader
 	}{
 		{
 			name: "first start: tail, nothing to restore, no gap",
@@ -39,14 +40,16 @@ func TestPlanStart(t *testing.T) {
 			mode: StartTail, gap: GapBootChange,
 		},
 		{
-			name: "same boot, valid cursor, short downtime: resume, no gap",
+			name: "same boot, valid cursor, short downtime: resume, no gap yet",
 			in:   StartInput{Boot: testBoot, Checkpoint: cp(testBoot, now.Add(-60*time.Second)), CursorValid: true, Now: now},
-			mode: StartResume, cursor: cursorFor(40), restoreCtrs: true,
+			mode: StartResume, cursor: cursorFor(40), restoreCtrs: true, resumeFrom: true,
 		},
 		{
-			name: "same boot, valid cursor, downtime over 60 s: resume with a gap",
+			// The gap is measured to the first new heartbeat, so the start
+			// decides nothing even when the restart alone took over 60 s.
+			name: "same boot, valid cursor, long downtime: resume, the reader decides the gap",
 			in:   StartInput{Boot: testBoot, Checkpoint: cp(testBoot, now.Add(-61*time.Second)), CursorValid: true, Now: now},
-			mode: StartResume, cursor: cursorFor(40), gap: GapResume, restoreCtrs: true,
+			mode: StartResume, cursor: cursorFor(40), restoreCtrs: true, resumeFrom: true,
 		},
 		{
 			name: "same boot, invalid cursor: tail, gap and live_gap hold, no counter restore",
@@ -59,6 +62,12 @@ func TestPlanStart(t *testing.T) {
 			p := PlanStart(tc.in)
 			if p.Mode != tc.mode || p.Cursor != tc.cursor || p.RestoreCounters != tc.restoreCtrs {
 				t.Fatalf("mode %q cursor %q restore %v; want %q %q %v", p.Mode, p.Cursor, p.RestoreCounters, tc.mode, tc.cursor, tc.restoreCtrs)
+			}
+			if got := !p.ResumeFrom.IsZero(); got != tc.resumeFrom {
+				t.Fatalf("ResumeFrom %v, want carried=%v", p.ResumeFrom, tc.resumeFrom)
+			}
+			if tc.resumeFrom && !p.ResumeFrom.Equal(tc.in.Checkpoint.HeartbeatAt) {
+				t.Fatalf("ResumeFrom %v, want the checkpoint heartbeat %v", p.ResumeFrom, tc.in.Checkpoint.HeartbeatAt)
 			}
 			switch {
 			case tc.gap == "" && p.Gap != nil:

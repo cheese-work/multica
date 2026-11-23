@@ -6,8 +6,8 @@ import "time"
 type Class string
 
 const (
-	// ClassContained: CONSTRAINT_MEMCG with oom_memcg at or under
-	// <service>/runs. The kill is bounded by a run leaf (or the runs aggregate).
+	// ClassContained: CONSTRAINT_MEMCG with oom_memcg under <service>/runs/. The
+	// kill is bounded by a run leaf; the runs aggregate itself is not contained.
 	ClassContained Class = "contained"
 	// ClassForeignMemcg: CONSTRAINT_MEMCG with oom_memcg outside the service
 	// (a Docker scope, another unit). Bounded by that cgroup's own limit.
@@ -19,7 +19,7 @@ type HoldCause string
 
 const (
 	HoldConstraintNotMemcg HoldCause = "constraint_not_memcg"    // CONSTRAINT_NONE, CPUSET, MEMORY_POLICY, unknown
-	HoldServiceOutsideRuns HoldCause = "service_outside_runs"    // multica.service itself, daemon, prep/*, .control
+	HoldServiceOutsideRuns HoldCause = "service_outside_runs"    // multica.service itself, runs, daemon, prep/*, .control
 	HoldAncestorMemcg      HoldCause = "ancestor_memcg"          // oom_memcg is an ancestor of the service
 	HoldNoConstraintLine   HoldCause = "no_constraint_line"      // headerless record: last OOM-killer line is not a constraint line
 	HoldConstraintPIDMiss  HoldCause = "constraint_pid_mismatch" // constraint line names another PID

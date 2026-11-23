@@ -11,9 +11,10 @@ func TestClassifierClasses(t *testing.T) {
 		{"runs leaf is contained",
 			[]string{hdr("python3"), memcgCon(svc+"/runs/bomb", 10), kill(10)},
 			[]string{"contained"}},
-		{"runs aggregate is contained",
+		// plan r13 3.5: contained means under runs/; the aggregate itself is not
+		{"runs aggregate itself holds",
 			[]string{hdr("python3"), memcgCon(svc+"/runs", 10), kill(10)},
-			[]string{"contained"}},
+			[]string{"hold:service_outside_runs"}},
 		{"nested path under a run leaf is contained",
 			[]string{hdr("python3"), memcgCon(svc+"/runs/a/b/c", 10), kill(10)},
 			[]string{"contained"}},

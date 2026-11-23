@@ -44,10 +44,15 @@ type StartPlan struct {
 	Gap             *GapEvent
 	Hold            *HoldEvent
 	RestoreCounters bool // only a same-boot resume with a valid cursor may restore counter state
+	// ResumeFrom is the last persisted heartbeat of a resume. The gap is the
+	// interval to the first new heartbeat, so the reader measures it
+	// (ReaderConfig.ResumeFrom), not the start.
+	ResumeFrom time.Time
 }
 
-// resumeGapAfter is two heartbeat periods: a restart that took longer leaves a
-// telemetry gap even when the cursor still resumes.
+// resumeGapAfter is two heartbeat periods: when the first heartbeat of a resumed
+// reader comes later than this after the last persisted one, the interval is a
+// telemetry gap even though the cursor still resumes.
 const resumeGapAfter = 2 * HeartbeatPeriod
 
 // PlanStart applies the cursor and boot-gap rules.
@@ -55,8 +60,10 @@ const resumeGapAfter = 2 * HeartbeatPeriod
 //   - No checkpoint: first start, follow from the tail.
 //   - Torn checkpoint: tail, gap and hold.
 //   - Another boot: tail of the new boot, gap, nothing restored.
-//   - Same boot, cursor still in the journal: resume after it; a gap only when
-//     the last heartbeat is more than 60 s old.
+//   - Same boot, cursor still in the journal: resume after it and carry the last
+//     heartbeat time; the reader emits a gap when its first new heartbeat is
+//     more than 60 s after it. The start cannot decide that: the restart may
+//     have been quick and the first heartbeat still late.
 //   - Same boot, cursor gone: tail, gap and a live_gap hold, nothing restored.
 func PlanStart(in StartInput) StartPlan {
 	gap := func(reason GapReason, from time.Time) *GapEvent {
@@ -81,17 +88,13 @@ func PlanStart(in StartInput) StartPlan {
 			Hold: &HoldEvent{Cause: HoldLiveGap, Detail: "checkpoint cursor is no longer in the journal", At: in.Now},
 		}
 	}
-	p := StartPlan{Mode: StartResume, Cursor: cp.Cursor, RestoreCounters: true}
-	if in.Now.Sub(cp.HeartbeatAt) > resumeGapAfter {
-		p.Gap = gap(GapResume, cp.HeartbeatAt)
-	}
-	return p
+	return StartPlan{Mode: StartResume, Cursor: cp.Cursor, RestoreCounters: true, ResumeFrom: cp.HeartbeatAt}
 }
 
 // WriteCheckpoint writes the checkpoint atomically: temporary file, fsync,
 // rename, directory fsync. A failure leaves the previous file and no
 // temporary file behind.
-func WriteCheckpoint(path string, cp Checkpoint) (err error) {
+func WriteCheckpoint(path string, cp Checkpoint) error {
 	body, err := json.Marshal(cp)
 	if err != nil {
 		return err
@@ -102,23 +105,22 @@ func WriteCheckpoint(path string, cp Checkpoint) (err error) {
 		return err
 	}
 	tmp := f.Name()
-	defer func() {
-		if err != nil {
-			_ = f.Close()
-			_ = os.Remove(tmp)
-		}
-	}()
-	if _, err = f.Write(append(body, '\n')); err != nil {
+	fail := func(err error) error {
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
-	if err = f.Sync(); err != nil {
-		return err
+	if _, err := f.Write(append(body, '\n')); err != nil {
+		return fail(err)
 	}
-	if err = f.Close(); err != nil {
-		return err
+	if err := f.Sync(); err != nil {
+		return fail(err)
 	}
-	if err = os.Rename(tmp, path); err != nil {
-		return err
+	if err := f.Close(); err != nil {
+		return fail(err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fail(err)
 	}
 	d, err := os.Open(dir)
 	if err != nil {

@@ -133,7 +133,8 @@ func (c *Classifier) classifyMemcg(oomMemcg string) (Class, HoldCause) {
 	case len(o) < len(svc) && hasPrefix(svc, o):
 		return "", HoldAncestorMemcg
 	case hasPrefix(o, svc):
-		if len(o) > len(svc) && o[len(svc)] == runsSegment {
+		// Under runs/, as plan r13 3.5 says: the runs aggregate itself is not.
+		if len(o) > len(svc)+1 && o[len(svc)] == runsSegment {
 			return ClassContained, ""
 		}
 		return "", HoldServiceOutsideRuns

@@ -14,9 +14,13 @@ const maxLine = 16 << 20
 
 // ReaderConfig configures a Reader.
 type ReaderConfig struct {
-	Boot       string // 32-hex journald form
-	UID        string // uid of the daemon, "1000" on X99
-	Cursor     string // last processed cursor (history boundary); may be empty
+	Boot   string // 32-hex journald form
+	UID    string // uid of the daemon, "1000" on X99
+	Cursor string // last processed cursor (history boundary); may be empty
+	// ResumeFrom is the last persisted heartbeat time of a same-boot resume; zero
+	// when the reader did not resume. The first heartbeat the reader sees decides
+	// whether the interval was a gap.
+	ResumeFrom time.Time
 	Classifier Config
 	Monitor    *HeartbeatMonitor
 	Sinks      Sinks
@@ -32,6 +36,7 @@ type Reader struct {
 	boundary *Cursor // entries at or before it are history
 	cursor   string
 	lastBeat time.Time // when the reader last saw its own heartbeat
+	resume   time.Time // last persisted heartbeat, until the first new one is seen
 }
 
 // NewReader returns a reader. An unparsable starting cursor is not a history
@@ -40,7 +45,7 @@ func NewReader(cfg ReaderConfig) *Reader {
 	if cfg.Monitor == nil {
 		cfg.Monitor = NewHeartbeatMonitor()
 	}
-	r := &Reader{cfg: cfg, cls: NewClassifier(cfg.Classifier), cursor: cfg.Cursor}
+	r := &Reader{cfg: cfg, cls: NewClassifier(cfg.Classifier), cursor: cfg.Cursor, resume: cfg.ResumeFrom}
 	if c, err := ParseCursor(cfg.Cursor); err == nil {
 		r.boundary = &c
 	}
@@ -82,6 +87,7 @@ func (r *Reader) Process(e Entry, now time.Time) {
 		case !r.cfg.Monitor.Seen(nonce, now):
 			r.ignore("heartbeat_unknown_or_late_nonce", e)
 		default:
+			r.firstHeartbeat(now)
 			r.lastBeat = now
 		}
 	default:
@@ -134,6 +140,22 @@ func (r *Reader) Run(src io.Reader, now func() time.Time) error {
 		return fmt.Errorf("read journal stream: %w", err)
 	}
 	return nil
+}
+
+// firstHeartbeat closes the resume boundary: the interval from the last
+// persisted heartbeat to the first new one is a gap when it exceeds
+// resumeGapAfter. Later heartbeats are not measured.
+func (r *Reader) firstHeartbeat(now time.Time) {
+	from := r.resume
+	if from.IsZero() {
+		return
+	}
+	r.resume = time.Time{}
+	if now.Sub(from) > resumeGapAfter {
+		if g := r.cfg.Sinks.Gap; g != nil {
+			g(GapEvent{Reason: GapResume, From: from, To: now})
+		}
+	}
 }
 
 func (r *Reader) verdict(v Verdict, now time.Time) {
