@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -35,6 +37,49 @@ const (
 type ReviewFinding struct {
 	Severity string `json:"severity"`
 	Summary  string `json:"summary"`
+	// Category tags the kind of mistake (missing_rollback, unverified_claim,
+	// scope_creep, ...). The recurring ones become pre-checks (CHE-9307).
+	Category string `json:"category,omitempty"`
+	// IntroducedByRevision marks a blocker the author's revision caused. From
+	// round 2 on it is the only way to add a blocker that round 1 did not list.
+	IntroducedByRevision bool `json:"introduced_by_revision,omitempty"`
+}
+
+var categoryPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,39}$`)
+
+// errCategoryRequired refuses a verdict whose finding has no valid category tag.
+var errCategoryRequired = errors.New("every review finding needs a category tag (lowercase letters, digits, _ or -, at most 40 characters, for example missing_rollback, unverified_claim, scope_creep, missing_test_first, wrong_owner); the top categories of the last 14 days are in `multica issue review-findings`")
+
+// errNewBlockerLate refuses a round-2 or later verdict that adds a blocker.
+var errNewBlockerLate = errors.New("a review lists every blocker in round 1; a later round may add a P0 or P1 finding only when the revision introduced it (set introduced_by_revision on that finding); a blocker that round 1 already listed must repeat its round-1 summary")
+
+func validCategories(findings []ReviewFinding) bool {
+	return !slices.ContainsFunc(findings, func(f ReviewFinding) bool { return !categoryPattern.MatchString(f.Category) })
+}
+
+func normSummary(s string) string { return strings.ToLower(strings.Join(strings.Fields(s), " ")) }
+
+// newLateBlocker reports whether a verdict after an earlier recorded round adds
+// a P0 or P1 finding that is neither a round-1 blocker nor introduced by the
+// revision. priorJSON is the findings JSON of each earlier CHANGES verdict.
+func newLateBlocker(findings []ReviewFinding, priorJSON []string) bool {
+	listed := map[string]bool{}
+	for _, raw := range priorJSON {
+		var prior []ReviewFinding
+		_ = json.Unmarshal([]byte(raw), &prior)
+		for _, f := range prior {
+			if f.Severity == "P0" || f.Severity == "P1" {
+				listed[normSummary(f.Summary)] = true
+			}
+		}
+	}
+	if len(listed) == 0 {
+		// No earlier blocker on record (a round without findings): nothing to compare with.
+		return false
+	}
+	return slices.ContainsFunc(findings, func(f ReviewFinding) bool {
+		return (f.Severity == "P0" || f.Severity == "P1") && !f.IntroducedByRevision && !listed[normSummary(f.Summary)]
+	})
 }
 
 // errFindingsRequired refuses a CHANGES verdict without a blocking finding.
@@ -73,6 +118,10 @@ func writeReviewLoopError(w http.ResponseWriter, err error) bool {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": independence.code})
 	case errors.Is(err, errFindingsRequired):
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "review_verdict_findings_required"})
+	case errors.Is(err, errCategoryRequired):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "review_finding_category_required"})
+	case errors.Is(err, errNewBlockerLate):
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "review_round_new_blocker"})
 	case errors.Is(err, errVerdictNeedsRun):
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "review_verdict_run_required"})
 	default:
@@ -141,6 +190,9 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 		return errVerdictNeedsRun
 	}
 	if verdict == "PASS" {
+		if !validCategories(caller.findings) {
+			return errCategoryRequired
+		}
 		return h.guardReviewerIndependence(ctx, q, prev, def, caller)
 	}
 	if verdict != "CHANGES" {
@@ -149,7 +201,17 @@ func (h *Handler) guardChangesVerdict(ctx context.Context, q *db.Queries, prev d
 	if !blocking(caller.findings) {
 		return errFindingsRequired
 	}
+	if !validCategories(caller.findings) {
+		return errCategoryRequired
+	}
 	prID, _ := runReviewHead(caller.run)
+	prior, err := q.ListPriorChangesFindingsForPR(ctx, db.ListPriorChangesFindingsForPRParams{IssueID: prev.ID, PullRequestID: prID})
+	if err != nil {
+		return err
+	}
+	if newLateBlocker(caller.findings, prior) {
+		return errNewBlockerLate
+	}
 	earlier, err := q.CountChangesRoundsForPR(ctx, db.CountChangesRoundsForPRParams{IssueID: prev.ID, PullRequestID: prID})
 	if err != nil {
 		return err

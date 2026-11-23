@@ -119,6 +119,13 @@ multica workflow webhook list <workflow-id>                    # never shows sec
 - `multica issue urgent-orphans [--output json]` lists open urgent issues with
   no queued, dispatched or running task and no enabled wakeup. The PULSE sweep
   reads it so an urgent issue never sits unowned. Read-only.
+- `multica issue review-findings [--days 14] [--limit 10] [--list] [--output json]`
+  prints the most frequent review finding categories of the last days; `--list`
+  prints each finding. Run the top categories as a pre-check before you ask for
+  review. A reviewer tags every finding: `multica issue status <id> <status>
+  --finding "P1@missing_rollback:<summary>"`. From round 2 on, a new P0 or P1
+  that round 1 did not list needs `@revision` (the revision introduced it), or
+  the server refuses the verdict (`review_round_new_blocker`). Read-only.
 - `multica issue workflow escalate <id> --reason "<why>" [--output json]` moves
   an issue that follows Quick back to the full workflow it followed before.
   `--reason` is required; `--reason rollback` needs no Estimate. The server
