@@ -584,6 +584,77 @@ func (q *Queries) CreateComment(ctx context.Context, arg CreateCommentParams) (C
 	return i, err
 }
 
+const createMoveReceiptComment = `-- name: CreateMoveReceiptComment :one
+WITH touched_issue AS (
+    UPDATE issue SET
+        updated_at = now(),
+        last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now())
+    WHERE issue.id = $4 AND issue.workspace_id = $5
+    RETURNING issue.id, issue.workspace_id
+)
+INSERT INTO comment (id, issue_id, workspace_id, author_type, author_id, content, type)
+SELECT $1, ti.id, ti.workspace_id, 'system', $2, $3, 'system'
+FROM touched_issue ti
+RETURNING id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read, notify_only, ask_source_root_id
+`
+
+type CreateMoveReceiptCommentParams struct {
+	ID          pgtype.UUID `json:"id"`
+	AuthorID    pgtype.UUID `json:"author_id"`
+	Content     string      `json:"content"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The receipt of a status move (CHE-9267) is written inside the transaction of
+// the move, after its status write. It leaves issue.revision alone: the caller
+// of the move still holds the revision that write returned, and its next
+// optimistic write (the close step after a merge) would find no row if the
+// receipt had bumped it. updated_at and last_activity_at move as for any
+// comment. The comment is a plain system comment: no task, parent or mention.
+func (q *Queries) CreateMoveReceiptComment(ctx context.Context, arg CreateMoveReceiptCommentParams) (Comment, error) {
+	row := q.db.QueryRow(ctx, createMoveReceiptComment,
+		arg.ID,
+		arg.AuthorID,
+		arg.Content,
+		arg.IssueID,
+		arg.WorkspaceID,
+	)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.SourceTaskID,
+		&i.QuickActionID,
+		&i.ViaPluginID,
+		&i.Revision,
+		&i.RecoverySettledAt,
+		&i.DeletedAt,
+		&i.SuppressedAgentIds,
+		&i.DecisionRequestID,
+		&i.DecisionAnswerID,
+		&i.DecisionIntentID,
+		&i.DecisionCommentKind,
+		&i.GithubNotifyOnly,
+		&i.TaintIds,
+		&i.ExternalRead,
+		&i.NotifyOnly,
+		&i.AskSourceRootID,
+	)
+	return i, err
+}
+
 const deleteLeafComment = `-- name: DeleteLeafComment :one
 DELETE FROM comment
 WHERE comment.id = $1 AND comment.workspace_id = $2

@@ -549,6 +549,25 @@ SELECT inserted_comment.*, touched_issue.revision AS issue_revision
 FROM inserted_comment
 JOIN touched_issue ON touched_issue.id = inserted_comment.issue_id;
 
+-- name: CreateMoveReceiptComment :one
+-- The receipt of a status move (CHE-9267) is written inside the transaction of
+-- the move, after its status write. It leaves issue.revision alone: the caller
+-- of the move still holds the revision that write returned, and its next
+-- optimistic write (the close step after a merge) would find no row if the
+-- receipt had bumped it. updated_at and last_activity_at move as for any
+-- comment. The comment is a plain system comment: no task, parent or mention.
+WITH touched_issue AS (
+    UPDATE issue SET
+        updated_at = now(),
+        last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now())
+    WHERE issue.id = sqlc.arg(issue_id) AND issue.workspace_id = sqlc.arg(workspace_id)
+    RETURNING issue.id, issue.workspace_id
+)
+INSERT INTO comment (id, issue_id, workspace_id, author_type, author_id, content, type)
+SELECT sqlc.arg(id), ti.id, ti.workspace_id, 'system', sqlc.arg(author_id), sqlc.arg(content), 'system'
+FROM touched_issue ti
+RETURNING *;
+
 -- name: GetDelegatedFailureRecoveryComment :one
 -- The failed task row is locked by the caller before this lookup/insert pair,
 -- making (source issue, failed task) a durable idempotency key without a new

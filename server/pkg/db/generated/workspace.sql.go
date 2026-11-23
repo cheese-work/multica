@@ -699,6 +699,7 @@ UPDATE workspace SET
     -- CHE-6460: decision_ask_park replaces its one settings key.
     -- CHE-9026: run_guard and run_budget each replace their one settings key.
     -- CHE-6992: wakeup_live_join replaces its one settings key.
+    -- CHE-9267: auto_move_receipt replaces its one settings key.
     -- CHE-7408: merge_queue is an object holding only the merge-queue keys the
     -- handler validated; it replaces those keys and leaves every other key.
     settings = (
@@ -724,50 +725,54 @@ UPDATE workspace SET
             ELSE y.v
         END AS v
         FROM (SELECT CASE
-            WHEN $11::jsonb IS NOT NULL THEN jsonb_set(l.v, '{wakeup_live_join}', $11::jsonb)
+            WHEN $11::jsonb IS NOT NULL THEN jsonb_set(r.v, '{auto_move_receipt}', $11::jsonb)
+            ELSE r.v
+        END AS v
+        FROM (SELECT CASE
+            WHEN $12::jsonb IS NOT NULL THEN jsonb_set(l.v, '{wakeup_live_join}', $12::jsonb)
             ELSE l.v
         END AS v
         FROM (SELECT CASE
-            WHEN $12::jsonb IS NOT NULL THEN jsonb_set(k.v, '{decision_ask_park}', $12::jsonb)
+            WHEN $13::jsonb IS NOT NULL THEN jsonb_set(k.v, '{decision_ask_park}', $13::jsonb)
             ELSE k.v
         END AS v
         FROM (SELECT CASE
-            WHEN $13::jsonb IS NOT NULL THEN jsonb_set(b.v, '{blocked_run_skip}', $13::jsonb)
+            WHEN $14::jsonb IS NOT NULL THEN jsonb_set(b.v, '{blocked_run_skip}', $14::jsonb)
             ELSE b.v
         END AS v
         FROM (SELECT CASE
-            WHEN $14::jsonb IS NOT NULL THEN jsonb_set(c.v, '{auto_close}', $14::jsonb)
+            WHEN $15::jsonb IS NOT NULL THEN jsonb_set(c.v, '{auto_close}', $15::jsonb)
             ELSE c.v
         END AS v
         FROM (SELECT CASE
-            WHEN $15::jsonb IS NOT NULL THEN jsonb_set(t.v, '{time_wakeup_skip}', $15::jsonb)
+            WHEN $16::jsonb IS NOT NULL THEN jsonb_set(t.v, '{time_wakeup_skip}', $16::jsonb)
             ELSE t.v
         END AS v
         FROM (SELECT CASE
-            WHEN $16::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || $16::jsonb)
+            WHEN $17::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || $17::jsonb)
             ELSE g.v
         END AS v
         FROM (SELECT CASE
-            WHEN $17::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', $17::jsonb)
+            WHEN $18::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', $18::jsonb)
             ELSE m.v
         END AS v
         FROM (SELECT CASE
-            WHEN $18::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', $18::jsonb)
+            WHEN $19::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', $19::jsonb)
             ELSE a.v
         END AS v FROM (SELECT CASE
-            WHEN $19::bool THEN base.v - 'auto_compact'
-            WHEN $20::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $20::jsonb)
+            WHEN $20::bool THEN base.v - 'auto_compact'
+            WHEN $21::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $21::jsonb)
             ELSE base.v
         END AS v
         FROM (SELECT CASE
-            WHEN $21::bool THEN COALESCE($22::jsonb, settings) - 'compact_prompt'
-            WHEN $23::text IS NOT NULL THEN jsonb_set(COALESCE($22::jsonb, settings), '{compact_prompt}', to_jsonb($23::text))
-            ELSE COALESCE($22::jsonb, settings)
-        END AS v) AS base) AS a) AS m) AS g) AS t) AS c) AS b) AS k) AS l) AS y) AS x) AS d) AS h) AS w
+            WHEN $22::bool THEN COALESCE($23::jsonb, settings) - 'compact_prompt'
+            WHEN $24::text IS NOT NULL THEN jsonb_set(COALESCE($23::jsonb, settings), '{compact_prompt}', to_jsonb($24::text))
+            ELSE COALESCE($23::jsonb, settings)
+        END AS v) AS base) AS a) AS m) AS g) AS t) AS c) AS b) AS k) AS l) AS r) AS y) AS x) AS d) AS h) AS w
     ),
-    repos = COALESCE($24, repos),
-    issue_prefix = COALESCE($25, issue_prefix),
-    avatar_url = COALESCE($26, avatar_url),
+    repos = COALESCE($25, repos),
+    issue_prefix = COALESCE($26, issue_prefix),
+    avatar_url = COALESCE($27, avatar_url),
     updated_at = now()
 WHERE id = $1
 RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
@@ -784,6 +789,7 @@ type UpdateWorkspaceParams struct {
 	AskGuardMode        []byte      `json:"ask_guard_mode"`
 	RunGuard            []byte      `json:"run_guard"`
 	RunBudget           []byte      `json:"run_budget"`
+	AutoMoveReceipt     []byte      `json:"auto_move_receipt"`
 	WakeupLiveJoin      []byte      `json:"wakeup_live_join"`
 	DecisionAskPark     []byte      `json:"decision_ask_park"`
 	BlockedRunSkip      []byte      `json:"blocked_run_skip"`
@@ -814,6 +820,7 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		arg.AskGuardMode,
 		arg.RunGuard,
 		arg.RunBudget,
+		arg.AutoMoveReceipt,
 		arg.WakeupLiveJoin,
 		arg.DecisionAskPark,
 		arg.BlockedRunSkip,

@@ -150,6 +150,9 @@ func RecordStatusChangeWithEvent(ctx context.Context, qtx *db.Queries, issue db.
 	if err != nil {
 		return row, err
 	}
+	if err := recordAutoMoveReceipt(ctx, qtx, issue, from, to, trigger, handoff, row); err != nil {
+		return row, err
+	}
 	return row, settleRefusalsOnStatusChange(ctx, qtx, issue, row, trigger)
 }
 

@@ -56,8 +56,8 @@ func TestStatusCauseKindsReceiptEligibility(t *testing.T) {
 			t.Errorf("cause kind %q is in the table but not in StatusCauseKinds()", kind)
 		}
 	}
-	if StatusCauseOwesReceipt("a_kind_nobody_registered") {
-		t.Error("an unregistered cause kind owes a receipt; unknown kinds must fail closed")
+	if !StatusCauseOwesReceipt("a_kind_nobody_registered") {
+		t.Error("an unregistered cause kind owes no receipt; eligibility is every kind except ui_or_api and workflow_remap")
 	}
 }
 

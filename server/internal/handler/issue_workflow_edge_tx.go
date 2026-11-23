@@ -84,6 +84,12 @@ func (h *Handler) moveIssueOnEdgeTxAs(ctx context.Context, q *db.Queries, issue 
 	if id, ok := extra["action_id"].(string); ok && source == "run_budget" {
 		rec.trigger.Cause.Ref = map[string]string{"action_id": id}
 	}
+	// The close an auto_close step makes names the predicates that held.
+	if source == "auto_close" {
+		if predicates, ok := extra["predicates"].(string); ok && predicates != "" {
+			rec.trigger.Cause.Ref = map[string]string{"predicates": predicates}
+		}
+	}
 	// A merge names the PRs that moved the issue, in the timeline and in the row.
 	if source == "pr_automation" {
 		if prs, ok := extra["pull_requests"].(string); ok {

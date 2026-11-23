@@ -237,6 +237,7 @@ func init() {
 	workspaceUpdateCmd.Flags().String("time-wakeup-skip-mode", "", "Set the time-wakeup skip mode (settings.time_wakeup_skip.mode): off, warn or block. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("run-guard-mode", "", "Set the weekly run guard mode (settings.run_guard.mode): off, warn or block. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("wakeup-live-join-mode", "", "Set the wakeup live-join mode (settings.wakeup_live_join.mode): off, warn or block. In block mode a condition firing of an agent's own wakeup is delivered into the agent's running run instead of queuing a repeat run; warn runs as today and logs would_join_live; unset means warn. Owner only; changes no other workspace setting")
+	workspaceUpdateCmd.Flags().String("auto-move-receipt-mode", "", "Set the auto-move receipt mode (settings.auto_move_receipt.mode): off, warn or block. In block mode each status move the server makes (a workflow edge, a merged PR, a decision park or restore, a failed-run reset, an approved project move, a Qoder run) leaves one system comment naming the move; warn writes one auto_move_receipt_would_post activity instead; unset means warn. A person's or an agent's own move and a workflow remap leave none. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("run-budget-mode", "", "Set the per-issue run budget mode (settings.run_budget.mode): off, warn or block. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("ask-guard-mode", "", "Set the ask guard mode (settings.ask_guard_mode): off, warn or block. Owner only; changes no other workspace setting")
 	workspaceUpdateCmd.Flags().String("merge-queue-routing", "", "Set the dequeue routing (settings.merge_queue_dequeue_routing): off or warn. block is refused until the rollout gate ships. Owner only; may combine only with the other --merge-queue-* flags")
@@ -706,7 +707,7 @@ func buildWorkspaceUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) 
 	// The exception is single-field-only server-side: reject any other
 	// update flag client-side, naming the conflicting one, rather than
 	// silently dropping it or sending a body the server would 400 on.
-	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "run-guard-mode", "run-budget-mode", "wakeup-live-join-mode", "ask-guard-mode", "compact-agent", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}
+	conflicting := []string{"name", "description", "description-stdin", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "run-guard-mode", "run-budget-mode", "wakeup-live-join-mode", "auto-move-receipt-mode", "ask-guard-mode", "compact-agent", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}
 	conflicting = append(conflicting, mergeQueueFlags...)
 	for _, name := range conflicting {
 		if cmd.Flags().Changed(name) {
@@ -806,12 +807,13 @@ func buildWorkspaceUpdateBody(cmd *cobra.Command) (map[string]any, error) {
 		{"run-guard-mode", "run_guard", "weekly run guard mode"},
 		{"run-budget-mode", "run_budget", "run budget mode"},
 		{"wakeup-live-join-mode", "wakeup_live_join", "wakeup live-join mode"},
+		{"auto-move-receipt-mode", "auto_move_receipt", "auto-move receipt mode"},
 		{"ask-guard-mode", "ask_guard_mode", "ask guard mode"},
 	} {
 		if !cmd.Flags().Changed(single.flag) {
 			continue
 		}
-		for _, name := range append([]string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "run-guard-mode", "run-budget-mode", "wakeup-live-join-mode", "ask-guard-mode", "compact-agent", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}, mergeQueueFlags...) {
+		for _, name := range append([]string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "run-guard-mode", "run-budget-mode", "wakeup-live-join-mode", "auto-move-receipt-mode", "ask-guard-mode", "compact-agent", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}, mergeQueueFlags...) {
 			if name != single.flag && name != runModePair[single.flag] && cmd.Flags().Changed(name) {
 				return nil, fmt.Errorf("--%s cannot be combined with --%s; it changes only the %s", single.flag, name, single.what)
 			}
@@ -849,7 +851,7 @@ func addMergeQueueFlags(cmd *cobra.Command, body map[string]any) error {
 	if first == "" {
 		return nil
 	}
-	for _, name := range []string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "run-guard-mode", "run-budget-mode", "wakeup-live-join-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
+	for _, name := range []string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "run-guard-mode", "run-budget-mode", "wakeup-live-join-mode", "auto-move-receipt-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"} {
 		if cmd.Flags().Changed(name) {
 			return fmt.Errorf("--%s cannot be combined with --%s; the --merge-queue-* flags change only their own settings", first, name)
 		}
@@ -949,7 +951,7 @@ func runWorkspaceUpdate(cmd *cobra.Command, args []string) error {
 	}
 	routing := routingFlagsChanged(cmd)
 	if len(body) == 0 && !routing {
-		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, --compact-prompt-file, --idle-guard-mode, --idle-guard-after-hours, --time-wakeup-skip-mode, --auto-close-mode, --run-guard-mode, --run-budget-mode, --wakeup-live-join-mode, --ask-guard-mode, a --merge-queue-* flag, or a --routing-* flag")
+		return fmt.Errorf("no fields to update; use --name, --description, --context, --issue-prefix, --compact-prompt-file, --idle-guard-mode, --idle-guard-after-hours, --time-wakeup-skip-mode, --auto-close-mode, --run-guard-mode, --run-budget-mode, --wakeup-live-join-mode, --auto-move-receipt-mode, --ask-guard-mode, a --merge-queue-* flag, or a --routing-* flag")
 	}
 
 	if routing {
@@ -1358,7 +1360,7 @@ func mergeRoutingFlags(cmd *cobra.Command, current map[string]any) (map[string]a
 
 // compactAgentExclusive lists every other update flag; --compact-agent changes
 // only the compact setting, so any of them next to it is refused before a request.
-var compactAgentExclusive = append([]string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "run-guard-mode", "run-budget-mode", "wakeup-live-join-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}, mergeQueueFlags...)
+var compactAgentExclusive = append([]string{"name", "description", "description-stdin", "context", "context-stdin", "context-file", "issue-prefix", "compact-prompt-file", "idle-guard-mode", "idle-guard-after-hours", "time-wakeup-skip-mode", "auto-close-mode", "blocked-run-skip-mode", "run-guard-mode", "run-budget-mode", "wakeup-live-join-mode", "auto-move-receipt-mode", "ask-guard-mode", "routing-agent", "routing-fallback-agent", "routing-statuses", "routing-overrides"}, mergeQueueFlags...)
 
 // runCompactAgentUpdate is `--compact-agent <id-or-name|null>` (CHE-2915, DX-6):
 // an alias over `background-agents set compact`. The name is resolved in the

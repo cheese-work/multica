@@ -194,6 +194,21 @@ func receiptWriters() []receiptWriter {
 			firePRWebhook(t, "che9267-secret", installationID, 3, identifier+": work", "", "feat/che9267", "merged")
 			return issueID
 		}},
+		{"advance_issue_to_done", 1, func(t *testing.T) string {
+			issue := newVCSIssue(t, "receipt github merge")
+			t.Cleanup(func() { cleanupVCS(context.Background(), issue.ID) })
+			row, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(issue.ID))
+			if err != nil {
+				t.Fatal(err)
+			}
+			testHandler.advanceIssueToDone(context.Background(), row, testWorkspaceID)
+			return issue.ID
+		}},
+		{"pr_auto_complete", 1, func(t *testing.T) string {
+			issueID := inProgressIssueWithMergedPR(t, "receipt pr auto-complete", "che9267-pr-auto")
+			testHandler.maybeAutoCompleteIssue(context.Background(), parseUUID(testWorkspaceID), parseUUID(issueID), nil)
+			return issueID
+		}},
 		{"decision_park_and_restore", 2, func(t *testing.T) string {
 			fixture := newParkFixture(t)
 			if _, err := testHandler.createDecisionRequest(fixture.request(), fixture.issue, fixture.input()); err != nil {
@@ -296,6 +311,7 @@ func TestAutoMoveReceiptMergeInBlockPostsTwoReceiptsAndStartsNoRun(t *testing.T)
 	}
 	setReceiptMode(t, "block")
 	c := newCloseOrDispatchEdgeEntry(t)
+	runsBefore := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, c.issueID)
 	c.seedVerdict(t, "review_passed", "[]", autoCloseHead, "1 hour")
 	c.mergedPR(t, autoCloseHead, "main", "main")
 	tickEdges(t)
@@ -305,8 +321,8 @@ func TestAutoMoveReceiptMergeInBlockPostsTwoReceiptsAndStartsNoRun(t *testing.T)
 	if moves[0].to != "merged" || moves[1].to != "done" {
 		t.Fatalf("moves = %+v, want merged then done", moves)
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, c.issueID); n != 0 {
-		t.Fatalf("runs = %d after the receipts, want 0: a receipt starts no run", n)
+	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, c.issueID); n != runsBefore {
+		t.Fatalf("runs = %d after the merge, want the %d the fixture seeded: a receipt starts no run", n, runsBefore)
 	}
 }
 

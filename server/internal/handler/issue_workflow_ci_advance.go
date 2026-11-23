@@ -244,19 +244,19 @@ func (h *Handler) tryMoveIssueOnEdgeSettle(ctx context.Context, issue db.Issue, 
 func edgeMoveCause(source string) string {
 	switch source {
 	case "workflow_edge":
-		return "workflow_edge"
+		return service.StatusCauseWorkflowEdge
 	case "ci_green_advance":
-		return "ci_advance"
+		return service.StatusCauseCIAdvance
 	case "run_budget":
-		return "run_budget"
+		return service.StatusCauseRunBudget
 	case "idle_started_guard":
-		return "watchdog"
+		return service.StatusCauseWatchdog
 	case "step_watchdog_budget":
-		return "step_watchdog_budget"
+		return service.StatusCauseStepWatchdogBudget
 	case "pr_automation":
 		return service.StatusCausePRMerged
 	}
-	return "system"
+	return service.StatusCauseSystem
 }
 
 // issueResponseWithCategory is the issue as clients receive it on an update.
