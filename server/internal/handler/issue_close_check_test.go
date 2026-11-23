@@ -157,6 +157,7 @@ func TestCloseCheck_PlainFormWritesNothing(t *testing.T) {
 	c := newAutoCloseMerged(t, "block")
 	c.seedVerdict(t, "review_passed", "[]", "", "1 hour")
 	dbfx.Exec(t, `UPDATE issue SET metadata = '{}'::jsonb WHERE id = $1`, c.issueID)
+	c.enterMerged(t)
 	before := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1`, c.issueID)
 	view := c.closeCheck(t, "")
 	if view.FirstFailure != "post_close_work_none" {
@@ -188,5 +189,21 @@ func TestCloseCheck_ReplayOfEveryFixtureRowEqualsItsRecordedFirstFailure(t *test
 				t.Fatalf("replay first_failure = %q, recorded %q", replay.FirstFailure, recorded)
 			}
 		})
+	}
+}
+
+// The edge transaction's close check records its rejection too.
+func TestCloseCheck_EdgeTransactionRecordsTheSkip(t *testing.T) {
+	c := newCloseOrDispatchEdgeEntry(t)
+	c.seedVerdict(t, "review_passed", "[]", autoCloseHead, "1 hour")
+	c.mergedPR(t, autoCloseHead2, "main", "main")
+	tickEdges(t)
+	c.wantHandlerRun(t)
+	rows := c.skippedRows(t)
+	if len(rows) != 1 || rows[0].Details.FirstFailure != "verdict_pass_current" {
+		t.Fatalf("rows = %+v, want one naming verdict_pass_current", rows)
+	}
+	if replay := c.closeCheck(t, rows[0].ID); replay.FirstFailure != "verdict_pass_current" {
+		t.Fatalf("replay first_failure = %q", replay.FirstFailure)
 	}
 }

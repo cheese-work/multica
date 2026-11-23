@@ -97,13 +97,14 @@ func (q *Queries) CountIssueWakeupsLiveAtEntry(ctx context.Context, arg CountIss
 }
 
 const getLatestIssueVerdict = `-- name: GetLatestIssueVerdict :one
-SELECT action, details, created_at, actor_id FROM activity_log
+SELECT id, action, details, created_at, actor_id FROM activity_log
 WHERE issue_id = $1 AND action IN ('review_passed', 'review_changes_requested')
 ORDER BY created_at DESC, id DESC
 LIMIT 1
 `
 
 type GetLatestIssueVerdictRow struct {
+	ID        pgtype.UUID        `json:"id"`
 	Action    string             `json:"action"`
 	Details   []byte             `json:"details"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
@@ -116,6 +117,7 @@ func (q *Queries) GetLatestIssueVerdict(ctx context.Context, issueID pgtype.UUID
 	row := q.db.QueryRow(ctx, getLatestIssueVerdict, issueID)
 	var i GetLatestIssueVerdictRow
 	err := row.Scan(
+		&i.ID,
 		&i.Action,
 		&i.Details,
 		&i.CreatedAt,

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net/http"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -30,6 +30,10 @@ const (
 	activityAutoCloseWould   = "auto_close_would_close"
 	activityAutoClosePending = "auto_close_pending_merge"
 	activityAutoCloseEnded   = "auto_close_pending_ended"
+	activityAutoCloseSkipped = "auto_close_skipped"
+
+	closeModeSourceWorkspace = "workspace"
+	closeModeSourceStep      = "step"
 )
 
 // validateAutoClosePatch checks the auto_close request field: an object holding
@@ -80,14 +84,21 @@ func (h *Handler) stepAutoClose(ctx context.Context, issue db.Issue) *issueworkf
 // (CHE-7672). The workspace mode off is the kill switch; otherwise the step's
 // mode wins, and a step with no auto_close follows the workspace.
 func (h *Handler) autoCloseSettings(ctx context.Context, issue db.Issue) (mode string, topLevel bool) {
+	mode, topLevel, _ = h.autoCloseSettingsSource(ctx, issue)
+	return mode, topLevel
+}
+
+// autoCloseSettingsSource is autoCloseSettings with where the mode came from:
+// "step" when the step's auto_close sets it, otherwise "workspace".
+func (h *Handler) autoCloseSettingsSource(ctx context.Context, issue db.Issue) (mode string, topLevel bool, source string) {
 	mode = h.autoCloseMode(ctx, issue.WorkspaceID)
 	if mode == "off" {
-		return mode, false
+		return mode, false, closeModeSourceWorkspace
 	}
 	if step := h.stepAutoClose(ctx, issue); step != nil {
-		return step.Mode, step.TopLevel
+		return step.Mode, step.TopLevel, closeModeSourceStep
 	}
-	return mode, false
+	return mode, false, closeModeSourceWorkspace
 }
 
 // entersAutoCloseStep reports whether entering status can close the issue.
@@ -116,17 +127,22 @@ type closeDecision struct {
 	WouldClose bool
 }
 
-// closeOrDispatch is the one close check (CHE-7671), read-only. The status-write
-// dispatch, the edge transaction and the pr.merged bridge call it before they
-// enqueue a run on an auto-close step. Only block mode closes or waits: off and
-// warn always dispatch.
+// closeOrDispatch is the one close check (CHE-7671). It changes no issue row; a
+// rejected close in warn or block leaves one auto_close_skipped activity with the
+// inputs the predicates read (CHE-9266). The status-write dispatch, the edge
+// transaction and the pr.merged bridge call it before they enqueue a run on an
+// auto-close step. Only block mode closes or waits: off and warn always dispatch.
 func (h *Handler) closeOrDispatch(ctx context.Context, issue db.Issue) closeDecision {
-	mode, topLevel := h.autoCloseSettings(ctx, issue)
+	mode, topLevel, source := h.autoCloseSettingsSource(ctx, issue)
 	if mode == "off" {
 		return closeDecision{Outcome: closeOutcomeDispatch}
 	}
-	read, state := h.autoCloseCheck(ctx, issue, topLevel)
-	predicates := strings.Join(read, ",")
+	inputs, ev := h.collectCloseInputs(ctx, issue, topLevel, false)
+	state := ev.State
+	predicates := strings.Join(ev.Read, ",")
+	if state == closeStateRejected {
+		h.recordCloseSkipped(ctx, issue, mode, source, predicates, inputs, ev)
+	}
 	switch {
 	case state == closeStateHolds && mode == "block":
 		return closeDecision{Outcome: closeOutcomeClosed, Predicates: predicates}
@@ -229,6 +245,18 @@ func (h *Handler) closeIssue(ctx context.Context, issue db.Issue, predicates str
 	return true
 }
 
+// recordCloseSkipped leaves one activity naming the first failed predicate and
+// the inputs every predicate up to it read.
+func (h *Handler) recordCloseSkipped(ctx context.Context, issue db.Issue, mode, source, predicates string, inputs closeInputs, ev closeEvaluation) {
+	h.recordActivityJSON(ctx, issue.ID, "system", "", activityAutoCloseSkipped, map[string]any{
+		"first_failure": ev.FirstFailure,
+		"predicates":    predicates,
+		"mode":          closeModeView{Value: mode, Source: source},
+		"checked_at":    time.Now().UTC().Format(time.RFC3339Nano),
+		"inputs":        inputs,
+	})
+}
+
 // closeState is how far the predicates hold.
 type closeState int
 
@@ -237,77 +265,6 @@ const (
 	closeStateAwaitingMerge
 	closeStateHolds
 )
-
-// autoCloseCheck evaluates the predicates in order and stops at the first that
-// does not hold or cannot be read. It returns the predicates read and held.
-// closeStateAwaitingMerge: a clean PASS names the head of an open PR, every
-// other predicate holds, and the issue's own watcher and a pr.merged done edge
-// will deliver the merge.
-func (h *Handler) autoCloseCheck(ctx context.Context, issue db.Issue, topLevel bool) (read []string, state closeState) {
-	q := h.Queries
-	var (
-		mergeEdge     bool
-		awaitingMerge bool
-		ownWatcher    int64
-	)
-	checks := []struct {
-		name string
-		hold func() (bool, error)
-	}{
-		{"done_edge", func() (bool, error) {
-			agentDone, onMerge, err := h.doneEdges(ctx, issue)
-			mergeEdge = onMerge
-			return agentDone || onMerge, err
-		}},
-		{"has_parent", func() (bool, error) { return issue.ParentIssueID.Valid || topLevel, nil }},
-		{"verdict_pass_current", func() (bool, error) {
-			holds, awaiting, err := h.autoCloseVerdictHolds(ctx, issue)
-			awaitingMerge = awaiting
-			return holds || awaiting, err
-		}},
-		{"prs_merged_into_default", func() (bool, error) { return h.linkedPRsMergedIntoDefault(ctx, issue) }},
-		{"no_open_child", func() (bool, error) { open, err := h.hasOpenChildren(ctx, issue); return !open, err }},
-		{"no_open_decision", func() (bool, error) {
-			open, err := q.HasOpenDecisionRequestForIssue(ctx, db.HasOpenDecisionRequestForIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
-			return !open, err
-		}},
-		{"no_live_wakeup", func() (bool, error) {
-			n, err := q.CountIssueWakeupsLiveAtEntry(ctx, db.CountIssueWakeupsLiveAtEntryParams{IssueID: issue.ID, Step: issue.Status})
-			ownWatcher = n.Own
-			return n.Other == 0, err
-		}},
-		{"no_cheese_stop", func() (bool, error) { return !hasCheeseStopLine(issue.Description.String), nil }},
-		{"parent_not_stopped", func() (bool, error) {
-			if topLevel && !issue.ParentIssueID.Valid {
-				return true, nil
-			}
-			parent, err := q.GetIssue(ctx, issue.ParentIssueID)
-			return err == nil && metadataString(parent.Metadata, deliveryStopKey) != "stopped", err
-		}},
-		{"post_close_work_none", func() (bool, error) { return metadataString(issue.Metadata, postCloseWorkKey) == "none", nil }},
-	}
-	for _, c := range checks {
-		held, err := c.hold()
-		if err != nil {
-			slog.Warn("auto close: predicate unreadable; the step's run starts", "predicate", c.name, "err", err, "issue_id", uuidToString(issue.ID))
-			return read, closeStateRejected
-		}
-		if !held {
-			return read, closeStateRejected
-		}
-		if c.name == "verdict_pass_current" && awaitingMerge {
-			continue
-		}
-		read = append(read, c.name)
-	}
-	if awaitingMerge {
-		if mergeEdge && ownWatcher > 0 {
-			return read, closeStateAwaitingMerge
-		}
-		return read, closeStateRejected
-	}
-	return read, closeStateHolds
-}
 
 // doneEdges reports which done edges the issue's step has: agent_done, and
 // pr.merged (the merge wait that the issue's own watcher carries).
@@ -330,85 +287,6 @@ func (h *Handler) doneEdges(ctx context.Context, issue db.Issue) (agentDone, onM
 	return agentDone, onMerge, nil
 }
 
-// autoCloseVerdictHolds: the newest verdict row is a PASS without a P0/P1
-// finding (a PASS write may carry findings, so the action name is not enough),
-// nothing voided it since, and the candidate is the one it reviewed: every
-// linked PR merged at the head the PASS names, or, with no PR, no attachment,
-// description revision or comment (other than the reviewer's) newer than the
-// PASS. awaitingMerge: the same, except that a linked PR is still open or draft
-// at the PASS's head. Anything unreadable keeps the handler run.
-func (h *Handler) autoCloseVerdictHolds(ctx context.Context, issue db.Issue) (holds, awaitingMerge bool, err error) {
-	verdict, err := h.Queries.GetLatestIssueVerdict(ctx, issue.ID)
-	if errors.Is(err, pgx.ErrNoRows) || (err == nil && verdict.Action != activityPassed) {
-		return false, false, nil
-	}
-	if err != nil {
-		return false, false, err
-	}
-	var details struct {
-		Findings string `json:"findings"`
-		HeadSHA  string `json:"head_sha"`
-	}
-	var findings []ReviewFinding
-	if err := json.Unmarshal(verdict.Details, &details); err != nil {
-		return false, false, err
-	}
-	if err := json.Unmarshal([]byte(details.Findings), &findings); err != nil {
-		return false, false, err
-	}
-	for _, f := range findings {
-		if f.Severity == "P0" || f.Severity == "P1" {
-			return false, false, nil
-		}
-	}
-	voided, err := h.Queries.CountIssueVerdictBreaksSince(ctx, db.CountIssueVerdictBreaksSinceParams{IssueID: issue.ID, Since: verdict.CreatedAt})
-	if err != nil || voided > 0 {
-		return false, false, err
-	}
-	prs, err := h.Queries.ListIssuePullRequestHeads(ctx, issue.ID)
-	if err != nil {
-		return false, false, err
-	}
-	if len(prs) == 0 {
-		newer, err := h.Queries.CountIssueTextCandidateChangesSince(ctx, db.CountIssueTextCandidateChangesSinceParams{IssueID: issue.ID, Since: verdict.CreatedAt, ReviewerID: verdict.ActorID})
-		return newer == 0, false, err
-	}
-	for _, pr := range prs {
-		if details.HeadSHA == "" || pr.HeadSha != details.HeadSHA {
-			return false, false, nil
-		}
-		switch pr.State {
-		case "merged":
-		case "open", "draft":
-			awaitingMerge = true
-		default:
-			return false, false, nil
-		}
-	}
-	return !awaitingMerge, awaitingMerge, nil
-}
-
-// linkedPRsMergedIntoDefault: on entry to merged, every linked PR merged into
-// its repository's default branch. A PR merged into another branch is a stack
-// layer, and a delivery that did not carry the base or the default branch is
-// unreadable: both keep the handler run. Entry to agent_accepted needs no PR
-// merged, so it passes.
-func (h *Handler) linkedPRsMergedIntoDefault(ctx context.Context, issue db.Issue) (bool, error) {
-	if issue.Status != statusMerged {
-		return true, nil
-	}
-	prs, err := h.Queries.ListIssuePullRequestHeads(ctx, issue.ID)
-	if err != nil {
-		return false, err
-	}
-	for _, pr := range prs {
-		if pr.State != "merged" || pr.BaseRef == "" || pr.BaseRef != pr.DefaultBranch {
-			return false, nil
-		}
-	}
-	return true, nil
-}
-
 func hasCheeseStopLine(description string) bool {
 	for _, line := range strings.Split(description, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), cheeseStopPrefix) {
@@ -426,9 +304,4 @@ func metadataString(metadata []byte, key string) string {
 	}
 	s, _ := m[key].(string)
 	return s
-}
-
-// GetIssueCloseCheck is a stub until close-check is built.
-func (h *Handler) GetIssueCloseCheck(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "close-check is not built")
 }

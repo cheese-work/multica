@@ -2345,6 +2345,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/description/history", h.ListIssueDescriptionRevisions)
 					r.Get("/description/diff", h.DiffIssueDescription)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
+					r.Get("/close-check", h.GetIssueCloseCheck)
 					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Get("/stage-queue", h.GetIssueStageQueue)
 					// CHE-2798 S1c: the direct raise and top-up are gone; a raise or top-up is a
