@@ -700,7 +700,10 @@
     "wakeup_skipped_plain": "{{condition}} · skipped waking {{agent}}",
     "wakeup_link_pr": "PR #{{number}}",
     "wakeup_link_comment": "Comment",
-    "wakeup_link_run": "View run"
+    "wakeup_link_run": "View run",
+    "trigger_pr_checks_passed": "las comprobaciones de {{pr}} pasaron",
+    "trigger_pr_dequeued": "{{pr}} salió de la cola de fusión",
+    "wakeup_rearmed": "Reprogramado el despertador tras fallar la ejecución"
   },
   "comment": {
     "add_reaction": "Añadir reacción",

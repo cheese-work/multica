@@ -750,7 +750,10 @@
     "wakeup_skipped_plain": "{{condition}} · skipped waking {{agent}}",
     "wakeup_link_pr": "PR #{{number}}",
     "wakeup_link_comment": "Comment",
-    "wakeup_link_run": "View run"
+    "wakeup_link_run": "View run",
+    "trigger_pr_checks_passed": "проверки {{pr}} пройдены",
+    "trigger_pr_dequeued": "{{pr}} вышел из очереди слияния",
+    "wakeup_rearmed": "Пробуждение перезаведено после сбоя запуска"
   },
   "comment": {
     "add_reaction": "Добавить реакцию",
