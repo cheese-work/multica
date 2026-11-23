@@ -183,12 +183,14 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 		guard        *reviewerGuard
 		pickRefusal  error
 	)
-	if step.Handler.Type == issueworkflow.HandlerReviewer {
-		// The pick needs the issue's authors, so it is not ResolveHandler's.
+	if holdsReviewerRule(step) {
 		var err error
 		if guard, err = h.loadReviewerGuard(ctx, q, prev.ID); err != nil {
 			return nil, err
 		}
+	}
+	if step.Handler.Type == issueworkflow.HandlerReviewer {
+		// The pick needs the issue's authors, so it is not ResolveHandler's.
 		var picked pgtype.UUID
 		picked, ok, pickRefusal = h.pickReviewer(ctx, q, prev, guard)
 		if ok {

@@ -123,3 +123,43 @@ func TestSameAs_SaveRefusesAStepOfAnotherWorkflowAndACycle(t *testing.T) {
 		t.Errorf("cycle: status %d, want 400", resp.Code)
 	}
 }
+
+// RGS-1 still holds when a same_as step is agent_review: the resolved agent is
+// held to the reviewer independence rule, as a reviewer step's pick is.
+func TestSameAs_AgentReviewHoldsTheResolvedAgentToIndependence(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	sameLab := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	otherLab := reviewerAgent(t, "codex", "gpt-5.5")
+	seedTestCatalog(t)
+	createTestCustomStatus(t, "agent_review", "started")
+	projectID := createWorkflowTestProject(t, "SameAs review project "+workflowTestSuffix())
+	setColumnHandoff(t, projectID, "agent_review", map[string]any{
+		"handler": map[string]any{"type": "same_as", "step": "in_review"}, "instructions": "Review it.",
+	}).Want(http.StatusOK)
+	newIssue := func(t *testing.T, handledInReview string) string {
+		t.Helper()
+		issueID := dbfx.Issue(t, "feat(x): same_as review "+workflowTestSuffix(), testutil.Cols{"project_id": projectID, "status": "in_review"})
+		var runtimeID string
+		dbfx.QueryRow(t, `SELECT runtime_id::text FROM agent WHERE id = $1`, author).Scan(&runtimeID)
+		dbfx.Task(t, author, testutil.Cols{"issue_id": issueID, "runtime_id": runtimeID, "status": "completed", "applied_model": "claude-sonnet-5-5"})
+		updateIssueForTest(t, issueID, map[string]any{"assignee_type": "agent", "assignee_id": handledInReview}).Want(http.StatusOK)
+		dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'cancelled' WHERE issue_id = $1 AND status = 'queued'`, issueID)
+		return issueID
+	}
+
+	t.Run("the author is refused", func(t *testing.T) {
+		issueID := newIssue(t, author)
+		wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "agent_review"}), issueID, "in_review")
+	})
+	t.Run("a same-lab agent is refused", func(t *testing.T) {
+		issueID := newIssue(t, sameLab)
+		wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "agent_review"}), issueID, "in_review", "anthropic")
+	})
+	t.Run("an agent of another lab is accepted", func(t *testing.T) {
+		issueID := newIssue(t, otherLab)
+		updateIssueForTest(t, issueID, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
+		if _, _, id := issueStatusAndAssignee(t, issueID); id != otherLab {
+			t.Fatalf("assignee = %s, want the other-lab agent %s", id, otherLab)
+		}
+	})
+}
