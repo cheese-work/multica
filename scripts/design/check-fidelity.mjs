@@ -6,7 +6,8 @@
  * component with the same fixture, reads the mapped blocks from both and compares them:
  *   unmapped-lock-content (rule 1)  a lock item (visible text, control, image) inside the state root is outside every mapped block
  *   unmapped-code-content (rule 2)  the same for an item in the rendered component root
- *   missing-block  (rule 3)  a mapped block is absent in the lock or in the code render
+ *   missing-block  (rule 3)  a mapped block is absent in the lock or in the code render; a case's `blocks` list (the ids its
+ *                            state draws) exempts an id that both sides lack and the list omits
  *   duplicate-block (rule 4) a block id without `repeat` matches more than one element on either side
  *   order          (rule 5)  the order of the blocks differs
  *   text           (rule 6)  the text of a block differs (carries the sha256 of the code text)
@@ -116,7 +117,7 @@ export function renderFailure(c, side, err) {
 
 /**
  * Compare what the lock and the code render for one case.
- * A side is { order: [block id in document order], blocks: { id: { text } }, unmapped?: [{ kind, key }], dups?: { id: count } }.
+ * A case may carry `blocks` (see rule 3 below). A side is { order: [block id in document order], blocks: { id: { text } }, unmapped?: [{ kind, key }], dups?: { id: count } }.
  * `unmapped` lists the items outside every mapped block, `dups` the non-repeat blocks that matched more than one element.
  */
 export function compareBlocks(c, lock, code, mapped = [...new Set([...Object.keys(lock.blocks), ...Object.keys(code.blocks)])]) {
@@ -131,11 +132,13 @@ export function compareBlocks(c, lock, code, mapped = [...new Set([...Object.key
     }
   }
   const common = mapped.filter((id) => id in lock.blocks && id in code.blocks);
-  // Every mapped id is judged, so a block absent on both sides still fails (rule 3).
+  // Rule 3 is judged per case. A case may list `blocks`, the ids its state draws: a mapped id outside that list is not judged
+  // when both sides lack it (an open card has no folded block). A listed id, and any id present on one side, is always judged.
   for (const id of mapped) {
     const inLock = id in lock.blocks;
     const inCode = id in code.blocks;
     if (inLock && inCode) continue;
+    if (!inLock && !inCode && c.blocks && !c.blocks.includes(id)) continue;
     if (!inLock && !inCode) out.push(instance(c, "missing-block", id, "both", `${id} is mapped, but the lock state draws no block that matches its selector and the code render has no element with data-testid="${id}"`));
     else if (!inCode) out.push(instance(c, "missing-block", id, "code", `the lock draws ${id}; the code render has no element with data-testid="${id}"`));
     else out.push(instance(c, "missing-block", id, "lock", `the code renders ${id}; the lock state draws no block that matches its selector`));

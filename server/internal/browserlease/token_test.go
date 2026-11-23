@@ -21,6 +21,16 @@ func seed(b byte) string {
 	return base64.StdEncoding.EncodeToString(s)
 }
 
+// parseAllowing parses a keyring that may sign both legacy host audiences. A keyring with no
+// allowlist signs nothing (plan r16, "Eligibility E").
+func parseAllowing(spec string) (*Keyring, error) {
+	kr, err := ParseKeyring(spec)
+	if err != nil {
+		return nil, err
+	}
+	return kr.WithAudiences(NewAudienceSet(Aud(HostC00), Aud(HostX99))), nil
+}
+
 const tNow = int64(1_800_000_000)
 
 // claims is what W3-3's Service hands the signer for a C00 S2 lease.
@@ -97,7 +107,7 @@ func sign(t *testing.T, kr *Keyring, c Claims) string {
 }
 
 func TestSignClaimsAndJWKS(t *testing.T) {
-	kr, err := ParseKeyring("k1:" + seed(1))
+	kr, err := parseAllowing("k1:" + seed(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +145,7 @@ func TestSignClaimsAndJWKS(t *testing.T) {
 
 // The gateway on each host accepts only its own audience (shared-browser steel-gateway/verify.go).
 func TestAudienceIsHostSpecific(t *testing.T) {
-	kr, _ := ParseKeyring("k1:" + seed(1))
+	kr, _ := parseAllowing("k1:" + seed(1))
 	keys, _ := fetchJWKS(t, kr)
 	now := time.Unix(tNow, 0)
 	accepts := func(tok, aud string) bool {
@@ -164,7 +174,7 @@ func TestAudienceIsHostSpecific(t *testing.T) {
 }
 
 func TestDecisionNullOnlyForS0(t *testing.T) {
-	kr, _ := ParseKeyring("k1:" + seed(1))
+	kr, _ := parseAllowing("k1:" + seed(1))
 	keys, _ := fetchJWKS(t, kr)
 	tok, err := kr.Sign(s0Claims())
 	if err != nil {
@@ -184,7 +194,7 @@ func TestDecisionNullOnlyForS0(t *testing.T) {
 }
 
 func TestSignRejectsBadClaims(t *testing.T) {
-	kr, _ := ParseKeyring("k1:" + seed(1))
+	kr, _ := parseAllowing("k1:" + seed(1))
 	cases := map[string]func(*Claims){
 		"S1 class":       func(c *Claims) { c.Class = "S1" },
 		"unknown class":  func(c *Claims) { c.Class = "x" },
@@ -215,11 +225,11 @@ func TestSignRejectsBadClaims(t *testing.T) {
 }
 
 func TestRotationKeepsOldKeyVerifiable(t *testing.T) {
-	old, _ := ParseKeyring("k1:" + seed(1))
+	old, _ := parseAllowing("k1:" + seed(1))
 	now := time.Unix(tNow, 0)
 	oldTok := sign(t, old, claims())
 
-	rot, err := ParseKeyring("k2:" + seed(2) + ",k1:" + seed(1))
+	rot, err := parseAllowing("k2:" + seed(2) + ",k1:" + seed(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +246,7 @@ func TestRotationKeepsOldKeyVerifiable(t *testing.T) {
 }
 
 func TestJWKSHasNoPrivateMaterial(t *testing.T) {
-	kr, _ := ParseKeyring("k1:" + seed(1))
+	kr, _ := parseAllowing("k1:" + seed(1))
 	_, rec := fetchJWKS(t, kr)
 	if strings.Contains(rec.Body.String(), `"d"`) {
 		t.Fatalf("jwks leaks private member: %s", rec.Body.String())
@@ -244,7 +254,7 @@ func TestJWKSHasNoPrivateMaterial(t *testing.T) {
 }
 
 func TestJWKSMethods(t *testing.T) {
-	kr, _ := ParseKeyring("k1:" + seed(1))
+	kr, _ := parseAllowing("k1:" + seed(1))
 	for _, m := range []string{http.MethodPost, http.MethodPut, http.MethodDelete} {
 		rec := httptest.NewRecorder()
 		kr.JWKSHandler().ServeHTTP(rec, httptest.NewRequest(m, JWKSPath, nil))
@@ -304,7 +314,7 @@ func hClaims() Claims {
 }
 
 func TestSignAcceptsAMemberLoginLeaseWithoutTaskOrIssue(t *testing.T) {
-	kr, err := ParseKeyring("k1:" + seed(1))
+	kr, err := parseAllowing("k1:" + seed(1))
 	if err != nil {
 		t.Fatal(err)
 	}

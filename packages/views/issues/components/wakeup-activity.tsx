@@ -23,6 +23,7 @@ export const WAKEUP_ACTIVITY_ACTIONS = new Set([
   "wakeup_timed_out",
   "wakeup_paused",
   "wakeup_checkin",
+  "wakeup_rearmed",
 ]);
 
 interface StoredPreview {
@@ -46,7 +47,7 @@ interface StoredPreview {
 interface WakeupDetails {
   wakeup?: StoredPreview;
   /** The built-in rule that fired; user-made rules carry none. */
-  rule?: "child_done" | "pr_merged" | "pr_checks_failed" | "pr_needs_attention";
+  rule?: "child_done" | "pr_merged" | "pr_checks_failed" | "pr_checks_passed" | "pr_needs_attention" | "pr_dequeued";
   pr_number?: number;
   pr_url?: string;
   comment_id?: string;
@@ -71,7 +72,7 @@ interface WakeupDetails {
   note?: string;
 }
 
-const PR_RULES = new Set(["pr_merged", "pr_checks_failed", "pr_needs_attention"]);
+const PR_RULES = new Set(["pr_merged", "pr_checks_failed", "pr_checks_passed", "pr_needs_attention", "pr_dequeued"]);
 
 function detailsOf(entry: TimelineEntry): WakeupDetails {
   return (entry.details ?? {}) as WakeupDetails;
@@ -116,8 +117,12 @@ function triggerOf(details: WakeupDetails, preview: WakeupPreview | null, t: Iss
         return t(($) => $.activity.trigger_pr_merged, { pr });
       case "pr_checks_failed":
         return t(($) => $.activity.trigger_pr_checks_failed, { pr });
-      default:
+      case "pr_checks_passed":
+        return t(($) => $.activity.trigger_pr_checks_passed, { pr });
+      case "pr_needs_attention":
         return t(($) => $.activity.trigger_pr_needs_attention, { pr });
+      case "pr_dequeued":
+        return t(($) => $.activity.trigger_pr_dequeued, { pr });
     }
   }
   const event = details.events?.[0];
@@ -187,7 +192,7 @@ export function formatWakeupActivity(
       const fired = triggerOf(details, preview, t, text, getActorName);
       if (details.outcome === "merged") return t(($) => $.activity.wakeup_triggered_merged, { condition: fired, agent: woken });
       if (details.outcome === "acknowledged") return t(($) => $.activity.wakeup_triggered_acknowledged, { condition: fired, agent: woken });
-      if (details.rule === "pr_needs_attention" || details.rule === "pr_checks_failed") {
+      if (details.rule && details.rule !== "pr_merged" && PR_RULES.has(details.rule)) {
         if (details.outcome === "notified") return fired + t(($) => $.activity.wakeup_child_done_notified, { name: woken });
         if (details.outcome === "none") return fired;
       }
@@ -213,6 +218,8 @@ export function formatWakeupActivity(
         ? t(($) => $.activity.wakeup_checkin_coalesced, { count, note })
         : t(($) => $.activity.wakeup_checkin, { note });
     }
+    case "wakeup_rearmed":
+      return t(($) => $.activity.wakeup_rearmed);
     default:
       return entry.action ?? "";
   }

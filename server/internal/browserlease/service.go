@@ -35,6 +35,19 @@ type Service struct {
 	Now       func() time.Time
 	// Audit records start and end events inside the transition's transaction (CHE-4744).
 	Audit AuditFunc
+	// Audiences is the token audience allowlist that E checks at grant, signing and renewal. The
+	// zero value allows nothing: no grant and no token.
+	Audiences AudienceSet
+
+	// hook is a test seam that runs at named points inside the locked sections; nil in production.
+	hook func(point string)
+}
+
+// at runs the test hook for point.
+func (s *Service) at(point string) {
+	if s.hook != nil {
+		s.hook(point)
+	}
 }
 
 // MintRequest is a running task's ask for a lease. The caller resolves task, agent, issue and
@@ -262,7 +275,7 @@ func (s *Service) statusOf(ctx context.Context, id, ws, task, user pgtype.UUID, 
 	if !issueToken {
 		return res, nil
 	}
-	return s.issueTokenEnding(ctx, res)
+	return s.signLease(ctx, res.Lease.ID, res.Lease.WorkspaceID, nil)
 }
 
 // Status reads a lease back without signing: no token, whatever the state.
@@ -270,24 +283,104 @@ func (s *Service) Status(ctx context.Context, ws, task, lease pgtype.UUID) (Resu
 	return s.statusOf(ctx, lease, ws, task, pgtype.UUID{}, false)
 }
 
-// issueToken signs with the lease row it is given, so the caller must pass the persisted
-// deadline. A signer failure comes back as signFailure; the caller ends the lease outside any
-// transaction that already holds the lease row.
-func (s *Service) issueToken(ctx context.Context, q *db.Queries, res Result) (Result, error) {
-	l := res.Lease
-	instances, err := s.Registry.Instances(ctx, l.WorkspaceID, l.Class)
-	if err != nil {
-		return res, err
-	}
-	var host string
-	for _, in := range instances {
-		if in.ID == l.InstanceID {
-			host = in.Host
+type signFailure struct{ err error }
+
+func (e signFailure) Error() string { return fmt.Sprintf("sign browser token: %v", e.err) }
+func (e signFailure) Unwrap() error { return e.err }
+
+// signLease signs a token for an active lease in one transaction (plan r16, "Lock order": renew
+// key, instance SHARE, credential SHARE, lease FOR UPDATE). E is checked on the rows it holds, the
+// token is signed, its jti recorded, and the caller gets the token only after the commit, so a
+// commit that fails leaves no token and no jti. limit is the renewal's revalidated deadline; the
+// lease keeps the earlier of it and the stored one.
+//
+// A lease that has ended, or whose epoch is no longer the instance's, gets ErrLeaseEnded and is left
+// alone: the instance may already belong to another lease. A lease that fails E is ended, outside
+// the transaction (reason not_eligible), and the instance stays held (H). So is one whose signer
+// fails or whose deadline passed.
+func (s *Service) signLease(ctx context.Context, id, ws pgtype.UUID, limit *time.Time) (Result, error) {
+	var out Result
+	var held db.BrowserLease
+	errExpired := errors.New("lease expired")
+	err := s.inTx(ctx, func(q *db.Queries) error {
+		s.at("sign:begin")
+		if err := lockKey(ctx, q, "browser-lease-renew:"+uuid.UUID(id.Bytes).String()); err != nil {
+			return err
 		}
+		// The instance id of an active lease never changes, so reading it before the locks is safe;
+		// everything E depends on is read again under them.
+		peek, err := q.GetBrowserLease(ctx, db.GetBrowserLeaseParams{ID: id, WorkspaceID: ws})
+		if errors.Is(err, pgx.ErrNoRows) || err == nil && peek.State != "active" {
+			return ErrLeaseEnded
+		}
+		if err != nil {
+			return err
+		}
+		in, err := q.LockBrowserInstanceShare(ctx, db.LockBrowserInstanceShareParams{ID: peek.InstanceID, WorkspaceID: ws})
+		if errors.Is(err, pgx.ErrNoRows) {
+			held = peek
+			return ErrNotEligible
+		}
+		if err != nil {
+			return err
+		}
+		creds, err := q.LockBrowserGatewayCredentialsShare(ctx, db.LockBrowserGatewayCredentialsShareParams{WorkspaceID: ws, Gateways: []string{in.Gateway}})
+		if err != nil {
+			return err
+		}
+		l, err := q.LockBrowserLeaseForUpdate(ctx, db.LockBrowserLeaseForUpdateParams{ID: id, WorkspaceID: ws})
+		if err != nil {
+			return err
+		}
+		if l.State != "active" || !l.Epoch.Valid || l.Epoch.Int64 != in.Epoch {
+			return ErrLeaseEnded
+		}
+		credentialed := map[string]bool{}
+		for _, c := range creds {
+			credentialed[c.Gateway] = true
+		}
+		host, err := eligible(l.Class, in, s.Audiences, credentialed)
+		if err != nil {
+			held = l
+			return err
+		}
+		if limit != nil {
+			// A decision shortened since the grant caps the lease from now on; the limit never grows.
+			if l, err = q.ShortenBrowserLeaseExpiry(ctx, db.ShortenBrowserLeaseExpiryParams{ID: id, WorkspaceID: ws, ExpiresAt: ts(*limit)}); err != nil {
+				return err
+			}
+		}
+		if !s.now().Before(l.ExpiresAt.Time) {
+			held = l
+			return errExpired
+		}
+		s.at("sign:locked")
+		res, err := s.token(ctx, q, l, host)
+		if err != nil {
+			held = l
+			return err
+		}
+		s.at("sign:before-commit")
+		out = res
+		return nil
+	})
+	var sf signFailure
+	switch {
+	case err == nil:
+		return out, nil
+	case errors.Is(err, errExpired):
+		return Result{}, errors.Join(ErrLeaseEnded, s.endActive(ctx, held, endExpired))
+	case errors.Is(err, ErrNotEligible):
+		return Result{}, errors.Join(err, s.endActive(ctx, held, endNotEligible))
+	case errors.As(err, &sf):
+		return Result{}, errors.Join(err, s.endActive(ctx, held, endSignFailed))
 	}
-	if host == "" {
-		return res, ErrNoInstance
-	}
+	return Result{}, err
+}
+
+// token signs the claims for the locked lease row l on the host E settled and records the jti on
+// the transaction q. The caller returns it to nobody until q commits.
+func (s *Service) token(ctx context.Context, q *db.Queries, l db.BrowserLease, host string) (Result, error) {
 	now := s.now()
 	exp := now.Add(TokenTTL)
 	if l.ExpiresAt.Time.Before(exp) {
@@ -309,38 +402,24 @@ func (s *Service) issueToken(ctx context.Context, q *db.Queries, res Result) (Re
 	}
 	token, err := s.Signer.Sign(claims)
 	if err != nil {
-		return res, signFailure{err}
+		return Result{}, signFailure{err}
 	}
 	sum := sha256.Sum256([]byte(jti))
-	if err := q.SetBrowserLeaseJTI(ctx, db.SetBrowserLeaseJTIParams{
-		ID: l.ID, WorkspaceID: l.WorkspaceID, JtiHash: pgtype.Text{String: hex.EncodeToString(sum[:]), Valid: true},
-	}); err != nil {
-		return res, err
+	hash := pgtype.Text{String: hex.EncodeToString(sum[:]), Valid: true}
+	if err := q.SetBrowserLeaseJTI(ctx, db.SetBrowserLeaseJTIParams{ID: l.ID, WorkspaceID: l.WorkspaceID, JtiHash: hash}); err != nil {
+		return Result{}, err
 	}
-	res.Lease.JtiHash = pgtype.Text{String: hex.EncodeToString(sum[:]), Valid: true}
-	res.Host, res.Token, res.TokenExpires = host, token, exp
-	return res, nil
-}
-
-type signFailure struct{ err error }
-
-func (e signFailure) Error() string { return fmt.Sprintf("sign browser token: %v", e.err) }
-func (e signFailure) Unwrap() error { return e.err }
-
-// issueTokenEnding is issueToken for a caller outside any transaction: a signer failure ends
-// the lease.
-func (s *Service) issueTokenEnding(ctx context.Context, res Result) (Result, error) {
-	out, err := s.issueToken(ctx, s.Queries, res)
-	var sf signFailure
-	if errors.As(err, &sf) {
-		return out, errors.Join(err, s.endActive(ctx, res.Lease, endSignFailed))
-	}
-	return out, err
+	l.JtiHash = hash
+	return Result{Lease: l, Host: host, Token: token, TokenExpires: exp}, nil
 }
 
 // endActive ends a granted lease. The instance stays held until cleanup-ack (W3-7).
 func (s *Service) endActive(ctx context.Context, l db.BrowserLease, reason string) error {
 	return s.inTx(ctx, func(q *db.Queries) error {
+		// Lock order: the instance row, then the lease row (signing and grant take them the same way).
+		if _, err := q.LockBrowserInstance(ctx, db.LockBrowserInstanceParams{ID: l.InstanceID, WorkspaceID: l.WorkspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 		ended, err := q.EndBrowserLease(ctx, db.EndBrowserLeaseParams{
 			ID: l.ID, WorkspaceID: l.WorkspaceID, EndedAt: ts(s.now()), EndReason: pgtype.Text{String: reason, Valid: true},
 		})
@@ -399,46 +478,7 @@ func (s *Service) renew(ctx context.Context, lease, ws, task, user pgtype.UUID) 
 		}
 		return res, err
 	}
-	return s.renewToken(ctx, l, limit)
-}
-
-// renewToken persists the revalidated deadline and signs under one per-lease lock. Overlapping
-// renewals take turns: each one reads the persisted minimum back from its own UPDATE, so the
-// last token signed and recorded never outlives a deadline another renewal already shortened.
-func (s *Service) renewToken(ctx context.Context, l db.BrowserLease, limit time.Time) (Result, error) {
-	var res Result
-	errExpired := errors.New("lease expired")
-	err := s.inTx(ctx, func(q *db.Queries) error {
-		if err := lockKey(ctx, q, "browser-lease-renew:"+uuid.UUID(l.ID.Bytes).String()); err != nil {
-			return err
-		}
-		// A decision shortened since the grant caps the lease from now on; the limit never grows.
-		cur, err := q.ShortenBrowserLeaseExpiry(ctx, db.ShortenBrowserLeaseExpiryParams{
-			ID: l.ID, WorkspaceID: l.WorkspaceID, ExpiresAt: ts(limit),
-		})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ErrLeaseEnded // released or ended while this renewal was validating
-		}
-		if err != nil {
-			return err
-		}
-		if !s.now().Before(cur.ExpiresAt.Time) {
-			return errExpired
-		}
-		res, err = s.issueToken(ctx, q, Result{Lease: cur})
-		return err
-	})
-	var sf signFailure
-	switch {
-	case errors.Is(err, errExpired):
-		if endErr := s.endActive(ctx, l, endExpired); endErr != nil {
-			return res, endErr
-		}
-		return res, ErrLeaseEnded
-	case errors.As(err, &sf):
-		return res, errors.Join(err, s.endActive(ctx, l, endSignFailed))
-	}
-	return res, err
+	return s.signLease(ctx, l.ID, l.WorkspaceID, &limit)
 }
 
 func (s *Service) Release(ctx context.Context, ws, task, lease pgtype.UUID) error {
@@ -502,7 +542,22 @@ func (s *Service) advanceOne(ctx context.Context, ws pgtype.UUID, class string) 
 		if err != nil {
 			return err
 		}
+		s.at("grant:candidates")
+		// The candidate list is advice. E is read from the rows as locked: every candidate instance
+		// FOR UPDATE in id order, then the unrevoked credentials of their gateways FOR SHARE.
+		locked, credentialed, err := s.lockForGrant(ctx, q, ws, candidates)
+		if err != nil {
+			return err
+		}
 		for _, c := range candidates {
+			in, ok := locked[c.ID]
+			if !ok {
+				continue
+			}
+			if _, err := eligible(head.Class, in, s.Audiences, credentialed); err != nil {
+				continue
+			}
+			s.at("grant:locked")
 			claimed, err := q.ClaimIdleBrowserInstance(ctx, db.ClaimIdleBrowserInstanceParams{ID: c.ID, WorkspaceID: ws})
 			if errors.Is(err, pgx.ErrNoRows) {
 				continue
@@ -526,4 +581,33 @@ func (s *Service) advanceOne(ctx context.Context, ws pgtype.UUID, class string) 
 		return nil
 	})
 	return more, err
+}
+
+// lockForGrant takes the grant's locks in the global order (plan r16, "Lock order"): the candidate
+// instance rows in id order, then the unrevoked credential rows of their gateways in id order. It
+// returns the instance rows as locked and the gateways that hold an unrevoked credential.
+func (s *Service) lockForGrant(ctx context.Context, q *db.Queries, ws pgtype.UUID, candidates []Instance) (map[pgtype.UUID]db.BrowserInstance, map[string]bool, error) {
+	ids := make([]pgtype.UUID, 0, len(candidates))
+	for _, c := range candidates {
+		ids = append(ids, c.ID)
+	}
+	rows, err := q.LockBrowserInstancesForUpdate(ctx, db.LockBrowserInstancesForUpdateParams{WorkspaceID: ws, Ids: ids})
+	if err != nil {
+		return nil, nil, err
+	}
+	locked := make(map[pgtype.UUID]db.BrowserInstance, len(rows))
+	gateways := make([]string, 0, len(rows))
+	for _, in := range rows {
+		locked[in.ID] = in
+		gateways = append(gateways, in.Gateway)
+	}
+	creds, err := q.LockBrowserGatewayCredentialsShare(ctx, db.LockBrowserGatewayCredentialsShareParams{WorkspaceID: ws, Gateways: gateways})
+	if err != nil {
+		return nil, nil, err
+	}
+	credentialed := make(map[string]bool, len(creds))
+	for _, c := range creds {
+		credentialed[c.Gateway] = true
+	}
+	return locked, credentialed, nil
 }

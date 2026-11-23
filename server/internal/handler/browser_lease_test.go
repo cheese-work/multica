@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,19 +54,16 @@ func newBrowserLeaseFixture(t *testing.T, taskStatus string) browserLeaseFixture
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := q.CreateBrowserInstance(context.Background(), db.CreateBrowserInstanceParams{WorkspaceID: ws, Name: "x99-1"}); err != nil {
-		t.Fatal(err)
-	}
-	seedGatewayCredential(t, "c00")
+	registerBrowserInstance(t, q, ws, "x99-1")
 	t.Cleanup(func() {
-		for _, tbl := range []string{"browser_lease", "browser_instance", "browser_profile"} {
+		for _, tbl := range []string{"browser_lease", "browser_instance", "browser_gateway_credential", "browser_profile"} {
 			testPool.Exec(context.Background(), "DELETE FROM "+tbl+" WHERE workspace_id = $1", testWorkspaceID)
 		}
 	})
 	h := testHandler
 	h.BrowserLeases = &browserlease.Service{
 		Pool: testPool, Queries: q, Gate: allowHooks{}, Decisions: allowHooks{},
-		Registry: browserlease.NameRegistry{Queries: q}, Signer: stubSigner{},
+		Registry: browserlease.NameRegistry{Queries: q}, Signer: stubSigner{}, Audiences: browserlease.NewAudienceSet(browserlease.Aud("x99"), browserlease.Aud("c00")),
 	}
 	t.Cleanup(func() { h.BrowserLeases = nil })
 	return browserLeaseFixture{h: h, taskID: taskID, agentID: agentID, profile: uuid.UUID(prof.ID.Bytes).String(), daemon: daemon}
@@ -448,5 +446,22 @@ func TestLeaseExpiryWait(t *testing.T) {
 		if got := leaseExpiryWait(tc.seconds); got != tc.want {
 			t.Errorf("leaseExpiryWait(%v) = %v, want %v", tc.seconds, got, tc.want)
 		}
+	}
+}
+
+// registerBrowserInstance registers a row the parity reader serves (the host, gateway and classes
+// its name prefix implies) and an unrevoked credential for its gateway, so E holds for it.
+func registerBrowserInstance(t *testing.T, q *db.Queries, ws pgtype.UUID, name string) {
+	t.Helper()
+	host, classes := "c00", []string{"S2", "H"}
+	if strings.HasPrefix(name, "x99-") {
+		host, classes = "x99", []string{"S0"}
+	}
+	ctx := context.Background()
+	if _, err := q.RegisterBrowserInstance(ctx, db.RegisterBrowserInstanceParams{WorkspaceID: ws, Name: name, Host: host, Gateway: host, AllowedClasses: classes}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.CreateBrowserGatewayCredential(ctx, db.CreateBrowserGatewayCredentialParams{WorkspaceID: ws, Gateway: host, CredentialHash: "h-" + uuid.NewString()}); err != nil {
+		t.Fatal(err)
 	}
 }

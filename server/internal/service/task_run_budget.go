@@ -227,6 +227,9 @@ func noteRunInserted(ctx context.Context, q *db.Queries, issueID, taskID pgtype.
 	if err != nil || usage == nil || left != runBudgetWarnAt(usage.Max) {
 		return nil
 	}
+	if runBudgetMode(ctx, q, issue.WorkspaceID) == RunBudgetModeOff {
+		return nil
+	}
 	// A failed read leaves Xid 0: the handler then only counts committed runs.
 	xid, _ := q.CurrentXactID(ctx)
 	event := RunBudgetEvent{IssueID: issue.ID, Kind: RunBudgetKindWarn80, Runs: usage.Runs, Max: usage.Max, Since: usage.Since, Xid: xid}
@@ -279,7 +282,8 @@ func guardRunBudget(ctx context.Context, q *db.Queries, issueID pgtype.UUID, tar
 		return ReviewGate{}, nil
 	}
 	runs, max := usage.Runs, usage.Max
-	spent := balance < 1
+	// Warn and off never refuse (CHE-9026): the run counts, the issue keeps going.
+	spent := balance < 1 && runBudgetMode(ctx, q, issue.WorkspaceID) == RunBudgetModeBlock
 	// The budget stops loops. It does not decide the end of an issue's work, so
 	// a derived run for a finished issue is dropped and its status kept.
 	if spent && isFinishedStatus(ctx, q, issue) {
@@ -328,14 +332,14 @@ func hookSuppressed(ctx context.Context) bool {
 // callback checks this before it writes.
 func RunBudgetStillRefuses(ctx context.Context, q *db.Queries, issueID pgtype.UUID, since time.Time) (bool, error) {
 	ctx = readOnlyRunBudget(ctx)
-	_, usage, balance, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
+	issue, usage, balance, err := openRunBudget(ctx, q, issueID, pgtype.UUID{})
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (usage == nil || !usage.Since.Equal(since))) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("run budget: %w", err)
 	}
-	return balance < 1, nil
+	return balance < 1 && runBudgetMode(ctx, q, issue.WorkspaceID) == RunBudgetModeBlock, nil
 }
 
 // IsReviewStatus reports whether a status hands the issue to its reviewer: the

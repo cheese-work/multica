@@ -1162,6 +1162,45 @@ func (q *Queries) LockBrowserGatewayCredential(ctx context.Context, arg LockBrow
 	return i, err
 }
 
+const lockBrowserGatewayCredentialsShare = `-- name: LockBrowserGatewayCredentialsShare :many
+SELECT id, gateway FROM browser_gateway_credential
+WHERE workspace_id = $1 AND gateway = ANY($2::text[]) AND revoked_at IS NULL
+ORDER BY id
+FOR SHARE
+`
+
+type LockBrowserGatewayCredentialsShareParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Gateways    []string    `json:"gateways"`
+}
+
+type LockBrowserGatewayCredentialsShareRow struct {
+	ID      pgtype.UUID `json:"id"`
+	Gateway string      `json:"gateway"`
+}
+
+// The unrevoked credentials of the given gateways, locked in id order (lock order level 4). A
+// revocation takes the row FOR UPDATE, so it waits for every grant and signing that read it.
+func (q *Queries) LockBrowserGatewayCredentialsShare(ctx context.Context, arg LockBrowserGatewayCredentialsShareParams) ([]LockBrowserGatewayCredentialsShareRow, error) {
+	rows, err := q.db.Query(ctx, lockBrowserGatewayCredentialsShare, arg.WorkspaceID, arg.Gateways)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LockBrowserGatewayCredentialsShareRow{}
+	for rows.Next() {
+		var i LockBrowserGatewayCredentialsShareRow
+		if err := rows.Scan(&i.ID, &i.Gateway); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockBrowserInstance = `-- name: LockBrowserInstance :one
 SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
 WHERE id = $1 AND workspace_id = $2
@@ -1220,6 +1259,120 @@ func (q *Queries) LockBrowserInstanceForGateway(ctx context.Context, arg LockBro
 		&i.Host,
 		&i.Gateway,
 		&i.AllowedClasses,
+	)
+	return i, err
+}
+
+const lockBrowserInstanceShare = `-- name: LockBrowserInstanceShare :one
+SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
+WHERE id = $1 AND workspace_id = $2
+FOR SHARE
+`
+
+type LockBrowserInstanceShareParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Signing reads the instance row E checks and keeps it from changing until commit (plan r16, lock
+// order level 3). Narrowing, registration and the grant claim take the row FOR UPDATE.
+func (q *Queries) LockBrowserInstanceShare(ctx context.Context, arg LockBrowserInstanceShareParams) (BrowserInstance, error) {
+	row := q.db.QueryRow(ctx, lockBrowserInstanceShare, arg.ID, arg.WorkspaceID)
+	var i BrowserInstance
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Name,
+		&i.Epoch,
+		&i.Phase,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Host,
+		&i.Gateway,
+		&i.AllowedClasses,
+	)
+	return i, err
+}
+
+const lockBrowserInstancesForUpdate = `-- name: LockBrowserInstancesForUpdate :many
+SELECT id, workspace_id, name, epoch, phase, created_at, updated_at, host, gateway, allowed_classes FROM browser_instance
+WHERE workspace_id = $1 AND id = ANY($2::uuid[])
+ORDER BY id
+FOR UPDATE
+`
+
+type LockBrowserInstancesForUpdateParams struct {
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+	Ids         []pgtype.UUID `json:"ids"`
+}
+
+// Grant locks every candidate in id order (lock order level 3), then reads them back as locked.
+func (q *Queries) LockBrowserInstancesForUpdate(ctx context.Context, arg LockBrowserInstancesForUpdateParams) ([]BrowserInstance, error) {
+	rows, err := q.db.Query(ctx, lockBrowserInstancesForUpdate, arg.WorkspaceID, arg.Ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BrowserInstance{}
+	for rows.Next() {
+		var i BrowserInstance
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.Epoch,
+			&i.Phase,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Host,
+			&i.Gateway,
+			&i.AllowedClasses,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockBrowserLeaseForUpdate = `-- name: LockBrowserLeaseForUpdate :one
+SELECT id, workspace_id, instance_id, profile_id, agent_id, task_id, issue_id, user_id, decision_id, class, state, epoch, jti_hash, expires_at, granted_at, ended_at, end_reason, cleanup_acked_at, created_at FROM browser_lease
+WHERE id = $1 AND workspace_id = $2
+FOR UPDATE
+`
+
+type LockBrowserLeaseForUpdateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Lock order level 5: the lease row, after its instance and credential rows.
+func (q *Queries) LockBrowserLeaseForUpdate(ctx context.Context, arg LockBrowserLeaseForUpdateParams) (BrowserLease, error) {
+	row := q.db.QueryRow(ctx, lockBrowserLeaseForUpdate, arg.ID, arg.WorkspaceID)
+	var i BrowserLease
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.InstanceID,
+		&i.ProfileID,
+		&i.AgentID,
+		&i.TaskID,
+		&i.IssueID,
+		&i.UserID,
+		&i.DecisionID,
+		&i.Class,
+		&i.State,
+		&i.Epoch,
+		&i.JtiHash,
+		&i.ExpiresAt,
+		&i.GrantedAt,
+		&i.EndedAt,
+		&i.EndReason,
+		&i.CleanupAckedAt,
+		&i.CreatedAt,
 	)
 	return i, err
 }

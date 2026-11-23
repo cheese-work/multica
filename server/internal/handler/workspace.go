@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -406,6 +407,12 @@ type UpdateWorkspaceRequest struct {
 	// BlockedRunSkip sets settings.blocked_run_skip alone (CHE-6973): the
 	// object {"mode": off|warn|block}. Owner only.
 	BlockedRunSkip json.RawMessage `json:"blocked_run_skip"`
+	// RunGuard sets settings.run_guard alone (CHE-9026): the object
+	// {"mode": off|warn|block}. Owner only.
+	RunGuard json.RawMessage `json:"run_guard"`
+	// RunBudget sets settings.run_budget alone (CHE-9026): the object
+	// {"mode": off|warn|block}. Owner only.
+	RunBudget json.RawMessage `json:"run_budget"`
 	// AskGuardMode sets settings.ask_guard_mode alone (CHE-6123): the string
 	// off|warn|block. Owner only.
 	AskGuardMode json.RawMessage `json:"ask_guard_mode"`
@@ -597,7 +604,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateDecisionAskParkSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateQuickFirstSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings), queueorder.ValidateSetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateLongThreadSettings(req.Settings), validateAskLoopBackSetting(req.Settings), validateDecisionAskParkSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateCardThreadSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateQuickFirstSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings), queueorder.ValidateSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -694,6 +701,26 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.BlockedRunSkip = req.BlockedRunSkip
+	}
+	for _, mode := range []struct {
+		key  string
+		raw  json.RawMessage
+		dest *[]byte
+	}{
+		{"run_guard", req.RunGuard, &params.RunGuard},
+		{"run_budget", req.RunBudget, &params.RunBudget},
+	} {
+		if mode.raw == nil {
+			continue
+		}
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := decisionaction.ValidateModeSetting(mode.key, mode.raw); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		*mode.dest = mode.raw
 	}
 	if req.AskGuardMode != nil {
 		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {

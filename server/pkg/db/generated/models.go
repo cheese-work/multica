@@ -2450,6 +2450,20 @@ type IssueHandoffDispatch struct {
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
+type IssueHandoffOperation struct {
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	IssueID          pgtype.UUID        `json:"issue_id"`
+	OperationKey     pgtype.UUID        `json:"operation_key"`
+	ActorType        string             `json:"actor_type"`
+	ActorID          pgtype.UUID        `json:"actor_id"`
+	RequestHash      string             `json:"request_hash"`
+	StatusHistoryID  pgtype.UUID        `json:"status_history_id"`
+	CreatedCommentID pgtype.UUID        `json:"created_comment_id"`
+	DispatchID       pgtype.UUID        `json:"dispatch_id"`
+	Response         []byte             `json:"response"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
 type IssueIdleGuard struct {
 	IssueID       pgtype.UUID        `json:"issue_id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`

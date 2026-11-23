@@ -43,6 +43,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
+	"github.com/multica-ai/multica/server/internal/secrets"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -479,6 +480,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		GitExtraCACerts:                gitca.Load(slog.Default()),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	// Scoped secrets keyring (CHE-989). Production already refused to boot
+	// without a usable key (exitOnSecretsKeyBootError); elsewhere nil disables the feature.
+	secretsKeyring, secretsKeyStatus, _ := secrets.LoadKeyring(os.Getenv)
+	h.SecretsKeyring = secretsKeyring
+	secrets.LogKeyStatus(slog.Default(), secretsKeyStatus)
 	// Fail closed until W3-4 (signer) fills the seam. The user gate (W3-8/9) reads the permission tables.
 	// Decisions are live: an answered decision (per lease or once per issue) is validated at every
 	// mint, renew and queued grant, and a mint with no decision opens the decision request (W3-10).

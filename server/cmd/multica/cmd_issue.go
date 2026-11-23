@@ -807,6 +807,10 @@ func init() {
 	issueCommentListCmd.Flags().Bool("compact", false, "JSON output only: drop response fields that carry no information for a reader — the issue_id echoed from the request path, source_task_id, updated_at when identical to created_at, null-valued fields, and empty arrays. Content and identity fields pass through untouched. Recommended for agent reads; composes with any mode.")
 	issueCommentListCmd.Flags().Bool("summary", false, "Clip each comment's content to a short preview (sets content_truncated) so you can scan a list without pulling full bodies. Composes with any mode.")
 	issueCommentListCmd.Flags().Bool("full", false, "Escape hatch: return every comment in resolved threads verbatim. By default the complete-thread reads (default list, --recent, --thread without --tail) are folded — a resolved thread collapses to its root + conclusion, with the dropped count reported on the root — so you do not pay tokens for settled discussion. Pass --full when you need the folded discussion. No effect on --since/--tail/--roots-only reads, which are never folded.")
+	issueCommentListCmd.Flags().Bool("with-me", false, "Only return the threads that involve the viewer: the viewer wrote in them, was mentioned directly, or a decision request in them targets the viewer. The viewer is you, or the member or agent named by --for. Filters whole threads, so it composes with --roots-only, --summary and --thread. Adds thread_relation to each root.")
+	issueCommentListCmd.Flags().Bool("without-me", false, "Only return the threads that do not involve the viewer (the opposite of --with-me). Mutually exclusive with --with-me and --waiting-on.")
+	issueCommentListCmd.Flags().String("waiting-on", "", "Only return the threads that wait on this member: an open decision request targets them, or a direct mention of them has had no reply from them yet. Takes a member id or name and reads the relation as that member. Mutually exclusive with --with-me and --without-me.")
+	issueCommentListCmd.Flags().String("for", "", "Member or agent id or name whose view the relation is computed for (default: you). Alone, it adds thread_relation to each root without filtering. With --with-me or --without-me, it filters by that actor's relation.")
 	issueCommentListCmd.Flags().String("before", "", "Cursor (RFC3339Nano timestamp). With --recent: thread cursor (last_activity_at). With --thread + --tail: reply cursor (reply created_at). Read from the X-Multica-Next-Before response header, printed on stderr as \"Next thread cursor\" / \"Next reply cursor\"; must be paired with --before-id.")
 	issueCommentListCmd.Flags().String("before-id", "", "Cursor UUID. With --recent: thread root UUID. With --thread + --tail: oldest reply UUID. Read from the X-Multica-Next-Before-Id response header; must be paired with --before.")
 
@@ -3051,12 +3055,23 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--before / --before-id require --recent (thread cursor) or --thread + --tail (reply cursor)")
 	}
 
+	rel, err := parseCommentRelationFlags(ctx, client, cmd)
+	if err != nil {
+		return err
+	}
+
 	params := url.Values{}
 	if since != "" {
 		params.Set("since", since)
 	}
 	if rootsOnly {
 		params.Set("roots_only", "true")
+	}
+	if rel.relation != "" {
+		params.Set("relation", rel.relation)
+	}
+	if rel.forID != "" {
+		params.Set("for", rel.forID)
 	}
 	if summary {
 		params.Set("summary", "true")
@@ -3113,10 +3128,22 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// A relation read that failed server-side comes back unfiltered. Printing
+	// that as if it were filtered would hand the reader every thread.
+	if rel.relation != "" && respHeaders.Get(handlerHeaderThreadRelation) == "unavailable" {
+		return fmt.Errorf("thread relation is unavailable on the server, so the list cannot be filtered; retry, or read without --with-me, --without-me, --waiting-on and --for")
+	}
+
 	output, _ := cmd.Flags().GetString("output")
+	compact, _ := cmd.Flags().GetBool("compact")
 	if output == "json" {
-		if compact, _ := cmd.Flags().GetBool("compact"); compact {
+		if compact {
 			compactComments(comments)
+		}
+		// --compact and --summary reads carry thread_relation only when a
+		// relation flag is set, so an existing agent read does not grow.
+		if (compact || summary) && rel.relation == "" {
+			dropThreadRelation(comments)
 		}
 		return cli.PrintJSON(os.Stdout, comments)
 	}
@@ -3153,6 +3180,91 @@ func runIssueCommentList(cmd *cobra.Command, args []string) error {
 	}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil
+}
+
+// handlerHeaderThreadRelation mirrors handler.HeaderThreadRelation: the server
+// sets it to "unavailable" when the relation read failed and it returned the
+// comments unfiltered.
+const handlerHeaderThreadRelation = "X-Multica-Thread-Relation"
+
+// commentRelationParams is the relation part of a comment list request.
+type commentRelationParams struct {
+	// relation is the relation= value; empty when no relation flag is set.
+	relation string
+	// forID is the for= value; empty means the caller.
+	forID string
+}
+
+// parseCommentRelationFlags reads --with-me, --without-me, --waiting-on and
+// --for. --waiting-on <member> is --for <member> plus the waiting filter. --for
+// alone asks for thread_relation without a filter (relation=1).
+func parseCommentRelationFlags(ctx context.Context, client *cli.APIClient, cmd *cobra.Command) (commentRelationParams, error) {
+	withMe, _ := cmd.Flags().GetBool("with-me")
+	withoutMe, _ := cmd.Flags().GetBool("without-me")
+	waitingOn, _ := cmd.Flags().GetString("waiting-on")
+	forFlag, _ := cmd.Flags().GetString("for")
+	waitingSet := cmd.Flags().Changed("waiting-on")
+
+	set := 0
+	for _, on := range []bool{withMe, withoutMe, waitingSet} {
+		if on {
+			set++
+		}
+	}
+	if set > 1 {
+		return commentRelationParams{}, fmt.Errorf("--with-me, --without-me and --waiting-on are mutually exclusive")
+	}
+	if waitingSet && strings.TrimSpace(waitingOn) == "" {
+		return commentRelationParams{}, fmt.Errorf("--waiting-on needs a member id or name")
+	}
+
+	var p commentRelationParams
+	if strings.TrimSpace(forFlag) != "" {
+		id, err := resolveRelationActor(ctx, client, forFlag, memberOrAgentKinds)
+		if err != nil {
+			return commentRelationParams{}, fmt.Errorf("--for: %w", err)
+		}
+		p.forID = id
+	}
+	if waitingSet {
+		id, err := resolveRelationActor(ctx, client, waitingOn, memberOnlyKinds)
+		if err != nil {
+			return commentRelationParams{}, fmt.Errorf("--waiting-on: %w", err)
+		}
+		if p.forID != "" && !strings.EqualFold(p.forID, id) {
+			return commentRelationParams{}, fmt.Errorf("--waiting-on %s already names the viewer; drop --for or pass the same member", waitingOn)
+		}
+		p.forID = id
+	}
+	switch {
+	case withMe:
+		p.relation = "with_me"
+	case withoutMe:
+		p.relation = "without_me"
+	case waitingSet:
+		p.relation = "waiting"
+	case p.forID != "":
+		p.relation = "1"
+	}
+	return p, nil
+}
+
+// resolveRelationActor returns the id of the member or agent a flag names. A
+// UUID passes through (the server checks it); anything else is looked up by name.
+func resolveRelationActor(ctx context.Context, client *cli.APIClient, raw string, kinds assigneeKinds) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if isUUID(raw) {
+		return raw, nil
+	}
+	_, id, err := resolveAssignee(ctx, client, raw, kinds)
+	return id, err
+}
+
+// dropThreadRelation removes thread_relation from every comment.
+func dropThreadRelation(comments []map[string]any) {
+	for _, c := range comments {
+		delete(c, "thread_relation")
+	}
 }
 
 func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
@@ -3281,6 +3393,11 @@ func runIssueCommentAdd(cmd *cobra.Command, args []string) error {
 	}
 	if fromThread != "" {
 		body["from_thread"] = fromThread
+	}
+	if resolveThread {
+		// The resolve call below still resolves; this tells the server not to
+		// move the comment out of the thread first (long-thread route, CHE-6432).
+		body["resolve_thread"] = true
 	}
 	if askID != "" {
 		body["ask"] = askID

@@ -39,10 +39,7 @@ func newLoginLeaseFixture(t *testing.T) loginLeaseFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := q.CreateBrowserInstance(ctx, db.CreateBrowserInstanceParams{WorkspaceID: ws, Name: "c00-1"}); err != nil {
-		t.Fatal(err)
-	}
-	seedGatewayCredential(t, "c00")
+	registerBrowserInstance(t, q, ws, "c00-1")
 	var other string
 	email := "login-lease-" + uuid.NewString() + "@multica.test"
 	if err := testPool.QueryRow(ctx, `INSERT INTO "user" (name, email) VALUES ('Login Lease Other', $1) RETURNING id`, email).Scan(&other); err != nil {
@@ -52,7 +49,7 @@ func newLoginLeaseFixture(t *testing.T) loginLeaseFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		for _, tbl := range []string{"browser_lease", "browser_instance", "browser_profile"} {
+		for _, tbl := range []string{"browser_lease", "browser_instance", "browser_gateway_credential", "browser_profile"} {
 			testPool.Exec(ctx, "DELETE FROM "+tbl+" WHERE workspace_id = $1", testWorkspaceID)
 		}
 		testPool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, other)
@@ -60,7 +57,7 @@ func newLoginLeaseFixture(t *testing.T) loginLeaseFixture {
 	h := testHandler
 	h.BrowserLeases = &browserlease.Service{
 		Pool: testPool, Queries: q, Gate: allowHooks{}, Decisions: allowHooks{},
-		Registry: browserlease.NameRegistry{Queries: q}, Signer: stubSigner{},
+		Registry: browserlease.NameRegistry{Queries: q}, Signer: stubSigner{}, Audiences: browserlease.NewAudienceSet(browserlease.Aud("x99"), browserlease.Aud("c00")),
 	}
 	t.Cleanup(func() { h.BrowserLeases = nil })
 	return loginLeaseFixture{h: h, profile: uuid.UUID(prof.ID.Bytes).String(), other: other}
