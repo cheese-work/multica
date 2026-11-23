@@ -40,6 +40,7 @@ export const READ_ONLY_COMMANDS = [
   ["multica", "issue", "get"],
   ["multica", "issue", "comment", "list"],
   ["multica", "issue", "run-messages"],
+  ["multica", "issue", "runs"],
 ];
 
 const DAY = 86_400_000;
@@ -124,6 +125,17 @@ const isVerdict = (content) => {
   return /\b(?:PASS|CHANGES|FAIL|APPROVED?|REJECT\w*)\b/i.test(first);
 };
 
+// A verdict signs one PR. It counts for a unit only when it names that PR's head SHA (7 or more hex digits) or the PR number.
+export function namesPr(content, unit) {
+  const text = String(content ?? "");
+  const oid = String(unit.headOid ?? "");
+  if (oid) {
+    for (const [token] of text.matchAll(/\b[0-9a-f]{7,40}\b/gi)) if (oid.startsWith(token.toLowerCase())) return true;
+  }
+  const n = String(unit.number);
+  return new RegExp(`(?:\\bPR\\s*#?|/pull/|(?<![\\w/])#)${n}\\b`, "i").test(text);
+}
+
 function guidanceSection(body) {
   const lines = String(body ?? "").split(/\r?\n/);
   const at = lines.findIndex((l) => /^#{2,4}\s*Modern Web Guidance\s*$/i.test(l.trim()));
@@ -141,19 +153,88 @@ const SECTION_EMPTY = /^(none|n\/a|na|no|not used|not applicable|nothing|-|—)\
 // ---------------------------------------------------------------------------------------------------------------------
 // Transcript signals
 
-const MWG_USE = /scripts\/mwg\.sh["']?\s+(?:search|retrieve)\b/;
-const MWG_CALL = /scripts\/mwg\.sh["']?\s+(?![|&;<>)\s])\S/;
-const START = String.raw`(?:^|[;&|(])\s*(?:\w+=\S*\s+)*`;
-const RUNNER = String.raw`(?:(?:npx|pnpx|bunx|npm\s+exec|pnpm\s+(?:dlx|exec)|yarn\s+dlx)\s+(?:-{1,2}\S+\s+)*|(?:sh|bash|node)\s+)?`;
-const UNSANCTIONED = new RegExp(`${START}${RUNNER}(?:\\S*/)?modern-web-guidance(?:@\\S+)?(?=\\s|$|["';)])`);
+// A Bash command is cut into statements at unquoted ; & | ( ) ` and newlines. Quoted text, heredoc bodies and comments
+// never start a statement, so a path or flag spelled inside a string, a grep pattern or a written file is not a call.
+// A heredoc fed to sh or bash is read as a script; `sh -c "..."` is read as a script too.
+const SHELLS = /^(?:sh|bash|zsh)$/;
+function statementsOf(cmd, depth = 0) {
+  const out = [];
+  let cur = "";
+  let quote = null;
+  let tag = null;
+  const flush = () => {
+    if (cur.trim()) out.push(cur.trim());
+    cur = "";
+  };
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    if (quote) {
+      cur += ch;
+      if (ch === "\\" && quote === '"') cur += cmd[++i] ?? "";
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      cur += ch;
+    } else if (ch === "\\") {
+      cur += ch + (cmd[++i] ?? "");
+    } else if (ch === "#" && /\s|^$/.test(cmd[i - 1] ?? " ")) {
+      while (i < cmd.length && cmd[i] !== "\n") i++;
+      i--;
+    } else if (ch === "<" && cmd[i + 1] === "<" && cmd[i + 2] !== "<") {
+      const m = /^<<-?\s*(['"]?)([A-Za-z_]\w*)\1/.exec(cmd.slice(i));
+      if (m) {
+        tag = m[2];
+        cur += m[0];
+        i += m[0].length - 1;
+      } else cur += ch;
+    } else if (ch === "\n") {
+      const first = cur.trim().split(/\s+/)[0] ?? "";
+      flush();
+      if (tag) {
+        const lines = [];
+        for (i++; i < cmd.length; i++) {
+          const end = cmd.indexOf("\n", i);
+          const line = cmd.slice(i, end < 0 ? cmd.length : end);
+          i = end < 0 ? cmd.length : end;
+          if (line.trim() === tag) break;
+          lines.push(line);
+        }
+        if (SHELLS.test(first) && depth < 3) out.push(...statementsOf(lines.join("\n"), depth + 1));
+        tag = null;
+      }
+    } else if (";&|()`".includes(ch)) {
+      flush();
+    } else cur += ch;
+  }
+  flush();
+  const nested = [];
+  for (const st of out) {
+    const m = SHELL_C.exec(st);
+    if (m && depth < 3) nested.push(...statementsOf(m[2], depth + 1));
+  }
+  return [...out, ...nested];
+}
+
+const VALUE = String.raw`(?:"[^"]*"|'[^']*'|[^\s"'])*`;
+const ENV = String.raw`(?:\w+=${VALUE}\s+)*`;
+const SHELL_C = new RegExp(String.raw`^${ENV}(?:sh|bash|zsh)\s+(?:-\S+\s+)*-\w*c\s+(["'])([\s\S]*)\1\s*$`);
+const WRAP = String.raw`(?:(?:exec|time|nohup|sudo|command|env)\s+(?:\w+=${VALUE}\s+)*|timeout\s+\S+\s+)*`;
+const RUNNER = String.raw`(?:(?:npx|pnpx|bunx|npm\s+exec|pnpm\s+(?:dlx|exec)|yarn\s+dlx|sh|bash|zsh|node)\s+(?:-{1,2}\S+\s+)*)?`;
+// The package runner name, or its entrypoint file at any path (the package's bin is skills/modern-web-guidance/modern-web.mjs).
+const UNSANCTIONED = new RegExp(String.raw`^${ENV}${WRAP}${RUNNER}(?:\S*/)?(?:modern-web-guidance(?:@\S+)?|modern-web\.mjs)(?=\s|$|["'])`);
+const MWG_EXEC = String.raw`^${ENV}${WRAP}(?:(?:sh|bash|zsh)\s+(?:-{1,2}\S+\s+)*)?["']?\S*scripts/mwg\.sh["']?\s+`;
+const MWG_USE = new RegExp(`${MWG_EXEC}(?:search|retrieve)\\b`);
+const MWG_CALL = new RegExp(`${MWG_EXEC}\\S`);
 
 export function classifyCall(call, mwgEnd = Infinity) {
   const kinds = [];
   if (call?.name !== "Bash" || typeof call.input?.command !== "string") return { use: false, kinds };
-  const cmd = call.input.command;
-  if (UNSANCTIONED.test(cmd)) kinds.push("unsanctioned");
-  if (MWG_CALL.test(cmd) && call.at && Date.parse(call.at) > mwgEnd) kinds.push("late");
-  return { use: MWG_USE.test(cmd), kinds };
+  const statements = statementsOf(call.input.command);
+  if (statements.some((st) => UNSANCTIONED.test(st))) kinds.push("unsanctioned");
+  if (call.at && Date.parse(call.at) > mwgEnd && statements.some((st) => MWG_CALL.test(st))) kinds.push("late");
+  return { use: statements.some((st) => MWG_USE.test(st)), kinds };
 }
 
 const mangle = (dir) => String(dir).replace(/[^A-Za-z0-9]/g, "-");
@@ -255,7 +336,7 @@ export function liveSources({ exec, env = {}, retryDelayMs = 3000 } = {}) {
     // PRs created in [start, end). The search takes whole seconds and is inclusive on both ends.
     async prList(repo, start, end, limit) {
       const range = `created:${iso(start)}..${iso(new Date(end.getTime() - 1000))}`;
-      const args = ["pr", "list", "--repo", repo, "--state", "all", "--search", range, "--json", "number,headRefName,createdAt,files", "--limit", String(limit)];
+      const args = ["pr", "list", "--repo", repo, "--state", "all", "--search", range, "--json", "number,headRefName,headRefOid,createdAt,files", "--limit", String(limit)];
       return (await json("github", "gh", args)).data;
     },
     async prBody(repo, number) {
@@ -286,6 +367,10 @@ export function liveSources({ exec, env = {}, retryDelayMs = 3000 } = {}) {
     },
     async runMessages(runId) {
       return (await json("multica", "multica", ["issue", "run-messages", runId, "--output", "json"])).data;
+    },
+    // Every run of one issue, from every agent, with no date limit.
+    async issueRuns(issueId) {
+      return (await json("multica", "multica", ["issue", "runs", issueId, "--output", "json"])).data;
     },
   };
 }
@@ -330,6 +415,9 @@ export function fixtureSources(dir, opts = {}) {
     },
     async runMessages(runId) {
       return load("run-messages.json")[runId] ?? [];
+    },
+    async issueRuns(issueId) {
+      return Object.values(load("tasks.json")).flat().filter((t) => t.issue_id === issueId);
     },
   };
 }
@@ -384,7 +472,7 @@ const NEEDS = {
 };
 
 export async function measure(opts) {
-  const { agents: names, start, end, reviewCutoff, mwgEnd, transcriptRoot, repos, prLimit = 500, lookbackDays = 3 } = opts;
+  const { agents: names, start, end, reviewCutoff, mwgEnd, transcriptRoot, repos, prLimit = 500 } = opts;
   const t0 = Date.now();
   const calls = { github: 0, multica: 0 };
   const count = (kind, fn) => (...a) => {
@@ -401,12 +489,12 @@ export async function measure(opts) {
     comments: count("multica", raw.comments),
     tasks: count("multica", raw.tasks),
     runMessages: count("multica", raw.runMessages),
+    issueRuns: count("multica", raw.issueRuns),
   };
   const failed = {}; // capability -> error message
   const fail = (cap, e) => {
     failed[cap] ??= e?.message ?? String(e);
   };
-  const lookbackStart = new Date(start.getTime() - lookbackDays * DAY);
   const mwgEndMs = mwgEnd.getTime();
 
   // Agents
@@ -492,7 +580,7 @@ export async function measure(opts) {
       fail("github", e);
       return;
     }
-    const units = mine.map((pr) => ({ repo: pr.repo, number: pr.number, headRefName: pr.headRefName, issue: null, issueId: null, reviewed: false, findings: [], section: guidanceSection(bodies.get(pr)), runs: [] }));
+    const units = mine.map((pr) => ({ repo: pr.repo, number: pr.number, headRefName: pr.headRefName, headOid: String(pr.headRefOid ?? "").toLowerCase(), issue: null, issueId: null, reviewed: false, findings: [], section: guidanceSection(bodies.get(pr)), runs: [] }));
     d.units.push(...units);
     const enrich = async (unit) => {
       const ident = /^agent\/[^/]+\/([a-z]+-\d+)\b/i.exec(unit.headRefName)?.[1]?.toUpperCase();
@@ -503,7 +591,7 @@ export async function measure(opts) {
         unit.issue = ident;
         unit.issueId = issue.id;
         const verdicts = (await commentsFor(ident)).filter((c) => {
-          if (c.author_type !== "agent" || !isVerdict(c.content)) return false;
+          if (c.author_type !== "agent" || !isVerdict(c.content) || !namesPr(c.content, unit)) return false;
           if (Date.parse(c.created_at) >= reviewCutoff.getTime()) return false;
           const reviewer = agentById.get(c.author_id);
           return reviewer && lab(reviewer.model) !== "unknown" && lab(reviewer.model) !== lab(agent.model);
@@ -526,15 +614,20 @@ export async function measure(opts) {
           const { items, next } = await src.tasks(agent.id, before);
           tasks.push(...items);
           const oldest = items.reduce((m, t) => Math.min(m, Date.parse(t.created_at)), Infinity);
-          if (!next || oldest < lookbackStart.getTime()) break;
+          if (!next || oldest < start.getTime()) break;
           before = next;
         }
         const started = tasks.filter((t) => t.started_at && Date.parse(t.created_at) < end.getTime());
         d.runs = started.filter((t) => Date.parse(t.created_at) >= start.getTime());
-        for (const unit of d.units) {
-          if (!unit.issueId) continue;
-          unit.runs = started.filter((t) => t.issue_id === unit.issueId && Date.parse(t.created_at) >= lookbackStart.getTime());
-        }
+      } catch (e) {
+        fail("tasks", e);
+        return;
+      }
+      // Every run of the unit's issue by this agent, however old, so transcript coverage is judged on all of them.
+      try {
+        await pool(d.units.filter((u) => u.issueId), CONCURRENCY, async (unit) => {
+          unit.runs = (await src.issueRuns(unit.issueId)).filter((t) => t.agent_id === agent.id && t.started_at && Date.parse(t.created_at) < end.getTime());
+        });
       } catch (e) {
         fail("tasks", e);
       }

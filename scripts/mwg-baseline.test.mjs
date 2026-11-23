@@ -12,6 +12,7 @@ import {
   liveSources,
   main,
   measure,
+  namesPr,
   parseFindings,
   render,
 } from "./mwg-baseline.mjs";
@@ -77,6 +78,16 @@ test("two PRs on one issue: only the PR the verdict names is reviewed", async ()
   assert.equal(by(114).reviewed, false);
 });
 
+test("namesPr matches the PR number or a head SHA prefix, not a longer number or another SHA", () => {
+  const unit = { number: 111, headOid: "5".repeat(40) };
+  assert.equal(namesPr("Verdict: PASS\nPR #111", unit), true);
+  assert.equal(namesPr("Verdict: PASS\nhttps://github.com/o/r/pull/111", unit), true);
+  assert.equal(namesPr("Verdict: PASS\nHead SHA: 5555555", unit), true, "a 7-digit prefix of the head");
+  assert.equal(namesPr("Verdict: PASS\nPR #1111 and #11", unit), false);
+  assert.equal(namesPr("Verdict: PASS\nHead SHA: " + "6".repeat(40), unit), false);
+  assert.equal(namesPr("Verdict: PASS\nissue CHE-111", unit), false);
+});
+
 // Review round 1, finding 2: every run of the issue counts; a missing older transcript is partial coverage.
 test("a unit's older run without a transcript makes the unit partial, never full", async () => {
   const result = await measure(base(fixtureSources(DIR)));
@@ -113,6 +124,37 @@ test("classifyCall flags every way to run the package outside mwg.sh, and nothin
   ]) {
     assert.deepEqual(kinds(command), [], command);
   }
+});
+
+// Text that only mentions a command (a written file, a grep pattern, a commit message) is not a call; a wrapped call is.
+test("classifyCall reads statements: quoted text and heredoc bodies are not calls, wrapped calls are", () => {
+  const kinds = (command, at) => classifyCall({ name: "Bash", input: { command }, at }, Date.parse("2026-11-14T00:00:00Z")).kinds;
+  for (const command of [
+    "python3 - <<'E'\nopen('t').write('node /tmp/modern-web-guidance/modern-web.mjs search x')\nnode modern-web.mjs search y\nE",
+    'cmd="node /tmp/modern-web-guidance/modern-web.mjs search x"',
+    'grep -n "foo\\|modern-web-guidance" file',
+    'git commit -m "docs: run node modern-web.mjs search; never npx modern-web-guidance"',
+    "echo 'cd /tmp && node modern-web.mjs search x' > note.txt",
+    "# node modern-web.mjs search x",
+  ]) {
+    assert.deepEqual(kinds(command), [], command);
+  }
+  for (const command of [
+    'bash -lc "node /tmp/p/modern-web.mjs search x"',
+    "sh -c 'npx modern-web-guidance search x'",
+    "bash <<'EOF'\nnode modern-web.mjs search x\nEOF",
+    "timeout 60 node /tmp/p/modern-web.mjs search x",
+    "exec node /tmp/p/modern-web.mjs search x",
+    "ls && npx -y modern-web-guidance@1.0.1 search x | head",
+  ]) {
+    assert.deepEqual(kinds(command), ["unsanctioned"], command);
+  }
+  const late = "2026-11-15T00:00:00Z";
+  assert.deepEqual(kinds('sh "$SKILL_DIR/scripts/mwg.sh" search "x"', late), ["late"]);
+  assert.deepEqual(kinds('sh "$SKILL_DIR/scripts/mwg.sh" search "x"', "2026-11-13T00:00:00Z"), []);
+  assert.deepEqual(kinds("git add pilots/modern-web-guidance/scripts/mwg.sh SKILL.md", late), [], "naming the file is not running it");
+  assert.equal(classifyCall({ name: "Bash", input: { command: 'sh "$SKILL_DIR/scripts/mwg.sh" retrieve id' } }).use, true);
+  assert.equal(classifyCall({ name: "Bash", input: { command: 'git add scripts/mwg.sh search' } }).use, false);
 });
 
 test("a slice that cannot shrink below the limit is unavailable, not a low count", async () => {
@@ -184,7 +226,7 @@ test("an unconfirmed M3p hit is reported, and a confirmation source failure is u
   const sources = fixtureSources(DIR);
   const noMessages = { ...sources, runMessages: async () => [] };
   const result = await measure(base(noMessages));
-  assert.equal(result.agents["x99-claude-sonnet-200k"].metrics.M3p.unconfirmed, 1);
+  assert.equal(result.agents["x99-claude-sonnet-200k"].metrics.M3p.unconfirmed, 2);
   const broken = { ...sources, runMessages: failing("multica") };
   const failed = await measure(base(broken));
   assert.equal(failed.agents["x99-claude-sonnet-200k"].metrics.M3p.state, "unavailable");
