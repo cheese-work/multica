@@ -1762,9 +1762,24 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 				if err != nil {
 					return err
 				}
+				// CHE-8962: a one-shot `at --watch issue` wakeup is compared with the
+				// fence its creating run R stored at claim, not with the agent's last
+				// run: R's own comments moved the issue after any earlier snapshot.
+				details := map[string]any{"wakeup_id": util.UUIDToString(w.ID), "inputs": w.WatchInputs, "last_task_id": util.UUIDToString(lastTask), "rule": "declared_inputs", "baseline": "last_run"}
+				if !unchanged && atFenceApplies(w) {
+					res, err := atFenceCompare(ctx, tx, w)
+					if err != nil {
+						return err
+					}
+					if res.Defer {
+						unchanged, lastTask = true, res.RunID
+						details["last_task_id"], details["baseline"] = util.UUIDToString(res.RunID), "creating_run"
+						details["time_left_ms"] = res.TimeLeft.Milliseconds()
+					}
+				}
 				if unchanged && mode == "warn" {
 					slog.Info("time wakeup skip (warn): declared inputs unchanged, running", "wakeup_id", util.UUIDToString(w.ID), "issue_id", util.UUIDToString(issue.ID), "last_task_id", util.UUIDToString(lastTask))
-					wouldDefer = map[string]any{"wakeup_id": util.UUIDToString(w.ID), "inputs": w.WatchInputs, "last_task_id": util.UUIDToString(lastTask)}
+					wouldDefer = details
 				}
 				if unchanged && mode == "block" {
 					// CHE-6968: defer, never consume. The fire stays pending and the
@@ -1779,7 +1794,7 @@ func (s *IssueWakeupService) dispatch(ctx context.Context, prev db.IssueWakeup) 
 						return err
 					}
 					if fresh {
-						if err := note(wakeupActivityDeferred, map[string]any{"wakeup_id": util.UUIDToString(w.ID), "inputs": w.WatchInputs, "last_task_id": util.UUIDToString(lastTask)}); err != nil {
+						if err := note(wakeupActivityDeferred, details); err != nil {
 							return err
 						}
 					}
