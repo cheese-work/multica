@@ -129,9 +129,11 @@ multica workflow webhook list <workflow-id>                    # never shows sec
   hands CHANGES to the author with a wakeup (the issue stays in agent_review)
   passes the same findings: `multica issue wakeup create <id> ... --finding
   "P1@missing_rollback:<summary>"`; the server applies the same rules and
-  records them. During rollout a handoff without `--finding` still wakes the
-  author and returns a `review_findings_missing` warning; findings will become
-  required. Read-only.
+  records them. Workspace setting `review_findings_wakeup.mode` sets what a handoff
+  without `--finding` gets: `warn` (default) wakes the author and returns a
+  `review_findings_missing` warning, `block` refuses it
+  (`review_verdict_findings_required`), `off` accepts it silently. Findings that
+  are sent are always checked. Read-only.
 - `multica issue workflow escalate <id> --reason "<why>" [--output json]` moves
   an issue that follows Quick back to the full workflow it followed before.
   `--reason` is required; `--reason rollback` needs no Estimate. The server

@@ -214,3 +214,56 @@ func TestReviewFindings_WakeupHandoffWithFindingsHasNoWarning(t *testing.T) {
 		t.Fatalf("unexpected warnings %v", body["warnings"])
 	}
 }
+
+func setWakeupFindingsMode(t *testing.T, mode string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE workspace SET settings = jsonb_set(settings, '{review_findings_wakeup}', jsonb_build_object('mode', $2::text)) WHERE id = $1`, testWorkspaceID, mode)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'review_findings_wakeup' WHERE id = $1`, testWorkspaceID)
+	})
+}
+
+// Mode block is the end of the rollout: a handoff wakeup without findings is
+// refused like a status verdict without findings, and wakes nobody.
+func TestReviewFindings_WakeupHandoffWithoutFindingsIsRefusedInBlockMode(t *testing.T) {
+	c, run := newReviewRun(t)
+	author := otherReadyAgentID(t)
+	setWakeupFindingsMode(t, "block")
+	body := c.reviewerWakeupWith(t, run, author).Want(http.StatusBadRequest).Map()
+	if body["code"] != "review_verdict_findings_required" {
+		t.Fatalf("refusal = %v", body)
+	}
+	if n := c.wakeups(t); n != 0 {
+		t.Fatalf("wakeups = %d, want 0", n)
+	}
+	body = c.reviewerWakeupWith(t, run, author, categorized("P1", "missing_rollback", "no rollback")).Want(http.StatusCreated).Map()
+	if body["warnings"] != nil {
+		t.Fatalf("unexpected warnings %v", body["warnings"])
+	}
+}
+
+func TestReviewFindings_WakeupHandoffWithoutFindingsIsSilentInOffMode(t *testing.T) {
+	c, run := newReviewRun(t)
+	setWakeupFindingsMode(t, "off")
+	body := c.reviewerWakeupWith(t, run, otherReadyAgentID(t)).Want(http.StatusCreated).Map()
+	if body["warnings"] != nil {
+		t.Fatalf("unexpected warnings %v", body["warnings"])
+	}
+}
+
+func TestValidateReviewFindingsWakeupSetting(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in      map[string]any
+		wantErr bool
+	}{
+		"unset":   {map[string]any{}, false},
+		"block":   {map[string]any{"review_findings_wakeup": map[string]any{"mode": "block"}}, false},
+		"bad":     {map[string]any{"review_findings_wakeup": map[string]any{"mode": "skip"}}, true},
+		"unknown": {map[string]any{"review_findings_wakeup": map[string]any{"mode": "warn", "x": 1}}, true},
+		"scalar":  {map[string]any{"review_findings_wakeup": "block"}, true},
+	} {
+		if err := validateReviewFindingsWakeupSetting(tc.in); (err != nil) != tc.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", name, err, tc.wantErr)
+		}
+	}
+}

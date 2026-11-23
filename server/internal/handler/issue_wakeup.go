@@ -250,12 +250,15 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	source := h.wakeupSourceTaskID(r)
 	var reviewRun db.AgentTaskQueue
 	handoff := false
+	handoffMode := "warn"
 	if !existingID.Valid && actorType == "agent" {
 		if reviewRun, handoff = h.reviewHandoffWakeup(r.Context(), issue, source, in); handoff {
-			// Rollout: a handoff that sends no findings is still accepted (the live
-			// Agent Review step 4b does not pass --finding yet) and answered with a
-			// warning. Findings that are sent are always checked.
-			if len(req.ReviewFindings) > 0 {
+			// Rollout: workspace setting review_findings_wakeup decides what a
+			// handoff without findings gets: mode warn (default) accepts it with a
+			// warning, block refuses it, off accepts it silently. Findings that are
+			// sent are always checked.
+			handoffMode = reviewFindingsWakeupMode(r.Context(), h.Queries, issue.WorkspaceID)
+			if len(req.ReviewFindings) > 0 || handoffMode == "block" {
 				prID, _ := runReviewHead(&reviewRun)
 				if err := checkChangesFindings(r.Context(), h.Queries, issue.ID, prID, req.ReviewFindings); err != nil {
 					if !writeReviewLoopError(w, err) {
@@ -288,7 +291,7 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	out := h.wakeupWithWarnings(r.Context(), result)
-	if handoff && len(req.ReviewFindings) == 0 {
+	if handoff && len(req.ReviewFindings) == 0 && handoffMode == "warn" {
 		out.Warnings = append(out.Warnings, warnReviewFindingsMissing)
 	}
 	writeJSON(w, status, out)
@@ -296,7 +299,7 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 
 // warnReviewFindingsMissing tells a reviewer that handed CHANGES to the author
 // without findings that the round was not categorized or checked.
-const warnReviewFindingsMissing = "review_findings_missing: pass --finding \"P1@<category>:<summary>\" so the round is categorized and the later-round rule applies; it will become required"
+const warnReviewFindingsMissing = "review_findings_missing: pass --finding \"P1@<category>:<summary>\" so the round is categorized and the later-round rule applies; set workspace setting review_findings_wakeup.mode to block to require it"
 
 func (h *Handler) DisableIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
