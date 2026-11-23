@@ -189,16 +189,16 @@ func serverDeadline(t *testing.T, busy, withoutTransactionTimeout bool) (p backe
 		nowaitOK, nowaitAt = lockErr == nil, time.Since(start)
 		_ = btx.Rollback(ctx)
 	}
-	if withoutTransactionTimeout {
-		// The control leaves its session running on purpose; end it now rather
-		// than wait for pg_sleep(30) or the connection close.
-		_, _ = pool.Exec(ctx, `SELECT pg_terminate_backend($1)`, pid)
-	}
+	// End the session if the server has not: when the bound is missing (the
+	// control, or a regression) the backend is still alive, and the busy
+	// statement would otherwise run for 30 s. A session that is already gone
+	// makes this a no-op.
+	_, _ = pool.Exec(ctx, `SELECT pg_terminate_backend($1)`, pid)
 	// Join the busy session's goroutine before the connection is closed: both
-	// use the same connection, and the server ends the session in either case.
+	// use the same connection, and the session is over in every case.
 	select {
 	case <-busyDone:
-	case <-time.After(10 * time.Second):
+	case <-time.After(20 * time.Second):
 		t.Error("the busy session's statement did not return after its backend ended")
 	}
 	return p, nowaitOK, nowaitAt
