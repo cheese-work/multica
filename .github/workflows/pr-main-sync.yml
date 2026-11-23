@@ -39,7 +39,7 @@ jobs:
     # The App key lives in this environment (branch policy: main only), so a dry run needs the default branch: dispatch with --ref main.
     environment: ci-app-token
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
@@ -52,7 +52,7 @@ jobs:
         run: go build -o "$RUNNER_TEMP/multica" ./cmd/multica
       - name: Mint the c00-multicado write token
         id: app
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
           private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}

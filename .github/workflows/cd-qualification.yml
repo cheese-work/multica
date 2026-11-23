@@ -31,7 +31,7 @@ jobs:
       FORK_CHANGELOG_START: '2026-10-11'
     steps:
       - name: Checkout qualified source without persisted credentials
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -76,7 +76,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Checkout exact source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -150,7 +150,7 @@ jobs:
           [ -d "$GITHUB_WORKSPACE/.git" ] || exit 0
           git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
       - name: Checkout exact source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -252,7 +252,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Expose GitHub cache runtime to Buildx
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         with:
           script: |
             core.setSecret(process.env.ACTIONS_RUNTIME_TOKEN);
@@ -390,7 +390,7 @@ jobs:
           git -C "$GITHUB_WORKSPACE" config --local --unset-all core.sparseCheckout || true
 
       - name: Checkout exact source
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
