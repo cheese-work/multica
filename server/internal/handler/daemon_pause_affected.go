@@ -3,11 +3,13 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -205,10 +207,17 @@ func (h *Handler) writeBannerDismissals(w http.ResponseWriter, r *http.Request, 
 			ignored = append(ignored, id)
 			continue
 		}
-		applied, err := h.applyBannerDismissal(r.Context(), workspaceID, userID, row, id, dismiss)
+		applied, err := h.applyBannerDismissal(r.Context(), workspaceID, userID, member.Role, row, id, dismiss)
 		if err != nil {
-			slog.Error("banner dismissal write failed", "error", err, "workspace_id", workspaceID)
-			writeError(w, http.StatusInternalServerError, "failed to update banner dismissal")
+			switch {
+			case errors.Is(err, pgx.ErrNoRows):
+				writeError(w, http.StatusNotFound, "workspace not found")
+			case isRetryableLockFailure(err):
+				writeError(w, http.StatusConflict, "the machine is being changed, try again")
+			default:
+				slog.Error("banner dismissal write failed", "error", err, "workspace_id", workspaceID)
+				writeError(w, http.StatusInternalServerError, "failed to update banner dismissal")
+			}
 			return
 		}
 		if applied {
@@ -224,9 +233,14 @@ func (h *Handler) writeBannerDismissals(w http.ResponseWriter, r *http.Request, 
 	writeJSON(w, http.StatusOK, map[string]any{key: done, "ignored": ignored})
 }
 
-// applyBannerDismissal writes one machine's dismissal in one transaction.
-// It reports false when the id is no longer the machine's current offline id.
-func (h *Handler) applyBannerDismissal(ctx context.Context, workspaceID, userID string, row db.ListAffectedMachinesRow, id string, dismiss bool) (bool, error) {
+// applyBannerDismissal writes one machine's dismissal in one transaction. The
+// transaction takes the member's machine lock, then re-reads the caller's
+// affected rows (read committed: each statement sees every earlier commit) and
+// acts only if id is still the machine's current offline id. A write validated
+// against an older period either runs before a newer write takes the lock and is
+// overwritten, or runs after it and finds the id stale. It reports false when
+// the id is no longer current.
+func (h *Handler) applyBannerDismissal(ctx context.Context, workspaceID, userID, role string, row db.ListAffectedMachinesRow, id string, dismiss bool) (bool, error) {
 	if bannerDismissBeforeLockHook != nil {
 		bannerDismissBeforeLockHook()
 	}
@@ -235,25 +249,46 @@ func (h *Handler) applyBannerDismissal(ctx context.Context, workspaceID, userID 
 		return false, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, fmt.Sprintf("SET LOCAL lock_timeout = %d", pauseLockTimeout.Milliseconds())); err != nil {
+		return false, err
+	}
 	qtx := h.Queries.WithTx(tx)
+	ws, user := parseUUID(workspaceID), parseUUID(userID)
+	// The workspace row FOR SHARE makes a concurrent workspace delete either
+	// finish first (404, nothing written) or wait for this write.
+	if _, err := qtx.LockWorkspaceForMachinePause(ctx, ws); err != nil {
+		return false, err
+	}
+	if err := qtx.LockMachineBannerDismissal(ctx, db.LockMachineBannerDismissalParams{
+		WorkspaceID: ws, UserID: user, MachineOwnerID: row.MachineOwnerID, DaemonID: row.DaemonID,
+	}); err != nil {
+		return false, err
+	}
+	rows, err := h.listAffectedRows(ctx, qtx, workspaceID, userID, role)
+	if err != nil {
+		return false, err
+	}
+	stillCurrent := false
+	for _, r := range rows {
+		if r.MachineOwnerID == row.MachineOwnerID && r.DaemonID == row.DaemonID {
+			m := affectedMachineToResponse(r)
+			stillCurrent = m.State == "offline" && m.EventID == id
+			break
+		}
+	}
+	if !stillCurrent {
+		return false, nil
+	}
 	if bannerDismissAfterValidateHook != nil {
 		bannerDismissAfterValidateHook()
 	}
 	if dismiss {
 		err = qtx.UpsertMachineBannerDismissal(ctx, db.UpsertMachineBannerDismissalParams{
-			WorkspaceID:    parseUUID(workspaceID),
-			UserID:         parseUUID(userID),
-			MachineOwnerID: row.MachineOwnerID,
-			DaemonID:       row.DaemonID,
-			EventID:        id,
+			WorkspaceID: ws, UserID: user, MachineOwnerID: row.MachineOwnerID, DaemonID: row.DaemonID, EventID: id,
 		})
 	} else {
 		err = qtx.DeleteMachineBannerDismissal(ctx, db.DeleteMachineBannerDismissalParams{
-			WorkspaceID:    parseUUID(workspaceID),
-			UserID:         parseUUID(userID),
-			MachineOwnerID: row.MachineOwnerID,
-			DaemonID:       row.DaemonID,
-			EventID:        id,
+			WorkspaceID: ws, UserID: user, MachineOwnerID: row.MachineOwnerID, DaemonID: row.DaemonID, EventID: id,
 		})
 	}
 	if err != nil {
