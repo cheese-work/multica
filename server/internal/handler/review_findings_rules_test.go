@@ -119,11 +119,10 @@ func TestReviewFindings_TopCategoriesLast14Days(t *testing.T) {
 
 // The wakeup handoff (agent_review step 4b) is a CHANGES verdict too: it keeps
 // agent_review, so its findings are checked and recorded on the wakeup path.
-func TestReviewFindings_WakeupHandoffNeedsCategorizedBlocker(t *testing.T) {
+func TestReviewFindings_WakeupHandoffFindingsSentAreChecked(t *testing.T) {
 	c, run := newReviewRun(t)
 	author := otherReadyAgentID(t)
 	for name, f := range map[string][]map[string]any{
-		"no findings": nil,
 		"no category": {{"severity": "P1", "summary": "no rollback"}},
 		"only P2":     {categorized("P2", "scope_creep", "nit")},
 	} {
@@ -189,5 +188,29 @@ func TestReviewFindings_WakeupFindingsCountForStatusRoundsAndTopCategories(t *te
 	}
 	if !found {
 		t.Fatalf("top categories %+v lack the wakeup finding", resp.Categories)
+	}
+}
+
+// Rollout: the live Agent Review step 4b hands CHANGES over with
+// `wakeup create` and no --finding. That handoff must still wake the author,
+// with a warning, until the workflow text passes findings.
+func TestReviewFindings_WakeupHandoffWithoutFindingsStillWakesAuthorWithWarning(t *testing.T) {
+	c, run := newReviewRun(t)
+	author := otherReadyAgentID(t)
+	body := c.reviewerWakeupWith(t, run, author).Want(http.StatusCreated).Map()
+	warnings, _ := body["warnings"].([]any)
+	if len(warnings) != 1 || !strings.HasPrefix(warnings[0].(string), "review_findings_missing") {
+		t.Fatalf("warnings = %v", body["warnings"])
+	}
+	if n := c.wakeups(t); n != 1 {
+		t.Fatalf("wakeups = %d, want 1: the author is woken", n)
+	}
+}
+
+func TestReviewFindings_WakeupHandoffWithFindingsHasNoWarning(t *testing.T) {
+	c, run := newReviewRun(t)
+	body := c.reviewerWakeupWith(t, run, otherReadyAgentID(t), categorized("P1", "missing_rollback", "no rollback")).Want(http.StatusCreated).Map()
+	if body["warnings"] != nil {
+		t.Fatalf("unexpected warnings %v", body["warnings"])
 	}
 }

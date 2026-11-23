@@ -252,12 +252,17 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	handoff := false
 	if !existingID.Valid && actorType == "agent" {
 		if reviewRun, handoff = h.reviewHandoffWakeup(r.Context(), issue, source, in); handoff {
-			prID, _ := runReviewHead(&reviewRun)
-			if err := checkChangesFindings(r.Context(), h.Queries, issue.ID, prID, req.ReviewFindings); err != nil {
-				if !writeReviewLoopError(w, err) {
-					writeError(w, http.StatusInternalServerError, "could not check the review findings")
+			// Rollout: a handoff that sends no findings is still accepted (the live
+			// Agent Review step 4b does not pass --finding yet) and answered with a
+			// warning. Findings that are sent are always checked.
+			if len(req.ReviewFindings) > 0 {
+				prID, _ := runReviewHead(&reviewRun)
+				if err := checkChangesFindings(r.Context(), h.Queries, issue.ID, prID, req.ReviewFindings); err != nil {
+					if !writeReviewLoopError(w, err) {
+						writeError(w, http.StatusInternalServerError, "could not check the review findings")
+					}
+					return
 				}
-				return
 			}
 			capped, err := h.capReviewHandoff(r.Context(), issue, reviewRun)
 			if err != nil {
@@ -282,8 +287,16 @@ func (h *Handler) CreateIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	if existingID.Valid {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, h.wakeupWithWarnings(r.Context(), result))
+	out := h.wakeupWithWarnings(r.Context(), result)
+	if handoff && len(req.ReviewFindings) == 0 {
+		out.Warnings = append(out.Warnings, warnReviewFindingsMissing)
+	}
+	writeJSON(w, status, out)
 }
+
+// warnReviewFindingsMissing tells a reviewer that handed CHANGES to the author
+// without findings that the round was not categorized or checked.
+const warnReviewFindingsMissing = "review_findings_missing: pass --finding \"P1@<category>:<summary>\" so the round is categorized and the later-round rule applies; it will become required"
 
 func (h *Handler) DisableIssueWakeup(w http.ResponseWriter, r *http.Request) {
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
