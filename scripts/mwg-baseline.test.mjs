@@ -202,6 +202,41 @@ test("the script calls only read-only subcommands (S3a AC 7)", async () => {
   }
 });
 
+test("a transient 5xx or timeout is retried; an auth failure is not; a source error is one line", async () => {
+  const fail = (stderr) => Object.assign(new Error("exit 1"), { stderr });
+  let calls = 0;
+  const flaky = liveSources({
+    exec: async () => {
+      calls += 1;
+      if (calls < 3) throw fail("HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)");
+      return { stdout: "[]", stderr: "" };
+    },
+    env: {},
+    retryDelayMs: 0,
+  });
+  assert.deepEqual(await flaky.prList("cheese-work/multica", new Date(0), new Date(1000), 10), []);
+  assert.equal(calls, 3);
+
+  let authCalls = 0;
+  const denied = liveSources({
+    exec: async () => {
+      authCalls += 1;
+      throw fail('non-200 OK status code: 401 Unauthorized body: "{\r\n  \"message\": \"Bad credentials\"\r\n}"');
+    },
+    env: {},
+    retryDelayMs: 0,
+  });
+  const err = await denied.prList("cheese-work/multica", new Date(0), new Date(1000), 10).catch((e) => e);
+  assert.ok(err instanceof SourceError);
+  assert.equal(authCalls, 1, "a 401 is not retried");
+  assert.doesNotMatch(err.message, /[\r\n]/);
+
+  let down = 0;
+  const dead = liveSources({ exec: async () => { down += 1; throw fail("HTTP 503"); }, env: {}, retryDelayMs: 0 });
+  await assert.rejects(() => dead.agents(), SourceError);
+  assert.equal(down, 3, "gives up after three attempts");
+});
+
 test("main: fixture mode prints JSON and exits 0; a failing source exits 2 and prints no count", async () => {
   const out = [];
   const code = await main(
