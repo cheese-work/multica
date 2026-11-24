@@ -3,6 +3,9 @@ package handler
 import (
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -35,7 +38,18 @@ func TestRoundCap_PlanIssueAutoSplitsWithoutCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	testHandler.ensureReviewRoundsCard(t.Context(), issue, roundsCap{rounds: 3})
+	var capped roundsCap
+	if err := testHandler.withPgxTx(t.Context(), func(tx pgx.Tx) error {
+		var err error
+		capped, err = recordRoundsCap(t.Context(), testHandler.Queries.WithTx(tx), issue, pgtype.UUID{}, 3)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !capped.autoSplit {
+		t.Fatal("cap did not take the auto-Split path")
+	}
+	testHandler.ensureReviewRoundsCard(t.Context(), issue, capped)
 	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, issueID); n != 0 {
 		t.Fatalf("decision requests = %d, want 0", n)
 	}

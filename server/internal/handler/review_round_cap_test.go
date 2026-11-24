@@ -356,6 +356,46 @@ func TestRoundCap_PlanIssueCapOpensNoCard(t *testing.T) {
 	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 1 {
 		t.Fatalf("auto-split rows = %d, want 1", n)
 	}
+	c.wantAutoSplitInMoveTx(t)
+}
+
+// wantAutoSplitInMoveTx checks the ordering the need_decision handler relies
+// on: the auto-Split decision (activity row and comment) commits in the same
+// transaction as the move to need_decision, so a handler run that the move
+// starts always finds it. Rows of one transaction share now().
+func (c roundCap) wantAutoSplitInMoveTx(t *testing.T) {
+	t.Helper()
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log a
+		JOIN activity_log m ON m.issue_id = a.issue_id AND m.action = 'status_changed' AND m.details->>'to' = 'need_decision'
+		WHERE a.issue_id = $1 AND a.action = 'review_rounds_auto_split' AND a.created_at = m.created_at`, c.issueID); n != 1 {
+		t.Fatalf("auto-split rows committed with the move to need_decision = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment c
+		JOIN activity_log m ON m.issue_id = c.issue_id AND m.action = 'status_changed' AND m.details->>'to' = 'need_decision'
+		WHERE c.issue_id = $1 AND c.type = 'system' AND c.content LIKE '%auto-Split at round limit%' AND c.created_at = m.created_at`, c.issueID); n != 1 {
+		t.Fatalf("auto-split comments committed with the move to need_decision = %d, want 1", n)
+	}
+}
+
+// The reviewer's wakeup path (agent_review step 4b) records the decision in the
+// same transaction as the move too.
+func TestRoundCap_PlanIssueWakeupCapRecordsAutoSplitWithTheMove(t *testing.T) {
+	enableRoundsAutoSplit(t, testWorkspaceID)
+	c := newRoundCap(t)
+	dbfx.Exec(t, `UPDATE issue SET title = 'plan(WE006): round cap' WHERE id = $1`, c.issueID)
+	run := c.inReview(t)
+	author := otherReadyAgentID(t)
+	for round := 1; round <= 2; round++ {
+		c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
+	}
+	c.reviewerWakeup(t, run, author).Want(http.StatusConflict)
+	if got := c.status(t); got != "need_decision" {
+		t.Fatalf("status = %q, want need_decision", got)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, c.issueID); n != 0 {
+		t.Fatalf("decision requests = %d, want 0", n)
+	}
+	c.wantAutoSplitInMoveTx(t)
 }
 
 // With the setting off (the default) a plan issue keeps the card.
