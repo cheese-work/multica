@@ -5,7 +5,7 @@
 # Runs inside the reusable PR guard rules job, so it covers pull_request_target, the edit workflow and every merge-queue
 # build with the same required context. A merge-queue build has no PR payload: the PR number comes from the queue branch
 # name (refs/heads/gh-readonly-queue/<base>/pr-<n>-<sha>), as in pr-guard-rules.sh. Labels are read live through the
-# read-only workflow token, so a label added or removed after the PR event is judged at queue time.
+# read-only workflow token, so a label added after the PR event is judged when the job is re-run and again at queue time (no label trigger: CHE-4385 run budget).
 # Fail closed: while frozen, an unreadable PR number or label list is red. Lift: `gh variable set SYNC_FREEZE --body off`.
 # Env: SYNC_FREEZE, PR_URL or MERGE_GROUP_HEAD_REF, REPO, GH_TOKEN; SYNC_FREEZE_ALLOWED_PR (default 1834).
 set -euo pipefail

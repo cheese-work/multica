@@ -101,6 +101,7 @@ test("the reusable guard job runs the freeze check from the trusted checkout bef
   assert.ok(rules.indexOf("sync-freeze-check.sh") > rules.indexOf("actions/checkout"), "after the trusted checkout");
 });
 
-test("adding or removing the urgent label re-runs the guard so a green or red result follows the label", () => {
-  assert.match(read("pr-guard-rules-edit.yml"), /types: \[edited, review_request_removed, labeled, unlabeled\]/);
+// CHE-4385 run budget: no new trigger. A label added later is read live when the job is re-run or the PR enters the queue.
+test("no label trigger is added to the edit workflow (CHE-4385 run budget)", () => {
+  assert.match(read("pr-guard-rules-edit.yml"), /types: \[edited, review_request_removed\]/);
 });
