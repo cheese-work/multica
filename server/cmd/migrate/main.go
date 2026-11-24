@@ -157,6 +157,7 @@ var concurrentIndexCleanups = map[string]string{
 	"999v_merge_queue_pr_close_uidx":                            "merge_queue_pr_close_uidx",
 	"999w_merge_queue_enqueue_event_node_uidx":                  "merge_queue_enqueue_event_node_uidx",
 	"999x_merge_queue_state_pr_uidx":                            "merge_queue_state_pr_uidx",
+	"99h_merge_queue_intake_ws_removal_uidx":                    "merge_queue_intake_ws_removal_uidx",
 	"999l_agent_task_queue_task_key_idx":                        "idx_agent_task_queue_task_key",
 	"942_issue_workflow_lint_override_log_idx":                  "idx_issue_workflow_lint_override_workflow",
 	"999l_issue_wakeup_receipt_pr_event_id_idx":                 "idx_issue_wakeup_receipt_pr_event_id",
@@ -593,6 +594,13 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 		Columns:       []string{"removal_node_id"},
 		Predicate:     "removal_node_id IS NOT NULL",
 	},
+	"99h_merge_queue_intake_ws_removal_uidx": {
+		IndexRegclass: "merge_queue_intake_ws_removal_uidx",
+		TableRegclass: "merge_queue_intake",
+		Unique:        true,
+		Columns:       []string{"workspace_id", "removal_node_id"},
+		Predicate:     "removal_node_id IS NOT NULL",
+	},
 	"999s_merge_queue_epoch_key_uidx": {
 		IndexRegclass: "merge_queue_epoch_key_uidx",
 		TableRegclass: "merge_queue_epoch",
@@ -856,6 +864,7 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 // the retry, while a bare CREATE would stay wedged on "already exists"; both
 // cases need direction-specific cleanup before the rollback can retry safely.
 var concurrentDownIndexCleanups = map[string]string{
+	"99i_merge_queue_intake_drop_global_removal_uidx":       "merge_queue_intake_removal_uidx",
 	"751_github_dispatch_drop_body_key":                     "idx_github_webhook_dispatch_key",
 	"729_github_revision_body_key":                          "idx_github_webhook_revision_key",
 	"616_decision_request_comment_index_retire":             "comment_decision_request_kind_uidx",

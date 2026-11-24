@@ -24,7 +24,13 @@ var mergeQueueIndexes = []struct{ version, index, table string }{
 	{"999v_merge_queue_pr_close_uidx", "merge_queue_pr_close_uidx", "merge_queue_pr_close"},
 	{"999w_merge_queue_enqueue_event_node_uidx", "merge_queue_enqueue_event_node_uidx", "merge_queue_enqueue_event"},
 	{"999x_merge_queue_state_pr_uidx", "merge_queue_state_pr_uidx", "merge_queue_state"},
+	// CHE-7409: the removal node id is unique per workspace.
+	{"99h_merge_queue_intake_ws_removal_uidx", "merge_queue_intake_ws_removal_uidx", "merge_queue_intake"},
 }
+
+// CHE-7409: retires the global removal-node index. Its up is one concurrent
+// drop; its down rebuilds the 999r index.
+const mergeQueueDropGlobalRemovalVersion = "99i_merge_queue_intake_drop_global_removal_uidx"
 
 func TestMergeQueueMigrationsFollowTheRules(t *testing.T) {
 	t.Parallel()
@@ -64,6 +70,21 @@ func TestMergeQueueMigrationsFollowTheRules(t *testing.T) {
 	}
 }
 
+func TestMergeQueueDropsTheGlobalRemovalIndexInOneStatement(t *testing.T) {
+	t.Parallel()
+	up := stripSQLComments(readWakeupMigration(t, mergeQueueDropGlobalRemovalVersion, "up"))
+	if strings.Count(up, ";") != 1 || !strings.Contains(up, "DROP INDEX CONCURRENTLY IF EXISTS merge_queue_intake_removal_uidx") {
+		t.Errorf("up must be one concurrent drop of the global index:\n%s", up)
+	}
+	dn := stripSQLComments(readWakeupMigration(t, mergeQueueDropGlobalRemovalVersion, "down"))
+	if strings.Count(dn, ";") != 1 || !strings.Contains(dn, "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS merge_queue_intake_removal_uidx") {
+		t.Errorf("down must be one concurrent rebuild of the global index:\n%s", dn)
+	}
+	if got := concurrentDownIndexCleanups[mergeQueueDropGlobalRemovalVersion]; got != "merge_queue_intake_removal_uidx" {
+		t.Errorf("down cleanup = %q, want merge_queue_intake_removal_uidx", got)
+	}
+}
+
 func TestMergeQueueSchemaUpDownUpAndKeys(t *testing.T) {
 	base := openTestPool(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 60*time.Second)
@@ -82,8 +103,10 @@ func TestMergeQueueSchemaUpDownUpAndKeys(t *testing.T) {
 		for _, ix := range mergeQueueIndexes {
 			apply(ix.version, "up")
 		}
+		apply(mergeQueueDropGlobalRemovalVersion, "up")
 	}
 	down := func() {
+		apply(mergeQueueDropGlobalRemovalVersion, "down")
 		for i := len(mergeQueueIndexes) - 1; i >= 0; i-- {
 			apply(mergeQueueIndexes[i].version, "down")
 		}
@@ -104,6 +127,7 @@ func TestMergeQueueSchemaUpDownUpAndKeys(t *testing.T) {
 	for _, ix := range mergeQueueIndexes { // re-running an up file is harmless
 		apply(ix.version, "up")
 	}
+	apply(mergeQueueDropGlobalRemovalVersion, "up")
 
 	const ws = "11111111-1111-1111-1111-111111111111"
 	const issue = "22222222-2222-2222-2222-222222222222"
@@ -128,6 +152,9 @@ func TestMergeQueueSchemaUpDownUpAndKeys(t *testing.T) {
 
 	// Unique keys.
 	dup("intake removal node", `INSERT INTO merge_queue_intake (`+pr+`, removal_node_id) VALUES (`+prv+`, 'RM1')`, `INSERT INTO merge_queue_intake (`+pr+`, removal_node_id) VALUES (`+prv+`, 'RM1')`)
+	if err := exec(`INSERT INTO merge_queue_intake (workspace_id, repo_owner, repo_name, pr_number, removal_node_id) VALUES ('33333333-3333-3333-3333-333333333333', 'o', 'r', 7, 'RM1')`); err != nil {
+		t.Errorf("the same removal node in another workspace must be allowed: %v", err)
+	}
 	if err := exec(`INSERT INTO merge_queue_intake (` + pr + `) VALUES (` + prv + `), (` + prv + `)`); err != nil {
 		t.Errorf("intake rows not yet bound to a removal node must coexist: %v", err)
 	}
@@ -187,6 +214,11 @@ func TestMergeQueueSchemaUpDownUpAndKeys(t *testing.T) {
 
 	// Down drops these tables only and up works again.
 	if err := exec(`CREATE TABLE merge_queue_bystander_probe (id int)`); err != nil {
+		t.Fatal(err)
+	}
+	// The 99i down restores the global index, which a removal node shared by two
+	// workspaces would violate; a rollback is expected to fail loudly then.
+	if err := exec(`DELETE FROM merge_queue_intake WHERE workspace_id = '33333333-3333-3333-3333-333333333333'`); err != nil {
 		t.Fatal(err)
 	}
 	down()

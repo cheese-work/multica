@@ -54,6 +54,7 @@ func newPRMergeWebhookFixture(t *testing.T, installationID int64) prMergeWebhook
 	ctx := context.Background()
 
 	fx := newChildDoneFixture(t, "in_progress")
+	cleanMQ(t) // a dequeued delivery stores merge-queue rows
 
 	secret := "che527-pr-ci-admission-secret"
 	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
