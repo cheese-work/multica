@@ -217,6 +217,38 @@ multica github stack-autolink set [--repo owner/repo] --mode off|report|link
 
 スタック API は GitHub 側でプレビュー段階のため、形が変わると `schema` として現れ、webhook の失敗にはなりません。
 
+## 承認カードでリポジトリを作成する [#repo-create]
+
+エージェントは単独で GitHub リポジトリを作成できません。エージェントがアクションファイルを用意し、ワークスペースのオーナーがパスキーで承認します。承認後、サーバーがエージェントには見えない組織管理者の認証情報でリポジトリを作成します。
+
+```bash
+multica github repo-create --org tevo-studio --name we006 \
+  --template tevo-studio/code-android-template --private \
+  --description "WE-006 app" --out repo-create.json
+multica decision request <issue> --action-file repo-create.json
+```
+
+| フラグ | 意味 |
+|---|---|
+| `--org` | 組織。受け付けるのは `tevo-studio` と `cheese-work` のみです。 |
+| `--name` | リポジトリ名。 |
+| `--template` | 任意の `owner/repo` テンプレート。所有者も承認済みの組織である必要があります。GitHub の generate API は ref を受け付けないため、テンプレートのデフォルトブランチが使われます。 |
+| `--private`、`--visibility` | `private`(デフォルト)、`internal`、`public`。公開リポジトリは公開行為にあたるため、`--class publish` で依頼してください。 |
+| `--description` | 1 行、350 文字まで。 |
+| `--out`、`--dry-run`、`--expires-in` | アクションファイルを書き出す、表示だけする、カードの有効期間を指定する。 |
+
+承認されると、サーバーはリポジトリを作成して読み戻し、ワークスペースのリポジトリ登録に追加します。組織にすでに `guard_policy.repository_allowlist` のエントリがある場合は、そこにも追加します。エントリがない組織は制限なしのままです。エントリを追加すると組織内の他のリポジトリが締め出されるためです。却下または期限切れのカードは何も作成しません。GitHub が要求を拒否した場合、アクションは失敗として終了し、ワークスペースの行は変更されません。
+
+### セルフホスト
+
+認証情報は API サーバーにだけ設定します。各組織を、そこでリポジトリを作成できるトークンに対応づける JSON オブジェクトです。
+
+```dotenv
+MULTICA_GITHUB_REPO_ADMIN_TOKENS={"tevo-studio":"<token>","cheese-work":"<token>"}
+```
+
+デーモンはこの変数をすべてのエージェント環境から取り除き、カード、結果、ログのいずれにも含まれません。未設定の場合、承認されたカードは `credential_not_configured` で失敗します。GitHub App 自体にこのための Administration 権限は不要です。
+
 ## 接続を解除する
 
 **設定 → コード** の GitHub の行で **⋯** メニューから**接続解除**を選ぶと、現在の Multica ワークスペースと installation の関係だけが削除されます。GitHub から App がアンインストールされることはありません。既存の PR 記録は保持されますが、新しいイベントはこのワークスペースに届かなくなります。
