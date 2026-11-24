@@ -2,11 +2,11 @@ import { act, fireEvent, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
-import { chatKeys } from "@multica/core/chat/queries";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import type { ChatMessage, ChatSession } from "@multica/core/types";
 import type { ReactElement } from "react";
 import { renderWithI18n } from "../../test/i18n";
+import { seedChatPages } from "../../test/chat-store";
 import { NavigationProvider } from "../../navigation";
 import { ChatAnnotationContext } from "./chat-annotation-context";
 
@@ -77,7 +77,7 @@ function Harness({ qc }: { qc: QueryClient }) {
 function renderChain() {
   const qc = new QueryClient();
   const seed = (id: string, messages: ChatMessage[]) =>
-    qc.setQueryData(chatKeys.messagesPage(id), { pages: [{ messages, limit: 50, has_more: false }], pageParams: [null] });
+    seedChatPages(qc, id, messages);
   seed(first, [message(first, "a1", "user", "Oldest question"), message(first, "a2", "assistant", "Oldest answer")]);
   seed(second, [message(second, "b1", "user", "Middle question"), message(second, "b2", "assistant", "Middle answer")]);
   const rendered = renderWithI18n(<Harness qc={qc} />);

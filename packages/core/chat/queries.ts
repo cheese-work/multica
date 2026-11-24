@@ -48,7 +48,8 @@ export const chatKeys = {
   /** By-id store: one row per chat message across sessions (B1a.1). */
   messageEntities: () => ["chat", "message-entities"] as const,
   /** Ordered message ids of one session; the rows live in `messageEntities`. */
-  messageIds: (sessionId: string) => ["chat", "message-ids", sessionId] as const,
+  messageIdsAll: () => ["chat", "message-ids"] as const,
+  messageIds: (sessionId: string) => [...chatKeys.messageIdsAll(), sessionId] as const,
   messagesPageAll: () => ["chat", "messages-page"] as const,
   messagesPage: (sessionId: string) => [...chatKeys.messagesPageAll(), sessionId] as const,
   pendingTaskAll: () => ["chat", "pending-task"] as const,

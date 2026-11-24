@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  useInfiniteQuery,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -22,7 +21,6 @@ import {
 } from "@multica/core/agents";
 import {
   chatSessionsOptions,
-  chatMessagesPageOptions,
   pendingChatTaskOptions,
   chatKeys,
   isTaskMessageTaskId,
@@ -36,6 +34,7 @@ import {
 import { DRAFT_NEW_SESSION, classifySendFailure, deriveChatTitle, sendWithPendingId, useChatStore } from "@multica/core/chat";
 import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
+import { useChatMessageRows } from "@multica/core/chat/use-chat-message-rows";
 import {
   enqueuePendingChatTask,
   hideQueuedChatMessages,
@@ -210,17 +209,16 @@ export function useChatController(opts?: { isActive?: boolean }) {
     projectListOptions(wsId),
   );
   const {
-    data: rawMessagePages,
-    isLoading: messagesLoading,
-    isSuccess: messagesFetched,
-    error: messagesError,
-    fetchNextPage: fetchOlderMessages,
-    hasNextPage: hasOlderMessages,
-    isFetchingNextPage: isFetchingOlderMessages,
-  } = useInfiniteQuery(chatMessagesPageOptions(activeSessionId ?? ""));
-
-  const messagePages = activeSessionId ? rawMessagePages?.pages ?? [] : [];
-  const allMessages = [...messagePages].reverse().flatMap((page) => page.messages);
+    query: {
+      isLoading: messagesLoading,
+      isSuccess: messagesFetched,
+      error: messagesError,
+      fetchNextPage: fetchOlderMessages,
+      hasNextPage: hasOlderMessages,
+      isFetchingNextPage: isFetchingOlderMessages,
+    },
+    messages: allMessages,
+  } = useChatMessageRows(activeSessionId ?? "");
 
   const { data: pendingTask, isLoading: pendingTaskLoading } = useQuery(
     pendingChatTaskOptions(activeSessionId ?? ""),

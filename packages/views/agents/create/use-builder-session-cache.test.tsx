@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { InfiniteData } from "@tanstack/react-query";
+import { selectChatMessageRows } from "@multica/core/chat/message-cache";
 import { createElement, type ReactNode } from "react";
 
 const h = vi.hoisted(() => ({
@@ -69,10 +70,13 @@ function harness() {
   return { qc, result };
 }
 
+/** Ids a reader sees on the paged cache: rows come from the by-id store, in the page order. */
 function pagedIds(qc: QueryClient) {
-  return qc
-    .getQueryData<InfiniteData<ChatMessagesPage>>(chatKeys.messagesPage(sessionId))
-    ?.pages.flatMap((p) => p.messages.map((m) => m.id));
+  return selectChatMessageRows(
+    qc.getQueryData(chatKeys.messageEntities()),
+    qc.getQueryData(chatKeys.messageIds(sessionId)),
+    qc.getQueryData<InfiniteData<ChatMessagesPage>>(chatKeys.messagesPage(sessionId))?.pageParams,
+  ).map((m) => m.id);
 }
 
 function flatIds(qc: QueryClient) {

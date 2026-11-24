@@ -1,12 +1,11 @@
 "use client";
 
 import { useEffect, useRef, type ReactNode } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
 import { motion, useIsPresent } from "motion/react";
 import type { AgentAvailability } from "@multica/core/agents";
 import { errorCode } from "@multica/core/api";
 import type { ChatMessage, ChatPendingTask, ChatQuickAction, ChatSession } from "@multica/core/types";
-import { chatMessagesPageOptions } from "@multica/core/chat/queries";
+import { useChatMessageRows } from "@multica/core/chat/use-chat-message-rows";
 import { hideQueuedChatMessages } from "@multica/core/chat/pending";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
@@ -56,18 +55,10 @@ export function ChatWindowMessages({
   const isPresent = useIsPresent();
   const regenerateQuickActions = useRegenerateChatQuickActions();
   const {
-    data,
-    isLoading,
-    error,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
-  } = useInfiniteQuery(chatMessagesPageOptions(sessionId ?? ""));
-  const pages = sessionId ? data?.pages ?? [] : [];
-  const messages = hideQueuedChatMessages(
-    [...pages].reverse().flatMap((page) => page.messages),
-    pendingTask ?? undefined,
-  );
+    query: { isLoading, error, fetchNextPage, hasNextPage, isFetchingNextPage },
+    messages: storedMessages,
+  } = useChatMessageRows(sessionId ?? "");
+  const messages = hideQueuedChatMessages(storedMessages, pendingTask ?? undefined);
   const loginRequired =
     interactiveLoginRequired || errorCode(error) === "interactive_login_required";
   const hasSessionLinks = !!(

@@ -7,6 +7,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
 import { chatKeys, chatWakeupsOptions, decisionActionKeys } from "../chat/queries";
+import {
+  ingestChatMessages,
+  ingestChatMessagesPage,
+  patchChatMessageInCaches,
+  selectChatMessagePageRows,
+} from "../chat/message-cache";
 import { inboxKeys } from "../inbox/queries";
 import { issueKeys } from "../issues/queries";
 import { runtimeKeys } from "../runtimes/queries";
@@ -727,10 +733,7 @@ describe("applyChatDoneToCache paged messages", () => {
     applyChatDoneToCache(qc, donePayload());
     applyChatDoneToCache(qc, donePayload());
 
-    const paged = qc.getQueryData<InfiniteData<ChatMessagesPage>>(chatKeys.messagesPage(sessionId));
-
-    expect(paged?.pages[0]?.messages.map((m) => m.id)).toEqual(["msg-latest", "msg-assistant"]);
-    expect(paged?.pages[1]?.messages.map((m) => m.id)).toEqual(["msg-user"]);
+    expect(storePageIds(qc)).toEqual([["msg-latest", "msg-assistant"], ["msg-user"]]);
   });
 });
 describe("resolveInboxSourceSlug", () => {
@@ -1087,10 +1090,7 @@ describe("chat quick-actions supplement flow", () => {
 
     const messages = qc.getQueryData<ChatMessage[]>(messagesKey);
     expect(messages?.at(-1)?.quick_actions).toEqual(actions);
-    const pages = qc.getQueryData<InfiniteData<ChatMessagesPage>>(
-      chatKeys.messagesPage(sessionId),
-    );
-    expect(pages?.pages[0]?.messages[0]?.quick_actions).toEqual(actions);
+    expect(storePageRows(qc)[0]?.[0]?.quick_actions).toEqual(actions);
     expect(qc.getQueryData(pendingMarkerKey)).toBeNull();
   });
 
@@ -1309,10 +1309,7 @@ describe("applyChatMessageToCache", () => {
       task_id: taskId,
       created_at: "2026-05-13T05:00:05Z",
     });
-    const pages = qc.getQueryData<InfiniteData<ChatMessagesPage>>(
-      chatKeys.messagesPage(sessionId),
-    );
-    expect(pages?.pages[0]?.messages.map((m) => m.id)).toEqual(["msg-user", "msg-user-2"]);
+    expect(storePageIds(qc)).toEqual([["msg-user", "msg-user-2"]]);
   });
 
   it("does not write a fired wakeup as a user row; the refetch brings it with its wakeup data", () => {
@@ -1396,31 +1393,72 @@ describe("applyDecisionAnswerUpdated", () => {
   });
 });
 
+/** Rows per page as a reader resolves them: from the by-id store, in the page order of the query. */
+function storePageRows(qc: ReturnType<typeof createQueryClient>) {
+  return selectChatMessagePageRows(
+    qc.getQueryData(chatKeys.messageEntities()),
+    qc.getQueryData(chatKeys.messageIds("session-1")),
+    qc.getQueryData<InfiniteData<ChatMessagesPage>>(chatKeys.messagesPage("session-1"))?.pageParams,
+  );
+}
+const storePageIds = (qc: ReturnType<typeof createQueryClient>) =>
+  storePageRows(qc).map((rows) => rows.map((m) => m.id));
+
+/** Seed a DM the way a fetch does: rows into the by-id store, page order into the page cache. */
+function seedDm(qc: ReturnType<typeof createQueryClient>, sessionId: string, messages: ChatMessage[]) {
+  const first = ingestChatMessagesPage(qc, sessionId, null, {
+    messages, limit: 50, has_more: false, next_cursor: null,
+  });
+  qc.setQueryData(chatKeys.messagesPage(sessionId), { pages: [first], pageParams: [null] });
+}
+
 describe("applyIssueRunStarted", () => {
-  it("invalidates only DMs holding a decision card for a started issue", () => {
+  const card = (issue_id?: string) =>
+    ({ id: "m", decision_quotes: issue_id ? [{ issue_id }] : [] }) as unknown as ChatMessage;
+
+  it("invalidates only DMs holding a decision card for a started issue, read from the by-id store", () => {
     const qc = createQueryClient();
-    const msg = (issue_id?: string) =>
-      ({ id: "m", decision_quotes: issue_id ? [{ issue_id }] : [] }) as unknown as ChatMessage;
-    qc.setQueryData(chatKeys.messages("dm-1"), [msg("X")]);
-    qc.setQueryData(chatKeys.messages("dm-2"), [msg("Z")]);
-    qc.setQueryData(chatKeys.messagesPage("dm-1"), { pages: [{ messages: [msg("X")] }], pageParams: [null] });
-    qc.setQueryData(chatKeys.messagesPage("dm-3"), { pages: [{ messages: [msg()] }], pageParams: [null] });
+    seedDm(qc, "dm-1", [card("X")]);
+    seedDm(qc, "dm-2", [{ ...card("Z"), id: "m2" }]);
+    seedDm(qc, "dm-3", [{ ...card(), id: "m3" }]);
     const spy = vi.spyOn(qc, "invalidateQueries");
     applyIssueRunStarted(qc, new Set(["X"]));
     const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);
     expect(keys).toEqual([chatKeys.messages("dm-1"), chatKeys.messagesPage("dm-1")]);
+  });
+
+  it("matches a card the page snapshot no longer shows but the store holds", () => {
+    const qc = createQueryClient();
+    seedDm(qc, "dm-1", [card()]);
+    patchChatMessageInCaches(qc, "dm-1", "m", (m) => ({ ...m, decision_quotes: [{ issue_id: "X" } as never] }));
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyIssueRunStarted(qc, new Set(["X"]));
+    expect(spy.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+      chatKeys.messages("dm-1"),
+      chatKeys.messagesPage("dm-1"),
+    ]);
+  });
+
+  it("matches a card on the flat Agent Builder list too", () => {
+    const qc = createQueryClient();
+    ingestChatMessages(qc, "dm-1", [card("X")]);
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    applyIssueRunStarted(qc, new Set(["X"]));
+    expect(spy.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+      chatKeys.messages("dm-1"),
+      chatKeys.messagesPage("dm-1"),
+    ]);
   });
 });
 
 describe("applyBudgetReceiptChanged", () => {
   it("invalidates only the DM pages that hold a card of the issue, its card list and its outcome queries", () => {
     const qc = createQueryClient();
-    const msg = (issue_id?: string) =>
-      ({ id: "m", decision_quotes: issue_id ? [{ issue_id }] : [] }) as unknown as ChatMessage;
-    qc.setQueryData(chatKeys.messages("dm-1"), [msg("X")]);
-    qc.setQueryData(chatKeys.messages("dm-2"), [msg("Z")]);
-    qc.setQueryData(chatKeys.messagesPage("dm-1"), { pages: [{ messages: [msg("X")] }], pageParams: [null] });
-    qc.setQueryData(chatKeys.messagesPage("dm-3"), { pages: [{ messages: [msg()] }], pageParams: [null] });
+    const msg = (id: string, issue_id?: string) =>
+      ({ id, decision_quotes: issue_id ? [{ issue_id }] : [] }) as unknown as ChatMessage;
+    seedDm(qc, "dm-1", [msg("a", "X")]);
+    seedDm(qc, "dm-2", [msg("b", "Z")]);
+    seedDm(qc, "dm-3", [msg("c")]);
     const spy = vi.spyOn(qc, "invalidateQueries");
     applyBudgetReceiptChanged(qc, "ws-1", ["X"]);
     const keys = spy.mock.calls.map(([filters]) => filters?.queryKey);

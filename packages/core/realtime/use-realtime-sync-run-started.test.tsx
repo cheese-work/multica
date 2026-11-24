@@ -4,6 +4,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { WSClient } from "../api/ws-client";
+import { ingestChatMessages } from "../chat/message-cache";
 import { chatKeys } from "../chat/queries";
 import { createQueryClient } from "../query-client";
 import type { ChatMessage } from "../types";
@@ -58,8 +59,11 @@ describe("useRealtimeSync — task:running on an issue", () => {
     queryClient.clear();
     for (const k of Object.keys(fetches)) delete fetches[k];
     queryClient.setQueryData(chatKeys.messages("dm-1"), [message("dm-1", "X")]);
+    ingestChatMessages(queryClient, "dm-1", [message("dm-1", "X")]);
     queryClient.setQueryData(chatKeys.messages("dm-2"), [message("dm-2", "Z")]);
+    ingestChatMessages(queryClient, "dm-2", [message("dm-2", "Z")]);
     queryClient.setQueryData(chatKeys.messages("dm-3"), [message("dm-3")]);
+    ingestChatMessages(queryClient, "dm-3", [message("dm-3")]);
     const ws = {
       on: (event: string, handler: (payload: unknown) => void) => {
         handlers[event] = handler;

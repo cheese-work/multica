@@ -11,7 +11,8 @@ const { chatKeys, chatMessagesOptions, chatMessagesPageOptions } = await import(
 const {
   patchChatMessageInCaches,
   removeChatMessageFromCaches,
-  selectChatMessagePages,
+  selectChatMessagePageRows,
+  selectChatMessageRows,
   upsertChatMessageToCaches,
 } = await import("./message-cache");
 type ChatMessageIds = import("./message-cache").ChatMessageIds;
@@ -40,10 +41,13 @@ const newClient = () => new QueryClient({ defaultOptions: { queries: { retry: fa
 const entities = (qc: QueryClient) =>
   qc.getQueryData<EntityTable<ChatMessage>>(chatKeys.messageEntities());
 const idLists = (qc: QueryClient) => qc.getQueryData<ChatMessageIds>(chatKeys.messageIds(sid));
+/** Row ids per page as a reader resolves them: from the store, in the page order of the query. */
 const pageIds = (qc: QueryClient) =>
-  qc
-    .getQueryData<InfiniteData<ChatMessagesPage>>(chatKeys.messagesPage(sid))
-    ?.pages.map((p) => p.messages.map((m) => m.id));
+  selectChatMessagePageRows(
+    entities(qc),
+    idLists(qc),
+    qc.getQueryData<InfiniteData<ChatMessagesPage>>(chatKeys.messagesPage(sid))?.pageParams,
+  ).map((rows) => rows.map((m) => m.id));
 const flatIds = (qc: QueryClient) =>
   qc.getQueryData<ChatMessage[]>(chatKeys.messages(sid))?.map((m) => m.id);
 
@@ -137,24 +141,33 @@ describe("by-id chat message store", () => {
   });
 
   it("never shows an id twice across pages", () => {
-    const data: InfiniteData<ChatMessagesPage> = {
-      pages: [page([msg("m-2")]), page([msg("m-1"), msg("m-2")])],
-      pageParams: [null, cursor],
-    };
     const store: EntityTable<ChatMessage> = { byId: { "m-1": msg("m-1"), "m-2": msg("m-2") } };
     const lists: ChatMessageIds = {
       byPage: { first: ["m-2"], [`${cursor.created_at}|${cursor.id}`]: ["m-1", "m-2"] },
     };
-    const derived = selectChatMessagePages(store, lists, data);
-    expect(derived.pages.map((p) => p.messages.map((m) => m.id))).toEqual([["m-2"], ["m-1"]]);
-    expect(derived.pages[1]).toMatchObject({ limit: 50, has_more: false });
+    const params = [null, cursor];
+    expect(selectChatMessagePageRows(store, lists, params).map((p) => p.map((m) => m.id)))
+      .toEqual([["m-2"], ["m-1"]]);
+    expect(selectChatMessageRows(store, lists, params).map((m) => m.id)).toEqual(["m-1", "m-2"]);
   });
 
-  it("the derived selector keeps the page reference when rows did not move", () => {
-    const rows = [msg("m-1")];
-    const data: InfiniteData<ChatMessagesPage> = { pages: [page(rows)], pageParams: [null] };
-    const store: EntityTable<ChatMessage> = { byId: { "m-1": rows[0]! } };
-    expect(selectChatMessagePages(store, { byPage: { first: ["m-1"] } }, data)).toBe(data);
+  it("reads rows from the store: a stale page snapshot does not reach a reader", async () => {
+    listChatMessagesPage.mockResolvedValue(page([msg("m-1", { content: "old" })]));
+    const qc = newClient();
+    await fetchPages(qc);
+    upsertChatMessageToCaches(qc, sid, msg("m-2"));
+    patchChatMessageInCaches(qc, sid, "m-1", (m) => ({ ...m, content: "patched" }));
+    const rows = selectChatMessageRows(
+      entities(qc),
+      idLists(qc),
+      qc.getQueryData<InfiniteData<ChatMessagesPage>>(chatKeys.messagesPage(sid))!.pageParams,
+    );
+    expect(rows.map((m) => [m.id, m.content])).toEqual([["m-1", "patched"], ["m-2", "m-2"]]);
+  });
+
+  it("returns no rows for an empty or unknown page order", () => {
+    expect(selectChatMessageRows(undefined, undefined, undefined)).toEqual([]);
+    expect(selectChatMessageRows({ byId: {} }, { byPage: { first: ["gone"] } }, [null])).toEqual([]);
   });
 
   it("an HTTP refetch refreshes a stored row (decided card) without losing store-only fields", async () => {
@@ -165,8 +178,6 @@ describe("by-id chat message store", () => {
     listChatMessagesPage.mockResolvedValueOnce(page([msg("m-1", { content: "new" })]));
     await fetchPages(qc);
     expect(entities(qc)!.byId["m-1"]).toMatchObject({ content: "new", attachments: [{ id: "a" }] });
-    expect(qc.getQueryData<InfiniteData<ChatMessagesPage>>(chatKeys.messagesPage(sid))!.pages[0]!
-      .messages[0]!.content).toBe("new");
   });
 
   it("ignores a response whose request was aborted, so it cannot undo a newer write", async () => {
@@ -195,10 +206,6 @@ describe("by-id chat message store", () => {
 
     patchChatMessageInCaches(qc, sid, "m-2", (m) => ({ ...m, quick_actions: [] as never }));
     expect(entities(qc)!.byId["m-2"]!.quick_actions).toEqual([]);
-    expect(
-      qc.getQueryData<InfiniteData<ChatMessagesPage>>(chatKeys.messagesPage(sid))!.pages[0]!.messages[1]!
-        .quick_actions,
-    ).toEqual([]);
 
     removeChatMessageFromCaches(qc, sid, "m-1");
     expect(entities(qc)!.byId["m-1"]).toBeUndefined();

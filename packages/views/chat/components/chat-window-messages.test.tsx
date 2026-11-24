@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { chatKeys } from "@multica/core/chat/queries";
 import { ApiError } from "@multica/core/api";
 import type { ChatMessage, ChatSession } from "@multica/core/types";
+import { seedChatPages } from "../../test/chat-store";
 import { ChatWindowMessages } from "./chat-window-messages";
 
 const fetchMessages = vi.hoisted(() => vi.fn());
@@ -52,10 +53,6 @@ function message(id: string): ChatMessage {
   };
 }
 
-function pages(messages: ChatMessage[]) {
-  return { pages: [{ messages, limit: 50, has_more: false }], pageParams: [null] };
-}
-
 function renderWindow(
   open: boolean,
   opts: {
@@ -73,7 +70,7 @@ function renderWindow(
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const key = chatKeys.messagesPage("session-1");
   if (opts.seed) opts.seed(qc, key);
-  else if (cached) qc.setQueryData(key, pages(opts.initial ?? [message("initial message")]));
+  else if (cached) seedChatPages(qc, "session-1", opts.initial ?? [message("initial message")]);
   const content = (isOpen: boolean) => (
     <QueryClientProvider client={qc}>
       <AnimatePresence initial={false}>
@@ -156,7 +153,7 @@ describe("floating chat message lifetime", () => {
   });
 
   it("follows immediately on open, stops during exit, then reads new data on reopen", async () => {
-    const { qc, key, setOpen, observers } = renderWindow(true);
+    const { qc, setOpen, observers } = renderWindow(true);
     expect(screen.getByTestId("messages")).toHaveAttribute("data-active", "true");
     expect(observers()).toBe(1);
 
@@ -168,7 +165,7 @@ describe("floating chat message lifetime", () => {
       expect(observers()).toBe(0);
     });
 
-    act(() => qc.setQueryData(key, pages([message("arrived while closed")])));
+    act(() => seedChatPages(qc, "session-1", [message("arrived while closed")]));
     setOpen(true);
     expect(screen.getByText("arrived while closed")).toBeInTheDocument();
     expect(screen.getByTestId("messages")).toHaveAttribute("data-active", "true");

@@ -111,6 +111,7 @@
     "./chat/usage": "./chat/usage.ts",
     "./chat/search": "./chat/search.ts",
     "./chat/message-cache": "./chat/message-cache.ts",
+    "./chat/use-chat-message-rows": "./chat/use-chat-message-rows.ts",
     "./chat/use-quick-actions-pending-timeout": "./chat/use-quick-actions-pending-timeout.ts",
     "./chat/unread": "./chat/unread.ts",
     "./chat/wakeup": "./chat/wakeup.ts",
