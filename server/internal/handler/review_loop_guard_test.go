@@ -34,6 +34,7 @@ func newReviewLoop(t *testing.T) reviewLoop {
 
 func newReviewLoopSteps(t *testing.T, steps []map[string]any) reviewLoop {
 	t.Helper()
+	enableRoundsAutoSplit(t, testWorkspaceID)
 	createTestCustomStatus(t, "agent_review", "started")
 	createTestCustomStatus(t, "need_decision", "started")
 	agentID := seededReadyAgentID(t)

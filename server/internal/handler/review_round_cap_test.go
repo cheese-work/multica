@@ -26,6 +26,7 @@ type roundCap struct {
 
 func newRoundCap(t *testing.T) roundCap {
 	t.Helper()
+	enableRoundsAutoSplit(t, testWorkspaceID)
 	for _, key := range []string{"agent_review", "need_decision"} {
 		if dbfx.Count(t, `SELECT count(*) FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, key) == 0 {
 			createTestCustomStatus(t, key, "started")
@@ -414,5 +415,24 @@ func TestRoundCap_AutoSplitWriteFailsOpensCard(t *testing.T) {
 	c.wantCard(t, 3)
 	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 0 {
 		t.Fatalf("auto-split rows = %d, want 0", n)
+	}
+}
+
+// With the setting off (the default) an issue of any type keeps the card.
+func TestRoundCap_SettingOffKeepsCardOnAnyIssueType(t *testing.T) {
+	for _, title := range []string{"plan(WE006): round cap", "fix(handler): round cap"} {
+		t.Run(title, func(t *testing.T) {
+			c := newRoundCap(t)
+			dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'review_rounds_auto_split' WHERE id = $1`, testWorkspaceID)
+			dbfx.Exec(t, `UPDATE issue SET title = $2 WHERE id = $1`, c.issueID, title)
+			for _, ago := range []int{300, 200, 100} {
+				c.activity(t, "status_changed", "agent_review", ago)
+			}
+			c.enterReview(t)
+			c.wantCard(t, 3)
+			if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 0 {
+				t.Fatalf("auto-split rows = %d, want 0", n)
+			}
+		})
 	}
 }

@@ -64,6 +64,46 @@ func (h *Handler) openCappedCard(ctx context.Context, issue db.Issue, wf *workfl
 	h.ensureReviewRoundsCard(ctx, issue, *wf.capped)
 }
 
+const (
+	roundsAutoSplitKey = "review_rounds_auto_split"
+	roundsAutoSplitOn  = "on"
+	roundsAutoSplitOff = "off"
+)
+
+// roundsAutoSplitEnabled reads the workspace setting. Only the stored string
+// "on" enables it, so the card stays the default until the workspace's
+// need_decision steps can take the Split path without a request. The setting
+// covers every issue type (CHE-9511).
+func (h *Handler) roundsAutoSplitEnabled(ctx context.Context, issue db.Issue) bool {
+	ws, err := h.Queries.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil || len(ws.Settings) == 0 {
+		return false
+	}
+	var settings map[string]any
+	if json.Unmarshal(ws.Settings, &settings) != nil {
+		return false
+	}
+	mode, _ := settings[roundsAutoSplitKey].(string)
+	return mode == roundsAutoSplitOn
+}
+
+// validateRoundsAutoSplitSetting checks the review_rounds_auto_split key of a
+// workspace settings object. An absent key is valid; null is not.
+func validateRoundsAutoSplitSetting(value any) error {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	v, present := config[roundsAutoSplitKey]
+	if !present {
+		return nil
+	}
+	if mode, _ := v.(string); mode != roundsAutoSplitOn && mode != roundsAutoSplitOff {
+		return fmt.Errorf("%s must be off or on", roundsAutoSplitKey)
+	}
+	return nil
+}
+
 // autoSplitIssue takes the Split path for an issue of any type at the round
 // limit with no decision request (CHE-9483 for plan issues, CHE-9511 for the
 // rest): it records the decision as an activity row and
@@ -93,16 +133,18 @@ const reviewRoundsCardAttempts = 3
 // errNoCardRecipient means the issue has no owner or asking agent to ask.
 var errNoCardRecipient = errors.New("review rounds: nobody to ask")
 
-// ensureReviewRoundsCard takes the cap's auto-Split; only when that write fails
-// does it open the cap's card. The issue is already in
+// ensureReviewRoundsCard takes the cap's auto-Split when the workspace setting
+// is on, and opens the cap's card when it is off or the write fails. The issue is already in
 // need_decision, so a failed attempt is retried, and when every attempt fails
 // the issue gets a system comment that says the card is missing: need_decision
 // never lacks its card silently.
 func (h *Handler) ensureReviewRoundsCard(ctx context.Context, issue db.Issue, c roundsCap) {
-	if err := h.autoSplitIssue(ctx, issue, c); err != nil {
-		slog.Error("review rounds: auto-split not recorded, opening the card", "err", err, "issue_id", uuidToString(issue.ID))
-	} else {
-		return
+	if h.roundsAutoSplitEnabled(ctx, issue) {
+		if err := h.autoSplitIssue(ctx, issue, c); err != nil {
+			slog.Error("review rounds: auto-split not recorded, opening the card", "err", err, "issue_id", uuidToString(issue.ID))
+		} else {
+			return
+		}
 	}
 	var err error
 	for attempt := 1; attempt <= reviewRoundsCardAttempts; attempt++ {
