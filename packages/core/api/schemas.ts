@@ -4,6 +4,7 @@ import type {
   BatchIssueOutcome,
   BatchIssueResult,
   BatchUpdateIssuesResponse,
+  EntryGateFailure,
   AppCatalogResponse,
   AppsOverview,
   TeamAppImpact,
@@ -4270,18 +4271,60 @@ const BatchIssueResultSchema = z.lazy(() => z
     }),
   ));
 
-/** `results` is absent on servers that predate per-issue batch results. */
+const EntryGateFailureSchema = z.lazy(() => z
+  .object({
+    guard: z.string().min(1),
+    mode: z.string().catch(""),
+    fact: z.string().catch(""),
+    fix: z.string().catch(""),
+    member_override: z.boolean().catch(false),
+  })
+  .loose()
+  .transform(
+    (value): EntryGateFailure => ({
+      guard: value.guard,
+      mode: value.mode,
+      fact: value.fact,
+      fix: value.fix,
+      member_override: value.member_override,
+    }),
+  ));
+
+const BatchFailedIssueSchema = z.lazy(() => z
+  .object({
+    id: z.string().min(1),
+    code: z.string(),
+    step: z.string().optional().catch(undefined),
+    failed_guards: z.array(EntryGateFailureSchema).optional().catch(undefined),
+  })
+  .loose()
+  .transform((value): NonNullable<BatchUpdateIssuesResponse["failed"]>[number] => ({
+    id: value.id,
+    code: value.code,
+    ...(value.step !== undefined ? { step: value.step } : {}),
+    ...(value.failed_guards ? { failed_guards: value.failed_guards } : {}),
+  })));
+
+/**
+ * `results` is absent on servers that predate per-issue batch results, and
+ * `updated_ids` and `failed` on servers that predate partial-write reporting.
+ * A malformed `updated_ids` or `failed` is dropped; the count still stands.
+ */
 export const BatchUpdateIssuesResponseSchema = z.lazy(() => z
   .object({
     updated: z.number().int().nonnegative(),
+    updated_ids: z.array(z.string()).optional().catch(undefined),
     results: z.array(BatchIssueResultSchema).optional(),
+    failed: z.array(BatchFailedIssueSchema).optional().catch(undefined),
     dry_run: z.boolean().optional().catch(undefined),
   })
   .loose()
   .transform(
     (value): BatchUpdateIssuesResponse => ({
       updated: value.updated,
+      ...(value.updated_ids ? { updated_ids: value.updated_ids } : {}),
       ...(value.results ? { results: value.results } : {}),
+      ...(value.failed ? { failed: value.failed } : {}),
       ...(value.dry_run !== undefined ? { dry_run: value.dry_run } : {}),
     }),
   ));

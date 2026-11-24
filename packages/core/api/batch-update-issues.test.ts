@@ -40,6 +40,50 @@ describe("batchUpdateIssues", () => {
     });
   });
 
+  it("keeps updated_ids and the gate refusal of a partial write", async () => {
+    const guard = {
+      guard: "pr_ready",
+      mode: "block",
+      fact: "No ready PR is linked.",
+      fix: "Mark the PR ready.",
+      member_override: true,
+    };
+    respond({
+      updated: 1,
+      updated_ids: ["a"],
+      results: [
+        { issue_id: "a", identifier: "MUL-1", outcome: "updated" },
+        { issue_id: "b", identifier: "MUL-2", outcome: "skipped", code: "entry_gate_failed", message: "gate refused" },
+      ],
+      failed: [{ id: "b", code: "entry_gate_failed", step: "in_review", failed_guards: [guard] }],
+    });
+    await expect(client().batchUpdateIssues(["a", "b"], { status: "in_review" })).resolves.toEqual({
+      updated: 1,
+      updated_ids: ["a"],
+      results: [
+        { issue_id: "a", identifier: "MUL-1", outcome: "updated" },
+        { issue_id: "b", identifier: "MUL-2", outcome: "skipped", code: "entry_gate_failed", message: "gate refused" },
+      ],
+      failed: [{ id: "b", code: "entry_gate_failed", step: "in_review", failed_guards: [guard] }],
+    });
+  });
+
+  it("keeps updated_ids on a count-only partial write", async () => {
+    respond({ updated: 1, updated_ids: ["a"] });
+    await expect(client().batchUpdateIssues(["a", "b"], { priority: "high" })).resolves.toEqual({
+      updated: 1,
+      updated_ids: ["a"],
+    });
+  });
+
+  it("drops malformed updated_ids and failed without losing the confirmed count", async () => {
+    respond({ updated: 1, updated_ids: "a", failed: [{ code: 7 }], results: [{ issue_id: "a", outcome: "updated" }] });
+    await expect(client().batchUpdateIssues(["a"], {})).resolves.toEqual({
+      updated: 1,
+      results: [{ issue_id: "a", outcome: "updated" }],
+    });
+  });
+
   it("keeps an older server's bare count for field updates", async () => {
     respond({ updated: 2 });
     await expect(client().batchUpdateIssues(["a", "b"], { priority: "high" })).resolves.toEqual({ updated: 2 });
