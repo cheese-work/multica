@@ -108,8 +108,13 @@ describe("applyChatDoneToCache", () => {
 
     applyChatDoneToCache(qc, donePayload());
 
-    expect(setQueryData.mock.calls[0]?.[0]).toEqual(messagesKey);
-    expect(setQueryData.mock.calls[2]?.[0]).toEqual(pendingKey);
+    // The door writes the by-id store and the derived caches (B1a.1); the
+    // order that matters is message first, pending marker last.
+    const written = setQueryData.mock.calls.map((call) => JSON.stringify(call[0]));
+    expect(written.indexOf(JSON.stringify(messagesKey))).toBeGreaterThanOrEqual(0);
+    expect(written.indexOf(JSON.stringify(messagesKey))).toBeLessThan(
+      written.indexOf(JSON.stringify(pendingKey)),
+    );
     expect(qc.getQueryData<ChatPendingTask>(pendingKey)).toEqual({});
     expect(qc.getQueryData<ChatMessage[]>(messagesKey)).toEqual([
       userMessage(),

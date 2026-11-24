@@ -73,6 +73,32 @@ func (h *Handler) chainAttachmentRevision(ctx context.Context, params *db.Create
 	return 0, ""
 }
 
+// identicalIssueUpload finds the unlinked issue file that already holds these
+// bytes under this name, so a retried upload adds no copy (CHE-9490). It
+// applies only to an issue-level upload without `replaces`; a file a comment
+// already holds is skipped, because the next comment needs its own to attach.
+func (h *Handler) identicalIssueUpload(ctx context.Context, params db.CreateAttachmentParams, replaces string, data []byte) (db.Attachment, bool) {
+	issueLevel := params.IssueID.Valid && !params.CommentID.Valid && !params.ChatSessionID.Valid && !params.TaskID.Valid
+	if !issueLevel || replaces != "" {
+		return db.Attachment{}, false
+	}
+	latest, err := h.Queries.GetLatestIssueAttachmentByName(ctx, db.GetLatestIssueAttachmentByNameParams{
+		WorkspaceID: params.WorkspaceID,
+		IssueID:     params.IssueID,
+		Filename:    params.Filename,
+	})
+	if err != nil {
+		return db.Attachment{}, false
+	}
+	sum := sha256.Sum256(data)
+	// A copy with a different external-read mark is not the same file: reusing
+	// it would drop a marked task's mark or taint a clean task's upload.
+	if latest.Sha256 != hex.EncodeToString(sum[:]) || latest.ExternalRead != (params.ExternalRead.Valid && params.ExternalRead.Bool) {
+		return db.Attachment{}, false
+	}
+	return latest, true
+}
+
 func chainID(a db.Attachment) pgtype.UUID {
 	if a.RevisionRoot.Valid {
 		return a.RevisionRoot

@@ -123,3 +123,27 @@ func TestRunAttachmentUploadSendsIssueAndReplaces(t *testing.T) {
 		t.Errorf("form = issue %q replaces %q file %q", gotIssue, gotReplaces, gotFile)
 	}
 }
+
+func TestRunAttachmentDeleteSendsDelete(t *testing.T) {
+	var method, path string
+	attachmentTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		method, path = r.Method, r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := runAttachmentDelete(&cobra.Command{Use: "delete"}, []string{testAttID}); err != nil {
+		t.Fatal(err)
+	}
+	if method != http.MethodDelete || path != "/api/attachments/"+testAttID {
+		t.Fatalf("request = %s %s, want DELETE /api/attachments/%s", method, path, testAttID)
+	}
+}
+
+func TestRunAttachmentDeleteReportsRefusal(t *testing.T) {
+	attachmentTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"error":"attachment is referenced by a comment or message"}`, http.StatusConflict)
+	})
+	err := runAttachmentDelete(&cobra.Command{Use: "delete"}, []string{testAttID})
+	if err == nil || !strings.Contains(err.Error(), "referenced") {
+		t.Fatalf("err = %v, want the server refusal", err)
+	}
+}
