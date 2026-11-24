@@ -355,7 +355,11 @@ class ReceiptOrderTest(AlarmCase):
 class FailurePathTest(AlarmCase):
     def test_fp01_r9_a_jobs_api_error_still_dispatches_reruns_and_reports_rule_2(self):
         boom = subprocess.CalledProcessError(1, "gh", stderr="HTTP 500: Server Error")
-        runs = [deploy(SHA, error=boom)]
+        run = deploy(SHA, error=boom)
+        # A title ending in the SHA makes the pre-receipt code call the jobs API too, so base reaches the HTTP 500 and fails the
+        # assertions below; at head the title is ignored and the receipt read hits the same 500.
+        run["display_title"] = f"CD deploy to C00 · {SHA}"
+        runs = [run]
         rc, out, seen = self.run_main(qual_runs=[qual("failure")], deploy_runs=runs, commits=[commit_at(SHA, at(11, 30))], now=at(12, 0),
                                       schedule_runs=[], dispatch_fails=False)
         self.assertEqual(self.dispatches(seen), [self.DISPATCH])
