@@ -367,6 +367,36 @@ func wantCapOpensNoCard(t *testing.T, title string) {
 	c.wantAutoSplitInMoveTx(t)
 }
 
+// failAutoSplit makes the auto-Split's activity write fail for one issue, so
+// the fallback to the decision card runs. The trigger is dropped at cleanup.
+func (c roundCap) failAutoSplit(t *testing.T) {
+	t.Helper()
+	name := "che9511_fail_" + strings.ReplaceAll(c.issueID, "-", "")
+	dbfx.Exec(t, `CREATE OR REPLACE FUNCTION `+name+`() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'che9511 test: auto-split write refused'; END $$`)
+	dbfx.Exec(t, `CREATE TRIGGER `+name+` BEFORE INSERT ON activity_log FOR EACH ROW WHEN (NEW.action = 'review_rounds_auto_split' AND NEW.issue_id = '`+c.issueID+`') EXECUTE FUNCTION `+name+`()`)
+	t.Cleanup(func() { dbfx.Exec(t, `DROP FUNCTION IF EXISTS `+name+`() CASCADE`) })
+}
+
+// CHE-9511: the auto-Split write fails. The move to need_decision still
+// commits and the card opens, as it did before the setting.
+func TestRoundCap_AutoSplitWriteFailsOpensCard(t *testing.T) {
+	enableRoundsAutoSplit(t, testWorkspaceID)
+	c := newRoundCap(t)
+	dbfx.Exec(t, `UPDATE issue SET title = 'fix(handler): write fails' WHERE id = $1`, c.issueID)
+	c.failAutoSplit(t)
+	for _, ago := range []int{300, 200, 100} {
+		c.activity(t, "status_changed", "agent_review", ago)
+	}
+	c.enterReview(t)
+	if got := c.status(t); got != "need_decision" {
+		t.Fatalf("status after the 4th entry = %q, want need_decision", got)
+	}
+	c.wantCard(t, 3)
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 0 {
+		t.Fatalf("auto-split rows = %d, want 0", n)
+	}
+}
+
 // wantAutoSplitInMoveTx checks the ordering the need_decision handler relies
 // on: the auto-Split decision (activity row and comment) commits in the same
 // transaction as the move to need_decision, so a handler run that the move

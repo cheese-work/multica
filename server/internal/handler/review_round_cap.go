@@ -77,11 +77,36 @@ func maybeAutoSplit(ctx context.Context, q *db.Queries, issue db.Issue, c *round
 	if !roundsAutoSplitEnabled(ctx, q, issue) {
 		return nil
 	}
-	if err := recordAutoSplit(ctx, q, issue, *c); err != nil {
-		return err
+	// The write runs in a savepoint: a failed insert aborts the whole
+	// transaction otherwise, and the move to need_decision would roll back with
+	// it. On failure only the auto-Split rows are undone, the cap commits
+	// without autoSplit, and the issue opens the card as it does with the
+	// setting off (CHE-9511).
+	if err := inSavepoint(ctx, q, func(sq *db.Queries) error { return recordAutoSplit(ctx, sq, issue, *c) }); err != nil {
+		slog.Warn("review rounds: auto-Split not recorded, opening the card", "err", err, "issue_id", uuidToString(issue.ID))
+		return nil
 	}
 	c.autoSplit = true
 	return nil
+}
+
+// inSavepoint runs fn in a savepoint of q's transaction. A failure rolls back
+// to the savepoint, so the outer transaction stays usable. Outside a
+// transaction fn runs directly.
+func inSavepoint(ctx context.Context, q *db.Queries, fn func(*db.Queries) error) error {
+	tx, ok := q.Conn().(pgx.Tx)
+	if !ok {
+		return fn(q)
+	}
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	if err := fn(q.WithTx(sp)); err != nil {
+		_ = sp.Rollback(ctx)
+		return err
+	}
+	return sp.Commit(ctx)
 }
 
 // openCappedCard opens the card for a write that capped the issue, after its
