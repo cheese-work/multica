@@ -355,7 +355,20 @@ func TestGitHubRepoCreateRecoversAfterALostAnswerOnTheSameCard(test *testing.T) 
 	if gotSettings, gotRepos := workspaceRows(test); gotSettings != beforeSettings || gotRepos != beforeRepos {
 		test.Fatalf("a lost answer changed workspace rows: settings %s, repos %s", gotSettings, gotRepos)
 	}
-	fixture.org.lostAnswer, fixture.org.getFailure = 0, 0
+	// The retry meets "already exists" while the read-back still fails: the
+	// repo may be this card's, so the card must stay pending, not fail.
+	fixture.org.lostAnswer = 0
+	copied = *fixture.handler
+	copied.ApprovalVerifier = acceptingVerifier
+	fixture.pendingAction.approve(test, &copied, fixture.claim(test, map[string]string{}), http.StatusServiceUnavailable)
+	dbfx.QueryRow(test, `SELECT state FROM decision_action WHERE id = $1`, fixture.actionID).Scan(&state)
+	if state != "pending" {
+		test.Fatalf("the card state = %q after an unreadable existing repo, want pending", state)
+	}
+	if gotSettings, gotRepos := workspaceRows(test); gotSettings != beforeSettings || gotRepos != beforeRepos {
+		test.Fatalf("an unreadable existing repo changed workspace rows: settings %s, repos %s", gotSettings, gotRepos)
+	}
+	fixture.org.getFailure = 0
 	out := fixture.approve(test)
 	if out.State != "executed" {
 		test.Fatalf("retry outcome = %+v, want executed", out)

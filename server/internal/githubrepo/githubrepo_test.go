@@ -163,3 +163,43 @@ func TestCreateRepoRefusesToAdoptWithoutAnAction(test *testing.T) {
 		test.Fatalf("err = %v, want ErrExists", err)
 	}
 }
+
+// A lost POST answer followed by an unreadable repository must stay retryable
+// on the same action until the read-back works (CHE-9525 round 3).
+func TestCreateRepoKeepsTheActionRetryableWhileReadBackIsUnavailable(test *testing.T) {
+	const action = "11111111-2222-3333-4444-555555555555"
+	var postStatus, getStatus = http.StatusBadGateway, http.StatusInternalServerError
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		status := getStatus
+		if request.Method == http.MethodPost {
+			status = postStatus
+		}
+		if status != http.StatusOK {
+			if request.Method == http.MethodPost && status == http.StatusUnprocessableEntity {
+				writer.WriteHeader(status)
+				_, _ = writer.Write([]byte(`{"errors":[{"message":"name already exists on this account"}]}`))
+				return
+			}
+			writer.WriteHeader(status)
+			return
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]any{"full_name": "tevo-studio/x", "visibility": "private", "description": "app [multica-action:" + action + "]"})
+	}))
+	test.Cleanup(server.Close)
+	client := NewClient(server.URL, map[string]string{"tevo-studio": "secret-token"})
+	create := func() error {
+		_, err := client.CreateRepo(context.Background(), Request{Org: "tevo-studio", Name: "x", Visibility: "private", Description: "app", ActionID: action})
+		return err
+	}
+	if err := create(); !errors.Is(err, ErrUncertain) {
+		test.Fatalf("lost POST, failed GET: err = %v, want ErrUncertain", err)
+	}
+	postStatus = http.StatusUnprocessableEntity
+	if err := create(); !errors.Is(err, ErrUncertain) || errors.Is(err, ErrExists) {
+		test.Fatalf("422 retry, failed GET: err = %v, want ErrUncertain (not ErrExists)", err)
+	}
+	getStatus = http.StatusOK
+	if err := create(); err != nil {
+		test.Fatalf("422 retry, readable marker: err = %v, want adoption", err)
+	}
+}

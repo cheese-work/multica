@@ -142,10 +142,15 @@ func (client *Client) CreateRepo(ctx context.Context, request Request) (Created,
 	var posted repoView
 	err := client.send(ctx, token, http.MethodPost, path, body, request.Template != "", &posted)
 	if errors.Is(err, ErrExists) || errors.Is(err, ErrUncertain) {
-		if adopted, ok := client.adopt(ctx, token, request); ok {
+		adopted, outcome := client.adopt(ctx, token, request)
+		switch {
+		case outcome == adoptOwn:
 			return adopted, nil
-		}
-		if errors.Is(err, ErrUncertain) {
+		case outcome == adoptUnreadable && request.ActionID != "":
+			// The repository may be this action's own, but it cannot be read to
+			// tell: keep the approval retryable instead of failing it.
+			return Created{}, fmt.Errorf("%w (the repository cannot be read back to check for this action's marker)", ErrUncertain)
+		case errors.Is(err, ErrUncertain):
 			return Created{}, fmt.Errorf("%w (checked for a repository this action created: none found)", err)
 		}
 	}
@@ -195,20 +200,33 @@ func (repo repoView) created(request Request) Created {
 	return created
 }
 
+type adoptOutcome int
+
+const (
+	// adoptOwn: the repository's description ends in this action's marker.
+	adoptOwn adoptOutcome = iota
+	// adoptMismatch: the repository was read and is not this action's.
+	adoptMismatch
+	// adoptUnreadable: the repository could not be read, so ownership is unknown.
+	adoptUnreadable
+)
+
 // adopt reports the repository as this action's own when its description ends
-// in the action's marker.
-func (client *Client) adopt(ctx context.Context, token string, request Request) (Created, bool) {
+// in the action's marker. A failed read is "unreadable", not a mismatch.
+func (client *Client) adopt(ctx context.Context, token string, request Request) (Created, adoptOutcome) {
 	if request.ActionID == "" {
-		return Created{}, false
+		return Created{}, adoptMismatch
 	}
 	var repo repoView
 	if err := client.send(ctx, token, http.MethodGet, repoPath(request), nil, false, &repo); err != nil {
-		return Created{}, false
+		// A 404 after "already exists" is a read the credential cannot make
+		// either; every read failure keeps the card retryable.
+		return Created{}, adoptUnreadable
 	}
 	if !strings.HasSuffix(strings.TrimSpace(repo.Description), request.marker()) {
-		return Created{}, false
+		return Created{}, adoptMismatch
 	}
-	return repo.created(request), true
+	return repo.created(request), adoptOwn
 }
 
 func (client *Client) send(ctx context.Context, token, method, path string, body any, templated bool, into any) error {
