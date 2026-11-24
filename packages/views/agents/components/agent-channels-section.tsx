@@ -15,7 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
 
-import { docsLocalePrefix } from "../../common/docs-locale";
+import { docsUrl } from "../../common/docs-url";
 import { ObjectSection, ObjectSectionAction } from "../../layout/object-page";
 import { useT, useTimeAgo } from "../../i18n";
 import { openExternal } from "../../platform";
@@ -304,9 +304,7 @@ function AgentChannelRow({
                   ) : null}
                   <DropdownMenuItem
                     onClick={() =>
-                      openExternal(
-                        `https://multica.ai/docs${docsLocalePrefix(i18n.language)}/lark-bot-integration`,
-                      )
+                      openExternal(docsUrl("/lark-bot-integration", i18n.language))
                     }
                   >
                     <ExternalLink />

@@ -17,7 +17,7 @@ import {
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { useT } from "../../i18n";
-import { docsLocalePrefix } from "../../common/docs-locale";
+import { docsUrl } from "../../common/docs-url";
 import { openExternal } from "../../platform";
 import { IntegrationChannelIcon } from "./integration-channel-icon";
 import {
@@ -228,9 +228,7 @@ function ChannelConnectSteps({
             variant="link"
             className="w-fit p-0"
             onClick={() =>
-              openExternal(
-                `https://multica.ai/docs${docsLocalePrefix(i18n.language)}/${channel === "lark" ? "lark" : channel}-bot-integration`,
-              )
+              openExternal(docsUrl(`/${channel}-bot-integration`, i18n.language))
             }
           >
             {t(($) => $.channels.setup_guide)}

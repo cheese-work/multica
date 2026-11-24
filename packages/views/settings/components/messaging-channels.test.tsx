@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { api, ApiError } from "@multica/core/api";
+import { configStore } from "@multica/core/config";
 import {
   AgentChannelsSection,
   AgentChannelLinks,
@@ -111,6 +112,10 @@ function show(ui: React.ReactElement) {
   };
 }
 
+afterEach(() => {
+  configStore.getState().setDocsBaseUrl(undefined);
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   state.role = "admin";
@@ -165,6 +170,22 @@ describe("agent messaging channels", () => {
       );
     },
   );
+
+  it("opens the instance's own troubleshooting docs when the server advertises them", async () => {
+    configStore.getState().setDocsBaseUrl("https://docs.example.test/docs");
+    vi.mocked(api.listLarkInstallations).mockResolvedValue({
+      ...listing([{ ...active, app_id: "cli_a", region: "feishu" }]),
+      install_supported: false,
+    } as never);
+    show(<AgentChannelsSection agent={agent} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Manage Lark" }));
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Troubleshooting" }),
+    );
+    expect(state.open).toHaveBeenCalledWith(
+      "https://docs.example.test/docs/lark-bot-integration",
+    );
+  });
 
   it("shows actionable DingTalk permission help instead of a healthy status", async () => {
     vi.mocked(api.listDingTalkInstallations).mockResolvedValue(
@@ -412,6 +433,25 @@ describe("shared connection dialog", () => {
         "agent-1",
         "feishu",
       ),
+    );
+  });
+
+  it("opens the instance's own setup guide when the server advertises it", async () => {
+    configStore.getState().setDocsBaseUrl("https://docs.example.test/docs");
+    show(
+      <ChannelConnectDialog
+        agents={[agent]}
+        initialAgent={agent}
+        open
+        onOpenChange={vi.fn()}
+      />,
+    );
+    const telegram = await screen.findByRole("button", { name: "Telegram" });
+    await waitFor(() => expect(telegram).toBeEnabled());
+    fireEvent.click(telegram);
+    fireEvent.click(screen.getByRole("button", { name: "Setup guide" }));
+    expect(state.open).toHaveBeenCalledWith(
+      "https://docs.example.test/docs/telegram-bot-integration",
     );
   });
 
