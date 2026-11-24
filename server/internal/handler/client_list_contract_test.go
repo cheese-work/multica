@@ -21,12 +21,15 @@ import (
 // contractEqual: both sides hold the same values. contractSubset: every web
 // value must exist in Go (the client picks part of a vocabulary). A subset
 // check finds unsupported client values; it cannot prove that every new Go
-// value has a client consumer.
+// value has a client consumer. contractCover: every Go value must exist in the
+// client list (a lookup the client must be able to render); the client may hold
+// more, such as values Go writes from outside the checked list.
 type contractRule int
 
 const (
 	contractEqual contractRule = iota
 	contractSubset
+	contractCover
 )
 
 type listContract struct {
@@ -51,12 +54,12 @@ func (c listContract) problems(ts, goVals map[string]bool) []string {
 	}
 	var undeclaredServer, undeclaredClient, staleServer, staleClient, badIssue []string
 	for _, v := range diffKeys(goVals, ts) {
-		if _, ok := c.serverOnly[v]; !ok && c.rule == contractEqual {
+		if _, ok := c.serverOnly[v]; !ok && c.rule != contractSubset {
 			undeclaredServer = append(undeclaredServer, v)
 		}
 	}
 	for _, v := range diffKeys(ts, goVals) {
-		if _, ok := c.clientOnly[v]; !ok {
+		if _, ok := c.clientOnly[v]; !ok && c.rule != contractCover {
 			undeclaredClient = append(undeclaredClient, v)
 		}
 	}
@@ -73,11 +76,11 @@ func (c listContract) problems(ts, goVals map[string]bool) []string {
 			staleClient = append(staleClient, v)
 		}
 	}
-	fix(undeclaredServer, "Go emits values the web list lacks; add them to the web list (with their rendering and copy), or declare them server-only with the web issue that adds them:")
-	fix(undeclaredClient, "the web list has values Go does not have; remove them from the web list, or declare a historical client-only value with a reason:")
-	fix(staleServer, "stale server-only declaration (value is not in Go, or the web list now has it); delete it:")
-	fix(staleClient, "stale client-only declaration (value is not in the web list, Go now has it, or it has no reason); delete it:")
-	fix(badIssue, "server-only declaration without a CHE-<n> web issue:")
+	fix(undeclaredServer, "Go emits values the client list lacks; add them to the client list (with their rendering and copy), or declare them server-only with the web issue that adds them:")
+	fix(undeclaredClient, "the client list has values Go does not have; remove them from the client list, or declare a historical client-only value with a reason:")
+	fix(staleServer, "stale server-only declaration (value is not in Go, or the client list now has it); delete it:")
+	fix(staleClient, "stale client-only declaration (value is not in the client list, Go now has it, or it has no reason); delete it:")
+	fix(badIssue, "server-only declaration without a CHE-<n> issue:")
 	return out
 }
 

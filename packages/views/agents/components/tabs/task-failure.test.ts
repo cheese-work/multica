@@ -187,6 +187,18 @@ describe("failureReasonLabel", () => {
     );
   });
 
+  it.each([
+    ["bg_run_timeout", "Background run timed out"],
+    ["bg_claim_timeout", "Background run expired in queue"],
+    ["compaction_start_timeout", "Compaction did not start in time"],
+    ["cleanup_unconfirmed", "Couldn't confirm the agent process stopped"],
+    ["cleanup_blocked", "Blocked by an earlier run's cleanup"],
+    ["dispatch_blocked.provider_hold", "Provider is on hold for this workspace"],
+  ])("renders its own copy for %s, not the raw value", (reason, copy) => {
+    expect(failureReasonLabel(reason, enT)).toBe(copy);
+    expect(failureReasonLabel(reason, fixedT("zh-Hans"))).not.toBe(copy);
+  });
+
   it("localizes the legacy user cancellation value retained by the service", () => {
     expect(failureReasonLabel("user_cancelled", enT)).toBe(
       "Cancelled by user",

@@ -26,6 +26,20 @@ describe("failureReasonKey", () => {
     expect(runFailureBadgeLabel("runtime_access_revoked")).toBe("Access revoked");
   });
 
+  it.each([
+    ["bg_run_timeout", "Background run timed out"],
+    ["bg_claim_timeout", "Background run expired in queue"],
+    ["compaction_start_timeout", "Compaction did not start in time"],
+    ["cleanup_unconfirmed", "Couldn't confirm the agent process stopped"],
+    ["cleanup_blocked", "Blocked by an earlier run's cleanup"],
+    ["dispatch_blocked.provider_hold", "Provider is on hold for this workspace"],
+  ])("labels %s with its own copy, not the default", (reason, copy) => {
+    const key = failureReasonKey(reason);
+    expect(key).not.toBe("failure_reason.default");
+    const bundle = chatEn.failure_reason as Record<string, string>;
+    expect(bundle[key.replace("failure_reason.", "")]).toBe(copy);
+  });
+
   it("falls back to a user-friendly unknown reason", () => {
     expect(failureReasonKey("not_known_yet")).toBe(
       "failure_reason.default",

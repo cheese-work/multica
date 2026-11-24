@@ -38,6 +38,8 @@
     "packages/views/settings/components/notifications-tab.tsx",
     "packages/views/settings/components/use-settings-search-index.ts",
     "apps/mobile/app/*/*/more/settings/notifications.tsx",
+    "packages/views/agents/components/tabs/task-failure.ts",
+    "apps/mobile/lib/failure-reason-label.ts",
     "e2e/decision-dm-card-renders.spec.ts",
     "e2e/dm-budget-proposal-helpers.ts",
     "e2e/fixtures.ts",
