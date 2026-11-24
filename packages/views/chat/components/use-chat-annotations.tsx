@@ -99,7 +99,10 @@ export function useChatAnnotations({ sessionId, messages, agentName, enabled }: 
     const cardId = sourceId.slice(DECISION_REQUEST_SOURCE_PREFIX.length);
     return messages.find((message) =>
       (message.decision_requests ?? (message.decision_request ? [message.decision_request] : [])).some((card) => card.id === cardId),
-    )?.id ?? null;
+    )?.id
+      // The card's message is in an older page: the unresolved source id matches
+      // no row, so the list keeps loading older pages until it lands or none are left.
+      ?? sourceId;
   }, [pendingReveal, messages]);
   const scope = useMemo<ChatAnnotationScope>(
     () => ({ enabled: active, agentName, registerSource, revealMessageId, onRevealMissing, onSourceMounted }),

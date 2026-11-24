@@ -26,7 +26,7 @@ const message = (id: string, role: "user" | "assistant"): ChatMessage => ({
   id, chat_session_id: "s1", role, content: `text ${id}`, task_id: null, created_at: "2026-10-20T00:00:00Z",
 });
 
-function renderList(revealMessageId: string | null, onRevealMissing = vi.fn()) {
+function renderList(revealMessageId: string | null, onRevealMissing = vi.fn(), older: { hasOlderMessages?: boolean; onLoadOlderMessages?: () => void } = {}) {
   return render(
     <I18nProvider locale="en" resources={{ en: { chat: enChat } }}>
       <QueryClientProvider client={new QueryClient()}>
@@ -35,6 +35,7 @@ function renderList(revealMessageId: string | null, onRevealMissing = vi.fn()) {
             messages={[message("u1", "user"), message("m1", "assistant"), message("m2", "assistant")]}
             pendingTask={null}
             availability="online"
+            {...older}
           />
         </ChatAnnotationContext.Provider>
       </QueryClientProvider>
@@ -53,5 +54,13 @@ describe("chat message list reveal for an annotation edit", () => {
     const onRevealMissing = vi.fn();
     renderList("gone", onRevealMissing);
     expect(onRevealMissing).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads older pages while the source is not loaded yet, and reports it missing once none are left", () => {
+    const onRevealMissing = vi.fn();
+    const onLoadOlderMessages = vi.fn();
+    renderList("decision-request:c9", onRevealMissing, { hasOlderMessages: true, onLoadOlderMessages });
+    expect(onLoadOlderMessages).toHaveBeenCalled();
+    expect(onRevealMissing).not.toHaveBeenCalled();
   });
 });

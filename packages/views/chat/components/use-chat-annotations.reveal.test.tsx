@@ -56,3 +56,20 @@ describe("editing a chat annotation whose source is not rendered", () => {
     expect(screen.getByTestId("reveal").textContent).toBe("");
   });
 });
+
+describe("editing a chat annotation on a decision card that is not loaded", () => {
+  it("keeps asking for the source until its message loads, then points at that message", () => {
+    useCommentDraftStore.getState().addAnnotation("chat:s1", {
+      id: "a2", sourceCommentId: "decision-request:c9", sourceActorName: "Terra", quote: "Pick one", note: "Why", start: 0, prefix: "", suffix: "",
+    });
+    const { rerender } = renderWithI18n(<Fixture messages={[message("m1")]} />);
+    act(() => { edit("a2"); });
+    // Not found among the loaded messages: the list must page older, not stall.
+    expect(screen.getByTestId("reveal").textContent).toBe("decision-request:c9");
+
+    const withCard = { ...message("m0"), decision_request: { id: "c9", state: "open" } } as unknown as ChatMessage;
+    rerender(<Fixture messages={[withCard, message("m1")]} />);
+    expect(screen.getByTestId("reveal").textContent).toBe("m0");
+  });
+});
+
