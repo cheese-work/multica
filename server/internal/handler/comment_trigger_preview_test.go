@@ -1040,7 +1040,7 @@ func TestPreviewCommentTriggers_MalformedMentionIDDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestPreviewCommentTriggers_AllSuppressesAssigneeAndNewThreadFoldsIntoAssignment(t *testing.T) {
+func TestPreviewCommentTriggers_AllSuppressesAssigneeAndNewThreadKeepsAssignmentRun(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -1074,9 +1074,10 @@ func TestPreviewCommentTriggers_AllSuppressesAssigneeAndNewThreadFoldsIntoAssign
 	postCommentForTriggerPreviewTest(t, issueID, map[string]any{
 		"content": "can you continue here?",
 	})
-	// CHE-1418: the comment folds into the queued assignment run.
-	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 1 {
-		t.Fatalf("assignment and new comment thread queued tasks = %d, want 1", got)
+	// CHE-9605: the queued assignment run is a step run and is never rewritten,
+	// so the comment queues its own run beside it.
+	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 2 {
+		t.Fatalf("assignment and new comment thread queued tasks = %d, want 2", got)
 	}
 }
 

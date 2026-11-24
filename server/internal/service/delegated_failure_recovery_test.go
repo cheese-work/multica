@@ -1641,3 +1641,42 @@ func TestDelegatedFailureRecoveryWaitsForStopGate(t *testing.T) {
 		t.Fatalf("recovery tasks after ack = %d, want 1", n)
 	}
 }
+
+// CHE-9605: a queued step run (an assignment-level run) is never rewritten by a
+// delegated-failure merge; the recovery comment gets its own run.
+func TestDelegatedFailureRecoveryKeepsQueuedStepRun(t *testing.T) {
+	f, svc := seedDelegatedFailureFixture(t)
+	ctx := context.Background()
+	failedID := f.insertWorkerTask(t, "running", "comment", 1, 2)
+
+	var stepID pgtype.UUID
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, originator_user_id, accountable_user_id, originator_source, trigger_comment_id, trigger_kind)
+		VALUES ($1, $2, $3, 'queued', 0, $4, $4, 'direct_human', $5, 'status_handoff')
+		RETURNING id`, f.coordinator, f.runtimeID, f.issueID, f.userID, f.sourceTrigger).Scan(&stepID); err != nil {
+		t.Fatalf("seed step run: %v", err)
+	}
+
+	if _, err := svc.FailTask(ctx, failedID, "worker exited", "", "", "", "agent_error.process_failure", false, "", ""); err != nil {
+		t.Fatalf("FailTask: %v", err)
+	}
+
+	var triggerIsHandoff bool
+	var coalesced int
+	if err := f.pool.QueryRow(ctx, `SELECT trigger_comment_id = $2::uuid, cardinality(coalesced_comment_ids) FROM agent_task_queue WHERE id = $1`, stepID, f.sourceTrigger).Scan(&triggerIsHandoff, &coalesced); err != nil {
+		t.Fatalf("read step run: %v", err)
+	}
+	if !triggerIsHandoff || coalesced != 0 {
+		t.Fatalf("step run was rewritten: trigger kept=%v coalesced=%d", triggerIsHandoff, coalesced)
+	}
+	var recovery int
+	if err := f.pool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE agent_id = $1 AND issue_id = $2 AND id <> $3 AND trigger_evidence_kind = 'delegated_failure'`,
+		f.coordinator, f.issueID, stepID).Scan(&recovery); err != nil {
+		t.Fatalf("count recovery runs: %v", err)
+	}
+	if recovery != 0 {
+		t.Fatalf("recovery runs = %d: the same-thread slot is held by the step run, so the recovery waits for the replay", recovery)
+	}
+}
