@@ -26,11 +26,17 @@ beforeEach(() => {
 
 it("uses the same browser tab from the shared connection action", async () => {
   const { result } = renderHook(() => useConnectGitHub("ws-1"));
-  await act(() => result.current.connect());
-  expect(mocks.connect).toHaveBeenCalledWith("ws-1", { desktop: false });
+  await act(() => result.current.connect("github"));
+  expect(mocks.connect).toHaveBeenCalledWith("ws-1", { desktop: false, returnTo: "github" });
   expect(mocks.open).toHaveBeenCalledWith("https://github.com/apps/test/installations/new", { webTarget: "same-tab" });
   act(() => useGitHubConnectionStore.getState().complete({ installation: { id: "install-1", workspace_id: "ws-1" }, connection_id: "desktop-nonce" }));
   expect(result.current.connectedInstallationID).toBe("");
+});
+
+it("keeps the initiating surface of a Repositories connect", async () => {
+  const { result } = renderHook(() => useConnectGitHub("ws-1"));
+  await act(() => result.current.connect("repositories"));
+  expect(mocks.connect).toHaveBeenCalledWith("ws-1", { desktop: false, returnTo: "repositories" });
 });
 
 it("completes only the desktop connection initiated in this workspace and window", async () => {
@@ -39,7 +45,7 @@ it("completes only the desktop connection initiated in this workspace and window
   const event = { installation: { id: "install-1", workspace_id: "ws-1" }, connection_id: "desktop-nonce" };
   act(() => useGitHubConnectionStore.getState().complete(event));
   expect(result.current.connectedInstallationID).toBe("");
-  await act(() => result.current.connect());
+  await act(() => result.current.connect("github"));
   act(() => useGitHubConnectionStore.getState().complete({ ...event, connection_id: "another-window" }));
   act(() => useGitHubConnectionStore.getState().complete({ ...event, installation: { ...event.installation, workspace_id: "ws-2" } }));
   act(() => useGitHubConnectionStore.getState().complete({ malformed: true }));
@@ -54,7 +60,7 @@ it("completes only the desktop connection initiated in this workspace and window
 it("does not open a browser when GitHub is unconfigured", async () => {
   mocks.connect.mockResolvedValue({ configured: false });
   const { result } = renderHook(() => useConnectGitHub("ws-1"));
-  await act(() => result.current.connect());
+  await act(() => result.current.connect("github"));
   expect(mocks.open).not.toHaveBeenCalled();
   expect(result.current.connecting).toBe(false);
 });
@@ -62,7 +68,7 @@ it("does not open a browser when GitHub is unconfigured", async () => {
 it("continues a desktop connection after leaving and returning to Code settings", async () => {
   mocks.desktop = true;
   const original = renderHook(() => useConnectGitHub("ws-1"));
-  await act(() => original.result.current.connect());
+  await act(() => original.result.current.connect("github"));
   original.unmount();
 
   const returned = renderHook(() => useConnectGitHub("ws-1"));
@@ -76,7 +82,7 @@ it("continues a desktop connection after leaving and returning to Code settings"
 it("retains completion received while Code settings is unmounted and consumes it only once", async () => {
   mocks.desktop = true;
   const original = renderHook(() => useConnectGitHub("ws-1"));
-  await act(() => original.result.current.connect());
+  await act(() => original.result.current.connect("github"));
   original.unmount();
   act(() => useGitHubConnectionStore.getState().complete({
     installation: { id: "install-1", workspace_id: "ws-1" },

@@ -195,7 +195,7 @@ export function CodeTab() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={handleConnect}
+                  onClick={() => void handleConnect("github")}
                   disabled={connecting || !configured}
                   aria-busy={connecting || undefined}
                 >

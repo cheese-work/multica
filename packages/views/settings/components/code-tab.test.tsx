@@ -133,7 +133,7 @@ describe("CodeTab — GitHub", () => {
     render(<CodeTab />, { wrapper: Wrapper });
     expect(screen.getByText("Not connected")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Connect GitHub" }));
-    expect(mockConnectGitHub).toHaveBeenCalledOnce();
+    expect(mockConnectGitHub).toHaveBeenCalledExactlyOnceWith("github");
   });
 
   it("names the account and who connected it", () => {

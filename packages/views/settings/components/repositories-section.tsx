@@ -449,7 +449,7 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
                 onClick={() =>
                   githubInstallations.length > 0
                     ? openGitHubPicker()
-                    : void connectGitHub()
+                    : void connectGitHub("repositories")
                 }
               >
                 {connectingGitHub ? (
@@ -473,7 +473,7 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
               {githubInstallations.length > 0 && githubData?.can_manage === true ? (
                 <DropdownMenuItem
                   disabled={connectingGitHub || !githubConnectConfigured}
-                  onClick={() => void connectGitHub()}
+                  onClick={() => void connectGitHub("repositories")}
                 >
                   <Plus />
                   {t(($) => $.repositories.github_add_account_or_organization)}
@@ -733,7 +733,7 @@ export function RepositoriesSection({ connection }: { connection: ReturnType<typ
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => void connectGitHub()}
+                onClick={() => void connectGitHub("repositories")}
                 disabled={connectingGitHub || !githubConnectConfigured}
                 aria-busy={connectingGitHub || undefined}
               >

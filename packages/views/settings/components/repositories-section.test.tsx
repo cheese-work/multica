@@ -262,7 +262,7 @@ describe("RepositoriesSection", () => {
     render(<RepositoriesSection connection={connection} />, { wrapper: Wrapper });
     await openAddMenu(user);
     await user.click(await screen.findByRole("menuitem", { name: /Connect GitHub/ }));
-    expect(mockConnectGitHub).toHaveBeenCalledOnce();
+    expect(mockConnectGitHub).toHaveBeenCalledExactlyOnceWith("repositories");
   });
 
   it("explains why GitHub import is unavailable when browsing is not configured", async () => {
@@ -288,7 +288,7 @@ describe("RepositoriesSection", () => {
     await openAddMenu(user);
     await user.click(await screen.findByRole("menuitem", { name: "Add account or organization" }));
 
-    expect(mockConnectGitHub).toHaveBeenCalledOnce();
+    expect(mockConnectGitHub).toHaveBeenCalledExactlyOnceWith("repositories");
   });
 
   it.each([1, 2])("adds another GitHub account from the picker with %s installations", async (count) => {
@@ -307,7 +307,7 @@ describe("RepositoriesSection", () => {
     const dialog = await screen.findByRole("dialog", { name: "Choose GitHub repositories" });
     await user.click(within(dialog).getByRole("button", { name: "Add account or organization" }));
 
-    expect(mockConnectGitHub).toHaveBeenCalledOnce();
+    expect(mockConnectGitHub).toHaveBeenCalledExactlyOnceWith("repositories");
     expect(mockUpdateWorkspace).not.toHaveBeenCalled();
   });
 

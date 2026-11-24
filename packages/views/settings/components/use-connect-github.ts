@@ -14,10 +14,12 @@ export function useConnectGitHub(wsId: string) {
     state.connection?.workspaceID === wsId ? state.connection.installationID : "",
   );
 
-  const connect = async () => {
+  // `returnTo` is the surface that started the flow; the callback returns there
+  // and Repositories also receives the installation the callback selected.
+  const connect = async (returnTo: "github" | "repositories") => {
     setConnecting(true);
     try {
-      const response = await api.getGitHubConnectURL(wsId, { desktop: isDesktopShell() });
+      const response = await api.getGitHubConnectURL(wsId, { desktop: isDesktopShell(), returnTo });
       if (!response.configured || !response.url) {
         toast.error(t(($) => $.github.toast_not_configured));
         return;

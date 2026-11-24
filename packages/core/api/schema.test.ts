@@ -77,6 +77,17 @@ describe("ApiClient schema fallback", () => {
       expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe("https://api.example.test/api/workspaces/ws-1/github/connect?desktop=1");
     });
 
+    it.each([
+      [{ returnTo: "repositories" as const }, "?return_to=repositories"],
+      [{ returnTo: "github" as const }, "?return_to=github"],
+      [{ desktop: true, returnTo: "repositories" as const }, "?desktop=1&return_to=repositories"],
+    ])("sends the initiating surface to the connect endpoint (%j)", async (options, query) => {
+      stubFetchJson({ configured: true, url: "https://github.com/apps/test/installations/new" });
+      const client = new ApiClient("https://api.example.test");
+      await client.getGitHubConnectURL("ws-1", options);
+      expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe(`https://api.example.test/api/workspaces/ws-1/github/connect${query}`);
+    });
+
     it("uses the unified GitHub connect endpoint", async () => {
       stubFetchJson({
         configured: true,
