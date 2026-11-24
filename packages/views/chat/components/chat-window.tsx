@@ -1187,6 +1187,7 @@ export function SessionDropdown({
                 renderRow={renderRow}
                 estimatedRowHeight={44}
                 maxHeight={320}
+                revealSessionId={renamingId}
               />
             </div>
           )}
