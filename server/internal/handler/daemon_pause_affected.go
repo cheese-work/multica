@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -115,8 +116,22 @@ func affectedMachineToResponse(row db.ListAffectedMachinesRow) AffectedMachineRe
 		return machine
 	}
 	machine.State = "offline"
-	machine.EventID = eventID("offline", key, row.LastSeenAt)
+	machine.EventID = offlineEventID(key, row)
 	return machine
+}
+
+// offlineEventID is offline:<owner>/<daemon>:e<generation>.<n>, with n the
+// machine's committed online transitions (CHE-9254): it changes at every online
+// transition and at no runtime delete, and a new generation changes every id.
+// A missing generation row (only a manual delete) gets a new random value per
+// request: the banner then shows on every poll, and an outage is never hidden.
+func offlineEventID(machineKey string, row db.ListAffectedMachinesRow) string {
+	generation := uuidToString(row.Generation)
+	if !row.Generation.Valid {
+		slog.Error("machine_online_event_generation has no row; offline banner ids are random until it is restored")
+		generation = uuid.NewString()
+	}
+	return fmt.Sprintf("offline:%s:e%s.%d", machineKey, generation, row.OnlineEvents)
 }
 
 func eventID(state, machineKey string, since pgtype.Timestamptz) string {

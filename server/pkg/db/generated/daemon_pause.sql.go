@@ -565,16 +565,22 @@ WITH waiting AS (
 )
 SELECT w.machine_owner_id, w.daemon_id, w.waiting_tasks,
        dp.reason AS pause_reason, dp.paused_at AS paused_at, dp.expires_at AS pause_expires_at,
-       m.device_name::text AS device_name, m.last_seen_at::timestamptz AS last_seen_at
+       m.device_name::text AS device_name,
+       COALESCE(ev.n, 0)::bigint AS online_events, g.generation AS generation
 FROM waiting w
 JOIN LATERAL (
     SELECT COALESCE(MIN(NULLIF(o.device_info, '')) FILTER (WHERE o.workspace_id = $1::uuid),
                     MIN(o.name) FILTER (WHERE o.workspace_id = $1::uuid)) AS device_name,
-           MAX(o.last_seen_at) AS last_seen_at,
            COALESCE(bool_or(o.status = 'online'), false) AS any_online
     FROM agent_runtime o
     WHERE COALESCE(o.owner_id, o.workspace_id) = w.machine_owner_id AND o.daemon_id = w.daemon_id
 ) m ON true
+LEFT JOIN LATERAL (
+    SELECT count(*)::bigint AS n
+    FROM machine_online_event e
+    WHERE e.machine_owner_id = w.machine_owner_id AND e.daemon_id = w.daemon_id
+) ev ON true
+LEFT JOIN machine_online_event_generation g ON true
 LEFT JOIN daemon_pause dp
   ON dp.machine_owner_id = w.machine_owner_id AND dp.daemon_id = w.daemon_id
  AND COALESCE(dp.expires_at, dp.paused_at + make_interval(secs => CASE dp.reason WHEN 'maintenance' THEN $2::int ELSE $3::int END)) > now()
@@ -598,7 +604,8 @@ type ListAffectedMachinesRow struct {
 	PausedAt       pgtype.Timestamptz `json:"paused_at"`
 	PauseExpiresAt pgtype.Timestamptz `json:"pause_expires_at"`
 	DeviceName     string             `json:"device_name"`
-	LastSeenAt     pgtype.Timestamptz `json:"last_seen_at"`
+	OnlineEvents   int64              `json:"online_events"`
+	Generation     pgtype.UUID        `json:"generation"`
 }
 
 // Machines that hold queued tasks of this workspace and are off: paused, or with
@@ -606,7 +613,9 @@ type ListAffectedMachinesRow struct {
 // tasks of projects led by user_id count. A machine with only running tasks, or
 // none, is not affected: nothing waits for it.
 // The machine can span workspaces: the device label comes only from this
-// workspace's runtimes; online state and last_seen_at are machine-wide.
+// workspace's runtimes; online state is machine-wide. online_events counts the
+// machine's committed online transitions and generation is the one-row epoch
+// (CHE-9254): together they make the offline period id.
 func (q *Queries) ListAffectedMachines(ctx context.Context, arg ListAffectedMachinesParams) ([]ListAffectedMachinesRow, error) {
 	rows, err := q.db.Query(ctx, listAffectedMachines,
 		arg.WorkspaceID,
@@ -630,7 +639,8 @@ func (q *Queries) ListAffectedMachines(ctx context.Context, arg ListAffectedMach
 			&i.PausedAt,
 			&i.PauseExpiresAt,
 			&i.DeviceName,
-			&i.LastSeenAt,
+			&i.OnlineEvents,
+			&i.Generation,
 		); err != nil {
 			return nil, err
 		}

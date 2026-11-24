@@ -196,9 +196,14 @@ func TestMachineOnlineEvent_E4_PeriodIsStableWhileOffline(t *testing.T) {
 func TestMachineOnlineEvent_E5_WriterCoverage(t *testing.T) {
 	moeRequireDB(t)
 	const prefix = "moe-e5"
-	moeCleanup(t, prefix)
 	ctx := context.Background()
 	q := testHandler.Queries
+	// Registered before moeCleanup so it runs after it: the users go once their runtimes are gone.
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(), `DELETE FROM "user" WHERE email LIKE 'moe-e5-%@multica.test'`)
+	})
+	moeCleanup(t, prefix)
+	_, _ = testPool.Exec(ctx, `DELETE FROM "user" WHERE email LIKE 'moe-e5-%@multica.test'`)
 	owner := dbfx.User(t, "moe e5 owner", "moe-e5-owner@multica.test")
 	other := dbfx.User(t, "moe e5 other", "moe-e5-other@multica.test")
 
