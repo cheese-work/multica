@@ -15,6 +15,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -1473,11 +1474,14 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 		return squadEnqueueNone
 	}
 
-	hasPending, err := h.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+	// Only a run in the slot this one takes can coalesce with it: a run in
+	// another thread leaves the leader's step run to queue (CHE-9607).
+	hasPending, err := h.Queries.HasPendingTaskForIssueAndAgentInThread(ctx, db.HasPendingTaskForIssueAndAgentInThreadParams{
 		IssueID: issue.ID,
 		AgentID: squad.LeaderID,
 		// Key dedup on the reviewed head (TEN-356).
-		HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
+		HeadSha:         h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
+		ThreadCommentID: service.RunSlotComment(ctx, pgtype.UUID{}),
 	})
 	if err != nil || hasPending {
 		return squadEnqueueNone

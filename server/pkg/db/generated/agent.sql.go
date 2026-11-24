@@ -7313,6 +7313,55 @@ func (q *Queries) HasPendingTaskForIssueAndAgentAtStep(ctx context.Context, arg 
 	return has_pending, err
 }
 
+const hasPendingTaskForIssueAndAgentAtStepInThread = `-- name: HasPendingTaskForIssueAndAgentAtStepInThread :one
+SELECT count(*) > 0 AS has_pending FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE($3::text, '') = ''
+    OR context->>'head_sha' = $3::text
+  )
+  AND NOT (
+    trigger_comment_id IS NULL
+    AND workflow_step IS NOT NULL
+    AND workflow_step <> $4::text
+  )
+  AND (trigger_comment_id IS NULL OR trigger_kind = 'status_handoff')
+  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($5::uuid)
+`
+
+type HasPendingTaskForIssueAndAgentAtStepInThreadParams struct {
+	IssueID         pgtype.UUID `json:"issue_id"`
+	AgentID         pgtype.UUID `json:"agent_id"`
+	HeadSha         pgtype.Text `json:"head_sha"`
+	Step            string      `json:"step"`
+	ThreadCommentID pgtype.UUID `json:"thread_comment_id"`
+}
+
+// HasPendingTaskForIssueAndAgentAtStep scoped to the pending slot a handoff
+// run takes (CHE-9607): the thread of its handoff comment, or the NULL slot
+// for none. A run held in another slot does not coalesce with it (the unique
+// index keys on the thread), so it must not stop the step run being queued.
+// Only a run that covers the step counts: an assignment-level run or a step
+// handoff run. A comment run in the same slot does not cover it; the intent is
+// committed and the dispatcher settles it as a skipped duplicate naming the
+// holder, so a retry (CHE-9608) can find it.
+func (q *Queries) HasPendingTaskForIssueAndAgentAtStepInThread(ctx context.Context, arg HasPendingTaskForIssueAndAgentAtStepInThreadParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasPendingTaskForIssueAndAgentAtStepInThread,
+		arg.IssueID,
+		arg.AgentID,
+		arg.HeadSha,
+		arg.Step,
+		arg.ThreadCommentID,
+	)
+	var has_pending bool
+	err := row.Scan(&has_pending)
+	return has_pending, err
+}
+
 const hasPendingTaskForIssueAndAgentExcludingTriggerComment = `-- name: HasPendingTaskForIssueAndAgentExcludingTriggerComment :one
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1
@@ -11680,6 +11729,37 @@ type PendingTaskForIssueAndAgentParams struct {
 // newest one when several match.
 func (q *Queries) PendingTaskForIssueAndAgent(ctx context.Context, arg PendingTaskForIssueAndAgentParams) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, pendingTaskForIssueAndAgent, arg.IssueID, arg.AgentID, arg.HeadSha)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const pendingTaskInSlotForAgent = `-- name: PendingTaskInSlotForAgent :one
+SELECT id FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2
+  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($3::uuid)
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type PendingTaskInSlotForAgentParams struct {
+	IssueID          pgtype.UUID `json:"issue_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
+	TriggerCommentID pgtype.UUID `json:"trigger_comment_id"`
+}
+
+// The run that holds the pending slot a new run with this trigger comment would
+// take: exactly the rows idx_one_pending_task_per_issue_agent_thread keeps one
+// of, in the comment's thread, or the NULL slot for a NULL trigger
+// (comment_thread_root_id is STRICT). No head filter: the index has none.
+// Callers inside a transaction check it before the insert, because the unique
+// violation would abort the transaction.
+func (q *Queries) PendingTaskInSlotForAgent(ctx context.Context, arg PendingTaskInSlotForAgentParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, pendingTaskInSlotForAgent, arg.IssueID, arg.AgentID, arg.TriggerCommentID)
 	var id pgtype.UUID
 	err := row.Scan(&id)
 	return id, err

@@ -101,7 +101,8 @@ func (s *TaskService) CancelStaleStepRunsInTx(ctx context.Context, q *db.Queries
 
 // EnqueueIssueRunInTx inserts the run an assignment to the issue's agent
 // starts, with the caller's queries: the run commits or rolls back with the
-// caller's transaction. A pending assignment-level run of the agent
+// caller's transaction. A pending run of the agent in the slot the
+// insert takes (the handoff comment's thread, else the trigger's, else NULL)
 // is checked under the caller's issue row lock, so the insert never trips the
 // pending-run unique index, whose violation would abort the transaction; it is
 // ErrDuplicatePendingTask. The admission refusals (run budget, triage, a
@@ -111,7 +112,7 @@ func (s *TaskService) CancelStaleStepRunsInTx(ctx context.Context, q *db.Queries
 // inserted without one has none. taskID is the run inserted, or the pending run
 // that held the slot when the error is ErrDuplicatePendingTask.
 func (s *TaskService) EnqueueIssueRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, triggerCommentID, actorUserID pgtype.UUID, overlay *PreparedRuntimeMCPOverlay) (taskID pgtype.UUID, afterCommit func(), err error) {
-	survivor, err := q.PendingAssignmentTaskForAgent(ctx, db.PendingAssignmentTaskForAgentParams{IssueID: issue.ID, AgentID: issue.AssigneeID})
+	survivor, err := q.PendingTaskInSlotForAgent(ctx, db.PendingTaskInSlotForAgentParams{IssueID: issue.ID, AgentID: issue.AssigneeID, TriggerCommentID: effectiveRunTrigger(ctx, triggerCommentID)})
 	if err == nil {
 		return survivor, nil, ErrDuplicatePendingTask
 	}
@@ -168,16 +169,12 @@ func (s *TaskService) PrepareStatusHandoffRunOverlay(ctx context.Context, issue 
 }
 
 // EnqueueSquadLeaderRunInTx inserts the squad leader's run an assignment to a
-// squad starts, with the caller's queries. A pending run of the leader on the
-// reviewed head is ErrDuplicatePendingTask, checked under the caller's issue
+// squad starts, with the caller's queries. A pending run of the leader in the slot the
+// insert takes is ErrDuplicatePendingTask, checked under the caller's issue
 // row lock so the insert never trips the unique index. The returned func
 // publishes the run after commit. taskID is as for EnqueueIssueRunInTx.
 func (s *TaskService) EnqueueSquadLeaderRunInTx(ctx context.Context, q *db.Queries, issue db.Issue, leaderID, squadID, triggerCommentID, actorUserID pgtype.UUID, overlay *PreparedRuntimeMCPOverlay) (taskID pgtype.UUID, afterCommit func(), err error) {
-	survivor, err := q.PendingTaskForIssueAndAgent(ctx, db.PendingTaskForIssueAndAgentParams{
-		IssueID: issue.ID,
-		AgentID: leaderID,
-		HeadSha: s.ResolveIssueReviewSHAParam(ctx, issue.ID),
-	})
+	survivor, err := q.PendingTaskInSlotForAgent(ctx, db.PendingTaskInSlotForAgentParams{IssueID: issue.ID, AgentID: leaderID, TriggerCommentID: effectiveRunTrigger(ctx, triggerCommentID)})
 	if err == nil {
 		return survivor, nil, ErrDuplicatePendingTask
 	}

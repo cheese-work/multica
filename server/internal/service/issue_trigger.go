@@ -165,6 +165,12 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		return IssueRunTrigger{}, false
 	}
 
+	// The slot the run will take, which is the only one a pending run can
+	// coalesce with: another thread's run never stops this one (CHE-9607). It
+	// is the thread of the handoff comment ctx names, as at the enqueue, and
+	// the assignment-level slot for none.
+	slot := effectiveRunTrigger(ctx, pgtype.UUID{})
+
 	switch issue.AssigneeType.String {
 	case "agent":
 		agent, err := s.Queries.GetAgent(ctx, issue.AssigneeID)
@@ -183,10 +189,10 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		// stamped for a step the issue has left would be refused the moment it
 		// moved the issue, so it must not suppress the run the new step needs.
 		if in.EnteredHandoffStep {
-			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID) || s.headAlreadyReviewed(ctx, issue) || s.waitingOnOpenDecision(ctx, issue) {
+			if s.hasPendingStepRun(ctx, issue, issue.AssigneeID, slot) || s.headAlreadyReviewed(ctx, issue) || s.waitingOnOpenDecision(ctx, issue) {
 				return IssueRunTrigger{}, false
 			}
-		} else if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID) {
+		} else if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, issue.AssigneeID, slot) {
 			return IssueRunTrigger{}, false
 		}
 		return IssueRunTrigger{
@@ -225,7 +231,7 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 		if !canAccess(leader) || (blockedResume && !probe.CanResumeBlockedIssue(leader)) {
 			return IssueRunTrigger{}, false
 		}
-		if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, squad.LeaderID) {
+		if source == RunSourceStatus && s.hasPendingRun(ctx, issue.ID, squad.LeaderID, slot) {
 			return IssueRunTrigger{}, false
 		}
 		return IssueRunTrigger{
@@ -240,15 +246,17 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 }
 
 // hasPendingRun reports whether the agent already holds a queued or dispatched
-// task for the issue (the (issue_id, agent_id) unique-index slot). Errors fail
-// closed to "pending" so preview never over-promises a run.
-func (s *IssueService) hasPendingRun(ctx context.Context, issueID, agentID pgtype.UUID) bool {
-	pending, err := s.Queries.HasPendingTaskForIssueAndAgent(ctx, db.HasPendingTaskForIssueAndAgentParams{
+// task for the issue in the slot the new run would take (the (issue_id,
+// agent_id, thread) unique-index slot). Errors fail closed to "pending" so
+// preview never over-promises a run.
+func (s *IssueService) hasPendingRun(ctx context.Context, issueID, agentID, slot pgtype.UUID) bool {
+	pending, err := s.Queries.HasPendingTaskForIssueAndAgentInThread(ctx, db.HasPendingTaskForIssueAndAgentInThreadParams{
 		IssueID: issueID,
 		AgentID: agentID,
 		// Key dedup on the reviewed head so a pending run against an old HEAD
 		// does not shadow a request after HEAD advanced (TEN-356).
-		HeadSha: headShaText(s.TaskService.ResolveIssueReviewSHA(ctx, issueID)),
+		HeadSha:         headShaText(s.TaskService.ResolveIssueReviewSHA(ctx, issueID)),
+		ThreadCommentID: slot,
 	})
 	if err != nil {
 		return true
@@ -259,12 +267,13 @@ func (s *IssueService) hasPendingRun(ctx context.Context, issueID, agentID pgtyp
 // hasPendingStepRun is hasPendingRun for a workflow handoff: a pending run
 // stamped for a step the issue has left does not count. Errors fail closed to
 // "pending", like hasPendingRun.
-func (s *IssueService) hasPendingStepRun(ctx context.Context, issue db.Issue, agentID pgtype.UUID) bool {
-	pending, err := s.Queries.HasPendingTaskForIssueAndAgentAtStep(ctx, db.HasPendingTaskForIssueAndAgentAtStepParams{
-		IssueID: issue.ID,
-		AgentID: agentID,
-		HeadSha: headShaText(s.TaskService.ResolveIssueReviewSHA(ctx, issue.ID)),
-		Step:    issue.Status,
+func (s *IssueService) hasPendingStepRun(ctx context.Context, issue db.Issue, agentID, slot pgtype.UUID) bool {
+	pending, err := s.Queries.HasPendingTaskForIssueAndAgentAtStepInThread(ctx, db.HasPendingTaskForIssueAndAgentAtStepInThreadParams{
+		IssueID:         issue.ID,
+		AgentID:         agentID,
+		HeadSha:         headShaText(s.TaskService.ResolveIssueReviewSHA(ctx, issue.ID)),
+		Step:            issue.Status,
+		ThreadCommentID: slot,
 	})
 	if err != nil {
 		return true
