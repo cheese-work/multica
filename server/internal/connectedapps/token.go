@@ -65,7 +65,7 @@ func VerifyTaskToken(secret []byte, token string, now time.Time) (string, error)
 	if err := json.Unmarshal(raw, &claims); err != nil || claims.TaskID == "" {
 		return "", ErrTokenMalformed
 	}
-	if now.Unix() > claims.Exp {
+	if now.Unix() >= claims.Exp {
 		return "", ErrTokenExpired
 	}
 	return claims.TaskID, nil
