@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Quote } from "@multica/ui/icons";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -10,7 +9,7 @@ import {
   CollapsibleTrigger,
 } from "@multica/ui/components/ui/collapsible";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
-import { chatMessagesPageOptions } from "@multica/core/chat/queries";
+import { useChatMessageRows } from "@multica/core/chat/use-chat-message-rows";
 import type { ChatMessage, ChatSession } from "@multica/core/types";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -91,14 +90,12 @@ function PredecessorMessages({
   onQuoteMessage?: (content: string) => void;
 }) {
   const { t } = useT("chat");
-  const { data, isLoading, hasNextPage, isFetchingNextPage, fetchNextPage } = useInfiniteQuery(
-    chatMessagesPageOptions(session.id),
-  );
+  const {
+    query: { isLoading, hasNextPage, isFetchingNextPage, fetchNextPage },
+    messages: storedMessages,
+  } = useChatMessageRows(session.id);
   if (isLoading) return <Skeleton className="my-2 h-3.5 w-1/2" />;
-  const messages = [...(data?.pages ?? [])]
-    .reverse()
-    .flatMap((page) => page.messages)
-    .filter((m) => !HIDDEN_KINDS.has(m.message_kind ?? ""));
+  const messages = storedMessages.filter((m) => !HIDDEN_KINDS.has(m.message_kind ?? ""));
   return (
     <div className="my-1 space-y-3 border-l-2 border-border pl-3">
       {hasNextPage && (

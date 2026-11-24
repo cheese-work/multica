@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { forgetLocalSearchIndex } from "../search-index/instance";
-import { useQueryClient, type InfiniteData, type QueryClient, type QueryFilters } from "@tanstack/react-query";
+import { useQueryClient, type QueryClient, type QueryFilters } from "@tanstack/react-query";
 import type { WSClient } from "../api/ws-client";
 import type { StoreApi, UseBoundStore } from "zustand";
 import type { AuthState } from "../auth/store";
@@ -79,8 +79,10 @@ import { useChatStore } from "../chat";
 import { parseWithFallback } from "../api/schema";
 import { ChatSessionUpdatedPayloadSchema } from "../api/schemas";
 import {
+  hasStoredChatMessage,
   patchChatMessageInCaches,
   removeChatMessageFromCaches,
+  storedChatMessages,
   upsertChatMessageToCaches,
 } from "../chat/message-cache";
 
@@ -141,7 +143,6 @@ import type {
   ChatMessage,
   ChatMessageEventPayload,
   ChatPendingTask,
-  ChatMessagesPage,
   ChatSession,
   ChatSessionCreatedPayload,
   InvitationCreatedPayload,
@@ -230,18 +231,20 @@ function messageCardIssueIds(m: ChatMessage): string[] {
  * of `issueIds`. A DM with no cache has nothing stale; it fetches on first open.
  */
 export function applyIssueRunStarted(qc: QueryClient, issueIds: ReadonlySet<string>) {
-  const hit = (messages: ChatMessage[] | undefined) =>
-    messages?.some((m) => messageCardIssueIds(m).some((id) => issueIds.has(id))) ?? false;
-  const refresh = (
-    all: readonly unknown[],
-    pick: (data: never) => ChatMessage[] | undefined,
-  ) => {
-    for (const [queryKey, data] of qc.getQueriesData({ queryKey: all })) {
-      if (data && hit(pick(data as never))) qc.invalidateQueries({ queryKey, exact: true });
-    }
-  };
-  refresh(chatKeys.messagesAll(), (d: ChatMessage[]) => d);
-  refresh(chatKeys.messagesPageAll(), (d: InfiniteData<ChatMessagesPage>) => d.pages.flatMap((p) => p.messages));
+  // A2 decision (CHE-3236 B1a.2): this stays a refetch. The run-start payload
+  // (`task:running`, `issue:updated`) carries ids only, while a decision card
+  // renders the run's agent name and the budget receipt. It is scoped to the
+  // sessions whose stored rows hold a card for the issue.
+  for (const [queryKey] of qc.getQueriesData({ queryKey: chatKeys.messageIdsAll() })) {
+    const sessionId = queryKey[2];
+    if (typeof sessionId !== "string") continue;
+    const hit = storedChatMessages(qc, sessionId).some((m) =>
+      messageCardIssueIds(m).some((id) => issueIds.has(id)),
+    );
+    if (!hit) continue;
+    qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId), exact: true });
+    qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId), exact: true });
+  }
 }
 
 /**
@@ -1724,8 +1727,7 @@ export function useRealtimeSync(
         if (!lastMessage?.id) continue;
 
         const pageKey = chatKeys.messagesPage(session.id);
-        const page = qc.getQueryData<InfiniteData<ChatMessagesPage>>(pageKey);
-        if (page && !page.pages.some((item) => item.messages.some((message) => message.id === lastMessage.id))) {
+        if (qc.getQueryData(pageKey) && !hasStoredChatMessage(qc, session.id, lastMessage.id)) {
           qc.invalidateQueries({ queryKey: pageKey });
         }
 

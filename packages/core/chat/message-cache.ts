@@ -17,11 +17,11 @@ import {
  *
  * Store: `chatKeys.messageEntities()` holds one row per message id, and
  * `chatKeys.messageIds(sessionId)` holds the ordered ids of one session (per
- * fetched page, plus the flat Agent Builder list). `chatKeys.messagesPage` and
- * `chatKeys.messages` keep the row shape readers consume today; they are
- * derived from the store by `selectChatMessagePages` / `selectChatMessages`
- * and written only here and by the fetches below. B1a.2 moves readers onto the
- * selectors and deletes the derived copies.
+ * fetched page, plus the flat Agent Builder list). Readers resolve rows with
+ * `selectChatMessageRows` (see `useChatMessageRows`); `chatKeys.messagesPage`
+ * only carries the page order and cursors, so its `messages` are the fetched
+ * snapshot and no reader uses them. `chatKeys.messages` (Agent Builder) is a
+ * derived row copy written only here and by the fetch.
  *
  * Two rules, both order-independent, so the same message arriving twice by
  * different routes converges instead of duplicating or downgrading:
@@ -57,30 +57,36 @@ function sameRows<T>(a: readonly T[], b: readonly T[]): boolean {
 }
 
 /**
- * Derived selector: rows in the shape readers use today. Page 0 is the newest
- * window and later pages are older cursor pages, so an id already shown by a
- * newer page is skipped on an older one.
+ * Rows of every fetched page, newest page first, each oldest first. Page 0 is
+ * the newest window and later pages are older cursor pages, so an id already
+ * shown by a newer page is skipped on an older one. `pageParams` is the page
+ * order of the infinite query; the rows come from the store, never from the
+ * page arrays.
  */
-export function selectChatMessagePages(
+export function selectChatMessagePageRows(
   entities: EntityTable<ChatMessage> | undefined,
   messageIds: ChatMessageIds | undefined,
-  data: InfiniteData<ChatMessagesPage>,
-): InfiniteData<ChatMessagesPage> {
+  pageParams: readonly unknown[] | undefined,
+): ChatMessage[][] {
   const seen = new Set<string>();
-  let changed = false;
-  const pages = data.pages.map((page, index) => {
-    const pageIds = messageIds?.byPage[pageParamKey(data.pageParams[index] as PageParam)];
-    if (!pageIds) return page;
+  return (pageParams ?? []).map((param) => {
+    const pageIds = messageIds?.byPage[pageParamKey(param as PageParam)] ?? [];
     const rows = resolveEntities(entities, pageIds.filter((id) => !seen.has(id)));
     rows.forEach((row) => seen.add(row.id));
-    if (sameRows(rows, page.messages)) return page;
-    changed = true;
-    return { ...page, messages: rows };
+    return rows;
   });
-  return changed ? { ...data, pages } : data;
 }
 
-export function selectChatMessages(
+/** The transcript, oldest first, resolved from the store. */
+export function selectChatMessageRows(
+  entities: EntityTable<ChatMessage> | undefined,
+  messageIds: ChatMessageIds | undefined,
+  pageParams: readonly unknown[] | undefined,
+): ChatMessage[] {
+  return selectChatMessagePageRows(entities, messageIds, pageParams).reverse().flat();
+}
+
+function selectChatMessages(
   entities: EntityTable<ChatMessage> | undefined,
   flatIds: readonly string[],
   current: ChatMessage[],
@@ -141,7 +147,7 @@ function adoptCaches(
   return { entities: nextEntities, ids: nextIds };
 }
 
-/** Rewrite the row-shaped caches from the store. Reference-stable when nothing moved. */
+/** Rewrite the flat row copy (Agent Builder) from the store. Reference-stable when nothing moved. */
 function project(
   qc: QueryClient,
   sessionId: string,
@@ -150,10 +156,6 @@ function project(
 ) {
   qc.setQueryData<ChatMessage[] | undefined>(chatKeys.messages(sessionId), (old) =>
     old && messageIds.flat ? selectChatMessages(entities, messageIds.flat, old) : old,
-  );
-  qc.setQueryData<InfiniteData<ChatMessagesPage> | undefined>(
-    chatKeys.messagesPage(sessionId),
-    (old) => (old?.pages.length ? selectChatMessagePages(entities, messageIds, old) : old),
   );
 }
 
@@ -320,4 +322,20 @@ export function removeChatMessageFromCaches(
       ),
     },
   }));
+}
+
+/** Every message id stored for a session, across the flat list and all pages. */
+function storedIds(messageIds: ChatMessageIds | undefined): string[] {
+  return [...(messageIds?.flat ?? []), ...Object.values(messageIds?.byPage ?? {}).flat()];
+}
+
+/** Rows the store holds for a session, whichever list they sit on. */
+export function storedChatMessages(qc: QueryClient, sessionId: string): ChatMessage[] {
+  const { entities, ids: messageIds } = readStore(qc, sessionId);
+  return resolveEntities(entities, storedIds(messageIds));
+}
+
+/** True when the session's id lists hold `messageId`. */
+export function hasStoredChatMessage(qc: QueryClient, sessionId: string, messageId: string): boolean {
+  return storedIds(readStore(qc, sessionId).ids).includes(messageId);
 }

@@ -5,6 +5,7 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { NavigationProvider } from "../../navigation";
 import { chatKeys } from "@multica/core/chat/queries";
+import { seedChatPages } from "../../test/chat-store";
 import type { Attachment, ChatMessage, ChatSession, TaskMessagePayload } from "@multica/core/types";
 import type { ComponentProps, ReactElement } from "react";
 import enChat from "../../locales/en/chat.json";
@@ -153,7 +154,7 @@ describe("ChatMessageList predecessor DMs", () => {
   function renderChain({ onQuoteMessage, sessions = chain }: { onQuoteMessage?: (content: string) => void; sessions?: ChatSession[] | null } = {}) {
     const qc = new QueryClient();
     const seed = (id: string, messages: ChatMessage[]) =>
-      qc.setQueryData(chatKeys.messagesPage(id), { pages: [{ messages, limit: 50, has_more: false }], pageParams: [null] });
+      seedChatPages(qc, id, messages);
     seed(first, [message(first, "a1", "user", "Oldest question"), message(first, "a2", "assistant", "Oldest answer")]);
     seed(second, [message(second, "b1", "user", "Middle question"), message(second, "b2", "assistant", "Middle **answer**\nsecond line")]);
     render(

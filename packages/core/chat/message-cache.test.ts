@@ -6,7 +6,13 @@ import {
 } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { chatKeys } from "./queries";
-import { upsertChatMessageToCaches } from "./message-cache";
+import {
+  ingestChatMessagesPage,
+  selectChatMessagePageRows,
+  upsertChatMessageToCaches,
+  type ChatMessageIds,
+} from "./message-cache";
+import type { EntityTable } from "../normalized/entity-table";
 import type { ChatMessage, ChatMessagesPage } from "../types";
 
 const sessionId = "session-1";
@@ -45,10 +51,15 @@ function flatIds(qc: QueryClient) {
   return qc.getQueryData<ChatMessage[]>(flatKey)?.map((m) => m.id);
 }
 
+/** Row ids per page as a reader resolves them: from the store, in the page order of the query. */
 function pageIds(qc: QueryClient) {
-  return qc
-    .getQueryData<InfiniteData<ChatMessagesPage>>(pageKey)
-    ?.pages.map((p) => p.messages.map((m) => m.id));
+  const params = qc.getQueryData<InfiniteData<ChatMessagesPage>>(pageKey)?.pageParams;
+  if (!params) return undefined;
+  return selectChatMessagePageRows(
+    qc.getQueryData<EntityTable<ChatMessage>>(chatKeys.messageEntities()),
+    qc.getQueryData<ChatMessageIds>(chatKeys.messageIds(sessionId)),
+    params,
+  ).map((rows) => rows.map((m) => m.id));
 }
 
 describe("upsertChatMessageToCaches", () => {
@@ -82,7 +93,7 @@ describe("upsertChatMessageToCaches", () => {
 
     expect(pageIds(qc)).toEqual([[], ["msg-old"]]);
     expect(
-      qc.getQueryData<InfiniteData<ChatMessagesPage>>(pageKey)?.pages[1]?.messages[0]
+      qc.getQueryData<EntityTable<ChatMessage>>(chatKeys.messageEntities())?.byId["msg-old"]
         ?.elapsed_ms,
     ).toBe(42);
   });
@@ -131,9 +142,17 @@ describe("upsertChatMessageToCaches", () => {
     const pageObserver = new InfiniteQueryObserver(qc, {
       queryKey: pageKey,
       initialPageParam: null,
-      queryFn: () => pageCalls++ === 0
-        ? new Promise<ChatMessagesPage>((resolve) => { resolvePage = resolve; })
-        : Promise.resolve(page([old, missed, incoming])),
+      // Like the real query function: every fetched page goes through the message door.
+      queryFn: async ({ client, pageParam, signal }) =>
+        ingestChatMessagesPage(
+          client,
+          sessionId,
+          pageParam,
+          await (pageCalls++ === 0
+            ? new Promise<ChatMessagesPage>((resolve) => { resolvePage = resolve; })
+            : Promise.resolve(page([old, missed, incoming]))),
+          signal,
+        ),
       getNextPageParam: () => undefined,
       staleTime: Infinity,
     });

@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { act, cleanup, renderHook, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ingestChatMessages } from "@multica/core/chat/message-cache";
 import { chatKeys, issueDecisionCardsOptions } from "@multica/core/chat/queries";
 import type { WSClient } from "@multica/core/api/ws-client";
 import { useRealtimeSync, type RealtimeSyncStores } from "@multica/core/realtime";
@@ -31,8 +32,8 @@ function IssuePageCards() {
   return <>{data?.map((c) => <div key={c.id} data-testid="issue-card"><DecisionSummary decision={c} /></div>)}</>;
 }
 function DmCards() {
-  const { data } = useQuery({ queryKey: chatKeys.messages("dm-1"), queryFn: () => api.listMessages(), staleTime: Infinity });
-  return <>{data?.map((m: { id: string; decision_request: RequestCard }) => <div key={m.id} data-testid="dm-card"><DecisionSummary decision={m.decision_request} /></div>)}</>;
+  const { data } = useQuery({ queryKey: chatKeys.messages("dm-1"), queryFn: async ({ client }) => ingestChatMessages(client, "dm-1", await api.listMessages()), staleTime: Infinity });
+  return <>{data?.map((m) => <div key={m.id} data-testid="dm-card"><DecisionSummary decision={m.decision_request as RequestCard} /></div>)}</>;
 }
 
 describe("decided cards update live from realtime events", () => {
