@@ -12,7 +12,9 @@
  *       lock: <topic>                # design/<topic>/approved/
  *       lock_export_sha256: <hex>    # copied from that LOCK.json (see lockPin)
  *       blocks_map: <path>           # the blocks map (needed for a new entry)
- *       state: building | shipped | unmapped
+ *       state: building | shipped | unmapped | upstream
+ *     An `upstream` entry owns screens that came from the upstream project and have no design lock: it has no
+ *     lock, lock_export_sha256 or blocks_map, and needs `paths` or `routes`. Rules 1 and 2 apply to it as to any entry.
  *
  * Rules (each failure has a named reason):
  *   1 ambiguous-owner     a changed UI file matches two named entries (a named entry wins over legacy)
@@ -39,7 +41,7 @@ import { isUiPath } from "./check-ui-pattern-ref.mjs";
 
 export const MAP_PATH = "design/ui-map.yml";
 export const ROUTES_PATH = "apps/desktop/src/renderer/src/routes.tsx";
-const STATES = new Set(["building", "shipped", "unmapped"]);
+const STATES = new Set(["building", "shipped", "unmapped", "upstream"]);
 const NEW_SCREEN = /^apps\/web\/app\/(?:.+\/)?page\.tsx$/;
 const LOCK_FOLDER = /^design\/([^/]+)\/approved\//;
 
@@ -149,8 +151,14 @@ function validateMap(doc) {
     else screens.add(e.screen);
     if (!isList(e?.paths)) errors.push(err("bad-map", `${at}: paths must be a list of globs`));
     if (e?.routes !== undefined && !isList(e.routes)) errors.push(err("bad-map", `${at}: routes must be a list of route paths`));
-    if (typeof e?.lock !== "string" || !e.lock) errors.push(err("bad-map", `${at}: lock (the design/<topic> name) is required`));
-    if (typeof e?.lock_export_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(e.lock_export_sha256)) errors.push(err("bad-map", `${at}: lock_export_sha256 must be a 64-hex sha256`));
+    if (e?.state === "upstream") {
+      // An upstream screen comes from the upstream project and has no design lock here: it needs an owned path or route, and no lock fields.
+      if (e.lock !== undefined || e.lock_export_sha256 !== undefined) errors.push(err("bad-map", `${at}: an upstream entry has no lock or lock_export_sha256`));
+      if (!e.paths?.length && !e.routes?.length) errors.push(err("bad-map", `${at}: an upstream entry needs paths or routes`));
+    } else {
+      if (typeof e?.lock !== "string" || !e.lock) errors.push(err("bad-map", `${at}: lock (the design/<topic> name) is required`));
+      if (typeof e?.lock_export_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(e.lock_export_sha256)) errors.push(err("bad-map", `${at}: lock_export_sha256 must be a 64-hex sha256`));
+    }
     if (!STATES.has(e?.state)) errors.push(err("bad-map", `${at}: state must be one of ${[...STATES].join(", ")}`));
     if (e?.blocks_map !== undefined && typeof e.blocks_map !== "string") errors.push(err("bad-map", `${at}: blocks_map must be a path`));
   }
@@ -214,7 +222,7 @@ export function checkUiMap({ head, base = null, changes }) {
       errors.push(err("lock-pin-mismatch", `${owners[0].screen}: lock_export_sha256 ${owners[0].lock_export_sha256} differs from design/${topic}/approved/LOCK.json (${pin ?? "no export_sha256"}). Fix: copy the lock's export_sha256 into the entry.`));
     }
   }
-  for (const e of entries) {
+  for (const e of entries.filter((x) => x.state !== "upstream")) {
     if (!topics.includes(e.lock)) errors.push(err("bad-map", `${e.screen}: design/${e.lock}/approved/ does not exist`));
   }
 

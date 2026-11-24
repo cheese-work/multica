@@ -4,6 +4,8 @@
 # legacy.seed_sha: the commit this map was seeded on. A UI file owned only by legacy must sit in a directory that
 #   exists there; a lock pin that equals the pin at that commit may stay `unmapped`.
 # entries: one per lock folder design/<topic>/approved/. state `building` (fidelity check runs), `shipped` (goldens), `unmapped`.
+#   state `upstream` is for a screen that came from the upstream project and has no design lock here: it lists the
+#   `paths` and `routes` it owns and has no lock fields. Give a screen a lock entry when a design is drawn for it.
 #   lock_export_sha256 is the lock's LOCK.json export_sha256 (a per-file object is pinned as the sha256 of its sorted
 #   sha256sum lines). Whoever merges second of a design PR and a code PR updates the pin.
 legacy:
@@ -94,3 +96,30 @@ entries:
     lock: you-are-approving-card
     lock_export_sha256: 09ead89b1b2e0199320a13dcc7671dbd99aac2ebfe79e123af3c147f171b6a32
     state: unmapped
+  - screen: upstream-landing
+    paths:
+      - apps/web/app/(landing)/**
+      - apps/web/features/landing/**
+    state: upstream
+  - screen: upstream-web-i18n
+    paths:
+      - apps/web/components/i18n/**
+    state: upstream
+  - screen: upstream-issue-deliverable
+    paths:
+      - apps/web/app/[workspaceSlug]/(dashboard)/issues/[id]/deliverables/**
+    routes:
+      - issues/:id/deliverables/:name
+    state: upstream
+  - screen: upstream-dev-toolbar
+    paths:
+      - packages/views/dev-toolbar/**
+    state: upstream
+  - screen: upstream-star-prompt
+    paths:
+      - packages/views/star-prompt/**
+    state: upstream
+  - screen: upstream-voice
+    paths:
+      - packages/views/voice/**
+    state: upstream
