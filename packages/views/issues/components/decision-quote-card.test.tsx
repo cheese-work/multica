@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ApiError } from "@multica/core/api/client";
-import { issueKeys } from "@multica/core/issues/queries";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { DecisionQuoteCard } from "./decision-quote-card";
+import { ingestTimeline } from "@multica/core/issues/timeline-store";
 
 // A plain function, not vi.fn(): vitest derives a promise from a mock's rejected
 // result that nothing handles, which fails the test for an error the component
@@ -70,7 +70,7 @@ function renderCard(entry: TimelineEntry, currentUserId = "human-1", compact = f
 
 function renderWithTimeline(entry: TimelineEntry, timeline: TimelineEntry[], onJumpToComment = vi.fn()) {
   const qc = new QueryClient();
-  qc.setQueryData(issueKeys.timeline("issue-1"), timeline);
+  ingestTimeline(qc, "issue-1", timeline);
   renderWithI18n(
     <QueryClientProvider client={qc}>
       <DecisionQuoteCard entry={entry} issueId="issue-1" currentUserId="human-1" onJumpToComment={onJumpToComment} />

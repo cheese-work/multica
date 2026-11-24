@@ -23,6 +23,7 @@ import type { SidebarIssuesRequest } from "./sidebar-list";
 import { ALL_STATUSES } from "./config";
 import { issueColumnCategory } from "./status-category";
 import { isSchemaValidationError } from "../api/schema";
+import { ingestTimeline } from "./timeline-store";
 
 export function issueTasksOptions(issueId: string) {
   return queryOptions({
@@ -166,9 +167,13 @@ export const issueKeys = {
    *  prefixes explicitly, or missed events leave them stale forever under
    *  the staleTime: Infinity default (#3953). */
   timelineAll: () => ["issues", "timeline"] as const,
-  /** Full-issue timeline (single TanStack Query, no cursor). */
+  /** Ordered timeline entry ids of one issue (single TanStack Query, no
+   *  cursor); the rows live in `timelineEntities`. */
   timeline: (issueId: string) =>
     [...issueKeys.timelineAll(), issueId] as const,
+  /** By-id store: one row per timeline entry of one issue (B1b). */
+  timelineEntities: (issueId: string) =>
+    ["issues", "timeline-entities", issueId] as const,
   /** Status-history dialog data. Nested under `timeline(issueId)` so every
    *  timeline invalidation (WS events, reconnect recovery) refreshes it too. */
   statusHistory: (issueId: string) =>
@@ -763,7 +768,10 @@ export function childrenByParentsOptions(
 export function issueTimelineOptions(issueId: string) {
   return queryOptions({
     queryKey: issueKeys.timeline(issueId),
-    queryFn: () => api.listTimeline(issueId),
+    // Caches the ordered ids; readers resolve rows with `useTimelineRows` /
+    // `readTimeline` (timeline-store.ts).
+    queryFn: async ({ client, signal }) =>
+      ingestTimeline(client, issueId, await api.listTimeline(issueId), signal),
   });
 }
 

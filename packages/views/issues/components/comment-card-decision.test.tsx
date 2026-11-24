@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, screen } from "@testing-library/react";
 import { forwardRef, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { issueKeys } from "@multica/core/issues/queries";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 
@@ -56,6 +55,7 @@ vi.mock("../../editor", async () => ({
 }));
 
 import { CommentCard } from "./comment-card";
+import { ingestTimeline } from "@multica/core/issues/timeline-store";
 
 // A decision quote is stored under the recording agent. The timeline shows the
 // human whose words it holds, with the agent only as the card's sub-line.
@@ -98,7 +98,7 @@ function quote(extra: Partial<TimelineEntry> = {}): TimelineEntry {
 
 function renderCard(entry: TimelineEntry, replies: TimelineEntry[] = [], onJumpToComment = vi.fn()) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  qc.setQueryData(issueKeys.timeline("issue-1"), [entry, ...replies]);
+  ingestTimeline(qc, "issue-1", [entry, ...replies]);
   return renderWithI18n(
     <QueryClientProvider client={qc}>
       <CommentCard

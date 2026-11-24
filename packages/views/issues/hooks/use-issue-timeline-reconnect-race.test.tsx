@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setApiInstance } from "@multica/core/api";
 import type { ApiClient } from "@multica/core/api/client";
 import { issueKeys } from "@multica/core/issues/queries";
+import { readTimeline } from "@multica/core/issues/timeline-store";
 import { useIssueTimeline } from "./use-issue-timeline";
 
 const realtime = vi.hoisted(() => ({
@@ -91,7 +92,7 @@ describe("useIssueTimeline reconnect race", () => {
     await waitFor(() => expect(qc.getQueryState(queryKey)?.fetchStatus).toBe("idle"));
 
     await waitFor(() => expect(listTimeline).toHaveBeenCalledTimes(3));
-    expect((qc.getQueryData<{ id: string }[]>(queryKey) ?? []).map((entry) => entry.id))
+    expect((readTimeline(qc, "issue-race") ?? []).map((entry) => entry.id))
       .toEqual([oldEntry.id, missedEntry.id, newEntry.id]);
     unmount();
   });
@@ -134,7 +135,7 @@ describe("useIssueTimeline reconnect race", () => {
     await act(async () => { resolveInitial([activity, persistedComment]); });
     await waitFor(() => expect(qc.getQueryState(queryKey)?.fetchStatus).toBe("idle"));
 
-    expect((qc.getQueryData<{ id: string }[]>(queryKey) ?? []).map((entry) => entry.id))
+    expect((readTimeline(qc, "issue-first-load") ?? []).map((entry) => entry.id))
       .toEqual([activity.id, persistedComment.id, "comment-new"]);
     unmount();
   });

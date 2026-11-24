@@ -42,6 +42,7 @@ import type { IssueTableQuerySpec } from "../types";
 import { getCurrentWsId } from "../platform/workspace-storage";
 import { forgetLocalSearchIndex } from "../search-index/instance";
 import { useRealtimeSync, type RealtimeSyncStores } from "./use-realtime-sync";
+import { ingestTimeline, readTimeline } from "../issues/timeline-store";
 
 vi.mock("../search-index/instance", () => ({
   forgetLocalSearchIndex: vi.fn(async () => undefined),
@@ -454,7 +455,7 @@ describe("useRealtimeSync — ws instance change", () => {
 
     try {
       await waitFor(() => {
-        expect(qc.getQueryData(issueKeys.timeline("issue-1"))).toEqual([timelineEntry]);
+        expect(readTimeline(qc, "issue-1")).toEqual([timelineEntry]);
         expect(qc.getQueryData(chatKeys.messages("session-1"))).toEqual([message]);
         expect(qc.getQueryData(chatKeys.messagesPage("session-1"))).toMatchObject({
           pages: [{ messages: [message] }],
@@ -473,7 +474,7 @@ describe("useRealtimeSync — ws instance change", () => {
     const listChatMessagesPage = vi.fn().mockResolvedValue({ messages: [], limit: 50, has_more: false });
     const listChatSessions = vi.fn().mockResolvedValue([]);
     setApiInstance({ listTimeline, listChatMessages, listChatMessagesPage, listChatSessions } as unknown as ApiClient);
-    qc.setQueryData(issueKeys.timeline("issue-2"), []);
+    ingestTimeline(qc, "issue-2", []);
     qc.setQueryData(chatKeys.messages("session-2"), []);
     qc.setQueryData(chatKeys.messagesPage("session-2"), {
       pages: [{ messages: [], limit: 50, has_more: false }], pageParams: [null],

@@ -32,8 +32,8 @@ import type {
   IssueUsageSummary,
   Label,
   ListIssuesCache,
-  TimelineEntry,
 } from "../types";
+import { ingestTimeline, readTimeline } from "./timeline-store";
 
 const WS_ID = "ws-1";
 const ISSUE_ID = "issue-1";
@@ -858,7 +858,7 @@ describe("onIssueDeleted", () => {
 
   it("removes every cache entry scoped directly to the deleted issue", () => {
     qc.setQueryData<Issue>(issueKeys.detail(WS_ID, ISSUE_ID), baseIssue);
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID), [
+    ingestTimeline(qc, ISSUE_ID, [
       {
         type: "activity",
         id: "activity-1",
@@ -920,7 +920,7 @@ describe("onIssueDeleted", () => {
     });
 
     qc.setQueryData<Issue>(issueKeys.detail(WS_ID, OTHER_ISSUE_ID), otherIssue);
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(OTHER_ISSUE_ID), []);
+    ingestTimeline(qc, OTHER_ISSUE_ID, []);
     qc.setQueryData<IssueLabelsResponse>(
       labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID),
       { labels: [labelB] },
@@ -929,7 +929,7 @@ describe("onIssueDeleted", () => {
     onIssueDeleted(qc, WS_ID, ISSUE_ID);
 
     expect(qc.getQueryData(issueKeys.detail(WS_ID, ISSUE_ID))).toBeUndefined();
-    expect(qc.getQueryData(issueKeys.timeline(ISSUE_ID))).toBeUndefined();
+    expect(readTimeline(qc, ISSUE_ID)).toBeUndefined();
     expect(qc.getQueryData(issueKeys.reactions(ISSUE_ID))).toBeUndefined();
     expect(qc.getQueryData(issueKeys.subscribers(ISSUE_ID))).toBeUndefined();
     expect(qc.getQueryData(issueKeys.usage(ISSUE_ID))).toBeUndefined();
@@ -941,7 +941,7 @@ describe("onIssueDeleted", () => {
     expect(qc.getQueryData(issueKeys.detail(WS_ID, OTHER_ISSUE_ID))).toEqual(
       otherIssue,
     );
-    expect(qc.getQueryData(issueKeys.timeline(OTHER_ISSUE_ID))).toEqual([]);
+    expect(readTimeline(qc, OTHER_ISSUE_ID)).toEqual([]);
     expect(qc.getQueryData(labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID))).toEqual({
       labels: [labelB],
     });

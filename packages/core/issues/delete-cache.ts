@@ -194,6 +194,7 @@ export function cleanupDeletedIssueCaches(
 
   qc.removeQueries({ queryKey: issueKeys.detail(wsId, issueId) });
   qc.removeQueries({ queryKey: issueKeys.timeline(issueId) });
+  qc.removeQueries({ queryKey: issueKeys.timelineEntities(issueId) });
   qc.removeQueries({ queryKey: issueKeys.reactions(issueId) });
   qc.removeQueries({ queryKey: issueKeys.subscribers(issueId) });
   qc.removeQueries({ queryKey: issueKeys.usage(issueId) });

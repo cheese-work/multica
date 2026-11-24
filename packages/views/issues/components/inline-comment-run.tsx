@@ -2,14 +2,13 @@
 
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { AlertCircle, Brain, Check, ChevronRight, CirclePause, Clock3, CornerDownRight, Loader2, MessageSquare, RotateCcw, ScrollText, Square, Terminal } from "@multica/ui/icons";
-import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useTraceIssueLabels } from "../../common/task-transcript/use-trace-issue-labels";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useTaskMessages } from "@multica/core/chat/queries";
 import { useCancelIssueRun, useRetryIssueRun } from "@multica/core/issues/mutations";
-import { issueTimelineOptions } from "@multica/core/issues/queries";
+import { useTimelineRows } from "@multica/core/issues/timeline-store";
 import { commentSupplementReceipts } from "@multica/core/issues/run-steering";
 import { PRE_RUN_STATUSES } from "@multica/core/issues/run-status";
 import { dispatchReasonCode } from "@multica/core/api";
@@ -112,11 +111,11 @@ export function InlineCommentRun({ run, className, viewState, showIdentity = fal
   const steps = useMemo(() => buildSteps(items), [items]);
   const rows = useMemo(() => groupSteps(steps), [steps]);
   // Messages that steered this turn, placed in its step list where it read them.
-  const { data: steers = NO_STEERS } = useQuery({
-    ...issueTimelineOptions(task.issue_id),
-    enabled: false,
-    select: (entries: TimelineEntry[]) => deliveredSteers(entries, task.id),
-  });
+  const timelineRows = useTimelineRows(task.issue_id);
+  const steers = useMemo(
+    () => (timelineRows ? deliveredSteers(timelineRows, task.id) : NO_STEERS),
+    [timelineRows, task.id],
+  );
   useEffect(() => {
     if (!active) return;
     const timer = setInterval(() => setNow(Date.now()), 1000);

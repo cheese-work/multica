@@ -67,6 +67,7 @@
     "./issues/wakeups": "./issues/wakeups.ts",
     "./issues/mutations": "./issues/mutations.ts",
     "./issues/timeline-sort": "./issues/timeline-sort.ts",
+    "./issues/timeline-store": "./issues/timeline-store.ts",
     "./issues/comment-deletion": "./issues/comment-deletion.ts",
     "./issues/supersession": "./issues/supersession.ts",
     "./issues/decision-fields": "./issues/decision-fields.ts",

@@ -35,6 +35,7 @@ import {
   type ToggleCommentReactionVars,
 } from "@multica/core/issues/mutations";
 import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
+import { updateTimeline, useResolvedRows } from "@multica/core/issues/timeline-store";
 import { keepDecisionFields, pickDecisionFields } from "@multica/core/issues/decision-fields";
 import {
   unhandledCommentTriggerOutcomes,
@@ -46,8 +47,6 @@ import { toast } from "sonner";
 import { rejectInvalidAgentMentions, type InvalidMentionRejection } from "../invalid-agent-mentions-copy";
 import { useT } from "../../i18n";
 import { blockedShortReasonLabel } from "../blocked-trigger-copy";
-
-type TLCache = TimelineEntry[];
 
 function commentToTimelineEntry(c: Comment): TimelineEntry {
   return {
@@ -95,7 +94,7 @@ export function applyCommentSnapshot(
   comment: Comment,
 ) {
   let missingRevision = false;
-  qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) =>
+  updateTimeline(qc, issueId, (old) =>
     old?.map((entry) => {
       if (entry.id !== comment.id) return entry;
       if (entry.revision !== undefined && comment.revision === undefined) {
@@ -124,9 +123,10 @@ export function useIssueTimeline(issueId: string, userId?: string) {
   const qc = useQueryClient();
 
   const query = useQuery(issueTimelineOptions(issueId));
-  const { data, isLoading: loading } = query;
+  const { isLoading: loading } = query;
 
-  const timeline = useMemo<TimelineEntry[]>(() => data ?? [], [data]);
+  const resolved = useResolvedRows(issueId, query.data);
+  const timeline = useMemo<TimelineEntry[]>(() => resolved ?? [], [resolved]);
 
   // Stable mutation handles. TanStack v5 returns a fresh result wrapper from
   // useMutation per render, but the inner mutateAsync / mutate functions are
@@ -158,7 +158,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         const queryKey = issueKeys.timeline(issueId);
         const recoveringFetch = qc.getQueryState?.(queryKey)?.fetchStatus === "fetching";
         const writeComment = (): void => {
-          qc.setQueryData<TLCache>(queryKey, (old) => {
+          updateTimeline(qc, issueId, (old) => {
             const entry = commentToTimelineEntry(comment);
             if (!old) return [entry];
             if (old.some((e) => e.id === comment.id)) return old;
@@ -229,7 +229,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         // A comment with replies is tombstoned (comment:updated), never
         // removed, so any cached reply of a removed comment is stale: older
         // servers cascaded the delete to every descendant.
-        qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) =>
+        updateTimeline(qc, issueId, (old) =>
           old ? removeCommentSubtree(old, comment_id) : old,
         );
       },
@@ -245,7 +245,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         if (p.issue_id !== issueId) return;
         const entry = p.entry;
         if (!entry || !entry.id) return;
-        qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) => {
+        updateTimeline(qc, issueId, (old) => {
           if (!old) return [entry];
           if (old.some((e) => e.id === entry.id)) return old;
           return sortTimelineEntriesAsc([...old, entry]);
@@ -262,7 +262,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         const { reaction, issue_id, comment_revision } = payload as ReactionAddedPayload;
         if (issue_id !== issueId) return;
         let missingRevision = false;
-        qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) =>
+        updateTimeline(qc, issueId, (old) =>
           old?.map((e) => {
             if (e.id !== reaction.comment_id) return e;
             if (comment_revision === undefined && e.revision !== undefined) {
@@ -298,7 +298,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         const p = payload as ReactionRemovedPayload;
         if (p.issue_id !== issueId) return;
         let missingRevision = false;
-        qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) =>
+        updateTimeline(qc, issueId, (old) =>
           old?.map((e) => {
             if (e.id !== p.comment_id) return e;
             if (p.comment_revision === undefined && e.revision !== undefined) {

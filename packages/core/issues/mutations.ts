@@ -52,6 +52,7 @@ import type {
 } from "../types";
 import type { TimelineEntry, IssueSubscriber, Reaction } from "../types";
 import { sortTimelineEntriesAsc } from "./timeline-sort";
+import { readTimeline, restoreTimeline, updateTimeline } from "./timeline-store";
 import { applyCommentDeletion, removeCommentSubtree } from "./comment-deletion";
 import { configStore } from "../config";
 import {
@@ -891,7 +892,7 @@ export function useCreateComment(issueId: string) {
       // this entry from the broadcast path before this onSuccess fires. Skip
       // the append if the entry is already in the cache — but keep the
       // steering receipts, which that broadcast predates.
-      qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) => {
+      updateTimeline(qc, issueId, (old) => {
         if (!old) return [entry];
         if (old.some((e) => e.id === entry.id)) {
           return steered
@@ -938,9 +939,9 @@ export function useUpdateComment(issueId: string) {
     }) => api.updateComment(commentId, content, attachmentIds, suppressAgentIds, contentBase, expectedRevision),
     onMutate: async ({ commentId, content, attachmentIds }) => {
       await qc.cancelQueries({ queryKey: issueKeys.timeline(issueId) });
-      const prev = qc.getQueryData<TimelineCache>(issueKeys.timeline(issueId));
+      const prev = readTimeline(qc, issueId);
       const kept = new Set(attachmentIds);
-      qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) =>
+      updateTimeline(qc, issueId, (old) =>
         old?.map((e) =>
           e.id === commentId
             ? { ...e, content, attachments: e.attachments?.filter((a) => kept.has(a.id)) }
@@ -950,9 +951,7 @@ export function useUpdateComment(issueId: string) {
       return { prev };
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) {
-        qc.setQueryData(issueKeys.timeline(issueId), ctx.prev);
-      }
+      restoreTimeline(qc, issueId, ctx?.prev);
     },
     onSuccess: (comment) => {
       if (comment.issue_revision) {
@@ -986,7 +985,7 @@ export function useDeleteComment(issueId: string) {
     // confirms, mirror its outcome; realtime events and the settle refetch
     // reconcile the rest.
     onSuccess: (keptReplies, commentId) => {
-      qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) => {
+      updateTimeline(qc, issueId, (old) => {
         if (!old) return old;
         return keptReplies
           ? applyCommentDeletion(old, commentId, new Date().toISOString())
@@ -1056,8 +1055,8 @@ export function useResolveComment(issueId: string) {
       resolved ? api.resolveComment(commentId) : api.unresolveComment(commentId),
     onMutate: async ({ commentId, resolved }) => {
       await qc.cancelQueries({ queryKey: issueKeys.timeline(issueId) });
-      const prev = qc.getQueryData<TimelineCache>(issueKeys.timeline(issueId));
-      qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) => {
+      const prev = readTimeline(qc, issueId);
+      updateTimeline(qc, issueId, (old) => {
         if (!old) return old;
         // Resolving makes this comment the sole resolution in its thread, so
         // mirror the server (ClearOtherThreadResolutions) and clear every other
@@ -1083,9 +1082,7 @@ export function useResolveComment(issueId: string) {
       return { prev };
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prev !== undefined) {
-        qc.setQueryData(issueKeys.timeline(issueId), ctx.prev);
-      }
+      restoreTimeline(qc, issueId, ctx?.prev);
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId) });
