@@ -576,6 +576,15 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			params.ChatSessionID = task.ChatSessionID
 		}
 
+		// A retried upload of the same bytes (CHE-9490) returns the file already
+		// there instead of adding a copy.
+		if existing, found := h.identicalIssueUpload(r.Context(), params, r.FormValue("replaces"), data); found {
+			resp := h.attachmentToResponse(existing, attachmentURLModeFromRequest(r))
+			resp.WebURL = h.workspaceWebURL(r.Context(), existing.WorkspaceID, func(ws db.Workspace) string { return weblink.Attachment(ws.Slug, resp.ID) })
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
+
 		if status, msg := h.chainAttachmentRevision(r.Context(), &params, r.FormValue("replaces"), data); status != 0 {
 			writeError(w, status, msg)
 			return
@@ -1440,13 +1449,20 @@ func (h *Handler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only the uploader (or workspace admin) can delete
-	uploaderID := uuidToString(att.UploaderID)
-	isUploader := att.UploaderType == "member" && uploaderID == userID
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	isUploader := att.UploaderType == actorType && uuidToString(att.UploaderID) == actorID
 	member, hasMember := ctxMember(r.Context())
 	isAdmin := hasMember && (member.Role == "admin" || member.Role == "owner")
 
 	if !isUploader && !isAdmin {
 		writeError(w, http.StatusForbidden, "not authorized to delete this attachment")
+		return
+	}
+	// An agent removes only its own file that nothing references: a comment's
+	// attachment is what a reviewer pinned by SHA-256, and an agent cannot
+	// take it back.
+	if actorType == "agent" && !isAdmin && (att.CommentID.Valid || att.ChatMessageID.Valid) {
+		writeError(w, http.StatusConflict, "attachment is referenced by a comment or message; only an orphan can be deleted by its agent")
 		return
 	}
 
@@ -1477,7 +1493,7 @@ func (h *Handler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if deleted.Changed && att.IssueID.Valid {
-		h.publish(protocol.EventIssueAttachmentsChanged, workspaceID, "member", userID, map[string]any{
+		h.publish(protocol.EventIssueAttachmentsChanged, workspaceID, actorType, actorID, map[string]any{
 			"issue_id":       uuidToString(att.IssueID),
 			"issue_revision": deleted.IssueRevision,
 		})
@@ -1490,7 +1506,7 @@ func (h *Handler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 			commentID := uuidToString(comment.ID)
 			reactions := h.groupReactions(r, []pgtype.UUID{comment.ID})
 			attachments := h.groupAttachments(r, []pgtype.UUID{comment.ID})
-			h.publish(protocol.EventCommentUpdated, workspaceID, "member", userID, map[string]any{
+			h.publish(protocol.EventCommentUpdated, workspaceID, actorType, actorID, map[string]any{
 				"comment": commentToResponse(comment, reactions[commentID], attachments[commentID]),
 			})
 		}

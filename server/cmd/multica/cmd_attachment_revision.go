@@ -30,6 +30,30 @@ var attachmentDiffCmd = &cobra.Command{
 	RunE: runAttachmentDiff,
 }
 
+var attachmentDeleteCmd = &cobra.Command{
+	Use:   "delete <attachment-id>",
+	Short: "Delete an attachment that no comment references",
+	Long: `Delete an attachment you uploaded when no comment or message references it,
+for example a stray copy left by a retried upload. A file a comment holds is
+refused: reviewers pin its SHA-256.`,
+	Args: exactArgs(1),
+	RunE: runAttachmentDelete,
+}
+
+func runAttachmentDelete(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+	if err := client.DeleteJSON(ctx, "/api/attachments/"+args[0]); err != nil {
+		return fmt.Errorf("delete attachment: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "Deleted attachment %s\n", args[0])
+	return nil
+}
+
 // runAttachmentUploadToIssue uploads a file to an issue. With replaces it is
 // the next revision of that attachment; the issue then defaults to the
 // replaced file's issue.
