@@ -260,22 +260,35 @@ WHERE e.kind NOT IN ('draft', 'ready', 'merged')
        -- A member was told once (notified); an agent or squad holding the issue
        -- takes the event now (CHE-5901).
        OR (e.status = 'notified'
-           AND EXISTS (SELECT 1 FROM issue i WHERE i.id = e.issue_id AND i.assignee_type IN ('agent', 'squad')))
+           AND e.issue_id IN (SELECT i.id FROM issue i WHERE i.assignee_type IN ('agent', 'squad')))
+       -- t.issue_id IS NOT NULL keeps NOT IN equal to NOT EXISTS (chat tasks have no issue).
        OR (e.status = 'accepted'
-           AND NOT EXISTS (
-               SELECT 1 FROM agent_task_queue t
+           AND e.issue_id NOT IN (
+               SELECT t.issue_id FROM agent_task_queue t
                JOIN task_pr_event_capability cap ON cap.task_id = t.id
-               WHERE t.issue_id = e.issue_id AND t.status = 'running')))
+               WHERE t.issue_id IS NOT NULL AND t.status = 'running')))
+  -- A pending receipt (not processed yet) holds the event.
   AND NOT EXISTS (
       SELECT 1
       FROM issue_wakeup w
       JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id
-      LEFT JOIN agent_task_queue t ON t.id = r.task_id
       WHERE w.issue_id = e.issue_id
         AND w.system_rule = 'pr_needs_attention'
         AND r.event_type = 'pr.event'
         AND r.payload->>'event_id' = e.id::text
-        AND (r.processed_at IS NULL OR t.status IN ('queued', 'dispatched') OR t.started_at IS NOT NULL))
+        AND r.processed_at IS NULL)
+  -- So does a receipt carried by a run that is queued, dispatched or has started.
+  AND NOT EXISTS (
+      SELECT 1
+      FROM issue_wakeup w
+      JOIN issue_wakeup_receipt r ON r.wakeup_id = w.id
+      JOIN agent_task_queue t ON t.id = r.task_id
+      WHERE w.issue_id = e.issue_id
+        AND w.system_rule = 'pr_needs_attention'
+        AND r.event_type = 'pr.event'
+        AND r.task_id IS NOT NULL
+        AND r.payload->>'event_id' = e.id::text
+        AND (t.status IN ('queued', 'dispatched') OR t.started_at IS NOT NULL))
   AND NOT EXISTS (
       SELECT 1
       FROM issue_wakeup lw
@@ -334,6 +347,16 @@ type ListNextTurnPREventsRow struct {
 // lifecycle stop already ran, and a reopen raises its own events.
 // Lifecycle kinds draft, ready and merged are never selected: they report
 // state only, and the pr_merged rule already wakes the issue (CHE-4972). closed has no rule, so it stays.
+// Shape (CHE-9177): the planner must not read every pr.event receipt per event
+// (C00 saw 15 to 27 s, IO/DataFileRead, then JIT on top). The in-flight test is
+// split in two NOT EXISTS arms, one per receipt state, so each reads only the
+// receipts it can match: pending ones (issue_wakeup_receipt_pending_idx) and
+// ones that name a run (idx_issue_wakeup_receipt_pr_event_id_task). A receipt
+// processed with no run can never block an event, and is most of them. The
+// correlation stays in WHERE (a correlated JOIN ON keeps the subquery a
+// SubPlan per row), and the two status arms use IN / NOT IN rather than
+// EXISTS inside the OR, which the planner costs as a per-row SubPlan (cost
+// over jit_above_cost, so JIT compiled every run). Do not fold them back.
 func (q *Queries) ListNextTurnPREvents(ctx context.Context, arg ListNextTurnPREventsParams) ([]ListNextTurnPREventsRow, error) {
 	rows, err := q.db.Query(ctx, listNextTurnPREvents,
 		arg.WorkspaceIds,
