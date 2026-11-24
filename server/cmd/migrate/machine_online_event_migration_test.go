@@ -138,7 +138,7 @@ func (e *moeEnv) generation(t *testing.T) string {
 
 // triggers reads the trigger state of the private agent_runtime, name:enabled.
 func (e *moeEnv) triggers(t *testing.T) string {
-	return e.one(t, `SELECT coalesce(string_agg(tgname || ':' || tgenabled, ',' ORDER BY tgname), '')
+	return e.one(t, `SELECT coalesce(string_agg(tgname || ':' || tgenabled::text, ',' ORDER BY tgname), '')
 		FROM pg_trigger WHERE tgrelid = $1::text::regclass AND NOT tgisinternal`, e.rel)
 }
 
