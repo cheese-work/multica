@@ -66,6 +66,7 @@ import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
 import { dayKey, formatDayLabel, formatMessageDateTime, formatMessageTime, formatTimeWithZone } from "./message-time";
 import { useT } from "../../i18n";
 import { AnnotatableAnswer } from "./annotatable-answer";
+import { useChatAnnotationScope } from "./chat-annotation-context";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
 import { DecisionAnswerContent, noteAfterOption } from "./decision-answer-content";
@@ -483,9 +484,16 @@ export function ChatMessageList({
   quickActionsDisabled = false,
   onRegenerateQuickActions,
   quickActionsPendingMessageId = null,
-  jumpToMessageId = null,
-  onJumpSettled,
+  jumpToMessageId: requestedJumpId = null,
+  onJumpSettled: onRequestedJumpSettled,
 }: ChatMessageListProps) {
+  // An annotation edit whose source row is not rendered asks for the same jump.
+  const { revealMessageId, onRevealMissing } = useChatAnnotationScope();
+  const jumpToMessageId = requestedJumpId ?? revealMessageId ?? null;
+  const onJumpSettled = useCallback((outcome: "landed" | "missing") => {
+    if (requestedJumpId) onRequestedJumpSettled?.(outcome);
+    else if (outcome === "missing") onRevealMissing?.();
+  }, [requestedJumpId, onRequestedJumpSettled, onRevealMissing]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
   const setScrollContainerRef = useCallback((node: HTMLDivElement | null) => {

@@ -1,7 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { useCommentDraftStore, type CommentDraftKey } from "@multica/core/issues/stores";
+import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import type { ChatMessage } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { useCommentAnnotations, type AnnotationLabels } from "../../issues/components/use-comment-annotations";
@@ -66,10 +68,42 @@ export function useChatAnnotations({ sessionId, messages, agentName, enabled }: 
     edit: (number, note) => t(($) => $.annotations.edit, { number, note }),
     remove: (number) => t(($) => $.annotations.remove, { number }),
   };
-  const annotation = useCommentAnnotations({ draftKey, sources, enabled: active, surface: "chat", labels });
+  // A saved comment whose source row is not rendered (virtualized, or in an
+  // older page) is revealed by the list; its editor opens once the row mounts.
+  const [pendingReveal, setPendingReveal] = useState<{ annotationId: string; sourceId: string } | null>(null);
+  const revealSource = useCallback((saved: ReplyAnnotation) => {
+    if (!active) return false;
+    setPendingReveal({ annotationId: saved.id, sourceId: saved.sourceCommentId });
+    return true;
+  }, [active]);
+  const annotation = useCommentAnnotations({ draftKey, sources, enabled: active, surface: "chat", labels, onRevealSource: revealSource });
+  const editAnnotationRef = useRef(annotation.editAnnotation);
+  editAnnotationRef.current = annotation.editAnnotation;
+  const pendingRevealRef = useRef(pendingReveal);
+  pendingRevealRef.current = pendingReveal;
+  const onSourceMounted = useCallback((sourceId: string) => {
+    const pending = pendingRevealRef.current;
+    if (!pending || pending.sourceId !== sourceId) return;
+    setPendingReveal(null);
+    if (!editAnnotationRef.current(pending.annotationId, true)) toast.error(tIssues(($) => $.reply.annotations.source_changed));
+  }, [tIssues]);
+  const onRevealMissing = useCallback(() => {
+    if (!pendingRevealRef.current) return;
+    setPendingReveal(null);
+    toast.error(tIssues(($) => $.reply.annotations.source_changed));
+  }, [tIssues]);
+  const revealMessageId = useMemo(() => {
+    if (!pendingReveal) return null;
+    const { sourceId } = pendingReveal;
+    if (!sourceId.startsWith(DECISION_REQUEST_SOURCE_PREFIX)) return sourceId;
+    const cardId = sourceId.slice(DECISION_REQUEST_SOURCE_PREFIX.length);
+    return messages.find((message) =>
+      (message.decision_requests ?? (message.decision_request ? [message.decision_request] : [])).some((card) => card.id === cardId),
+    )?.id ?? null;
+  }, [pendingReveal, messages]);
   const scope = useMemo<ChatAnnotationScope>(
-    () => ({ enabled: active, agentName, registerSource }),
-    [active, agentName, registerSource],
+    () => ({ enabled: active, agentName, registerSource, revealMessageId, onRevealMissing, onSourceMounted }),
+    [active, agentName, registerSource, revealMessageId, onRevealMissing, onSourceMounted],
   );
   const input: ChatInputAnnotations | undefined = active
     ? {
