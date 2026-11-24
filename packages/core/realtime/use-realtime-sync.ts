@@ -89,7 +89,13 @@ import { useChatStore } from "../chat";
 import { parseWithFallback } from "../api/schema";
 import { ChatSessionUpdatedPayloadSchema } from "../api/schemas";
 import { connectedAppsKeys } from "../connected-apps/queries";
-import { upsertChatMessageToCaches } from "../chat/message-cache";
+import {
+  patchChatMessageInCaches,
+  removeChatMessageFromCaches,
+  upsertChatMessageToCaches,
+} from "../chat/message-cache";
+
+export { removeChatMessageFromCaches };
 import { isWakeupHeaderContent } from "../chat/wakeup";
 import {
   promotePendingChatTask,
@@ -403,23 +409,7 @@ export async function applyChatQuickActionsToCache(
       qc.cancelQueries({ queryKey: chatKeys.messages(sessionId) }),
       qc.cancelQueries({ queryKey: chatKeys.messagesPage(sessionId) }),
     ]);
-    qc.setQueryData<ChatMessage[] | undefined>(
-      chatKeys.messages(sessionId),
-      (old) => old?.map(patch),
-    );
-    qc.setQueryData<InfiniteData<ChatMessagesPage> | undefined>(
-      chatKeys.messagesPage(sessionId),
-      (old) =>
-        old
-          ? {
-              ...old,
-              pages: old.pages.map((page) => ({
-                ...page,
-                messages: page.messages.map(patch),
-              })),
-            }
-          : old,
-    );
+    patchChatMessageInCaches(qc, sessionId, payload.message_id, patch);
     // Settle the cancel (MUL-5711). cancelQueries defaults to `revert: true`,
     // so the line above does more than ignore the in-flight response — it rolls
     // the cache back to the snapshot taken when that fetch STARTED, dropping
@@ -507,38 +497,6 @@ export function applyChatSessionUpdatedToCache(
       ? next
       : sortChatSessions(next);
   });
-}
-
-function removeChatMessageFromPageCache(
-  qc: QueryClient,
-  sessionId: string,
-  messageId: string,
-) {
-  qc.setQueryData<InfiniteData<ChatMessagesPage> | undefined>(
-    chatKeys.messagesPage(sessionId),
-    (old) => {
-      if (!old) return old;
-      return {
-        ...old,
-        pages: old.pages.map((page) => ({
-          ...page,
-          messages: page.messages.filter((m) => m.id !== messageId),
-        })),
-      };
-    },
-  );
-}
-
-export function removeChatMessageFromCaches(
-  qc: QueryClient,
-  sessionId: string,
-  messageId: string,
-) {
-  qc.setQueryData<ChatMessage[]>(
-    chatKeys.messages(sessionId),
-    (old) => old?.filter((m) => m.id !== messageId) ?? old,
-  );
-  removeChatMessageFromPageCache(qc, sessionId, messageId);
 }
 
 /**

@@ -388,6 +388,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_release_pending":             workspaceDelete,     // CHE-7545 FK workspace ON DELETE CASCADE.
 	"issue_description_revision":         workspaceDelete,     // CHE-7545 FK issue ON DELETE CASCADE; no workspace_id.
 	"issue_handoff_dispatch":             workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
+	"issue_handoff_operation":            workspaceDelete,     // CHE-5491 per-request retry receipt, no FK; DeleteWorkspaceLeafData.
+	"machine_banner_dismissal":           workspaceDelete,     // CHE-9190 no FK; DeleteWorkspaceIssueRoots.
 	"issue_step_assignee":                workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
 	"issue_step_watchdog_action":         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
 	"merge_pause_state":                  workspaceDeleteKeep, // CHE-7545 per repository variable cache; no workspace_id.

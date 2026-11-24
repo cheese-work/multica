@@ -1244,6 +1244,13 @@ describe("useChatController durable draft restores (#5219)", () => {
 // to an agent, so only `activeSessionId` can answer it.
 describe("useChatController.handleSend — compose target tracking", () => {
   beforeEach(() => {
+    // The message door reads the message caches (B1a.1). Earlier describes leave
+    // a pending-task value on this shared mock for every key; keep it for
+    // every key except the message caches, which read as unfetched.
+    const leftover = h.queryClient.getQueryData();
+    h.queryClient.getQueryData.mockImplementation((key?: readonly unknown[]) =>
+      key?.[0] === "chat" && /^message/.test(String(key[1])) ? undefined : leftover,
+    );
     h.store.setActiveSession.mockClear();
     h.store.moveInputDraft.mockClear();
     h.createSessionMutate.mockClear();
