@@ -189,6 +189,10 @@ type IssueWakeupService struct {
 	scopedPos scopedCursor
 	// prEvents is where the next-turn PR-event bridge resumes (wakeup_pr_event_queue.go).
 	prEvents prEventCursor
+	// prEventLimits and prEventSeam bound and (in tests) hold open the bridge
+	// transaction; zero and nil mean production (wakeup_pr_event_bound.go).
+	prEventLimits prEventLimits
+	prEventSeam   prEventSeam
 }
 
 func (s *IssueWakeupService) Validate(in *WakeupInput, now time.Time) (pgtype.Timestamptz, error) {

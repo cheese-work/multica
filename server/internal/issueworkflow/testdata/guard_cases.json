@@ -150,6 +150,18 @@
     "entry_only": true
   },
   {
+    "expr": "human_done",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
+    "expr": "pr.all_merged",
+    "valid": true,
+    "needs_timeout": false,
+    "entry_only": false
+  },
+  {
     "expr": "",
     "valid": false,
     "needs_timeout": false,

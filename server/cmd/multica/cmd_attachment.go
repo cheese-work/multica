@@ -69,7 +69,7 @@ func init() {
 	attachmentUploadCmd.Flags().String("issue", "", "Issue to attach to (id or identifier); defaults to the issue of --replaces")
 	attachmentUploadCmd.Flags().String("replaces", "", "Attachment id this file is the next revision of")
 
-	attachmentCmd.AddCommand(attachmentHistoryCmd, attachmentDiffCmd)
+	attachmentCmd.AddCommand(attachmentHistoryCmd, attachmentDiffCmd, attachmentDeleteCmd)
 	attachmentHistoryCmd.Flags().String("output", "table", "Output format: table or json")
 	attachmentDiffCmd.Flags().String("output", "table", "Output format: table or json")
 	attachmentDiffCmd.Flags().Int64("from", 0, "Earlier revision number (required)")
