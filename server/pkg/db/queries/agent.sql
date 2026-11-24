@@ -2431,6 +2431,10 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
 -- run takes (CHE-9607): the thread of its handoff comment, or the NULL slot
 -- for none. A run held in another slot does not coalesce with it (the unique
 -- index keys on the thread), so it must not stop the step run being queued.
+-- Only a run that covers the step counts: an assignment-level run or a step
+-- handoff run. A comment run in the same slot does not cover it; the intent is
+-- committed and the dispatcher settles it as a skipped duplicate naming the
+-- holder, so a retry (CHE-9608) can find it.
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
   AND (
@@ -2446,6 +2450,7 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     AND workflow_step IS NOT NULL
     AND workflow_step <> sqlc.arg('step')::text
   )
+  AND (trigger_comment_id IS NULL OR trigger_kind = 'status_handoff')
   AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(sqlc.narg('thread_comment_id')::uuid);
 
 -- name: LastVerdictHeadSHA :one

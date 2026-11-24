@@ -359,34 +359,16 @@ func slotIntentCase(t *testing.T, squad bool) slotCase {
 }
 
 // moveIntoStep makes the intent a person's move into the step writes, carrying
-// the handoff comment when asked, dispatches it, and returns the settled intent.
-// An agent target takes the real status writer; a squad target takes the intent
-// row that writer leaves for a squad, through the real dispatcher.
+// the handoff comment when asked, and returns the settled intent. Both targets
+// take the real status writer and its in-process dispatch.
 func (c slotCase) moveIntoStep(t *testing.T, withHandoff bool) handoffIntentRow {
 	t.Helper()
 	issueID := util.UUIDToString(c.issue.ID)
-	if !c.squad {
-		extra := map[string]any(nil)
-		if withHandoff {
-			extra = map[string]any{"handoff_comment_id": c.handoff}
-		}
-		moveIntoHandoffStep(t, issueID, extra)
-		return wantOneIntent(t, issueID)
-	}
-	var squadID string
-	dbfx.QueryRow(t, `SELECT assignee_id::text FROM issue WHERE id = $1`, issueID).Scan(&squadID)
-	cols := testutil.Cols{
-		"id": testutil.Raw("gen_random_uuid()"), "workspace_id": testWorkspaceID, "issue_id": issueID, "target_type": "squad", "target_id": squadID,
-		"actor_type": "member", "actor_id": testUserID, "handoff_write": "slot-claim-squad",
-	}
+	extra := map[string]any(nil)
 	if withHandoff {
-		cols["context_comment_ids"] = testutil.Raw("ARRAY['" + c.handoff + "'::uuid]")
+		extra = map[string]any{"handoff_comment_id": c.handoff}
 	}
-	dbfx.Insert(t, "issue_handoff_dispatch", cols)
-	intent := wantOneIntent(t, issueID)
-	if _, err := testHandler.dispatchHandoffIntent(context.Background(), parseUUID(intent.ID)); err != nil {
-		t.Fatalf("dispatchHandoffIntent: %v", err)
-	}
+	moveIntoHandoffStep(t, issueID, extra)
 	return wantOneIntent(t, issueID)
 }
 
@@ -434,9 +416,11 @@ func TestSlotClaim_WorkflowIntent_Handoff_ThreadFree_NullHeld(t *testing.T) {
 	})
 }
 
-// Acceptance (2), (4) and (6) through the intent: a run holds the handoff's
-// thread. The intent settles in the dispatcher's own transaction as a skipped
-// duplicate, nothing aborts, and no second run is made.
+// Acceptance (2), (4) and (6) through the intent: a comment run holds the
+// handoff's thread. The intent is committed with the move and settles in the
+// dispatcher's own transaction as a skipped duplicate, nothing aborts, and no
+// second run is made. This holds for an agent and a squad leader, with and
+// without a linked PR: admission does not drop the intent for a holder.
 func TestSlotClaim_WorkflowIntent_Handoff_ThreadHeld_IntentSkipsWithoutAbort(t *testing.T) {
 	eachPR(t, func(t *testing.T) {
 		for _, squad := range []bool{false, true} {
@@ -452,23 +436,6 @@ func TestSlotClaim_WorkflowIntent_Handoff_ThreadHeld_IntentSkipsWithoutAbort(t *
 						held = c.holder(t, c.threadT)
 					}
 
-					if !squad && !slotLinkPR {
-						// The agent's move is judged before the write: with no PR a
-						// run holding the handoff's thread stops it there, so the
-						// move commits with no intent and no second run. A squad
-						// intent is written by the writer and settles below.
-						moveIntoHandoffStep(t, issueID, map[string]any{"handoff_comment_id": c.handoff})
-						if n := dbfx.Count(t, `SELECT count(*) FROM issue_handoff_dispatch WHERE issue_id = $1`, issueID); n != 0 {
-							t.Errorf("%d handoff intents, want none: the held thread stops the move's run", n)
-						}
-						if got := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND status = 'in_progress'`, issueID); got != 1 {
-							t.Errorf("the move did not commit")
-						}
-						if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, c.agentID); n != 1 {
-							t.Errorf("%d runs, want only the holder %s", n, held)
-						}
-						return
-					}
 					intent := c.moveIntoStep(t, true)
 
 					if got := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND status IN ('in_progress','todo')`, issueID); got != 1 {
@@ -486,6 +453,29 @@ func TestSlotClaim_WorkflowIntent_Handoff_ThreadHeld_IntentSkipsWithoutAbort(t *
 						t.Errorf("%d runs, want only the holder %s", n, held)
 					}
 				})
+			}
+		}
+	})
+}
+
+// Acceptance (9) through the writer: the holder of the handoff's thread is a
+// step run, not a comment run. The move commits, no second run is made, and the
+// holder is not rewritten.
+func TestSlotClaim_WorkflowIntent_Handoff_StepHolderInSlot(t *testing.T) {
+	eachPR(t, func(t *testing.T) {
+		c := slotIntentCase(t, false)
+		issueID := util.UUIDToString(c.issue.ID)
+		held := c.holder(t, c.threadT, testutil.Cols{"trigger_kind": service.TriggerKindStatusHandoff})
+		moveIntoHandoffStep(t, issueID, map[string]any{"handoff_comment_id": c.handoff})
+		if got := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND status = 'in_progress'`, issueID); got != 1 {
+			t.Errorf("the move did not commit")
+		}
+		if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, c.agentID); n != 1 {
+			t.Errorf("%d runs, want only the step holder %s", n, held)
+		}
+		for _, in := range handoffIntents(t, issueID) {
+			if in.TaskID != "" && in.TaskID != held {
+				t.Errorf("intent %+v carries a run other than the holder %s", in, held)
 			}
 		}
 	})
