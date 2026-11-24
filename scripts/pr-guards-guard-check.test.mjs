@@ -68,7 +68,7 @@ for (const [label, wf] of [["pr-guards.yml", guards], ["pr-guard-rules-edit.yml"
 }
 
 test("a title, body or base edit and a removed reviewer re-run the check, in their own workflow (CHE-4385 budget)", () => {
-  assert.match(edits, /^on:\n {2}pull_request_target:\n {4}types: \[edited, review_request_removed\]$/m);
+  assert.match(edits, /^on:\n {2}pull_request_target:\n {4}types: \[edited, review_request_removed, labeled, unlabeled\]$/m);
   assert.match(edits, /group: pr-guard-rules-edit-\$\{\{ github\.event\.pull_request\.number \}\}/);
   assert.match(edits, /cancel-in-progress: true/);
   assert.match(guards, /types: \[opened, synchronize, reopened, ready_for_review\]/);

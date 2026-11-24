@@ -36,6 +36,15 @@ jobs:
         with:
           ref: ${{ github.event.merge_group.base_sha || github.workflow_sha }}
           persist-credentials: false
+      # CHE-9542: interim merge freeze while repository variable SYNC_FREEZE is `on`; see scripts/sync-freeze-check.sh.
+      - name: Sync freeze
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          MERGE_GROUP_HEAD_REF: ${{ github.event.merge_group.head_ref }}
+          REPO: ${{ github.repository }}
+          SYNC_FREEZE: ${{ vars.SYNC_FREEZE }}
+        run: bash scripts/sync-freeze-check.sh
       - uses: actions/setup-go@v7
         with:
           go-version: "~1.27.3"
