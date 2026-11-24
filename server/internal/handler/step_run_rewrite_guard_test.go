@@ -179,6 +179,12 @@ func TestSameThreadCommentKeepsQueuedStatusHandoffStepRun(t *testing.T) {
 	if slices.Contains(delivered, reply) {
 		t.Fatalf("reply was recorded as delivered by the step claim: %v", delivered)
 	}
+	// After the run completes, the replay queues a follow-up run for the reply.
+	completed := fx.task(t, stepID)
+	testHandler.reconcileCommentsOnCompletion(context.Background(), &completed)
+	if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued' AND (trigger_comment_id = $3 OR $3 = ANY(coalesced_comment_ids))`, fx.issueID, fx.agentID, reply); n != 1 {
+		t.Fatalf("got %d follow-up runs for the reply after the step run, want 1", n)
+	}
 }
 
 // The post-insert sibling collapse never cancels a fresh comment run into a
