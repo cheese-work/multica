@@ -134,6 +134,14 @@ SELECT id FROM project
 WHERE id = $1 AND workspace_id = $2
 FOR KEY SHARE;
 
+-- name: LockProjectArchiveState :one
+-- Share-locks the project row and returns its archive bit. Archiving updates
+-- the row, so a save that decides on this read serializes with the archive and
+-- its autopilot pause sweep instead of reading a pre-archive snapshot.
+SELECT archived_at FROM project
+WHERE id = $1 AND workspace_id = $2
+FOR SHARE;
+
 -- name: LockProjectForDelete :one
 -- Serializes project deletion with chat-session creation. The handler locks,
 -- clears every soft chat reference, and deletes the project in one transaction.

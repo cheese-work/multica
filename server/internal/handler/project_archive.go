@@ -22,18 +22,22 @@ func writeProjectArchived(w http.ResponseWriter) {
 	writeErrorCode(w, http.StatusConflict, projectArchivedCode, "project is archived; restore it before adding issues")
 }
 
-// projectIsArchived reports whether a workspace project is archived. A
-// project that cannot be read reports false: callers have already validated
-// existence and only need the archive bit.
+// projectIsArchived reports whether a workspace project is archived and
+// share-locks its row, so a caller inside a transaction serializes with
+// ArchiveProject and its autopilot pause sweep: an archive in flight either
+// commits first (this reports true) or waits for the caller's commit and then
+// sweeps what the caller wrote (CHE-9684). A project that cannot be read
+// reports false: callers have already validated existence and only need the
+// archive bit.
 func (h *Handler) projectIsArchived(ctx context.Context, q *db.Queries, projectID, workspaceID pgtype.UUID) bool {
 	if !projectID.Valid {
 		return false
 	}
-	project, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{
+	archivedAt, err := q.LockProjectArchiveState(ctx, db.LockProjectArchiveStateParams{
 		ID:          projectID,
 		WorkspaceID: workspaceID,
 	})
-	return err == nil && project.ArchivedAt.Valid
+	return err == nil && archivedAt.Valid
 }
 
 // ArchiveProjectResponse is the archived project plus the autopilots the

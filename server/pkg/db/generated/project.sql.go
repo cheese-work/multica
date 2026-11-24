@@ -671,6 +671,27 @@ func (q *Queries) LockIssueProjectStatus(ctx context.Context, id pgtype.UUID) (s
 	return status, err
 }
 
+const lockProjectArchiveState = `-- name: LockProjectArchiveState :one
+SELECT archived_at FROM project
+WHERE id = $1 AND workspace_id = $2
+FOR SHARE
+`
+
+type LockProjectArchiveStateParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Share-locks the project row and returns its archive bit. Archiving updates
+// the row, so a save that decides on this read serializes with the archive and
+// its autopilot pause sweep instead of reading a pre-archive snapshot.
+func (q *Queries) LockProjectArchiveState(ctx context.Context, arg LockProjectArchiveStateParams) (pgtype.Timestamptz, error) {
+	row := q.db.QueryRow(ctx, lockProjectArchiveState, arg.ID, arg.WorkspaceID)
+	var archived_at pgtype.Timestamptz
+	err := row.Scan(&archived_at)
+	return archived_at, err
+}
+
 const lockProjectForChatSessionCreate = `-- name: LockProjectForChatSessionCreate :one
 SELECT id FROM project
 WHERE id = $1 AND workspace_id = $2

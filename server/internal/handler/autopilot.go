@@ -914,11 +914,6 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if h.projectIsArchived(r.Context(), h.Queries, projectID, wsUUID) {
-		writeProjectArchived(w)
-		return
-	}
-
 	// Parse before insert so a malformed payload doesn't open a transaction.
 	subscribers, ok := parseAutopilotSubscribers(w, req.Subscribers)
 	if !ok {
@@ -939,6 +934,15 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 	// either this save commits first and revocation prunes it, or revocation
 	// commits first and this save rejects the departed subscriber.
 	if !h.lockAndValidateAutopilotSubscribers(w, r, qtx, subscribers, wsUUID) {
+		return
+	}
+
+	// The archive check shares the insert's transaction and locks the project
+	// row: ArchiveProject updates that row before it sweeps autopilots, so an
+	// archive in flight makes this wait, then refuse, rather than insert an
+	// active autopilot the sweep never sees (CHE-9684).
+	if h.projectIsArchived(r.Context(), qtx, projectID, wsUUID) {
+		writeProjectArchived(w)
 		return
 	}
 
