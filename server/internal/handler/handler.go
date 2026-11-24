@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/multica-ai/multica/server/internal/cibroker"
+	"github.com/multica-ai/multica/server/internal/githubrepo"
 	"github.com/multica-ai/multica/server/internal/secrets/seal"
 	"log/slog"
 	"math"
@@ -255,7 +256,10 @@ type Handler struct {
 	Queries *db.Queries
 	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
 	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
-	ActionRequestsEnabled  bool
+	ActionRequestsEnabled bool
+	// GitHubRepoCreator runs an approved github.repo.create (CHE-9525). Nil
+	// makes the approval end as a failed action.
+	GitHubRepoCreator      githubrepo.Creator
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
 	TxStarter              txStarter

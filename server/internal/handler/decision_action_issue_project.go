@@ -114,6 +114,9 @@ func projectIDString(id pgtype.UUID) string {
 // run budget.
 func (handler *Handler) requestClassFor(ctx context.Context, issue db.Issue, agentClass string, draft *decisionActionDraft) (string, error) {
 	class := actionRequestClass(agentClass, draft.Definition.MinClass)
+	if err := refuseRepoCreateClass(draft, class); err != nil {
+		return "", err
+	}
 	if draft.Type != issueProjectSetType || class != "reversible" {
 		return class, nil
 	}

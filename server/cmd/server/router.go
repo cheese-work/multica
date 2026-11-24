@@ -30,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/gitca"
+	"github.com/multica-ai/multica/server/internal/githubrepo"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -523,6 +524,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// the same base URL so Billing cannot be readable while invitation writes
 	// silently skip Cloud's authoritative seat policy.
 	h.SeatCapacity = seatCapacityExecutor(signupConfig.CloudURL)
+	// github.repo.create (CHE-9525): the org-admin tokens live only in this
+	// process's environment; an approved action is the only caller.
+	repoCreator, repoCreatorErr := githubrepo.NewClientFromEnv(os.Getenv)
+	if repoCreatorErr != nil {
+		slog.Warn("github repo creation disabled", "error", repoCreatorErr)
+	}
+	h.GitHubRepoCreator = repoCreator
 	capacityLocker := seatcapacity.NewWorkspaceLocker(pool)
 	h.SeatCapacityLocker = capacityLocker
 	if seatcapacity.CanRunWorker(h.SeatCapacity) {
