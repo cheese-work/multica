@@ -5424,7 +5424,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	assigneeSupplied := req.AssigneeType != nil || req.AssigneeID != nil
 	chained := chainsSameOwner(actorType, callerRun, handoff, params)
 	suppressRun := req.SuppressRun || chained
-	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
+	writeCtx, handed := withWakeupHandedTo(r.Context(), h.handedToAgentIfRun(handoffSlotRequest(r, req), actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun))
 	writeCtx = withQuickMoveCard(withBudgetActor(writeCtx, r), r)
 	// The handoff comment rides to the run as context. A run that will start
 	// refuses a comment that is not a live comment of this issue; a move that
@@ -5442,7 +5442,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case ok:
 			existingContext = append(existingContext, parseUUID(*req.HandoffCommentID))
-		case h.writeWillRun(r, actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun):
+		case h.writeWillRun(handoffSlotRequest(r, req), actorType, actorID, prevIssue, params, assigneeSupplied, handoff != nil, suppressRun):
 			writeErrorCode(w, http.StatusBadRequest, "comment_not_on_issue", "handoff_comment_id is not a comment of this issue")
 			return
 		}
@@ -5623,7 +5623,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if handoff != nil && req.StopPreviousAssigneeRuns {
 		h.stopPreviousAssigneeRuns(r.Context(), workflowWrite, issue, actorType, actorID)
 	}
-	trigger, willRun := h.IssueService.WillEnqueueRun(r.Context(),
+	// The run is keyed by the thread of the comment that explains the move, so
+	// the pending check looks at that slot only (CHE-9607).
+	trigger, willRun := h.IssueService.WillEnqueueRun(withHandoffSlot(r.Context(), handoffContextIDs(statusRec, existingContext)),
 		service.IssueTriggerInput{
 			Issue:              issue,
 			PrevStatus:         prevIssue.Status,

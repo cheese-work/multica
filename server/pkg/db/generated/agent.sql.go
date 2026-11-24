@@ -7313,6 +7313,50 @@ func (q *Queries) HasPendingTaskForIssueAndAgentAtStep(ctx context.Context, arg 
 	return has_pending, err
 }
 
+const hasPendingTaskForIssueAndAgentAtStepInThread = `-- name: HasPendingTaskForIssueAndAgentAtStepInThread :one
+SELECT count(*) > 0 AS has_pending FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE($3::text, '') = ''
+    OR context->>'head_sha' = $3::text
+  )
+  AND NOT (
+    trigger_comment_id IS NULL
+    AND workflow_step IS NOT NULL
+    AND workflow_step <> $4::text
+  )
+  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($5::uuid)
+`
+
+type HasPendingTaskForIssueAndAgentAtStepInThreadParams struct {
+	IssueID         pgtype.UUID `json:"issue_id"`
+	AgentID         pgtype.UUID `json:"agent_id"`
+	HeadSha         pgtype.Text `json:"head_sha"`
+	Step            string      `json:"step"`
+	ThreadCommentID pgtype.UUID `json:"thread_comment_id"`
+}
+
+// HasPendingTaskForIssueAndAgentAtStep scoped to the pending slot a handoff
+// run takes (CHE-9607): the thread of its handoff comment, or the NULL slot
+// for none. A run held in another slot does not coalesce with it (the unique
+// index keys on the thread), so it must not stop the step run being queued.
+func (q *Queries) HasPendingTaskForIssueAndAgentAtStepInThread(ctx context.Context, arg HasPendingTaskForIssueAndAgentAtStepInThreadParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasPendingTaskForIssueAndAgentAtStepInThread,
+		arg.IssueID,
+		arg.AgentID,
+		arg.HeadSha,
+		arg.Step,
+		arg.ThreadCommentID,
+	)
+	var has_pending bool
+	err := row.Scan(&has_pending)
+	return has_pending, err
+}
+
 const hasPendingTaskForIssueAndAgentExcludingTriggerComment = `-- name: HasPendingTaskForIssueAndAgentExcludingTriggerComment :one
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1

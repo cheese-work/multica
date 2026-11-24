@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -235,4 +236,39 @@ func (h *Handler) publishHandoffComment(ctx context.Context, issue db.Issue, rec
 		"issue_revision":      rec.created.IssueRevision,
 	})
 	h.triggerTasksForComment(ctx, issue, comment, nil, actorType, actorID, rec.comment.originatorUserID, rec.comment.suppressedAgentID, commentSteerRequest{})
+}
+
+// withHandoffSlot names the first of a move's handoff comments on ctx, the one
+// the run is keyed by, so a pending-run check looks at the slot the run takes.
+func withHandoffSlot(ctx context.Context, ids []pgtype.UUID) context.Context {
+	if len(ids) == 0 || !ids[0].Valid {
+		return ctx
+	}
+	return service.WithStatusHandoffComment(ctx, ids[0])
+}
+
+// handoffSlotRequest is r carrying the comment a move's run will be keyed by,
+// for the checks that run before the write: the new handoff comment, else the
+// legacy handoff_comment_id, else the first attached comment (the order
+// handoffContextIDs gives). A new comment starts a thread no run holds, so an
+// id of nothing stands in for it.
+func handoffSlotRequest(r *http.Request, req UpdateIssueRequest) *http.Request {
+	var ids []pgtype.UUID
+	if req.HandoffComment != nil {
+		ids = append(ids, pgtype.UUID{Bytes: uuid.New(), Valid: true})
+	}
+	if req.HandoffCommentID != nil {
+		if id, err := util.ParseUUID(*req.HandoffCommentID); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	for _, raw := range req.AttachCommentIDs {
+		if id, err := util.ParseUUID(raw); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	if ctx := withHandoffSlot(r.Context(), ids); ctx != r.Context() {
+		return r.WithContext(ctx)
+	}
+	return r
 }

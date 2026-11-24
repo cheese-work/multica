@@ -2426,6 +2426,28 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     AND workflow_step <> sqlc.arg('step')::text
   );
 
+-- name: HasPendingTaskForIssueAndAgentAtStepInThread :one
+-- HasPendingTaskForIssueAndAgentAtStep scoped to the pending slot a handoff
+-- run takes (CHE-9607): the thread of its handoff comment, or the NULL slot
+-- for none. A run held in another slot does not coalesce with it (the unique
+-- index keys on the thread), so it must not stop the step run being queued.
+SELECT count(*) > 0 AS has_pending FROM agent_task_queue
+WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+  AND (
+    COALESCE(sqlc.narg('head_sha')::text, '') = ''
+    OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+  AND NOT (
+    trigger_comment_id IS NULL
+    AND workflow_step IS NOT NULL
+    AND workflow_step <> sqlc.arg('step')::text
+  )
+  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(sqlc.narg('thread_comment_id')::uuid);
+
 -- name: LastVerdictHeadSHA :one
 -- PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a
 -- review dispatched for that head, with nothing pushed since, would only repeat

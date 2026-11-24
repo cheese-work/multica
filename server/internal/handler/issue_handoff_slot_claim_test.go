@@ -9,11 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/daemon"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
@@ -87,34 +90,6 @@ func eachPR(t *testing.T, fn func(t *testing.T)) {
 			t.Cleanup(func() { slotLinkPR = prior })
 			fn(t)
 		})
-	}
-}
-
-// eachGatedPR runs a case with a PR bound only. These writers (the status move,
-// the agent workflow intent, the agent edge move and the route) ask
-// IssueService.WillEnqueueRun first, and its pending check
-// (hasPendingRun / hasPendingStepRun) matches a run in any slot when the issue
-// has no PR. That gate is outside S1c, so without a PR it stops the move before
-// the preflight S1c changes is reached. With a PR the gate keys on the head
-// and the preflight decides. The other cases reach the preflight either way and
-// use eachPR.
-func eachGatedPR(t *testing.T, fn func(t *testing.T)) {
-	t.Helper()
-	t.Run("PR bound", func(t *testing.T) {
-		prior := slotLinkPR
-		slotLinkPR = true
-		t.Cleanup(func() { slotLinkPR = prior })
-		fn(t)
-	})
-}
-
-// skipAgentWithoutPR skips an agent target on an issue with no PR: the agent
-// move reaches its intent only through WillEnqueueRun (see eachGatedPR). The
-// squad intent is dispatched by the handler directly, so it runs both ways.
-func skipAgentWithoutPR(t *testing.T, squad bool) {
-	t.Helper()
-	if !slotLinkPR && !squad {
-		t.Skip("agent move stops at the WillEnqueueRun pending gate without a PR (outside S1c)")
 	}
 }
 
@@ -295,7 +270,7 @@ func memberMoveAttribution() handoffRun {
 // Acceptance (1): no handoff comment, a run in thread T. The move starts the
 // step run in the NULL slot; the run in T is unchanged and still replies in T.
 func TestSlotClaim_StatusMove_NoHandoff_SideRunDoesNotBlock(t *testing.T) {
-	eachGatedPR(t, func(t *testing.T) {
+	eachPR(t, func(t *testing.T) {
 		forEachSlotCase(t, "status move", func(t *testing.T, c slotCase) {
 			c.sideRun(t)
 			if code, body := c.statusMove(t, false); code != http.StatusOK {
@@ -312,7 +287,7 @@ func TestSlotClaim_StatusMove_NoHandoff_SideRunDoesNotBlock(t *testing.T) {
 // Acceptance (3) and (5): the handoff comment is in thread T, T is free and a
 // non-step run holds the NULL slot. The step run takes T.
 func TestSlotClaim_StatusMove_Handoff_ThreadFree_NullHeld(t *testing.T) {
-	eachGatedPR(t, func(t *testing.T) {
+	eachPR(t, func(t *testing.T) {
 		forEachSlotCase(t, "status move", func(t *testing.T, c slotCase) {
 			nullHolder := c.holder(t, "")
 			if code, body := c.statusMove(t, true); code != http.StatusOK {
@@ -422,7 +397,6 @@ func TestSlotClaim_WorkflowIntent_SideRunDoesNotBlock(t *testing.T) {
 	eachPR(t, func(t *testing.T) {
 		for _, squad := range []bool{false, true} {
 			t.Run(targetName(squad), func(t *testing.T) {
-				skipAgentWithoutPR(t, squad)
 				c := slotIntentCase(t, squad)
 				c.sideRun(t)
 
@@ -445,7 +419,6 @@ func TestSlotClaim_WorkflowIntent_Handoff_ThreadFree_NullHeld(t *testing.T) {
 	eachPR(t, func(t *testing.T) {
 		for _, squad := range []bool{false, true} {
 			t.Run(targetName(squad), func(t *testing.T) {
-				skipAgentWithoutPR(t, squad)
 				c := slotIntentCase(t, squad)
 				nullHolder := c.holder(t, "")
 
@@ -470,7 +443,6 @@ func TestSlotClaim_WorkflowIntent_Handoff_ThreadHeld_IntentSkipsWithoutAbort(t *
 			for _, media := range []bool{false, true} {
 				name := targetName(squad) + map[bool]string{false: "/queued", true: "/media pending"}[media]
 				t.Run(name, func(t *testing.T) {
-					skipAgentWithoutPR(t, squad)
 					c := slotIntentCase(t, squad)
 					issueID := util.UUIDToString(c.issue.ID)
 					var held string
@@ -480,6 +452,23 @@ func TestSlotClaim_WorkflowIntent_Handoff_ThreadHeld_IntentSkipsWithoutAbort(t *
 						held = c.holder(t, c.threadT)
 					}
 
+					if !squad && !slotLinkPR {
+						// The agent's move is judged before the write: with no PR a
+						// run holding the handoff's thread stops it there, so the
+						// move commits with no intent and no second run. A squad
+						// intent is written by the writer and settles below.
+						moveIntoHandoffStep(t, issueID, map[string]any{"handoff_comment_id": c.handoff})
+						if n := dbfx.Count(t, `SELECT count(*) FROM issue_handoff_dispatch WHERE issue_id = $1`, issueID); n != 0 {
+							t.Errorf("%d handoff intents, want none: the held thread stops the move's run", n)
+						}
+						if got := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND status = 'in_progress'`, issueID); got != 1 {
+							t.Errorf("the move did not commit")
+						}
+						if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2`, issueID, c.agentID); n != 1 {
+							t.Errorf("%d runs, want only the holder %s", n, held)
+						}
+						return
+					}
 					intent := c.moveIntoStep(t, true)
 
 					if got := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND status IN ('in_progress','todo')`, issueID); got != 1 {
@@ -502,11 +491,32 @@ func TestSlotClaim_WorkflowIntent_Handoff_ThreadHeld_IntentSkipsWithoutAbort(t *
 	})
 }
 
+// moveOnEdge drives the real edge move into the step and returns the run the move
+// inserted. The settle step runs only for a run the move inserted: a refused run
+// (a duplicate among them) leaves it unset, which fails the test.
+func moveOnEdge(t *testing.T, issue db.Issue, to string) string {
+	t.Helper()
+	t.Cleanup(giveBackRunBudgetHooks)
+	var inserted string
+	settle := func(_ context.Context, _ pgx.Tx, taskID pgtype.UUID) (func(context.Context), error) {
+		inserted = util.UUIDToString(taskID)
+		return nil, nil
+	}
+	moved, ranHandler, err := testHandler.tryMoveIssueOnEdgeSettle(context.Background(), issue, to, "ci_green_advance", nil, true, nil, settle)
+	if err != nil || !moved || !ranHandler {
+		t.Fatalf("tryMoveIssueOnEdge = moved %v, ran %v, err %v; want a move that ran the handler", moved, ranHandler, err)
+	}
+	if inserted == "" {
+		t.Fatalf("the edge move inserted no run: the handler's run was refused or taken for a duplicate")
+	}
+	return inserted
+}
+
 // Acceptance (7), edge move: the step's handler is the target, which has a queued
 // comment run in thread T. The move starts one step run beside it, committed
 // with the move.
 func TestSlotClaim_EdgeMove_SideRunDoesNotBlock(t *testing.T) {
-	eachGatedPR(t, func(t *testing.T) {
+	eachPR(t, func(t *testing.T) {
 		edge, agentID := newHandoffEdgeCase(t, 9607101)
 		c := slotCaseOn(t, edge.issueID, agentID, false)
 		c.sideRun(t)
@@ -514,51 +524,50 @@ func TestSlotClaim_EdgeMove_SideRunDoesNotBlock(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(giveBackRunBudgetHooks)
 
-		moved, ranHandler, err := testHandler.tryMoveIssueOnEdge(context.Background(), issue, "in_review", "ci_green_advance", nil, true)
-		if err != nil || !moved || !ranHandler {
-			t.Fatalf("tryMoveIssueOnEdge = moved %v, ran %v, err %v; want a move that ran the handler", moved, ranHandler, err)
-		}
+		inserted := moveOnEdge(t, issue, "in_review")
 
 		stepRun := c.newRunBeside(t, c.side)
+		if inserted != stepRun {
+			t.Errorf("the edge move inserted run %s, but the run beside the side run is %s", inserted, stepRun)
+		}
 		claimed := claimRuns(t, c.runtimeID, c.side, stepRun)
 		c.wantClaimedStepRun(t, claimed[stepRun], "", memberMoveAttribution())
 		c.wantSideRunStillReplies(t, claimed)
 	})
 }
 
-// Acceptance (7), edge move, squad: the edge calls the squad enqueue when the
-// issue's assignee is a squad. No workflow step hands off to a squad, so the
-// helper is driven at that call, inside the transaction the edge move holds. The
-// edge builds no connected-app overlay for a leader's run, before or after S1c.
+// Acceptance (7), edge move, squad: the step's handler is a squad, so the
+// edge's own handoff assigns it and queues its leader's run. The workflow API
+// takes no squad handler, so the stored step is rewritten to one; everything
+// after that is the real edge. The leader has a queued comment run in thread T.
+// The move starts one leader step run beside it. The edge builds no
+// connected-app overlay for a leader's run, before or after S1c.
 func TestSlotClaim_EdgeMove_SquadLeaderRun_SideRunDoesNotBlock(t *testing.T) {
 	eachPR(t, func(t *testing.T) {
 		edge, agentID := newHandoffEdgeCase(t, 9607102)
-		setIssueAssigneeDirect(t, edge.issueID, "squad", dbfx.Squad(t, "slot edge squad "+workflowTestSuffix(), agentID))
+		squadID := dbfx.Squad(t, "slot edge squad "+workflowTestSuffix(), agentID)
+		dbfx.Exec(t, `UPDATE issue_workflow SET steps = (
+			SELECT jsonb_agg(CASE WHEN s->>'status_key' = 'in_review'
+				THEN jsonb_set(s, '{handler}', jsonb_build_object('type', 'squad', 'id', $2::text)) ELSE s END)
+			FROM jsonb_array_elements(steps) s) WHERE id = $1`, edge.workflowID, squadID)
 		c := slotCaseOn(t, edge.issueID, agentID, true)
 		c.noOverlay = true
 		c.sideRun(t)
-
-		ctx := context.Background()
-		tx, err := testHandler.TxStarter.Begin(ctx)
+		issue, err := testHandler.Queries.GetIssue(context.Background(), parseUUID(edge.issueID))
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback(ctx)
-		tq := testHandler.Queries.WithTx(tx)
-		runID, after, err := testHandler.onQueries(tq).enqueueSquadLeaderRunInTx(ctx, tq, c.issue)
-		if err != nil {
-			t.Fatalf("enqueueSquadLeaderRunInTx: %v", err)
-		}
-		if err := tx.Commit(ctx); err != nil {
-			t.Fatal(err)
-		}
-		if after != nil {
-			after()
+
+		inserted := moveOnEdge(t, issue, "in_review")
+		if got := dbfx.Count(t, `SELECT count(*) FROM issue WHERE id = $1 AND assignee_type = 'squad' AND status = 'in_review'`, edge.issueID); got != 1 {
+			t.Fatalf("the edge did not hand the issue to the squad")
 		}
 
-		stepRun := util.UUIDToString(runID)
+		stepRun := c.newRunBeside(t, c.side)
+		if inserted != stepRun {
+			t.Errorf("the edge move inserted run %s, but the run beside the side run is %s", inserted, stepRun)
+		}
 		claimed := claimRuns(t, c.runtimeID, c.side, stepRun)
 		c.wantClaimedStepRun(t, claimed[stepRun], "", memberMoveAttribution())
 		c.wantSideRunStillReplies(t, claimed)
@@ -581,7 +590,7 @@ func routeSlotCase(t *testing.T, squad bool) (routeCase, slotCase) {
 // the target has a queued comment run in thread T. The route starts one step run
 // beside it and reports it started.
 func TestSlotClaim_Route_SideRunDoesNotBlock(t *testing.T) {
-	eachGatedPR(t, func(t *testing.T) {
+	eachPR(t, func(t *testing.T) {
 		for _, squad := range []bool{false, true} {
 			t.Run(targetName(squad), func(t *testing.T) {
 				r, c := routeSlotCase(t, squad)
