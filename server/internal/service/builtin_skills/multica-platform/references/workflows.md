@@ -125,7 +125,8 @@ multica workflow webhook list <workflow-id>                    # never shows sec
   review. A reviewer tags every finding: `multica issue status <id> <status>
   --finding "P1@missing_rollback:<summary>"`; `P1:<summary>` without a category
   still works until the workspace setting `review_findings_category.mode` is
-  `required` (default `optional`). From round 2 on, a new P0 or P1
+  `required` (default `optional`; the flip to `required` is tracked in CHE-9416,
+  readiness: `--list --days 7` shows no `uncategorized` finding). From round 2 on, a new P0 or P1
   that round 1 did not list needs `@revision` (the revision introduced it), or
   the server refuses the verdict (`review_round_new_blocker`). Read-only.
 - `multica issue workflow escalate <id> --reason "<why>" [--output json]` moves
