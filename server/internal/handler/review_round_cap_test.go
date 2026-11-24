@@ -26,7 +26,6 @@ type roundCap struct {
 
 func newRoundCap(t *testing.T) roundCap {
 	t.Helper()
-	enableRoundsAutoSplit(t, testWorkspaceID)
 	for _, key := range []string{"agent_review", "need_decision"} {
 		if dbfx.Count(t, `SELECT count(*) FROM issue_status WHERE workspace_id = $1 AND key = $2`, testWorkspaceID, key) == 0 {
 			createTestCustomStatus(t, key, "started")
@@ -76,22 +75,6 @@ func (c roundCap) wantCard(t *testing.T, rounds int) {
 	}
 }
 
-// wantAutoSplit checks the round limit's auto-Split (CHE-9511): no decision
-// request, one review_rounds_auto_split row and one system notice that names
-// the round count, on any issue type.
-func (c roundCap) wantAutoSplit(t *testing.T, rounds int) {
-	t.Helper()
-	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, c.issueID); n != 0 {
-		t.Fatalf("decision requests = %d, want 0: the round limit auto-Splits", n)
-	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split' AND details->>'rounds' = $2`, c.issueID, fmt.Sprint(rounds)); n != 1 {
-		t.Fatalf("review_rounds_auto_split rows = %d, want 1", n)
-	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND type = 'system' AND content LIKE '%auto-Split at round limit%' AND content LIKE $2`, c.issueID, fmt.Sprintf("%%%d review rounds%%", rounds)); n != 1 {
-		t.Fatalf("auto-Split notices = %d, want 1", n)
-	}
-}
-
 func (c roundCap) status(t *testing.T) string {
 	t.Helper()
 	status, _, _ := issueStatusAndAssignee(t, c.issueID)
@@ -107,7 +90,7 @@ func TestRoundCap_FourthEntryIntoReviewGoesToNeedDecision(t *testing.T) {
 	if got := c.status(t); got != "need_decision" {
 		t.Fatalf("status after the 4th entry = %q, want need_decision", got)
 	}
-	c.wantAutoSplit(t, 3)
+	c.wantCard(t, 3)
 	var capped int
 	dbfx.QueryRow(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_capped'`, c.issueID).Scan(&capped)
 	if capped != 1 {
@@ -200,7 +183,7 @@ func TestRoundCap_ThirdReviewerWakeupGoesToNeedDecision(t *testing.T) {
 	if n := c.wakeups(t); n != 2 {
 		t.Fatalf("wakeups = %d, want 2: the 3rd must not wake the author", n)
 	}
-	c.wantAutoSplit(t, 3)
+	c.wantCard(t, 3)
 }
 
 // A wakeup to the reviewer's own agent, or one made outside agent_review, is
@@ -254,7 +237,7 @@ func TestRoundCap_ThirdStatusVerdictOpensCardAndRestartsTheCount(t *testing.T) {
 		t.Fatalf("status after the 3rd verdict = %q, want need_decision", status)
 	}
 	c := roundCap{l.agentID, l.issueID, l.run}
-	c.wantAutoSplit(t, 3)
+	c.wantCard(t, 3)
 	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_capped'`, l.issueID); n != 1 {
 		t.Fatalf("review_rounds_capped rows = %d, want 1", n)
 	}
@@ -315,7 +298,7 @@ func TestRoundCap_MixedWakeupAndStatusRoundsCountOnePR(t *testing.T) {
 	if got := c.status(t); got != "need_decision" {
 		t.Fatalf("status after wakeup + 2 status verdicts = %q, want need_decision", got)
 	}
-	c.wantAutoSplit(t, 3)
+	c.wantCard(t, 3)
 }
 
 // Two status verdicts then a wakeup: the wakeup is the third round.
@@ -329,7 +312,7 @@ func TestRoundCap_StatusRoundsThenWakeupIsTheThirdRound(t *testing.T) {
 	if got := c.status(t); got != "need_decision" {
 		t.Fatalf("status = %q, want need_decision", got)
 	}
-	c.wantAutoSplit(t, 3)
+	c.wantCard(t, 3)
 }
 
 // Rounds of another PR on the same issue do not count: a replacement PR starts
@@ -354,57 +337,20 @@ func TestRoundCap_RoundsAreCountedPerPR(t *testing.T) {
 	}
 }
 
-// CHE-9483, CHE-9511: the capped entry opens no card and records the
-// auto-Split on any issue type; the issue stays in need_decision for its
-// handler to split.
+// CHE-9483, CHE-9511: on an issue of any type the capped entry opens no card
+// and records the auto-Split; the issue stays in need_decision for its handler
+// to split.
 func TestRoundCap_CapOpensNoCardOnAnyIssueType(t *testing.T) {
+	enableRoundsAutoSplit(t, testWorkspaceID)
 	for _, title := range []string{"plan(WE006): round cap", "fix(handler): round cap", "task: round cap", "round cap"} {
-		t.Run(title, func(t *testing.T) {
-			c := newRoundCap(t)
-			dbfx.Exec(t, `UPDATE issue SET title = $2 WHERE id = $1`, c.issueID, title)
-			for _, ago := range []int{300, 200, 100} {
-				c.activity(t, "status_changed", "agent_review", ago)
-			}
-			c.enterReview(t)
-			if got := c.status(t); got != "need_decision" {
-				t.Fatalf("status after the 4th entry = %q, want need_decision", got)
-			}
-			c.wantAutoSplit(t, 3)
-		})
+		t.Run(title, func(t *testing.T) { wantCapOpensNoCard(t, title) })
 	}
 }
 
-// The reviewer-wakeup cap path takes the same auto-Split on a fix(...) issue.
-func TestRoundCap_ThirdReviewerWakeupAutoSplitsFixIssue(t *testing.T) {
-	c := newRoundCap(t)
-	dbfx.Exec(t, `UPDATE issue SET title = 'fix(handler): wakeup cap' WHERE id = $1`, c.issueID)
-	run := c.inReview(t)
-	author := otherReadyAgentID(t)
-	for round := 1; round <= 2; round++ {
-		c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
-	}
-	c.reviewerWakeup(t, run, author).Want(http.StatusConflict)
-	if got := c.status(t); got != "need_decision" {
-		t.Fatalf("status after the 3rd wakeup round = %q, want need_decision", got)
-	}
-	c.wantAutoSplit(t, 3)
-}
-
-// failAutoSplit makes the auto-Split's activity write fail for one issue, so
-// the fallback to the decision card runs. The trigger is dropped at cleanup.
-func (c roundCap) failAutoSplit(t *testing.T) {
+func wantCapOpensNoCard(t *testing.T, title string) {
 	t.Helper()
-	name := "che9511_fail_" + strings.ReplaceAll(c.issueID, "-", "")
-	dbfx.Exec(t, `CREATE OR REPLACE FUNCTION `+name+`() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'che9511 test: auto-split write refused'; END $$`)
-	dbfx.Exec(t, `CREATE TRIGGER `+name+` BEFORE INSERT ON activity_log FOR EACH ROW WHEN (NEW.action = 'review_rounds_auto_split' AND NEW.issue_id = '`+c.issueID+`') EXECUTE FUNCTION `+name+`()`)
-	dbfx.Cleanup(t, `DROP FUNCTION IF EXISTS `+name+`() CASCADE`)
-}
-
-// The auto-Split write fails: the card opens as it did before CHE-9511.
-func TestRoundCap_AutoSplitWriteFailsOpensCard(t *testing.T) {
 	c := newRoundCap(t)
-	dbfx.Exec(t, `UPDATE issue SET title = 'fix(handler): write fails' WHERE id = $1`, c.issueID)
-	c.failAutoSplit(t)
+	dbfx.Exec(t, `UPDATE issue SET title = $2 WHERE id = $1`, c.issueID, title)
 	for _, ago := range []int{300, 200, 100} {
 		c.activity(t, "status_changed", "agent_review", ago)
 	}
@@ -412,27 +358,64 @@ func TestRoundCap_AutoSplitWriteFailsOpensCard(t *testing.T) {
 	if got := c.status(t); got != "need_decision" {
 		t.Fatalf("status after the 4th entry = %q, want need_decision", got)
 	}
-	c.wantCard(t, 3)
-	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 0 {
-		t.Fatalf("auto-split rows = %d, want 0", n)
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, c.issueID); n != 0 {
+		t.Fatalf("decision requests = %d, want 0", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 1 {
+		t.Fatalf("auto-split rows = %d, want 1", n)
+	}
+	c.wantAutoSplitInMoveTx(t)
+}
+
+// wantAutoSplitInMoveTx checks the ordering the need_decision handler relies
+// on: the auto-Split decision (activity row and comment) commits in the same
+// transaction as the move to need_decision, so a handler run that the move
+// starts always finds it. Rows of one transaction share now().
+func (c roundCap) wantAutoSplitInMoveTx(t *testing.T) {
+	t.Helper()
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log a
+		JOIN activity_log m ON m.issue_id = a.issue_id AND m.action = 'status_changed' AND m.details->>'to' = 'need_decision'
+		WHERE a.issue_id = $1 AND a.action = 'review_rounds_auto_split' AND a.created_at = m.created_at`, c.issueID); n != 1 {
+		t.Fatalf("auto-split rows committed with the move to need_decision = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment c
+		JOIN activity_log m ON m.issue_id = c.issue_id AND m.action = 'status_changed' AND m.details->>'to' = 'need_decision'
+		WHERE c.issue_id = $1 AND c.type = 'system' AND c.content LIKE '%auto-Split at round limit%' AND c.created_at = m.created_at`, c.issueID); n != 1 {
+		t.Fatalf("auto-split comments committed with the move to need_decision = %d, want 1", n)
 	}
 }
 
+// The reviewer's wakeup path (agent_review step 4b) records the decision in the
+// same transaction as the move too.
+func TestRoundCap_WakeupCapRecordsAutoSplitWithTheMoveOnFixIssue(t *testing.T) {
+	enableRoundsAutoSplit(t, testWorkspaceID)
+	c := newRoundCap(t)
+	dbfx.Exec(t, `UPDATE issue SET title = 'fix(handler): round cap' WHERE id = $1`, c.issueID)
+	run := c.inReview(t)
+	author := otherReadyAgentID(t)
+	for round := 1; round <= 2; round++ {
+		c.reviewerWakeup(t, run, author).Want(http.StatusCreated)
+	}
+	c.reviewerWakeup(t, run, author).Want(http.StatusConflict)
+	if got := c.status(t); got != "need_decision" {
+		t.Fatalf("status = %q, want need_decision", got)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, c.issueID); n != 0 {
+		t.Fatalf("decision requests = %d, want 0", n)
+	}
+	c.wantAutoSplitInMoveTx(t)
+}
+
 // With the setting off (the default) an issue of any type keeps the card.
-func TestRoundCap_SettingOffKeepsCardOnAnyIssueType(t *testing.T) {
-	for _, title := range []string{"plan(WE006): round cap", "fix(handler): round cap"} {
-		t.Run(title, func(t *testing.T) {
-			c := newRoundCap(t)
-			dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'review_rounds_auto_split' WHERE id = $1`, testWorkspaceID)
-			dbfx.Exec(t, `UPDATE issue SET title = $2 WHERE id = $1`, c.issueID, title)
-			for _, ago := range []int{300, 200, 100} {
-				c.activity(t, "status_changed", "agent_review", ago)
-			}
-			c.enterReview(t)
-			c.wantCard(t, 3)
-			if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 0 {
-				t.Fatalf("auto-split rows = %d, want 0", n)
-			}
-		})
+func TestRoundCap_FixIssueKeepsCardWhileSettingIsOff(t *testing.T) {
+	c := newRoundCap(t)
+	dbfx.Exec(t, `UPDATE issue SET title = 'fix(handler): round cap' WHERE id = $1`, c.issueID)
+	for _, ago := range []int{300, 200, 100} {
+		c.activity(t, "status_changed", "agent_review", ago)
+	}
+	c.enterReview(t)
+	c.wantCard(t, 3)
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 0 {
+		t.Fatalf("auto-split rows = %d, want 0", n)
 	}
 }

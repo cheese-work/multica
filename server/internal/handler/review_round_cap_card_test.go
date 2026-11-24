@@ -3,6 +3,9 @@ package handler
 import (
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -16,8 +19,6 @@ func TestRoundCap_MissingCardIsAnnouncedOnTheIssue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enableRoundsAutoSplit(t, wsID)
-	roundCap{issueID: issueID}.failAutoSplit(t)
 	testHandler.ensureReviewRoundsCard(t.Context(), issue, roundsCap{rounds: 3})
 	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND type = 'system' AND content LIKE '%could not open its decision card%'`, issueID); n != 1 {
 		t.Fatalf("missing-card notices = %d, want 1", n)
@@ -28,21 +29,45 @@ func TestRoundCap_MissingCardIsAnnouncedOnTheIssue(t *testing.T) {
 }
 
 // CHE-9483, CHE-9511: an issue of any type that reaches the round limit gets no
-// decision card. The server records the auto-Split as an agent decision and
-// tells the need_decision handler to run the Split path.
+// decision card when the setting is on. The server records the auto-Split as an
+// agent decision and tells the need_decision handler to run the Split path.
 func TestRoundCap_AnyIssueTypeAutoSplitsWithoutCard(t *testing.T) {
 	enableRoundsAutoSplit(t, testWorkspaceID)
-	for _, title := range []string{"plan(WE006): split the workstream", "fix(handler): split the fix", "task: split the task"} {
-		issueID := dbfx.Issue(t, title, testutil.Cols{})
-		issue, err := testHandler.Queries.GetIssue(t.Context(), parseUUID(issueID))
-		if err != nil {
-			t.Fatal(err)
-		}
-		testHandler.ensureReviewRoundsCard(t.Context(), issue, roundsCap{rounds: 3})
-		roundCap{issueID: issueID}.wantAutoSplit(t, 3)
-		if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND content LIKE '%could not open its decision card%'`, issueID); n != 0 {
-			t.Fatalf("%s: missing-card notices = %d, want 0", title, n)
-		}
+	for _, title := range []string{"plan(WE006): split the workstream", "fix(handler): split the fix", "task: split the task", "no type prefix"} {
+		t.Run(title, func(t *testing.T) { wantAutoSplitWithoutCard(t, title) })
+	}
+}
+
+func wantAutoSplitWithoutCard(t *testing.T, title string) {
+	t.Helper()
+	issueID := dbfx.Issue(t, title, testutil.Cols{})
+	issue, err := testHandler.Queries.GetIssue(t.Context(), parseUUID(issueID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capped roundsCap
+	if err := testHandler.withPgxTx(t.Context(), func(tx pgx.Tx) error {
+		var err error
+		capped, err = recordRoundsCap(t.Context(), testHandler.Queries.WithTx(tx), issue, pgtype.UUID{}, 3)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !capped.autoSplit {
+		t.Fatal("cap did not take the auto-Split path")
+	}
+	testHandler.ensureReviewRoundsCard(t.Context(), issue, capped)
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, issueID); n != 0 {
+		t.Fatalf("decision requests = %d, want 0", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split' AND details->>'rounds' = '3'`, issueID); n != 1 {
+		t.Fatalf("auto-split activity rows = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND type = 'system' AND content LIKE '%auto-Split at round limit%' AND content LIKE '%3 review rounds%'`, issueID); n != 1 {
+		t.Fatalf("auto-split notices = %d, want 1", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND content LIKE '%could not open its decision card%'`, issueID); n != 0 {
+		t.Fatalf("missing-card notices = %d, want 0", n)
 	}
 }
 
