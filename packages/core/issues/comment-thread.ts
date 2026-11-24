@@ -1,5 +1,6 @@
 import type { Comment, TimelineEntry } from "../types";
 import { sortTimelineEntriesAsc } from "./timeline-sort";
+import { pickDecisionFields } from "./decision-fields";
 
 export function commentToTimelineEntry(c: Comment): TimelineEntry {
   return {
@@ -25,6 +26,11 @@ export function commentToTimelineEntry(c: Comment): TimelineEntry {
     supplement_failure_reason: c.supplement_failure_reason,
     supplement_delivered_at: c.supplement_delivered_at,
     deleted_at: c.deleted_at,
+    // Fork: decision-card and supersede fields ride on every timeline entry
+    // source (live, snapshot and historical thread reads).
+    superseded_by_id: c.superseded_by_id,
+    supersedes: c.supersedes,
+    ...pickDecisionFields(c),
   };
 }
 

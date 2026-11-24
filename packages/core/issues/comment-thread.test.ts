@@ -22,4 +22,19 @@ describe("requested comment thread", () => {
     expect(mergeCommentThread([live], [comment])[0]).toEqual(live);
     expect(mergeCommentThread([commentToTimelineEntry(comment)], [{ ...comment, revision: 4, content: "Updated chart" }])[0]?.content).toBe("Updated chart");
   });
+
+  it("keeps the fork's decision and supersede fields on every thread entry", () => {
+    const decided: Comment = {
+      ...comment,
+      superseded_by_id: "newer",
+      supersedes: [{ id: "older" } as never],
+      decision_request_id: "req-1",
+      decision_state: "effective",
+    };
+    const entry = mergeCommentThread([], [decided])[0];
+    expect(entry?.superseded_by_id).toBe("newer");
+    expect(entry?.supersedes).toEqual([{ id: "older" }]);
+    expect(entry?.decision_request_id).toBe("req-1");
+    expect(entry?.decision_state).toBe("effective");
+  });
 });

@@ -36,11 +36,11 @@ import {
   type ToggleCommentReactionVars,
 } from "@multica/core/issues/mutations";
 import {
-  commentToTimelineEntry as baseCommentToTimelineEntry,
+  commentToTimelineEntry,
   mergeCommentThread,
 } from "@multica/core/issues/comment-thread";
 import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
-import { keepDecisionFields, pickDecisionFields } from "@multica/core/issues/decision-fields";
+import { keepDecisionFields } from "@multica/core/issues/decision-fields";
 import {
   unhandledCommentTriggerOutcomes,
   mentionLabelsByTarget,
@@ -53,18 +53,6 @@ import { useT } from "../../i18n";
 import { blockedShortReasonLabel } from "../blocked-trigger-copy";
 
 type TLCache = TimelineEntry[];
-
-// Fork: decision-card and supersede fields ride on the timeline entry. The
-// upstream mapper (core/issues/comment-thread.ts) does not copy them.
-function commentToTimelineEntry(c: Comment): TimelineEntry {
-  return {
-    ...baseCommentToTimelineEntry(c),
-    superseded_by_id: c.superseded_by_id,
-    supersedes: c.supersedes,
-    ...pickDecisionFields(c),
-  };
-}
-
 
 function acceptsCommentRevision(
   current: TimelineEntry,
