@@ -39,6 +39,10 @@ run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.e
 # deploy, readback, readback-delay or readback-confirm suspends automatic deploys: the next
 # authorize-c00 finds the latest finished run failed and builds without
 # deploying, until a later deploy succeeds (the owner's dispatch lifts it).
+# A first-attempt run that the quiescence preflight deferred (the marker step in
+# the `deploy` job, CHE-9367) is named as such in the warning, but it still
+# suspends: nothing is skipped yet (CHE-9330). `authorize-c00.py --explain`
+# prints the walk and the deferral streak; the workflow does not call it.
 # The cutover controller rolls back by digest on a failed cutover, and the
 # `rollback` job does the same after a failed readback, readback-delay or readback-confirm.
 #
