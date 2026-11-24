@@ -23,9 +23,20 @@ export {
 } from "./issues-scope-store";
 export { useCommentCollapseStore } from "./comment-collapse-store";
 export {
+  useIssueSidebarSectionsStore,
+  selectIssueSidebarOrder,
+  selectIssueSidebarCustomized,
+  resolveIssueSidebarOrder,
+  resolveIssueSidebarHidden,
+  ISSUE_SIDEBAR_SECTIONS,
+  ISSUE_SIDEBAR_ALWAYS_SHOWN,
+  type IssueSidebarSection,
+} from "./issue-sidebar-sections-store";
+export {
   useResolvedExpandStore,
   selectExpandedResolved,
 } from "./resolved-expand-store";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 export {
   useIssueDisclosureStore,
   selectDescriptionExpanded,
@@ -37,6 +48,11 @@ export {
   unfoldAllCommentThreads,
 } from "./thread-fold-coordinator";
 export { useCommentComposerStore, type RunningAgentReply } from "./comment-composer-store";
+||||||| 2ae2f08005
+export { useCommentComposerStore, type RunningAgentReply } from "./comment-composer-store";
+=======
+export { useCommentComposerStore, type CommentImageLayout, type RunningAgentReply } from "./comment-composer-store";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 export { useCommentDraftStore, type CommentDraftKey } from "./comment-draft-store";
 export {
   myIssuesViewStore,

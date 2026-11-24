@@ -21,7 +21,8 @@ import {
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, motion } from "motion/react";
+import { useReducedMotion } from "@multica/core/appearance";
 import { toast } from "sonner";
 import {
   PreviewTooLargeError,
@@ -33,6 +34,7 @@ import {
   Code,
   Copy,
   Download,
+  Ellipsis,
   ExternalLink,
   File,
   FileAudio,
@@ -42,6 +44,7 @@ import {
   FileVideo,
   ImageIcon,
   LayoutGrid,
+  Link2,
   ListTree,
   Loader2,
   Maximize2,
@@ -56,13 +59,29 @@ import {
   type IconComponent,
 } from "@multica/ui/icons";
 import type { Attachment } from "@multica/core/types";
-import { attachmentIdFromStorageURL } from "@multica/core/types/attachment-url";
+import {
+  attachmentIdFromDownloadURL,
+  attachmentIdFromLocalUploadURL,
+  attachmentIdFromStorageURL,
+} from "@multica/core/types/attachment-url";
 import { useConfigStore } from "@multica/core/config";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { createShortcutChord } from "@multica/core/shortcuts";
 import { cn } from "@multica/ui/lib/utils";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
-import { copyImage } from "@multica/ui/lib/clipboard";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@multica/ui/components/ui/dropdown-menu";
+import { copyImage, copyText } from "@multica/ui/lib/clipboard";
 import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import {
   UI_EASE_OUT,
@@ -89,8 +108,12 @@ import { parseStructured } from "./utils/parse-structured";
 import { formatBytes } from "../common/format-bytes";
 import { ShortcutKeycaps } from "../common/shortcut-keycaps";
 import { useDownloadAttachment } from "./use-download-attachment";
+import { useAttachmentDownloadState } from "./hooks/use-attachment-download-state";
 import { useAttachmentHtmlText } from "./hooks/use-attachment-html-text";
-import { useResignedInlineMedia } from "./hooks/use-inline-media-url";
+import {
+  useFreshStreamedMediaURL,
+  useResignedInlineMedia,
+} from "./hooks/use-inline-media-url";
 import { useZoomCanvas, type ZoomCanvasApi } from "./hooks/use-zoom-canvas";
 import { ZoomCanvas, ZoomControls } from "./zoom-canvas";
 import type { Size } from "./utils/zoom-transform";
@@ -110,6 +133,7 @@ import {
   HtmlViewportFrame,
   type HtmlViewport,
 } from "./html-viewport-frame";
+import { withWidthBridge } from "./utils/iframe-width-bridge";
 
 // Preview source — full attachment, or URL-only (media types only)
 //
@@ -193,7 +217,9 @@ function normalize(source: PreviewSource): PreviewState {
     filename: source.filename,
     contentType: "",
     mediaUrl: resolvePublicFileUrl(source.url) ?? source.url,
-    attachmentId: null,
+    attachmentId:
+      attachmentIdFromDownloadURL(source.url) ??
+      attachmentIdFromLocalUploadURL(source.url) ?? null,
     sizeBytes: 0,
     kind: source.forceKind ?? getPreviewKind("", source.filename),
   };
@@ -223,6 +249,15 @@ export interface PreviewLocateAction {
   onSelect: () => void;
 }
 
+/**
+ * Copy a link to the file on screen — labelled by the host, which knows what
+ * the link points at (for an issue deliverable, its newest version).
+ */
+export interface PreviewCopyLinkAction {
+  label: string;
+  onSelect: () => void;
+}
+
 /** The info panel beside the stage (MUL-7649). Its open state outlives the file. */
 export interface PreviewInfoPanel {
   content: ReactNode;
@@ -237,12 +272,19 @@ interface AttachmentPreviewModalProps {
   sequence?: PreviewSequence;
   /** Fired when the image kind fails to load — lets a gallery skip the frame. */
   onImageError?: () => void;
+  /**
+   * The image failed and the host is staying on it: show the failure on the
+   * stage (with a download) instead of a broken frame.
+   */
+  imageFailed?: boolean;
   /** Rendered after the file name, e.g. a version switcher. */
   titleAccessory?: ReactNode;
   /** Adds the info button and `I`. */
   info?: PreviewInfoPanel;
   /** Adds "show where this was posted": the caller closes the viewer and scrolls. */
   locate?: PreviewLocateAction;
+  /** Adds a "copy link" button for the file on screen. */
+  copyLink?: PreviewCopyLinkAction;
   /** Adds the overview button and `G`. */
   onOpenOverview?: () => void;
 }
@@ -416,14 +458,16 @@ export function AttachmentPreviewModal({
   onExitComplete,
   sequence,
   onImageError,
+  imageFailed,
   titleAccessory,
   info,
   locate,
+  copyLink,
   onOpenOverview,
 }: AttachmentPreviewModalProps & { onExitComplete?: () => void }) {
   const download = useDownloadAttachment();
   const cdnDomain = useConfigStore((s) => s.cdnDomain);
-  const shouldReduceMotion = useReducedMotion() ?? false;
+  const shouldReduceMotion = useReducedMotion();
   const state = normalize(source);
   // useWorkspaceSlug (not useWorkspacePaths) — returns null outside a
   // workspace route instead of throwing, so the new-tab button just hides.
@@ -504,10 +548,9 @@ export function AttachmentPreviewModal({
     const attachmentId =
       state.attachmentId ?? attachmentIdFromStorageURL(state.mediaUrl, cdnDomain);
     if (attachmentId) {
-      download(attachmentId);
-    } else {
-      openExternal(state.mediaUrl);
+      return download(attachmentId);
     }
+    return openExternal(state.mediaUrl);
   };
 
   // Open-in-new-tab: the full-page route (/attachments/{id}/preview) shows
@@ -542,8 +585,9 @@ export function AttachmentPreviewModal({
       {open && (
         <motion.div
           // Blurred as well as dimmed: at any opacity that still reads as a
-          // backdrop, the page's text shows through behind the top bar.
-          className="fixed inset-0 z-50 flex flex-col bg-black/95 backdrop-blur-xl"
+          // backdrop, the page's text shows through behind the top bar. The
+          // backdrop runs to the screen edge; the controls stay in the safe area.
+          className="fixed inset-0 z-50 flex flex-col bg-black/95 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] backdrop-blur-xl"
           // Only a click that lands on the backdrop itself closes. A pan that
           // starts on the zoom canvas and releases out here retargets its
           // click through pointer capture, but this makes the intent explicit
@@ -592,10 +636,12 @@ export function AttachmentPreviewModal({
             onOpenInNewTab={canOpenInNewTab ? handleOpenInNewTab : undefined}
             sequence={sequence}
             onImageError={onImageError}
+            imageFailed={imageFailed}
             reduceMotion={shouldReduceMotion}
             titleAccessory={titleAccessory}
             info={info}
             locate={locate}
+            copyLink={copyLink}
             onOpenOverview={onOpenOverview}
             onHtmlAddressChange={handleHtmlAddressChange}
           />
@@ -688,10 +734,12 @@ function GenericPreviewPanel({
   onOpenInNewTab,
   sequence,
   onImageError,
+  imageFailed,
   reduceMotion,
   titleAccessory,
   info,
   locate,
+  copyLink,
   onOpenOverview,
   renderHtmlFrame = renderViewerHtmlFrame,
   initialHtmlAddress = "",
@@ -702,14 +750,16 @@ function GenericPreviewPanel({
   source: PreviewSource;
   state: PreviewState;
   onClose?: () => void;
-  onDownload: () => void;
+  onDownload: () => void | Promise<unknown>;
   onOpenInNewTab?: () => void;
   sequence?: PreviewSequence;
   onImageError?: () => void;
+  imageFailed?: boolean;
   reduceMotion: boolean;
   titleAccessory?: ReactNode;
   info?: PreviewInfoPanel;
   locate?: PreviewLocateAction;
+  copyLink?: PreviewCopyLinkAction;
   onOpenOverview?: () => void;
   renderHtmlFrame?: HtmlFrameRenderer;
   /** Query and fragment an HTML file opens at. */
@@ -720,6 +770,11 @@ function GenericPreviewPanel({
   const { t } = useT("editor");
   const inheritedSource = useMediaSource();
   const mediaSource = source.kind === "full" && source.attachment.issue_id ? { type: "issues" as const, id: source.attachment.issue_id } : source.kind === "full" && source.attachment.chat_session_id ? { type: "chats" as const, id: source.attachment.chat_session_id } : inheritedSource;
+
+  const { downloading, handleDownload } = useAttachmentDownloadState(
+    onDownload,
+    state.attachmentId ?? state.mediaUrl,
+  );
 
   // How the file is shown. Held here rather than in the stage so a choice
   // carries over as the reader pages through the sequence: the next HTML
@@ -780,11 +835,35 @@ function GenericPreviewPanel({
   const imageLoadError =
     mediaUrl !== "" && mediaUrl === targetUrl ? onImageError : undefined;
 
+  // Video, audio and PDF stream straight from a URL the reader has never
+  // loaded, so they get a freshly signed one rather than the record's.
+  const cdnDomain = useConfigStore((s) => s.cdnDomain);
+  const streamed = useFreshStreamedMediaURL(
+    state.attachmentId ??
+      attachmentIdFromLocalUploadURL(state.mediaUrl) ??
+      attachmentIdFromStorageURL(state.mediaUrl, cdnDomain),
+    state.mediaUrl,
+    kind === "video" || kind === "audio" || kind === "pdf",
+    kind === "pdf",
+  );
+  const streamUrl = streamed.pending ? "" : streamed.url;
+
   // Copying reads the image's bytes from script. The desktop renderer can
   // read any origin; web script can't read the storage CDN (it sends no CORS
   // headers), and there the browser's own context menu has Copy image. Copies
   // the frame on screen, which during a sequence swap is still the last one.
   const canCopyImage = kind === "image" && isDesktopShell();
+  const canCopyText =
+    kind !== null && TEXT_BACKED_KINDS.has(kind) && (kind !== "html" || htmlSource);
+  const copyContent = useAttachmentHtmlText(canCopyText ? state.attachmentId : null);
+  const handleCopyText = async () => {
+    if (!copyContent.data || copyContent.isError) return;
+    if (await copyText(copyContent.data.text)) {
+      toast.success(t(($) => $.attachment.contents_copied));
+    } else {
+      toast.error(t(($) => $.attachment.copy_failed));
+    }
+  };
   const handleCopyImage = async () => {
     if (await copyImage(mediaUrl)) {
       toast.success(t(($) => $.image.image_copied));
@@ -839,6 +918,7 @@ function GenericPreviewPanel({
 
   const wrapButton = (enabled: boolean) => (
     <ChromeButton
+      className="hidden @3xl:flex"
       label={t(($) => $.attachment.wrap_lines)}
       pressed={enabled && wrap}
       disabled={!enabled}
@@ -853,6 +933,17 @@ function GenericPreviewPanel({
     tablet: t(($) => $.attachment.viewport_tablet),
     phone: t(($) => $.attachment.viewport_phone),
   };
+  const overflowTriggerRef = useRef<HTMLButtonElement>(null);
+  const restoreOverflowFocus = useRef(false);
+  const overflowActionMovesFocus = useRef(false);
+  const navigateFromOverflow = (navigate: () => void) => {
+    overflowActionMovesFocus.current = true;
+    navigate();
+  };
+  const showZoomControls = kind === "image" && !!(natural || sequence);
+  const hasViewControls = showZoomControls || kind === "html" || kind === "structured" || kind === "text";
+  const hasOverflowActions = hasViewControls || !!(locate || copyLink || onOpenInNewTab || onOpenOverview || info);
+  const canWrap = kind === "text" || (kind === "html" && htmlSource) || (kind === "structured" && structuredView === "raw");
 
   return (
     <>
@@ -861,11 +952,19 @@ function GenericPreviewPanel({
         className="dark @container flex min-h-14 shrink-0 flex-wrap items-center gap-4 pl-3 pr-2 py-2 text-foreground max-md:[&_button]:min-h-10 max-md:[&_button]:min-w-10"
         style={surface === "viewer" ? DRAG : undefined}
       >
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
         <div className="flex w-full min-w-0 items-center gap-2.5 md:w-auto">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
+||||||| 2ae2f08005
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground">
+=======
+        <div className="flex min-w-0 items-center gap-2.5">
+          <span className="hidden size-8 shrink-0 items-center justify-center rounded-md bg-secondary text-muted-foreground @3xl:flex">
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
             <KindIcon className="size-4" />
           </span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2" style={titleAccessory ? NO_DRAG : undefined}>
               {kind === "html" && !htmlSource ? (
                 <HtmlPreviewAddress
@@ -896,9 +995,9 @@ function GenericPreviewPanel({
               (disabled while un-measured) instead: `natural` passes through
               null on every swap, and controls that vanish and reappear shift
               the buttons to their right on every navigation. */}
-          {kind === "image" && (natural || sequence) && (
+          {showZoomControls && (
             <>
-              <ZoomControls canvas={canvas} disabled={!natural} />
+              <ZoomControls className="hidden @3xl:flex" canvas={canvas} disabled={!natural} />
               <ChromeDivider />
             </>
           )}
@@ -908,6 +1007,7 @@ function GenericPreviewPanel({
           {kind === "html" && (
             <>
               <ChromeButton
+                className="hidden @3xl:flex"
                 label={t(($) => $.attachment.reload)}
                 disabled={htmlSource}
                 onClick={htmlLocation.reload}
@@ -915,6 +1015,7 @@ function GenericPreviewPanel({
                 <RotateCw className="size-4" />
               </ChromeButton>
               <ChromeSegmented
+                className="hidden @3xl:flex"
                 label={t(($) => $.attachment.viewport)}
                 value={htmlViewport}
                 disabled={htmlSource}
@@ -939,6 +1040,7 @@ function GenericPreviewPanel({
           {kind === "structured" && (
             <>
               <ChromeSegmented
+                className="hidden @3xl:flex"
                 label={t(($) => $.attachment.view_mode)}
                 value={structuredView}
                 disabled={!treeAvailable}
@@ -967,12 +1069,38 @@ function GenericPreviewPanel({
             </>
           )}
           {locate && (
-            <ChromeButton label={locate.label} onClick={locate.onSelect}>
+            <ChromeButton className="hidden @3xl:flex" label={locate.label} onClick={locate.onSelect}>
               <MessageSquareText className="size-4" />
             </ChromeButton>
           )}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
           {onOpenInNewTab && !mediaSource && (
+||||||| 2ae2f08005
+          {onOpenInNewTab && (
+=======
+          {/* Reserve the HTML copy slot so switching source never moves its toggle. */}
+          {(canCopyText || kind === "html") && (
+            <div className="size-11 shrink-0 @3xl:size-8">
+              {canCopyText && (
+                <ChromeButton
+                  label={t(($) => $.attachment.copy_contents)}
+                  disabled={!copyContent.data || copyContent.isError}
+                  onClick={() => void handleCopyText()}
+                >
+                  <Copy className="size-4" />
+                </ChromeButton>
+              )}
+            </div>
+          )}
+          {copyLink && (
+            <ChromeButton className="hidden @3xl:flex" label={copyLink.label} onClick={copyLink.onSelect}>
+              <Link2 className="size-4" />
+            </ChromeButton>
+          )}
+          {onOpenInNewTab && (
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
             <ChromeButton
+              className="hidden @3xl:flex"
               label={t(($) => $.attachment.open_in_new_tab)}
               onClick={onOpenInNewTab}
             >
@@ -988,13 +1116,159 @@ function GenericPreviewPanel({
               <Copy className="size-4" />
             </ChromeButton>
           )}
-          <ChromeButton label={t(($) => $.image.download)} onClick={onDownload}>
-            <Download className="size-4" />
+          <ChromeButton
+            label={t(($) => $.image.download)}
+            onClick={handleDownload}
+            disabled={downloading}
+            busy={downloading}
+          >
+            {downloading ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Download className="size-4" />
+            )}
           </ChromeButton>
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
           <MediaLinkAction kind={state.attachmentId ? "attachment" : "image"} content={source.kind === "url" ? source.url : ""} attachmentId={state.attachmentId ?? undefined} source={mediaSource} copyLink={surface === "page"} />
+||||||| 2ae2f08005
+=======
+          {hasOverflowActions && (
+            <div className="@3xl:hidden">
+              <DropdownMenu
+                onOpenChange={(open, details) => {
+                  if (open) {
+                    restoreOverflowFocus.current = false;
+                    overflowActionMovesFocus.current = false;
+                  } else if (details.reason !== "trigger-hover") {
+                    // Hover dismissal can follow item selection or Escape during exit.
+                    restoreOverflowFocus.current = details.reason === "escape-key" ||
+                      (details.reason === "item-press" && !overflowActionMovesFocus.current);
+                  }
+                }}
+                onOpenChangeComplete={(open) => {
+                  if (!open && restoreOverflowFocus.current) {
+                    restoreOverflowFocus.current = false;
+                    overflowTriggerRef.current?.focus({ preventScroll: true });
+                  }
+                }}
+              >
+                <DropdownMenuTrigger
+                  ref={overflowTriggerRef}
+                  render={
+                    <button
+                      type="button"
+                      aria-label={t(($) => $.attachment.more_actions)}
+                      className="flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                    >
+                      <Ellipsis className="size-4" />
+                    </button>
+                  }
+                />
+                <DropdownMenuContent
+                  align="end"
+                  className="dark w-72 max-w-[calc(100vw-1rem)] [&_[role^=menuitem]]:min-h-11"
+                >
+                  {kind === "html" && (
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel>{t(($) => $.attachment.viewport)}</DropdownMenuLabel>
+                      <DropdownMenuRadioGroup
+                        className="grid grid-cols-2 gap-0.5"
+                        value={htmlViewport}
+                        onValueChange={(value) => setHtmlViewport(value as HtmlViewport)}
+                      >
+                        {HTML_VIEWPORTS.map((viewport) => (
+                          <DropdownMenuRadioItem key={viewport} value={viewport} disabled={htmlSource}>
+                            {viewportLabels[viewport]}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                      <DropdownMenuItem onClick={htmlLocation.reload} disabled={htmlSource}>
+                        <RotateCw className="size-4" />
+                        {t(($) => $.attachment.reload)}
+                      </DropdownMenuItem>
+                    </DropdownMenuGroup>
+                  )}
+                  {kind === "structured" && (
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel>{t(($) => $.attachment.view_mode)}</DropdownMenuLabel>
+                      <DropdownMenuRadioGroup
+                        value={structuredView}
+                        onValueChange={(value) => setStructuredChoice(value as StructuredView)}
+                      >
+                        <DropdownMenuRadioItem value="tree" disabled={!treeAvailable}>
+                          <ListTree className="size-4" />
+                          {t(($) => $.attachment.view_tree)}
+                        </DropdownMenuRadioItem>
+                        <DropdownMenuRadioItem value="raw" disabled={!treeAvailable}>
+                          <Code className="size-4" />
+                          {t(($) => $.attachment.view_raw)}
+                        </DropdownMenuRadioItem>
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuGroup>
+                  )}
+                  {(kind === "html" || kind === "structured" || kind === "text") && (
+                    <DropdownMenuCheckboxItem checked={canWrap && wrap} disabled={!canWrap} closeOnClick={false} onCheckedChange={setWrapChoice}>
+                      <WrapText className="size-4" />
+                      {t(($) => $.attachment.wrap_lines)}
+                    </DropdownMenuCheckboxItem>
+                  )}
+                  {showZoomControls && (
+                    <DropdownMenuGroup>
+                      <DropdownMenuLabel>{canvas.zoomPercent}%</DropdownMenuLabel>
+                      <DropdownMenuItem onClick={canvas.zoomOut} disabled={!natural || !canvas.canZoomOut}>
+                        {t(($) => $.canvas.zoom_out)}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={canvas.zoomIn} disabled={!natural || !canvas.canZoomIn}>
+                        {t(($) => $.canvas.zoom_in)}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={canvas.fit} disabled={!natural}>
+                        {t(($) => $.canvas.zoom_fit)}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={canvas.zoomToActualSize} disabled={!natural}>
+                        {t(($) => $.canvas.zoom_actual)}
+                      </DropdownMenuItem>
+                    </DropdownMenuGroup>
+                  )}
+                  {hasViewControls && (locate || copyLink || onOpenInNewTab || onOpenOverview || info) && <DropdownMenuSeparator />}
+                  {locate && (
+                    <DropdownMenuItem onClick={() => navigateFromOverflow(locate.onSelect)}>
+                      <MessageSquareText className="size-4" />
+                      {locate.label}
+                    </DropdownMenuItem>
+                  )}
+                  {copyLink && (
+                    <DropdownMenuItem onClick={copyLink.onSelect}>
+                      <Link2 className="size-4" />
+                      {copyLink.label}
+                    </DropdownMenuItem>
+                  )}
+                  {onOpenInNewTab && (
+                    <DropdownMenuItem onClick={() => navigateFromOverflow(onOpenInNewTab)}>
+                      <ExternalLink className="size-4" />
+                      {t(($) => $.attachment.open_in_new_tab)}
+                    </DropdownMenuItem>
+                  )}
+                  {onOpenOverview && (
+                    <DropdownMenuItem onClick={() => navigateFromOverflow(onOpenOverview)}>
+                      <LayoutGrid className="size-4" />
+                      {t(($) => $.attachment.overview)}
+                    </DropdownMenuItem>
+                  )}
+                  {info && (
+                    <DropdownMenuCheckboxItem checked={info.open} closeOnClick onCheckedChange={info.onToggle}>
+                      <PanelRight className="size-4" />
+                      {t(($) => $.attachment.info)}
+                    </DropdownMenuCheckboxItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
           {(onOpenOverview || info) && <ChromeDivider />}
           {onOpenOverview && (
             <ChromeButton
+              className="hidden @3xl:flex"
               label={t(($) => $.attachment.overview)}
               shortcut="G"
               onClick={onOpenOverview}
@@ -1004,6 +1278,7 @@ function GenericPreviewPanel({
           )}
           {info && (
             <ChromeButton
+              className="hidden @3xl:flex"
               label={t(($) => $.attachment.info)}
               shortcut="I"
               pressed={info.open}
@@ -1037,7 +1312,13 @@ function GenericPreviewPanel({
               },
             }}
           >
-            {kind === "image" ? (
+            {kind === "image" && imageFailed ? (
+              <UnsupportedFallback
+                message={t(($) => $.attachment.preview_failed)}
+                onDownload={handleDownload}
+                downloading={downloading}
+              />
+            ) : kind === "image" ? (
               <ImagePreview
                 state={state}
                 mediaUrl={mediaUrl}
@@ -1051,8 +1332,12 @@ function GenericPreviewPanel({
                 kind={kind}
                 source={source}
                 state={state}
+                streamUrl={streamUrl}
+                streamFailed={streamed.failed}
+                onStreamError={streamed.refreshIfExpired}
                 view={view}
-                onDownload={onDownload}
+                onDownload={handleDownload}
+                downloading={downloading}
                 onBackdropClick={closeOnBackdrop}
               />
             )}
@@ -1079,19 +1364,23 @@ function GenericPreviewPanel({
 // Top-bar icon button. Sits inside the `dark` header, so the semantic tokens
 // resolve to the dark set whatever the app theme is.
 function ChromeButton({
+  className,
   label,
   shortcut,
   pressed,
   disabled,
+  busy,
   onClick,
   children,
 }: {
+  className?: string;
   label: string;
   /** Single-key shortcut, shown in the tooltip and announced to AT. */
   shortcut?: string;
   /** Toggle buttons pass their state; plain actions leave it unset. */
   pressed?: boolean;
   disabled?: boolean;
+  busy?: boolean;
   onClick: () => void;
   children: ReactNode;
 }) {
@@ -1108,12 +1397,14 @@ function ChromeButton({
       <button
         type="button"
         className={cn(
-          "flex size-8 items-center justify-center rounded-md transition-colors enabled:hover:bg-secondary enabled:hover:text-foreground disabled:opacity-40",
+          "flex size-11 shrink-0 items-center justify-center rounded-md transition-colors enabled:hover:bg-secondary enabled:hover:text-foreground disabled:opacity-40 @3xl:size-8",
           pressed ? "bg-secondary text-foreground" : "text-muted-foreground",
+          className,
         )}
         aria-label={label}
         aria-keyshortcuts={shortcut}
         aria-pressed={pressed}
+        aria-busy={busy}
         disabled={disabled}
         onClick={onClick}
       >
@@ -1127,12 +1418,14 @@ function ChromeButton({
 // pressed look as the toggle buttons beside it. Labels show once the bar has
 // room for them; below that the icons carry the choice, named by tooltip.
 function ChromeSegmented<T extends string>({
+  className,
   label,
   value,
   options,
   disabled,
   onChange,
 }: {
+  className?: string;
   label: string;
   value: T;
   options: ReadonlyArray<{ value: T; label: string; icon: IconComponent }>;
@@ -1140,7 +1433,7 @@ function ChromeSegmented<T extends string>({
   onChange: (value: T) => void;
 }) {
   return (
-    <div role="group" aria-label={label} className="flex items-center gap-0.5">
+    <div role="group" aria-label={label} className={cn("flex items-center gap-0.5", className)}>
       {options.map((option) => {
         const pressed = option.value === value;
         const Icon = option.icon;
@@ -1170,7 +1463,7 @@ function ChromeSegmented<T extends string>({
 }
 
 function ChromeDivider() {
-  return <span className="mx-1.5 h-4 w-px bg-input" aria-hidden />;
+  return <span className="mx-1.5 hidden h-4 w-px bg-input @3xl:block" aria-hidden />;
 }
 
 // Prev / next with the position between them, centered under the stage. The
@@ -1352,15 +1645,24 @@ function PreviewContent({
   kind,
   source,
   state,
+  streamUrl,
+  streamFailed,
+  onStreamError,
   view,
   onDownload,
+  downloading,
   onBackdropClick,
 }: {
   kind: Exclude<PreviewKind, "image"> | null;
   source: PreviewSource;
   state: PreviewState;
+  /** Where video, audio and PDF load from; empty while it is being signed. */
+  streamUrl: string;
+  streamFailed: boolean;
+  onStreamError: () => Promise<boolean>;
   view: StageView;
   onDownload: () => void;
+  downloading: boolean;
   onBackdropClick: (e: React.MouseEvent) => void;
 }) {
   const { t } = useT("editor");
@@ -1370,6 +1672,7 @@ function PreviewContent({
       <UnsupportedFallback
         message={t(($) => $.attachment.preview_unsupported)}
         onDownload={onDownload}
+        downloading={downloading}
       />
     );
   }
@@ -1384,6 +1687,7 @@ function PreviewContent({
       <UnsupportedFallback
         message={t(($) => $.attachment.preview_unsupported)}
         onDownload={onDownload}
+        downloading={downloading}
       />
     );
   }
@@ -1400,38 +1704,42 @@ function PreviewContent({
     </DocumentSheet>
   );
 
+  if (kind === "pdf" && streamFailed) {
+    return <UnsupportedFallback message={t(($) => $.attachment.preview_failed)} onDownload={onDownload} downloading={downloading} />;
+  }
+  if ((kind === "pdf" || kind === "video" || kind === "audio") && !streamUrl) {
+    return <PreviewLoading />;
+  }
+
   switch (kind) {
     case "pdf":
       return (
         <div className="h-full pb-4">
           <iframe
-            src={state.mediaUrl}
+            src={streamUrl}
             className="h-full w-full rounded-lg bg-background"
             title={state.filename}
           />
         </div>
       );
     case "video":
-      return (
-        <div className="flex h-full w-full items-center justify-center pb-4">
-          <video
-            src={state.mediaUrl}
-            controls
-            className="h-full w-full object-contain"
-          />
-        </div>
-      );
     case "audio":
       return (
-        <div className="dark flex h-full w-full items-center justify-center p-8">
-          <audio src={state.mediaUrl} controls className="w-full max-w-xl" />
-        </div>
+        <MediaPlayer
+          key={state.attachmentId ?? state.mediaUrl}
+          kind={kind}
+          src={streamUrl}
+          onExpired={onStreamError}
+          onDownload={onDownload}
+          downloading={downloading}
+        />
       );
     case "markdown":
       return (
         <TextBackedPreview
           attachmentId={state.attachmentId!}
           onDownload={onDownload}
+          downloading={downloading}
           render={(text) => (
             <DocumentSheet width="prose" onBackdropClick={onBackdropClick}>
               <ReadonlyContent
@@ -1448,13 +1756,14 @@ function PreviewContent({
         <TextBackedPreview
           attachmentId={state.attachmentId!}
           onDownload={onDownload}
+          downloading={downloading}
           render={(text) =>
             view.htmlSource ? (
               code(text, "xml")
             ) : (
               <HtmlViewportFrame viewport={view.htmlViewport}>
                 {view.renderHtmlFrame({
-                  html: text,
+                  html: withWidthBridge(text),
                   title: state.filename,
                   location: view.htmlLocation,
                 })}
@@ -1468,6 +1777,7 @@ function PreviewContent({
         <TextBackedPreview
           attachmentId={state.attachmentId!}
           onDownload={onDownload}
+          downloading={downloading}
           render={(text) => (
             // Keyed on the file: sort order and column widths belong to it.
             <TablePreview
@@ -1483,6 +1793,7 @@ function PreviewContent({
         <TextBackedPreview
           attachmentId={state.attachmentId!}
           onDownload={onDownload}
+          downloading={downloading}
           render={(text) => {
             const parse = view.structuredParse;
             if (parse?.ok && view.structuredView === "tree") {
@@ -1518,6 +1829,7 @@ function PreviewContent({
         <TextBackedPreview
           attachmentId={state.attachmentId!}
           onDownload={onDownload}
+          downloading={downloading}
           render={(text) => code(text, extensionToLanguage(state.filename))}
         />
       );
@@ -1560,29 +1872,25 @@ function DocumentSheet({
 function TextBackedPreview({
   attachmentId,
   onDownload,
+  downloading,
   render,
 }: {
   attachmentId: string;
   onDownload: () => void;
+  downloading: boolean;
   render: (text: string) => ReactNode;
 }) {
   const { t } = useT("editor");
   const query = useAttachmentHtmlText(attachmentId);
 
-  if (query.isLoading) {
-    return (
-      <div className="dark flex h-full items-center justify-center gap-2 text-body text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
-        {t(($) => $.attachment.preview_loading)}
-      </div>
-    );
-  }
+  if (query.isLoading) return <PreviewLoading />;
   if (query.error) {
     if (query.error instanceof PreviewTooLargeError) {
       return (
         <UnsupportedFallback
           message={t(($) => $.attachment.preview_too_large)}
           onDownload={onDownload}
+          downloading={downloading}
         />
       );
     }
@@ -1591,6 +1899,7 @@ function TextBackedPreview({
         <UnsupportedFallback
           message={t(($) => $.attachment.preview_unsupported)}
           onDownload={onDownload}
+          downloading={downloading}
         />
       );
     }
@@ -1598,6 +1907,7 @@ function TextBackedPreview({
       <UnsupportedFallback
         message={t(($) => $.attachment.preview_failed)}
         onDownload={onDownload}
+        downloading={downloading}
       />
     );
   }
@@ -1605,14 +1915,103 @@ function TextBackedPreview({
   return <>{render(query.data.text)}</>;
 }
 
+function PreviewLoading() {
+  const { t } = useT("editor");
+  return (
+    <div className="dark flex h-full items-center justify-center gap-2 text-body text-muted-foreground">
+      <Loader2 className="size-4 animate-spin" />
+      {t(($) => $.attachment.preview_loading)}
+    </div>
+  );
+}
+
+// Video and audio — the browser's own player. A file it cannot play (an
+// unsupported container or codec, a URL that stopped working) would otherwise
+// leave an empty player with no explanation.
+function MediaPlayer({
+  kind,
+  src,
+  onExpired,
+  onDownload,
+  downloading,
+}: {
+  kind: "video" | "audio";
+  src: string;
+  onExpired: () => Promise<boolean>;
+  onDownload: () => void;
+  downloading: boolean;
+}) {
+  const { t } = useT("editor");
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  const mediaRef = useRef<HTMLMediaElement | null>(null);
+  const resumeRef = useRef<{ currentTime: number; paused: boolean; playbackRate: number } | null>(null);
+
+  useEffect(() => {
+    const media = mediaRef.current;
+    if (!media || media.getAttribute("src") === src) return;
+    // Replacing an expired capability reloads the native player. Snapshot
+    // before assigning src so renewal preserves both the seek and play state.
+    const { currentTime, paused, playbackRate } = resumeRef.current ?? media;
+    const restore = () => {
+      media.currentTime = currentTime;
+      media.playbackRate = playbackRate;
+      if (!paused) void media.play().catch(() => {});
+      resumeRef.current = null;
+    };
+    media.addEventListener("loadedmetadata", restore, { once: true });
+    media.src = src;
+    return () => media.removeEventListener("loadedmetadata", restore);
+  }, [src]);
+
+  const handleError = async () => {
+    const media = mediaRef.current;
+    if (media) resumeRef.current = { currentTime: media.currentTime, paused: media.paused, playbackRate: media.playbackRate };
+    if (!(await onExpired())) setFailedSrc(src);
+  };
+
+  if (failedSrc === src) {
+    return (
+      <UnsupportedFallback
+        message={t(($) => $.attachment.preview_failed)}
+        onDownload={onDownload}
+        downloading={downloading}
+      />
+    );
+  }
+  if (kind === "audio") {
+    return (
+      <div className="dark flex h-full w-full items-center justify-center p-8">
+        <audio
+          ref={(element) => { mediaRef.current = element; }}
+          controls
+          className="w-full max-w-xl"
+          onError={handleError}
+        />
+      </div>
+    );
+  }
+  return (
+    <div className="flex h-full w-full items-center justify-center pb-4">
+      <video
+        ref={(element) => { mediaRef.current = element; }}
+        controls
+        className="h-full w-full object-contain"
+        onError={handleError}
+      />
+    </div>
+  );
+}
+
 // Fallback — used for 413 / 415 / unknown kinds. Sits on the stage, so dark.
 
 function UnsupportedFallback({
   message,
   onDownload,
+  downloading,
 }: {
   message: string;
   onDownload: () => void;
+  downloading: boolean;
 }) {
   const { t } = useT("editor");
   return (
@@ -1623,8 +2022,14 @@ function UnsupportedFallback({
         type="button"
         className="inline-flex items-center gap-2 rounded-md border border-input bg-secondary px-3 py-1.5 text-body text-foreground transition-colors hover:bg-muted"
         onClick={onDownload}
+        disabled={downloading}
+        aria-busy={downloading}
       >
-        <Download className="size-4" />
+        {downloading ? (
+          <Loader2 className="size-4 animate-spin" />
+        ) : (
+          <Download className="size-4" />
+        )}
         {t(($) => $.image.download)}
       </button>
     </div>

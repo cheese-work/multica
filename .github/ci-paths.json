@@ -16,9 +16,22 @@
     "scripts/ci-scope.mjs",
     "scripts/ci-scope.test.mjs"
   ],
+  "docs": [
+    "apps/docs/**",
+    "package.json",
+    ".npmrc",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "patches/**",
+    ".github/workflows/ci.yml",
+    ".github/ci-paths.json",
+    "scripts/ci-scope.mjs",
+    "scripts/ci-scope.test.mjs"
+  ],
   "backend": [
     "server/**",
     "packages/core/runtimes/cli-version.ts",
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     "packages/core/issues/decision-action-preview.ts",
     "e2e/decision-dm-card-renders.spec.ts",
     "e2e/dm-budget-proposal-helpers.ts",
@@ -26,6 +39,14 @@
     "e2e/env.ts",
     "e2e/global-setup.ts",
     "playwright.config.ts",
+||||||| 2ae2f08005
+=======
+    "packages/core/types/inbox.ts",
+    ".multica/environments.toml",
+    "examples/plugins/**",
+    ".env.example",
+    "docker-compose.selfhost.yml",
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     "scripts/agent-cli-command-names.txt",
     "scripts/go-test-with-agent-cli-guard.sh",
     "scripts/go-test-db-exec.sh",
@@ -79,6 +100,13 @@
     "scripts/ci-scope.mjs",
     "scripts/ci-scope.test.mjs"
   ],
+  "processtree": [
+    "server/internal/daemon/processtree/**",
+    ".github/workflows/ci.yml",
+    ".github/ci-paths.json",
+    "scripts/ci-scope.mjs",
+    "scripts/ci-scope.test.mjs"
+  ],
   "quality": [
     ".github/actions/frontend-quality/**",
     "apps/**",
@@ -91,10 +119,19 @@
     "turbo.json",
     "knip.jsonc",
     "scripts/*.mjs",
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     "scripts/design/**",
     "design/patterns.yml",
     "DESIGN.md",
     "scripts/check-ui-wildcard-exports.test.sh",
+||||||| 2ae2f08005
+    "scripts/check-ui-wildcard-exports.test.sh",
+=======
+    "scripts/brand/*.mjs",
+    "scripts/pr-shots",
+    "server/cmd/multica/cmd_auth.go",
+    "docs/assets/logo-*.svg",
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     ".github/workflows/mobile-verify.yml",
     ".github/workflows/ci.yml",
     ".github/ci-paths.json"
@@ -108,6 +145,9 @@
     "scripts/worktree-db.test.sh",
     "scripts/dev-env.sh",
     "scripts/dev-env.test.sh",
+    "scripts/agent-environment.sh",
+    "scripts/agent-environment.test.sh",
+    ".multica/environments.toml",
     "scripts/perf-compare.mjs",
     "scripts/perf-compare.test.sh",
     "scripts/selfhost-wait.sh",
@@ -118,7 +158,6 @@
     "scripts/dev.sh",
     "scripts/local-env.sh",
     "scripts/init-worktree-env.sh",
-    "scripts/local-env.test.sh",
     "scripts/helm-config.test.sh",
     "scripts/entrypoint.test.sh",
     "scripts/makefile-build.test.sh",

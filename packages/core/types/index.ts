@@ -47,6 +47,10 @@ export type {
   TaskPresetSettings,
   TaskPresetSkip,
   TaskUsage,
+  ContextReceipt,
+  ContextReceiptLoad,
+  ContextReceiptSource,
+  TaskContextReceiptResponse,
   TaskAttribution,
   AttributionUser,
   TaskCancellationActor,
@@ -150,6 +154,7 @@ export type {
   PluginMCPTool,
   PluginTokenIssue,
 } from "./plugin";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 export type { InboxItem, InboxSeverity, InboxItemType, InboxWorkspaceUnread, ArchivedInboxPage, ArchivedInboxFacets } from "./inbox";
 export type {
   NotificationChannel,
@@ -164,6 +169,15 @@ export type {
 } from "./notification-preference";
 export type { DecisionArtifact, DecisionArtifactDiff, DecisionArtifactHunk, DecisionArtifactSignature, DecisionConfigChange, DecisionConfigDiffHunk, DecisionCard, DecisionBatchItem, DecisionCoveredCard, DecisionCommentFields, DecisionCommentKind, DecisionState, DecisionRequestCard, DecisionRequestOption, OpenDecisionRequest } from "./decision";
 export type { Comment, CommentType, CommentAuthorType, CommentSupersedeLink, CommentSupplementReceipt, CommentSupplementStatus, CommentTriggerPreview, CommentTriggerPreviewAgent, CommentTriggerSource, CommentTriggerOutcome, CommentTriggerStatus, Reaction } from "./comment";
+||||||| 2ae2f08005
+export type { InboxItem, InboxSeverity, InboxItemType, InboxWorkspaceUnread, ArchivedInboxPage, ArchivedInboxFacets } from "./inbox";
+export type { NotificationGroupKey, NotificationGroupValue, NotificationPreferences, NotificationPreferenceResponse } from "./notification-preference";
+export type { Comment, CommentType, CommentAuthorType, CommentSupplementReceipt, CommentSupplementStatus, CommentTriggerPreview, CommentTriggerPreviewAgent, CommentTriggerSource, CommentTriggerOutcome, CommentTriggerStatus, Reaction } from "./comment";
+=======
+export type { InboxItem, InboxSeverity, InboxItemType, InboxWorkspaceUnread, ArchivedInboxPage, ArchivedInboxFacets, SnoozedInboxIssue } from "./inbox";
+export type { NotificationGroupKey, NotificationGroupValue, NotificationPreferences, NotificationPreferenceResponse, OthersIssuesValue } from "./notification-preference";
+export type { Comment, CommentType, CommentAuthorType, CommentSupplementReceipt, CommentSupplementStatus, CommentTriggerPreview, CommentTriggerPreviewAgent, CommentTriggerSource, CommentTriggerOutcome, CommentTriggerStatus, Reaction } from "./comment";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 export type { Label, LabelResourceType, CreateLabelRequest, UpdateLabelRequest, ListLabelsResponse, IssueLabelsResponse, ResourceLabelsResponse } from "./label";
 export type { IssueProperty, IssuePropertyType, ScalarIssuePropertyType, ListIssuePropertyType, IssuePropertyOption, IssuePropertyConfig, IssuePropertyValue, IssuePropertyValues, CreatePropertyRequest, UpdatePropertyRequest, ListPropertiesResponse, IssuePropertiesResponse, IssuePropertyActorKind, IssuePropertyActorRef, PropertyFilterOp, PropertyOperatorFilter, PropertyFilterValue } from "./property";
 export { ISSUE_PROPERTY_TYPES, isKnownPropertyType, ISSUE_PROPERTY_ACTOR_KINDS, MAX_ISSUE_PROPERTY_ACTOR_VALUES, MAX_ISSUE_PROPERTY_SELECT_VALUES, MAX_ISSUE_PROPERTY_SELECT_OPTIONS, MAX_ISSUE_PROPERTY_FILTER_VALUES, isActorPropertyType, isFilterablePropertyType, isScalarPropertyType, isListPropertyType, formatActorRef, parseActorRef, actorRefsFromValue, actorRefValuesFromValue, hasUnknownActorRef, isPropertyOperatorFilter, isKnownPropertyFilterOp, propertyFilterValueKey, PROPERTY_FILTER_OP_SYMBOLS, PROPERTY_FILTER_OPS_BY_TYPE } from "./property";
@@ -185,7 +199,7 @@ export type {
   TimelineEntry,
   AssigneeFrequencyEntry,
 } from "./activity";
-export type { IssueSubscriber } from "./subscriber";
+export type { IssueSubscriber, IssueSubscriberDelivery } from "./subscriber";
 export type * from "./events";
 export type * from "./api";
 export type { Attachment, AttachmentRevisionDiff } from "./attachment";
@@ -239,10 +253,16 @@ export type { StorageAdapter } from "./storage";
 export type {
   Project,
   ProjectStatus,
+  ProjectVisibility,
+  ProjectMember,
+  ListProjectMembersResponse,
+  PrivateProjectOverview,
+  ListPrivateProjectsResponse,
   ProjectPriority,
   CreateProjectRequest,
   UpdateProjectRequest,
   ListProjectsResponse,
+  ArchiveProjectResponse,
   ProjectResource,
   ProjectResourceType,
   ProjectResourceRef,
@@ -265,6 +285,8 @@ export type {
   GitHubPullRequestMergeStateStatus,
   GitHubPullRequestState,
   IssuePullRequestsResponse,
+  IssuePullRequestSummary,
+  IssuePullRequestSummariesResponse,
   PRAutoComplete,
   PRAutoCompleteState,
   PullRequestLinkSource,
@@ -273,6 +295,20 @@ export type {
   ListGitHubRepositoriesResponse,
   GitHubConnectResponse,
 } from "./github";
+export type {
+  DeclaredEnvironment,
+  IssueEnvironment,
+  IssueEnvironmentAction,
+  IssueEnvironmentActionRecord,
+  IssueEnvironmentActionStatus,
+  IssueEnvironmentCommand,
+  IssueEnvironmentConfig,
+  IssueEnvironmentSource,
+  IssueEnvironmentKind,
+  IssueEnvironmentState,
+  IssueEnvironmentsResponse,
+  StartIssueEnvironmentRequest,
+} from "./environment";
 export type {
   VCSProvider,
   VCSConnection,
@@ -292,6 +328,29 @@ export type {
   ComposioConnection,
   ComposioConnectInitResponse,
 } from "./composio";
+export type {
+  AppAccountScope,
+  AppAccessLevel,
+  AppActionClass,
+  AppActionPolicy,
+  AppCatalogMode,
+  AppConnection,
+  AgentApp,
+  AppsOverview,
+  AppCatalogEntry,
+  AppCatalogResponse,
+  AppRule,
+  AppTool,
+  AppToolCall,
+  AppCallOutcome,
+  IssueAppCall,
+  TeamAppImpact,
+  AppRequestStatus,
+  AppRequest,
+  AppRequestList,
+  UpdateAgentAppsRequest,
+  AppRequestChangedPayload,
+} from "./connected-apps";
 export type {
   SlackInstallation,
   ListSlackInstallationsResponse,

@@ -3,6 +3,14 @@ export interface Attachment {
   workspace_id: string;
   issue_id: string | null;
   comment_id: string | null;
+  /**
+   * Origin of a comment file, from the issue attachment list only: the
+   * comment's author and time. Absent on description files, on other
+   * endpoints, and from servers older than this field.
+   */
+  comment_author_type?: string;
+  comment_author_id?: string;
+  comment_created_at?: string;
   chat_session_id: string | null;
   chat_message_id: string | null;
   uploader_type: string;
@@ -46,6 +54,7 @@ export interface Attachment {
   content_type: string;
   size_bytes: number;
   created_at: string;
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   /**
    * 1 for a first upload; higher when a later upload replaced it (CHE-5295).
    * Optional: a server older than revision chains omits it.
@@ -65,4 +74,13 @@ export interface AttachmentRevisionDiff {
   diff: string;
   /** Binary fallback line, e.g. "binary, sizes and SHA differ". */
   message: string;
+||||||| 2ae2f08005
+=======
+  /**
+   * An image's displayed pixel size, so a body can reserve its box before the
+   * image loads. Absent for other files and for older uploads.
+   */
+  width?: number;
+  height?: number;
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 }

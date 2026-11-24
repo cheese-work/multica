@@ -9,7 +9,12 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/featureflags"
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	"github.com/multica-ai/multica/server/pkg/buildinfo"
+||||||| 2ae2f08005
+=======
+	"github.com/multica-ai/multica/server/internal/storage"
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 )
 
 type AppConfig struct {
@@ -18,8 +23,8 @@ type AppConfig struct {
 	// use it only to recognize links belonging to this deployment.
 	AttachmentPublicURL string `json:"attachment_public_url,omitempty"`
 	// CdnSigned tells clients that the CDN domain above serves PRIVATE
-	// content through time-bounded signed URLs (CloudFront signing is
-	// enabled). When true, a raw storage URL on the CDN domain is NOT
+	// content through authenticated downloads or time-bounded signed URLs.
+	// When true, a raw storage URL on the CDN domain is NOT
 	// publicly fetchable — renderers must not pick it as a native
 	// <img>/<video> source and should fall back to the per-attachment
 	// API endpoint or a freshly signed download_url instead (MUL-3254).
@@ -53,6 +58,12 @@ type AppConfig struct {
 	// false so the managed-cloud response keeps its previous shape; the UI
 	// defaults absent to false (hidden).
 	VCSIntegrationAvailable bool `json:"vcs_integration_available,omitempty"`
+
+	// ThemeStoreEnabled tells the app it can browse and install community
+	// themes through /api/theme-store. Omitted when the store could not start
+	// (an invalid MULTICA_THEME_REGISTRY_URL), and older servers omit it too,
+	// so the app shows no Browse entry and makes no store requests.
+	ThemeStoreEnabled bool `json:"theme_store_enabled,omitempty"`
 
 	// PostHog public config for the frontend. The key is the same Project
 	// API Key the backend uses; returning it here (instead of baking it
@@ -102,6 +113,7 @@ type AppConfig struct {
 	// replies unless it is declared.
 	CommentDeleteKeepRepliesSupported bool `json:"comment_delete_keep_replies_supported"`
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	// AutopilotDescriptionGuardSupported tells independently deployed clients
 	// that PATCH /api/autopilots/{id} enforces expected_description_sha256.
 	// Older handlers ignored the unknown JSON field and still overwrote the
@@ -112,6 +124,25 @@ type AppConfig struct {
 	// fork ICT build stamp (YYYYMMDD-hhmm), and ServerCommit is the 7-char short
 	// commit SHA. Only emitted on self-hosted deployments — omitted on the
 	// managed cloud and empty for unstamped dev builds.
+||||||| 2ae2f08005
+	// ServerVersion is the running API build version, so self-hosted
+	// operators can confirm what's deployed and include it in bug reports.
+	// Only emitted on self-hosted deployments — omitted on the managed cloud,
+	// which is continuously deployed so its users can't act on the version —
+	// and empty for dev builds that aren't stamped via -X main.version.
+=======
+	// IssueBatchOpsSupported tells clients that batch update accepts labels,
+	// properties and dry_run, and that batch update and delete return
+	// per-issue results. Older handlers ignore those fields — a dry run there
+	// would write — so clients must fail closed when this is absent.
+	IssueBatchOpsSupported bool `json:"issue_batch_ops_supported"`
+
+	// ServerVersion is the running API build version, so self-hosted
+	// operators can confirm what's deployed and include it in bug reports.
+	// Only emitted on self-hosted deployments — omitted on the managed cloud,
+	// which is continuously deployed so its users can't act on the version —
+	// and empty for dev builds that aren't stamped via -X main.version.
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	ServerVersion string `json:"server_version,omitempty"`
 	ServerBuild   string `json:"server_build,omitempty"`
 	ServerCommit  string `json:"server_commit,omitempty"`
@@ -135,7 +166,12 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 		AgentConversationStartersSupported: true,
 		IssueCreatePropertiesSupported:     true,
 		CommentDeleteKeepRepliesSupported:  true,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		AutopilotDescriptionGuardSupported: true,
+||||||| 2ae2f08005
+=======
+		IssueBatchOpsSupported:             true,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		AllowSignup:                        os.Getenv("ALLOW_SIGNUP") != "false",
 		GoogleClientID:                     os.Getenv("GOOGLE_CLIENT_ID"),
 		WorkspaceCreationDisabled:          os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
@@ -145,12 +181,20 @@ func (h *Handler) GetConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	config.AttachmentPublicURL = h.cfg.PublicURL
 	config.CdnSigned = h.CFSigner != nil
+	if _, local := h.Storage.(*storage.LocalStorage); local {
+		config.CdnSigned = true
+	}
 	config.DaemonServerURL, config.DaemonAppURL = daemonSetupURLsFromEnv()
 	config.DaemonSetupTarget = "self_host"
 	config.VCSIntegrationAvailable = h.cfg.VCSIntegrationEnabled
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	if servesDocs() {
 		config.DocsURL = "/docs"
 	}
+||||||| 2ae2f08005
+=======
+	config.ThemeStoreEnabled = h.ThemeStore != nil
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	config.FeatureFlags = featureflags.EvaluateFrontendPublicFlags(r.Context(), h.FeatureFlags)
 	// Only surface the build version on self-hosted deployments. The managed
 	// cloud is continuously deployed and its users can't choose the build, so

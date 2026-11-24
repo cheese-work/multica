@@ -2,6 +2,7 @@
 import { mkdtemp, writeFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { describe, expect, it, vi } from "vitest";
 
 // The loader only needs app.getPath. Importing the real `electron` package
@@ -9,6 +10,18 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("electron", () => ({ app: { getPath: vi.fn(() => "/home/test") } }));
 
 import { desktopConfigPath, loadRuntimeConfig } from "./runtime-config-loader";
+||||||| 2ae2f08005
+import { describe, expect, it } from "vitest";
+import { loadRuntimeConfig } from "./runtime-config-loader";
+=======
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("electron", () => ({
+  app: { getPath: () => tmpdir() },
+}));
+
+import { loadRuntimeConfig } from "./runtime-config-loader";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 describe("loadRuntimeConfig", () => {
   it("uses dev env and ignores desktop.json during electron-vite dev", async () => {

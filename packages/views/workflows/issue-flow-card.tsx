@@ -85,12 +85,19 @@ export function IssueFlowCard({
             className="-ml-1 inline-flex min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-caption transition-colors hover:bg-accent data-popup-open:bg-accent"
           >
             <Workflow aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
             <span className="truncate text-foreground">{workflow?.name ?? t(($) => $.workflows.detail.no_workflow)}</span>
             {workflow && (
               <span className="shrink-0 text-muted-foreground">
                 {workflowId ? t(($) => $.workflows.detail.follows_override) : t(($) => $.workflows.detail.follows_project)}
               </span>
             )}
+||||||| 2ae2f08005
+            <span className="truncate text-foreground">{workflow.name}</span>
+            <span className="shrink-0 text-muted-foreground">{t(($) => $.workflows.detail.follows_project)}</span>
+=======
+            <span className="truncate text-foreground">{workflow.name}</span>
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
           </button>
         }
       />

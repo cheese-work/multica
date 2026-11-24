@@ -493,7 +493,13 @@ func (q *Queries) ListChildConditionWakeups(ctx context.Context, issueID pgtype.
 }
 
 const listParentsWithoutSystemWakeup = `-- name: ListParentsWithoutSystemWakeup :many
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 SELECT p.id, p.workspace_id, p.title, p.description, p.status, p.priority, p.assignee_type, p.assignee_id, p.creator_type, p.creator_id, p.parent_issue_id, p.acceptance_criteria, p.context_refs, p.position, p.due_date, p.created_at, p.updated_at, p.number, p.project_id, p.origin_type, p.origin_id, p.first_executed_at, p.start_date, p.metadata, p.stage, p.properties, p.revision, p.last_activity_at, p.triage_state, p.duplicate_of_issue_id, p.workflow_id, p.requested_by_id, p.max_runs_override, p.description_external_read, p.created_via FROM (SELECT DISTINCT c.parent_issue_id AS id FROM issue c WHERE c.parent_issue_id IS NOT NULL) parents
+||||||| 2ae2f08005
+SELECT p.id, p.workspace_id, p.title, p.description, p.status, p.priority, p.assignee_type, p.assignee_id, p.creator_type, p.creator_id, p.parent_issue_id, p.acceptance_criteria, p.context_refs, p.position, p.due_date, p.created_at, p.updated_at, p.number, p.project_id, p.origin_type, p.origin_id, p.first_executed_at, p.start_date, p.metadata, p.stage, p.properties, p.revision, p.last_activity_at, p.triage_state, p.duplicate_of_issue_id FROM (SELECT DISTINCT c.parent_issue_id AS id FROM issue c WHERE c.parent_issue_id IS NOT NULL) parents
+=======
+SELECT p.id, p.workspace_id, p.title, p.description, p.status, p.priority, p.assignee_type, p.assignee_id, p.creator_type, p.creator_id, p.parent_issue_id, p.acceptance_criteria, p.context_refs, p.position, p.due_date, p.created_at, p.updated_at, p.number, p.project_id, p.origin_type, p.origin_id, p.first_executed_at, p.start_date, p.metadata, p.stage, p.properties, p.revision, p.last_activity_at, p.triage_state, p.duplicate_of_issue_id, p.requester_user_id FROM (SELECT DISTINCT c.parent_issue_id AS id FROM issue c WHERE c.parent_issue_id IS NOT NULL) parents
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 JOIN issue p ON p.id=parents.id
 WHERE NOT EXISTS(SELECT 1 FROM issue_wakeup w WHERE w.issue_id=p.id AND w.system_rule= $1)
  AND p.status NOT IN ('done','cancelled')
@@ -547,11 +553,16 @@ func (q *Queries) ListParentsWithoutSystemWakeup(ctx context.Context, arg ListPa
 			&i.LastActivityAt,
 			&i.TriageState,
 			&i.DuplicateOfIssueID,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 			&i.WorkflowID,
 			&i.RequestedByID,
 			&i.MaxRunsOverride,
 			&i.DescriptionExternalRead,
 			&i.CreatedVia,
+||||||| 2ae2f08005
+=======
+			&i.RequesterUserID,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		); err != nil {
 			return nil, err
 		}

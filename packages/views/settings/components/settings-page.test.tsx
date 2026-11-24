@@ -76,6 +76,7 @@ vi.mock("./connected-apps-tab", () => ({
 
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme" }),
+  useWorkspacePaths: () => ({ autopilots: () => "/acme/autopilots" }),
 }));
 vi.mock("@multica/core/workspace/avatar-url", () => ({
   resolvePublicFileUrl: (url: string | null | undefined) => url ?? null,
@@ -254,8 +255,16 @@ describe("SettingsPage Plugin feature flag", () => {
   });
 });
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 describe("SettingsPage workflow feature flag", () => {
   it("mounts workflows in workspace settings without losing wakeups", () => {
+||||||| 2ae2f08005
+describe("SettingsPage workflows", () => {
+  it("mounts workflows without feature flag configuration and keeps wakeups", () => {
+=======
+describe("SettingsPage workflows", () => {
+  it("mounts workflows without feature flag configuration", () => {
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     navigationState.search = "tab=workflows";
     configStore.getState().setFeatureFlags({ [PROJECT_WORKFLOWS_V1_FLAG]: true });
 
@@ -264,7 +273,6 @@ describe("SettingsPage workflow feature flag", () => {
     expect(screen.getByText("WorkflowsTab")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Workflows" })).toHaveAttribute("aria-current", "page");
     expect(screen.queryByRole("link", { name: "Issue Statuses" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Wakeups" })).toBeInTheDocument();
   });
 
   it("keeps the status catalog when workflows are disabled", () => {
@@ -272,9 +280,26 @@ describe("SettingsPage workflow feature flag", () => {
 
     renderWithI18n(<SettingsPage />);
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     expect(screen.getByText("IssueStatusesTab")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Workflows" })).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Wakeups" })).toBeInTheDocument();
+||||||| 2ae2f08005
+    expect(screen.getByText("WorkflowsTab")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Workflows" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Wakeups" })).toBeInTheDocument();
+=======
+    expect(screen.getByText("WorkflowsTab")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Workflows" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("sends old wakeup default links to the issue wakeups list", () => {
+    navigationState.search = "tab=wakeups";
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(replace).toHaveBeenCalledWith("/acme/autopilots?tab=wakeups");
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   });
 });
 
@@ -367,7 +392,7 @@ describe("SettingsPage information architecture", () => {
     renderWithI18n(<SettingsPage />);
     expect(
       within(nav()).queryByRole("link", {
-        name: /^(Issue|Chat|GitHub|Labs|Integrations|Repositories)$/,
+        name: /^(Issue|Chat|GitHub|Labs|Integrations|Repositories|Wakeups)$/,
       }),
     ).not.toBeInTheDocument();
   });
@@ -392,7 +417,7 @@ describe("SettingsPage information architecture", () => {
     );
   });
 
-  it("lists Connected apps with the personal pages only when Composio is available", () => {
+  it("lists Connected apps with the workspace connections only when Composio is available", () => {
     const first = renderWithI18n(<SettingsPage />);
     expect(screen.queryByRole("link", { name: "Connected apps" })).toBeNull();
     first.unmount();
@@ -401,8 +426,9 @@ describe("SettingsPage information architecture", () => {
     navigationState.search = "tab=integrations&connected=notion";
     renderWithI18n(<SettingsPage />);
     const personal = within(nav()).getByRole("region", { name: /Personal/ });
+    expect(within(personal).queryByRole("link", { name: "Connected apps" })).toBeNull();
     expect(
-      within(personal).getByRole("link", { name: "Connected apps" }),
+      within(nav()).getByRole("link", { name: "Connected apps" }),
     ).toHaveAttribute("aria-current", "page");
     expect(screen.getByText("ConnectedAppsTab")).toBeInTheDocument();
   });

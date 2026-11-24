@@ -67,7 +67,20 @@
     "unread_other": "未読のチャット {{count}}件",
     "default": "Multica に質問"
   },
+  "bar": {
+    "history": "チャット履歴",
+    "history_group": {
+      "today": "今日",
+      "week": "過去 7 日間",
+      "older": "それ以前"
+    },
+    "close_chip": "{{title}} を閉じる",
+    "all_chats": "すべてのチャット",
+    "more_other": "他 {{count}} 件のチャット"
+  },
   "input": {
+    "page_context_add": "このページをコンテキストに追加",
+    "page_context_remove": "ページのコンテキストを削除",
     "placeholder_no_agent": "チャットを始めるにはエージェントを作成してください",
     "placeholder_archived": "このセッションはアーカイブされています",
     "placeholder_compacting": "コンパクト中…",
@@ -136,6 +149,7 @@
     "resend_failed_toast": "メッセージを再送できませんでした"
   },
   "message_list": {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     "continued_from": "継続元：",
     "previous_dm": "前のDM",
     "continued_in": "継続先 →",
@@ -157,6 +171,11 @@
     "quote_message": "引用",
     "speaker_you": "あなた",
     "load_older_messages": "さらに前のメッセージを読み込む",
+||||||| 2ae2f08005
+=======
+    "jump_to_latest": "最新に移動",
+    "new_reply": "新しい返信",
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     "show_details": "詳細を表示",
     "show_earlier_context": "以前の文脈を表示",
     "replied_in": "{{elapsed}}で返信",
@@ -237,6 +256,7 @@
     "restore_tooltip": "復元",
     "expand_tooltip": "展開",
     "minimize_tooltip": "最小化",
+    "close_tooltip": "閉じる",
     "another_running": "別のチャットが実行中です",
     "another_unread": "別のチャットに未読の返信があります",
     "running": "実行中",
@@ -277,7 +297,6 @@
       "label": "アクションを提案",
       "prompt": "私のワークスペースについて知っていることを踏まえ、最初に役立つアクションを提案してください。"
     },
-    "customize": "開始例をカスタマイズ",
     "uploading": "アップロードが完了してから開始例を使用してください。",
     "draft_in_progress": "開始例を使う前に、下書きを送信するか消去してください。"
   },
@@ -368,8 +387,6 @@
     "no_response_preview": "テキスト返信なし",
     "quick_agents": "よく使う Agent",
     "add": "追加",
-    "add_agent": "よく使う Agent を追加",
-    "unpin_agent": "よく使うから外す",
     "waiting": "返信待ち",
     "pin": "ピン留め",
     "unpin": "ピン留めを解除",

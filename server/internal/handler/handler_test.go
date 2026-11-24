@@ -52,17 +52,49 @@ func isHandlerTestDatabase(databaseName string) bool {
 func TestMain(m *testing.M) {
 	ctx := context.Background()
 	dbURL := os.Getenv("DATABASE_URL")
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	if dbURL == "" {
 		dbURL = "postgres://multica:multica@localhost:5432/multica_test?sslmode=disable"
+||||||| 2ae2f08005
+	if dbURL == "" {
+		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
+=======
+	dbConfigured := dbURL != ""
+	if !dbConfigured {
+		dbURL = "postgres://multica:multica@localhost:5432/multica?sslmode=disable"
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	}
 
 	pool, err := pgxpool.New(ctx, dbURL)
 	if err != nil {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		testutil.ExitWithoutDatabase(err)
+||||||| 2ae2f08005
+		fmt.Printf("Skipping tests: could not connect to database: %v\n", err)
+		os.Exit(0)
+=======
+		if dbConfigured {
+			fmt.Fprintln(os.Stderr, "Failed to configure handler test database from DATABASE_URL")
+			os.Exit(1)
+		}
+		fmt.Printf("Skipping tests: could not connect to database: %v\n", err)
+		os.Exit(0)
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	}
 	if err := pool.Ping(ctx); err != nil {
 		pool.Close()
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		testutil.ExitWithoutDatabase(err)
+||||||| 2ae2f08005
+		os.Exit(0)
+=======
+		if dbConfigured {
+			fmt.Fprintln(os.Stderr, "Failed to connect to handler test database configured by DATABASE_URL")
+			os.Exit(1)
+		}
+		fmt.Printf("Skipping tests: database not reachable: %v\n", err)
+		os.Exit(0)
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	}
 	queries := db.New(pool)
 	hub := realtime.NewHub()

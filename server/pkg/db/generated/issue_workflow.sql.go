@@ -647,7 +647,13 @@ func (q *Queries) ListOverrideIssueStatusesForWorkflow(ctx context.Context, arg 
 }
 
 const listProjectsUsingDefaultIssueWorkflow = `-- name: ListProjectsUsingDefaultIssueWorkflow :many
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split FROM project
+||||||| 2ae2f08005
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id FROM project
+=======
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 WHERE workspace_id = $1::uuid
   AND workflow_id IS NULL
 ORDER BY created_at, id
@@ -677,8 +683,18 @@ func (q *Queries) ListProjectsUsingDefaultIssueWorkflow(ctx context.Context, wor
 			&i.StartDate,
 			&i.DueDate,
 			&i.WorkflowID,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 			&i.DecisionDelegates,
 			&i.WorkflowSplit,
+||||||| 2ae2f08005
+=======
+			&i.CreatorType,
+			&i.CreatorID,
+			&i.Visibility,
+			&i.ArchivedAt,
+			&i.ArchivedByType,
+			&i.ArchivedByID,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		); err != nil {
 			return nil, err
 		}
@@ -691,7 +707,13 @@ func (q *Queries) ListProjectsUsingDefaultIssueWorkflow(ctx context.Context, wor
 }
 
 const listProjectsUsingIssueWorkflow = `-- name: ListProjectsUsingIssueWorkflow :many
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split FROM project
+||||||| 2ae2f08005
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id FROM project
+=======
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 WHERE workspace_id = $1::uuid
   AND workflow_id = $2::uuid
 ORDER BY created_at, id
@@ -726,8 +748,18 @@ func (q *Queries) ListProjectsUsingIssueWorkflow(ctx context.Context, arg ListPr
 			&i.StartDate,
 			&i.DueDate,
 			&i.WorkflowID,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 			&i.DecisionDelegates,
 			&i.WorkflowSplit,
+||||||| 2ae2f08005
+=======
+			&i.CreatorType,
+			&i.CreatorID,
+			&i.Visibility,
+			&i.ArchivedAt,
+			&i.ArchivedByType,
+			&i.ArchivedByID,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		); err != nil {
 			return nil, err
 		}
@@ -763,7 +795,13 @@ func (q *Queries) LockProjectForIssueWrite(ctx context.Context, arg LockProjectF
 }
 
 const lockProjectForWorkflowChange = `-- name: LockProjectForWorkflowChange :one
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split FROM project
+||||||| 2ae2f08005
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id FROM project
+=======
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
 FOR UPDATE
@@ -793,8 +831,18 @@ func (q *Queries) LockProjectForWorkflowChange(ctx context.Context, arg LockProj
 		&i.StartDate,
 		&i.DueDate,
 		&i.WorkflowID,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		&i.DecisionDelegates,
 		&i.WorkflowSplit,
+||||||| 2ae2f08005
+=======
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.Visibility,
+		&i.ArchivedAt,
+		&i.ArchivedByType,
+		&i.ArchivedByID,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	)
 	return i, err
 }
@@ -853,8 +901,14 @@ WHERE i.workspace_id = $2::uuid
   AND i.project_id = ANY($3::uuid[])
   AND i.status = $4::text
   AND i.status <> $1::text
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   AND i.workflow_id IS NULL
 RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read, i.created_via
+||||||| 2ae2f08005
+RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id
+=======
+RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.requester_user_id
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 `
 
 type RemapProjectIssueStatusParams struct {
@@ -915,11 +969,16 @@ func (q *Queries) RemapProjectIssueStatus(ctx context.Context, arg RemapProjectI
 			&i.LastActivityAt,
 			&i.TriageState,
 			&i.DuplicateOfIssueID,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 			&i.WorkflowID,
 			&i.RequestedByID,
 			&i.MaxRunsOverride,
 			&i.DescriptionExternalRead,
 			&i.CreatedVia,
+||||||| 2ae2f08005
+=======
+			&i.RequesterUserID,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		); err != nil {
 			return nil, err
 		}
@@ -1022,7 +1081,13 @@ UPDATE project SET
     updated_at = now()
 WHERE id = $2::uuid
   AND workspace_id = $3::uuid
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split
+||||||| 2ae2f08005
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id
+=======
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 `
 
 type SetProjectWorkflowParams struct {
@@ -1049,8 +1114,18 @@ func (q *Queries) SetProjectWorkflow(ctx context.Context, arg SetProjectWorkflow
 		&i.StartDate,
 		&i.DueDate,
 		&i.WorkflowID,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		&i.DecisionDelegates,
 		&i.WorkflowSplit,
+||||||| 2ae2f08005
+=======
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.Visibility,
+		&i.ArchivedAt,
+		&i.ArchivedByType,
+		&i.ArchivedByID,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	)
 	return i, err
 }

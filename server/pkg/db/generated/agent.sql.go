@@ -3619,27 +3619,59 @@ INSERT INTO agent_task_queue (
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
     squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     workflow_step, pull_request_id, taint_ids, trigger_kind, id
+||||||| 2ae2f08005
+    workflow_step, id
+=======
+    workflow_step, fire_at, id
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 )
 SELECT
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     $1, $2, $3, CASE WHEN EXISTS (SELECT 1 FROM provider_hold) THEN 'deferred' ELSE 'queued' END, $4, $5,
     COALESCE($6::uuid[], '{}'),
     $7,
     COALESCE($8::boolean, FALSE),
+||||||| 2ae2f08005
+    $1, $2, $3, 'queued', $4, $5,
+    COALESCE($6::uuid[], '{}'),
+    $7,
+    COALESCE($8::boolean, FALSE),
+=======
+    $1, $2, $3,
+    CASE WHEN $5::timestamptz IS NULL THEN 'queued' ELSE 'deferred' END,
+    $4, $6,
+    COALESCE($7::uuid[], '{}'),
+    $8,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     COALESCE($9::boolean, FALSE),
-    $10,
+    COALESCE($10::boolean, FALSE),
     $11,
+    $12,
     NULLIF(CASE
-        WHEN COALESCE($12::text, '') <> ''
-        THEN jsonb_build_object('head_sha', $12::text)
+        WHEN COALESCE($13::text, '') <> ''
+        THEN jsonb_build_object('head_sha', $13::text)
         ELSE '{}'::jsonb
     END || CASE
-        WHEN COALESCE($13::boolean, FALSE)
+        WHEN COALESCE($14::boolean, FALSE)
         THEN '{"fresh_rerun":true}'::jsonb
         ELSE '{}'::jsonb
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     END || COALESCE((SELECT context FROM provider_hold), '{}'::jsonb), '{}'::jsonb),
     $14,
     $15,
+||||||| 2ae2f08005
+    END, '{}'::jsonb),
+    $14,
+    $15,
+=======
+    END || CASE
+        WHEN $15::bigint IS NOT NULL
+        THEN jsonb_build_object('workflow_handoff_revision', $15::bigint)
+        ELSE '{}'::jsonb
+    END, '{}'::jsonb),
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     $16,
     $17,
     $18,
@@ -3648,7 +3680,10 @@ SELECT
     $21,
     $22,
     $23,
+    $24,
+    $25,
     -- The issue's status as this task is queued: the workflow step it works on (MUL-7420).
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     (SELECT i.status FROM issue i WHERE i.id = $3),
     -- The PR whose head the review is stamped with, so a later head can find
     -- and supersede this run (CHE-2307). A replacement passes the exact PR
@@ -3668,12 +3703,21 @@ SELECT
     COALESCE($25::text[], '{}'),
     $26,
     COALESCE($27::uuid, gen_random_uuid())
+||||||| 2ae2f08005
+    (SELECT i.status FROM issue i WHERE i.id = $3),
+    COALESCE($24::uuid, gen_random_uuid())
+=======
+    COALESCE($26::text, (SELECT i.status FROM issue i WHERE i.id = $3)),
+    $5,
+    COALESCE($27::uuid, gen_random_uuid())
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 WHERE lock_task_owner_rows($1, $3, $2)
   AND (NOT COALESCE($28::boolean, FALSE) OR EXISTS (SELECT 1 FROM review_claim))
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, comment_thread_id, cancelled_by_type, cancelled_by_id, cancelled_by_name, issue_snapshot, context_tokens, context_window, task_kind, compact_reason, compact_trigger_tokens, workflow_step, claimed_model, chat_compaction_epoch, preset_name, preset_source, preset_skips, claimed_thinking_level, claimed_service_tier, claimed_context_args, cancel_acked_at, stop_unconfirmed_at, pull_request_id, replacement_released_at, stop_hold_issue_wide, taint_ids, applied_model, applied_thinking_level, applied_service_tier, applied_context_args, applied_reported_at, external_read, purpose, cancel_ack_reason, source_chat_session_id, trigger_kind, handoff_dispatch_id
 `
 
 type CreateAgentTaskParams struct {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	AgentID              pgtype.UUID   `json:"agent_id"`
 	RuntimeID            pgtype.UUID   `json:"runtime_id"`
 	IssueID              pgtype.UUID   `json:"issue_id"`
@@ -3705,6 +3749,60 @@ type CreateAgentTaskParams struct {
 	ProviderHoldSeconds  pgtype.Int4   `json:"provider_hold_seconds"`
 	HoldProvider         pgtype.Text   `json:"hold_provider"`
 	GateHead             pgtype.Text   `json:"gate_head"`
+||||||| 2ae2f08005
+	AgentID              pgtype.UUID   `json:"agent_id"`
+	RuntimeID            pgtype.UUID   `json:"runtime_id"`
+	IssueID              pgtype.UUID   `json:"issue_id"`
+	Priority             int32         `json:"priority"`
+	TriggerCommentID     pgtype.UUID   `json:"trigger_comment_id"`
+	CoalescedCommentIds  []pgtype.UUID `json:"coalesced_comment_ids"`
+	TriggerSummary       pgtype.Text   `json:"trigger_summary"`
+	ForceFreshSession    pgtype.Bool   `json:"force_fresh_session"`
+	IsLeaderTask         pgtype.Bool   `json:"is_leader_task"`
+	HandoffNote          pgtype.Text   `json:"handoff_note"`
+	SquadID              pgtype.UUID   `json:"squad_id"`
+	HeadSha              pgtype.Text   `json:"head_sha"`
+	FreshRerun           pgtype.Bool   `json:"fresh_rerun"`
+	OriginatorUserID     pgtype.UUID   `json:"originator_user_id"`
+	AccountableUserID    pgtype.UUID   `json:"accountable_user_id"`
+	RuntimeMcpOverlay    []byte        `json:"runtime_mcp_overlay"`
+	RuntimeConnectedApps []byte        `json:"runtime_connected_apps"`
+	OriginatorSource     pgtype.Text   `json:"originator_source"`
+	DelegatedFromTaskID  pgtype.UUID   `json:"delegated_from_task_id"`
+	RuleVersionID        pgtype.UUID   `json:"rule_version_id"`
+	RerunOfTaskID        pgtype.UUID   `json:"rerun_of_task_id"`
+	TriggerEvidenceKind  pgtype.Text   `json:"trigger_evidence_kind"`
+	TriggerEvidenceRefID pgtype.UUID   `json:"trigger_evidence_ref_id"`
+	ID                   pgtype.UUID   `json:"id"`
+=======
+	AgentID                 pgtype.UUID        `json:"agent_id"`
+	RuntimeID               pgtype.UUID        `json:"runtime_id"`
+	IssueID                 pgtype.UUID        `json:"issue_id"`
+	Priority                int32              `json:"priority"`
+	FireAt                  pgtype.Timestamptz `json:"fire_at"`
+	TriggerCommentID        pgtype.UUID        `json:"trigger_comment_id"`
+	CoalescedCommentIds     []pgtype.UUID      `json:"coalesced_comment_ids"`
+	TriggerSummary          pgtype.Text        `json:"trigger_summary"`
+	ForceFreshSession       pgtype.Bool        `json:"force_fresh_session"`
+	IsLeaderTask            pgtype.Bool        `json:"is_leader_task"`
+	HandoffNote             pgtype.Text        `json:"handoff_note"`
+	SquadID                 pgtype.UUID        `json:"squad_id"`
+	HeadSha                 pgtype.Text        `json:"head_sha"`
+	FreshRerun              pgtype.Bool        `json:"fresh_rerun"`
+	WorkflowHandoffRevision pgtype.Int8        `json:"workflow_handoff_revision"`
+	OriginatorUserID        pgtype.UUID        `json:"originator_user_id"`
+	AccountableUserID       pgtype.UUID        `json:"accountable_user_id"`
+	RuntimeMcpOverlay       []byte             `json:"runtime_mcp_overlay"`
+	RuntimeConnectedApps    []byte             `json:"runtime_connected_apps"`
+	OriginatorSource        pgtype.Text        `json:"originator_source"`
+	DelegatedFromTaskID     pgtype.UUID        `json:"delegated_from_task_id"`
+	RuleVersionID           pgtype.UUID        `json:"rule_version_id"`
+	RerunOfTaskID           pgtype.UUID        `json:"rerun_of_task_id"`
+	TriggerEvidenceKind     pgtype.Text        `json:"trigger_evidence_kind"`
+	TriggerEvidenceRefID    pgtype.UUID        `json:"trigger_evidence_ref_id"`
+	WorkflowStep            pgtype.Text        `json:"workflow_step"`
+	ID                      pgtype.UUID        `json:"id"`
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 }
 
 // Fenced against workspace teardown: lock_task_owner_rows (migration 284)
@@ -3726,18 +3824,26 @@ type CreateAgentTaskParams struct {
 // COALESCE keeps the column's gen_random_uuid() default reachable, so a caller
 // that passes no id still inserts — it just gets a random v4, exactly as before.
 // The same pattern is used by every INSERT listed in pkg/dbid's write table.
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 // gate_head/gate_required carry the run budget's review gate (CHE-2226). A run
 // admitted as the issue's reviewer records the head in issue_review_admission in
 // this same statement, so the claim and the task row commit or roll back
 // together. When the budget is spent (gate_required) only the statement that
 // inserted the claim writes a task; a concurrent loser writes none and the
 // caller sees no row.
+||||||| 2ae2f08005
+=======
+// Workflow handoffs pass their original step and source revision explicitly.
+// A fire_at value admits a durable deferred task outside the pending slot;
+// existing callers omit it and continue to insert queued tasks.
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, createAgentTask,
 		arg.AgentID,
 		arg.RuntimeID,
 		arg.IssueID,
 		arg.Priority,
+		arg.FireAt,
 		arg.TriggerCommentID,
 		arg.CoalescedCommentIds,
 		arg.TriggerSummary,
@@ -3747,6 +3853,7 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 		arg.SquadID,
 		arg.HeadSha,
 		arg.FreshRerun,
+		arg.WorkflowHandoffRevision,
 		arg.OriginatorUserID,
 		arg.AccountableUserID,
 		arg.RuntimeMcpOverlay,
@@ -3757,6 +3864,7 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 		arg.RerunOfTaskID,
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		arg.PullRequestID,
 		arg.TaintIds,
 		arg.TriggerKind,
@@ -3915,6 +4023,10 @@ func (q *Queries) CreateBackgroundTask(ctx context.Context, arg CreateBackground
 		arg.OriginatorSource,
 		arg.TriggerEvidenceKind,
 		arg.TriggerEvidenceRefID,
+||||||| 2ae2f08005
+=======
+		arg.WorkflowStep,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		arg.ID,
 	)
 	var i AgentTaskQueue
@@ -6491,8 +6603,19 @@ WITH retired_sessions AS (
       )
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
         t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
         t.started_at, t.completed_at, t.issue_snapshot, t.context_tokens,
+||||||| 2ae2f08005
+        t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
+        t.started_at, t.issue_snapshot,
+=======
+        t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason,
+        -- Counts in the adapter summary are not upstream HTTP statuses.
+        -- Keep this pattern aligned with taskfailure.WithoutCodebuddyProtocolSummary.
+        regexp_replace(COALESCE(t.error, ''), '^\[codebuddy protocol: exit_code=-?[0-9]+ stdout_bytes=[0-9]+ stderr_bytes=[0-9]+ event_count=[0-9]+ invalid_event_count=[0-9]+ assistant_event_count=[0-9]+ tool_use_count=[0-9]+ saw_result=(true|false) result_is_error=(true|false) result_bytes=[0-9]+ last_assistant_bytes=[0-9]+ scanner_error=(true|false)\]$', '', 'gn') AS error,
+        t.started_at, t.issue_snapshot,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
         COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) AS terminal_at
     FROM agent_task_queue t
     WHERE t.agent_id = $1 AND t.issue_id = $2
@@ -9673,6 +9796,124 @@ func (q *Queries) ListUnreleasedSupersededReviews(ctx context.Context, issueID p
 	return items, nil
 }
 
+const listTasksByIssueSubtree = `-- name: ListTasksByIssueSubtree :many
+WITH RECURSIVE subtree(id) AS (
+    SELECT root.id FROM issue root
+    WHERE root.id = $2 AND root.workspace_id = $3
+    UNION
+    SELECT child.id FROM issue child
+    JOIN subtree parent ON child.parent_issue_id = parent.id
+    WHERE child.workspace_id = $3
+)
+SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.comment_thread_id, atq.cancelled_by_type, atq.cancelled_by_id, atq.cancelled_by_name, atq.issue_snapshot, atq.workflow_step, i.title AS issue_title, i.number AS issue_number, w.issue_prefix
+FROM agent_task_queue atq
+JOIN subtree ON subtree.id = atq.issue_id
+JOIN issue i ON i.id = atq.issue_id
+JOIN workspace w ON w.id = i.workspace_id
+WHERE NOT $1::boolean
+   OR atq.status IN ('queued', 'dispatched', 'waiting_local_directory', 'running')
+ORDER BY atq.created_at DESC, atq.id
+`
+
+type ListTasksByIssueSubtreeParams struct {
+	ActiveOnly  bool        `json:"active_only"`
+	RootIssueID pgtype.UUID `json:"root_issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type ListTasksByIssueSubtreeRow struct {
+	AgentTaskQueue AgentTaskQueue `json:"agent_task_queue"`
+	IssueTitle     string         `json:"issue_title"`
+	IssueNumber    int32          `json:"issue_number"`
+	IssuePrefix    string         `json:"issue_prefix"`
+}
+
+// UNION deduplicates IDs, so even a corrupt parent cycle terminates.
+// Constrain every recursive step to the authorized root's workspace.
+func (q *Queries) ListTasksByIssueSubtree(ctx context.Context, arg ListTasksByIssueSubtreeParams) ([]ListTasksByIssueSubtreeRow, error) {
+	rows, err := q.db.Query(ctx, listTasksByIssueSubtree, arg.ActiveOnly, arg.RootIssueID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTasksByIssueSubtreeRow{}
+	for rows.Next() {
+		var i ListTasksByIssueSubtreeRow
+		if err := rows.Scan(
+			&i.AgentTaskQueue.ID,
+			&i.AgentTaskQueue.AgentID,
+			&i.AgentTaskQueue.IssueID,
+			&i.AgentTaskQueue.Status,
+			&i.AgentTaskQueue.Priority,
+			&i.AgentTaskQueue.DispatchedAt,
+			&i.AgentTaskQueue.StartedAt,
+			&i.AgentTaskQueue.CompletedAt,
+			&i.AgentTaskQueue.Result,
+			&i.AgentTaskQueue.Error,
+			&i.AgentTaskQueue.CreatedAt,
+			&i.AgentTaskQueue.Context,
+			&i.AgentTaskQueue.RuntimeID,
+			&i.AgentTaskQueue.SessionID,
+			&i.AgentTaskQueue.WorkDir,
+			&i.AgentTaskQueue.TriggerCommentID,
+			&i.AgentTaskQueue.ChatSessionID,
+			&i.AgentTaskQueue.AutopilotRunID,
+			&i.AgentTaskQueue.Attempt,
+			&i.AgentTaskQueue.MaxAttempts,
+			&i.AgentTaskQueue.ParentTaskID,
+			&i.AgentTaskQueue.FailureReason,
+			&i.AgentTaskQueue.TriggerSummary,
+			&i.AgentTaskQueue.ForceFreshSession,
+			&i.AgentTaskQueue.IsLeaderTask,
+			&i.AgentTaskQueue.WaitReason,
+			&i.AgentTaskQueue.InitiatorUserID,
+			&i.AgentTaskQueue.HandoffNote,
+			&i.AgentTaskQueue.PrepareLeaseExpiresAt,
+			&i.AgentTaskQueue.SquadID,
+			&i.AgentTaskQueue.RuntimeMcpOverlay,
+			&i.AgentTaskQueue.EscalationForTaskID,
+			&i.AgentTaskQueue.FireAt,
+			&i.AgentTaskQueue.OriginatorUserID,
+			&i.AgentTaskQueue.RuntimeConnectedApps,
+			&i.AgentTaskQueue.CoalescedCommentIds,
+			&i.AgentTaskQueue.DeliveredCommentIds,
+			&i.AgentTaskQueue.ChatInputTaskID,
+			&i.AgentTaskQueue.ChatFinalizeDeferredAt,
+			&i.AgentTaskQueue.OriginatorSource,
+			&i.AgentTaskQueue.DelegatedFromTaskID,
+			&i.AgentTaskQueue.RetryOfTaskID,
+			&i.AgentTaskQueue.RerunOfTaskID,
+			&i.AgentTaskQueue.RuleVersionID,
+			&i.AgentTaskQueue.TriggerEvidenceKind,
+			&i.AgentTaskQueue.TriggerEvidenceRefID,
+			&i.AgentTaskQueue.AccountableUserID,
+			&i.AgentTaskQueue.SessionRolloutMissing,
+			&i.AgentTaskQueue.RetiredSessionID,
+			&i.AgentTaskQueue.QuickActionsDisabled,
+			&i.AgentTaskQueue.RegenerateQuickActionsFor,
+			&i.AgentTaskQueue.BranchName,
+			&i.AgentTaskQueue.DurableWorkDir,
+			&i.AgentTaskQueue.ChannelContextRevision,
+			&i.AgentTaskQueue.CommentThreadID,
+			&i.AgentTaskQueue.CancelledByType,
+			&i.AgentTaskQueue.CancelledByID,
+			&i.AgentTaskQueue.CancelledByName,
+			&i.AgentTaskQueue.IssueSnapshot,
+			&i.AgentTaskQueue.WorkflowStep,
+			&i.IssueTitle,
+			&i.IssueNumber,
+			&i.IssuePrefix,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listUserAgentIDsByRuntime = `-- name: ListUserAgentIDsByRuntime :many
 SELECT id FROM agent
 WHERE runtime_id = $1 AND kind = 'user'
@@ -9976,8 +10217,8 @@ WHERE a.workspace_id = $1
           )
           OR (
             $3::text IN ('created', 'any')
-            AND i.creator_type = 'member'
-            AND i.creator_id = $4::uuid
+            AND ((i.creator_type = 'member' AND i.creator_id = $4::uuid)
+                 OR i.requester_user_id = $4::uuid)
           )
           OR (
             $3::text IN ('requested', 'any')
@@ -11880,6 +12121,7 @@ func (q *Queries) PromoteDueDeferredTasksForRuntimes(ctx context.Context, arg Pr
 	return items, nil
 }
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 const rebaseClaimedChatTaskEpoch = `-- name: RebaseClaimedChatTaskEpoch :exec
 UPDATE agent_task_queue
 SET chat_compaction_epoch = cs.compaction_epoch
@@ -11900,6 +12142,53 @@ func (q *Queries) RebaseClaimedChatTaskEpoch(ctx context.Context, id pgtype.UUID
 	return err
 }
 
+||||||| 2ae2f08005
+=======
+const reassignPendingAgentTasksToRuntime = `-- name: ReassignPendingAgentTasksToRuntime :one
+WITH fence AS MATERIALIZED (
+    SELECT lock_task_owner_rows($1, NULL, $2) AS ok
+),
+reassigned AS (
+    UPDATE agent_task_queue
+    SET runtime_id = $2
+    WHERE agent_id = $1
+      AND status IN ('queued', 'deferred')
+      AND runtime_id IS DISTINCT FROM $2
+      AND (SELECT ok FROM fence)
+    RETURNING id
+)
+SELECT
+    (SELECT ok FROM fence) AS fence_ok,
+    (SELECT count(*) FROM reassigned) AS reassigned_tasks
+`
+
+type ReassignPendingAgentTasksToRuntimeParams struct {
+	AgentID      pgtype.UUID `json:"agent_id"`
+	NewRuntimeID pgtype.UUID `json:"new_runtime_id"`
+}
+
+type ReassignPendingAgentTasksToRuntimeRow struct {
+	FenceOk         bool  `json:"fence_ok"`
+	ReassignedTasks int64 `json:"reassigned_tasks"`
+}
+
+// Moves an agent's not-yet-dispatched tasks to the runtime it was just rebound
+// to. Claims fence on agent.runtime_id = task.runtime_id (MUL-6697), so a
+// queued or deferred row left on the old runtime is claimable by neither
+// daemon. Deferred rows move too: promotion is per runtime and would otherwise
+// strand them later. Dispatched, running and waiting rows are already held by
+// the old runtime's daemon and stay. Callers hold the agent row FOR UPDATE.
+//
+// Same fence-verdict shape as ReassignTasksToRuntime: FenceOk = false must
+// abort the rebind rather than commit a binding with stranded rows.
+func (q *Queries) ReassignPendingAgentTasksToRuntime(ctx context.Context, arg ReassignPendingAgentTasksToRuntimeParams) (ReassignPendingAgentTasksToRuntimeRow, error) {
+	row := q.db.QueryRow(ctx, reassignPendingAgentTasksToRuntime, arg.AgentID, arg.NewRuntimeID)
+	var i ReassignPendingAgentTasksToRuntimeRow
+	err := row.Scan(&i.FenceOk, &i.ReassignedTasks)
+	return i, err
+}
+
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 const rebindAgentBuilderRuntime = `-- name: RebindAgentBuilderRuntime :one
 UPDATE agent
 SET runtime_id = $1,

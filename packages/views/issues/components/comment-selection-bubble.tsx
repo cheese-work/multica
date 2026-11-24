@@ -23,17 +23,29 @@ function placementFor(marker: boolean, touch: boolean) {
 const isTouch = () => !!window.matchMedia?.("(pointer: coarse)").matches;
 
 /** Match the description's EditorBubbleMenu geometry for readonly selections. */
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 export function CommentSelectionBubble({ range, source, children, owner, markerRanges, onPositioned, portalTarget, keepInView = false }: {
+||||||| 2ae2f08005
+export function CommentSelectionBubble({ range, source, children, owner, markerRanges, onPositioned }: {
+=======
+export function CommentSelectionBubble({ range, source, children, owner, markerRanges, markerZIndex = 20, onPositioned, keepVisibleWhenDetached = false }: {
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   range: Range;
   source: HTMLElement;
   children: ReactNode;
   owner: string;
   markerRanges?: Range[];
+  markerZIndex?: number;
   /** Called after the popup has a visible, usable position. */
   onPositioned?: () => void;
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   /** Where the overlay lives in the DOM. Defaults to the page body. */
   portalTarget?: HTMLElement;
   keepInView?: boolean;
+||||||| 2ae2f08005
+=======
+  keepVisibleWhenDetached?: boolean;
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const marker = !!markerRanges;
@@ -48,9 +60,15 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
     let revision = 0;
     const update = () => {
       const currentRevision = ++revision;
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       const touch = isTouch();
       const viewport = window.visualViewport;
       element.style.maxHeight = keepInView && viewport ? `${Math.max(0, viewport.height - 16)}px` : "";
+||||||| 2ae2f08005
+=======
+      // Keep an open note recoverable if realtime removes or replaces its source.
+      if (keepVisibleWhenDetached && (!source.isConnected || !range.startContainer.isConnected)) return;
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       // Keep visibility tied to the real quote, not a zero-width point outside
       // the scroll container. Markers move horizontally but never clamp/flip
       // vertically: doing so piles unrelated annotations at the viewport edge.
@@ -87,11 +105,25 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
     // resizing its source element or triggering a window resize.
     const cleanup = autoUpdate(anchor, element, update, { animationFrame: true });
     return () => { active = false; cleanup(); };
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   }, [range, source, marker, markerRanges, onPositioned, keepInView]);
+||||||| 2ae2f08005
+  }, [range, source, marker, markerRanges, onPositioned]);
+=======
+  }, [range, source, marker, markerRanges, onPositioned, keepVisibleWhenDetached]);
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
   return createPortal(
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     <div ref={ref} data-reply-annotation-overlay={owner}
       style={{ position: "fixed", zIndex: marker ? 20 : 50, visibility: "hidden", width: "max-content", overflowY: keepInView ? "auto" : undefined }}>
+||||||| 2ae2f08005
+    <div ref={ref} data-reply-annotation-overlay={owner}
+      style={{ position: "fixed", zIndex: marker ? 20 : 50, visibility: "hidden", width: "max-content" }}>
+=======
+    <div ref={ref} data-reply-annotation-overlay={owner} data-editor-overlay-owner={owner}
+      style={{ position: "fixed", zIndex: marker ? markerZIndex : 50, visibility: "hidden", width: "max-content" }}>
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       {children}
     </div>,
     portalTarget ?? document.body,

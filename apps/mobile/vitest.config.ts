@@ -13,6 +13,7 @@ import path from "node:path";
 //
 // Co-located test files (foo.ts + foo.test.ts) match how the rest of the
 // monorepo organises vitest suites.
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 // The composer draft test renders the real composers with react-test-renderer
 // and every native module mocked: it checks that a draft survives unmount and
 // remount, not native rendering.
@@ -22,6 +23,14 @@ import path from "node:path";
 // `*-screen.test.tsx`) opt into jsdom per file. The screen tests render the real
 // screens with react-native swapped for DOM stubs (`data/stores/test-support/`);
 // they cover wiring and state, not native rendering.
+||||||| 2ae2f08005
+// The run cancel button has headless callback/prop tests with native modules
+// mocked; these do not verify native rendering.
+=======
+// The run cancel button, inbox and timeline list have headless
+// callback/prop tests with native modules mocked; these do not verify
+// native rendering.
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 // App configuration tests also run here to cover native prebuild options
 // across environment variants without loading React Native.
 export default defineConfig({
@@ -40,8 +49,14 @@ export default defineConfig({
       "data/**/*.test.ts",
       "data/**/*.test.tsx",
       "components/issue/run-cancel-button.test.ts",
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       "components/composer/composer-draft.test.tsx",
       "components/issue/issue-detail-load-error.test.tsx",
+||||||| 2ae2f08005
+=======
+      "components/inbox/inbox-screen.test.ts",
+      "components/issue/timeline-list.test.ts",
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     ],
     passWithNoTests: true,
   },

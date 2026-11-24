@@ -138,10 +138,18 @@ services:
       # off (every account allowed, with a startup warning).
       GITHUB_ALLOWED_ACCOUNT_IDS: ${GITHUB_ALLOWED_ACCOUNT_IDS:-}
       GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       # Required for Connect GitHub. Enable user authorization during
       # installation and grant the App read-only organization Members access.
       GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
       GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
+||||||| 2ae2f08005
+=======
+      # Required for new connections: verify the installing user's access.
+      GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
+      GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
+      # Required for new connections to prove organization repository control.
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       # App API credentials. The pull_request webhook is what mirrors a PR
       # onto a card; these are what let the server authenticate as the App
       # and pull the CI / mergeability snapshot that enriches it, plus
@@ -218,10 +226,17 @@ services:
       MULTICA_VCS_INTEGRATION_ENABLED: ${MULTICA_VCS_INTEGRATION_ENABLED:-true}
       # VCS integration at-rest encryption key for token-based providers
       MULTICA_VCS_SECRET_KEY: ${MULTICA_VCS_SECRET_KEY:-}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       # Per-workspace Jev credential encryption; unset keeps this write-only
       # storage disabled without affecting the existing process-wide JEV_API_KEY.
       MULTICA_JEV_SECRET_KEY: ${MULTICA_JEV_SECRET_KEY:-}
       MULTICA_JEV_SECRET_KEY_PREVIOUS: ${MULTICA_JEV_SECRET_KEY_PREVIOUS:-}
+||||||| 2ae2f08005
+=======
+      # Community theme store (Settings → Appearance → Manage). Always on; the
+      # registry URL points it at another registry's index.json.
+      MULTICA_THEME_REGISTRY_URL: ${MULTICA_THEME_REGISTRY_URL:-}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       # WeCom smart-bot integration. MULTICA_WECOM_SECRET_KEY is the
       # opt-in: unset = integration disabled. It encrypts each installation's
       # smart-bot secret at rest. The server needs it to unseal a bot's
@@ -256,6 +271,7 @@ services:
       # (bot_token_encrypted), so this single deployment-wide key is all
       # the operator needs to set here.
       MULTICA_TELEGRAM_SECRET_KEY: ${MULTICA_TELEGRAM_SECRET_KEY:-}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       # Same value as the frontend's: set means this instance serves /docs, so
       # /api/config advertises the path and in-app docs links stay on the
       # origin the visitor reached.
@@ -264,6 +280,12 @@ services:
       # 401 = healthy) before it lets skipped recurring autopilots run again.
       # Empty (the default) leaves the probe unconfigured; see .env.example.
       MULTICA_PROVIDER_RECOVERY_BASE_URL: ${MULTICA_PROVIDER_RECOVERY_BASE_URL:-}
+||||||| 2ae2f08005
+=======
+      # Tool steps shown in the streamed reply: auto (default; details in
+      # private chats, kind of work in groups), off, summary or detail.
+      MULTICA_TELEGRAM_TOOL_PROGRESS: ${MULTICA_TELEGRAM_TOOL_PROGRESS:-}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     restart: unless-stopped
 
   frontend:

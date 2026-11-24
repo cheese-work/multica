@@ -1,5 +1,15 @@
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { afterEach, describe, expect, it, vi, beforeEach } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+||||||| 2ae2f08005
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+=======
+import { describe, expect, it, vi, beforeEach } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { VirtuosoMockContext } from "react-virtuoso";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { Agent, ChatSession } from "@multica/core/types";
 import enChat from "../../locales/en/chat.json";
@@ -69,7 +79,12 @@ vi.mock("@multica/core/chat/mutations", () => ({
   useMarkChatSessionRead: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
   useUpdateChatSession: () => ({ mutate: updateMutate, isPending: false }),
   useSetChatSessionArchived: () => ({ mutate: archiveMutate, isPending: false }),
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   useBatchChatSessions: () => ({ mutateAsync: vi.fn().mockResolvedValue({ failed: [] }), isPending: false }),
+||||||| 2ae2f08005
+=======
+  useUpdateChatSession: () => ({ mutate: vi.fn(), isPending: false }),
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 }));
 
 vi.mock("@multica/core/chat/attention-mutations", () => {
@@ -137,6 +152,7 @@ function renderList(
     onEnterSelectMode = undefined as ((session: ChatSession) => void) | undefined,
   } = {},
 ) {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   const { container } = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <NavigationProvider value={{ push: navigate, replace: vi.fn(), back: vi.fn(), pathname: "/test-ws/chat", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (path) => path }}>
@@ -152,6 +168,31 @@ function renderList(
       />
       </NavigationProvider>
     </I18nProvider>,
+||||||| 2ae2f08005
+  render(
+    <I18nProvider locale="en" resources={TEST_RESOURCES}>
+      <ChatThreadList
+        sessions={renderedSessions}
+        agents={renderedAgents}
+        activeSessionId={activeSessionId}
+        onSelectSession={onSelectSession}
+        onArchive={onArchive}
+      />
+    </I18nProvider>,
+=======
+  render(
+    <VirtuosoMockContext.Provider value={{ viewportHeight: 560, itemHeight: 56 }}>
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatThreadList
+          sessions={renderedSessions}
+          agents={renderedAgents}
+          activeSessionId={activeSessionId}
+          onSelectSession={onSelectSession}
+          onArchive={onArchive}
+        />
+      </I18nProvider>
+    </VirtuosoMockContext.Provider>,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   );
   return { onArchive, onSelectSession, container };
 }
@@ -161,6 +202,30 @@ const ARCHIVE_LABEL_RE = new RegExp(`^${ARCHIVE_LABEL}`);
 
 beforeEach(() => {
   useChatStore.setState({ listView: "main" });
+});
+
+describe("ChatThreadList windowing", () => {
+  it("mounts only a window of a long history without an archive footer", () => {
+    renderList(null, {
+      renderedSessions: Array.from({ length: 200 }, (_, i) => makeSession({ id: `history-${i}` })),
+    });
+    expect(screen.getByText("Chat history-0")).toBeInTheDocument();
+    expect(screen.getAllByTestId("avatar-agent-1").length).toBeLessThan(30);
+    expect(screen.queryByText("Chat history-199")).not.toBeInTheDocument();
+  });
+
+  it("keeps the archive entry reachable and windows archived sessions", () => {
+    renderList(null, {
+      renderedSessions: [
+        ...sessions,
+        ...Array.from({ length: 200 }, (_, i) => makeSession({ id: `archived-${i}`, status: "archived" })),
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Archived.*200/ }));
+    expect(screen.getByText("Chat archived-0")).toBeInTheDocument();
+    expect(screen.getAllByTestId("avatar-agent-1").length).toBeLessThan(30);
+    expect(screen.queryByText("Chat archived-199")).not.toBeInTheDocument();
+  });
 });
 
 describe("ChatThreadList archive delegation", () => {
@@ -244,17 +309,7 @@ describe("ChatThreadList no_response preview (MUL-4351)", () => {
         message_kind: "no_response",
       },
     });
-    render(
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <ChatThreadList
-          sessions={[session]}
-          agents={[agent]}
-          activeSessionId={null}
-          onSelectSession={vi.fn()}
-          onArchive={vi.fn()}
-        />
-      </I18nProvider>,
-    );
+    renderList(null, { renderedSessions: [session] });
     expect(screen.getByText(enChat.list.no_response_preview)).toBeInTheDocument();
     // The stored English fallback body must not leak into the preview.
     expect(
@@ -382,6 +437,7 @@ describe("ChatThreadList row keyboard semantics", () => {
     expect(onSelectSession).not.toHaveBeenCalled();
   });
 });
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 
 // CHE-5511 slice 1: filter chips replace the sticky Needs-you block.
 describe("ChatThreadList filter chips", () => {
@@ -682,3 +738,70 @@ describe("ChatThreadList has no search of its own (CHE-5593)", () => {
     expect(document.activeElement).toBe(document.body);
   });
 });
+||||||| 2ae2f08005
+=======
+
+describe("ChatThreadList right-click menu", () => {
+  beforeEach(() => {
+    archiveMutate.mockClear();
+  });
+
+  it("keeps the row's actions available after pointer departure and acts on that row", async () => {
+    const { onArchive, onSelectSession } = renderList("s1");
+
+    fireEvent.contextMenu(screen.getByText("Chat s2"), { clientX: 30, clientY: 90 });
+    const menu = await screen.findByRole("menu");
+    expect(
+      Array.from(menu.querySelectorAll('[role="menuitem"]'), (el) => el.textContent?.trim()),
+    ).toEqual([enChat.list.pin, ARCHIVE_LABEL, enChat.header.rename]);
+
+    fireEvent.mouseLeave(menu.parentElement!, { relatedTarget: document.body });
+    expect(screen.getByRole("menu")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("menuitem", { name: ARCHIVE_LABEL }));
+    expect(onArchive).toHaveBeenCalledTimes(1);
+    expect(onArchive.mock.calls[0]![0]).toMatchObject({ id: "s2" });
+    expect(onSelectSession).not.toHaveBeenCalled();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("dismisses with Escape and reopens actions for a different chat", async () => {
+    const { onArchive } = renderList("s1");
+    fireEvent.contextMenu(screen.getByText("Chat s2"), { clientX: 30, clientY: 90 });
+    fireEvent.keyDown(await screen.findByRole("menu"), { key: "Escape" });
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+
+    fireEvent.contextMenu(screen.getByText("Chat s3"), { clientX: 40, clientY: 140 });
+    fireEvent.click(await screen.findByRole("menuitem", { name: ARCHIVE_LABEL }));
+    expect(onArchive).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: "s3" }));
+  });
+
+  it("dismisses on an outside press without running a row action", async () => {
+    const { onArchive, onSelectSession } = renderList("s1");
+    fireEvent.contextMenu(screen.getByText("Chat s2"), { clientX: 30, clientY: 90 });
+    await screen.findByRole("menu");
+    await userEvent.click(document.body);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(onArchive).not.toHaveBeenCalled();
+    expect(onSelectSession).not.toHaveBeenCalled();
+  });
+
+  it("keeps the modal dismissal layer after pointer departure", async () => {
+    const { onArchive, onSelectSession } = renderList("s1");
+    fireEvent.contextMenu(screen.getByText("Chat s2"), { clientX: 30, clientY: 90 });
+    const menu = await screen.findByRole("menu");
+    // The real Base UI backdrop prevents an outside press reaching the row below.
+    const backdrop = document.querySelector<HTMLElement>(
+      'div[role="presentation"][data-base-ui-inert]',
+    )!;
+    expect(backdrop).toBeInTheDocument();
+
+    fireEvent.mouseLeave(menu.parentElement!, { relatedTarget: document.body });
+    expect(backdrop).toBeInTheDocument();
+    await userEvent.click(backdrop);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(onArchive).not.toHaveBeenCalled();
+    expect(onSelectSession).not.toHaveBeenCalled();
+  });
+});
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d

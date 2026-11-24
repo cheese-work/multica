@@ -37,8 +37,15 @@ import type { Attachment } from "../../types";
 export type CommentDraftKey =
   | `new:${string}`              // top-level CommentInput, key = `new:${issueId}`
   | `reply:${string}:${string}`  // ReplyInput inside a thread, key = `reply:${issueId}:${rootCommentId}`
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   | `edit:${string}:${string}`   // inline edit on existing comment, key = `edit:${issueId}:${commentId}`
   | `chat:${string}`;           // agent-message annotations in a DM, key = `chat:${sessionId}`
+||||||| 2ae2f08005
+  | `edit:${string}:${string}`;  // inline edit on existing comment, key = `edit:${issueId}:${commentId}`
+=======
+  | `edit:${string}:${string}`   // inline edit on existing comment, key = `edit:${issueId}:${commentId}`
+  | `chat:${string}`;            // chat composer annotations only, key = `chat:${sessionId}`; text lives in the chat store
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 interface CommentDraft {
   content: string;

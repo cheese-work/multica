@@ -27,14 +27,21 @@
 // real `git describe` invocation against a throwaway repo.
 
 import { execFileSync, spawnSync } from "node:child_process";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { readFileSync, rmSync } from "node:fs";
+||||||| 2ae2f08005
+import { rmSync } from "node:fs";
+=======
+import { realpathSync, rmSync } from "node:fs";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import { delimiter, dirname, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(here, "..");
 const repoRoot = resolve(desktopRoot, "../..");
 const bundleCliScript = resolve(here, "bundle-cli.mjs");
+const bundleVoiceEngineScript = resolve(here, "bundle-voice-engine.mjs");
 
 const PLATFORM_CONFIG = {
   mac: {
@@ -467,6 +474,23 @@ function main() {
       },
     );
 
+    console.log(`[package] bundling voice engine → ${formatTarget(target)}`);
+    execFileSync(
+      "node",
+      [
+        bundleVoiceEngineScript,
+        "--target-platform",
+        PLATFORM_CONFIG[target.platform].runtimePlatform,
+        "--target-arch",
+        target.arch,
+        "--required",
+      ],
+      {
+        stdio: "inherit",
+        cwd: desktopRoot,
+      },
+    );
+
     const builderArgs = builderArgsForTarget(target, parsed, version, {
       disableMacNotarize,
       hostPlatform: process.platform,
@@ -499,7 +523,7 @@ function main() {
 // Only run when invoked as a CLI, not when imported by a test file.
 if (
   process.argv[1] &&
-  import.meta.url === pathToFileURL(process.argv[1]).href
+  realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url))
 ) {
   main();
 }

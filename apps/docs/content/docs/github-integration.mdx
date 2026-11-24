@@ -17,6 +17,8 @@ Self-hosted Multica can also connect self-hosted Forgejo, Gitea, or GitLab insta
 
 A workspace owner or admin can complete the connection:
 
+A new connection also requires GitHub installation control: a personal installation must belong to the authorizing GitHub user; an organization installation requires admin permission on every repository it covers. Read-only or partial access is insufficient. Select at least one repository for an organization installation before connecting.
+
 <Steps>
 <Step>
 Open **Settings → Code**.
@@ -238,9 +240,17 @@ Create the App under GitHub's **Developer settings → GitHub Apps** and fill in
 | Field | Value |
 |---|---|
 | Homepage URL | Your Multica frontend address, e.g. `https://multica.example.com` |
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 | Callback URL | `https://<api-host>/api/github/setup` — the same endpoint as the Setup URL |
 | Request user authorization (OAuth) during installation | Enabled |
 | Setup URL | `https://<api-host>/api/github/setup`, with **Redirect on update** enabled |
+||||||| 2ae2f08005
+| Callback URL | Leave blank |
+| Setup URL | `https://<api-host>/api/github/setup`, with **Redirect on update** enabled |
+=======
+| Callback URL | `https://<api-host>/api/github/setup` |
+| Request user authorization (OAuth) during installation | Enable |
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 | Webhook URL | `https://<api-host>/api/webhooks/github` |
 | Webhook secret | A random string you keep long-term |
 
@@ -285,18 +295,35 @@ Take the slug from the App's public URL. For example, the slug of `https://githu
 ```dotenv
 GITHUB_APP_SLUG=multica-acme
 GITHUB_WEBHOOK_SECRET=<the webhook secret you entered when creating the App>
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 GITHUB_APP_CLIENT_ID=<the App's Client ID>
 GITHUB_APP_CLIENT_SECRET=<a client secret generated on the App's settings page>
+||||||| 2ae2f08005
+=======
+GITHUB_APP_CLIENT_ID=<Client ID>
+GITHUB_APP_CLIENT_SECRET=<Client secret>
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 FRONTEND_ORIGIN=https://multica.example.com
 ```
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 The App credentials below let Multica authoritatively resolve the installation before binding it. They are also used for the repository picker and for CI and mergeability snapshots:
+||||||| 2ae2f08005
+If either `GITHUB_APP_SLUG` or `GITHUB_WEBHOOK_SECRET` is missing, the connect button is disabled and the webhook endpoint refuses to process events.
+
+For the PR card to show CI status and mergeability, also set the next two variables. Multica uses them to authenticate as the App and pull snapshots:
+=======
+All six GitHub variables in this section are required for new connections, including `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY`. Missing any of them disables Connect; webhook acceptance requires only `GITHUB_WEBHOOK_SECRET`. Existing bindings continue working. Set the first Callback URL to this endpoint and enable installation OAuth before deploying. GitHub does not use a separate Setup URL when installation OAuth is enabled.
+
+For new connections, PR-card CI status and mergeability, also set the next two variables. Multica uses a metadata-only installation token to compare the complete installation repository list with the repositories the connecting user administers:
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 ```dotenv
 GITHUB_APP_ID=<the GitHub App's numeric ID>
 GITHUB_APP_PRIVATE_KEY=<full PEM private key, keeping the BEGIN/END lines and newlines>
 ```
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 Generate the private key under the GitHub App's **Private keys → Generate a private key**. Without these App credentials, existing installations can still receive signed webhooks, mirror PRs, auto-link issues, and update issue status on merge. Creating a binding, browsing repositories, and refreshing CI or mergeability require the credentials, so PR cards show no CI or merge state until they are configured.
 
 All six GitHub values are required for the connect button. During a new connection, Multica exchanges GitHub's user-authorization code, resolves the installation as the App, and then requires either an exact personal-account ID and login match or an active organization admin membership. Visibility in a user's installation list is not treated as proof of organization authority. Verification errors fail closed. The temporary user token is revoked after the check.
@@ -310,6 +337,11 @@ GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
 ```
 
 GitHub `deleted` and `suspend` events always remove the binding, whatever the list says.
+||||||| 2ae2f08005
+Generate the private key under the GitHub App's **Private keys → Generate a private key**. Without these two variables, PRs still mirror and issues still auto-link and change status on merge; the PR card just shows no CI or merge state.
+=======
+Generate the private key under the GitHub App's **Private keys → Generate a private key**. Without these two variables, Connect is disabled. Existing bindings still mirror PRs and update issues from webhooks, but PR cards lack CI and mergeability status.
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 </Step>
 <Step>
@@ -323,8 +355,14 @@ This change needs no database migration. Restart the API server with the new env
 
 ## Troubleshooting
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 - **Connect button disabled**: check that `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_ID`, and `GITHUB_APP_PRIVATE_KEY` reached the API process.
 - **Connect fails right after installing**: enable **Request user authorization (OAuth) during installation**, set both callback and setup URLs to `/api/github/setup`, and grant Members read-only. The connecting user must own the personal account or be an active admin of the organization.
+||||||| 2ae2f08005
+- **Connect button disabled**: check that `GITHUB_APP_SLUG` and `GITHUB_WEBHOOK_SECRET` reached the API process.
+=======
+- **Connect button disabled**: check all six GitHub variables above, the first Callback URL, and **Request user authorization (OAuth) during installation**.
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 - **Webhook returns 401**: confirm the GitHub App and the API use the same webhook secret, then redeliver from GitHub's **Recent Deliveries**.
 - **PR still open in Multica after it merged on GitHub**: the `closed` webhook was lost. With `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` configured, the next CI refresh reads the PR from GitHub and records the merge or close as if the webhook had arrived. Open the issue to start a refresh, or wait for the periodic background refresh. Without the credentials, redeliver the event from **Recent Deliveries**.
 - **PR not linked**: check that the repository is in the App's authorized scope, auto-linking is on, the identifier belongs to the current workspace, and nobody removed the PR from the issue.

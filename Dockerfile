@@ -1,5 +1,11 @@
 # --- Build stage ---
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 FROM golang:1.27.3-alpine AS deps
+||||||| 2ae2f08005
+FROM golang:1.27.3-alpine AS builder
+=======
+FROM golang:1.27.4-alpine AS builder
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 RUN apk add --no-cache git
 

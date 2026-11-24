@@ -10,7 +10,14 @@ import { getCurrentSlug, setCurrentWorkspace } from "@multica/core/platform";
 import { isWorkspaceDeletePending } from "@multica/core/workspace/pending-delete";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { MachinePauseBanner, WorkspacePresencePrefetch } from "@multica/views/layout";
+||||||| 2ae2f08005
+import { WorkspacePresencePrefetch } from "@multica/views/layout";
+=======
+import { WorkspacePresencePrefetch } from "@multica/views/layout";
+import { VoiceWorkspaceWords } from "@multica/views/voice";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import { SourceBackfillModal } from "@multica/views/onboarding";
 import { useTabStore } from "@/stores/tab-store";
 import { useWindowOverlayStore } from "@/stores/window-overlay-store";
@@ -176,9 +183,14 @@ export function WorkspaceRouteLayout() {
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
       <WorkspacePresencePrefetch />
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       {/* Owner-only warning while one of their machines is paused; web mounts
        *  it in DashboardLayout, which desktop does not use. */}
       <MachinePauseBanner />
+||||||| 2ae2f08005
+=======
+      <VoiceWorkspaceWords />
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       <Outlet />
       {/* Source-attribution backfill: same Dialog the web shell mounts
        *  inside DashboardLayout. Desktop's WorkspaceRouteLayout doesn't

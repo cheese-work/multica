@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/dispatch"
 	inboxwriter "github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -1365,7 +1365,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		return err
 	}
 	var activities []wakeupActivity
-	var inbox []db.InboxItem
+	var pendingInbox inboxwriter.Deferred
 	note := func(action string, details map[string]any) error {
 		a, err := recordWakeupActivity(ctx, q, w, action, "system", pgtype.UUID{}, details)
 		if err == nil {
@@ -1378,8 +1378,8 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 		s.publishWakeupActivities(activities...)
-		for _, item := range inbox {
-			s.publishSystemInbox(item, issue.Status)
+		if s.Tasks != nil {
+			pendingInbox.Flush(s.Tasks.Bus)
 		}
 		return nil
 	}
@@ -1503,6 +1503,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	// assignee whose agent cannot run.
 	if current.Type == "member" || !current.Agent.ID.Valid {
 		facts["outcome"] = "none"
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		if current.Refused != "" {
 			facts["outcome"] = current.Refused
 		}
@@ -1517,7 +1518,34 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 				if notices, err = prNotices(ctx, q, issue, receipts); err != nil {
 					return err
 				}
+||||||| 2ae2f08005
+		if current.Type == "member" {
+			facts["outcome"] = "notified"
+			details, _ := json.Marshal(facts)
+			item, inserted, err := inboxwriter.CreateIfEligible(ctx, q, db.CreateInboxItemParams{
+				ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, RecipientType: "member", RecipientID: current.ID,
+				Type: "children_done", Severity: "info", IssueID: issue.ID, Title: issue.Title,
+				ActorType: pgtype.Text{String: "system", Valid: true}, Details: details,
+			})
+			if err != nil {
+				return err
+=======
+		if current.Type == "member" {
+			facts["outcome"] = "notified"
+			details, _ := json.Marshal(facts)
+			_, inserted, err := inboxwriter.Deliver(ctx, q, &pendingInbox, inboxwriter.Notification{
+				Params: db.CreateInboxItemParams{
+					ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, RecipientType: "member", RecipientID: current.ID,
+					Type: "children_done", Severity: "info", IssueID: issue.ID, Title: issue.Title,
+					ActorType: pgtype.Text{String: "system", Valid: true}, Details: details,
+				},
+				IssueStatus: &issue.Status,
+			})
+			if err != nil {
+				return err
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 			}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 			// One notice per pull request: two pull requests batched in one
 			// wake are never settled by one row (CHE-5901).
 			facts["outcome"] = "none"
@@ -1546,6 +1574,15 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 					facts["outcome"] = "notified"
 					inbox = append(inbox, item)
 				}
+||||||| 2ae2f08005
+			if inserted {
+				inbox = append(inbox, item)
+			} else {
+				facts["outcome"] = "none"
+=======
+			if !inserted {
+				facts["outcome"] = "none"
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 			}
 		}
 		if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
@@ -1620,7 +1657,27 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	if err != nil {
 		return err
 	}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	waiting, err := hasWaitingRunFor(ctx, q, issue.ID, agent.ID, attr.UserID, config, current)
+||||||| 2ae2f08005
+	waiting, err := hasWaitingRun(ctx, q, issue.ID, agent.ID, attr.UserID)
+=======
+	// Recorded without a run, like an assignee whose agent cannot run.
+	if err = s.Tasks.guardRunProjectAccess(ctx, issue, agent, attr.UserID, attr.AccountableUserID); err != nil {
+		if !errors.Is(err, ErrProjectAccessDenied) {
+			return err
+		}
+		facts["outcome"], facts["reason"] = "none", string(dispatch.ReasonProjectAccessBlocked)
+		if err = q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+			return err
+		}
+		if err = note(wakeupActivityTriggered, facts); err != nil {
+			return err
+		}
+		return commit()
+	}
+	waiting, err := hasWaitingRun(ctx, q, issue.ID, agent.ID, attr.UserID)
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	if err != nil {
 		return err
 	}
@@ -1817,6 +1874,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	return nil
 }
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 // resumeRateLimited lifts a rate pause through the one guarded statement and
 // mirrors it on w; false means the limit still leaves no room.
 func resumeRateLimited(ctx context.Context, q *db.Queries, w *db.IssueWakeup, now time.Time, limit int) (bool, error) {
@@ -1845,6 +1903,26 @@ func (s *IssueWakeupService) publishSystemInbox(item db.InboxItem, issueStatus s
 	})
 }
 
+||||||| 2ae2f08005
+func (s *IssueWakeupService) publishSystemInbox(item db.InboxItem, issueStatus string) {
+	if s.Tasks == nil || s.Tasks.Bus == nil {
+		return
+	}
+	s.Tasks.Bus.Publish(events.Event{
+		Type: protocol.EventInboxNew, WorkspaceID: util.UUIDToString(item.WorkspaceID), ActorType: "system",
+		Payload: map[string]any{"item": map[string]any{
+			"id": util.UUIDToString(item.ID), "workspace_id": util.UUIDToString(item.WorkspaceID),
+			"recipient_type": item.RecipientType, "recipient_id": util.UUIDToString(item.RecipientID),
+			"type": item.Type, "severity": item.Severity, "issue_id": util.UUIDToPtr(item.IssueID),
+			"title": item.Title, "body": util.TextToPtr(item.Body), "read": item.Read, "archived": item.Archived,
+			"created_at": util.TimestampToString(item.CreatedAt), "actor_type": util.TextToPtr(item.ActorType),
+			"actor_id": util.UUIDToPtr(item.ActorID), "details": json.RawMessage(item.Details), "issue_status": issueStatus,
+		}},
+	})
+}
+
+=======
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 // SystemWakeupInput is a person's change to a system rule on one issue.
 // Omitted fields keep their value.
 type SystemWakeupInput struct {

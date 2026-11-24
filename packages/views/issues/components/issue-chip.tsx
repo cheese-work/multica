@@ -56,6 +56,7 @@ export interface IssueChipProps {
 
 export const ISSUE_CHIP_CLASS = ISSUE_CHIP_BASE_CLASS;
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 export function IssueChip({
   issueId,
   fallbackLabel,
@@ -63,8 +64,19 @@ export function IssueChip({
   className,
   stableWidth,
 }: IssueChipProps) {
+||||||| 2ae2f08005
+export function IssueChip({
+  issueId,
+  fallbackLabel,
+  children,
+  className,
+}: IssueChipProps) {
+=======
+/** The issue a chip shows, from the issue list cache or, past its first page,
+ *  the issue's own query. Undefined until it loads, or when it is gone. */
+export function useChipIssue(issueId: string) {
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   const wsId = useWorkspaceId();
-  const { colorOf: statusColorOf, iconOf: statusIconOf } = useIssueStatuses(wsId);
   const { data: issues = [] } = useQuery(issueListOptions(wsId));
   const compact = useCompactIssueChips();
   const listIssue = issues.find((i) => i.id === issueId);
@@ -80,10 +92,29 @@ export function IssueChip({
       !(query.state.error instanceof ApiError && query.state.error.status === 404),
   });
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   const issue = listIssue ?? detailIssue;
   const cls = [ISSUE_CHIP_CLASS, stableWidth && ISSUE_CHIP_STABLE_WIDTH_CLASS, className]
     .filter(Boolean)
     .join(" ");
+||||||| 2ae2f08005
+  const issue = listIssue ?? detailIssue;
+  const cls = className ? `${BASE_CLASS} ${className}` : BASE_CLASS;
+=======
+  return listIssue ?? detailIssue;
+}
+
+export function IssueChip({
+  issueId,
+  fallbackLabel,
+  children,
+  className,
+}: IssueChipProps) {
+  const wsId = useWorkspaceId();
+  const { colorOf: statusColorOf, iconOf: statusIconOf } = useIssueStatuses(wsId);
+  const issue = useChipIssue(issueId);
+  const cls = className ? `${BASE_CLASS} ${className}` : BASE_CLASS;
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
   if (children !== undefined) {
     return <span className={cls} data-copy-token={issue?.identifier}>{children}</span>;

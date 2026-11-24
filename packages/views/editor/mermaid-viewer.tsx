@@ -131,11 +131,17 @@ export function MermaidViewer({
         // panes `vh` includes retracted browser chrome, which would push the
         // toolbar off-screen — the exact "can't find the close button"
         // failure this viewer exists to remove.
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
         // `touch-none` + `overscroll-contain`: a finger anywhere on the dialog
         // (header included) stays here and never scrolls or zooms the page
         // behind. Below md it fills the screen, so no backdrop strip is left
         // to touch; the `!` overrides beat the base popup's centring classes.
         className="touch-none overscroll-contain !max-w-[calc(100vw-2rem)] !h-[min(90dvh,calc(100dvh-2rem))] !w-[calc(100vw-2rem)] flex flex-col gap-0 overflow-hidden p-0 max-md:!inset-0 max-md:!h-dvh max-md:!max-h-none max-md:!w-screen max-md:!max-w-none max-md:!translate-x-0 max-md:!translate-y-0 max-md:!rounded-none max-md:!ring-0 xl:!max-w-[80rem]"
+||||||| 2ae2f08005
+        className="!max-w-[calc(100vw-2rem)] !h-[min(90dvh,calc(100dvh-2rem))] !w-[calc(100vw-2rem)] flex flex-col gap-0 overflow-hidden p-0 xl:!max-w-[80rem]"
+=======
+        className="!max-w-[calc(100%-2rem)] !h-[min(90%,calc(100%-2rem))] !w-[calc(100%-2rem)] flex flex-col gap-0 overflow-hidden p-0 xl:!max-w-[80rem]"
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
         aria-label={t(($) => $.mermaid.viewer_title)}
       >
         {/* Body state (zoom, pan, source toggle) deliberately lives below the

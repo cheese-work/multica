@@ -2,6 +2,35 @@
 
 import { lazy, Suspense, type ReactNode } from "react";
 import { useModalStore } from "@multica/core/modals";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
+||||||| 2ae2f08005
+import { CreateIssueDialog } from "./create-issue-dialog";
+import { CreateProjectModal } from "./create-project";
+import { CreateSquadModal } from "./create-squad";
+import { FeedbackModal } from "./feedback";
+import { SetParentIssueModal } from "./set-parent-issue";
+import { MarkDuplicateIssueModal } from "./mark-duplicate-issue";
+import { AddChildIssueModal } from "./add-child-issue";
+import { AddProjectIssueModal } from "./add-project-issue";
+import { RenameIssueModal } from "./rename-issue";
+import { DeleteIssueConfirmModal } from "./delete-issue-confirm";
+import { RunConfirmModal } from "./run-confirm";
+import { WorkflowHandoffModal } from "./workflow-handoff";
+=======
+import { CreateIssueDialog } from "./create-issue-dialog";
+import { CreateProjectModal } from "./create-project";
+import { CreateSquadModal } from "./create-squad";
+import { FeedbackModal } from "./feedback";
+import { SetParentIssueModal } from "./set-parent-issue";
+import { MarkDuplicateIssueModal } from "./mark-duplicate-issue";
+import { AddChildIssueModal } from "./add-child-issue";
+import { AddProjectIssueModal } from "./add-project-issue";
+import { RenameIssueModal } from "./rename-issue";
+import { RenameProjectModal } from "./rename-project";
+import { DeleteIssueConfirmModal } from "./delete-issue-confirm";
+import { RunConfirmModal } from "./run-confirm";
+import { WorkflowHandoffModal } from "./workflow-handoff";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import { IssueLimitUpgradeDialog } from "./issue-limit-upgrade-dialog";
 
 // Modals are opened on demand; keeping them (and the editor they bring) out of
@@ -90,6 +119,9 @@ export function ModalRegistry() {
       break;
     case "project-add-issue":
       activeModal = <AddProjectIssueModal onClose={close} data={data} />;
+      break;
+    case "project-rename":
+      activeModal = <RenameProjectModal onClose={close} data={data} />;
       break;
     case "issue-rename":
       activeModal = <RenameIssueModal onClose={close} data={data} />;

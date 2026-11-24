@@ -44,6 +44,7 @@ import { GitHubMark } from "./github-mark";
 import { VCSConnectionRows } from "./code-vcs";
 import { HostMark, HostStatus } from "./code-host";
 import { RepositoriesSection } from "./repositories-section";
+import { useConnectGitHub } from "./use-connect-github";
 import { PRMergeStatusRow } from "./pr-merge-status-row";
 import { GitHubReviewMappings } from "./github-review-mappings";
 
@@ -82,8 +83,17 @@ export function CodeTab() {
 
   const flags = deriveGitHubSettings(workspace);
   const [savingKey, setSavingKey] = useState<GitHubSettingsKey | null>(null);
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   const [connecting, setConnecting] = useState(false);
   const [disconnectTarget, setDisconnectTarget] = useState<GitHubInstallation | null>(null);
+||||||| 2ae2f08005
+  const [connecting, setConnecting] = useState(false);
+  const [disconnectTarget, setDisconnectTarget] = useState<string | null>(null);
+=======
+  const githubConnection = useConnectGitHub(wsId);
+  const { connecting, connect: handleConnect } = githubConnection;
+  const [disconnectTarget, setDisconnectTarget] = useState<string | null>(null);
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   const [disconnecting, setDisconnecting] = useState(false);
 
   async function persistSetting(key: GitHubSettingsKey, next: boolean) {
@@ -102,22 +112,6 @@ export function CodeTab() {
       toast.error(e instanceof Error ? e.message : t(($) => $.github.toast_failed));
     } finally {
       setSavingKey(null);
-    }
-  }
-
-  async function handleConnect() {
-    setConnecting(true);
-    try {
-      const resp = await api.getGitHubConnectURL(wsId);
-      if (!resp.configured || !resp.url) {
-        toast.error(t(($) => $.github.toast_not_configured));
-        return;
-      }
-      window.open(resp.url, "_blank", "noopener");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : t(($) => $.github.toast_open_failed));
-    } finally {
-      setConnecting(false);
     }
   }
 
@@ -168,8 +162,12 @@ export function CodeTab() {
     <>
       {t(($) => $.github.not_configured)}{" "}
       <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">GITHUB_APP_SLUG</code>{" "}
+      <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">GITHUB_WEBHOOK_SECRET</code>{" "}
+      <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">GITHUB_APP_CLIENT_ID</code>{" "}
+      <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">GITHUB_APP_CLIENT_SECRET</code>{" "}
+      <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">GITHUB_APP_ID</code>{" "}
       {t(($) => $.github.not_configured_and)}{" "}
-      <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">GITHUB_WEBHOOK_SECRET</code>
+      <code className="rounded-xs bg-muted px-1 py-0.5 text-micro">GITHUB_APP_PRIVATE_KEY</code>
       {pausedNote}
     </>
   ) : (
@@ -266,7 +264,7 @@ export function CodeTab() {
         </SettingsCard>
       </SettingsSection>
 
-      <RepositoriesSection />
+      <RepositoriesSection connection={githubConnection} />
 
       <SettingsSection
         title={t(($) => $.code.pr_linking_title)}

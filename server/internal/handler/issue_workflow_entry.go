@@ -130,8 +130,7 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	// made for a step the issue has left, and applying it would undo that move.
 	// Default without handoffs keeps the pre-workflow behavior, so workspaces
 	// that never adopt workflows see no change.
-	if run != nil && run.WorkflowStep.Valid && run.WorkflowStep.String != prev.Status &&
-		(!def.IsDefault || def.HandsOffAnywhere()) &&
+	if workflowStepMoved(def, prev.Status, run) &&
 		statusExplicit && params.Status.Valid && params.Status.String != prev.Status {
 		return nil, h.stepMovedError(ctx, prev, run.WorkflowStep.String)
 	}
@@ -277,6 +276,13 @@ func (h *Handler) deferHandoffRun(ctx context.Context, issue db.Issue, willRun b
 		return false, handoffRunReasonStageQueueFull
 	}
 	return true, runReason
+}
+
+// workflowStepMoved shares the step guard with the claim brief so a run is
+// never told to advance a step its status changes cannot act on.
+func workflowStepMoved(def *issueworkflow.Definition, status string, run *db.AgentTaskQueue) bool {
+	return def != nil && run != nil && run.WorkflowStep.Valid && run.WorkflowStep.String != status &&
+		(!def.IsDefault || def.HandsOffAnywhere())
 }
 
 // workflowHandoffPayload describes a handoff on the issue:updated event, so
@@ -541,11 +547,16 @@ func (h *Handler) stepMovedError(ctx context.Context, issue db.Issue, step strin
 		StepName:        resolver.Name(ctx, h.Queries, step),
 		Current:         issue.Status,
 		CurrentName:     resolver.Name(ctx, h.Queries, issue.Status),
-	}
-	if last, err := h.Queries.GetLastIssueStatusChange(ctx, issue.ID); err == nil && last.ActorID.Valid {
-		out.MovedBy = h.actorDisplayName(ctx, issue.WorkspaceID, last.ActorType.String, last.ActorID)
+		MovedBy:         h.lastIssueStatusMover(ctx, issue),
 	}
 	return out
+}
+
+func (h *Handler) lastIssueStatusMover(ctx context.Context, issue db.Issue) string {
+	if last, err := h.Queries.GetLastIssueStatusChange(ctx, issue.ID); err == nil && last.ActorID.Valid {
+		return h.actorDisplayName(ctx, issue.WorkspaceID, last.ActorType.String, last.ActorID)
+	}
+	return ""
 }
 
 // workflowHandoffBrief renders the brief a handoff's agent or squad will
@@ -653,10 +664,22 @@ func (h *Handler) stopPreviousAssigneeRuns(ctx context.Context, w *workflowWrite
 	}
 }
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 // assigneeActiveRuns lists the active runs of an issue's assignee on it: the
 // agent's own runs, or every run made on a squad's behalf. Members run
 // nothing.
 func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue db.Issue) []db.AgentTaskQueue {
+||||||| 2ae2f08005
+// assigneeActiveRuns lists the active runs of an issue's assignee on it: the
+// agent's own runs, or every run made on a squad's behalf. Members run
+// nothing.
+func (h *Handler) assigneeActiveRuns(ctx context.Context, issue db.Issue) []db.AgentTaskQueue {
+=======
+// assigneeActiveRuns lists the unfinished runs of an issue's assignee on it,
+// including deferred work: the agent's own runs, or every run made on a
+// squad's behalf. Members run nothing.
+func (h *Handler) assigneeActiveRuns(ctx context.Context, issue db.Issue) []db.ListAssigneeRunsForHandoffRow {
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	if !issue.AssigneeID.Valid {
 		return nil
 	}
@@ -664,19 +687,20 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue d
 	if assigneeType != "agent" && assigneeType != "squad" {
 		return nil
 	}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	tasks, err := q.ListActiveTasksByIssue(ctx, issue.ID)
+||||||| 2ae2f08005
+	tasks, err := h.Queries.ListActiveTasksByIssue(ctx, issue.ID)
+=======
+	tasks, err := h.Queries.ListAssigneeRunsForHandoff(ctx, db.ListAssigneeRunsForHandoffParams{
+		IssueID: issue.ID, AssigneeType: assigneeType, AssigneeID: issue.AssigneeID,
+	})
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	if err != nil {
 		slog.Warn("workflow: list active tasks failed", "issue_id", uuidToString(issue.ID), "error", err)
 		return nil
 	}
-	var out []db.AgentTaskQueue
-	for _, task := range tasks {
-		if (assigneeType == "agent" && task.AgentID == issue.AssigneeID) ||
-			(assigneeType == "squad" && task.SquadID == issue.AssigneeID) {
-			out = append(out, task)
-		}
-	}
-	return out
+	return tasks
 }
 
 // claimProjectWorkflow renders the issue's project workflow for a task claim,
@@ -703,12 +727,25 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 		return nil
 	}
 	in := h.workflowBriefInput(ctx, issue, *def, project)
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	if !taskRunsForAssignee(issue, task) {
+||||||| 2ae2f08005
+	in.LegacyRuntimeRules = legacyRuntimeRules
+	if !taskRunsForAssignee(issue, task) {
+=======
+	in.LegacyRuntimeRules = legacyRuntimeRules
+	stepMoved := workflowStepMoved(def, issue.Status, task)
+	if stepMoved {
+		in.BoundStep = task.WorkflowStep.String
+		in.MovedBy = h.lastIssueStatusMover(ctx, issue)
+	} else if !taskRunsForAssignee(issue, task) {
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		in.Observer = true
 		if issue.AssigneeType.Valid && issue.AssigneeID.Valid {
 			in.AssigneeName = h.actorDisplayName(ctx, issue.WorkspaceID, issue.AssigneeType.String, issue.AssigneeID)
 		}
 	}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in) + h.runBudgetLine(ctx, issue, def)}
 }
 
@@ -740,6 +777,11 @@ func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issuew
 	}
 	return fmt.Sprintf("%s; %d tokens used (%d %s unreported).\n",
 		runs, usage.TotalInputTokens+usage.TotalOutputTokens, usage.UnreportedTaskCount, unit)
+||||||| 2ae2f08005
+	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in)}
+=======
+	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in), stepMoved: stepMoved}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 }
 
 // taskRunsForAssignee reports whether a run works on the issue as its

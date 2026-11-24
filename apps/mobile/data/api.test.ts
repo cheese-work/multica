@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { api } from "./api";
@@ -11,6 +12,21 @@ vi.hoisted(() => {
 
 // The real store pulls in expo-secure-store; the client only needs the slug.
 vi.mock("@/data/workspace-store", () => ({ getCurrentSlug: () => null }));
+
+describe("api.listAgents", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    [undefined, "/api/agents"],
+    [{ includeArchived: false }, "/api/agents"],
+    [{ includeArchived: true }, "/api/agents?include_archived=true"],
+  ])("with %j requests %s", async (opts, path) => {
+    const fetchMock = vi.fn(async () => Response.json([]));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(api.listAgents(opts)).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith(`https://api.example.test${path}`, expect.any(Object));
+  });
+});
 
 describe("api.deleteComment", () => {
   const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
@@ -40,6 +56,7 @@ describe("api.deleteComment", () => {
     expect(fetchMock).toHaveBeenCalledWith(url, expect.objectContaining({ method: "DELETE" }));
   });
 });
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 
 describe("api.createComment", () => {
   const fetchMock = vi.fn();
@@ -369,3 +386,18 @@ describe("api.getIssue schema failure", () => {
     expect(String(warn.mock.calls[0]?.[0])).toContain("number");
   });
 });
+||||||| 2ae2f08005
+=======
+
+
+describe("api.listIssues requester compatibility", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it.each([false, true])("checks server support before returning Created rows (supported=%s)", async (supported) => {
+    const fetchMock = vi.fn(async (_url: string) => Response.json({ issues: [], total: 0, ...(supported ? { created_by_user_id: "me" } : {}) }));
+    vi.stubGlobal("fetch", fetchMock);
+    await api.listIssues({ created_by_user_id: "me" });
+    expect(fetchMock).toHaveBeenCalledTimes(supported ? 1 : 2);
+    if (!supported) expect(String(fetchMock.mock.calls[1]?.[0])).toContain("creator_id=me");
+  });
+});
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d

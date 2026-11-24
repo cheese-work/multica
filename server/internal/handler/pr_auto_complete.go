@@ -16,6 +16,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -378,8 +379,16 @@ func (h *Handler) autoCompleteIssue(ctx context.Context, workspaceID, issueID pg
 
 	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
 	resp := issueToResponse(updated, prefix)
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	h.fillStatusCategory(ctx, updated.WorkspaceID, &resp)
 	payload := map[string]any{
+||||||| 2ae2f08005
+	h.fillStatusCategory(ctx, updated.WorkspaceID, &resp)
+	h.publish(protocol.EventIssueUpdated, uuidToString(workspaceID), "system", "", map[string]any{
+=======
+	h.fillStatusCategory(ctx, updated.WorkspaceID, projectaccess.Hidden{}, &resp)
+	h.publish(protocol.EventIssueUpdated, uuidToString(workspaceID), "system", "", map[string]any{
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		"issue":          resp,
 		"status_changed": true,
 		"prev_status":    issue.Status,

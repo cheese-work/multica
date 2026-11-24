@@ -53,6 +53,7 @@ const (
 type DispatchReasonCode = dispatch.ReasonCode
 
 const (
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	ReasonQueued                              = dispatch.ReasonQueued
 	ReasonProjectInactive                     = dispatch.ReasonProjectInactive
 	ReasonCoalesced                           = dispatch.ReasonCoalesced
@@ -79,6 +80,42 @@ const (
 	ReasonAdmissionDeferred                   = dispatch.ReasonAdmissionDeferred
 	ReasonInternalError                       = dispatch.ReasonInternalError
 	ReasonProviderHold                        = dispatch.ReasonProviderHold
+||||||| 2ae2f08005
+	ReasonQueued                = dispatch.ReasonQueued
+	ReasonCoalesced             = dispatch.ReasonCoalesced
+	ReasonDeferred              = dispatch.ReasonDeferred
+	ReasonSteered               = dispatch.ReasonSteered
+	ReasonInvocationNotAllowed  = dispatch.ReasonInvocationNotAllowed
+	ReasonTargetUnavailable     = dispatch.ReasonTargetUnavailable
+	ReasonRuntimeOffline        = dispatch.ReasonRuntimeOffline
+	ReasonRuntimeUnusable       = dispatch.ReasonRuntimeUnusable
+	ReasonRuntimeAccessDenied   = dispatch.ReasonRuntimeAccessDenied
+	ReasonRuntimeProfileMissing = dispatch.ReasonRuntimeProfileMissing
+	ReasonAgentRuntimeRequired  = dispatch.ReasonAgentRuntimeRequired
+	ReasonAttributionBlocked    = dispatch.ReasonAttributionBlocked
+	ReasonAlreadyActive         = dispatch.ReasonAlreadyActive
+	ReasonSelfTriggerSuppressed = dispatch.ReasonSelfTriggerSuppressed
+	ReasonIssueInTriage         = dispatch.ReasonIssueInTriage
+	ReasonInternalError         = dispatch.ReasonInternalError
+=======
+	ReasonQueued                = dispatch.ReasonQueued
+	ReasonCoalesced             = dispatch.ReasonCoalesced
+	ReasonDeferred              = dispatch.ReasonDeferred
+	ReasonSteered               = dispatch.ReasonSteered
+	ReasonInvocationNotAllowed  = dispatch.ReasonInvocationNotAllowed
+	ReasonTargetUnavailable     = dispatch.ReasonTargetUnavailable
+	ReasonRuntimeOffline        = dispatch.ReasonRuntimeOffline
+	ReasonRuntimeUnusable       = dispatch.ReasonRuntimeUnusable
+	ReasonRuntimeAccessDenied   = dispatch.ReasonRuntimeAccessDenied
+	ReasonRuntimeProfileMissing = dispatch.ReasonRuntimeProfileMissing
+	ReasonAgentRuntimeRequired  = dispatch.ReasonAgentRuntimeRequired
+	ReasonAttributionBlocked    = dispatch.ReasonAttributionBlocked
+	ReasonAlreadyActive         = dispatch.ReasonAlreadyActive
+	ReasonSelfTriggerSuppressed = dispatch.ReasonSelfTriggerSuppressed
+	ReasonIssueInTriage         = dispatch.ReasonIssueInTriage
+	ReasonProjectAccessBlocked  = dispatch.ReasonProjectAccessBlocked
+	ReasonInternalError         = dispatch.ReasonInternalError
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 )
 
 // DispatchTarget is the caller-visible reference to an execution target. Name
@@ -148,6 +185,7 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "a run is already active for this target"
 	case ReasonIssueInTriage:
 		return "the issue is in Triage and has no owner to run yet; accept it out of Triage first"
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	case ReasonRunBudgetExhausted:
 		return "the issue used its workflow's run budget; move it on to give it a new one"
 	case ReasonStageQueueFull:
@@ -160,6 +198,11 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "the PR head is not admissible (a check is failing, pending or missing, or the PR has a merge conflict); the review is deferred"
 	case ReasonProviderHold:
 		return "the target's model provider is on a workspace policy hold"
+||||||| 2ae2f08005
+=======
+	case ReasonProjectAccessBlocked:
+		return "the agent's owner is not a member of this private project"
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	default:
 		return "the run was blocked"
 	}

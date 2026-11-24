@@ -149,17 +149,6 @@ func keysOf(steps []Step) []string {
 	return keys
 }
 
-// MiddleKeys returns the workflow's own steps, without the fixed statuses.
-func MiddleKeys(keys []string) []string {
-	out := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if !IsFixed(key) {
-			out = append(out, key)
-		}
-	}
-	return out
-}
-
 // BuiltInDefaultKeys is Default before a workspace stores its own.
 func BuiltInDefaultKeys() []string {
 	return ArrangeKeys([]string{issuestatus.Backlog, issuestatus.InProgress, issuestatus.InReview, issuestatus.Blocked})
@@ -576,15 +565,21 @@ func ValidateHandoff(s Step, def Definition) error {
 		return invalid("status %q is not part of this workflow", s.StatusKey)
 	}
 	switch s.Handler.Type {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge:
 	case HandlerAgent, HandlerMember:
+||||||| 2ae2f08005
+	case HandlerNone, HandlerProjectLead:
+	case HandlerAgent, HandlerMember:
+=======
+	case HandlerNone, HandlerProjectLead:
+	case HandlerAgent, HandlerSquad, HandlerMember:
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
 		}
-	case HandlerSquad, HandlerCreator:
-		// A squad routes work itself, so a handoff to one would compete with
-		// its own assignment. (MUL-7420)
-		return invalid("hand off to an agent, a member or the project lead")
+	case HandlerCreator:
+		return invalid("hand off to an agent, a squad, a member or the project lead")
 	default:
 		return invalid("unknown handler type %q", s.Handler.Type)
 	}
@@ -882,6 +877,12 @@ type BriefInput struct {
 	ProjectName     string
 	StatusKey       string
 	IssueIdentifier string
+	// BoundStep is the task's effective step when its binding must be respected.
+	// A different StatusKey renders a continuation brief without status moves.
+	// Empty preserves the normal handoff, preview and unbound-run brief.
+	BoundStep string
+	// MovedBy names whoever last changed the status, when known.
+	MovedBy string
 	// StatusName resolves a catalog key to its display name.
 	StatusName func(key string) string
 	// HandlerName describes who a step hands off to, e.g. "Sentinel" or
@@ -913,6 +914,7 @@ type BriefInput struct {
 // names are kept to one line.
 func Brief(in BriefInput) string {
 	step, _ := in.Workflow.Step(in.StatusKey)
+	stepMoved := in.BoundStep != "" && in.BoundStep != in.StatusKey
 	name := func(key string) string {
 		if in.StatusName == nil {
 			return key
@@ -928,12 +930,78 @@ func Brief(in BriefInput) string {
 		title = fmt.Sprintf("%s (%s)", title, project)
 	}
 	fmt.Fprintf(&b, "This project's workflow — %s\n", title)
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	b.WriteString("This workflow replaces the status rules in your runtime instructions: use only the status keys below")
 	if !in.Workflow.Has(issuestatus.InReview) {
 		fmt.Fprintf(&b, ", never `%s`", issuestatus.InReview)
+||||||| 2ae2f08005
+	// Each move names who the target step hands off to, so the list needs no
+	// preamble about handoffs.
+	handsOffTo := func(key string) string {
+		target, ok := in.Workflow.Step(key)
+		if !ok || in.HandlerName == nil {
+			return ""
+		}
+		if who := briefLine(in.HandlerName(target)); who != "" {
+			return " — hands off to " + who
+		}
+		return ""
 	}
+	// An older daemon still states the built-in rules itself, so its brief
+	// keeps the per-step wording rather than add a second in_progress rule.
+	var span handlerlessSpan
+	if !in.Observer && !in.LegacyRuntimeRules {
+		span = in.Workflow.handlerlessSpan(in.StatusKey)
+	}
+	if in.LegacyRuntimeRules {
+		b.WriteString("This workflow replaces the status rules in your runtime instructions: use only the status keys below")
+		if !in.Workflow.Has(issuestatus.InReview) {
+			fmt.Fprintf(&b, ", never `%s`", issuestatus.InReview)
+		}
+		b.WriteString(".\n")
+=======
+	// Each move names who the target step hands off to, so the list needs no
+	// preamble about handoffs.
+	handsOffTo := func(key string) string {
+		target, ok := in.Workflow.Step(key)
+		if !ok || in.HandlerName == nil {
+			return ""
+		}
+		if who := briefLine(in.HandlerName(target)); who != "" {
+			return " — hands off to " + who
+		}
+		return ""
+	}
+	// An older daemon still states the built-in rules itself, so its brief
+	// keeps the per-step wording rather than add a second in_progress rule.
+	var span handlerlessSpan
+	if !stepMoved && !in.Observer && !in.LegacyRuntimeRules {
+		span = in.Workflow.handlerlessSpan(in.StatusKey)
+	}
+	if in.LegacyRuntimeRules && !stepMoved {
+		b.WriteString("This workflow replaces the status rules in your runtime instructions: use only the status keys below")
+		if !in.Workflow.Has(issuestatus.InReview) {
+			fmt.Fprintf(&b, ", never `%s`", issuestatus.InReview)
+		}
+		b.WriteString(".\n")
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
+	}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	b.WriteString(".\n")
 	if in.Observer {
+||||||| 2ae2f08005
+	if in.Observer {
+=======
+	if stepMoved {
+		mover := briefLine(in.MovedBy)
+		if mover == "" {
+			mover = "someone else"
+		}
+		fmt.Fprintf(&b, "This run remains bound to %s, but %s is now at %s (last moved by %s).\n",
+			statusLabel(name(in.BoundStep), in.BoundStep), in.IssueIdentifier, statusLabel(name(in.StatusKey), in.StatusKey), mover)
+		b.WriteString("Do not change the issue's status in this run, including when starting or finishing work; this overrides the status rules in your runtime instructions. Do not retry a refused status change. Leave a comment if something needs attention. A member can review the current state and explicitly rerun the work.\n")
+	} else if in.Observer {
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		assignee := "is unassigned"
 		if who := briefLine(in.AssigneeName); who != "" {
 			assignee = "is assigned to " + who
@@ -967,6 +1035,9 @@ func Brief(in BriefInput) string {
 			b.WriteString("   ← current")
 		}
 		b.WriteString("\n")
+	}
+	if stepMoved {
+		return b.String()
 	}
 	if in.Observer {
 		b.WriteString("\nMoving the issue into a step that hands off reassigns it to that step's handler and starts their run.\n")

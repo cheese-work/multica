@@ -14,9 +14,14 @@ on:
         type: string
         required: false
 
+# Only a PR's runs supersede each other. A push filters paths against the
+# commit just before it, so a cancelled main run's scope is never re-checked
+# and a breaking commit lands green (MUL-8798). A shared group is not enough
+# either: with cancel-in-progress off, a new run still cancels a pending one,
+# so every non-PR run gets its own group.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   namespace-qualification:
@@ -236,9 +241,11 @@ jobs:
       actions: read
     outputs:
       frontend: ${{ steps.decide.outputs.frontend }}
+      docs: ${{ steps.decide.outputs.docs }}
       backend: ${{ steps.decide.outputs.backend }}
       sqlc: ${{ steps.decide.outputs.sqlc }}
       runtime: ${{ steps.decide.outputs.runtime }}
+      processtree: ${{ steps.decide.outputs.processtree }}
       quality_only: ${{ steps.decide.outputs.quality_only }}
       scripts: ${{ steps.decide.outputs.scripts }}
       installer: ${{ steps.decide.outputs.installer }}
@@ -259,8 +266,19 @@ jobs:
         with:
           node-version: 22
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       - name: Test CI selection and gates
         run: node --test scripts/ci-scope.test.mjs scripts/go-test-flakes.test.mjs scripts/check-image-budget.test.mjs scripts/brief-replay-check.test.mjs scripts/upstream-version.test.mjs scripts/governance-perf-summarize.test.mjs scripts/daemon-artifact-version.test.mjs scripts/release-build-stamp.test.mjs scripts/dockerfile-patches.test.mjs scripts/pr-changelog-line.test.mjs scripts/agent-adoption.test.mjs scripts/pr-issue-link-check.test.mjs scripts/fork-changelog.test.mjs scripts/fork-changelog-fetch.test.mjs scripts/fork-sync-guard.test.mjs scripts/upstream-pr-watch.test.mjs scripts/fork-ledger-stale.test.mjs scripts/upstream-watch-stale.test.mjs scripts/upstream-watch-run.test.mjs scripts/ci-runners.test.mjs scripts/pr-guards-upstream-base.test.mjs scripts/pr-guards-guard-check.test.mjs scripts/ci-download-resilience.test.mjs scripts/ci-required-jobs.test.mjs scripts/ci-locale-parity.test.mjs scripts/ci-vitest-timeout.test.mjs scripts/merge-queue-dequeue-report.test.mjs scripts/merge-queue-fallback.test.mjs scripts/pr-main-sync.test.mjs scripts/page-load-report.test.mjs scripts/phone-network.test.mjs scripts/ux-explorer-negative-authz.test.mjs scripts/security-weekly/summarize.test.mjs scripts/security-weekly/seal.test.mjs scripts/security-weekly/workflow.test.mjs scripts/security-weekly/triage.test.mjs scripts/security-weekly/trusted.test.mjs scripts/ux-explorer/findings.test.mjs scripts/dependabot-config.test.mjs scripts/background-agent-usage.test.mjs deploy/cd/release-manifest.test.mjs deploy/cd/drift-receipt.test.mjs
+||||||| 2ae2f08005
+      - name: Test CI selection and gates
+        run: node --test scripts/ci-scope.test.mjs scripts/check-image-budget.test.mjs
+=======
+      # Path selection must be proven before it skips anything. Every other
+      # scripts/**/*.test.mjs suite runs through `pnpm test:scripts` in the
+      # frontend-quality action.
+      - name: Test CI selection
+        run: node --test scripts/ci-scope.test.mjs
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
       - name: Filter paths
         id: filter
@@ -296,7 +314,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: "~1.27.3"
+          go-version: "~1.27.4"
           check-latest: true
           cache-dependency-path: server/go.sum
 
@@ -453,6 +471,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Report runner CPU
+        run: |
+          nproc
+          lscpu
+
       - name: Setup pnpm
         run: bash scripts/setup-pnpm.sh
 
@@ -486,6 +509,7 @@ jobs:
       - name: Test views shard ${{ matrix.index }}/${{ matrix.total }}
         run: pnpm exec turbo test --filter='@multica/views' -- --shard=${{ matrix.index }}/${{ matrix.total }}
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   # CHE-2418 B3: fast fail-first check for locale skew. The merge queue failed
   # 22% of runs, mostly on locales/parity.test.ts: two PRs, each green alone,
   # leave zh-Hant keys missing together. A PR run only sees the main it last
@@ -523,9 +547,46 @@ jobs:
       - name: Locale parity against the newest main
         run: pnpm --filter @multica/views exec vitest run locales/parity.test.ts
 
+||||||| 2ae2f08005
+=======
+  # The jobs above exclude docs because a per-PR `next build` of the docs site
+  # was too heavy (#1279). Its Vitest suite is not: it guards content such as
+  # unrendered CJK bold and finishes in seconds. It gets its own scope so a
+  # content-only PR runs it and an unrelated PR pays nothing, and installs only
+  # the docs package so the job stays far off the frontend critical path.
+  docs-test:
+    needs: changes
+    if: ${{ needs.changes.outputs.docs == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install docs dependencies
+        run: pnpm install --frozen-lockfile --filter @multica/docs
+
+      - name: Test docs
+        run: pnpm --filter @multica/docs test
+
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   # Preserve the aggregate check names while validating intentional skips.
   frontend:
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     needs: [changes, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend-quality]
+||||||| 2ae2f08005
+    needs: [changes, frontend-build, frontend-test, frontend-views-test, frontend-quality]
+=======
+    needs: [changes, frontend-build, frontend-test, frontend-views-test, frontend-quality, docs-test]
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_FRONTEND || 'ubuntu-24.04' }}
     steps:
@@ -533,7 +594,13 @@ jobs:
       - name: Check frontend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
           JOB_SCOPES: '{"frontend-build":"push_frontend","frontend-test":"push_frontend","frontend-views-test":"frontend","locale-parity":"frontend","frontend-quality":"quality_only"}'
+||||||| 2ae2f08005
+          JOB_SCOPES: '{"frontend-build":"frontend","frontend-test":"frontend","frontend-views-test":"frontend","frontend-quality":"quality_only"}'
+=======
+          JOB_SCOPES: '{"frontend-build":"frontend","frontend-test":"frontend","frontend-views-test":"frontend","frontend-quality":"quality_only","docs-test":"docs"}'
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
         run: node scripts/ci-scope.mjs gate
 
   # The Go caches are handled explicitly here rather than through setup-go's
@@ -675,7 +742,7 @@ jobs:
         with:
           # Keep the security floor even when the setup-go manifest lags;
           # continue accepting newer patches within Go 1.27.
-          go-version: "~1.27.3"
+          go-version: "~1.27.4"
           check-latest: true
           cache: false
 
@@ -929,7 +996,7 @@ jobs:
         id: go
         uses: actions/setup-go@v7
         with:
-          go-version: "~1.27.3"
+          go-version: "~1.27.4"
           check-latest: true
           cache: false
 
@@ -997,7 +1064,7 @@ jobs:
         with:
           # Keep the security floor even when the setup-go manifest lags;
           # continue accepting newer patches within Go 1.27.
-          go-version: "~1.27.3"
+          go-version: "~1.27.4"
           check-latest: true
           cache-dependency-path: server/go.sum
 
@@ -1005,6 +1072,7 @@ jobs:
         working-directory: server
         run: go tool govulncheck ./...
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   # Gates only on findings a change introduces. golangci-lint compares
   # against the pull request's merge base, which is what makes this job
   # useful on day one: server/.golangci.yml landed against a module carrying
@@ -1089,10 +1157,56 @@ jobs:
           fail-on-scopes: runtime, development
           comment-summary-in-pr: never
 
+||||||| 2ae2f08005
+=======
+  # Every other backend job builds for Linux, so a `_darwin.go` file or a
+  # `//go:build darwin` test that falls out of step with a shared signature
+  # stayed green until the release build compiled it. Cross-vetting from
+  # ubuntu type-checks the whole module, tests included, the way macOS builds
+  # it, without paying for a macOS runner. arm64 because that is what Apple
+  # silicon users run; cgo is off when cross-compiling, as in the release.
+  # Its own runner rather than a backend-tests step: a cold darwin vet adds
+  # ~1 GB to the build cache that job publishes (see MUL-7547), and here it
+  # runs in parallel with the long pole instead of extending it.
+  backend-darwin-vet:
+    needs: changes
+    if: ${{ needs.changes.outputs.backend == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "~1.27.4"
+          check-latest: true
+          cache: false
+
+      - name: Restore Go module cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ~/go/pkg/mod
+          key: go-mod-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('server/go.sum') }}
+
+      - name: Vet darwin build
+        working-directory: server
+        env:
+          GOOS: darwin
+          GOARCH: arm64
+        run: go vet ./...
+
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   # Preserve the existing required-check name while allowing tests, generated
   # SQL verification, and the vulnerability scan to run independently.
   backend:
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, go-lint, script-checks, installer, deploy-cd, dependency-review]
+||||||| 2ae2f08005
+    needs: [changes, backend-tests, backend-agent-tests, sqlc-check, go-vulnerability-scan, macos-runtime, windows-execenv, script-checks, installer]
+=======
+    needs: [changes, backend-tests, backend-agent-tests, backend-darwin-vet, sqlc-check, go-vulnerability-scan, macos-runtime, macos-processtree, windows-execenv, script-checks, installer]
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     if: ${{ !cancelled() }}
     runs-on: ${{ vars.RUNNER_BACKEND || 'ubuntu-24.04' }}
     steps:
@@ -1100,13 +1214,694 @@ jobs:
       - name: Check backend job results
         env:
           NEEDS_JSON: ${{ toJSON(needs) }}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
           JOB_SCOPES: '{"backend-tests":"push_backend","backend-agent-tests":"backend","sqlc-check":"push_sqlc","go-vulnerability-scan":"push_backend","go-lint":"push_backend","script-checks":"scripts","installer":"installer","deploy-cd":"deploy_cd","dependency-review":"always"}'
+||||||| 2ae2f08005
+          JOB_SCOPES: '{"backend-tests":"backend","backend-agent-tests":"backend","sqlc-check":"sqlc","go-vulnerability-scan":"backend","macos-runtime":"full","windows-execenv":"runtime","script-checks":"scripts","installer":"installer"}'
+=======
+          JOB_SCOPES: '{"backend-tests":"backend","backend-agent-tests":"backend","backend-darwin-vet":"backend","sqlc-check":"sqlc","go-vulnerability-scan":"backend","macos-runtime":"full","macos-processtree":"processtree","windows-execenv":"runtime","script-checks":"scripts","installer":"installer"}'
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
         run: node scripts/ci-scope.mjs gate
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   # macOS daemon CI is halted (CHE-1012): there are no free macOS runners, so
   # the former macos-runtime job (Blacksmith) is removed and no macOS daemon
   # artifact is built. cursor_background_process_darwin.go is therefore not
   # built or tested in CI until a macOS runner is provisioned by its owner.
+||||||| 2ae2f08005
+  windows-execenv:
+    # The environment-preparation deadline owns a process tree, not just a Go
+    # process. This Windows runtime test verifies Job Object cancellation kills
+    # a delayed descendant before an immediate retry can reuse the same root.
+    # The runtime scope includes daemon/agent sources and their Go dependencies.
+    needs: changes
+    if: ${{ needs.changes.outputs.runtime == 'true' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Keep the security floor even when the setup-go manifest lags;
+          # continue accepting newer patches within Go 1.27.
+          go-version: "~1.27.3"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      - name: Test Windows WeCom media streaming and plaintext cleanup
+        working-directory: server
+        # These tests need no database. Windows must prove private file access,
+        # streaming without buffered fallback, and cleanup after process exit.
+        run: go test ./internal/integrations/wecom -v -run '^(TestStreamingDecrypt|TestMediaTempFile|TestPeekFile|TestIngest|TestTheStreamingPath)' -count=1 -timeout=5m
+
+      - name: Test Windows execution-environment isolation
+        working-directory: server
+        # Keep this job scoped to the runtime regression it exists to prove.
+        # The package's legacy OpenClaw HOME tests are not Windows-safe and are
+        # outside this PR; the normal backend job still runs the full package.
+        run: go test ./internal/daemon/execenv -run '^TestPrepareIsolated_WindowsKillsDescendantBeforeRetry$' -count=1 -timeout=5m
+
+      - name: Test Windows daemon local-skill discovery
+        working-directory: server
+        # These fixtures must redirect both the Windows user profile and the
+        # platform-native Hermes home; otherwise discovery scans the runner's
+        # real skills instead of the test directories.
+        run: go test ./internal/daemon -v -run '^(TestListRuntimeLocalSkills_HermesFollowsTaskHome|TestLocalSkills_DiscoversACPProviderRoots)$' -count=1 -timeout=5m
+
+      - name: Test Windows Git Bash temp lifecycle
+        working-directory: server
+        run: |
+          $env:MULTICA_TEST_GIT_BASH = "$env:ProgramFiles\Git\usr\bin\bash.exe"
+          if (-not (Test-Path -LiteralPath $env:MULTICA_TEST_GIT_BASH)) { throw "Git for Windows is required" }
+          go test -tags=gitbashintegration ./internal/daemon -v -run '^(TestWindowsGitBashTaskTempLifecycle|TestTaskMulticaEnvironment.*|TestTaskTempBaseDir)$' -count=1 -timeout=5m
+
+      - name: Test Windows agent launcher argv/stdin handling
+        working-directory: server
+        # Agent prompts must never reach a Windows launcher through argv: the
+        # official cursor-agent.ps1, pi.ps1, and qwen.ps1 launch native children with
+        # `$args`, and PowerShell re-serialises them onto the child command
+        # line. Under
+        # Legacy native argument passing (powershell.exe 5.1, pwsh <= 7.2) a
+        # prompt holding embedded quotes is re-tokenised and fragments like
+        # `-X` become flags (#5649). Only a real PowerShell host proves this,
+        # so it cannot live in the ubuntu backend job. Scoped to the launcher
+        # tests, which are windows-tagged and therefore run nowhere else today;
+        # the backend job still runs the full package on Linux.
+        # -v so a silent skip (no PowerShell host resolved, or a -run pattern
+        # that stops matching) is visible in the log instead of passing as "ok".
+        run: go test ./pkg/agent -v -run '^(TestCursorExecutePromptSurvivesPowerShellShim|TestPiExecutePromptSurvivesPowerShellShim|TestQwenExecutePromptSurvivesPowerShellShim|TestPlatformCursorInvocation|TestPlatformCopilotInvocation|TestPlatformPiInvocation|TestPlatformQwenInvocation)' -count=1 -timeout=5m
+
+      - name: Test Windows OpenCode oversized prompt reaches stdin
+        working-directory: server
+        # #6538: the daemon inlined the whole task prompt as an argv element,
+        # so every OpenCode task whose prompt cleared CreateProcess's 32,767
+        # character lpCommandLine limit failed to start at all, with Go
+        # reporting ERROR_FILENAME_EXCED_RANGE as the misleading "The filename
+        # or extension is too long". Only a real CreateProcess enforces that
+        # ceiling, so this cannot run in the ubuntu backend job. The test
+        # spawns a native .exe directly (a Chocolatey-installed opencode.exe is
+        # a real PE binary, not a .cmd shim) with an oversized prompt and pins
+        # that the process starts, argv stays free of the prompt, and the full
+        # payload arrives on stdin.
+        # -v so a silent skip or a -run pattern that stops matching is visible
+        # in the log instead of passing as "ok".
+        run: go test ./pkg/agent -v -run '^TestOpencodeExecuteOversizedPromptStartsOnWindows$' -count=1 -timeout=5m
+
+      - name: Test Windows agent process-tree ownership
+        working-directory: server
+        # A Job Object is the only way to prove whole-tree termination on
+        # Windows, and only a real Windows runner can exercise it: that a
+        # grandchild dies with the tree that owns it, that an unowned process
+        # still reports cleanup as unconfirmed, and that a descendant holding
+        # inherited stdout neither keeps Result blocked nor survives cleanup.
+        # -v makes RUN/PASS evidence explicit in CI logs.
+        run: go test ./pkg/agent -v -run '^(TestStartOwnedProcessTreeCapturesImmediateDescendants|TestStartOwnedProcessTreeLeavesNoSuspendedChild|TestWaitProcessGroupGoneWithoutOwnershipReportsUnconfirmed|TestCodexInitializeRetrySupportedWithOwnedProcessTree|TestCodexWindowsDescendantsDieWithTheOwnedProcessTree|TestCodeArtsWindowsCancellationTerminatesDescendants)$' -count=1 -timeout=5m
+
+      - name: Test bounded CLI output collection on Windows
+        working-directory: server
+        # MUL-5467: RunCollect / RunCollectQuiet own the pipes as well as the
+        # process tree on the OpenClaw CLI paths, which outputOwned cannot. A real
+        # Windows host proves its Job Object owns and
+        # terminates descendants, a CLI that prints its answer and then refuses
+        # to exit still yields that answer, a response still streaming at the
+        # deadline is NOT reported as success, and no collector goroutine
+        # outlives the call. Unix uses process groups, so it cannot exercise this
+        # platform lifecycle.
+        # -v so a skip (a -run pattern that stops matching) is visible in the log
+        # instead of passing as "ok".
+        run: go test ./pkg/agent -v -run '^TestWindowsRunCollect' -count=1 -timeout=5m
+
+      - name: Test Windows Pi session lock leaves the transcript readable
+        working-directory: server
+        # #7840: the session lock claimed the transcript itself, and Windows
+        # byte-range locks are mandatory. Pi's own read of the file we hand it
+        # through --session failed with EBUSY, so every Pi/omp task on Windows
+        # died ~0.5s after launch. Unix flock is advisory and never reproduces
+        # it, which is exactly how the regression shipped; the tests are
+        # windows-tagged and therefore run nowhere else today.
+        # -v so a skip (a -run pattern that stops matching) is visible in the
+        # log instead of passing as "ok".
+        run: go test ./pkg/agent -v -run '^TestPiSessionFileLock' -count=1 -timeout=5m
+
+      - name: Test Windows OpenClaw npm shim interpreter resolution
+        working-directory: server
+        # #6061: every OpenClaw task failed execenv prep on a Windows host with
+        # a bare `exit status 1` and no stderr. A batch shim resolves and runs
+        # fine while the `node` it re-execs is unreachable, and npm's real
+        # template prefers a co-located node.exe over PATH — none of which can
+        # be proven without a real cmd.exe host. These tests pin: the positive
+        # control (node on PATH → success), that a missing node surfaces
+        # cmd.exe's own stderr (the first run of this job disproved #6061's
+        # premise that it does not), that a genuinely silent shim DOES reach the
+        # new diagnostic, that a co-located interpreter is credited, that a
+        # context timeout is not misdiagnosed as a missing interpreter, and that
+        # TEMP/TMP are NOT load-bearing (the originally reported root cause,
+        # since retracted upstream).
+        # Scoped to the windows-tagged shim tests — the package's legacy
+        # OpenClaw HOME tests are not Windows-safe; the backend job still runs
+        # the full package plus the cross-platform half on Linux.
+        # -v so a skip (no node on the runner) is visible instead of passing
+        # silently as "ok".
+        run: go test ./internal/daemon/execenv -v -run '^TestWindowsOpenclawShim' -count=1 -timeout=5m
+
+      - name: Test Windows workdir containment guard in the CLI
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        working-directory: server
+        # The CLI's --content-file / --attachment guard decides whether a path is
+        # inside the task workdir by canonicalizing both sides. Two of the things
+        # that decision rests on are Windows-only and covered nowhere else: a
+        # candidate on another volume, where filepath.Rel returns an error rather
+        # than a "..", so the guard has to read that as "outside" instead of
+        # surfacing `Rel: can't make Z:\... relative to C:\...` as a resolve
+        # failure; and a directory junction — the containment-relevant link shape
+        # that needs no elevation, so the one real hosts have — which resolves to
+        # itself rather than to its target under this module's go directive. The
+        # junction test pins that gap deliberately, records the observations it
+        # rests on, and fails with instructions if the platform ever starts
+        # resolving them.
+        # cmd/multica has no Windows job otherwise, so these windows-tagged
+        # tests run nowhere else. It matters twice over on a non-admin host,
+        # where the package's cross-platform cases skip for want of the symlink
+        # privilege; the ubuntu backend job covers those shapes instead.
+        # -v so a silent skip (or a -run pattern that stops matching) is visible
+        # in the log instead of passing as "ok".
+        run: go test ./cmd/multica -v -run '^TestFileWithinWorkingDirWindows' -count=1 -timeout=5m
+
+      - name: Test Windows link-target classification in internal/util
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        working-directory: server
+        # The guard's Windows correctness rests on internal/util's link-target
+        # grammar (classifyTarget), whose branch ordering is load-bearing:
+        # VolumeName is non-empty for drive-absolute paths too, so asking it
+        # before IsAbs misreads a junction's absolute target as drive-relative
+        # and resolves it against the working directory — exactly how a
+        # junction escape read as inside the workdir for one CI run. The
+        # fixture-free table pins every branch without needing a filesystem,
+        # but windows-tagged util tests run nowhere else. Scoped to the table
+        # by name; the package's symlinked-workdir cases belong to the ubuntu
+        # backend job, which runs the whole package.
+        # -v so a silent skip or a pattern that stops matching is visible.
+        run: go test ./internal/util -v -run '^TestClassifyTarget' -count=1 -timeout=5m
+
+      - name: Test Windows isolated repo checkout is committable
+        working-directory: server
+        # #6449: on Windows the daemon now hands Codex tasks a checkout whose
+        # .git lives inside the task workdir, because a linked worktree's
+        # external gitdir stays read-only under the native sandbox and breaks
+        # `git add` / `git commit` at the end of a task. Two of the guarantees
+        # are claims about Windows itself and cannot be made on ubuntu: that
+        # Git puts the gitdir inside the task directory, and that the clone's
+        # objects are private copies rather than NTFS hard links sharing one
+        # file and one security descriptor with the daemon-owned cache. The
+        # cross-volume test covers what a hard link cannot express at all.
+        # Scoped to the two windows-tagged tests by exact name. A prefix match
+        # also caught the package's cross-platform isolated-checkout test,
+        # which cannot run here: repocache derives a cache directory name from
+        # the full source repo path, so a t.TempDir() path that already embeds
+        # a long test name doubles and blows past MAX_PATH. That test belongs
+        # to the ubuntu backend job, which runs the whole package.
+        # -v so a skip (single-volume runner) is visible instead of passing
+        # silently as "ok".
+        run: go test ./internal/daemon/repocache -v -run '^(TestIsolatedCheckoutIsCommittableOnWindows|TestIsolatedCheckoutAcrossVolumesOnWindows)$' -count=1 -timeout=5m
+
+      - name: Test Windows directory-junction link safety
+        working-directory: server
+        # MUL-6000: the per-task codex-home links the user's real skills into
+        # the task directory instead of copying them. On Windows that link is a
+        # directory junction whenever os.Symlink is denied (no Developer Mode),
+        # and a junction is the one link shape a ModeSymlink check misses:
+        # since Go 1.23 os.Lstat reports it as ModeDir|ModeIrregular with no
+        # ModeSymlink bit, while its DirEntry still answers IsDir() == true, so
+        # filepath.WalkDir descends into the target. Two claims about Windows
+        # itself cannot be made on ubuntu: that the per-task skills wipe
+        # (os.RemoveAll) drops the junction rather than the user's files, and
+        # that the GC's artifact sweep and size accounting refuse to walk
+        # through one. The tests call mklink /J directly so the junction shape
+        # is exercised even on a runner where symlinks are permitted.
+        # -v so a skip is visible instead of passing silently as "ok".
+        run: |
+          go test ./internal/daemon/execenv -v -run '^(TestSeedUserCodexSkills|TestHydrateCodexSkills)' -count=1 -timeout=5m
+          go test ./internal/daemon -v -run '^(TestCleanTaskArtifacts_DoesNotFollowDirectoryJunction|TestTaskSize_DoesNotCountDirectoryJunction)$' -count=1 -timeout=5m
+
+      - name: Test Windows task temp dir sweep survives a sharing violation
+        working-directory: server
+        # The GC's task temp sweep has to cope with a file it cannot delete: a
+        # leftover child process holding one open is what left 174 directories
+        # behind in #7364. Only a real Windows filesystem produces that sharing
+        # violation — on unix an open file unlinks fine — so this is the only
+        # place we can prove the two things that matter: the failed cleanup
+        # keeps .task_lock (without it the directory reads as a pre-lock
+        # leftover and stops being reclaimable on liveness), and the next cycle
+        # removes the directory once the handle closes.
+        # -v so a skip is visible instead of passing silently as "ok".
+        run: go test ./internal/daemon/execenv -v -run '^TestPruneTaskTempDirsSurvivesRealSharingViolation$' -count=1 -timeout=5m
+
+      - name: Test Windows agent executable junction resolution
+        working-directory: server
+        # The standalone Codex installer exposes bin as a directory junction.
+        # filepath.EvalSymlinks cannot traverse that reparse-point shape, so
+        # only a real Windows filesystem proves both PATH discovery and an
+        # explicitly configured path reach the release executable. The same job
+        # covers the npm shape, where the entry point is a `.cmd` shim that only
+        # the command interpreter can run.
+        run: go test ./internal/daemon -v -run '^(TestCanonicalExecutablePath|TestTrimExtendedLengthPrefix|TestResolveAgentExecutablePathKeeps|TestResolveAgentExecutablePath_ProfileOverride|TestResolveAgentEntry(FollowsRetargetedInstallerJunction|CanonicalizesRediscoveredJunction|ForLaunchKeepsCmdShimLaunchable|ForLaunchRejectsUnverifiedInitialJunctionTarget|ForLaunchRejectsRediscoveredJunctionWhenFinalPathResolutionFails|DoesNotSharePreRetargetSingleflightResult|ForLaunchFailsWhenJunctionKeepsRetargeting)|TestHandleTaskReportsWindowsCodexProcessStartFailure)' -count=1 -timeout=5m
+
+      - name: Test Windows task workdirs under a junctioned workspaces root
+        working-directory: server
+        # #8946: a workspaces root moved to another drive and left behind as a
+        # directory junction puts a junction in the middle of every task path.
+        # filepath.EvalSymlinks fails with ENOTDIR there, so every repo checkout
+        # was refused as "not owned by the active task" and every follow-up
+        # silently lost its workdir. The strict resolver also has to walk
+        # extended-length (`\\?\`) spellings instead of comparing them as
+        # strings, and refuse volume-GUID paths it cannot walk. Only a real
+        # Windows filesystem has junctions; the ubuntu backend job covers the
+        # symlink shapes.
+        # -v so a skip or a pattern that stops matching is visible.
+        run: |
+          go test ./internal/util -v -run '^(TestResolveSymlinksFollowsJunctions|TestResolveSymlinksExtendedLengthPaths)$' -count=1 -timeout=5m
+          go test ./internal/daemon -v -run '^(TestAuthorizeRepoCheckoutWorkDirThroughJunctionedRoot|TestAuthorizeRepoCheckoutWorkDirFollowsJunctionsInsideTheWorkdir|TestAuthorizeRepoCheckoutWorkDirExtendedLengthSpelling|TestShouldReusePriorWorkdirThroughJunctionedRoot)$' -count=1 -timeout=5m
+
+      - name: Build Windows CLI helper entrypoint
+        working-directory: server
+        run: go build ./cmd/multica
+
+      - name: Test Windows Cursor background ownership
+        working-directory: server
+        # Cursor's background shell is captured through a second Job Object, and
+        # TestCaptureCursorBackgroundProcessRejectsForeignJob is windows-tagged,
+        # so it builds nowhere else. This used to be its own windows-latest job
+        # on the same runtime scope as this one; same runner, same package, same
+        # concern, so it is a step here instead of a second runner per merge.
+        # Last on purpose: absorbing another job's steps means this job's own
+        # failure modes now truncate that job's coverage too, and Cursor
+        # ownership is the newest arrival, not the load-bearing one. The ubuntu
+        # backend job still covers the untagged and Unix arms.
+        run: go test -race ./pkg/agent -v -run 'TestCursorBackground|TestCaptureCursorBackground' -count=1 -timeout=5m
+
+  # The only macOS runner here, and the only place cursor_background_process_darwin.go
+  # is ever built: it signals a process group through XNU's per-process unique
+  # identity so a recycled PID cannot redirect a kill, and the two tests pinning
+  # that are `//go:build darwin`. Windows keeps its arm as a step in
+  # windows-execenv, but macOS has no sibling job to join, and this covers one
+  # integration's background shell rather than the shared launch path every
+  # agent uses. So the daily full run carries it instead of charging every
+  # backend merge for a macOS runner; `full` also means the stress counts below
+  # are now the only finalization pass, replacing the single-count merge variant.
+  macos-runtime:
+    needs: changes
+    if: ${{ needs.changes.outputs.full == 'true' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "~1.27.3"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+      - name: Verify Cursor background lifecycle and watchdog races
+        shell: bash
+        working-directory: server
+        # Explicit, verbose selection prevents the Unix regression from silently
+        # disappearing behind a build tag.
+        run: |
+          go test -race ./pkg/agent -v -run 'TestCursorBackground|TestCaptureCursorBackground' -count=1
+          go test -race ./internal/daemon -v -run 'Test.*Background.*Watchdog|Test.*IdleWatchdog' -count=1
+
+      - name: Stress macOS finalization
+        shell: bash
+        working-directory: server
+        run: |
+          go test ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
+          go test -race ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
+
+      - name: Verify cgo-free macOS ownership
+        shell: bash
+        working-directory: server
+        run: CGO_ENABLED=0 go test ./pkg/agent -run '^TestCaptureCursorBackground(KernelRejectsStaleIdentity|DetachedSession|LateDescendant)$' -count=1
+=======
+  windows-execenv:
+    # The environment-preparation deadline owns a process tree, not just a Go
+    # process. This Windows runtime test verifies Job Object cancellation kills
+    # a delayed descendant before an immediate retry can reuse the same root.
+    # The runtime scope includes daemon/agent sources and their Go dependencies.
+    needs: changes
+    if: ${{ needs.changes.outputs.runtime == 'true' }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # Keep the security floor even when the setup-go manifest lags;
+          # continue accepting newer patches within Go 1.27.
+          go-version: "~1.27.4"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+
+      - name: Test Windows WeCom media streaming and plaintext cleanup
+        working-directory: server
+        # These tests need no database. Windows must prove private file access,
+        # streaming without buffered fallback, and cleanup after process exit.
+        run: go test ./internal/integrations/wecom -v -run '^(TestStreamingDecrypt|TestMediaTempFile|TestPeekFile|TestIngest|TestTheStreamingPath)' -count=1 -timeout=5m
+
+      - name: Test Windows execution-environment isolation
+        working-directory: server
+        # Keep this job scoped to the runtime regression it exists to prove.
+        # The package's legacy OpenClaw HOME tests are not Windows-safe and are
+        # outside this PR; the normal backend job still runs the full package.
+        run: go test ./internal/daemon/execenv -run '^TestPrepareIsolated_WindowsKillsDescendantBeforeRetry$' -count=1 -timeout=5m
+
+      - name: Test Windows daemon local-skill discovery
+        working-directory: server
+        # These fixtures must redirect both the Windows user profile and the
+        # platform-native Hermes home; otherwise discovery scans the runner's
+        # real skills instead of the test directories.
+        run: go test ./internal/daemon -v -run '^(TestListRuntimeLocalSkills_HermesFollowsTaskHome|TestLocalSkills_DiscoversACPProviderRoots|TestGC_LocalCodexHomePreservesJunctionTargets)$' -count=1 -timeout=5m
+
+      - name: Test Windows Git Bash temp lifecycle
+        working-directory: server
+        run: |
+          $env:MULTICA_TEST_GIT_BASH = "$env:ProgramFiles\Git\usr\bin\bash.exe"
+          if (-not (Test-Path -LiteralPath $env:MULTICA_TEST_GIT_BASH)) { throw "Git for Windows is required" }
+          go test -tags=gitbashintegration ./internal/daemon -v -run '^(TestWindowsGitBashTaskTempLifecycle|TestTaskMulticaEnvironment.*|TestTaskTempBaseDir)$' -count=1 -timeout=5m
+
+      - name: Test Windows agent launcher argv/stdin handling
+        working-directory: server
+        # Agent prompts must never reach a Windows launcher through argv: the
+        # official cursor-agent.ps1, pi.ps1, and qwen.ps1 launch native children with
+        # `$args`, and PowerShell re-serialises them onto the child command
+        # line. Under
+        # Legacy native argument passing (powershell.exe 5.1, pwsh <= 7.2) a
+        # prompt holding embedded quotes is re-tokenised and fragments like
+        # `-X` become flags (#5649). Only a real PowerShell host proves this,
+        # so it cannot live in the ubuntu backend job. Scoped to the launcher
+        # tests, which are windows-tagged and therefore run nowhere else today;
+        # the backend job still runs the full package on Linux.
+        # -v so a silent skip (no PowerShell host resolved, or a -run pattern
+        # that stops matching) is visible in the log instead of passing as "ok".
+        run: go test ./pkg/agent -v -run '^(TestCursorExecutePromptSurvivesPowerShellShim|TestPiExecutePromptSurvivesPowerShellShim|TestQwenExecutePromptSurvivesPowerShellShim|TestPlatformCursorInvocation|TestPlatformCopilotInvocation|TestPlatformPiInvocation|TestPlatformQwenInvocation)' -count=1 -timeout=5m
+
+      - name: Test Windows OpenCode oversized prompt reaches stdin
+        working-directory: server
+        # #6538: the daemon inlined the whole task prompt as an argv element,
+        # so every OpenCode task whose prompt cleared CreateProcess's 32,767
+        # character lpCommandLine limit failed to start at all, with Go
+        # reporting ERROR_FILENAME_EXCED_RANGE as the misleading "The filename
+        # or extension is too long". Only a real CreateProcess enforces that
+        # ceiling, so this cannot run in the ubuntu backend job. The test
+        # spawns a native .exe directly (a Chocolatey-installed opencode.exe is
+        # a real PE binary, not a .cmd shim) with an oversized prompt and pins
+        # that the process starts, argv stays free of the prompt, and the full
+        # payload arrives on stdin.
+        # -v so a silent skip or a -run pattern that stops matching is visible
+        # in the log instead of passing as "ok".
+        run: go test ./pkg/agent -v -run '^TestOpencodeExecuteOversizedPromptStartsOnWindows$' -count=1 -timeout=5m
+
+      - name: Test Windows agent process-tree ownership
+        working-directory: server
+        # A Job Object is the only way to prove whole-tree termination on
+        # Windows, and only a real Windows runner can exercise it: that a
+        # grandchild dies with the tree that owns it, that an unowned process
+        # still reports cleanup as unconfirmed, and that a descendant holding
+        # inherited stdout neither keeps Result blocked nor survives cleanup.
+        # -v makes RUN/PASS evidence explicit in CI logs.
+        run: go test ./pkg/agent -v -run '^(TestStartOwnedProcessTreeCapturesImmediateDescendants|TestStartOwnedProcessTreeLeavesNoSuspendedChild|TestWaitProcessGroupGoneWithoutOwnershipReportsUnconfirmed|TestCodexInitializeRetrySupportedWithOwnedProcessTree|TestCodexWindowsDescendantsDieWithTheOwnedProcessTree|TestCodeArtsWindowsCancellationTerminatesDescendants)$' -count=1 -timeout=5m
+
+      - name: Test Windows Hermes gateway ownership and reservation
+        working-directory: server
+        run: go test ./pkg/agent -v -run '^(TestHermesGatewayWindowsCleanupOwnsDescendants|TestHermesGatewayReservation)$' -count=1 -timeout=5m
+
+      - name: Test bounded CLI output collection on Windows
+        working-directory: server
+        # MUL-5467: RunCollect / RunCollectQuiet own the pipes as well as the
+        # process tree on the OpenClaw CLI paths, which outputOwned cannot. A real
+        # Windows host proves its Job Object owns and
+        # terminates descendants, a CLI that prints its answer and then refuses
+        # to exit still yields that answer, a response still streaming at the
+        # deadline is NOT reported as success, and no collector goroutine
+        # outlives the call. Unix uses process groups, so it cannot exercise this
+        # platform lifecycle.
+        # -v so a skip (a -run pattern that stops matching) is visible in the log
+        # instead of passing as "ok".
+        run: go test ./pkg/agent -v -run '^TestWindowsRunCollect' -count=1 -timeout=5m
+
+      - name: Test Windows Pi session lock leaves the transcript readable
+        working-directory: server
+        # #7840: the session lock claimed the transcript itself, and Windows
+        # byte-range locks are mandatory. Pi's own read of the file we hand it
+        # through --session failed with EBUSY, so every Pi/omp task on Windows
+        # died ~0.5s after launch. Unix flock is advisory and never reproduces
+        # it, which is exactly how the regression shipped; the tests are
+        # windows-tagged and therefore run nowhere else today.
+        # -v so a skip (a -run pattern that stops matching) is visible in the
+        # log instead of passing as "ok".
+        run: go test ./pkg/agent -v -run '^TestPiSessionFileLock' -count=1 -timeout=5m
+
+      - name: Test Windows OpenClaw npm shim interpreter resolution
+        working-directory: server
+        # #6061: every OpenClaw task failed execenv prep on a Windows host with
+        # a bare `exit status 1` and no stderr. A batch shim resolves and runs
+        # fine while the `node` it re-execs is unreachable, and npm's real
+        # template prefers a co-located node.exe over PATH — none of which can
+        # be proven without a real cmd.exe host. These tests pin: the positive
+        # control (node on PATH → success), that a missing node surfaces
+        # cmd.exe's own stderr (the first run of this job disproved #6061's
+        # premise that it does not), that a genuinely silent shim DOES reach the
+        # new diagnostic, that a co-located interpreter is credited, that a
+        # context timeout is not misdiagnosed as a missing interpreter, and that
+        # TEMP/TMP are NOT load-bearing (the originally reported root cause,
+        # since retracted upstream).
+        # Scoped to the windows-tagged shim tests — the package's legacy
+        # OpenClaw HOME tests are not Windows-safe; the backend job still runs
+        # the full package plus the cross-platform half on Linux.
+        # -v so a skip (no node on the runner) is visible instead of passing
+        # silently as "ok".
+        run: go test ./internal/daemon/execenv -v -run '^TestWindowsOpenclawShim' -count=1 -timeout=5m
+
+      - name: Test Windows workdir containment guard in the CLI
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        working-directory: server
+        # The CLI's --content-file / --attachment guard decides whether a path is
+        # inside the task workdir by canonicalizing both sides. Two of the things
+        # that decision rests on are Windows-only and covered nowhere else: a
+        # candidate on another volume, where filepath.Rel returns an error rather
+        # than a "..", so the guard has to read that as "outside" instead of
+        # surfacing `Rel: can't make Z:\... relative to C:\...` as a resolve
+        # failure; and a directory junction — the containment-relevant link shape
+        # that needs no elevation, so the one real hosts have — which resolves to
+        # itself rather than to its target under this module's go directive. The
+        # junction test pins that gap deliberately, records the observations it
+        # rests on, and fails with instructions if the platform ever starts
+        # resolving them.
+        # cmd/multica has no Windows job otherwise, so these windows-tagged
+        # tests run nowhere else. It matters twice over on a non-admin host,
+        # where the package's cross-platform cases skip for want of the symlink
+        # privilege; the ubuntu backend job covers those shapes instead.
+        # -v so a silent skip (or a -run pattern that stops matching) is visible
+        # in the log instead of passing as "ok".
+        run: go test ./cmd/multica -v -run '^TestFileWithinWorkingDirWindows' -count=1 -timeout=5m
+
+      - name: Test Windows link-target classification in internal/util
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        working-directory: server
+        # The guard's Windows correctness rests on internal/util's link-target
+        # grammar (classifyTarget), whose branch ordering is load-bearing:
+        # VolumeName is non-empty for drive-absolute paths too, so asking it
+        # before IsAbs misreads a junction's absolute target as drive-relative
+        # and resolves it against the working directory — exactly how a
+        # junction escape read as inside the workdir for one CI run. The
+        # fixture-free table pins every branch without needing a filesystem,
+        # but windows-tagged util tests run nowhere else. Scoped to the table
+        # by name; the package's symlinked-workdir cases belong to the ubuntu
+        # backend job, which runs the whole package.
+        # -v so a silent skip or a pattern that stops matching is visible.
+        run: go test ./internal/util -v -run '^TestClassifyTarget' -count=1 -timeout=5m
+
+      - name: Test Windows isolated repo checkout is committable
+        working-directory: server
+        # #6449: on Windows the daemon now hands Codex tasks a checkout whose
+        # .git lives inside the task workdir, because a linked worktree's
+        # external gitdir stays read-only under the native sandbox and breaks
+        # `git add` / `git commit` at the end of a task. Two of the guarantees
+        # are claims about Windows itself and cannot be made on ubuntu: that
+        # Git puts the gitdir inside the task directory, and that the clone's
+        # objects are private copies rather than NTFS hard links sharing one
+        # file and one security descriptor with the daemon-owned cache. The
+        # cross-volume test covers what a hard link cannot express at all.
+        # Exact names keep unrelated package tests out of this Windows check.
+        # -v so a skip (single-volume runner) is visible instead of passing
+        # silently as "ok".
+        run: go test ./internal/daemon/repocache -v -run '^(TestIsolatedCheckoutIsCommittableOnWindows|TestIsolatedCheckoutAcrossVolumesOnWindows)$' -count=1 -timeout=5m
+
+      - name: Test Windows long repository URL checkout and cache upgrade
+        working-directory: server
+        run: go test ./internal/daemon/repocache -v -run '^(TestCheckoutLongRepoURL|TestMigrateUnusedLegacyCache|TestMigrationDoesNotOverwriteExistingDestination|TestMigrationKeepsLockedWorktree|TestMigrationFailureKeepsUsableLegacyCache|TestMigrationFailureRespectsCancellation|TestCreateWorktreeFailureDoesNotLeakBranch)$' -count=1 -timeout=5m
+
+      - name: Test Windows directory-junction link safety
+        working-directory: server
+        # MUL-6000: the per-task codex-home links the user's real skills into
+        # the task directory instead of copying them. On Windows that link is a
+        # directory junction whenever os.Symlink is denied (no Developer Mode),
+        # and a junction is the one link shape a ModeSymlink check misses:
+        # since Go 1.23 os.Lstat reports it as ModeDir|ModeIrregular with no
+        # ModeSymlink bit, while its DirEntry still answers IsDir() == true, so
+        # filepath.WalkDir descends into the target. Two claims about Windows
+        # itself cannot be made on ubuntu: that the per-task skills wipe
+        # (os.RemoveAll) drops the junction rather than the user's files, and
+        # that the GC's artifact sweep and size accounting refuse to walk
+        # through one. The tests call mklink /J directly so the junction shape
+        # is exercised even on a runner where symlinks are permitted.
+        # -v so a skip is visible instead of passing silently as "ok".
+        run: |
+          go test ./internal/daemon/execenv -v -run '^(TestSeedUserCodexSkills|TestHydrateCodexSkills)' -count=1 -timeout=5m
+          go test ./internal/daemon -v -run '^(TestCleanTaskArtifacts_DoesNotFollowDirectoryJunction|TestTaskSize_DoesNotCountDirectoryJunction)$' -count=1 -timeout=5m
+
+      - name: Test Windows task temp dir sweep survives a sharing violation
+        working-directory: server
+        # The GC's task temp sweep has to cope with a file it cannot delete: a
+        # leftover child process holding one open is what left 174 directories
+        # behind in #7364. Only a real Windows filesystem produces that sharing
+        # violation — on unix an open file unlinks fine — so this is the only
+        # place we can prove the two things that matter: the failed cleanup
+        # keeps .task_lock (without it the directory reads as a pre-lock
+        # leftover and stops being reclaimable on liveness), and the next cycle
+        # removes the directory once the handle closes.
+        # -v so a skip is visible instead of passing silently as "ok".
+        run: go test ./internal/daemon/execenv -v -run '^TestPruneTaskTempDirsSurvivesRealSharingViolation$' -count=1 -timeout=5m
+
+      - name: Test Windows agent executable junction resolution
+        working-directory: server
+        # The standalone Codex installer exposes bin as a directory junction.
+        # filepath.EvalSymlinks cannot traverse that reparse-point shape, so
+        # only a real Windows filesystem proves both PATH discovery and an
+        # explicitly configured path reach the release executable. The same job
+        # covers the npm shape, where the entry point is a `.cmd` shim that only
+        # the command interpreter can run.
+        run: go test ./internal/daemon -v -run '^(TestCanonicalExecutablePath|TestTrimExtendedLengthPrefix|TestResolveAgentExecutablePathKeeps|TestResolveAgentExecutablePath_ProfileOverride|TestResolveAgentEntry(FollowsRetargetedInstallerJunction|CanonicalizesRediscoveredJunction|ForLaunchKeepsCmdShimLaunchable|ForLaunchRejectsUnverifiedInitialJunctionTarget|ForLaunchRejectsRediscoveredJunctionWhenFinalPathResolutionFails|DoesNotSharePreRetargetSingleflightResult|ForLaunchFailsWhenJunctionKeepsRetargeting)|TestHandleTaskReportsWindowsCodexProcessStartFailure)' -count=1 -timeout=5m
+
+      - name: Test Windows task workdirs under a junctioned workspaces root
+        working-directory: server
+        # #8946: a workspaces root moved to another drive and left behind as a
+        # directory junction puts a junction in the middle of every task path.
+        # filepath.EvalSymlinks fails with ENOTDIR there, so every repo checkout
+        # was refused as "not owned by the active task" and every follow-up
+        # silently lost its workdir. The strict resolver also has to walk
+        # extended-length (`\\?\`) spellings instead of comparing them as
+        # strings, and refuse volume-GUID paths it cannot walk. Only a real
+        # Windows filesystem has junctions; the ubuntu backend job covers the
+        # symlink shapes.
+        # -v so a skip or a pattern that stops matching is visible.
+        run: |
+          go test ./internal/util -v -run '^(TestResolveSymlinksFollowsJunctions|TestResolveSymlinksExtendedLengthPaths)$' -count=1 -timeout=5m
+          go test ./internal/daemon -v -run '^(TestAuthorizeRepoCheckoutWorkDirThroughJunctionedRoot|TestAuthorizeRepoCheckoutWorkDirFollowsJunctionsInsideTheWorkdir|TestAuthorizeRepoCheckoutWorkDirExtendedLengthSpelling|TestShouldReusePriorWorkdirThroughJunctionedRoot)$' -count=1 -timeout=5m
+
+      - name: Build Windows CLI helper entrypoint
+        working-directory: server
+        run: go build ./cmd/multica
+
+      - name: Test Windows Cursor background ownership
+        working-directory: server
+        # Cursor's background shell is captured through a second Job Object, and
+        # TestCaptureCursorBackgroundProcessRejectsForeignJob is windows-tagged,
+        # so it builds nowhere else. This used to be its own windows-latest job
+        # on the same runtime scope as this one; same runner, same package, same
+        # concern, so it is a step here instead of a second runner per merge.
+        # Last on purpose: absorbing another job's steps means this job's own
+        # failure modes now truncate that job's coverage too, and Cursor
+        # ownership is the newest arrival, not the load-bearing one. The ubuntu
+        # backend job still covers the untagged and Unix arms.
+        run: go test -race ./pkg/agent -v -run 'TestCursorBackground|TestCaptureCursorBackground' -count=1 -timeout=5m
+
+  # The daily macOS runtime runner, and the only place the darwin-only code
+  # runs (backend-darwin-vet only type-checks it). It began with
+  # cursor_background_process_darwin.go, which signals a process group through
+  # XNU's per-process unique identity so a recycled PID cannot redirect a kill,
+  # and the two tests pinning that are `//go:build darwin`. Windows keeps its
+  # arm as a step in windows-execenv, but macOS has no sibling job to join,
+  # and this covers one integration's background shell rather than the shared
+  # launch path every agent uses. So the daily full run carries it instead of
+  # charging every backend merge for a macOS runner; `full` also means the
+  # stress counts below are now the only finalization pass, replacing the
+  # single-count merge variant.
+  macos-runtime:
+    needs: changes
+    if: ${{ needs.changes.outputs.full == 'true' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "~1.27.4"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+      - name: Verify Cursor background lifecycle and watchdog races
+        shell: bash
+        working-directory: server
+        # Explicit, verbose selection prevents the Unix regression from silently
+        # disappearing behind a build tag.
+        run: |
+          go test -race ./pkg/agent -v -run 'TestCursorBackground|TestCaptureCursorBackground' -count=1
+          go test -race ./internal/daemon -v -run 'Test.*Background.*Watchdog|Test.*IdleWatchdog' -count=1
+
+      - name: Stress macOS finalization
+        shell: bash
+        working-directory: server
+        run: |
+          go test ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
+          go test -race ./pkg/agent -run '^TestCursorBackgroundLifecycle/finish$' -count=5
+
+      - name: Verify cgo-free macOS ownership
+        shell: bash
+        working-directory: server
+        run: CGO_ENABLED=0 go test ./pkg/agent -run '^TestCaptureCursorBackground(KernelRejectsStaleIdentity|DetachedSession|LateDescendant)$' -count=1
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
+
+      # The ubuntu backend job passes these same tests through the Linux
+      # implementations; only a macOS host reaches pi_cleanup_darwin.go,
+      # localenv's lsof/ps/AppKit detection, and the LaunchAgent writer.
+      # localenv's focusApp needs a GUI login session and stays uncovered.
+      # Runs even when a Cursor step above failed, since it shares nothing with
+      # them. -race reuses the objects those steps already built.
+      # -v so a silent skip or a -run pattern that stops matching is visible.
+      - name: Test macOS Pi cleanup, local environments, and autostart
+        if: ${{ !cancelled() }}
+        shell: bash
+        working-directory: server
+        run: |
+          go test -race ./pkg/agent -v -run '^TestPiCleanup' -count=1 -timeout=10m
+          go test -race ./internal/daemon -v -run '^TestPiCleanup' -count=1 -timeout=10m
+          go test -race ./internal/daemon/localenv -v -count=1 -timeout=10m
+          go test -race ./cmd/multica -v -run 'Autostart|LaunchAgent' -count=1 -timeout=10m
+
+  # MUL-9162: Darwin's kill(-pgid) skips group members that are exiting or
+  # zombies and returns EPERM instead of ESRCH while the group drains, so
+  # processtree treats that EPERM as "nothing left to signal". The branch is
+  # gated on runtime.GOOS, so the ubuntu backend job passes the same tests
+  # without ever reaching it; only a macOS host proves the handling is still
+  # there. Scoped to the package itself (stdlib-only, ~10s at -count=3) so a
+  # macOS runner is charged only to PRs that touch it, plus every full run.
+  # -count=3 because the test lands in the drain window only a few times per
+  # thousand iterations.
+  macos-processtree:
+    needs: changes
+    if: ${{ needs.changes.outputs.processtree == 'true' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "~1.27.4"
+          check-latest: true
+          cache-dependency-path: server/go.sum
+      - name: Test macOS process-group drain handling
+        shell: bash
+        working-directory: server
+        run: go test ./internal/daemon/processtree/ -v -count=3 -timeout=5m
 
   image-budget:
     # Soft gate against the 21.7MB of raw PNG/JPG that MUL-6352 cleared out:
@@ -1221,6 +2016,9 @@ jobs:
 
       - name: Test development environment registry
         run: bash scripts/dev-env.test.sh
+
+      - name: Test agent environment lifecycle
+        run: bash scripts/agent-environment.test.sh
 
       - name: Test UI performance comparison runner
         run: bash scripts/perf-compare.test.sh

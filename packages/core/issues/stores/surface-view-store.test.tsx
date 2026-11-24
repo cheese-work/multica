@@ -103,7 +103,7 @@ describe("issue surface view store registry", () => {
 
     const legacy = getIssueSurfaceViewStore("workspace:legacy").getState();
     expect([legacy.sortBy, legacy.sortDirection]).toEqual([
-      "created_at",
+      "updated_at",
       "desc",
     ]);
     expect(legacy.cardProperties.description).toBe(false);
@@ -242,6 +242,7 @@ describe("issue surface view store registry", () => {
     expect(view.getState().agentRunningFilter).toBe(true);
   });
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   it("does not keep the agent running filter on a regular surface across a reload", async () => {
     setCurrentWorkspace("acme", "ws_a");
     await flush();
@@ -259,6 +260,25 @@ describe("issue surface view store registry", () => {
     expect(surface.getState().agentRunningFilter).toBe(false);
   });
 
+||||||| 2ae2f08005
+=======
+  it("persists Idle per workspace and resets it with the other filters", async () => {
+    setCurrentWorkspace("acme", "ws_a");
+    await flush();
+    seedIssueSurfaceViewState("view:idle", { agentIdleFilter: true });
+    const view = getIssueSurfaceViewStore("view:idle");
+    expect(view.getState().agentIdleFilter).toBe(true);
+    setCurrentWorkspace("beta", "ws_b");
+    await flush();
+    expect(view.getState().agentIdleFilter).toBe(false);
+    setCurrentWorkspace("acme", "ws_a");
+    await flush();
+    expect(view.getState().agentIdleFilter).toBe(true);
+    view.getState().clearFilters();
+    expect(view.getState().agentIdleFilter).toBe(false);
+  });
+
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   it("clears one surface without touching sibling surfaces", async () => {
     setCurrentWorkspace("acme", "ws_a");
     await flush();

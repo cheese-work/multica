@@ -11,6 +11,7 @@ import {
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import {
   ContextMenu,
   ContextMenuContent,
@@ -19,6 +20,10 @@ import {
   ContextMenuShortcut,
   ContextMenuTrigger,
 } from "@multica/ui/components/ui/context-menu";
+||||||| 2ae2f08005
+=======
+import { nextRowMenuState, usePointAnchor, type RowMenuState } from "./point-menu";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 export interface RowActionItem {
   key: string;
@@ -109,6 +114,7 @@ export function RowActionsMenu({
         }
       />
       <DropdownMenuContent align="end" className="w-auto">
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
         {filled.map((group, index) => (
           <Fragment key={group[0]!.key}>
             {index > 0 && <DropdownMenuSeparator />}
@@ -125,10 +131,30 @@ export function RowActionsMenu({
             ))}
           </Fragment>
         ))}
+||||||| 2ae2f08005
+        {filled.map((group, index) => (
+          <Fragment key={group[0]!.key}>
+            {index > 0 && <DropdownMenuSeparator />}
+            {group.map((item) => (
+              <DropdownMenuItem
+                key={item.key}
+                variant={item.danger ? "destructive" : "default"}
+                onClick={item.onSelect}
+              >
+                {item.icon}
+                {item.label}
+              </DropdownMenuItem>
+            ))}
+          </Fragment>
+        ))}
+=======
+        <RowActionGroups groups={filled} />
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 
 /**
  * Right-click opens the same groups `RowActionsMenu` offers. Wraps the row, so
@@ -169,3 +195,59 @@ export function RowContextMenu({
     </ContextMenu>
   );
 }
+||||||| 2ae2f08005
+=======
+
+/**
+ * The same actions as a right-click menu at the cursor. A list keeps one for
+ * all its rows and holds on to the last point after closing, so the menu does
+ * not jump while it animates out.
+ */
+export function RowActionsPointMenu({
+  menu,
+  onOpenChange,
+  groups,
+}: {
+  menu: RowMenuState;
+  onOpenChange: (open: boolean) => void;
+  groups: RowActionItem[][];
+}) {
+  const anchor = usePointAnchor(menu.point);
+  const filled = groups.filter((group) => group.length > 0);
+
+  return (
+    <DropdownMenu
+      open={menu.open && filled.length > 0}
+      onOpenChange={(open, details) => {
+        if (!nextRowMenuState(menu, open, details.reason)) {
+          details.cancel();
+          return;
+        }
+        onOpenChange(open);
+      }}
+    >
+      <DropdownMenuContent align="start" anchor={anchor} className="w-auto">
+        <RowActionGroups groups={filled} />
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function RowActionGroups({ groups }: { groups: RowActionItem[][] }) {
+  return groups.map((group, index) => (
+    <Fragment key={group[0]!.key}>
+      {index > 0 && <DropdownMenuSeparator />}
+      {group.map((item) => (
+        <DropdownMenuItem
+          key={item.key}
+          variant={item.danger ? "destructive" : "default"}
+          onClick={item.onSelect}
+        >
+          {item.icon}
+          {item.label}
+        </DropdownMenuItem>
+      ))}
+    </Fragment>
+  ));
+}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d

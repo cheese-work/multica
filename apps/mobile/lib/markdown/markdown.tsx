@@ -149,6 +149,7 @@ export function Markdown({
       : style;
   }, [baseStyle, compact, viewerId, isDarkColorScheme]);
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const linkCtx = useMemo(
     () => ({ webOrigin: process.env.EXPO_PUBLIC_WEB_URL ?? null, slug: wsSlug }),
@@ -217,6 +218,17 @@ export function Markdown({
       )
     );
   };
+||||||| 2ae2f08005
+  const segments = useMemo(() => {
+    const processed = preprocessMobileMarkdown(content);
+    return splitMarkdown(processed);
+  }, [content]);
+=======
+  const segments = useMemo(() => {
+    const processed = preprocessMobileMarkdown(content, attachments);
+    return splitMarkdown(processed);
+  }, [content, attachments]);
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {

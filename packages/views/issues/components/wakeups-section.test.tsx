@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import type { ReactNode } from "react";
 import type { IssueWakeup, SystemWakeup } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { WakeupsSection } from "./wakeups-section";
@@ -23,15 +24,36 @@ let settings: Record<string, unknown> = {};
 vi.mock("./wakeup-condition-names", () => ({
   useConditionNames: () => ({ status: (key: string) => key, label: () => undefined, property: () => undefined, actor: (_type: string, id: string) => id }),
 }));
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 // The scoped defaults have their own tests and their own queries.
 vi.mock("./issue-wakeup-defaults", () => ({ IssueWakeupDefaults: () => null }));
 const settingsPush = vi.hoisted(() => vi.fn());
 vi.mock("../../navigation", () => ({ useNavigation: () => ({ push: settingsPush }) }));
+||||||| 2ae2f08005
+const settingsPush = vi.hoisted(() => vi.fn());
+vi.mock("../../navigation", () => ({ useNavigation: () => ({ push: settingsPush }) }));
+=======
+vi.mock("../../navigation", () => ({
+  AppLink: ({ href, children, ...props }: { href: string; children: ReactNode }) => (
+    <a href={href} {...props}>
+      {children}
+    </a>
+  ),
+}));
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 vi.mock("@multica/core/paths", () => ({
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   useCurrentWorkspace: () => ({ id: "ws", settings }),
 }));
 vi.mock("@multica/core/workspace/queries", () => ({
   memberListOptions: () => ({ queryKey: ["members"] }),
+||||||| 2ae2f08005
+  useWorkspacePaths: () => ({ settings: () => "/acme/settings" }),
+  useCurrentWorkspace: () => ({ id: "ws" }),
+=======
+  useWorkspacePaths: () => ({ autopilots: () => "/acme/autopilots" }),
+  useCurrentWorkspace: () => ({ id: "ws" }),
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 }));
 vi.mock("@multica/core/issues", () => ({
   issueWakeupsOptions: () => ({ queryKey: ["wakeups"] }),
@@ -481,6 +503,23 @@ describe("v2 sidebar", () => {
     await waitFor(() => expect(updateSystem).toHaveBeenCalledWith({ rule: "child_done", enabled: false, instruction: "" }));
   });
 
+  it("folds a turned-off system rule into history and turns it back on from there", async () => {
+    empty = true;
+    systemRules = [{
+      id: "rule", revision: 1, default_instruction: "Advance the next stage.", customized: true, paused_reason: null,
+      rule: "child_done", workspace_default: true, enabled: false, instruction: "", staged: false, stage: null, total: 2, remaining: 1,
+      waiting: ["MUL-2"], target: { type: "agent", id: "a", name: "Emacs" }, blocked: "",
+    }];
+    renderWithI18n(<WakeupsSection issueId="issue" />);
+    expect(screen.getByRole("button", { name: "Wakeups" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /When all sub-issues finish/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Wakeup history · 1" }));
+    const row = screen.getByRole("button", { name: /When all sub-issues finish/ });
+    expect(row).toHaveTextContent("Turned off for this issue");
+    fireEvent.click(screen.getAllByRole("switch", { name: "Wake the assignee when sub-issues finish" })[0]!);
+    await waitFor(() => expect(updateSystem).toHaveBeenCalledWith({ rule: "child_done", enabled: true, instruction: "" }));
+  });
+
   it("says a member assignee is notified instead of woken", () => {
     systemRules = [{
       id: "rule", revision: 1, default_instruction: "Advance the next stage.", customized: false, paused_reason: null,
@@ -500,6 +539,7 @@ describe("v2 sidebar", () => {
     renderWithI18n(<WakeupsSection issueId="issue" />);
     fireEvent.click(screen.getByRole("button", { name: /When all sub-issues finish/ }));
     expect(await screen.findByText("Advance the next stage.")).toBeVisible();
+    expect(screen.getByRole("link", { name: "Change the default" })).toHaveAttribute("href", "/acme/autopilots?tab=wakeups");
     fireEvent.click(screen.getByRole("button", { name: "Edit instruction" }));
     const input = screen.getByLabelText("What to do when woken");
     expect(input).toHaveAttribute("placeholder", "Advance the next stage.");

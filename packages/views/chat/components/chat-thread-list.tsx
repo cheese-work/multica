@@ -9,13 +9,23 @@ import {
   ArchiveRestore,
   CheckIcon,
   Clock,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   Eye,
   EyeOff,
   ListChecks,
+||||||| 2ae2f08005
+=======
+  Link2,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   Loader2,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   MinusIcon,
   MoreHorizontal,
   Pencil,
+||||||| 2ae2f08005
+=======
+  Pencil,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   Pin,
   PinOff,
   Square,
@@ -25,6 +35,8 @@ import {
 import { Button } from "@multica/ui/components/ui/button";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { cn } from "@multica/ui/lib/utils";
+import { copyText } from "@multica/ui/lib/clipboard";
+import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { useWorkspacePresenceMap } from "@multica/core/agents";
@@ -50,14 +62,21 @@ import type { Agent, ChatSession, PendingChatTasksResponse } from "@multica/core
 import { ActorAvatar } from "../../common/actor-avatar";
 import {
   RowActionsMenu,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   RowContextMenu,
+||||||| 2ae2f08005
+=======
+  RowActionsPointMenu,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   handleRowActivationKey,
   type RowActionItem,
 } from "../../common/row-actions-menu";
+import { CLOSED_ROW_MENU, shouldOpenRowMenu, type RowMenuState } from "../../common/point-menu";
 import { resolveClickIntent, useOptionalNavigation } from "../../navigation";
 import { createLogger } from "@multica/core/logger";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { useChatSessionActions } from "./use-chat-session-actions";
 import { handleRowShortcut } from "./use-row-shortcuts";
 import { SessionRenameInput } from "./session-rename-input";
@@ -76,6 +95,11 @@ import { findScrollParent, useScrollPointerShield } from "./use-scroll-pointer-s
 
 // Row height is fixed (`h-14`), so Virtuoso starts from the real value.
 const ROW_HEIGHT_PX = 56;
+||||||| 2ae2f08005
+=======
+import { SessionHistoryList } from "./session-history-list";
+import { SessionRenameInput } from "./session-rename-input";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 const apiLogger = createLogger("chat.api");
 
@@ -134,6 +158,7 @@ export function ChatThreadList({
   onEnterSelectMode,
 }: ChatThreadListProps) {
   const { t } = useT("chat");
+  const { t: tLayout } = useT("layout");
   const locale = useLocale();
   const wsId = useWorkspaceId();
   // Null-safe slug (not useWorkspacePaths, which throws): the list renders in
@@ -205,7 +230,19 @@ export function ChatThreadList({
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [confirmingStopId, setConfirmingStopId] = useState<string | null>(null);
   const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   const [renamingId, setRenamingId] = useState<string | null>(null);
+||||||| 2ae2f08005
+=======
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const updateSession = useUpdateChatSession();
+  // One right-click menu for every row; it keeps the session it opened on
+  // through its close animation.
+  const [contextMenu, setContextMenu] = useState<RowMenuState & { sessionId: string | null }>({
+    ...CLOSED_ROW_MENU,
+    sessionId: null,
+  });
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   const deleteSession = useDeleteChatSession();
   const updateSession = useUpdateChatSession();
   const setPinned = useSetChatSessionPinned();
@@ -278,6 +315,7 @@ export function ChatThreadList({
     });
   };
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   const handleBulk = async (action: BulkAction, ids: string[]) => {
     // Hold auto mark-read first, as the single "unseen" action does.
     if (action === "unseen" && activeSessionId && ids.includes(activeSessionId)) {
@@ -321,6 +359,97 @@ export function ChatThreadList({
     );
   };
 
+||||||| 2ae2f08005
+=======
+  // One list drives every action surface — the compact menu without hover,
+  // the hover strip with it, and the right-click menu — so they cannot drift.
+  // The archived view is the only place hard-delete lives; the history view
+  // offers the reversible archive instead.
+  const rowActionsFor = (session: ChatSession): RowActionItem[] =>
+    view === "archived"
+      ? [
+          {
+            key: "unarchive",
+            icon: <ArchiveRestore className="size-3.5" />,
+            label: t(($) => $.list.unarchive),
+            onSelect: () =>
+              setArchived.mutate({ sessionId: session.id, archived: false }),
+          },
+          {
+            key: "delete",
+            icon: <Trash2 className="size-3.5" />,
+            label: t(($) => $.session_history.row_delete_aria),
+            danger: true,
+            onSelect: () => setConfirmingDeleteId(session.id),
+          },
+        ]
+      : [
+          {
+            key: "pin",
+            icon: session.pinned ? (
+              <PinOff className="size-3.5" />
+            ) : (
+              <Pin className="size-3.5 -rotate-45" />
+            ),
+            label: session.pinned
+              ? t(($) => $.list.unpin)
+              : t(($) => $.list.pin),
+            onSelect: () =>
+              setPinned.mutate({ sessionId: session.id, pinned: !session.pinned }),
+          },
+          pendingTaskBySessionId.has(session.id)
+            ? {
+                key: "stop",
+                icon: <Square className="size-3 fill-current" />,
+                label: t(($) => $.session_history.row_stop_aria),
+                danger: true,
+                onSelect: () => setConfirmingStopId(session.id),
+              }
+            : {
+                key: "archive",
+                icon: <Archive className="size-3.5" />,
+                label: t(($) => $.list.archive),
+                onSelect: () => onArchive(session),
+              },
+        ];
+
+  // Menu-only entries: the touch and right-click menus have room for them,
+  // the hover strip keeps its two quick actions.
+  const menuActionsFor = (session: ChatSession): RowActionItem[] => {
+    if (view === "archived") return [];
+    const href = sessionHref(session.id);
+    return [
+      {
+        key: "rename",
+        icon: <Pencil className="size-3.5" />,
+        label: t(($) => $.header.rename),
+        onSelect: () => setRenamingId(session.id),
+      },
+      ...(href && getShareableUrl
+        ? [
+            {
+              key: "copy-link",
+              icon: <Link2 className="size-3.5" />,
+              label: tLayout(($) => $.rail.copy_link),
+              onSelect: () => {
+                void copyText(getShareableUrl(href)).then((ok) => {
+                  if (ok) toast.success(tLayout(($) => $.rail.link_copied));
+                });
+              },
+            },
+          ]
+        : []),
+    ];
+  };
+
+  const commitRename = (session: ChatSession, value: string) => {
+    setRenamingId(null);
+    const title = value.trim();
+    if (!title || title === (session.title ?? "")) return;
+    updateSession.mutate({ sessionId: session.id, title });
+  };
+
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   const renderRow = (session: ChatSession) => {
     const isCurrent = session.id === activeSessionId;
     const agent = agentById.get(session.agent_id) ?? null;
@@ -337,6 +466,7 @@ export function ChatThreadList({
     const isConfirmingDelete = confirmingDeleteId === session.id;
     const isConfirmingStop = confirmingStopId === session.id && !!pendingTask;
     const isConfirmingAction = isConfirmingDelete || isConfirmingStop;
+    const isRenaming = renamingId === session.id;
     const titleText = session.title?.trim() || t(($) => $.window.untitled);
     const last = session.last_message ?? null;
     const timeText = formatChatClock(sessionActivityTime(session), locale);
@@ -386,6 +516,7 @@ export function ChatThreadList({
       previewNode = <span className="block truncate text-muted-foreground">{t(($) => $.list.no_messages)}</span>;
     }
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     // One list drives every action surface (⋯ menu, right-click menu, row
     // shortcuts), so they cannot drift. The archived view is the only place
     // hard-delete lives; the history view offers the reversible archive.
@@ -512,6 +643,62 @@ export function ChatThreadList({
               tone: "info",
               onSelect: () => void sessionActions.markUnseen(session),
             };
+||||||| 2ae2f08005
+    // One list drives both action surfaces — the compact menu without hover
+    // and the hover strip with it — so they cannot drift. The archived view
+    // is the only place hard-delete lives; the history view offers the
+    // reversible archive instead.
+    const rowActions: RowActionItem[] =
+      view === "archived"
+        ? [
+            {
+              key: "unarchive",
+              icon: <ArchiveRestore className="size-3.5" />,
+              label: t(($) => $.list.unarchive),
+              onSelect: () =>
+                setArchived.mutate({ sessionId: session.id, archived: false }),
+            },
+            {
+              key: "delete",
+              icon: <Trash2 className="size-3.5" />,
+              label: t(($) => $.session_history.row_delete_aria),
+              danger: true,
+              onSelect: () => setConfirmingDeleteId(session.id),
+            },
+          ]
+        : [
+            {
+              key: "pin",
+              icon: session.pinned ? (
+                <PinOff className="size-3.5" />
+              ) : (
+                <Pin className="size-3.5 -rotate-45" />
+              ),
+              label: session.pinned
+                ? t(($) => $.list.unpin)
+                : t(($) => $.list.pin),
+              onSelect: () =>
+                setPinned.mutate({ sessionId: session.id, pinned: !session.pinned }),
+            },
+            isRunning
+              ? {
+                  key: "stop",
+                  icon: <Square className="size-3 fill-current" />,
+                  label: t(($) => $.session_history.row_stop_aria),
+                  danger: true,
+                  onSelect: () => setConfirmingStopId(session.id),
+                }
+              : {
+                  key: "archive",
+                  icon: <Archive className="size-3.5" />,
+                  label: t(($) => $.list.archive),
+                  onSelect: () => onArchive(session),
+                },
+          ];
+=======
+    const rowActions = rowActionsFor(session);
+    const menuActions = menuActionsFor(session);
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
     return (
       <SwipeRow
@@ -531,11 +718,17 @@ export function ChatThreadList({
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
         onClick={(e) => {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
           if (isConfirmingAction || e.defaultPrevented) return;
           if (selecting) {
             selection.toggle(session.id);
             return;
           }
+||||||| 2ae2f08005
+          if (isConfirmingAction || e.defaultPrevented) return;
+=======
+          if (isConfirmingAction || isRenaming || e.defaultPrevented) return;
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
           // Plain click keeps the master-detail selection. On web, a modifier
           // click opens the session as its own browser tab. Desktop tabs
           // dedupe chat by pathname (a session is view state, not a subject —
@@ -566,16 +759,27 @@ export function ChatThreadList({
           window.open(getShareableUrl(href), "_blank", "noopener,noreferrer");
         }}
         onKeyDown={(e) => {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
           if (isConfirmingAction) return;
           if (selecting) {
             if (e.key === "Escape") selection.exit();
             else handleRowActivationKey(e, () => selection.toggle(session.id));
             return;
           }
+||||||| 2ae2f08005
+          if (isConfirmingAction) return;
+=======
+          if (isConfirmingAction || isRenaming) return;
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
           handleRowActivationKey(e, () => onSelectSession(session));
           // A portal (the open ⋯ menu) still bubbles React events to the row;
           // only keys pressed inside the row's own DOM are row shortcuts.
           if (e.currentTarget.contains(e.target as Node)) handleRowShortcut(e, shortcutItems);
+        }}
+        onContextMenu={(e) => {
+          if (isConfirmingAction || isRenaming || !shouldOpenRowMenu(e)) return;
+          e.preventDefault();
+          setContextMenu({ open: true, point: { x: e.clientX, y: e.clientY }, sessionId: session.id });
         }}
         className={cn(
           // Fixed height so nothing (hover actions, confirm prompts) can change
@@ -609,6 +813,7 @@ export function ChatThreadList({
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"
               />
             )}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
             {isRenaming ? (
               <div className="min-w-0 flex-1">
                 <SessionRenameInput
@@ -623,6 +828,27 @@ export function ChatThreadList({
               </span>
             )}
             <span className={cn("ml-auto shrink-0 text-micro", unseen ? "font-semibold text-brand" : "text-muted-foreground")}>{timeText}</span>
+||||||| 2ae2f08005
+            <span className={cn("min-w-0 flex-1 truncate text-body", unread > 0 ? "font-semibold text-foreground" : "font-medium")}>
+              {titleText}
+            </span>
+            <span className="ml-auto shrink-0 text-micro text-muted-foreground">{timeText}</span>
+=======
+            {isRenaming ? (
+              <div className="min-w-0 flex-1">
+                <SessionRenameInput
+                  initialValue={session.title ?? ""}
+                  onSubmit={(value) => commitRename(session, value)}
+                  onCancel={() => setRenamingId(null)}
+                />
+              </div>
+            ) : (
+              <span className={cn("min-w-0 flex-1 truncate text-body", unread > 0 ? "font-semibold text-foreground" : "font-medium")}>
+                {titleText}
+              </span>
+            )}
+            <span className="ml-auto shrink-0 text-micro text-muted-foreground">{timeText}</span>
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
           </div>
 
           {/* Line 2: preview + unread badge, or an inline confirm prompt */}
@@ -699,23 +925,84 @@ export function ChatThreadList({
             </div>
         </div>
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
         {/* One ⋯ menu. Where the pointer can hover it shows on row hover or
             keyboard focus; right-click opens the same menu. */}
         {!isConfirmingAction && !selecting && (
+||||||| 2ae2f08005
+        {/* Compact action menu — the touch equivalent of the hover strip
+            below, which a pointer without hover can never reach. It takes real
+            layout space (rather than overlaying the preview) and gives way to
+            the hover strip on a hover-capable pointer. */}
+        {!isConfirmingAction && (
+=======
+        {/* Compact action menu — the touch equivalent of the hover strip
+            below, which a pointer without hover can never reach. It takes real
+            layout space (rather than overlaying the preview) and gives way to
+            the hover strip on a hover-capable pointer. */}
+        {!isConfirmingAction && !isRenaming && (
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
           <RowActionsMenu
             label={t(($) => $.list.row_actions_aria)}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
             groups={menuGroups}
             large
             revealOnHover
             open={moreMenuId === session.id}
             onOpenChange={(next) => setMoreMenuId(next ? session.id : null)}
+||||||| 2ae2f08005
+            groups={[rowActions]}
+=======
+            groups={[rowActions, menuActions]}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
           />
         )}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       </RowContextMenu>
       </SwipeRow>
+||||||| 2ae2f08005
+
+        {/* Hover actions — absolutely positioned so showing/hiding them never
+            changes the row height (which was making the list jump). Keyboard
+            focus reveals them too, so they are reachable without a mouse. */}
+        {!isConfirmingAction && (
+          <div className="absolute inset-y-0 right-1 hidden items-center gap-0.5 rounded-md bg-gradient-to-l from-accent from-40% to-transparent pl-10 pr-1 [@media(hover:hover)]:group-hover/row:flex [@media(hover:hover)]:group-focus-within/row:flex">
+            {rowActions.map((action) => (
+              <RowAction
+                key={action.key}
+                icon={action.icon}
+                label={action.label}
+                danger={action.danger}
+                onClick={action.onSelect}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+=======
+
+        {/* Hover actions — absolutely positioned so showing/hiding them never
+            changes the row height (which was making the list jump). Keyboard
+            focus reveals them too, so they are reachable without a mouse. */}
+        {!isConfirmingAction && !isRenaming && (
+          <div className="absolute inset-y-0 right-1 hidden items-center gap-0.5 rounded-md bg-gradient-to-l from-accent from-40% to-transparent pl-10 pr-1 [@media(hover:hover)]:group-hover/row:flex [@media(hover:hover)]:group-focus-within/row:flex">
+            {rowActions.map((action) => (
+              <RowAction
+                key={action.key}
+                icon={action.icon}
+                label={action.label}
+                danger={action.danger}
+                onClick={action.onSelect}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     );
   };
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   // Pinned rows get their own header in Main / All; everything else sits under
   // its day. The Pinned chip is all pinned rows, so a header there says nothing.
   const sections = useMemo(() => {
@@ -742,8 +1029,102 @@ export function ChatThreadList({
   const flatKeys = useMemo(
     () => sections.flatMap((g) => [`group:${g.key}`, ...g.sessions.map((s) => s.id)]),
     [sections],
+||||||| 2ae2f08005
+  // Archived view: a back header, then the archived rows. Delete lives only
+  // here (via each row's hover actions).
+  if (view === "archived") {
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setView("history")}
+          className="flex w-full items-center gap-1.5 rounded-md px-2 py-2 text-left text-caption font-medium text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <ChevronLeft className="size-4 shrink-0" />
+          <span className="truncate">{t(($) => $.list.archived_title)}</span>
+          <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
+            {archivedSessions.length}
+          </span>
+        </button>
+        {archivedSessions.map(renderRow)}
+      </>
+    );
+  }
+
+  // History (default) view: active rows + a footer entry into the archive.
+  const archivedEntry = archivedSessions.length > 0 && (
+    <button
+      type="button"
+      onClick={() => setView("archived")}
+      className="mt-1 flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-caption text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <span className="flex size-9 shrink-0 items-center justify-center">
+        <Archive className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1 truncate font-medium">{t(($) => $.list.archived_title)}</span>
+      <span className="shrink-0 tabular-nums text-muted-foreground">{archivedSessions.length}</span>
+      <ChevronRight className="size-4 shrink-0 text-faint-foreground" />
+    </button>
+=======
+  const contextMenuSession = contextMenu.sessionId
+    ? sessions.find((s) => s.id === contextMenu.sessionId)
+    : undefined;
+  const rowContextMenu = (
+    <RowActionsPointMenu
+      menu={contextMenuSession ? contextMenu : CLOSED_ROW_MENU}
+      onOpenChange={(open) => {
+        if (!open) setContextMenu((current) => ({ ...current, open: false }));
+      }}
+      groups={
+        contextMenuSession
+          ? [rowActionsFor(contextMenuSession), menuActionsFor(contextMenuSession)]
+          : []
+      }
+    />
   );
 
+  // Archived view: a back header, then the archived rows. Delete lives only
+  // here (via each row's hover actions).
+  if (view === "archived") {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <button
+          type="button"
+          onClick={() => setView("history")}
+          className="flex w-full shrink-0 items-center gap-1.5 rounded-md px-2 py-2 text-left text-caption font-medium text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <ChevronLeft className="size-4 shrink-0" />
+          <span className="truncate">{t(($) => $.list.archived_title)}</span>
+          <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
+            {archivedSessions.length}
+          </span>
+        </button>
+        <div className="min-h-0 flex-1">
+          <SessionHistoryList sessions={archivedSessions} renderRow={renderRow} />
+        </div>
+        {rowContextMenu}
+      </div>
+    );
+  }
+
+  // History (default) view: active rows + a footer entry into the archive.
+  const archivedEntry = archivedSessions.length > 0 && (
+    <button
+      type="button"
+      onClick={() => setView("archived")}
+      className="mt-1 flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-caption text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <span className="flex size-9 shrink-0 items-center justify-center">
+        <Archive className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1 truncate font-medium">{t(($) => $.list.archived_title)}</span>
+      <span className="shrink-0 tabular-nums text-muted-foreground">{archivedSessions.length}</span>
+      <ChevronRight className="size-4 shrink-0 text-faint-foreground" />
+    </button>
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
+  );
+
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   // Virtuoso needs the real scroll container (the page owns it); until the
   // wrapper has found it, a bounded slice of real rows keeps the first frame
   // populated. The same slice is what renders where nothing scrolls (tests).
@@ -819,11 +1200,31 @@ export function ChatThreadList({
           );
         })}
       </div>
+||||||| 2ae2f08005
+  if (historySessions.length === 0) {
+    return (
+      <>
+        <div className="px-2 py-1.5 text-caption text-muted-foreground">
+          {t(($) => $.window.no_previous)}
+        </div>
+        {archivedEntry}
+      </>
+=======
+  if (historySessions.length === 0) {
+    return (
+      <>
+        <div className="px-3 py-1.5 text-caption text-muted-foreground">
+          {t(($) => $.window.no_previous)}
+        </div>
+        {archivedEntry}
+      </>
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     );
   }
 
   return (
     <>
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       {selecting && (
         <div className="flex items-center gap-1 px-2 py-1.5">
           <span className="min-w-0 flex-1 truncate text-label font-semibold">
@@ -855,6 +1256,17 @@ export function ChatThreadList({
           />
         </div>
       )}
+||||||| 2ae2f08005
+      {historySessions.map(renderRow)}
+      {archivedEntry}
+=======
+      <SessionHistoryList
+        sessions={historySessions}
+        renderRow={renderRow}
+        footer={archivedEntry}
+      />
+      {rowContextMenu}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     </>
   );
 }

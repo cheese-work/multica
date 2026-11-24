@@ -205,6 +205,8 @@ export const MessageSquarePlus = /* @__PURE__ */ createIcon("MessageSquarePlus",
 export const MessageSquareQuote = /* @__PURE__ */ createIcon("MessageSquareQuote", glyph.MessageSquareQuote);
 export const MessageSquareText = /* @__PURE__ */ createIcon("MessageSquareText", glyph.MessageSquare);
 export const MessagesSquare = /* @__PURE__ */ createIcon("MessagesSquare", glyph.MessagesSquare);
+export const Mic = /* @__PURE__ */ createIcon("Mic", glyph.Mic);
+export const MicOff = /* @__PURE__ */ createIcon("MicOff", glyph.MicOff);
 export const Milestone = /* @__PURE__ */ createIcon("Milestone", glyph.Milestone);
 export const Minimize2 = /* @__PURE__ */ createIcon("Minimize2", glyph.Minimize2);
 export const Minus = /* @__PURE__ */ createIcon("Minus", glyph.Minus);
@@ -247,7 +249,12 @@ export const RotateCcw = /* @__PURE__ */ createIcon("RotateCcw", glyph.RotateCcw
 export const RotateCw = /* @__PURE__ */ createIcon("RotateCw", glyph.RotateCw);
 export const Rows3 = /* @__PURE__ */ createIcon("Rows3", glyph.Rows3);
 export const Save = /* @__PURE__ */ createIcon("Save", glyph.Save);
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 export const Scale = /* @__PURE__ */ createIcon("Scale", glyph.Scale);
+||||||| 2ae2f08005
+=======
+export const Scan = /* @__PURE__ */ createIcon("Scan", glyph.Scan);
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 export const ScrollText = /* @__PURE__ */ createIcon("ScrollText", glyph.ScrollText);
 export const Search = /* @__PURE__ */ createIcon("Search", glyph.Search);
 export const SearchIcon = /* @__PURE__ */ createIcon("SearchIcon", glyph.Search);

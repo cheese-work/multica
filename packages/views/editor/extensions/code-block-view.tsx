@@ -1,6 +1,12 @@
 "use client";
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { useMemo, useState } from "react";
+||||||| 2ae2f08005
+import { useState } from "react";
+=======
+import { useEffect, useRef, useState } from "react";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import { NodeViewWrapper, NodeViewContent } from "@tiptap/react";
 import type { NodeViewProps } from "@tiptap/react";
 import { Code as CodeIcon, Copy, Check, Eye, Maximize2, RotateCw } from "@multica/ui/icons";
@@ -15,6 +21,15 @@ import { MediaSourceProvider, useMediaSource, usePersistedEditorMedia } from "..
 import { markdownMedia } from "../../media/markdown-media";
 import { MermaidDiagram } from "../mermaid-diagram";
 import { CodeBlockIframe } from "../code-block-iframe";
+import { useThemeVersion } from "../hooks/use-theme-version";
+import { readEmbedTheme } from "../../common/embed-theme";
+import {
+  HTML_BLOCK_EMBED_OPTIONS,
+  NO_HTML_BLOCK_THEME,
+  buildHtmlBlockDocument,
+  htmlBlockTheme,
+  mentionsThemeTokens,
+} from "../utils/html-block-document";
 
 // Coalesces fast keystrokes before re-rendering live previews.
 // `mermaid.initialize()` mutates a process-global config, so back-to-back
@@ -52,11 +67,33 @@ function CodeBlockView({ node }: NodeViewProps) {
     PREVIEW_DEBOUNCE_MS,
     showHtmlPreview || fullscreen,
   );
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   const source = useMediaSource();
   const persistedMarkdown = usePersistedEditorMedia();
   const persistedBlocks = useMemo(() => markdownMedia(persistedMarkdown ?? ""), [persistedMarkdown]);
   const previewContent = isHtml ? debouncedHtml : debouncedChart;
   const persisted = chart === previewContent && persistedBlocks.some((block) => block.kind === language && block.content === chart);
+||||||| 2ae2f08005
+=======
+  // The same document a read-only ```html block gets, so the embed tokens
+  // resolve while the block is being edited too. HTML that names no token
+  // gets the same document under every theme: a new srcDoc reloads the frame
+  // and loses whatever was typed or toggled in it.
+  const previewRef = useRef<HTMLDivElement>(null);
+  const themeVersion = useThemeVersion();
+  const [srcDoc, setSrcDoc] = useState("");
+  useEffect(() => {
+    const host = previewRef.current;
+    if (!host || !debouncedHtml) {
+      setSrcDoc("");
+      return;
+    }
+    const theme = mentionsThemeTokens(debouncedHtml)
+      ? htmlBlockTheme(readEmbedTheme(host, HTML_BLOCK_EMBED_OPTIONS))
+      : NO_HTML_BLOCK_THEME;
+    setSrcDoc(buildHtmlBlockDocument(debouncedHtml, theme));
+  }, [debouncedHtml, themeVersion]);
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
   const handleCopy = async () => {
     const text = node.textContent;
@@ -86,6 +123,7 @@ function CodeBlockView({ node }: NodeViewProps) {
         // unmounting either side would either lose ProseMirror bindings
         // (source) or thrash iframe.srcDoc (preview).
         <div
+          ref={previewRef}
           contentEditable={false}
           className={showHtmlPreview ? "mb-1" : undefined}
           hidden={!showHtmlPreview && !fullscreen}
@@ -100,7 +138,7 @@ function CodeBlockView({ node }: NodeViewProps) {
           >
             <CodeBlockIframe
               key={reloadKey}
-              html={debouncedHtml}
+              html={srcDoc}
               title={t(($) => $.code_block.html_preview)}
               heightClassName={fullscreen ? "h-full" : "h-[480px]"}
               className={fullscreen ? "rounded-none border-0" : undefined}

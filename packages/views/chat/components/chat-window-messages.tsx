@@ -1,6 +1,12 @@
 "use client";
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { useEffect, useRef, type ReactNode } from "react";
+||||||| 2ae2f08005
+import { useEffect, type ReactNode } from "react";
+=======
+import { useEffect, type ComponentProps, type ReactNode } from "react";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { motion, useIsPresent } from "motion/react";
 import type { AgentAvailability } from "@multica/core/agents";
@@ -27,6 +33,7 @@ export function ChatWindowMessages({
   quickActionsPendingMessageId,
   onQuoteMessage,
   onReady,
+  annotations,
   children,
 }: {
   sessionId: string | null;
@@ -51,6 +58,7 @@ export function ChatWindowMessages({
   onQuoteMessage?: (content: string) => void;
   /** This area has something to show — the window can fade in around it. */
   onReady?: () => void;
+  annotations?: ComponentProps<typeof ChatMessageList>["annotations"];
   children: ReactNode;
 }) {
   const isPresent = useIsPresent();
@@ -134,7 +142,12 @@ export function ChatWindowMessages({
             ? regenerateQuickActions.mutateAsync({ sessionId, messageId: message.id })
             : undefined}
           quickActionsPendingMessageId={quickActionsPendingMessageId}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
           onQuoteMessage={onQuoteMessage}
+||||||| 2ae2f08005
+=======
+          annotations={annotations}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
         />
       ) : children}
     </motion.div>

@@ -51,8 +51,15 @@ import {
   hideQueuedChatMessages,
   removePendingChatTask,
 } from "@multica/core/chat/pending";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { deriveChatTitle } from "@multica/core/chat/title";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
+||||||| 2ae2f08005
+import { canAssignAgentToIssue } from "@multica/core/permissions";
+=======
+import { refetchChatSessionsAfterCommit } from "@multica/core/chat/session-list";
+import { canAssignAgentToIssue } from "@multica/core/permissions/rules";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import { api } from "@/data/api";
 import { sendWithPendingId } from "@/data/stores/pending-send-store";
 import { useAuthStore } from "@/data/auth-store";
@@ -392,16 +399,23 @@ export default function ChatTab() {
   const sessionPromiseRef = useRef<Promise<string | null> | null>(null);
 
   const ensureSession = useCallback(
-    async (titleSeed: string): Promise<string | null> => {
+    async (): Promise<string | null> => {
       if (activeSessionId) return activeSessionId;
       if (!currentAgent) return null;
       if (sessionPromiseRef.current) return sessionPromiseRef.current;
 
       const promise = (async () => {
         try {
+          // Untitled on purpose: the server derives the title from the first
+          // message it accepts, the same rule for every client and channel.
           const session = await createSession.mutateAsync({
             agent_id: currentAgent.id,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
             title: deriveChatTitle(titleSeed),
+||||||| 2ae2f08005
+            title: titleSeed.slice(0, 50),
+=======
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
           });
           return session.id;
         } finally {
@@ -439,7 +453,7 @@ export default function ChatTab() {
       const isNewSession = !activeSessionId;
       let sessionId: string | null;
       try {
-        sessionId = await ensureSession(content);
+        sessionId = await ensureSession();
       } catch (err) {
         Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
         throw err;
@@ -512,9 +526,23 @@ export default function ChatTab() {
           queued: result.queued,
         });
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
         // No draft clear here: the composer already emptied the input on
         // submit and restores it if this send throws. Clearing now would
         // erase whatever the user typed while the request was pending.
+||||||| 2ae2f08005
+        if (options.clearDraft !== false) {
+          clearDraft(sessionId);
+        }
+=======
+        // This send just committed the new session's server-derived title.
+        if (isNewSession) {
+          void refetchChatSessionsAfterCommit(qc, chatKeys.sessions(wsId));
+        }
+        if (options.clearDraft !== false) {
+          clearDraft(sessionId);
+        }
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       } catch (err) {
         qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
           old ? old.filter((m) => m.id !== optimistic.id) : old,
@@ -528,6 +556,7 @@ export default function ChatTab() {
       }
     },
     [
+      wsId,
       activeSessionId,
       currentAgent,
       accessRevoked,

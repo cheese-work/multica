@@ -72,11 +72,24 @@ type IssueTriggerInput struct {
 // paths. AgentID is the agent that will actually run — the assignee for an
 // agent issue, the squad leader for a squad issue.
 type IssueRunTrigger struct {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	IssueID      pgtype.UUID
 	AgentID      pgtype.UUID
 	AssigneeType string
 	Source       RunEnqueueSource
 	BlockedEntry bool
+||||||| 2ae2f08005
+	IssueID      pgtype.UUID
+	AgentID      pgtype.UUID
+	AssigneeType string
+	Source       RunEnqueueSource
+=======
+	IssueID         pgtype.UUID
+	AgentID         pgtype.UUID
+	AssigneeType    string
+	Source          RunEnqueueSource
+	WorkflowHandoff bool
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 }
 
 func allowAllAgents(db.Agent) bool { return true }
@@ -229,11 +242,24 @@ func (s *IssueService) WillEnqueueRun(ctx context.Context, in IssueTriggerInput,
 			return IssueRunTrigger{}, false
 		}
 		return IssueRunTrigger{
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 			IssueID:      issue.ID,
 			AgentID:      squad.LeaderID,
 			AssigneeType: "squad",
 			Source:       source,
 			BlockedEntry: in.EnteredHandoffStep && in.StatusChanged && currentStatus == "blocked",
+||||||| 2ae2f08005
+			IssueID:      issue.ID,
+			AgentID:      squad.LeaderID,
+			AssigneeType: "squad",
+			Source:       source,
+=======
+			IssueID:         issue.ID,
+			AgentID:         squad.LeaderID,
+			AssigneeType:    "squad",
+			Source:          source,
+			WorkflowHandoff: in.EnteredHandoffStep,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		}, true
 	}
 	return IssueRunTrigger{}, false

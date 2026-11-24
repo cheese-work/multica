@@ -12,7 +12,13 @@ import (
 )
 
 const lockQoderTaskIssue = `-- name: LockQoderTaskIssue :one
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read, i.created_via FROM issue i
+||||||| 2ae2f08005
+SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id FROM issue i
+=======
+SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.requester_user_id FROM issue i
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 JOIN agent_task_queue t ON t.issue_id = i.id
 JOIN agent_runtime r ON r.id = t.runtime_id AND r.workspace_id = i.workspace_id
 WHERE t.id = $1 AND r.provider = 'qoder_cloud'
@@ -59,11 +65,16 @@ func (q *Queries) LockQoderTaskIssue(ctx context.Context, taskID pgtype.UUID) (I
 		&i.LastActivityAt,
 		&i.TriageState,
 		&i.DuplicateOfIssueID,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		&i.WorkflowID,
 		&i.RequestedByID,
 		&i.MaxRunsOverride,
 		&i.DescriptionExternalRead,
 		&i.CreatedVia,
+||||||| 2ae2f08005
+=======
+		&i.RequesterUserID,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	)
 	return i, err
 }

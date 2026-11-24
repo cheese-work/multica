@@ -1746,6 +1746,7 @@ func (q *Queries) LockAutopilotForUpdate(ctx context.Context, arg LockAutopilotF
 	return i, err
 }
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 const mergeAutopilotRunResult = `-- name: MergeAutopilotRunResult :exec
 UPDATE autopilot_run
 SET result = CASE WHEN jsonb_typeof(result) = 'object' THEN result ELSE '{}'::jsonb END || $1::jsonb
@@ -1765,6 +1766,65 @@ func (q *Queries) MergeAutopilotRunResult(ctx context.Context, arg MergeAutopilo
 	return err
 }
 
+||||||| 2ae2f08005
+=======
+const pauseAutopilotsByArchivedProject = `-- name: PauseAutopilotsByArchivedProject :many
+UPDATE autopilot
+SET status = 'paused',
+    pause_reason = 'project_archived',
+    updated_at = now()
+WHERE status = 'active'
+  AND workspace_id = $1
+  AND project_id = $2
+RETURNING id, workspace_id, title, description, assignee_id, status, execution_mode, issue_title_template, created_by_type, created_by_id, last_run_at, created_at, updated_at, assignee_type, project_id, pause_reason
+`
+
+type PauseAutopilotsByArchivedProjectParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+}
+
+// An archived project accepts no new issues, so an automation filing into it
+// would fail every run. Pause it, keeping the configuration; restoring the
+// project leaves it paused for an explicit resume.
+func (q *Queries) PauseAutopilotsByArchivedProject(ctx context.Context, arg PauseAutopilotsByArchivedProjectParams) ([]Autopilot, error) {
+	rows, err := q.db.Query(ctx, pauseAutopilotsByArchivedProject, arg.WorkspaceID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Autopilot{}
+	for rows.Next() {
+		var i Autopilot
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Title,
+			&i.Description,
+			&i.AssigneeID,
+			&i.Status,
+			&i.ExecutionMode,
+			&i.IssueTitleTemplate,
+			&i.CreatedByType,
+			&i.CreatedByID,
+			&i.LastRunAt,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.AssigneeType,
+			&i.ProjectID,
+			&i.PauseReason,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 const pauseAutopilotsByUnboundAgents = `-- name: PauseAutopilotsByUnboundAgents :many
 UPDATE autopilot a
 SET status = 'paused',

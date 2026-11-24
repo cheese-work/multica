@@ -18,7 +18,8 @@ import (
 // it owns. It atomically fails any dispatched/running tasks the server still
 // believes belong to that runtime — those are the tasks the previous daemon
 // process was running when it died — and triggers MaybeRetryFailedTask for
-// each so the user sees a fresh attempt instead of a permanently stuck row.
+// each so retry-safe work gets a fresh attempt. Started Muse executions retain
+// a cleanup fence because their workers can survive the daemon process.
 //
 // This is the targeted fix for "issue stuck at in_progress when daemon
 // restarts mid-task": the runtime heartbeat sweeper takes up to 75s + the
@@ -268,6 +269,7 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonIssueInTriage)
 		return
 	}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	if errors.Is(err, service.ErrStageQueueFull) {
 		h.writeDispatchBlocked(w, http.StatusConflict, ReasonStageQueueFull)
 		return
@@ -293,6 +295,13 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 		writeError(w, http.StatusConflict, notConfirmed.Error())
 		return
 	}
+||||||| 2ae2f08005
+=======
+	if errors.Is(err, service.ErrProjectAccessDenied) {
+		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonProjectAccessBlocked)
+		return
+	}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	// Not a dispatch refusal: the issue may well be runnable, and only the named
 	// source is ineligible. It falls through to the 400 below with the
 	// sentinel's own sentence, like the sibling "does not belong to this issue".

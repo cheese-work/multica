@@ -249,6 +249,7 @@ describe("WSClient", () => {
       });
     }
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     it("reconnects a half-open socket when a probe gets no pong", () => {
       const ws = new WSClient("wss://example.test/ws");
       ws.setAuth("tok", "acme");
@@ -340,6 +341,30 @@ describe("WSClient", () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
+||||||| 2ae2f08005
+=======
+    it("reports connecting, connected, then reconnecting until the next auth ack", () => {
+      const ws = new WSClient("ws://example.test/ws");
+      const listener = vi.fn();
+      ws.onStatusChange(listener);
+      ws.setAuth("tok", "acme");
+      ws.connect();
+      expect(ws.getStatus()).toBe("connecting");
+
+      simulateAuthAck();
+      expect(ws.getStatus()).toBe("connected");
+
+      simulateDisconnect();
+      expect(ws.getStatus()).toBe("reconnecting");
+      vi.runOnlyPendingTimers();
+      expect(ws.getStatus()).toBe("reconnecting");
+
+      simulateAuthAck();
+      expect(ws.getStatus()).toBe("connected");
+      expect(listener).toHaveBeenCalledTimes(3);
+    });
+
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     it("uses ~1000ms base delay for the first reconnect attempt", () => {
       // Pin Math.random so jitter is deterministic: random()=0.5 → jitter=0.
       vi.stubGlobal(

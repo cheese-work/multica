@@ -40,10 +40,40 @@ type stateClaims struct {
 	// toolkit's auth config without re-resolving (which could fail-open). It is
 	// an opaque config handle (ac_…), not a credential.
 	AuthConfigID string `json:"a"`
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	// Origin is the browser origin that started the connect flow; the callback
 	// returns there only if it is still in CORS_ALLOWED_ORIGINS.
 	Origin string `json:"o,omitempty"`
 	Exp    int64  `json:"e"`
+||||||| 2ae2f08005
+	Exp          int64  `json:"e"`
+=======
+	// WorkspaceID and ConnectedBy are set only for a team account: the
+	// workspace that owns it and the admin who started the handshake.
+	WorkspaceID string `json:"w,omitempty"`
+	ConnectedBy string `json:"c,omitempty"`
+	// ReturnTo is the app path the browser goes back to, e.g. the issue whose
+	// connect card started the flow. Validated by SafeReturnPath at sign time.
+	ReturnTo string `json:"r,omitempty"`
+	Exp      int64  `json:"e"`
+}
+
+// SafeReturnPath reports whether p is a same-origin app path: absolute,
+// not protocol-relative, without control characters, and short.
+func SafeReturnPath(p string) bool {
+	if p == "" || len(p) > 512 || !strings.HasPrefix(p, "/") {
+		return false
+	}
+	if strings.HasPrefix(p, "//") || strings.HasPrefix(p, "/\\") {
+		return false
+	}
+	for _, r := range p {
+		if r < 0x20 || r == 0x7f || r == '\\' {
+			return false
+		}
+	}
+	return true
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 }
 
 // signState produces a URL-safe "<payload>.<sig>" token. payload is the

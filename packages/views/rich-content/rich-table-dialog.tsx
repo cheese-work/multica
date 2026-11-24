@@ -172,9 +172,33 @@ export function RichTableDialog({ model, open, onOpenChange, getMarkdown, standa
 
   const shownRows = table.getRowModel().rows.length;
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   const content = <>
         <div data-testid="media-toolbar" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border py-2 pr-2 pl-4">
           {standalone ? <h1 className="mr-auto w-full text-body font-medium md:w-auto">{t(($) => $.table.expanded_title)}</h1> : <DialogTitle className="mr-auto w-full text-body font-medium md:w-auto">{t(($) => $.table.expanded_title)}</DialogTitle>}
+||||||| 2ae2f08005
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        showCloseButton={false}
+        className="flex h-[min(85dvh,56rem)] w-[min(72rem,calc(100vw-4rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+      >
+        <div className="flex shrink-0 items-center gap-2 border-b border-border py-2 pr-2 pl-4">
+          <DialogTitle className="mr-auto text-body font-medium">
+            {t(($) => $.table.expanded_title)}
+          </DialogTitle>
+=======
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        showCloseButton={false}
+        className="flex h-[min(85%,56rem)] w-[min(72rem,calc(100%-4rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+      >
+        <div className="flex shrink-0 items-center gap-2 border-b border-border py-2 pr-2 pl-4">
+          <DialogTitle className="mr-auto text-body font-medium">
+            {t(($) => $.table.expanded_title)}
+          </DialogTitle>
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
           <div className="relative w-56 shrink-0">
             <Search
               aria-hidden

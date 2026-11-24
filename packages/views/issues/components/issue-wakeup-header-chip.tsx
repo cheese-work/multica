@@ -78,8 +78,16 @@ export const IssueWakeupHeaderChip = memo(function IssueWakeupHeaderChip({
       title={label}
       aria-label={`${label}${primary.count > 1 ? ` +${primary.count - 1}` : ""} · ${t(($) => $.wakeups.wait.open)}`}
       className={cn(
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
         "inline-flex h-7 max-w-72 min-w-0 items-center gap-1.5 rounded-full border border-border px-2.5 text-caption hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
         workspacePaused || primary.kind === "paused" ? "text-warning" : "text-foreground",
+||||||| 2ae2f08005
+        "inline-flex h-7 max-w-72 min-w-0 items-center gap-1.5 rounded-full border border-border px-2.5 text-caption hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
+        primary.kind === "paused" ? "text-warning" : "text-foreground",
+=======
+        "inline-flex h-7 max-w-72 min-w-0 items-center gap-1.5 rounded-md border border-border px-2.5 text-caption hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring",
+        primary.kind === "paused" ? "text-warning" : "text-foreground",
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       )}
     >
       <Icon className="size-3.5 shrink-0" aria-hidden="true" />

@@ -6,7 +6,12 @@ import { cn } from "@multica/ui/lib/utils";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import type { WebhookEventFilter } from "@multica/core/types";
 import { useT } from "../../i18n";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { docsUrl } from "../../common/docs-url";
+||||||| 2ae2f08005
+=======
+import { isTraditionalChinese } from "../../common/docs-locale";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 interface WebhookEventFilterSectionProps {
   filters: WebhookEventFilter[];
@@ -20,6 +25,7 @@ export function WebhookEventFilterSection({
   const { t, i18n } = useT("autopilots");
   const [newEvent, setNewEvent] = useState("");
   const [newActions, setNewActions] = useState("");
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   // Only zh and fr docs carry this section; other languages use the English page.
   const docsLang = /^(zh|fr)/.test(i18n.language ?? "") ? i18n.language : undefined;
   const anchor = docsLang?.startsWith("zh")
@@ -28,6 +34,21 @@ export function WebhookEventFilterSection({
       ? encodeURIComponent("filtres-dévénements")
       : "event-filters";
   const docsHref = `${docsUrl("/autopilots", docsLang)}#${anchor}`;
+||||||| 2ae2f08005
+  const docsHref = i18n.language?.startsWith("zh")
+    ? `https://multica.ai/docs/zh/autopilots#${encodeURIComponent("事件过滤")}`
+    : i18n.language?.startsWith("fr")
+      ? `https://multica.ai/docs/fr/autopilots#${encodeURIComponent("filtres-dévénements")}`
+      : "https://multica.ai/docs/autopilots#event-filters";
+=======
+  const docsHref = isTraditionalChinese(i18n.language)
+    ? `https://multica.ai/docs/zh-Hant/autopilots#${encodeURIComponent("事件過濾")}`
+    : i18n.language?.startsWith("zh")
+      ? `https://multica.ai/docs/zh/autopilots#${encodeURIComponent("事件过滤")}`
+      : i18n.language?.startsWith("fr")
+        ? `https://multica.ai/docs/fr/autopilots#${encodeURIComponent("filtres-dévénements")}`
+        : "https://multica.ai/docs/autopilots#event-filters";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
   const addFilter = () => {
     const event = newEvent.trim();

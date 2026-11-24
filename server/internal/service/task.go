@@ -1762,6 +1762,9 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 		slog.Warn("task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
+	if err := s.guardRunProjectAccess(ctx, issue, agent, attr.UserID, attr.AccountableUserID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.runtimeMCPOverlayForEnqueue(ctx, originatorUserID, agent, preparedOverlay)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -2022,14 +2025,22 @@ func (s *TaskService) EnqueueTaskForSquadLeaderWithHandoffComment(ctx context.Co
 }
 
 func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin) (db.AgentTaskQueue, error) {
-	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, nil, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, false)
+	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, nil, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin, false, false)
 }
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, freshRerun bool) (db.AgentTaskQueue, error) {
 	// The helpers prepare calls read through the pool, so they run before the
 	// transaction: it holds one connection, from the budget lock to the debit.
 	params, attr, err := s.prepareMentionTaskWithQueries(readOnlyRunBudget(ctx), s.Queries, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, forceFreshSession, handoffNote, actorUserID, rerunOfTaskID, origin)
 	if err != nil {
+||||||| 2ae2f08005
+func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, freshRerun bool) (db.AgentTaskQueue, error) {
+	if err := guardIssueNotInTriage(ctx, s.Queries, issue.ID, origin); err != nil {
+=======
+func (s *TaskService) enqueueMentionTaskWithCommentPlan(ctx context.Context, issue db.Issue, agentID pgtype.UUID, triggerCommentID pgtype.UUID, coalescedCommentIDs []pgtype.UUID, isLeader bool, squadID pgtype.UUID, forceFreshSession bool, handoffNote string, actorUserID pgtype.UUID, rerunOfTaskID pgtype.UUID, origin RunOrigin, freshRerun, workflowHandoff bool) (db.AgentTaskQueue, error) {
+	if err := guardIssueNotInTriage(ctx, s.Queries, issue.ID, origin); err != nil {
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		return db.AgentTaskQueue{}, err
 	}
 	params.FreshRerun = pgtype.Bool{Bool: freshRerun, Valid: true}
@@ -2144,6 +2155,9 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 		slog.Warn("mention task enqueue refused: attribution fail-closed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
 		return db.CreateAgentTaskParams{}, attribution.Result{}, err
 	}
+	if err := s.guardRunProjectAccess(ctx, issue, agent, attr.UserID, attr.AccountableUserID); err != nil {
+		return db.AgentTaskQueue{}, err
+	}
 	originatorUserID := attr.UserID
 	runtimeMCPOverlay := s.runtimeMCPOverlayForEnqueue(ctx, originatorUserID, agent, preparedOverlay)
 	attrSource, attrDelegatedFrom, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -2173,9 +2187,75 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 		// Stamp the reviewed head so dedup can distinguish this run's target
 		// from a later request against a new HEAD (TEN-356).
 		HeadSha: headShaText(s.ResolveIssueReviewSHA(ctx, issue.ID)),
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
+||||||| 2ae2f08005
+	})
+	if err != nil {
+		// A concurrent enqueue for the same (issue, agent) won the race and the
+		// unique index rejected this insert. That is benign — a sibling run
+		// already covers this target — so log it at debug and return a typed
+		// sentinel the caller maps to a coalesced outcome / 409 rather than a
+		// 500 that leaks the raw constraint name (#5914).
+		if isDuplicatePendingTaskErr(err) {
+			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
+		}
+		slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
+		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
+=======
 	}
+	var task db.AgentTaskQueue
+	if workflowHandoff {
+		task, err = s.createWorkflowSquadHandoffTask(ctx, issue, params)
+	} else {
+		task, err = s.Queries.CreateAgentTask(ctx, params)
+	}
+	if err != nil {
+		// A concurrent enqueue for the same (issue, agent) won the race and the
+		// unique index rejected this insert. That is benign — a sibling run
+		// already covers this target — so log it at debug and return a typed
+		// sentinel the caller maps to a coalesced outcome / 409 rather than a
+		// 500 that leaks the raw constraint name (#5914).
+		if errors.Is(err, ErrDuplicatePendingTask) || isDuplicatePendingTaskErr(err) {
+			slog.Debug("mention task enqueue coalesced: pending task already exists", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+			return db.AgentTaskQueue{}, ErrDuplicatePendingTask
+		}
+		slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
+		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
+	}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	gate.Apply(&params)
 	return params, attr, nil
+||||||| 2ae2f08005
+
+	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
+	s.RecordHumanDelegation(ctx, attr)
+	// See EnqueueTaskForIssue for ordering rationale.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.NotifyTaskEnqueued(ctx, task)
+	return task, nil
+=======
+
+	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
+	s.RecordHumanDelegation(ctx, attr)
+	if workflowHandoff {
+		// Publish the durable waiting task before promotion can publish queued
+		// or the daemon can claim it. Existing promotion handles occupied slots.
+		s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+		s.notifyTaskAvailable(task)
+		if err := s.PromoteDueDeferredTasksForRuntime(ctx, task.RuntimeID); err != nil {
+			// The handoff is already durable; the daemon's next claim retries
+			// promotion, including after a server restart.
+			slog.Warn("promote workflow squad handoff failed", "task_id", util.UUIDToString(task.ID), "error", err)
+		}
+		return task, nil
+	}
+	// See EnqueueTaskForIssue for ordering rationale.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	s.NotifyTaskEnqueued(ctx, task)
+	return task, nil
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 }
 
 // QuickCreateContext is the JSON payload stored on a quick-create task's
@@ -2320,6 +2400,11 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	// owner), or is refused if the workspace is fail-closed (MUL-4302 §3.5).
 	attr, err = s.applyAttributionFallback(ctx, attr, agent)
 	if err != nil {
+		return db.AgentTaskQueue{}, err
+	}
+	// The claim hands this run the project's description and resources (and
+	// the parent issue for a sub-issue), so it is gated like an issue run.
+	if err := s.guardQuickCreateProjectAccess(ctx, workspaceID, agent, requesterID, attr.AccountableUserID, projectID, parentIssueID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
 	attrSource, _, attrEvidenceKind, attrEvidenceRef := attributionCreateParams(attr)
@@ -3000,6 +3085,8 @@ func (s *TaskService) PromoteDeferredChannelIssueTask(ctx context.Context, taskI
 // persisted, so the handler can broadcast the user message and shape its
 // response without re-reading them.
 type DirectChatSendResult struct {
+	Replayed           bool
+	Acceptance         *ChatSubmissionResponse
 	Task               db.AgentTaskQueue
 	Message            db.ChatMessage
 	BoundAttachmentIDs []pgtype.UUID
@@ -3048,6 +3135,7 @@ func (s *TaskService) SendDirectChatMessage(
 	sentVia string,
 	opts DirectChatSendOptions,
 ) (*DirectChatSendResult, error) {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	plan, err := s.PlanDirectChatSend(ctx, session.ID, agent, initiatorUserID)
 	if err != nil {
 		return nil, err
@@ -3088,6 +3176,23 @@ type DirectChatSendPlan struct {
 // PlanDirectChatSend resolves the overlay and attribution of a direct-chat send
 // for sessionID. It runs outside any transaction.
 func (s *TaskService) PlanDirectChatSend(ctx context.Context, sessionID pgtype.UUID, agent db.Agent, initiatorUserID pgtype.UUID) (DirectChatSendPlan, error) {
+||||||| 2ae2f08005
+=======
+	return s.sendDirectChatMessage(ctx, session, agent, initiatorUserID, content, attachmentIDs, uploaderType, uploaderID, nil)
+}
+
+func (s *TaskService) sendDirectChatMessage(
+	ctx context.Context,
+	session db.ChatSession,
+	agent db.Agent,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	submission *chatSubmission,
+) (*DirectChatSendResult, error) {
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	// Build the per-task Composio overlay before the transaction — it can do
 	// network I/O and must not run with a DB transaction open.
 	plan := DirectChatSendPlan{overlay: s.buildRuntimeMCPOverlay(ctx, initiatorUserID, agent)}
@@ -3133,12 +3238,19 @@ func (s *TaskService) SendDirectChatMessageTx(
 		// running on the old runtime. Locking chat_session first also matches the
 		// delete path's lock order, so the two cannot deadlock.
 		if _, err := qtx.LockChatSessionForRuntimeBind(ctx, session.ID); err != nil {
+			if submission != nil && errors.Is(err, pgx.ErrNoRows) {
+				return ErrChatSessionNotFound
+			}
 			return fmt.Errorf("lock chat session: %w", err)
 		}
 		currentSession, err := qtx.GetChatSession(ctx, session.ID)
 		if err != nil {
+			if submission != nil && errors.Is(err, pgx.ErrNoRows) {
+				return ErrChatSessionNotFound
+			}
 			return fmt.Errorf("reload chat session: %w", err)
 		}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		// A repeat of a stored send returns the original rows. Under the session
 		// lock, so a retry racing its own first attempt waits for it and sees it.
 		if plan.Options.ClientMessageID != "" {
@@ -3151,6 +3263,20 @@ func (s *TaskService) SendDirectChatMessageTx(
 				return nil
 			}
 		}
+||||||| 2ae2f08005
+=======
+		if submission != nil {
+			response, err := submission.lookup(ctx, qtx)
+			if err != nil {
+				return err
+			}
+			if response != nil {
+				out.Replayed = true
+				out.Acceptance = response
+				return nil
+			}
+		}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		if currentSession.Status != "active" {
 			return ErrChatSessionArchived
 		}
@@ -3315,11 +3441,15 @@ func (s *TaskService) SendDirectChatMessageTx(
 		if err := qtx.TouchChatSession(ctx, session.ID); err != nil {
 			return fmt.Errorf("touch chat session: %w", err)
 		}
+		if submission != nil {
+			return submission.store(ctx, qtx, &out, len(attachmentIDs) > 0)
+		}
 		return nil
 	}()
 	return out, err
 }
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 // replayDirectChatSend loads the rows a stored send with this client_message_id wrote.
 func (s *TaskService) replayDirectChatSend(ctx context.Context, qtx *db.Queries, session db.ChatSession, clientMessageID string) (DirectChatSendResult, bool, error) {
 	msg, err := qtx.GetChatMessageByClientID(ctx, db.GetChatMessageByClientIDParams{
@@ -3388,6 +3518,12 @@ func applyHumanSendAttention(ctx context.Context, qtx *db.Queries, session db.Ch
 
 // NotifyDirectChatSent announces a committed direct-chat task.
 func (s *TaskService) NotifyDirectChatSent(ctx context.Context, task db.AgentTaskQueue) {
+||||||| 2ae2f08005
+=======
+	if out.Replayed {
+		return &out, nil
+	}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	slog.Info("direct chat task enqueued",
 		"task_id", util.UUIDToString(task.ID),
 		"chat_session_id", util.UUIDToString(task.ChatSessionID),
@@ -4598,8 +4734,9 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		// A daemon may still hold a stale candidate after the agent is rebound.
 		// Reject it before doing capacity work. ClaimAgentTask repeats the fence
 		// before its state transition; the claim handler then rechecks the freshly
-		// loaded Agent before returning any payload. Runtime mutation teardown is
-		// responsible for serializing and settling the remaining queued rows.
+		// loaded Agent before returning any payload. Runtime mutation paths settle
+		// the remaining queued rows: teardown and revocation cancel them, and
+		// UpdateAgent re-stamps them to the new runtime.
 		if runtimeID.Valid && agent.RuntimeID != runtimeID {
 			outcome = "runtime_mismatch"
 			return nil
@@ -5169,9 +5306,48 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 // The returned slice contains both reclaimed and freshly-claimed tasks, each
 // already carrying its runtime_id so the daemon routes it to the matching
 // runtime locally.
-func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int) ([]db.AgentTaskQueue, error) {
+// forceRecheckRuntimeIDs, when non-empty, names runtimes whose empty-claim
+// verdict must be ignored for THIS call: a targeted daemon `task_available`
+// wakeup carries them so a queued task becomes claimable immediately even if a
+// prior enqueue's EmptyClaim.Bump was lost to a transient Redis failure and the
+// stale "empty" verdict would otherwise survive to its TTL (GitHub #7452). The
+// forced runtimes still MarkEmpty-repair on a zero-candidate result (step 5),
+// so a genuinely-idle runtime re-arms the cache instead of polling Postgres
+// every cycle. It is an optional, additive signal: an empty set reproduces the
+// exact pre-#7452 behavior, and ids not in runtimeIDs are ignored.
+//
+// The second return value ACKNOWLEDGES the subset of forceRecheckRuntimeIDs
+// whose candidate SELECT came back with ZERO candidates this cycle, as
+// canonical uuid strings. A forced runtime is acknowledged only once it has
+// been observed genuinely idle and MarkEmpty-repaired (step 5): its cache entry
+// is then freshly authoritative, so the hint has done its job and the daemon
+// can drop it.
+//
+// Everything else is deliberately NOT acknowledged, so the daemon keeps the
+// runtime forced and re-forces it next cycle:
+//   - a forced runtime whose SELECT found candidates. The batch's
+//     one-attempt-per-agent rule can claim one of two same-agent tasks and leave
+//     the second queued, and the stale verdict that made the runtime need
+//     forcing is still cached. Acknowledging here would depend on a repair write
+//     (a Bump/invalidate) succeeding, and that write can fail in the very Redis
+//     outage that lost the enqueue-side Bump, silently restoring the stale
+//     verdict. Staying forced until a scan is empty needs no such write.
+//   - a forced runtime the server never scanned, because reclaim already filled
+//     the batch (step 2 early return) or an error cut the cycle short.
+//
+// The set is meaningful even when empty, and the handler always emits the field,
+// so a daemon can tell "this server acknowledged nothing" from "this server does
+// not know the field at all".
+func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pgtype.UUID, maxTasks int, forceRecheckRuntimeIDs ...pgtype.UUID) ([]db.AgentTaskQueue, []string, error) {
 	if len(runtimeIDs) == 0 || maxTasks <= 0 {
-		return nil, nil
+		return nil, nil, nil
+	}
+
+	// Runtimes whose cached empty verdict is bypassed for this call. Keyed by
+	// canonical uuid string so it matches the per-runtime bookkeeping below.
+	forceRecheck := make(map[string]struct{}, len(forceRecheckRuntimeIDs))
+	for _, rid := range forceRecheckRuntimeIDs {
+		forceRecheck[util.UUIDToString(rid)] = struct{}{}
 	}
 
 	// De-dup runtime IDs defensively so MarkEmpty/version bookkeeping stays
@@ -5213,7 +5389,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		promoted = nil
 	} else if err != nil {
 		s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "error_promote_deferred", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
-		return nil, fmt.Errorf("promote deferred tasks: %w", err)
+		return nil, nil, fmt.Errorf("promote deferred tasks: %w", err)
 	}
 	for _, task := range promoted {
 		slog.Info("deferred task promoted (batch)",
@@ -5249,7 +5425,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		})
 		if err != nil {
 			s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "error_reclaim_dispatched", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
-			return nil, fmt.Errorf("reclaim stale dispatched tasks: %w", err)
+			return nil, nil, fmt.Errorf("reclaim stale dispatched tasks: %w", err)
 		}
 		for _, row := range reclaimedRows {
 			reclaimed = append(reclaimed, db.AgentTaskQueue(row)) // the query's row struct mirrors the table
@@ -5275,15 +5451,31 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		)
 	}
 	if len(claimed) >= maxTasks {
-		return claimed[:maxTasks], nil
+		// Reclaim (step 2) already filled the batch, so step 3 never runs and a
+		// forceRecheck runtime not among the reclaimed tasks keeps its stale
+		// "empty" verdict this cycle. That is self-healing: the daemon re-drives
+		// the same free slots on the next poll (and the wakeup that set the force
+		// signal recurs), so the bypass lands then; the TTL is the outer bound.
+		// Nothing was scanned, so nothing is acknowledged: the daemon keeps every
+		// forced runtime forced and the bypass lands on the next poll.
+		return claimed[:maxTasks], nil, nil
 	}
 
 	// 3. Empty-cache short-circuit + version sampling for the remaining runtimes.
+	// A runtime named in forceRecheck skips the IsEmpty short-circuit and always
+	// runs the real candidate SELECT (step 4), repairing a stale "empty" verdict
+	// left by a lost Bump (#7452). It still samples the version so step 5 can
+	// MarkEmpty-repair it, and acknowledge it, when the SELECT confirms it is
+	// genuinely idle.
 	nonEmpty := make([]pgtype.UUID, 0, len(uniqueIDs))
 	versions := make(map[string]int64, len(uniqueIDs))
+	// forceRechecked acknowledges the forced runtimes that step 5 confirms idle,
+	// so every other forced runtime stays forced (see the doc comment).
+	forceRechecked := make([]string, 0, len(forceRecheck))
 	for _, rid := range uniqueIDs {
 		key := util.UUIDToString(rid)
-		if s.EmptyClaim.IsEmpty(ctx, key) {
+		_, forced := forceRecheck[key]
+		if !forced && s.EmptyClaim.IsEmpty(ctx, key) {
 			continue
 		}
 		versions[key] = s.EmptyClaim.CurrentVersion(ctx, key)
@@ -5292,7 +5484,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 	if len(nonEmpty) == 0 {
 		s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "empty_cache_hit", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
 		slog.Debug("batch claim: all runtimes empty-cached", "runtimes", len(uniqueIDs))
-		return claimed, nil
+		return claimed, forceRechecked, nil
 	}
 
 	// 4. One candidate SELECT across the non-empty set.
@@ -5310,9 +5502,11 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		if len(claimed) > 0 {
 			slog.Error("batch claim: candidate query failed after partial success; returning claimed tasks to avoid loss",
 				"error", err, "claimed", len(claimed))
-			return claimed, nil
+			// The SELECT errored, so no forced runtime was observed idle:
+			// acknowledge none of them and let the daemon keep them forced.
+			return claimed, nil, nil
 		}
-		return nil, fmt.Errorf("list queued claim candidates: %w", err)
+		return nil, nil, fmt.Errorf("list queued claim candidates: %w", err)
 	}
 
 	// 5. Mark runtimes with zero candidates empty so their next idle poll skips
@@ -5327,6 +5521,15 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		key := util.UUIDToString(rid)
 		if _, ok := withCandidates[key]; !ok {
 			s.EmptyClaim.MarkEmpty(ctx, key, versions[key])
+			// The runtime is confirmed idle and its cache entry has just been
+			// re-armed from a real SELECT, so the force hint has done its job:
+			// acknowledge it and let the daemon drop it (#7452). A forced runtime
+			// that DID yield candidates is intentionally left unacknowledged: it
+			// stays forced until a later scan comes back empty, which is what makes
+			// the contract independent of any Redis repair write succeeding.
+			if _, forced := forceRecheck[key]; forced {
+				forceRechecked = append(forceRechecked, key)
+			}
 		}
 	}
 	if len(candidates) == 0 {
@@ -5335,7 +5538,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		// agent/runtime binding, so this is about visible candidates, not
 		// about the queue being empty).
 		s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "empty_db", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
-		return claimed, nil
+		return claimed, forceRechecked, nil
 	}
 
 	// 6. Claim per distinct agent through the runtime-scoped helper, preserving
@@ -5374,9 +5577,11 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 			if len(claimed) > 0 {
 				slog.Error("batch claim: claim task failed after partial success; returning claimed tasks to avoid loss",
 					"error", err, "claimed", len(claimed))
-				return claimed, nil
+				// Step 5 already ran, so any forced runtime it confirmed idle is
+				// safely acknowledged; the rest stay forced.
+				return claimed, forceRechecked, nil
 			}
-			return nil, fmt.Errorf("claim task: %w", err)
+			return nil, nil, fmt.Errorf("claim task: %w", err)
 		}
 		if task == nil {
 			continue
@@ -5394,7 +5599,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		claimed = append(claimed, *task)
 	}
 
-	return claimed, nil
+	return claimed, forceRechecked, nil
 }
 
 // cancelSupersededDeferredRetries drops deferred auto-retry rows that an active
@@ -5457,7 +5662,7 @@ func (s *TaskService) PromoteDueDeferredTasksForRuntime(ctx context.Context, run
 // maybeLogClaimSlow emits one structured log per ClaimTask call when its total
 // latency exceeds 300ms, so the prod tail can be diagnosed without flooding
 // logs at normal poll rates. Called via defer so it captures the full path
-// including post-claim updateAgentStatus / broadcastTaskDispatch (both of
+// including post-claim ReconcileAgentStatus / broadcastTaskDispatch (both of
 // which can hit the DB) and any error exit.
 func (s *TaskService) maybeLogClaimSlow(agentID pgtype.UUID, outcome string, start time.Time, getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs int64) {
 	totalMs := time.Since(start).Milliseconds()
@@ -7126,6 +7331,7 @@ func ResumeUnsafeFailure(failureReason, errorText string) bool {
 	if resumeUnsafeFailureReason(failureReason) {
 		return true
 	}
+	errorText = taskfailure.WithoutCodebuddyProtocolSummary(errorText)
 	lower := strings.ToLower(errorText)
 	if strings.Contains(lower, "400") && strings.Contains(lower, "invalid_request_error") {
 		return true
@@ -8057,7 +8263,7 @@ func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agen
 		util.UUIDToString(issue.AssigneeID) == util.UUIDToString(agentID) {
 		return s.enqueueIssueTaskWithCommentPlan(ctx, issue, triggerCommentID, coalescedCommentIDs, true, "", actorUserID, rerunOfTaskID, pgtype.Timestamptz{}, origin, fresh)
 	}
-	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID, origin, fresh)
+	return s.enqueueMentionTaskWithCommentPlan(ctx, issue, agentID, triggerCommentID, coalescedCommentIDs, isLeader, squadID, true, "", actorUserID, rerunOfTaskID, origin, fresh, false)
 }
 
 // The bulk terminal writes below are the sweeper, archive and daemon-recovery
@@ -8158,6 +8364,7 @@ func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.
 		if err != nil {
 			return nil, err
 		}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		if err := SettleTerminalTaskState(ctx, s.Queries, failed...); err != nil {
 			return failed, err
 		}
@@ -8215,6 +8422,33 @@ func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
+||||||| 2ae2f08005
+		return SettleTerminalTaskState(ctx, qtx, failed...)
+	}); err != nil {
+=======
+		// A terminal infrastructure error does not stop an independent Muse
+		// worker. Persist that uncertainty in this transaction, before retry
+		// decisions or another claim can observe the failed rows.
+		var startedIDs []pgtype.UUID
+		indices := make(map[pgtype.UUID]int)
+		for i, task := range failed {
+			if task.Status == "failed" && task.StartedAt.Valid {
+				startedIDs = append(startedIDs, task.ID)
+				indices[task.ID] = i
+			}
+		}
+		if len(startedIDs) > 0 {
+			unconfirmed, err := qtx.MarkMuseAppRecoveryCleanupUnconfirmed(ctx, startedIDs)
+			if err != nil {
+				return fmt.Errorf("record Muse recovery cleanup: %w", err)
+			}
+			for _, task := range unconfirmed {
+				failed[indices[task.ID]] = task
+			}
+		}
+		return SettleTerminalTaskState(ctx, qtx, failed...)
+	}); err != nil {
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		return nil, err
 	}
 	return failed, nil
@@ -8251,12 +8485,14 @@ func (s *TaskService) HandleFailedTasks(ctx context.Context, tasks []db.AgentTas
 			}
 		}
 		if !retryPending {
-			if _, err := s.recoverDelegatedTaskFailure(ctx, t); err != nil {
-				slog.Warn("handle failed tasks: delegated failure recovery failed",
-					"task_id", util.UUIDToString(t.ID),
-					"delegated_from_task_id", util.UUIDToString(t.DelegatedFromTaskID),
-					"error", err,
-				)
+			if t.FailureReason.String != taskfailure.ReasonProcessCleanupUnconfirmed.String() && t.FailureReason.String != taskfailure.ReasonProcessCleanupBlocked.String() {
+				if _, err := s.recoverDelegatedTaskFailure(ctx, t); err != nil {
+					slog.Warn("handle failed tasks: delegated failure recovery failed",
+						"task_id", util.UUIDToString(t.ID),
+						"delegated_from_task_id", util.UUIDToString(t.DelegatedFromTaskID),
+						"error", err,
+					)
+				}
 			}
 			// Same terminal-failure comment FailTaskWithTransition posts, so
 			// swept tasks are not silent on their issue.
@@ -8709,10 +8945,15 @@ func delegatedFailureRecoveryAttribution(target *delegatedFailureRecoveryTarget)
 // by the first and does not report another exhaustion.
 func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, target *delegatedFailureRecoveryTarget) (bool, error) {
 	var exhaustedComment db.Comment
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	var exhaustedInbox db.InboxItem
 	var clearedResolution []db.Comment
+||||||| 2ae2f08005
+	var exhaustedInbox db.InboxItem
+=======
+	var pendingInbox inbox.Deferred
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	created := false
-	inboxCreated := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if _, err := qtx.AcknowledgeExhaustedDelegatedFailureRecovery(ctx, db.AcknowledgeExhaustedDelegatedFailureRecoveryParams{
 			CommentID:    target.comment.ID,
@@ -8798,19 +9039,25 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 			if err != nil {
 				return fmt.Errorf("encode delegated failure exhaustion details: %w", err)
 			}
-			exhaustedInbox, inboxCreated, err = inbox.CreateIfEligible(ctx, qtx, db.CreateInboxItemParams{
-				ID:            dbid.NewV7(),
-				WorkspaceID:   target.issue.WorkspaceID,
-				RecipientType: "member",
-				RecipientID:   recipient,
-				Type:          "task_failed",
-				Severity:      "action_required",
-				IssueID:       target.issue.ID,
-				Title:         target.issue.Title,
-				Body:          pgtype.Text{String: exhaustedComment.Content, Valid: true},
-				ActorType:     pgtype.Text{String: "system", Valid: true},
-				ActorID:       pgtype.UUID{},
-				Details:       details,
+			_, _, err = inbox.Deliver(ctx, qtx, &pendingInbox, inbox.Notification{
+				Params: db.CreateInboxItemParams{
+					ID:            dbid.NewV7(),
+					WorkspaceID:   target.issue.WorkspaceID,
+					RecipientType: "member",
+					RecipientID:   recipient,
+					Type:          "task_failed",
+					Severity:      "action_required",
+					IssueID:       target.issue.ID,
+					Title:         target.issue.Title,
+					Body:          pgtype.Text{String: exhaustedComment.Content, Valid: true},
+					ActorType:     pgtype.Text{String: "system", Valid: true},
+					ActorID:       pgtype.UUID{},
+					Details:       details,
+				},
+				IssueStatus: &target.issue.Status,
+				// The one notice that automatic recovery gave up; it has
+				// never followed the agent_activity mute.
+				IgnorePreferences: true,
 			})
 			if err != nil {
 				return fmt.Errorf("create delegated failure exhaustion inbox item: %w", err)
@@ -8834,6 +9081,7 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 			},
 		})
 	}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	if inboxCreated && s.Bus != nil {
 		s.Bus.Publish(events.Event{
 			Type:        protocol.EventInboxNew,
@@ -8863,6 +9111,36 @@ func (s *TaskService) exhaustDelegatedFailureRecovery(ctx context.Context, targe
 	if created && s.Bus != nil {
 		s.PublishThreadUnresolvedOnReply(clearedResolution, util.UUIDToString(target.issue.WorkspaceID), "system", "")
 	}
+||||||| 2ae2f08005
+	if inboxCreated && s.Bus != nil {
+		s.Bus.Publish(events.Event{
+			Type:        protocol.EventInboxNew,
+			WorkspaceID: util.UUIDToString(target.issue.WorkspaceID),
+			ActorType:   "system",
+			ActorID:     "",
+			Payload: map[string]any{"item": map[string]any{
+				"id":             util.UUIDToString(exhaustedInbox.ID),
+				"workspace_id":   util.UUIDToString(exhaustedInbox.WorkspaceID),
+				"recipient_type": exhaustedInbox.RecipientType,
+				"recipient_id":   util.UUIDToString(exhaustedInbox.RecipientID),
+				"type":           exhaustedInbox.Type,
+				"severity":       exhaustedInbox.Severity,
+				"issue_id":       util.UUIDToPtr(exhaustedInbox.IssueID),
+				"title":          exhaustedInbox.Title,
+				"body":           util.TextToPtr(exhaustedInbox.Body),
+				"read":           exhaustedInbox.Read,
+				"archived":       exhaustedInbox.Archived,
+				"created_at":     util.TimestampToString(exhaustedInbox.CreatedAt),
+				"actor_type":     util.TextToPtr(exhaustedInbox.ActorType),
+				"actor_id":       util.UUIDToPtr(exhaustedInbox.ActorID),
+				"details":        json.RawMessage(exhaustedInbox.Details),
+				"issue_status":   target.issue.Status,
+			}},
+		})
+	}
+=======
+	pendingInbox.Flush(s.Bus)
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	return created, nil
 }
 
@@ -8958,6 +9236,13 @@ func (s *TaskService) dispatchDelegatedFailureRecovery(ctx context.Context, targ
 		ruleVersionID := target.failed.RuleVersionID
 		if !ruleVersionID.Valid {
 			ruleVersionID = target.source.RuleVersionID
+		}
+		// The signal stays pending, so a later sweep recovers once access is back.
+		if err := s.guardRunProjectAccess(ctx, target.issue, target.agent, originator, accountable); err != nil {
+			if errors.Is(err, ErrProjectAccessDenied) {
+				return delegatedFailureRecoveryCovered, nil
+			}
+			return delegatedFailureRecoveryCovered, err
 		}
 		overlay := s.buildRuntimeMCPOverlay(ctx, originator, target.agent)
 		task, err := createProviderHeldAgentTask(ctx, s.Queries, db.CreateAgentTaskParams{
@@ -9199,17 +9484,6 @@ func (s *TaskService) ReconcileAgentStatus(ctx context.Context, agentID pgtype.U
 		return
 	}
 	slog.Debug("agent status reconciled", "agent_id", util.UUIDToString(agentID), "status", agent.Status)
-	s.publishAgentStatus(agent)
-}
-
-func (s *TaskService) updateAgentStatus(ctx context.Context, agentID pgtype.UUID, status string) {
-	agent, err := s.Queries.UpdateAgentStatus(ctx, db.UpdateAgentStatusParams{
-		ID:     agentID,
-		Status: status,
-	})
-	if err != nil {
-		return
-	}
 	s.publishAgentStatus(agent)
 }
 
@@ -9562,6 +9836,12 @@ func (s *TaskService) NotifyRuntimeCapacityChanged(runtimeID pgtype.UUID) {
 	s.notifyRuntimeMayHaveWork(runtimeID, "")
 }
 
+// NotifyRuntimeMayHaveWork wakes a runtime's daemon after queued work was
+// moved onto it outside an enqueue, such as an agent runtime switch.
+func (s *TaskService) NotifyRuntimeMayHaveWork(runtimeID pgtype.UUID) {
+	s.notifyRuntimeMayHaveWork(runtimeID, "")
+}
+
 // notifyTasksFinished is the batch form used by bulk terminal transitions.
 // Coalesce by runtime so cancelling many tasks on one machine produces one
 // cache bump and one websocket hint rather than a burst of identical work.
@@ -9619,10 +9899,15 @@ var backgroundDispatchKeys = []string{
 }
 
 func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTaskQueue) {
-	var payload map[string]any
-	if task.Context != nil {
-		json.Unmarshal(task.Context, &payload)
+	// Dispatch is a workspace-wide invalidation hint. Task context may contain
+	// private prompts; the daemon receives it through the claim response.
+	payload := map[string]any{
+		"task_id":    util.UUIDToString(task.ID),
+		"runtime_id": util.UUIDToString(task.RuntimeID),
+		"issue_id":   util.UUIDToString(task.IssueID),
+		"agent_id":   util.UUIDToString(task.AgentID),
 	}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	if payload == nil {
 		payload = map[string]any{}
 	}
@@ -9642,6 +9927,16 @@ func (s *TaskService) broadcastTaskDispatch(ctx context.Context, task db.AgentTa
 	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
 	payload["issue_id"] = util.UUIDToString(task.IssueID)
 	payload["agent_id"] = util.UUIDToString(task.AgentID)
+||||||| 2ae2f08005
+	if payload == nil {
+		payload = map[string]any{}
+	}
+	payload["task_id"] = util.UUIDToString(task.ID)
+	payload["runtime_id"] = util.UUIDToString(task.RuntimeID)
+	payload["issue_id"] = util.UUIDToString(task.IssueID)
+	payload["agent_id"] = util.UUIDToString(task.AgentID)
+=======
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	// chat_session_id is the routing key the chat window uses to writethrough
 	// `chatKeys.pendingTask` to status="running" the moment the daemon claims
 	// the task. Without it the pill stays stuck at "Queued" until completion.
@@ -9885,6 +10180,18 @@ func (s *TaskService) broadcastChatDone(ctx context.Context, task db.AgentTaskQu
 		}
 		if msg.ElapsedMs.Valid {
 			payload.ElapsedMs = msg.ElapsedMs.Int64
+		}
+		if msg.MessageKind == "message" {
+			session, sessionErr := s.Queries.GetChatSession(ctx, task.ChatSessionID)
+			origin, originErr := s.Queries.GetTaskChannelOrigin(ctx, task.ID)
+			if sessionErr == nil && originErr == nil && !origin.ChannelIngested &&
+				session.Status == "active" && !session.IsAgentIntro && util.UUIDToString(session.WorkspaceID) == workspaceID {
+				title := strings.TrimSpace(session.Title)
+				if title == "" {
+					title = "Chat reply"
+				}
+				payload.Notification = &protocol.ChatReplyNotification{WorkspaceID: workspaceID, Title: title}
+			}
 		}
 	}
 	s.Bus.Publish(events.Event{
@@ -10230,6 +10537,7 @@ func IssueToMap(issue db.Issue, issuePrefix string) map[string]any {
 		"assignee_type":   util.TextToPtr(issue.AssigneeType),
 		"assignee_id":     util.UUIDToPtr(issue.AssigneeID),
 		"creator_type":    issue.CreatorType,
+		"requester_id":    util.UUIDToPtr(issue.RequesterUserID),
 		"creator_id":      util.UUIDToString(issue.CreatorID),
 		"requested_by_id": util.UUIDToPtr(issue.RequestedByID),
 		"parent_issue_id": util.UUIDToPtr(issue.ParentIssueID),
@@ -10437,28 +10745,25 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		"identifier":      identifier,
 		"original_prompt": qc.Prompt,
 	})
-	item, inserted, err := inbox.CreateIfEligible(ctx, s.Queries, db.CreateInboxItemParams{
-		ID:            dbid.NewV7(),
-		WorkspaceID:   workspaceID,
-		RecipientType: "member",
-		RecipientID:   requesterID,
-		Type:          "quick_create_done",
-		Severity:      "info",
-		IssueID:       issue.ID,
-		Title:         issue.Title,
-		Body:          pgtype.Text{},
-		ActorType:     pgtype.Text{String: "agent", Valid: true},
-		ActorID:       task.AgentID,
-		Details:       details,
-	})
-	if err != nil {
+	if _, _, err := inbox.Deliver(ctx, s.Queries, s.Bus, inbox.Notification{
+		Params: db.CreateInboxItemParams{
+			ID:            dbid.NewV7(),
+			WorkspaceID:   workspaceID,
+			RecipientType: "member",
+			RecipientID:   requesterID,
+			Type:          "quick_create_done",
+			Severity:      "info",
+			IssueID:       issue.ID,
+			Title:         issue.Title,
+			Body:          pgtype.Text{},
+			ActorType:     pgtype.Text{String: "agent", Valid: true},
+			ActorID:       task.AgentID,
+			Details:       details,
+		},
+		IssueStatus: &issue.Status,
+	}); err != nil {
 		slog.Error("quick-create completion: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
-		return
 	}
-	if !inserted {
-		return
-	}
-	s.publishQuickCreateInbox(item, qc.WorkspaceID, util.UUIDToString(task.AgentID), issue.Status)
 }
 
 // Inbox types for the two non-success quick-create outcomes. They are distinct
@@ -10541,59 +10846,26 @@ func (s *TaskService) writeQuickCreateOutcomeInbox(ctx context.Context, task db.
 		"error":             redact.Text(errMsg),
 		"source_context_id": qc.SourceContextID,
 	})
-	item, inserted, err := inbox.CreateIfEligible(ctx, s.Queries, db.CreateInboxItemParams{
-		ID:            dbid.NewV7(),
-		WorkspaceID:   workspaceID,
-		RecipientType: "member",
-		RecipientID:   requesterID,
-		Type:          inboxType,
-		Severity:      "action_required",
-		IssueID:       pgtype.UUID{},
-		Title:         title,
-		Body:          pgtype.Text{String: redact.Text(errMsg), Valid: true},
-		ActorType:     pgtype.Text{String: "agent", Valid: true},
-		ActorID:       task.AgentID,
-		Details:       details,
-	})
-	if err != nil {
+	noIssueStatus := ""
+	if _, _, err := inbox.Deliver(ctx, s.Queries, s.Bus, inbox.Notification{
+		Params: db.CreateInboxItemParams{
+			ID:            dbid.NewV7(),
+			WorkspaceID:   workspaceID,
+			RecipientType: "member",
+			RecipientID:   requesterID,
+			Type:          inboxType,
+			Severity:      "action_required",
+			IssueID:       pgtype.UUID{},
+			Title:         title,
+			Body:          pgtype.Text{String: redact.Text(errMsg), Valid: true},
+			ActorType:     pgtype.Text{String: "agent", Valid: true},
+			ActorID:       task.AgentID,
+			Details:       details,
+		},
+		IssueStatus: &noIssueStatus,
+	}); err != nil {
 		slog.Error("quick-create failure: inbox write failed", "task_id", util.UUIDToString(task.ID), "error", err)
-		return
 	}
-	if !inserted {
-		return
-	}
-	s.publishQuickCreateInbox(item, qc.WorkspaceID, util.UUIDToString(task.AgentID), "")
-}
-
-// publishQuickCreateInbox emits the WS event so the requester's inbox list
-// updates immediately. Mirrors the payload shape used by the other inbox
-// listeners (notification_listeners.go).
-func (s *TaskService) publishQuickCreateInbox(item db.InboxItem, workspaceID, agentID, issueStatus string) {
-	resp := map[string]any{
-		"id":             util.UUIDToString(item.ID),
-		"workspace_id":   util.UUIDToString(item.WorkspaceID),
-		"recipient_type": item.RecipientType,
-		"recipient_id":   util.UUIDToString(item.RecipientID),
-		"type":           item.Type,
-		"severity":       item.Severity,
-		"issue_id":       util.UUIDToPtr(item.IssueID),
-		"title":          item.Title,
-		"body":           util.TextToPtr(item.Body),
-		"read":           item.Read,
-		"archived":       item.Archived,
-		"created_at":     util.TimestampToString(item.CreatedAt),
-		"actor_type":     util.TextToPtr(item.ActorType),
-		"actor_id":       util.UUIDToPtr(item.ActorID),
-		"details":        json.RawMessage(item.Details),
-		"issue_status":   issueStatus,
-	}
-	s.Bus.Publish(events.Event{
-		Type:        protocol.EventInboxNew,
-		WorkspaceID: workspaceID,
-		ActorType:   "agent",
-		ActorID:     agentID,
-		Payload:     map[string]any{"item": resp},
-	})
 }
 
 // agentToMap builds a simple map for broadcasting agent status updates.

@@ -39,15 +39,21 @@ import { canForkSession } from "./lib/can-fork-session";
 import { EmptyState } from "./components/chat-empty-state";
 import { NewChatButton } from "./components/new-chat-button";
 import { useChatController } from "./components/use-chat-controller";
+import { useChatAnnotations } from "./components/use-chat-annotations";
 import { OfflineBanner } from "./components/offline-banner";
 import { NoAgentBanner } from "./components/no-agent-banner";
 import { ArchivedAgentBanner } from "./components/archived-agent-banner";
 import { AgentAccessRevokedBanner } from "./components/agent-access-revoked-banner";
 import { RuntimeRequiredBanner } from "./components/runtime-required-banner";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { InteractiveLoginBanner } from "./components/interactive-login-banner";
 import { ChatAnnotationContext } from "./components/chat-annotation-context";
 import { useChatAnnotations } from "./components/use-chat-annotations";
 import { useQuoteRequest } from "./components/use-quote-request";
+||||||| 2ae2f08005
+=======
+import { ChatAppRequests } from "../common/app-requests";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import { useRegisterCommandBarContext } from "../search/register-context";
 import { useSearchStore } from "../search/search-store";
 
@@ -104,6 +110,11 @@ export function ChatPage() {
   // Toast when an accepted refresh later fails in the daemon (async half).
   useQuickActionsFailureToast(c.activeSessionId ?? null);
   const regenerateQuickActions = useRegenerateChatQuickActions();
+  const annotations = useChatAnnotations({
+    sessionId: c.activeSessionId,
+    agentName: c.activeAgent?.name,
+    enabled: !c.isSessionArchived && !c.isAgentArchived && !c.isAgentAccessRevoked && c.isAgentRuntimeBound && !c.noAgent,
+  });
   const urlSession = searchParams.get("session") || null;
   const urlAgent = searchParams.get("agent") || null;
   // `?new=1` is an unsent new chat, so Back from it and a refresh behave.
@@ -397,7 +408,7 @@ export function ChatPage() {
   );
 
   const listBody = (
-    <div className="px-2 py-1">
+    <div className="min-h-0 flex-1 px-2 py-1">
       <ChatThreadList
         sessions={c.sessions}
         agents={c.agents}
@@ -534,13 +545,13 @@ export function ChatPage() {
               : undefined
           }
           quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
+          annotations={annotations}
         />
       ) : (
         <EmptyState
           agent={c.activeAgent}
           hasSessions={c.sessions.length > 0}
           onPickPrompt={c.sendConversationStarter}
-          customizeHref={c.customizeConversationStartersHref}
         />
       )}
 
@@ -558,6 +569,10 @@ export function ChatPage() {
       ) : (
         <OfflineBanner agentName={c.activeAgent?.name} availability={c.availability} />
       )}
+
+      <div className="px-4">
+        <ChatAppRequests sessionId={c.activeSessionId} />
+      </div>
 
       <ChatQueue
         tasks={queuedTasks}
@@ -601,7 +616,12 @@ export function ChatPage() {
         onProjectChange={changeProjectContext}
         isProjectUpdating={c.isProjectUpdating}
         focusRequest={c.focusInputRequest}
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
         annotationScope={annotation.input}
+||||||| 2ae2f08005
+=======
+        annotations={annotations}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       />
     </div>
     {dm.dialogs}
@@ -640,7 +660,7 @@ export function ChatPage() {
         {noAgentPage ? (
           noAgentState
         ) : (
-          <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
+          <div className="flex min-h-0 flex-1 flex-col">{listBody}</div>
         )}
       </div>
     );
@@ -655,7 +675,7 @@ export function ChatPage() {
     <div className="flex min-h-0 flex-1">
       <ListColumn collapsed={listCollapsed} width="list">
         {listHeader}
-        <div className="flex-1 min-h-0 overflow-y-auto">{listBody}</div>
+        <div className="flex min-h-0 flex-1 flex-col">{listBody}</div>
       </ListColumn>
       <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
         {listCollapsed && !c.currentSession && <PageHeader>{newChatButton}</PageHeader>}

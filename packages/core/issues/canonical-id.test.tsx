@@ -6,7 +6,14 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "../api";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { ApiError, type ApiClient } from "../api/client";
+||||||| 2ae2f08005
+import type { ApiClient } from "../api/client";
+=======
+import { ApiError } from "../api/client";
+import type { ApiClient } from "../api/client";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import type { Issue } from "../types";
 import { createQueryClient } from "../query-client";
 import { issueDetailViewOptions, issueKeys } from "./queries";

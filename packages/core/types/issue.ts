@@ -213,6 +213,7 @@ export interface Issue {
   assignee_id: string | null;
   creator_type: IssueAssigneeType;
   creator_id: string;
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
   /**
    * The member this issue was created for: set when an agent creates it on
    * their behalf. The "human by role" workflow handler hands to them first.
@@ -220,6 +221,10 @@ export interface Issue {
   requested_by_id?: string | null;
   /** How the issue was made; server-set. Empty for older issues and web/desktop forms. */
   created_via?: string | null;
+||||||| 2ae2f08005
+=======
+  requester_id?: string | null;
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   parent_issue_id: string | null;
   /**
    * The original this issue duplicates (MUL-7349): present only while the

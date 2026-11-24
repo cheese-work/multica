@@ -41,12 +41,17 @@ import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/i18n";
 import { useCommentSelectStore } from "@/data/comment-select-store";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import {
   issueAnchorKey,
   loadReadingAnchor,
   restoreIndex,
 } from "@/lib/reading-anchor";
 import { useReadingAnchorRecorder } from "@/lib/use-reading-anchor";
+||||||| 2ae2f08005
+=======
+import { resolveTimelineHighlight } from "@/lib/inbox-display";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 interface Props {
   issue: Issue;
@@ -141,7 +146,8 @@ export function TimelineList({
   // Gates single-shot per (commentId, nonce) tuple. Re-tap from inbox
   // bumps the nonce → ref no longer matches → effect re-fires.
   const lastStampRef = useRef<string | null>(null);
-  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [highlight, setHighlight] = useState<{ id: string; stamp: string } | null>(null);
+  const highlightedId = highlight?.id ?? null;
 
   // ── "New since last view" divider ─────────────────────────────────────
   // Snapshot the last-viewed timestamp ONCE on mount. Subsequent WS
@@ -161,6 +167,47 @@ export function TimelineList({
   }, [data, lastViewedSnapshot]);
   const dividerScrolledPastRef = useRef(false);
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
+||||||| 2ae2f08005
+  useEffect(() => {
+    if (!highlightCommentId || data.length === 0) return;
+    const stamp = `${highlightCommentId}:${highlightNonce ?? ""}`;
+    if (lastStampRef.current === stamp) return;
+    lastStampRef.current = stamp;
+
+    setHighlightedId(highlightCommentId);
+
+    const fade = setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS);
+    return () => clearTimeout(fade);
+  }, [highlightCommentId, highlightNonce, data.length]);
+
+=======
+  // A cached timeline can open without the target and gain it on refresh,
+  // possibly as a reply that leaves the row count unchanged, so the
+  // highlight is consumed only once its row exists.
+  const highlightTarget = useMemo(
+    () =>
+      highlightCommentId && entries
+        ? resolveTimelineHighlight(entries, highlightCommentId)
+        : null,
+    [entries, highlightCommentId],
+  );
+
+  useEffect(() => {
+    if (!highlightCommentId || !highlightTarget) return;
+    const stamp = `${highlightCommentId}:${highlightNonce ?? ""}`;
+    if (lastStampRef.current === stamp) return;
+    lastStampRef.current = stamp;
+    setHighlight({ id: highlightTarget, stamp });
+  }, [highlightCommentId, highlightNonce, highlightTarget]);
+
+  useEffect(() => {
+    if (!highlight) return;
+    const fade = setTimeout(() => setHighlight(null), HIGHLIGHT_HOLD_MS);
+    return () => clearTimeout(fade);
+  }, [highlight]);
+
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   // ── New-comment-while-reading chip ────────────────────────────────────
   // After landing, if WS appends new entries while the user is NOT at the
   // bottom, surface a floating "↓ N new" chip instead of silently shifting

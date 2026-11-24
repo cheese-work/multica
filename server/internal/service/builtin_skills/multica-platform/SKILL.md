@@ -1,6 +1,12 @@
 ---
 name: multica-platform
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 description: "Use for Multica platform actions the brief does not cover: issue and PR contracts, comments, charts, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, wakeups, labels, workspace admin, skill import. Not for the product code you are working on."
+||||||| 2ae2f08005
+description: "Use for Multica platform actions the runtime brief does not fully cover: issue and PR contracts, sub-issues, charts and files in comments, mentions, agents, squads, autopilots, projects, runtimes, skill import. Not for the product code you are working on."
+=======
+description: "Use for Multica actions the runtime brief does not fully cover: issue and PR contracts, sub-issues, batch changes, saved views, charts and files in comments, mentions, agents, squads, autopilots, projects, runtimes, local environments, skill import, themes. Not for product code you are working on."
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -19,11 +25,20 @@ Read the invariants below, then open the reference(s) your task actually needs
 
 | Open | When the task is about |
 |---|---|
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 | `references/issues.md` | Issues: PR linking and handoff, ETA, custom properties, relations graph, status side effects, sub-issues and stages, who else is running, wakeups, comments |
 | `references/issue-turn.md` | The runtime brief's issue Workflow steps: waiver reports, comment catch-up, `--no-start`, how a child closes itself |
 | `references/charts.md` | Rendering a chart or attaching a file in a comment: fenced `html`/`mermaid` blocks, `--attachment`, theme variables |
 | `references/pull-requests.md` | Linked PR state and current GitHub checks |
 | `references/wakeups.md` | Wakeups: event/time triggers, ownership and close behavior, retained inputs and status |
+||||||| 2ae2f08005
+| `references/issues.md` | Issues: PR linking, reading a linked PR's state, custom properties, status side effects, who else is running, wakeups (events, conditions, timers, check-ins), charts vs attached files in a comment |
+| `references/sub-issues.md` | Sub-issues: whether to split an issue at all, `todo` vs `backlog` children, serial chains, stages and the parent wakeups they drive |
+=======
+| `references/issues.md` | Issues: PR linking, reading a linked PR's state, saved views (reading, creating, changing), custom properties, status side effects, who else is running, wakeups (events, conditions, timers, check-ins), charts vs attached files in a comment |
+| `references/batch-changes.md` | Changing many issues at once (`issue batch update`, `issue delete <id>... --dry-run`): label and property operations, per-issue results, dry runs |
+| `references/sub-issues.md` | Sub-issues: whether to split an issue at all, `todo` vs `backlog` children, serial chains, stages and the parent wakeups they drive |
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 | `references/mentions.md` | Writing a `mention://` link: which types enqueue a run, which are inert, why one silently did nothing; steering another agent's running turn (`comment add --steer`) |
 | `references/agents.md` | Creating, copying or debugging an agent definition: fields, secrets, MCP config, skill binding |
 | `references/squads.md` | Squads: leader routing, roster, recording leader activity, why a squad did or did not run |
@@ -35,14 +50,22 @@ Read the invariants below, then open the reference(s) your task actually needs
 | `references/labels.md` | Labels, issue metadata keys, property definitions, board reorder |
 | `references/workspace.md` | Workspace settings, members, MCP library, repo registry, user profile, attachment download, provenance export, GitHub kill switch |
 | `references/runtimes.md` | Runtimes, daemons, `repo checkout`, and the task CLI boundary |
+| `references/environments.md` | Local environments in the issue sidebar: writing `.multica/environments.toml`, `multica env start` / `stop` / `list`, detected servers |
 | `references/skill-import.md` | Importing a skill into this workspace from a URL or a local archive |
+| `references/themes.md` | Building or changing a Multica app theme: the format, the checker, delivering to Desktop's themes folder or as a `.zip` |
 
 Open what the task needs. A single-domain task usually needs one; a task that
 crosses domains needs each domain it touches — creating a squad, assigning it an
 issue, then writing a mention needs `squads.md`, `issues.md` and `mentions.md`,
 and skipping one of those means acting on a contract you have not read.
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 What is never right is reading every reference because you are not sure. Each
+||||||| 2ae2f08005
+What is never right is reading all nine because you are not sure. Each
+=======
+What is never right is reading all eleven because you are not sure. Each
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 reference states its own contracts in full and none depends on another, so
 pick by domain and skip the rest.
 

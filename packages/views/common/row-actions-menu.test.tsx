@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { RowActionsMenu, RowContextMenu } from "./row-actions-menu";
+||||||| 2ae2f08005
+import { RowActionsMenu } from "./row-actions-menu";
+=======
+import { RowActionsMenu, RowActionsPointMenu } from "./row-actions-menu";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 describe("RowActionsMenu", () => {
   it("names its trigger so a screen reader can announce the row's actions", () => {
@@ -55,6 +61,7 @@ describe("RowActionsMenu", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 
 describe("RowActionsMenu shortcut hints and reveal", () => {
   const groups = [
@@ -115,3 +122,17 @@ describe("RowContextMenu", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 });
+||||||| 2ae2f08005
+=======
+
+it("does not open an empty cursor menu", () => {
+  render(
+    <RowActionsPointMenu
+      menu={{ open: true, point: { x: 30, y: 40 } }}
+      onOpenChange={vi.fn()}
+      groups={[[], []]}
+    />,
+  );
+  expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+});
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d

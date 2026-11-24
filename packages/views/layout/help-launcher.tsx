@@ -1,6 +1,7 @@
 "use client";
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowUpRight,
   BookOpen,
@@ -9,6 +10,7 @@ import {
   History,
   Megaphone,
   MessageCircle,
+  Star,
 } from "@multica/ui/icons";
 import {
   DropdownMenu,
@@ -22,16 +24,37 @@ import {
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useModalStore } from "@multica/core/modals";
 import { useConfigStore } from "@multica/core/config";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { instanceOrigin } from "@multica/core/config/instance-origin";
+||||||| 2ae2f08005
+=======
+import { formatStarCount, githubStarsOptions, MULTICA_GITHUB_URL } from "@multica/core/github/stars";
+import { createLogger } from "@multica/core/logger";
+import { markStarPromptStarred } from "@multica/core/star-prompt";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import { isDesktopShell } from "../platform/local-directory";
 import { DISCORD_URL, DiscordIcon } from "./discord";
+import { GitHubIcon } from "../onboarding/components/brand-icons";
 import { useT } from "../i18n";
 import { docsUrl } from "../common/docs-url";
 import { RAIL_ICON_BUTTON_CLASS } from "./rail-styles";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import { DOWNLOAD_URL } from "./help-links";
 import { useWhatsNewMenuPanel, WhatsNewMenuPanel } from "../whats-new/whats-new-launcher";
+||||||| 2ae2f08005
+import { CHANGELOG_URL, DOCS_URL, DOWNLOAD_URL } from "./help-links";
+import { useWhatsNewMenuPanel, WhatsNewMenuPanel } from "../whats-new/whats-new-launcher";
+=======
+import { CHANGELOG_URL, DOCS_URL, DOWNLOAD_URL } from "./help-links";
+import { useWhatsNewMenuPanel, WhatsNewMenuPanel } from "../whats-new/whats-new-menu-panel";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 const BRAND_URL = "https://multica.ai";
+||||||| 2ae2f08005
+=======
+const logger = createLogger("help-launcher");
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 
 export function HelpLauncher() {
   const { t, i18n } = useT("layout");
@@ -59,9 +82,12 @@ export function HelpLauncher() {
   const desktop = isDesktopShell();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const whatsNew = useWhatsNewMenuPanel();
+  const [open, setOpen] = useState(false);
+  // Asked only once the menu opens, so closed sessions never call GitHub.
+  const { data: stars } = useQuery({ ...githubStarsOptions(), enabled: open });
   return (
     <>
-      <DropdownMenu>
+      <DropdownMenu open={open} onOpenChange={setOpen}>
         <TooltipHint label={t(($) => $.help.trigger)} side="right">
           <DropdownMenuTrigger
             ref={triggerRef}
@@ -112,6 +138,14 @@ export function HelpLauncher() {
             <DropdownMenuItem onClick={whatsNew.show}>
               <Megaphone className="h-3.5 w-3.5" />
               {t(($) => $.whats_new.trigger)}
+              {whatsNew.newestUnread && (
+                <span
+                  data-slot="whats-new-tag"
+                  className="ml-auto text-caption font-medium text-brand tabular-nums"
+                >
+                  {`v${whatsNew.newestUnread}`}
+                </span>
+              )}
             </DropdownMenuItem>
           )}
           <DropdownMenuItem
@@ -135,6 +169,25 @@ export function HelpLauncher() {
             <DiscordIcon className="h-3.5 w-3.5" />
             {t(($) => $.help.discord)}
             <ArrowUpRight className="size-3 translate-y-px text-faint-foreground" />
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            render={
+              <a href={MULTICA_GITHUB_URL} target="_blank" rel="noopener noreferrer" />
+            }
+            onClick={() => {
+              markStarPromptStarred().catch((err) => logger.warn("failed to record star click", err));
+            }}
+          >
+            <GitHubIcon className="h-3.5 w-3.5" />
+            {t(($) => $.help.star_on_github)}
+            {typeof stars === "number" ? (
+              <span className="ml-auto inline-flex shrink-0 items-center gap-1 text-caption whitespace-nowrap text-muted-foreground tabular-nums">
+                <Star aria-hidden="true" className="size-3" />
+                {formatStarCount(stars)}
+              </span>
+            ) : (
+              <ArrowUpRight className="size-3 translate-y-px text-faint-foreground" />
+            )}
           </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => useModalStore.getState().open("feedback")}

@@ -102,9 +102,14 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"chat_message":                       workspaceDelete,
 	"chat_pinned_agent":                  workspaceDelete,
 	"chat_session":                       workspaceDelete,
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	"chat_task_supplement":               workspaceDelete,
 	"chat_turn_outcome":                  workspaceDelete, // workspace_id; removed by workspace id, even after its root session was hard-deleted.
 	"chat_wakeup":                        workspaceDelete,
+||||||| 2ae2f08005
+=======
+	"chat_submission_receipt":            workspaceDelete,
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
 	"comment_reaction":                   workspaceDelete,
@@ -247,6 +252,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"plugin_package_version":             workspaceDelete,
 	"plugin_package_file":                workspaceDelete,
 	"project":                            workspaceDelete,
+	"project_member":                     workspaceDelete,
+	"project_subscriber":                 workspaceDelete,
 	"project_resource":                   workspaceDelete,
 	"protocol_lint_run":                  workspaceDeleteKeep, // Cross-workspace protocol-lint audit/reporting data (CHE-552), not workspace-owned.
 	"provenance_export_log":              workspaceDelete,     // CHE-755 provenance export audit rows; workspace-owned leaf.
@@ -272,6 +279,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"search_index_change":                workspaceDelete,
 	"search_index_prune_mark":            workspaceDeleteKeep,
 	"seat_capacity_outbox":               workspaceDeleteSettle,
+	"site_counter":                       workspaceDeleteKeep,
 	"skill":                              workspaceDelete,
 	"skill_file":                         workspaceDelete,
 	"skill_to_label":                     workspaceDelete,
@@ -281,6 +289,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"stage_completion_wake":              workspaceDelete,
 	"stage_generation":                   workspaceDelete,
 	"sys_cron_executions":                workspaceDeleteKeep,
+	"theme_store_download":               workspaceDeleteKeep, // per registry theme, not workspace-owned
+	"task_context_receipt":               workspaceDelete,
 	"task_message":                       workspaceDelete,
 	"silence_alert_receipt":              workspaceDelete, // CHE-2990 per-task alert receipt; removed with its task in DeleteTaskBatch.
 	"task_supplement":                    workspaceDelete,
@@ -304,6 +314,16 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_event":             workspaceDelete, // CHE-2031
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"wecom_install_session":              workspaceDelete,
+	"workspace_composio_connection":      workspaceDelete,
+	"agent_app":                          workspaceDelete,
+	"app_action_rule":                    workspaceDelete,
+	"app_action_request":                 workspaceDelete,
+	"app_tool_call":                      workspaceDelete,
+	"issue_environment":                  workspaceDelete,
+	"issue_environment_command":          workspaceDelete,
+	"issue_environment_config":           workspaceDelete,
+	"workspace_app_setting":              workspaceDelete,
+	"app_tool_class_override":            workspaceDelete,
 	"workspace":                          workspaceDelete,
 	"workspace_config_sync":              workspaceDelete,
 	"ask_guard_event":                    workspaceDelete,

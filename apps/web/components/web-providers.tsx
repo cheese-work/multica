@@ -1,11 +1,18 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
+import dynamic from "next/dynamic";
 import { CoreProvider } from "@multica/core/platform";
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 import type { WSClient } from "@multica/core/api/ws-client";
+||||||| 2ae2f08005
+=======
+import { installUserTimingCap } from "@multica/core/diagnostics";
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 import { createBrowserCookieLocaleAdapter } from "@multica/core/i18n/browser";
-import type { LocaleResources, SupportedLocale } from "@multica/core/i18n";
+import type { SupportedLocale } from "@multica/core/i18n";
 import packageJson from "../package.json";
+import { LocaleBundle } from "@/components/i18n/locale-bundle";
 import { WebNavigationProvider } from "@/platform/navigation";
 import { WebScrollRestorationProvider } from "@/platform/scroll-restoration";
 import {
@@ -15,6 +22,7 @@ import {
 import { detectWebOS } from "@/platform/client-os";
 import { useUserLocaleSyncEnabled } from "@/platform/user-locale-sync";
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 function watchWSLifecycle(client: WSClient) {
   const onVisible = () => {
     if (document.visibilityState === "visible") client.probe();
@@ -33,6 +41,16 @@ function watchWSLifecycle(client: WSClient) {
   };
 }
 
+||||||| 2ae2f08005
+=======
+// Client-only: every reading is a live client measurement the server cannot
+// render, so server HTML would only ever mismatch on hydration.
+const WebDevToolbar = dynamic(
+  () => import("./web-dev-toolbar").then((m) => m.WebDevToolbar),
+  { ssr: false },
+);
+
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 // Legacy token in localStorage → keep this session in token mode so users who
 // logged in before the cookie-auth migration stay authed. They migrate to
 // cookie mode on their next logout/login cycle (logout clears multica_token).
@@ -66,15 +84,16 @@ const WEB_VERSION =
 export function WebProviders({
   children,
   locale,
-  resources,
   apiBaseUrl,
   wsUrl,
+  devToolbarApiUrl,
 }: {
   children: React.ReactNode;
   locale: SupportedLocale;
-  resources: Record<string, LocaleResources>;
   apiBaseUrl?: string;
   wsUrl?: string;
+  /** Set only when the dev toolbar is enabled; the backend it reports. */
+  devToolbarApiUrl?: string;
 }) {
   const cookieAuth = !hasLegacyToken();
   const syncUserLocale = useUserLocaleSyncEnabled();
@@ -85,7 +104,13 @@ export function WebProviders({
     [],
   );
   const localeAdapter = useMemo(() => createBrowserCookieLocaleAdapter(), []);
+  // React's development build never clears its render measures; see
+  // installUserTimingCap.
+  useEffect(() => {
+    if (process.env.NODE_ENV === "development") installUserTimingCap();
+  }, []);
   return (
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     <CoreProvider
       apiBaseUrl={apiBaseUrl}
       wsUrl={wsUrl || deriveWsUrl()}
@@ -103,5 +128,47 @@ export function WebProviders({
         <WebScrollRestorationProvider>{children}</WebScrollRestorationProvider>
       </WebNavigationProvider>
     </CoreProvider>
+||||||| 2ae2f08005
+    <CoreProvider
+      apiBaseUrl={apiBaseUrl}
+      wsUrl={wsUrl || deriveWsUrl()}
+      cookieAuth={cookieAuth}
+      onLogin={setLoggedInCookie}
+      onLogout={clearLoggedInCookie}
+      identity={identity}
+      locale={locale}
+      resources={resources}
+      localeAdapter={localeAdapter}
+      syncUserLocale={syncUserLocale}
+    >
+      <WebNavigationProvider>
+        <WebScrollRestorationProvider>{children}</WebScrollRestorationProvider>
+      </WebNavigationProvider>
+    </CoreProvider>
+=======
+    <LocaleBundle locale={locale}>
+      {(resources) => (
+        <CoreProvider
+          apiBaseUrl={apiBaseUrl}
+          wsUrl={wsUrl || deriveWsUrl()}
+          cookieAuth={cookieAuth}
+          onLogin={setLoggedInCookie}
+          onLogout={clearLoggedInCookie}
+          identity={identity}
+          locale={locale}
+          resources={resources}
+          localeAdapter={localeAdapter}
+          syncUserLocale={syncUserLocale}
+        >
+          <WebNavigationProvider>
+            <WebScrollRestorationProvider>{children}</WebScrollRestorationProvider>
+            {process.env.NODE_ENV === "development" && devToolbarApiUrl && (
+              <WebDevToolbar apiUrl={devToolbarApiUrl} />
+            )}
+          </WebNavigationProvider>
+        </CoreProvider>
+      )}
+    </LocaleBundle>
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
   );
 }

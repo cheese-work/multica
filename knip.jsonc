@@ -34,8 +34,11 @@
 
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.mjs"],
-      "project": ["scripts/*.mjs"]
+      "entry": ["scripts/*.mjs", "scripts/brand/*.mjs"],
+      "project": ["scripts/*.mjs", "scripts/brand/*.mjs"],
+      // scripts/theme-preview.mjs drives Tailwind through the PostCSS API; the
+      // root has no Tailwind stylesheets for the plugin to read.
+      "tailwind": false
     },
 
     "apps/web": {
@@ -47,10 +50,28 @@
     },
 
     "apps/desktop": {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       // window-state.node-test.mjs and bundle-cli.node-test.mjs are run by
       // hand (`node --test`) rather than by a package script, so nothing
       // imports them.
       "entry": ["eslint.config.mjs", "src/main/*.node-test.mjs", "scripts/*.node-test.mjs"],
+||||||| 2ae2f08005
+      // window-state.node-test.mjs is run by hand (`node --test`, see its
+      // header) rather than by a package script, so nothing imports it.
+      "entry": ["eslint.config.mjs", "src/main/*.node-test.mjs"],
+=======
+      // window-state.node-test.mjs is run by hand (`node --test`, see its
+      // header) rather than by a package script, so nothing imports it.
+      // bundle-cli.node-test.mjs is run the same way. test/electron-guard.ts
+      // is the `electron` alias target in vitest.config.ts, a path string
+      // knip does not follow.
+      "entry": [
+        "eslint.config.mjs",
+        "src/main/*.node-test.mjs",
+        "scripts/*.node-test.mjs",
+        "test/electron-guard.ts"
+      ],
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       // Consumed by `extends` in tsconfig.node.json / tsconfig.web.json.
       // knip follows `extends` from the default tsconfig.json only.
       "ignoreDependencies": ["@multica/tsconfig"]
@@ -59,6 +80,10 @@
     "apps/docs": {
       // Imported only by the ignored components/mermaid.tsx above.
       "ignoreDependencies": ["mermaid"]
+    },
+
+    "apps/storybook": {
+      "entry": ["eslint.config.mjs"]
     },
 
     // The three shared packages export raw .ts/.tsx compiled by their
@@ -80,11 +105,32 @@
     // export and knip picks that directory back up; the script reads the same
     // manifest, so the two stay in step without overlapping.
     "packages/ui": {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
       // Loaded by e2e/shimmer-text.spec.ts, which sits outside every workspace.
       "entry": ["eslint.config.mjs", "test/shimmer-text-bundle.mjs"],
+||||||| 2ae2f08005
+      "entry": ["eslint.config.mjs"],
+=======
+      // shimmer-text-bundle.mjs is imported by e2e/shimmer-text.spec.ts, which
+      // sits outside every workspace, and hands the fixture to esbuild as an
+      // entry-point path.
+      "entry": [
+        "eslint.config.mjs",
+        "test/shimmer-text-bundle.mjs",
+        "test/shimmer-text-fixture.tsx"
+      ],
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       "project": ["**/*.{ts,tsx}"]
     },
     "packages/views": {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
+||||||| 2ae2f08005
+      "entry": ["eslint.config.mjs"],
+=======
+      // Passed to vitest as `--reporter=./test/timing-reporter.ts` when
+      // refreshing shard timings (packages/views/test/README.md).
+      "entry": ["test/timing-reporter.ts"],
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
       "project": ["**/*.{ts,tsx}"]
     },
     "packages/core": {
@@ -92,10 +138,17 @@
       "project": ["**/*.{ts,tsx}"]
     },
 
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
     "packages/plugin-sdk": {
       "entry": ["eslint.config.mjs"]
     },
 
+||||||| 2ae2f08005
+=======
+    "packages/plugin-sdk": {
+      "entry": ["eslint.config.mjs"]
+    },
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
     "packages/eslint-config": {},
     "packages/tsconfig": {},
     "packages/vitest-setup": {}

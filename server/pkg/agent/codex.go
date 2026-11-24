@@ -83,15 +83,18 @@ const (
 	codexVersionDiagnosticTimeout      = 2 * time.Second
 	// Keep a raw agent-message tail small enough that a slow daemon does not
 	// make the stdout reader retain token-sized channel entries indefinitely.
-	// At one sixty-fourth of the scanner's maximum completed-snapshot line, any
-	// reconcilable item occupies at most 65 of the 256 message slots (the leading
-	// delta plus 64 aggregates), reserving the rest for status and tool events.
-	// Since this threshold is 512 KiB, a normal message will not reach it: only
-	// its leading delta is usually handed off during generation, while the
-	// remaining deltas stay pending until item/completed reconciles the item.
-	// A single provider event may be larger, in which case that event is flushed
-	// as one chunk rather than split at an arbitrary byte boundary.
+	// At one sixty-fourth of the scanner's maximum completed-snapshot line, a
+	// burst of deltas costs at most one channel slot per 512 KiB, never one per
+	// token. A normal message will not reach this size; its tail is handed off
+	// on codexAgentMessageFlushInterval instead. A single
+	// provider event may be larger, in which case that event is flushed as one
+	// chunk rather than split at an arbitrary byte boundary.
 	codexAgentMessageAggregateBytes = agentStreamMaxLineBytes / 64
+	// codexAgentMessageFlushInterval is how long pending agent text may wait
+	// before the next delta hands it off. It matches the daemon's 500 ms report
+	// batch, so a long answer streams at the rate the server can show it while
+	// a token burst still costs at most one channel slot per interval.
+	codexAgentMessageFlushInterval = 500 * time.Millisecond
 	// codexGracefulShutdownTimeout bounds how long the lifecycle goroutine
 	// waits for codex to exit on its own after stdin is closed, before forcing
 	// a context-cancel kill. A clean exit lets codex run its shutdown path and
@@ -2648,6 +2651,8 @@ type codexClient struct {
 	// advanced only after onAgentMessageChunk confirms daemon handoff.
 	agentMessageStreams map[string]*codexAgentMessageStream
 	agentMessageOrder   []string
+	// now is the clock for agent-text flush pacing; nil means time.Now.
+	now func() time.Time
 
 	notificationProtocol string // "unknown", "legacy", "raw"
 	turnCompleted        bool
@@ -2685,6 +2690,8 @@ type codexClient struct {
 type codexAgentMessageStream struct {
 	delivered strings.Builder
 	pending   strings.Builder
+	// lastFlush is when pending text was last offered to the daemon channel.
+	lastFlush time.Time
 }
 
 // codexTurnNotificationGate keeps resume-time history replay from mutating the
@@ -2816,6 +2823,10 @@ type pendingRPC struct {
 type rpcResult struct {
 	result json.RawMessage
 	err    error
+	// processExited marks the error codexClient.markProcessExited hands to
+	// every pending request. It is not an answer from the server, so a caller
+	// whose context has already ended reports that instead.
+	processExited bool
 }
 
 type codexHandshakeTimeoutError struct {
@@ -2971,10 +2982,31 @@ func (c *codexClient) request(ctx context.Context, method string, params any) (j
 
 	var res rpcResult
 	select {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	case res = <-pr.ch:
+||||||| 2ae2f08005
+	case res := <-pr.ch:
+		return res.result, res.err
+=======
+	case res := <-pr.ch:
+		if res.processExited && requestCtx.Err() != nil {
+			return nil, codexRequestContextError(requestCtx)
+		}
+		return res.result, res.err
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 	case <-processDone:
 		select {
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 		case res = <-pr.ch:
+||||||| 2ae2f08005
+		case res := <-pr.ch:
+			return res.result, res.err
+=======
+		case res := <-pr.ch:
+			if !res.processExited {
+				return res.result, res.err
+			}
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 		default:
 			c.mu.Lock()
 			delete(c.pending, id)
@@ -3056,7 +3088,7 @@ func (c *codexClient) markProcessExited(err error) {
 		}
 	}
 	for id, pr := range c.pending {
-		pr.ch <- rpcResult{err: err}
+		pr.ch <- rpcResult{err: err, processExited: true}
 		delete(c.pending, id)
 	}
 }
@@ -3874,9 +3906,11 @@ func (c *codexClient) handleAgentMessageDelta(itemID, delta string) {
 
 	stream := c.agentMessageStream(itemID)
 	// The leading delta is the latency-critical event. Deliver it immediately;
-	// coalesce the rest so a burst of token notifications cannot fill the
-	// daemon channel before its consumer is scheduled.
+	// coalesce the rest into one chunk per flush interval so a burst of token
+	// notifications cannot fill the daemon channel before its consumer is
+	// scheduled, while a long answer still streams as it is generated.
 	if stream.delivered.Len() == 0 && stream.pending.Len() == 0 {
+		stream.lastFlush = c.clock()
 		if c.emitAgentMessageChunk(delta) {
 			stream.delivered.WriteString(delta)
 			return
@@ -3884,9 +3918,18 @@ func (c *codexClient) handleAgentMessageDelta(itemID, delta string) {
 	}
 
 	stream.pending.WriteString(delta)
-	if stream.pending.Len() >= codexAgentMessageAggregateBytes {
+	if stream.pending.Len() >= codexAgentMessageAggregateBytes ||
+		c.clock().Sub(stream.lastFlush) >= codexAgentMessageFlushInterval {
+		stream.lastFlush = c.clock()
 		c.flushAgentMessageStream(stream)
 	}
+}
+
+func (c *codexClient) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
 }
 
 func (c *codexClient) flushAgentMessageStream(stream *codexAgentMessageStream) bool {

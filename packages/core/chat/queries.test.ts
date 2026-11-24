@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from "vitest";
 
 import type { TaskMessagePayload } from "../types/events";
@@ -163,6 +164,7 @@ describe("sortChatSessions", () => {
     sortChatSessions(input);
     expect(input.map((s) => s.id)).toEqual(snapshot);
   });
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 
   it("does not bump a lifecycle-only DM whose metadata was touched", () => {
     const notesOnly = session({ id: "notes", updated_at: "2026-06-03T00:00:00Z" });
@@ -172,6 +174,20 @@ describe("sortChatSessions", () => {
     });
     expect(sortChatSessions([notesOnly, conversation]).map((row) => row.id)).toEqual(["conversation", "notes"]);
   });
+||||||| 2ae2f08005
+=======
+
+  it("preserves server order and session identities when activity times tie", () => {
+    const first = session({ id: "first" });
+    const second = session({ id: "second" });
+    const pinned = session({ id: "pinned", pinned: true });
+
+    const sorted = sortChatSessions([first, pinned, second]);
+    expect(sorted).toEqual([pinned, first, second]);
+    expect(sorted[1]).toBe(first);
+    expect(sorted[2]).toBe(second);
+  });
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 });
 
 describe("countUnreadChatSessions", () => {

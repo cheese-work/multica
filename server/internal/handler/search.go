@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -13,8 +12,13 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+<<<<<<< b441bc8a2d6331808b11e83175a1716c052bd1d2
 	"github.com/multica-ai/multica/server/internal/middleware"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+||||||| 2ae2f08005
+	"github.com/multica-ai/multica/server/internal/middleware"
+=======
+>>>>>>> 2fcb424b72b024f65161809081009063846ea44d
 )
 
 // searchStatementTimeout bounds every /search request at the Postgres level.
@@ -258,23 +262,4 @@ func isSearchStatementTimeout(err error) bool {
 		return pgErr.Code == "57014"
 	}
 	return false
-}
-
-// writeSearchCancellation classifies an abandoned search without counting it as
-// a server failure or a successful request. PostgreSQL may surface disconnect
-// cancellation as SQLSTATE 57014, so the request context distinguishes it from
-// the database's statement timeout. Unrelated database errors remain failures.
-// Successful paths pass the context error to catch cancellation after commit
-// or during supplementary reads before writing a response.
-func writeSearchCancellation(w http.ResponseWriter, r *http.Request, err error) bool {
-	if !errors.Is(r.Context().Err(), context.Canceled) {
-		return false
-	}
-	if !errors.Is(err, context.Canceled) && !isSearchStatementTimeout(err) {
-		return false
-	}
-	// The client has disconnected; retain the status for logs and metrics but
-	// avoid encoding a response body for a request that no longer needs it.
-	w.WriteHeader(middleware.StatusClientClosedRequest)
-	return true
 }
