@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/decisionaction"
 	"github.com/multica-ai/multica/server/internal/githubrepo"
@@ -27,6 +28,10 @@ type fakeGitHubOrg struct {
 	calls   []string
 	auth    []string
 	failure int // answer every POST with this status when set
+	// getFailure answers every GET with this status when set.
+	getFailure int
+	// created holds the creation time of a repo when it differs from now.
+	created map[string]time.Time
 }
 
 func (fake *fakeGitHubOrg) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
@@ -35,6 +40,10 @@ func (fake *fakeGitHubOrg) ServeHTTP(writer http.ResponseWriter, request *http.R
 	fake.calls = append(fake.calls, request.Method+" "+request.URL.Path)
 	fake.auth = append(fake.auth, request.Header.Get("Authorization"))
 	if request.Method == http.MethodGet {
+		if fake.getFailure != 0 {
+			writer.WriteHeader(fake.getFailure)
+			return
+		}
 		name := strings.TrimPrefix(request.URL.Path, "/repos/")
 		body, ok := fake.repos[name]
 		if !ok {
@@ -45,7 +54,15 @@ func (fake *fakeGitHubOrg) ServeHTTP(writer http.ResponseWriter, request *http.R
 		if body["private"] == false {
 			visibility = "public"
 		}
-		_ = json.NewEncoder(writer).Encode(map[string]any{"full_name": name, "html_url": "https://github.com/" + name, "visibility": visibility})
+		createdAt := time.Now()
+		if at, ok := fake.created[name]; ok {
+			createdAt = at
+		}
+		view := map[string]any{"full_name": name, "html_url": "https://github.com/" + name, "visibility": visibility, "created_at": createdAt.UTC().Format(time.RFC3339)}
+		if template, _ := body["template"].(string); template != "" {
+			view["template_repository"] = map[string]any{"full_name": template}
+		}
+		_ = json.NewEncoder(writer).Encode(view)
 		return
 	}
 	var body map[string]any
@@ -296,12 +313,74 @@ func TestGitHubRepoCreateEndsAsAFailureWhenTheNameIsTaken(test *testing.T) {
 	beforeSettings, beforeRepos := workspaceRows(test)
 	fixture := newRepoCreateFixture(test, "spend", repoCreateParams("private", ""))
 	fixture.org.repos["tevo-studio/we006"] = map[string]any{}
+	fixture.org.created = map[string]time.Time{"tevo-studio/we006": time.Now().Add(-48 * time.Hour)}
 	out := fixture.approve(test)
 	if out.State != "failed" || out.ErrorCode != "repo_exists" {
 		test.Fatalf("outcome = %+v, want failed/repo_exists", out)
 	}
 	if gotSettings, gotRepos := workspaceRows(test); gotSettings != beforeSettings || gotRepos != beforeRepos {
 		test.Fatal("a name clash left workspace rows changed")
+	}
+}
+
+// A create GitHub accepted must not be undone because the read-back failed.
+func TestGitHubRepoCreateKeepsTheRepoWhenTheReadBackFails(test *testing.T) {
+	seedWorkspace(test, listedTevoSettings, `[]`)
+	fixture := newRepoCreateFixture(test, "spend", repoCreateParams("private", ""))
+	fixture.org.getFailure = http.StatusBadGateway
+	out := fixture.approve(test)
+	if out.State != "executed" || !fixture.org.has("tevo-studio/we006") {
+		test.Fatalf("outcome = %+v, repo exists = %v", out, fixture.org.has("tevo-studio/we006"))
+	}
+	settings, repos := workspaceRows(test)
+	if !strings.Contains(settings, "we006") || !strings.Contains(repos, "tevo-studio/we006") {
+		test.Fatalf("the repo is not in both lists: settings %s, repos %s", settings, repos)
+	}
+}
+
+// A commit that failed after GitHub answered leaves a repo created for this
+// card and not listed. The next approval adopts it and lists it everywhere.
+func TestGitHubRepoCreateAdoptsTheRepoAnEarlierAttemptCreated(test *testing.T) {
+	seedWorkspace(test, listedTevoSettings, `[]`)
+	fixture := newRepoCreateFixture(test, "spend", repoCreateParams("private", "tevo-studio/code-android-template"))
+	fixture.org.repos["tevo-studio/we006"] = map[string]any{"template": "tevo-studio/code-android-template", "private": true}
+	out := fixture.approve(test)
+	if out.State != "executed" {
+		test.Fatalf("outcome = %+v, want executed", out)
+	}
+	settings, repos := workspaceRows(test)
+	if !strings.Contains(settings, "we006") || !strings.Contains(repos, "tevo-studio/we006") {
+		test.Fatalf("the adopted repo is not in both lists: settings %s, repos %s", settings, repos)
+	}
+}
+
+// A repo that existed before the card, or came from another template, is not
+// this action's: the approval still ends as repo_exists.
+func TestGitHubRepoCreateDoesNotAdoptAnUnrelatedRepo(test *testing.T) {
+	for name, existing := range map[string]struct {
+		template string
+		age      time.Duration
+	}{
+		"older than the card": {"", -48 * time.Hour},
+		"other template":      {"someone/else", time.Hour},
+	} {
+		test.Run(name, func(test *testing.T) {
+			seedWorkspace(test, listedTevoSettings, `[]`)
+			beforeSettings, beforeRepos := workspaceRows(test)
+			fixture := newRepoCreateFixture(test, "spend", repoCreateParams("private", ""))
+			if existing.template != "" {
+				fixture = newRepoCreateFixture(test, "spend", repoCreateParams("private", "tevo-studio/code-android-template"))
+			}
+			fixture.org.repos["tevo-studio/we006"] = map[string]any{"template": existing.template, "private": true}
+			fixture.org.created = map[string]time.Time{"tevo-studio/we006": time.Now().Add(existing.age)}
+			out := fixture.approve(test)
+			if out.State != "failed" || out.ErrorCode != "repo_exists" {
+				test.Fatalf("outcome = %+v, want failed/repo_exists", out)
+			}
+			if gotSettings, gotRepos := workspaceRows(test); gotSettings != beforeSettings || gotRepos != beforeRepos {
+				test.Fatal("an unrelated repo was adopted into the workspace rows")
+			}
+		})
 	}
 }
 

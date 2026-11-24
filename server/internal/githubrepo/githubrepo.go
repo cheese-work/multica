@@ -40,11 +40,20 @@ var (
 	ErrNotConfigured = errors.New("no admin credential is configured for this org")
 	ErrExists        = errors.New("a repository with this name already exists")
 	ErrTemplate      = errors.New("the template repository is not available")
+	// errUncertain marks a create whose outcome is unknown: the repository may
+	// exist although GitHub's answer did not arrive.
+	errUncertain = errors.New("the outcome of the create is unknown")
 )
 
 // Request is one repository to create.
 type Request struct {
 	Org, Name, Visibility, Template, Description string
+	// NotBefore is when the approval was requested. A repository that already
+	// carries this name is adopted as this action's own only if it was created
+	// at or after NotBefore from the same template: that is how a retry after a
+	// lost answer or a failed commit recovers without taking over a repository
+	// that existed before the card. Zero disables adoption.
+	NotBefore time.Time
 }
 
 // Created is the read-back of the new repository.
@@ -114,23 +123,85 @@ func (client *Client) CreateRepo(ctx context.Context, request Request) (Created,
 		path = "/orgs/" + url.PathEscape(request.Org) + "/repos"
 		body = map[string]any{"name": request.Name, "description": request.Description, "visibility": request.Visibility}
 	}
-	if err := client.send(ctx, token, http.MethodPost, path, body, request.Template != "", nil); err != nil {
+	var posted repoView
+	err := client.send(ctx, token, http.MethodPost, path, body, request.Template != "", &posted)
+	if errors.Is(err, ErrExists) || errors.Is(err, errUncertain) {
+		if adopted, ok := client.adopt(ctx, token, request); ok {
+			return adopted, nil
+		}
+		if errors.Is(err, errUncertain) {
+			return Created{}, fmt.Errorf("%w (checked for a repository this action created: none found)", err)
+		}
+	}
+	if err != nil {
 		return Created{}, err
 	}
-	var repo struct {
+	// The POST answered 2xx, so the repository exists. The read-back only
+	// refreshes the answer; failing it must not undo the create.
+	var repo repoView
+	if err := client.send(ctx, token, http.MethodGet, repoPath(request), nil, false, &repo); err != nil {
+		repo = posted
+	}
+	return repo.created(request), nil
+}
+
+type repoView struct {
+	FullName   string    `json:"full_name"`
+	HTMLURL    string    `json:"html_url"`
+	Private    bool      `json:"private"`
+	Visibility string    `json:"visibility"`
+	CreatedAt  time.Time `json:"created_at"`
+	Template   *struct {
 		FullName string `json:"full_name"`
-		HTMLURL  string `json:"html_url"`
-		Private  bool   `json:"private"`
-		Visible  string `json:"visibility"`
+	} `json:"template_repository"`
+}
+
+func repoPath(request Request) string {
+	return "/repos/" + url.PathEscape(request.Org) + "/" + url.PathEscape(request.Name)
+}
+
+func (repo repoView) visibility() string {
+	if repo.Visibility != "" {
+		return repo.Visibility
 	}
-	if err := client.send(ctx, token, http.MethodGet, "/repos/"+url.PathEscape(request.Org)+"/"+url.PathEscape(request.Name), nil, false, &repo); err != nil {
-		return Created{}, fmt.Errorf("created, but the read-back failed: %w", err)
+	return map[bool]string{true: "private", false: "public"}[repo.Private]
+}
+
+// created reads the answer, filling what GitHub left out from the request.
+func (repo repoView) created(request Request) Created {
+	created := Created{FullName: repo.FullName, HTMLURL: repo.HTMLURL, Visibility: repo.visibility()}
+	if created.FullName == "" {
+		created.FullName = request.Org + "/" + request.Name
 	}
-	visibility := repo.Visible
-	if visibility == "" {
-		visibility = map[bool]string{true: "private", false: "public"}[repo.Private]
+	if created.HTMLURL == "" {
+		created.HTMLURL = "https://github.com/" + created.FullName
 	}
-	return Created{FullName: repo.FullName, HTMLURL: repo.HTMLURL, Visibility: visibility}, nil
+	if repo.FullName == "" {
+		created.Visibility = request.Visibility
+	}
+	return created
+}
+
+// adopt reports the repository as this action's own when it was created after
+// the request, from the requested template, with the requested visibility.
+func (client *Client) adopt(ctx context.Context, token string, request Request) (Created, bool) {
+	if request.NotBefore.IsZero() {
+		return Created{}, false
+	}
+	var repo repoView
+	if err := client.send(ctx, token, http.MethodGet, repoPath(request), nil, false, &repo); err != nil {
+		return Created{}, false
+	}
+	if repo.CreatedAt.Before(request.NotBefore) {
+		return Created{}, false
+	}
+	if request.Template != "" && (repo.Template == nil || !strings.EqualFold(repo.Template.FullName, request.Template)) {
+		return Created{}, false
+	}
+	if repo.visibility() != request.Visibility {
+		return Created{}, false
+	}
+	return repo.created(request), true
 }
 
 func (client *Client) send(ctx context.Context, token, method, path string, body any, templated bool, into any) error {
@@ -154,7 +225,7 @@ func (client *Client) send(ctx context.Context, token, method, path string, body
 	}
 	response, err := client.HTTP.Do(httpRequest)
 	if err != nil {
-		return fmt.Errorf("github request failed: %w", scrub(err, token))
+		return fmt.Errorf("github request failed: %w: %w", errUncertain, scrub(err, token))
 	}
 	defer response.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
@@ -176,7 +247,11 @@ func (client *Client) send(ctx context.Context, token, method, path string, body
 	if templated && response.StatusCode == http.StatusNotFound {
 		return ErrTemplate
 	}
-	return fmt.Errorf("github answered %d: %s", response.StatusCode, strings.ReplaceAll(failure.Message, token, "***"))
+	answer := fmt.Errorf("github answered %d: %s", response.StatusCode, strings.ReplaceAll(failure.Message, token, "***"))
+	if response.StatusCode >= 500 {
+		return fmt.Errorf("%w: %w", errUncertain, answer)
+	}
+	return answer
 }
 
 // scrub drops the URL (which could echo a credential in a proxy error) from a
