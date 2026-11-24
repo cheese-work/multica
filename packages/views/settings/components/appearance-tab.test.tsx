@@ -32,6 +32,8 @@ const api = vi.hoisted(() => ({
   getStoreThemeScreenshot: vi.fn(),
 }));
 vi.mock("@multica/core/api", () => ({ api }));
+const openExternal = vi.hoisted(() => vi.fn());
+vi.mock("../../platform/open-external", () => ({ openExternal }));
 
 import { AppearanceTab } from "./appearance-tab";
 
@@ -89,6 +91,17 @@ describe("AppearanceTab", () => {
   });
   afterEach(() => {
     cleanup();
+  });
+
+  it("opens the theme guide on the instance docs the server advertises", async () => {
+    const user = userEvent.setup();
+    configStore.setState({ docsBaseUrl: "https://docs.example.com/docs" });
+    render(<AppearanceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "How to make a theme" }));
+
+    expect(openExternal).toHaveBeenCalledWith("https://docs.example.com/docs/developers/themes");
+    configStore.setState({ docsBaseUrl: "" });
   });
 
   it("switches the mode on this device", async () => {
