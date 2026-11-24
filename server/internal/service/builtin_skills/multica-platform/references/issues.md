@@ -304,6 +304,24 @@ and triage batches rely on that.
 JSON: nodes and typed edges in both directions, including issues that wait on
 or mention it. At most 40 nodes; `omitted_count` says how many were left out.
 
+## Design review verdict
+
+A design reviewer records one typed verdict from its own run, never by comment:
+
+```bash
+multica issue design-verdict <issue> --attestation <doop-attestation-id> --verdict PASS
+multica issue design-verdict <issue> --attestation <id> --verdict CHANGES --findings-file findings.json
+```
+
+`findings.json` is a JSON array of `{"severity":"P0|P1|P2|P3","summary":"..."}`;
+`CHANGES` needs a P0 or P1. The call needs the run's task token on this issue
+(`403 design_verdict_run_required` otherwise). A `PASS` is checked against the
+issue's Design url and the doop attestation (canvas, page, frame, complete,
+current) and against your independence from the design author; a failed check
+is `409` with a `design_*` code, and `404 design_attestation_not_found` or
+`503` mean doop has no such attestation or cannot be read. Fix the cause and
+call again; the newest verdict per attestation counts.
+
 ## Who else is running right now
 
 Nothing about concurrent runs is pushed into your prompt: the answer changes

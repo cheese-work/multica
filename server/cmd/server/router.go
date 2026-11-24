@@ -2333,6 +2333,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/agent-decisions", h.LookupAgentDecision)
 					r.Get("/human-in-charge", h.GetHumanInCharge)
 					r.Post("/agent-decisions/rely", h.RelyAgentDecision)
+					r.Post("/design-verdicts", h.RecordDesignVerdict)
 					r.Get("/relations", h.GetIssueRelations)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)

@@ -439,6 +439,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 
 工作区设置 `design_card_guard` 是一个对象，含 `mode`、`doop_origin`、`design_url_property_id` 和 `design_workflow_id`。`mode` 为 `off`、`warn` 或 `block`；键不存在或缺少 `mode` 时为 `off`。`warn` 或 `block` 时，`doop_origin`（不带路径的 `https` 源）和 `design_url_property_id`（UUID）必填；`design_workflow_id`（UUID）可选。服务器对其他字段、`null` 值或类型错误返回 `400`。通过决策动作修改设置时可以指定该键。目前只读取并校验该设置，尚不会对任何卡片发出警告或拒绝。
 
+`multica issue design-verdict <issue> --attestation <id> --verdict PASS|CHANGES [--findings-file <path>]` 记录一条带类型的设计评审结论（`POST /api/issues/{id}/design-verdicts`）。只有智能体自己的运行才能写入：调用需要一个任务令牌，其任务在该 issue 上处于 `dispatched` 或 `running`，否则服务器返回 `403 design_verdict_run_required`。`--findings-file` 是 `{"severity": "P0|P1|P2|P3", "summary": "..."}` 的 JSON 数组；`CHANGES` 结论至少需要一条 P0 或 P1 发现。服务器会读取 doop 证明（attestation）：未知 ID 返回 `404 design_attestation_not_found`，doop 无法读取返回 `503 design_doop_unavailable`，`design_card_guard` 为 `off` 或无效返回 `503 design_guard_misconfigured`。`PASS` 还必须与该 issue 的 Design url 和证明（canvas、page、frame，完整且为最新）一致，并来自独立于设计作者的评审者，否则服务器返回带拒绝码的 `409`。`CHANGES` 结论跳过这些检查。请求体无效返回 `400`。成功时返回 `201` 并写入一行 `design_review_verdict` 活动记录；每个 issue 与证明下最新的一行即为生效结论，没有编辑或删除路由。
+
 ## 后台智能体
 
 每个后台作业（`dm_title`、`quick_actions`、`compact`、`routing`）都作为主智能体的任务运行，必要时再由备用智能体运行。查看或设置工作区默认值，或你自己的链：
