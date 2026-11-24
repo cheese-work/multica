@@ -117,8 +117,35 @@ func (b bindCase) own(p bindPath) pgtype.UUID {
 	return b.c1
 }
 
-// A queued run for another comment is not the refused work: the resume folds
-// the stored comment into it, in its transaction, and only then ends on it.
+// slotAware is a path whose preflight checks the slot the resumed run takes
+// (CHE-9607): a pending run in another thread, or in the NULL slot, does not
+// hold it. The mention path keeps the issue-and-agent check.
+func slotAware(p bindPath) bool { return p.trigger != "mention" }
+
+// wantOwnRunBesideSurvivor asserts the resume queued a run of its own for the
+// stored comment and left the survivor of another slot untouched.
+func (b bindCase) wantOwnRunBesideSurvivor(t *testing.T, survivor pgtype.UUID, before int) {
+	t.Helper()
+	wantResume(t, b.id, "run_queued", "")
+	got := wantTaskOf(t, b.id)
+	if got == survivor {
+		t.Fatal("the refusal ended on the run of another slot, want a run of its own")
+	}
+	if !answers(t, got, b.c2) {
+		t.Fatal("the resumed run does not answer the refused comment")
+	}
+	if answers(t, survivor, b.c2) {
+		t.Fatal("the stored comment was folded into a run of another slot")
+	}
+	if n := issueRuns(t, b.c); n != before+1 {
+		t.Fatalf("runs = %d, want %d: the survivor plus the resumed run", n, before+1)
+	}
+}
+
+// A queued run for another comment is not the refused work. On a path that
+// checks the mention's issue-and-agent slot the resume folds the stored comment
+// into it, in its transaction, and only then ends on it; on a slot-aware path
+// the run in another slot does not hold the slot, and the resume queues its own.
 func TestRunBudgetResumeQueuedSurvivorOfAnotherCommentTakesTheStoredComment(t *testing.T) {
 	for i, p := range bindPaths {
 		t.Run(p.name, func(t *testing.T) {
@@ -127,6 +154,10 @@ func TestRunBudgetResumeQueuedSurvivorOfAnotherCommentTakesTheStoredComment(t *t
 			survivor := b.survivor(t, p, "queued", b.own(p))
 			before := issueRuns(t, b.c)
 			resume(t, b.id)
+			if slotAware(p) {
+				b.wantOwnRunBesideSurvivor(t, survivor, before)
+				return
+			}
 			wantResume(t, b.id, "run_queued", "")
 			if got := wantTaskOf(t, b.id); got != survivor {
 				t.Fatalf("refusal ends on %s, want the survivor %s", uuidToString(got), uuidToString(survivor))
@@ -153,14 +184,20 @@ func TestRunBudgetResumeQueuedSurvivorOfAnotherCommentTakesTheStoredComment(t *t
 }
 
 // A dispatched run of another thread cannot take planned input: the refusal
-// never ends on it without the comment. It stays resume_pending, and once the
-// run has started the sweep queues the run for the stored comment.
+// never ends on it without the comment. On the mention path it stays
+// resume_pending, and once the run has started the sweep queues the run for the
+// stored comment. A slot-aware path does not wait: the run is in another slot.
 func TestRunBudgetResumeDispatchedSurvivorOfAnotherThreadLeavesTheRefusalPending(t *testing.T) {
 	for i, p := range bindPaths {
 		t.Run(p.name, func(t *testing.T) {
 			b := newBindCase(t, int64(2860210+i), p, true)
 			survivor := b.survivor(t, p, "dispatched", b.own(p))
+			before := issueRuns(t, b.c)
 			resume(t, b.id)
+			if slotAware(p) {
+				b.wantOwnRunBesideSurvivor(t, survivor, before)
+				return
+			}
 			wantResume(t, b.id, "resume_pending", "")
 			if answers(t, survivor, b.c2) {
 				t.Fatal("the comment was registered on a run of another thread")
@@ -228,12 +265,13 @@ func TestRunBudgetResumeSurvivorOfTheSameOrNoCommentBindsUntouched(t *testing.T)
 	}
 }
 
-// A survivor that cannot take the comment (it is on another head) does not end
-// the refusal: it stays resume_pending until the survivor finishes, and then the
-// sweep queues the run for the stored comment.
+// A survivor in the comment's own slot that cannot take the comment (it is on
+// another head) does not end the refusal: it stays resume_pending until the
+// survivor finishes, and then the sweep queues the run for the stored comment.
 func TestRunBudgetResumeSurvivorThatCannotTakeTheCommentLeavesTheRefusalPending(t *testing.T) {
-	p := bindPaths[0]
+	p := bindPaths[2]
 	b := newBindCase(t, 2860250, p, true)
+	dbfx.Exec(t, `UPDATE comment SET parent_id=$2 WHERE id=$1`, b.c2, b.c1)
 	var pr string
 	if err := testPool.QueryRow(context.Background(), `INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at, head_sha)
 		VALUES ($1, 1, 'multica-ai', 'multica', 2860250, 'review PR', 'open', 'https://example.test/pr', now(), now(), 'new-head') RETURNING id`, testWorkspaceID).Scan(&pr); err != nil {

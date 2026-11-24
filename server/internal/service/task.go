@@ -1631,6 +1631,17 @@ func statusHandoffFor(ctx context.Context, triggerCommentID pgtype.UUID) pgtype.
 	return pgtype.UUID{}
 }
 
+// effectiveRunTrigger is the comment a run inserted under ctx is keyed by: the
+// handoff comment statusHandoffFor names, else the trigger comment itself (NULL
+// for none). Its thread is the pending slot the insert takes, so a preflight
+// checks this comment's slot and never disagrees with the insert.
+func effectiveRunTrigger(ctx context.Context, triggerCommentID pgtype.UUID) pgtype.UUID {
+	if handoff := statusHandoffFor(ctx, triggerCommentID); handoff.Valid {
+		return handoff
+	}
+	return triggerCommentID
+}
+
 // statusHandoffAttribution attributes a run started by a status move. A member
 // mover is direct_human. An agent mover delegates from its acting task, so the
 // human is whoever that task serves, never the handoff comment's author. With
@@ -1759,7 +1770,7 @@ func (s *TaskService) prepareIssueTaskWithQueriesAndOverlay(ctx context.Context,
 	var triggerKind pgtype.Text
 	handoffComment := statusHandoffFor(ctx, triggerCommentID)
 	if handoffComment.Valid {
-		triggerCommentID = handoffComment
+		triggerCommentID = effectiveRunTrigger(ctx, triggerCommentID)
 		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
 		if len(coalescedCommentIDs) == 0 {
 			coalescedCommentIDs = statusHandoffRest(ctx)
@@ -2149,7 +2160,7 @@ func (s *TaskService) prepareMentionTaskWithQueriesAndOverlay(ctx context.Contex
 	var triggerKind pgtype.Text
 	handoffComment := statusHandoffFor(ctx, triggerCommentID)
 	if handoffComment.Valid {
-		triggerCommentID = handoffComment
+		triggerCommentID = effectiveRunTrigger(ctx, triggerCommentID)
 		triggerKind = pgtype.Text{String: TriggerKindStatusHandoff, Valid: true}
 		if len(coalescedCommentIDs) == 0 {
 			coalescedCommentIDs = statusHandoffRest(ctx)

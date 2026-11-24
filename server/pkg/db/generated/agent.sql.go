@@ -11685,6 +11685,37 @@ func (q *Queries) PendingTaskForIssueAndAgent(ctx context.Context, arg PendingTa
 	return id, err
 }
 
+const pendingTaskInSlotForAgent = `-- name: PendingTaskInSlotForAgent :one
+SELECT id FROM agent_task_queue
+WHERE issue_id = $1 AND agent_id = $2
+  AND comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($3::uuid)
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type PendingTaskInSlotForAgentParams struct {
+	IssueID          pgtype.UUID `json:"issue_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
+	TriggerCommentID pgtype.UUID `json:"trigger_comment_id"`
+}
+
+// The run that holds the pending slot a new run with this trigger comment would
+// take: exactly the rows idx_one_pending_task_per_issue_agent_thread keeps one
+// of, in the comment's thread, or the NULL slot for a NULL trigger
+// (comment_thread_root_id is STRICT). No head filter: the index has none.
+// Callers inside a transaction check it before the insert, because the unique
+// violation would abort the transaction.
+func (q *Queries) PendingTaskInSlotForAgent(ctx context.Context, arg PendingTaskInSlotForAgentParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, pendingTaskInSlotForAgent, arg.IssueID, arg.AgentID, arg.TriggerCommentID)
+	var id pgtype.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
 const promoteDeferredChannelIssueTask = `-- name: PromoteDeferredChannelIssueTask :one
 UPDATE agent_task_queue
 SET status = 'queued', fire_at = NULL
