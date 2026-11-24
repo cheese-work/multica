@@ -464,6 +464,7 @@ SELECT w.id, w.name
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
+  AND m.role IN ('owner', 'admin', 'member')
 ORDER BY w.id ASC
 `
 
@@ -531,6 +532,7 @@ SELECT w.id, w.name, w.slug, w.description, w.settings,
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
+  AND m.role IN ('owner', 'admin', 'member')
 ORDER BY m.pinned_at DESC NULLS LAST, w.created_at ASC
 `
 
@@ -557,6 +559,7 @@ type ListWorkspacesRow struct {
 	PinnedAt                    pgtype.Timestamptz `json:"pinned_at"`
 }
 
+// A role this build does not know is no membership (see GetMemberByUserAndWorkspace).
 func (q *Queries) ListWorkspaces(ctx context.Context, userID pgtype.UUID) ([]ListWorkspacesRow, error) {
 	rows, err := q.db.Query(ctx, listWorkspaces, userID)
 	if err != nil {
