@@ -968,6 +968,49 @@ describe("IssueDetail (shared)", () => {
     useIssueSidebarSectionsStore.getState().reset();
   });
 
+  // CHE-9612: a loaded comment target that does not exist must not cost the
+  // reader their previous position; pixel restoration is the fallback.
+  it.each(["control", "missing-no-anchor", "missing-stale-anchor"])(
+    "CHE-9612 missing target fallback: %s",
+    async (scenario) => {
+      const visited = renderIssueDetail();
+      await screen.findByText("Started working on this");
+      const firstScroller = visited.container.querySelector<HTMLElement>('[data-tab-scroll-root="main:issue-1"]')!;
+      expect(firstScroller).not.toBeNull();
+      firstScroller.scrollTop = 520;
+      fireEvent.scroll(firstScroller);
+      visited.unmount();
+
+      // Web has no pixel-memento adapter. A saved semantic anchor is either
+      // absent or cannot resolve to any currently loaded timeline row.
+      const adapter: ScrollRestorationAdapter = {
+        get: () => undefined,
+        getViewState: (key) => scenario === "missing-stale-anchor" && key === "scroll-anchor:issue-1"
+          ? JSON.stringify({ key: "comment:deleted-anchor", offset: 11 }) : undefined,
+        setViewState: vi.fn(),
+      };
+      const queryClient = createTestQueryClient();
+      const returned = render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <ScrollRestorationProvider adapter={adapter}>
+              <IssueDetail issueId="issue-1" highlightCommentId={scenario === "control" ? undefined : "deleted-landing-target"} />
+            </ScrollRestorationProvider>
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+      await screen.findByText("Started working on this");
+      const returnedScroller = returned.container.querySelector<HTMLElement>('[data-tab-scroll-root="main:issue-1"]')!;
+      await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 120)); });
+      expect(document.getElementById("comment-deleted-landing-target")).toBeNull();
+      expect(scrollToIndexSpy).not.toHaveBeenCalled();
+      expect(adapter.setViewState).not.toHaveBeenCalledWith("highlight:issue-1", "deleted-landing-target");
+      // A loaded missing target permits the same previous-position fallback
+      // as the control; no successful landing is fabricated.
+      expect(returnedScroller.scrollTop).toBe(520);
+    },
+  );
+
   describe("sidebar section settings", () => {
     const wakeupsSlot = (container: HTMLElement) => container.querySelector('[data-issue-sidebar-section="wakeups"]');
     const wakeupsSwitch = async () => {

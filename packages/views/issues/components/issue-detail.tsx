@@ -3816,6 +3816,12 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     listOpenedAtRef.current = { listKey, commentId: openAtLandingIndex >= 0 ? highlightCommentId ?? null : null };
   }
 
+  const landingPending = !!highlightCommentId && consumedHighlightId !== highlightCommentId;
+  // The timeline is fully loaded and has no row for the target (deleted
+  // comment, stale link): the landing has nothing to own, so the previous
+  // reading position is restored like any other return.
+  const landingTargetMissing = landingPending && !timelineLoading && !commentTasksLoading && targetIdx < 0;
+
   useIssueDetailScrollRestore({
     restoreKey: `${wsId}:${id}`,
     scrollContainerEl,
@@ -3826,7 +3832,7 @@ export function IssueDetail({ issueId, onDelete, onDone, onUnsubscribeArchive, d
     // A peek always opens at the top: it is a glance, not a place to return to.
     // The timeline anchor owns the restore when one resolves: a pixel offset
     // lands on a different comment once virtualized row heights are measured.
-    disabled: isPeek || scrollAnchorIndex >= 0 || (!!highlightCommentId && consumedHighlightId !== highlightCommentId),
+    disabled: isPeek || scrollAnchorIndex >= 0 || (landingPending && !landingTargetMissing),
     // The tab memento's offset, when the platform serves one. It must win
     // over this hook's module-level map — see the parameter doc.
     overrideTop: restoredScrollTop,
