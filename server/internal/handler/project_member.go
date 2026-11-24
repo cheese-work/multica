@@ -51,9 +51,14 @@ type projectAccessUpdate struct {
 
 func (u projectAccessUpdate) empty() bool { return u.visibility == "" && len(u.addIDs) == 0 }
 
+// requireHumanProjectAccessActor refuses every machine credential: a task token
+// (resolved as an agent) and a cloud PAT, which carries its member owner's user
+// id and so resolves as that member (CHE-9684, A5e P2 1). Both would otherwise
+// inherit the owner's right to change who sees a project.
 func (h *Handler) requireHumanProjectAccessActor(w http.ResponseWriter, r *http.Request, workspaceID string) bool {
-	if actorType, _ := h.resolveActor(r, requestUserID(r), workspaceID); actorType == "agent" {
-		writeError(w, http.StatusForbidden, "agents cannot change project access")
+	actorType, _ := h.resolveActor(r, requestUserID(r), workspaceID)
+	if actorType == "agent" || isMachineCredentialActor(r) {
+		writeError(w, http.StatusForbidden, "agents and machine credentials cannot change project access")
 		return false
 	}
 	return true
