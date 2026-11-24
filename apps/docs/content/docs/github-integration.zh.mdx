@@ -236,7 +236,7 @@ multica decision request <issue> --action-file repo-create.json
 | `--name` | 仓库名称。 |
 | `--template` | 可选的 `owner/repo` 模板。其所有者也必须是已批准的组织。GitHub 的 generate API 不接受 ref,因此使用模板的默认分支。 |
 | `--private`、`--visibility` | `private`(默认)、`internal` 或 `public`。公开仓库属于公开发布,请用 `--class publish` 提出请求。 |
-| `--description` | 一行,最多 350 个字符。 |
+| `--description` | 一行,最多 290 个字符。服务器会在仓库描述末尾加上 `[multica-action:<id>]` 标记。 |
 | `--out`、`--dry-run`、`--expires-in` | 写出操作文件、只打印、或设置卡片保持开放的时长。 |
 
 批准后,服务器创建仓库并回读确认,然后把它加入工作区的仓库登记。如果该组织在 `guard_policy.repository_allowlist` 中已有条目,也会把仓库加到那里。没有条目的组织保持不受限制,因为新增条目会把该组织的其他仓库挡在外面。被拒绝或已过期的卡片不会创建任何内容。如果 GitHub 拒绝请求,该操作以失败结束,工作区的数据保持不变。

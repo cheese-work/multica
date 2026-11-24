@@ -118,3 +118,48 @@ func TestApprovedOrgs(test *testing.T) {
 		test.Fatal("approved org table is wrong")
 	}
 }
+
+func TestCreateRepoWritesTheActionMarkerAndAdoptsOnlyItsOwn(test *testing.T) {
+	const action = "11111111-2222-3333-4444-555555555555"
+	for name, tc := range map[string]struct {
+		description string
+		adopted     bool
+	}{
+		"own marker":      {"app [multica-action:" + action + "]", true},
+		"other marker":    {"app [multica-action:99999999-2222-3333-4444-555555555555]", false},
+		"no marker":       {"app", false},
+		"marker mid-text": {"[multica-action:" + action + "] app", false},
+	} {
+		test.Run(name, func(test *testing.T) {
+			var posted map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.Method == http.MethodPost {
+					_ = json.NewDecoder(request.Body).Decode(&posted)
+					writer.WriteHeader(http.StatusBadGateway) // the answer is lost
+					return
+				}
+				_ = json.NewEncoder(writer).Encode(map[string]any{"full_name": "tevo-studio/x", "visibility": "private", "description": tc.description})
+			}))
+			test.Cleanup(server.Close)
+			client := NewClient(server.URL, map[string]string{"tevo-studio": "secret-token"})
+			_, err := client.CreateRepo(context.Background(), Request{Org: "tevo-studio", Name: "x", Visibility: "private", Description: "app", ActionID: action})
+			if want := "app [multica-action:" + action + "]"; posted["description"] != want {
+				test.Fatalf("description sent = %v, want %q", posted["description"], want)
+			}
+			if tc.adopted && err != nil {
+				test.Fatalf("own repo not adopted: %v", err)
+			}
+			if !tc.adopted && !errors.Is(err, ErrUncertain) {
+				test.Fatalf("err = %v, want ErrUncertain", err)
+			}
+		})
+	}
+}
+
+func TestCreateRepoRefusesToAdoptWithoutAnAction(test *testing.T) {
+	client, fake := newFake(test)
+	fake.exists = true
+	if _, err := client.CreateRepo(context.Background(), Request{Org: "tevo-studio", Name: "x", Visibility: "private"}); !errors.Is(err, ErrExists) {
+		test.Fatalf("err = %v, want ErrExists", err)
+	}
+}

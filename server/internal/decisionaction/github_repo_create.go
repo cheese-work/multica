@@ -33,8 +33,6 @@ var (
 	repoCreateTemplatePattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$`)
 )
 
-const maxRepoDescription = 350
-
 func normalizeGitHubRepoCreate(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
 	if len(slots) > 0 {
 		return nil, nil, invalid("%s takes no secret slots: the server holds the admin credential", GitHubRepoCreate)
@@ -68,8 +66,8 @@ func normalizeGitHubRepoCreate(raw json.RawMessage, slots []SecretSlot) (json.Ra
 			return nil, nil, &Error{Code: CodeOrgNotAllowed, Message: "template must live in an approved org"}
 		}
 	}
-	if utf8.RuneCountInString(params.Description) > maxRepoDescription || strings.ContainsAny(params.Description, "\r\n") {
-		return nil, nil, invalid("description must be one line of at most %d characters", maxRepoDescription)
+	if utf8.RuneCountInString(params.Description) > githubrepo.MaxDescription || strings.ContainsAny(params.Description, "\r\n") {
+		return nil, nil, invalid("description must be one line of at most %d characters", githubrepo.MaxDescription)
 	}
 	out, err := json.Marshal(params)
 	return out, nil, err

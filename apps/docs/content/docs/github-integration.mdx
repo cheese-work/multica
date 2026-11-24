@@ -238,7 +238,7 @@ multica decision request <issue> --action-file repo-create.json
 | `--name` | The repository name. |
 | `--template` | Optional `owner/repo` template. Its owner must also be an approved organization. GitHub's generate API takes no ref, so the template's default branch is used. |
 | `--private`, `--visibility` | `private` (default), `internal` or `public`. A public repository is a publication: ask with `--class publish`. |
-| `--description` | One line, 350 characters at most. |
+| `--description` | One line, 290 characters at most. The server adds a `[multica-action:<id>]` marker to the repo description. |
 | `--out`, `--dry-run`, `--expires-in` | Write the action file, only print it, or set how long the card stays open. |
 
 On approval the server creates the repository, reads it back, and adds it to the workspace repo registry. If the organization already has an entry in `guard_policy.repository_allowlist`, it adds the repository there too. An organization with no entry is left unrestricted, because adding one would lock out the rest of the organization. A rejected or expired card creates nothing. If GitHub refuses the request, the action ends as failed and the workspace rows stay unchanged.

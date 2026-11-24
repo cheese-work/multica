@@ -234,7 +234,7 @@ multica decision request <issue> --action-file repo-create.json
 | `--name` | リポジトリ名。 |
 | `--template` | 任意の `owner/repo` テンプレート。所有者も承認済みの組織である必要があります。GitHub の generate API は ref を受け付けないため、テンプレートのデフォルトブランチが使われます。 |
 | `--private`、`--visibility` | `private`(デフォルト)、`internal`、`public`。公開リポジトリは公開行為にあたるため、`--class publish` で依頼してください。 |
-| `--description` | 1 行、350 文字まで。 |
+| `--description` | 1 行、290 文字まで。サーバーはリポジトリの説明に `[multica-action:<id>]` マーカーを追加します。 |
 | `--out`、`--dry-run`、`--expires-in` | アクションファイルを書き出す、表示だけする、カードの有効期間を指定する。 |
 
 承認されると、サーバーはリポジトリを作成して読み戻し、ワークスペースのリポジトリ登録に追加します。組織にすでに `guard_policy.repository_allowlist` のエントリがある場合は、そこにも追加します。エントリがない組織は制限なしのままです。エントリを追加すると組織内の他のリポジトリが締め出されるためです。却下または期限切れのカードは何も作成しません。GitHub が要求を拒否した場合、アクションは失敗として終了し、ワークスペースの行は変更されません。

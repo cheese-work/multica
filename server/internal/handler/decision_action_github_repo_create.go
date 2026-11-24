@@ -21,10 +21,11 @@ import (
 //
 // The writes to Multica rows run first inside the executor's savepoint, and the
 // GitHub call runs last: a refusal from GitHub rolls the rows back, so a
-// refused or failed create leaves the workspace unchanged. A commit failure
-// after GitHub answered leaves an unlisted repository; the next approval of the
-// same name adopts it when it was created after the card was requested, from
-// the same template (githubrepo.Request.NotBefore).
+// refused or failed create leaves the workspace unchanged. When GitHub's answer
+// is lost, or the commit fails after it answered, the approval stays pending
+// and the same card decides again: the repository's description carries this
+// action's marker, so the retry adopts it and nothing else
+// (githubrepo.Request.ActionID).
 
 const githubRepoCreateTimeout = 30 * time.Second
 
@@ -136,12 +137,17 @@ func executeGitHubRepoCreateAction(ctx context.Context, execution decisionAction
 	}
 	createCtx, cancel := context.WithTimeout(ctx, githubRepoCreateTimeout)
 	defer cancel()
-	created, err := execution.GitHubRepos.CreateRepo(createCtx, githubrepo.Request{Org: params.Org, Name: params.Name, Visibility: params.Visibility, Template: params.Template, Description: params.Description, NotBefore: execution.Action.CreatedAt.Time})
+	created, err := execution.GitHubRepos.CreateRepo(createCtx, githubrepo.Request{Org: params.Org, Name: params.Name, Visibility: params.Visibility, Template: params.Template, Description: params.Description, ActionID: uuidToString(execution.Action.ID)})
 	switch {
 	case errors.Is(err, githubrepo.ErrNotConfigured):
 		return nil, actionFailure{Code: "credential_not_configured", Message: err.Error()}
 	case errors.Is(err, githubrepo.ErrExists):
 		return nil, actionFailure{Code: "repo_exists", Message: err.Error()}
+	case errors.Is(err, githubrepo.ErrUncertain):
+		// The repository may exist. Leave the approval pending: the same card
+		// decides again, and the retry adopts the repository by its marker.
+		slog.Warn("github.repo.create outcome unknown", "org", params.Org, "name", params.Name, "error", err)
+		return nil, errOutcomeRetry
 	case errors.Is(err, githubrepo.ErrTemplate):
 		return nil, actionFailure{Code: "template_unavailable", Message: err.Error()}
 	case err != nil:

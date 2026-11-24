@@ -234,7 +234,7 @@ multica decision request <issue> --action-file repo-create.json
 | `--name` | 저장소 이름. |
 | `--template` | 선택 사항인 `owner/repo` 템플릿. 소유자도 승인된 조직이어야 합니다. GitHub generate API는 ref를 받지 않으므로 템플릿의 기본 브랜치가 사용됩니다. |
 | `--private`, `--visibility` | `private`(기본값), `internal`, `public`. 공개 저장소는 공개 행위이므로 `--class publish`로 요청하세요. |
-| `--description` | 한 줄, 최대 350자. |
+| `--description` | 한 줄, 최대 290자. 서버가 저장소 설명에 `[multica-action:<id>]` 표시를 덧붙입니다. |
 | `--out`, `--dry-run`, `--expires-in` | 액션 파일을 쓰거나, 출력만 하거나, 카드가 열려 있는 시간을 정합니다. |
 
 승인되면 서버가 저장소를 만들고 다시 읽어 확인한 뒤 워크스페이스 저장소 등록부에 추가합니다. 조직에 이미 `guard_policy.repository_allowlist` 항목이 있으면 그곳에도 추가합니다. 항목이 없는 조직은 제한 없이 그대로 둡니다. 항목을 추가하면 조직의 나머지 저장소가 막히기 때문입니다. 거절되었거나 만료된 카드는 아무것도 만들지 않습니다. GitHub가 요청을 거부하면 액션은 실패로 끝나고 워크스페이스 행은 바뀌지 않습니다.

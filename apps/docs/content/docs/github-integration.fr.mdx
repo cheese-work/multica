@@ -236,7 +236,7 @@ multica decision request <issue> --action-file repo-create.json
 | `--name` | Le nom du dépôt. |
 | `--template` | Modèle `owner/repo` facultatif. Son propriétaire doit aussi être une organisation approuvée. L'API de génération de GitHub n'accepte pas de référence : la branche par défaut du modèle est utilisée. |
 | `--private`, `--visibility` | `private` (par défaut), `internal` ou `public`. Un dépôt public est une publication : demandez avec `--class publish`. |
-| `--description` | Une ligne, 350 caractères au plus. |
+| `--description` | Une ligne, 290 caractères au plus. Le serveur ajoute un marqueur `[multica-action:<id>]` à la description du dépôt. |
 | `--out`, `--dry-run`, `--expires-in` | Écrire le fichier d'action, seulement l'afficher, ou fixer la durée d'ouverture de la carte. |
 
 À l'approbation, le serveur crée le dépôt, le relit, puis l'ajoute au registre des dépôts de l'espace de travail. Si l'organisation a déjà une entrée dans `guard_policy.repository_allowlist`, il y ajoute aussi le dépôt. Une organisation sans entrée reste sans restriction, car en ajouter une exclurait le reste de l'organisation. Une carte rejetée ou expirée ne crée rien. Si GitHub refuse la demande, l'action se termine en échec et les lignes de l'espace de travail restent inchangées.

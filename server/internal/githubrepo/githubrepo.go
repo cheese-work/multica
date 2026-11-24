@@ -40,20 +40,36 @@ var (
 	ErrNotConfigured = errors.New("no admin credential is configured for this org")
 	ErrExists        = errors.New("a repository with this name already exists")
 	ErrTemplate      = errors.New("the template repository is not available")
-	// errUncertain marks a create whose outcome is unknown: the repository may
+	// ErrUncertain marks a create whose outcome is unknown: the repository may
 	// exist although GitHub's answer did not arrive.
-	errUncertain = errors.New("the outcome of the create is unknown")
+	ErrUncertain = errors.New("the outcome of the create is unknown")
 )
+
+// MaxDescription is the longest description a proposal may carry: GitHub
+// allows 350 characters and the action marker takes the rest.
+const MaxDescription = 290
 
 // Request is one repository to create.
 type Request struct {
 	Org, Name, Visibility, Template, Description string
-	// NotBefore is when the approval was requested. A repository that already
-	// carries this name is adopted as this action's own only if it was created
-	// at or after NotBefore from the same template: that is how a retry after a
-	// lost answer or a failed commit recovers without taking over a repository
-	// that existed before the card. Zero disables adoption.
-	NotBefore time.Time
+	// ActionID is the approved action. The created repository's description
+	// ends in a marker naming it, and only a repository carrying that marker is
+	// adopted as this action's own: a retry of the same card after a lost answer
+	// or a failed commit finishes the creation, and a repository that existed
+	// before, or belongs to another card, is never taken over. Empty disables
+	// adoption.
+	ActionID string
+}
+
+// marker is the evidence on GitHub that an action created the repository.
+func (request Request) marker() string { return "[multica-action:" + request.ActionID + "]" }
+
+// describe is the description sent to GitHub.
+func (request Request) describe() string {
+	if request.ActionID == "" {
+		return request.Description
+	}
+	return strings.TrimSpace(request.Description + " " + request.marker())
 }
 
 // Created is the read-back of the new repository.
@@ -118,18 +134,18 @@ func (client *Client) CreateRepo(ctx context.Context, request Request) (Created,
 	var body map[string]any
 	if request.Template != "" {
 		path = "/repos/" + request.Template + "/generate"
-		body = map[string]any{"owner": request.Org, "name": request.Name, "description": request.Description, "private": private}
+		body = map[string]any{"owner": request.Org, "name": request.Name, "description": request.describe(), "private": private}
 	} else {
 		path = "/orgs/" + url.PathEscape(request.Org) + "/repos"
-		body = map[string]any{"name": request.Name, "description": request.Description, "visibility": request.Visibility}
+		body = map[string]any{"name": request.Name, "description": request.describe(), "visibility": request.Visibility}
 	}
 	var posted repoView
 	err := client.send(ctx, token, http.MethodPost, path, body, request.Template != "", &posted)
-	if errors.Is(err, ErrExists) || errors.Is(err, errUncertain) {
+	if errors.Is(err, ErrExists) || errors.Is(err, ErrUncertain) {
 		if adopted, ok := client.adopt(ctx, token, request); ok {
 			return adopted, nil
 		}
-		if errors.Is(err, errUncertain) {
+		if errors.Is(err, ErrUncertain) {
 			return Created{}, fmt.Errorf("%w (checked for a repository this action created: none found)", err)
 		}
 	}
@@ -146,14 +162,11 @@ func (client *Client) CreateRepo(ctx context.Context, request Request) (Created,
 }
 
 type repoView struct {
-	FullName   string    `json:"full_name"`
-	HTMLURL    string    `json:"html_url"`
-	Private    bool      `json:"private"`
-	Visibility string    `json:"visibility"`
-	CreatedAt  time.Time `json:"created_at"`
-	Template   *struct {
-		FullName string `json:"full_name"`
-	} `json:"template_repository"`
+	FullName    string `json:"full_name"`
+	HTMLURL     string `json:"html_url"`
+	Private     bool   `json:"private"`
+	Visibility  string `json:"visibility"`
+	Description string `json:"description"`
 }
 
 func repoPath(request Request) string {
@@ -182,23 +195,17 @@ func (repo repoView) created(request Request) Created {
 	return created
 }
 
-// adopt reports the repository as this action's own when it was created after
-// the request, from the requested template, with the requested visibility.
+// adopt reports the repository as this action's own when its description ends
+// in the action's marker.
 func (client *Client) adopt(ctx context.Context, token string, request Request) (Created, bool) {
-	if request.NotBefore.IsZero() {
+	if request.ActionID == "" {
 		return Created{}, false
 	}
 	var repo repoView
 	if err := client.send(ctx, token, http.MethodGet, repoPath(request), nil, false, &repo); err != nil {
 		return Created{}, false
 	}
-	if repo.CreatedAt.Before(request.NotBefore) {
-		return Created{}, false
-	}
-	if request.Template != "" && (repo.Template == nil || !strings.EqualFold(repo.Template.FullName, request.Template)) {
-		return Created{}, false
-	}
-	if repo.visibility() != request.Visibility {
+	if !strings.HasSuffix(strings.TrimSpace(repo.Description), request.marker()) {
 		return Created{}, false
 	}
 	return repo.created(request), true
@@ -225,7 +232,7 @@ func (client *Client) send(ctx context.Context, token, method, path string, body
 	}
 	response, err := client.HTTP.Do(httpRequest)
 	if err != nil {
-		return fmt.Errorf("github request failed: %w: %w", errUncertain, scrub(err, token))
+		return fmt.Errorf("github request failed: %w: %w", ErrUncertain, scrub(err, token))
 	}
 	defer response.Body.Close()
 	payload, _ := io.ReadAll(io.LimitReader(response.Body, 1<<20))
@@ -249,7 +256,7 @@ func (client *Client) send(ctx context.Context, token, method, path string, body
 	}
 	answer := fmt.Errorf("github answered %d: %s", response.StatusCode, strings.ReplaceAll(failure.Message, token, "***"))
 	if response.StatusCode >= 500 {
-		return fmt.Errorf("%w: %w", errUncertain, answer)
+		return fmt.Errorf("%w: %w", ErrUncertain, answer)
 	}
 	return answer
 }
