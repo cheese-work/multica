@@ -2843,6 +2843,12 @@ RETURNING t.id;
 -- could execute under the first member's identity/connected-apps (MUL-4302).
 -- Only claim-receipt statuses (already-built delivered set) are safe planned-id
 -- targets.
+--
+-- One queued exception (CHE-9605): a status-handoff step run holding the thread's
+-- slot. MergeCommentIntoPendingTask never retargets it, so the comment is only
+-- appended to its planned set. Its trigger, kind, note and attribution stay, the
+-- claim does not receipt the id (the step prompt renders no coalesced comment),
+-- and completion reconcile replays the comment under its own attribution.
 -- Recheck status on the UPDATE target after a concurrent row-lock wait. The
 -- subquery can see an active snapshot while completion commits; appending to
 -- that completed row would be too late for its completion replay to see it.
@@ -2857,7 +2863,10 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = @issue_id
       AND t.agent_id = @agent_id
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(@comment_id::uuid)
-      AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND (
+          t.status IN ('dispatched', 'running', 'waiting_local_directory')
+          OR (t.status = 'queued' AND t.trigger_kind = 'status_handoff')
+      )
       AND (sqlc.narg('target_task_id')::uuid IS NULL OR t.id = sqlc.narg('target_task_id')::uuid)
       AND (
           COALESCE(sqlc.narg('head_sha')::text, '') = ''
@@ -2866,7 +2875,10 @@ WHERE id = (
     ORDER BY t.created_at DESC
     LIMIT 1
 )
-AND status IN ('dispatched', 'running', 'waiting_local_directory')
+AND (
+    status IN ('dispatched', 'running', 'waiting_local_directory')
+    OR (status = 'queued' AND trigger_kind = 'status_handoff')
+)
 RETURNING id, coalesced_comment_ids;
 
 -- name: MergeDelegatedFailureCommentIntoPendingTask :one

@@ -3421,6 +3421,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// Workspace-scoped load (MUL-4252) so a foreign comment UUID resolves to
 		// "missing" instead of leaking another tenant's text into the prompt.
 		plannedCommentIDs := append([]pgtype.UUID{}, task.CoalescedCommentIds...)
+		if task.TriggerKind.String == "status_handoff" {
+			// The step prompt renders no coalesced comment (CHE-9605), so none is
+			// embedded or receipted; completion reconcile replays each one.
+			plannedCommentIDs = nil
+		}
 		if task.TriggerCommentID.Valid {
 			plannedCommentIDs = append(plannedCommentIDs, task.TriggerCommentID)
 		}

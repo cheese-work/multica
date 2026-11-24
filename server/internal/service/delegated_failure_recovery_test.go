@@ -1661,13 +1661,24 @@ func TestDelegatedFailureRecoveryKeepsQueuedStepRun(t *testing.T) {
 		t.Fatalf("FailTask: %v", err)
 	}
 
+	// The recovery signal registers on the step run as planned, undelivered
+	// input; the step run keeps its trigger and kind, and its completion replay
+	// answers the signal.
 	var triggerIsHandoff bool
-	var coalesced int
-	if err := f.pool.QueryRow(ctx, `SELECT trigger_comment_id = $2::uuid, cardinality(coalesced_comment_ids) FROM agent_task_queue WHERE id = $1`, stepID, f.sourceTrigger).Scan(&triggerIsHandoff, &coalesced); err != nil {
+	var kind string
+	var planned, delivered []pgtype.UUID
+	if err := f.pool.QueryRow(ctx, `SELECT trigger_comment_id = $2::uuid, COALESCE(trigger_kind, ''), coalesced_comment_ids, delivered_comment_ids FROM agent_task_queue WHERE id = $1`, stepID, f.sourceTrigger).Scan(&triggerIsHandoff, &kind, &planned, &delivered); err != nil {
 		t.Fatalf("read step run: %v", err)
 	}
-	if !triggerIsHandoff || coalesced != 0 {
-		t.Fatalf("step run was rewritten: trigger kept=%v coalesced=%d", triggerIsHandoff, coalesced)
+	if !triggerIsHandoff || kind != "status_handoff" {
+		t.Fatalf("step run was rewritten: trigger kept=%v kind=%q", triggerIsHandoff, kind)
+	}
+	if len(planned) != 1 || len(delivered) != 0 {
+		t.Fatalf("recovery signal not registered as undelivered planned input: planned=%v delivered=%v", planned, delivered)
+	}
+	var parent string
+	if err := f.pool.QueryRow(ctx, `SELECT parent_id::text FROM comment WHERE id = $1`, planned[0]).Scan(&parent); err != nil || parent != f.sourceTrigger {
+		t.Fatalf("planned comment parent = %q, %v; want the recovery comment under %s", parent, err, f.sourceTrigger)
 	}
 	var recovery int
 	if err := f.pool.QueryRow(ctx, `
@@ -1677,6 +1688,6 @@ func TestDelegatedFailureRecoveryKeepsQueuedStepRun(t *testing.T) {
 		t.Fatalf("count recovery runs: %v", err)
 	}
 	if recovery != 0 {
-		t.Fatalf("recovery runs = %d: the same-thread slot is held by the step run, so the recovery waits for the replay", recovery)
+		t.Fatalf("recovery runs = %d: the same-thread slot is held by the step run, so the recovery is registered on it for the replay", recovery)
 	}
 }

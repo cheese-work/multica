@@ -53,33 +53,49 @@ func (fx issueFoldFixture) task(t *testing.T, taskID string) db.AgentTaskQueue {
 	return task
 }
 
-// claimAll claims every queued run of the fixture's runtime in order, completing
-// each so the next can start, and returns the claimed daemon tasks by task id.
-func (fx issueFoldFixture) claimAll(t *testing.T) map[string]daemon.Task {
+// claimNext claims the next queued run of the runtime through the daemon claim
+// handler; nil when nothing is claimable.
+func claimNext(t *testing.T, runtimeID string) *daemon.Task {
+	t.Helper()
+	request := withURLParam(newOwnerDaemonRequest(http.MethodPost, "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil), "runtimeId", runtimeID)
+	var response struct {
+		Task *AgentTaskResponse `json:"task"`
+	}
+	testutil.Call(t, testHandler.ClaimTaskByRuntime, request).Want(http.StatusOK).JSON(&response)
+	if response.Task == nil {
+		return nil
+	}
+	raw, err := json.Marshal(response.Task)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var task daemon.Task
+	if err := json.Unmarshal(raw, &task); err != nil {
+		t.Fatal(err)
+	}
+	return &task
+}
+
+// claimAllOn claims every queued run of the runtime in order, completing each so
+// the next can start, and returns the claimed daemon tasks by task id.
+func claimAllOn(t *testing.T, runtimeID string) map[string]daemon.Task {
 	t.Helper()
 	claimed := map[string]daemon.Task{}
 	for range 8 {
-		request := withURLParam(newOwnerDaemonRequest(http.MethodPost, "/api/daemon/runtimes/"+fx.runtime+"/tasks/claim", nil), "runtimeId", fx.runtime)
-		var response struct {
-			Task *AgentTaskResponse `json:"task"`
-		}
-		testutil.Call(t, testHandler.ClaimTaskByRuntime, request).Want(http.StatusOK).JSON(&response)
-		if response.Task == nil {
+		task := claimNext(t, runtimeID)
+		if task == nil {
 			break
 		}
-		raw, err := json.Marshal(response.Task)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var task daemon.Task
-		if err := json.Unmarshal(raw, &task); err != nil {
-			t.Fatal(err)
-		}
-		claimed[task.ID] = task
+		claimed[task.ID] = *task
 		// The claim lets one run per (issue, agent) execute at a time.
 		dbfx.Exec(t, "UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1", task.ID)
 	}
 	return claimed
+}
+
+func (fx issueFoldFixture) claimAll(t *testing.T) map[string]daemon.Task {
+	t.Helper()
+	return claimAllOn(t, fx.runtime)
 }
 
 // wantStepPrompt fails unless the claimed run renders the step prompt, not a comment prompt.
