@@ -36,6 +36,14 @@ func TestIsNotifMutedGroupSplit(t *testing.T) {
 		{"status group intact", map[string]string{"status_changes": "muted"}, "status_changed", true},
 		{"muting comments leaves assignments alone", map[string]string{"comments": "muted"}, "issue_assigned", false},
 
+		// CHE-6400: assignee churn has its own switch; "Assigned to me" keeps
+		// issue_assigned.
+		{"muted assignee_changes drops assignee_changed", map[string]string{"assignee_changes": "muted"}, "assignee_changed", true},
+		{"muted assignee_changes drops unassigned", map[string]string{"assignee_changes": "muted"}, "unassigned", true},
+		{"muted assignee_changes still delivers issue_assigned", map[string]string{"assignee_changes": "muted"}, "issue_assigned", false},
+		{"muted assignments still delivers assignee_changed", map[string]string{"assignments": "muted"}, "assignee_changed", false},
+		{"muted assignments still delivers unassigned", map[string]string{"assignments": "muted"}, "unassigned", false},
+
 		// Types outside the map are always delivered.
 		{"unconfigurable type always delivered", map[string]string{"comments": "muted"}, "quick_create_done", false},
 	}
