@@ -122,8 +122,8 @@ func TestIdleStartedGuardSkipsAgentOwnedContinuation(test *testing.T) {
 		"active task": func(test *testing.T, f idleGuardFixture) {
 			dbfx.Task(test, f.agent, testutil.Cols{"issue_id": f.issue, "status": "running", "runtime_id": handlerTestRuntimeID(test)})
 		},
-		"at wakeup": func(test *testing.T, f idleGuardFixture) {
-			f.wakeup(test, testutil.Cols{"kind": "at", "mode": "once", "next_fire_at": testutil.Raw(`now() + interval '2 days'`)})
+		"at wakeup within the threshold": func(test *testing.T, f idleGuardFixture) {
+			f.wakeup(test, testutil.Cols{"kind": "at", "mode": "once", "next_fire_at": testutil.Raw(`now() + interval '1 hour'`)})
 		},
 		"agent filtered event wakeup": func(test *testing.T, f idleGuardFixture) {
 			f.wakeup(test, testutil.Cols{"event_types": testutil.Raw(`ARRAY['comment.created']`), "filter_actor_type": "agent", "filter_actor_id": f.agent})
@@ -163,11 +163,12 @@ func TestIdleStartedGuardSkipsAgentOwnedContinuation(test *testing.T) {
 
 func TestIdleStartedGuardIgnoresHumanOnlyWakeups(test *testing.T) {
 	for name, cols := range map[string]testutil.Cols{
-		"unfiltered comment wakeup": {"event_types": testutil.Raw(`ARRAY['comment.created']`)},
-		"member filtered":           {"event_types": testutil.Raw(`ARRAY['issue.status_changed']`), "filter_actor_type": "member", "filter_actor_id": testUserID},
-		"issue_field condition":     {"condition": `{"type":"issue_field","field":"status","value":"done"}`},
-		"disabled at wakeup":        {"kind": "at", "mode": "once", "next_fire_at": testutil.Raw(`now() + interval '1 day'`), "enabled": false},
-		"paused every wakeup":       {"kind": "every", "interval_seconds": 3600, "next_fire_at": testutil.Raw(`now() + interval '1 day'`), "paused_reason": "loop"},
+		"unfiltered comment wakeup":      {"event_types": testutil.Raw(`ARRAY['comment.created']`)},
+		"member filtered":                {"event_types": testutil.Raw(`ARRAY['issue.status_changed']`), "filter_actor_type": "member", "filter_actor_id": testUserID},
+		"issue_field condition":          {"condition": `{"type":"issue_field","field":"status","value":"done"}`},
+		"at wakeup beyond the threshold": {"kind": "at", "mode": "once", "next_fire_at": testutil.Raw(`now() + interval '2 days'`)},
+		"disabled at wakeup":             {"kind": "at", "mode": "once", "next_fire_at": testutil.Raw(`now() + interval '1 day'`), "enabled": false},
+		"paused every wakeup":            {"kind": "every", "interval_seconds": 3600, "next_fire_at": testutil.Raw(`now() + interval '1 day'`), "paused_reason": "loop"},
 	} {
 		test.Run(name, func(test *testing.T) {
 			fixture := newIdleGuardFixture(test, 5)

@@ -87,7 +87,7 @@ func (handler *Handler) admitIdleGuardNotice(ctx context.Context, settings idleG
 		return settle(idleGuardNotified)
 	}
 	still, err := q.ListIdleStartedGuardIssues(ctx, db.ListIdleStartedGuardIssuesParams{
-		WorkspaceID: workspaceID, IssueID: issueID, Statuses: []string{receipt.To}, AfterSeconds: settings.threshold().Seconds(),
+		WorkspaceID: workspaceID, IssueID: issueID, Statuses: []string{receipt.To}, AfterSeconds: settings.threshold().Seconds(), HorizonSeconds: settings.threshold().Seconds(),
 		Episode: pgtype.Bool{Bool: true, Valid: true},
 	})
 	if err != nil {
@@ -252,7 +252,7 @@ func (handler *Handler) settleIdleGuardEpisodes(ctx context.Context) error {
 // retryIdleGuardMove repeats a refused move while the issue is still idle.
 func (handler *Handler) retryIdleGuardMove(ctx context.Context, settings idleGuardSettings, workspaceID, issueID pgtype.UUID, receipt idleGuardReceipt) error {
 	idle, err := handler.Queries.ListIdleStartedGuardIssues(ctx, db.ListIdleStartedGuardIssuesParams{
-		WorkspaceID: workspaceID, IssueID: issueID, Statuses: []string{receipt.From}, AfterSeconds: settings.threshold().Seconds(),
+		WorkspaceID: workspaceID, IssueID: issueID, Statuses: []string{receipt.From}, AfterSeconds: settings.threshold().Seconds(), HorizonSeconds: settings.threshold().Seconds(),
 		Episode: pgtype.Bool{Bool: true, Valid: true},
 	})
 	if err != nil {
