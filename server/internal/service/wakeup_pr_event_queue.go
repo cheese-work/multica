@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 
@@ -35,9 +36,10 @@ const (
 // cursor the same oldest batch would be selected on every pass and starve every
 // later event. The cursor lives in memory: a restart begins a new walk.
 type prEventCursor struct {
-	mu sync.Mutex
-	at pgtype.Timestamptz
-	id pgtype.UUID
+	mu     sync.Mutex
+	at     pgtype.Timestamptz
+	id     pgtype.UUID
+	shrunk bool
 }
 
 func (c *prEventCursor) position() (pgtype.Timestamptz, pgtype.UUID) {
@@ -54,46 +56,146 @@ func (c *prEventCursor) advance(at pgtype.Timestamptz, id pgtype.UUID) {
 
 func (c *prEventCursor) rewind() { c.advance(pgtype.Timestamptz{}, pgtype.UUID{}) }
 
+// limit is the batch size of the next read: the default, or the shrunk batch
+// after an expired attempt, until a commit.
+func (c *prEventCursor) limit() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.shrunk {
+		return prEventShrunkBatch
+	}
+	return wakeupPREventBatch
+}
+
+func (c *prEventCursor) committed() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.shrunk = false
+}
+
+// expired records an attempt that hit a time bound. The next batch shrinks. If
+// this one already was the shrunk size and its rows were read, the cursor moves
+// past them, so a batch that always expires cannot hold back later events; they
+// are retried when the walk rewinds. It returns the ids it skipped.
+func (c *prEventCursor) expired(batch int, events []db.ListNextTurnPREventsRow) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.shrunk = true
+	if batch > prEventShrunkBatch || len(events) == 0 {
+		return nil
+	}
+	skipped := make([]string, len(events))
+	for i, e := range events {
+		skipped[i] = util.UUIDToString(e.ID)
+	}
+	last := events[len(events)-1]
+	c.at, c.id = last.ObservedAt, last.ID
+	return skipped
+}
+
 // queueNextTurnPREvents settles started wakes, then bridges every event no
 // receipt is carrying. It follows TriggerPullRequestWakeup: same issue and
 // configuration checks, same rebase, so a cause is never recorded under a
 // revision dispatch would retire. A rule that is off or held records nothing
 // but a visible note; the event stays stored for when the rule is back.
+//
+// The bridge transaction is bounded on the server and on the client (CHE-9240,
+// wakeup_pr_event_bound.go). An expired attempt writes nothing, because
+// receipts are written only inside the transaction; the next attempt reads a
+// batch of prEventShrunkBatch, and if that batch expires after its rows were
+// read the cursor moves past them so later events still progress. The walk
+// rewinds at its end as before, so the skipped events are retried then.
 func (s *IssueWakeupService) queueNextTurnPREvents(ctx context.Context, workspaceIDs []pgtype.UUID) error {
 	if _, err := s.Tasks.Queries.MarkStartedPREventsDelivered(ctx, workspaceIDs); err != nil {
 		return err
 	}
-	tx, err := s.Tasks.TxStarter.Begin(ctx)
+	limits := s.prEventLimits.orDefault()
+	batch := s.prEvents.limit()
+	afterAt, afterID := s.prEvents.position()
+	boundedCtx, cancel := context.WithTimeout(ctx, limits.Client)
+	defer cancel()
+	var (
+		events    []db.ListNextTurnPREventsRow
+		withdrawn []db.AgentTaskQueue
+		noted     []wakeupActivity
+		readTook  time.Duration
+	)
+	began := time.Now()
+	err := func() error {
+		tx, err := s.Tasks.TxStarter.Begin(boundedCtx)
+		if err != nil {
+			return err
+		}
+		// The rollback must not depend on the caller or bound context: a
+		// cancelled one would skip it. If it still fails pgx closes the
+		// connection and the server aborts the transaction on disconnect.
+		defer func() {
+			rollbackCtx, rollbackCancel := context.WithTimeout(context.WithoutCancel(ctx), limits.Rollback)
+			defer rollbackCancel()
+			if err := tx.Rollback(rollbackCtx); err != nil && !errors.Is(err, pgx.ErrTxClosed) {
+				slog.WarnContext(ctx, "pr event bridge: rollback failed", "error", err)
+			}
+		}()
+		if err := setPREventBounds(boundedCtx, tx, limits); err != nil {
+			return err
+		}
+		q := s.Tasks.Queries.WithTx(tx)
+		if s.prEventSeam != nil {
+			if err := s.prEventSeam(boundedCtx, tx, prEventStageRead, nil); err != nil {
+				return err
+			}
+		}
+		readBegan := time.Now()
+		events, err = q.ListNextTurnPREvents(boundedCtx, db.ListNextTurnPREventsParams{
+			WorkspaceIds: workspaceIDs, RowLimit: int32(batch), AfterObservedAt: afterAt, AfterID: afterID,
+		})
+		readTook = time.Since(readBegan)
+		if err != nil {
+			events = nil
+			return err
+		}
+		if len(events) == 0 {
+			return nil
+		}
+		if s.prEventSeam != nil {
+			if err := s.prEventSeam(boundedCtx, tx, prEventStageBridge, events); err != nil {
+				return err
+			}
+		}
+		for _, e := range events {
+			tasks, activity, err := s.bridgePREvent(boundedCtx, tx, q, e)
+			if err != nil {
+				return err
+			}
+			withdrawn = append(withdrawn, tasks...)
+			noted = append(noted, activity...)
+		}
+		return tx.Commit(boundedCtx)
+	}()
+	took := time.Since(began)
+	fields := []any{
+		"batch", batch, "events", len(events), "read_ms", readTook.Milliseconds(), "tx_ms", took.Milliseconds(),
+		"cursor_at", afterAt.Time, "cursor_id", util.UUIDToString(afterID),
+	}
+	if prEventExpired(ctx, boundedCtx, err) {
+		skipped := s.prEvents.expired(batch, events)
+		slog.WarnContext(ctx, "pr event bridge: expired", append(fields, "skipped_ids", skipped, "error", err)...)
+		return err
+	}
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
-	q := s.Tasks.Queries.WithTx(tx)
-	afterAt, afterID := s.prEvents.position()
-	events, err := q.ListNextTurnPREvents(ctx, db.ListNextTurnPREventsParams{
-		WorkspaceIds: workspaceIDs, RowLimit: wakeupPREventBatch, AfterObservedAt: afterAt, AfterID: afterID,
-	})
-	if err != nil {
-		return err
+	if took > prEventSlowTransaction {
+		slog.WarnContext(ctx, "pr event bridge: slow transaction", fields...)
+	} else {
+		slog.DebugContext(ctx, "pr event bridge: tick", fields...)
 	}
 	if len(events) == 0 {
 		s.prEvents.rewind()
 		return nil
 	}
-	var withdrawn []db.AgentTaskQueue
-	var noted []wakeupActivity
-	for _, e := range events {
-		tasks, activity, err := s.bridgePREvent(ctx, tx, q, e)
-		if err != nil {
-			return err
-		}
-		withdrawn = append(withdrawn, tasks...)
-		noted = append(noted, activity...)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return err
-	}
-	if len(events) < wakeupPREventBatch {
+	s.prEvents.committed()
+	if len(events) < batch {
 		s.prEvents.rewind()
 	} else {
 		last := events[len(events)-1]
