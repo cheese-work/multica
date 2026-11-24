@@ -39,6 +39,13 @@ const (
 	GuardAdoptionLinked   = "adoption_linked"
 	GuardUpstreamChecked  = "upstream_checked"
 	GuardRootIssue        = "root_issue"
+	// GuardHumanDone holds once a member's live decision on the issue chose done
+	// (CHE-9259). The engine applies it like any fact edge.
+	GuardHumanDone = "human_done"
+	// GuardPRAllMerged holds when the issue has a linked PR, every linked PR is
+	// merged and none is open. It is an agent exit: the agent asks for the move
+	// and the guard is checked then, so the engine never moves on it.
+	GuardPRAllMerged = "pr.all_merged"
 )
 
 // GuardIntakeSimple and GuardQAProof are in intake.go.
@@ -62,7 +69,7 @@ var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRChecksInfraRed: 0, GuardPRChecksFlaky: 0, GuardPRReady: 0,
 	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardPRNoneOpen: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
 	GuardWebhook: 1, GuardAdoptionLinked: 0, GuardUpstreamChecked: 0,
-	GuardIntakeSimple: 0, GuardQAProof: 0, GuardRootIssue: 0,
+	GuardIntakeSimple: 0, GuardQAProof: 0, GuardRootIssue: 0, GuardHumanDone: 0, GuardPRAllMerged: 0,
 }
 
 // webhookNameRe is the endpoint name a webhook guard may reference.
@@ -105,13 +112,21 @@ func ParseGuard(s string) (Guard, error) {
 
 // needsTimeout reports whether a guard waits on an outside fact.
 func (g Guard) needsTimeout() bool {
-	return strings.HasPrefix(g.Kind, "pr.") || g.Kind == GuardWebhook
+	return (strings.HasPrefix(g.Kind, "pr.") && g.Kind != GuardPRAllMerged) || g.Kind == GuardWebhook
 }
+
+// agentConditional reports whether the guard gates an agent's own status
+// write on stored facts: the agent asks and the facts decide.
+func (g Guard) agentConditional() bool { return g.Kind == GuardPRAllMerged }
+
+// opensAgentExit reports whether the guard, when it holds, lets an agent make
+// the move: the conditional guards, and human_done, which the engine also applies.
+func (g Guard) opensAgentExit() bool { return g.agentConditional() || g.Kind == GuardHumanDone }
 
 // readsFacts reports whether stored facts decide the guard; the agent guards
 // are decided by the agent's own status write.
 func (g Guard) readsFacts() bool {
-	return g.Kind != GuardAgentDone && g.Kind != GuardAgentVerdict
+	return g.Kind != GuardAgentDone && g.Kind != GuardAgentVerdict && !g.agentConditional()
 }
 
 // EdgesOf returns a step's exits: its own edges, or else the ones its legacy
@@ -239,6 +254,9 @@ type Facts struct {
 	QA     *QAFacts
 	// HasParent is what the root_issue entry gate reads (CHE-6831).
 	HasParent bool
+	// HumanDone is what the human_done guard reads: a member's live decision on
+	// this issue chose done.
+	HumanDone bool
 	// ReadyForReview is the author's ready marker on the issue (CHE-5741). A
 	// draft PR is the author's early push, so pr.checks_green holds for it only
 	// once the author set the marker.
@@ -298,6 +316,10 @@ func (f Facts) holds(g Guard) bool {
 		return f.Webhooks[g.Args[0]]
 	case GuardRootIssue:
 		return !f.HasParent
+	case GuardHumanDone:
+		return f.HumanDone
+	case GuardPRAllMerged:
+		return len(f.PRs) > 0 && !f.anyPR(func(p PRFact) bool { return p.State != "merged" })
 	case GuardAdoptionLinked:
 		return f.Adoption != nil && f.Adoption.Refusal() == ""
 	}
@@ -433,9 +455,19 @@ func (s Step) HasGuard(kind string) bool { return hasGuard(s.Edges, kind) }
 type MoveNotAllowedError struct {
 	From, To string
 	Allowed  []string
+	// Missing names the guards of the step's exits to To that did not hold, each
+	// with what makes it hold (CHE-9259).
+	Missing []string
 }
 
 func (e *MoveNotAllowedError) Error() string {
+	if len(e.Missing) > 0 {
+		msg := fmt.Sprintf("status %q is not an allowed move from %q: %s", e.To, e.From, strings.Join(e.Missing, "; or "))
+		if len(e.Allowed) > 0 {
+			msg += "; the moves that work now: " + strings.Join(e.Allowed, ", ")
+		}
+		return msg
+	}
 	if len(e.Allowed) == 0 {
 		return fmt.Sprintf("status %q is not an allowed move from %q; this step has no agent exit, the workflow moves the issue", e.To, e.From)
 	}
@@ -449,7 +481,7 @@ func (d Definition) AgentMoves(key string) []string {
 	var moves []string
 	for _, e := range d.EdgesOf(key) {
 		g, err := ParseGuard(e.Guard)
-		if err != nil || g.readsFacts() || slices.Contains(moves, e.To) {
+		if err != nil || g.readsFacts() || g.agentConditional() || slices.Contains(moves, e.To) {
 			continue
 		}
 		moves = append(moves, e.To)
@@ -481,4 +513,42 @@ func (d Definition) VerdictOf(from, to string) string {
 		}
 	}
 	return ""
+}
+
+// guardHints say what makes a conditional exit hold; an agent reads them in a refusal.
+var guardHints = map[string]string{
+	GuardHumanDone:   "guard human_done: a member's decision on this issue must have chosen done (a decision card option with option_key done or the typed issue.status.set done)",
+	GuardPRAllMerged: "guard pr.all_merged: the issue needs at least one linked PR, every linked PR merged and none open",
+}
+
+// CheckAgentMoveFacts is CheckAgentMove with the stored facts: an exit gated by
+// human_done or pr.all_merged opens when its guard holds. A refusal names each
+// guard of the step's exits to the target that failed, and the moves that work.
+func CheckAgentMoveFacts(def Definition, from, to string, f Facts) error {
+	if err := CheckAgentMove(def, from, to); err == nil {
+		return nil
+	}
+	var missing []string
+	for _, e := range def.EdgesOf(from) {
+		g, err := ParseGuard(e.Guard)
+		if err != nil || e.To != to || !g.opensAgentExit() {
+			continue
+		}
+		if f.holds(g) {
+			return nil
+		}
+		missing = append(missing, guardHints[g.Kind])
+	}
+	return &MoveNotAllowedError{From: from, To: to, Allowed: def.AgentMoves(from), Missing: missing}
+}
+
+// HasConditionalExit reports whether the step has an exit to a status that a
+// stored fact can open for an agent, so the caller knows to load the facts.
+func (d Definition) HasConditionalExit(from, to string) bool {
+	for _, e := range d.EdgesOf(from) {
+		if g, err := ParseGuard(e.Guard); err == nil && e.To == to && g.opensAgentExit() {
+			return true
+		}
+	}
+	return false
 }

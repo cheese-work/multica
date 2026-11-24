@@ -1,6 +1,7 @@
 import { infiniteQueryOptions, queryOptions, useQuery, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { api } from "../api";
+import { ingestChatMessages, ingestChatMessagesPage } from "./message-cache";
 import type { TaskMessagePayload } from "../types/events";
 import type {
   ChatQuickActionsFailureState,
@@ -44,6 +45,10 @@ export const chatKeys = {
   usage: (wsId: string, id: string) => [...chatKeys.all(wsId), "usage", id] as const,
   messagesAll: () => ["chat", "messages"] as const,
   messages: (sessionId: string) => [...chatKeys.messagesAll(), sessionId] as const,
+  /** By-id store: one row per chat message across sessions (B1a.1). */
+  messageEntities: () => ["chat", "message-entities"] as const,
+  /** Ordered message ids of one session; the rows live in `messageEntities`. */
+  messageIds: (sessionId: string) => ["chat", "message-ids", sessionId] as const,
   messagesPageAll: () => ["chat", "messages-page"] as const,
   messagesPage: (sessionId: string) => [...chatKeys.messagesPageAll(), sessionId] as const,
   pendingTaskAll: () => ["chat", "pending-task"] as const,
@@ -256,7 +261,8 @@ export function chatSessionOptions(wsId: string, id: string) {
 export function chatMessagesOptions(sessionId: string) {
   return queryOptions({
     queryKey: chatKeys.messages(sessionId),
-    queryFn: () => api.listChatMessages(sessionId),
+    queryFn: async ({ client, signal }) =>
+      ingestChatMessages(client, sessionId, await api.listChatMessages(sessionId), signal),
     enabled: !!sessionId,
     staleTime: Infinity,
   });
@@ -265,8 +271,14 @@ export function chatMessagesOptions(sessionId: string) {
 export function chatMessagesPageOptions(sessionId: string, limit = 50) {
   return infiniteQueryOptions({
     queryKey: chatKeys.messagesPage(sessionId),
-    queryFn: ({ pageParam }) =>
-      api.listChatMessagesPage(sessionId, { before: pageParam, limit }),
+    queryFn: async ({ pageParam, client, signal }) =>
+      ingestChatMessagesPage(
+        client,
+        sessionId,
+        pageParam,
+        await api.listChatMessagesPage(sessionId, { before: pageParam, limit }),
+        signal,
+      ),
     initialPageParam: null as { created_at: string; id: string } | null,
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.next_cursor ?? undefined : undefined,
