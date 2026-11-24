@@ -151,6 +151,14 @@ func (h *Handler) pickReviewer(ctx context.Context, q *db.Queries, issue db.Issu
 	}
 }
 
+// holdsReviewerRule reports whether the assignee of a step is held to the
+// independence rule: a reviewer step, and a same_as step that is the review
+// step (agent_review), whose resolved agent could be the author (RGS-1).
+func holdsReviewerRule(step issueworkflow.Step) bool {
+	return step.Handler.Type == issueworkflow.HandlerReviewer ||
+		(step.Handler.Type == issueworkflow.HandlerSameAs && step.StatusKey == statusAgentReview)
+}
+
 // checkReviewerAssignee holds the effective assignee of a reviewer step, after
 // override and sticky, to the same rule as the table's pick. A person is
 // outside the rule; a squad is judged by its leader.
@@ -180,14 +188,18 @@ func (h *Handler) checkReviewerAssignee(ctx context.Context, q *db.Queries, work
 // issue into a reviewer step to the independence rule. The write is a person's
 // or agent's explicit choice, so no handoff is computed, but it must not put an
 // author or a same-lab agent on the review.
-func (h *Handler) checkTouchedReviewer(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, def *issueworkflow.Definition) error {
+func (h *Handler) checkTouchedReviewer(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, def *issueworkflow.Definition, callerIsAgent bool) error {
 	step, ok := def.Step(params.Status.String)
-	if !ok || step.Handler.Type != issueworkflow.HandlerReviewer || !params.AssigneeType.Valid || !params.AssigneeID.Valid {
+	if !ok || !holdsReviewerRule(step) || !params.AssigneeType.Valid || !params.AssigneeID.Valid {
 		return nil
 	}
 	guard, err := h.loadReviewerGuard(ctx, q, prev.ID)
 	if err != nil {
 		return err
 	}
-	return h.checkReviewerAssignee(ctx, q, prev.WorkspaceID, guard, issueworkflow.StepAssignee{Type: params.AssigneeType.String, ID: params.AssigneeID})
+	assignee := issueworkflow.StepAssignee{Type: params.AssigneeType.String, ID: params.AssigneeID}
+	if err := h.checkReviewerAssignee(ctx, q, prev.WorkspaceID, guard, assignee); err != nil {
+		return err
+	}
+	return h.checkReviewerScope(ctx, q, prev, textOr(params.Title, prev.Title), assignee, callerIsAgent)
 }

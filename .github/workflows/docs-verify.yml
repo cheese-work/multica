@@ -35,7 +35,7 @@ jobs:
     runs-on: ${{ vars.RUNNER_DOCS_VERIFY || 'ubuntu-24.04' }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       - name: Setup pnpm
         run: bash scripts/setup-pnpm.sh

@@ -19,7 +19,7 @@ RETURNING id;
 -- The guard's incidents since a time, newest first, for the brief: refusals and warn-mode would-be refusals.
 SELECT i.number::bigint AS number, a.details, a.action
 FROM activity_log a JOIN issue i ON i.id = a.issue_id
-WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid AND a.action IN ('weekly_run_guard_tripped', 'weekly_run_guard_warned')
+WHERE a.workspace_id = sqlc.arg('workspace_id')::uuid AND a.action IN ('weekly_run_guard_tripped', 'weekly_run_guard_warned', 'stop_loss_warned')
   AND a.created_at >= sqlc.arg('since')::timestamptz
 ORDER BY a.created_at DESC;
 

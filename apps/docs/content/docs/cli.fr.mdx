@@ -307,6 +307,7 @@ multica skill list
 multica skill get <skill-id>
 multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
+multica agent skills remove <agent-id> --skill-id <skill-id>
 ```
 
 `multica agent get <agent-id> --output json` renvoie aussi `background_use` : les tâches d'arrière-plan que l'agent assure, sous forme de liste `{scope, job}` (`scope` vaut `workspace` ou `personal`). Vous voyez toutes les tâches de l'espace de travail et uniquement vos propres choix personnels.
@@ -454,6 +455,8 @@ multica me background-agents set dm_title --agent none   # retour à la valeur p
 
 `multica workspace capability-routing [workspace]` affiche le paramètre `capability_routing` (type de ticket vers agents auteur et relecteurs) en JSON, ou `{}` s’il est vide. Elle ne fait que lire ; modifiez le paramètre avec `multica config propose workspace.settings --set 'capability_routing:=<json>'`. Voir [Workflows](/docs/workflows).
 
+`multica workspace agent-role-scope [workspace]` affiche le paramètre `agent_role_scope` (agent vers les classes de travail qu’un autre agent peut lui confier : `plan`, `plan_review`, `decision`, `debate`, `security_cosign`, `code_review`, `execution`) en JSON, ou `{}` s’il est vide. Un agent sans entrée n’est pas restreint. Quand un agent assigne un ticket, ou demande une relecture, à un agent dont la portée exclut la classe de travail, le serveur refuse avec une indication qui nomme l’auteur ou les relecteurs de `capability_routing` ; l’assignation par une personne réussit et laisse une note d’audit sur le ticket. La classe vient du préfixe de type du titre (`plan`, `decision`, `debate`), de la portée de `review(...)` (`plan`, `design`, `spec`, `decision`, `debate` : relecture de plan ; sinon relecture de code, `security` compris), d’un ticket enfant intitulé `security gate: <identifiant du parent>` sous le ticket qu’il contrôle (la co-signature D8), sinon `execution` ; un travail de type `security`, une relecture `security` ou un chemin dans le titre ne font jamais une co-signature. Elle ne fait que lire ; modifiez le paramètre avec `multica config propose workspace.settings --set 'agent_role_scope:=<json>'`. `multica agent get <agent>` affiche la portée d’un agent.
+
 `multica workspace queue-order show [workspace]` affiche en JSON les valeurs effectives de `queue_order` (`priority` ou `project_rank`) et de `queue_aging_minutes` (5 à 720). `multica workspace queue-order set [workspace] --order <mode> --aging-minutes <n>` modifie l’une ou les deux (propriétaire ou admin uniquement ; chaque changement est journalisé avec l’auteur, l’ancienne valeur, la nouvelle valeur et l’heure). `priority`, la valeur par défaut, garde l’ordre actuel de la file. `project_rank` classe les exécutions en file par priorité du projet, puis du ticket parent, puis par la leur, et chaque période d’attente les fait monter d’un cran ; le chemin de prise en charge lira ce réglage dans une version ultérieure, donc pour l’instant il est seulement enregistré et journalisé. Une valeur refusée nomme les valeurs autorisées. Utilisez `--order priority` pour revenir en arrière.
 
 ## Baux de navigateur
@@ -580,7 +583,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | --- | --- | --- | --- |
 | `issue` | `list` | Lister les tâches | `--status`, `--priority`, `--assignee`, `--project`, `--metadata` (répétable), `--property` (répétable, `"Name=Value"` ; `__none__` correspond à une valeur non définie), `--limit`, `--offset`, `--sort` (y compris `effective_due`, qui place d'abord les tâches datées selon l'échéance héritée la plus proche, et `property:<name-or-id>`), `--full-id`, `--resolve-properties` (JSON uniquement ; lignes avec les noms de propriété, d'option et de membre à côté des ID enregistrés), `--fields` (JSON uniquement ; champs à conserver, séparés par des virgules) |
 | | `get <id>` | Afficher une tâche | `--resolve-properties` (JSON uniquement ; lignes avec les noms de propriété, d'option et de membre à côté des ID enregistrés) |
-| | `create` | Créer une tâche | `--title` (obligatoire), `--description` / `--description-stdin` / `--description-file`, `--status`, `--priority`, `--assignee`, `--parent`, `--stage`, `--project`, `--start-date`, `--due-date`, `--attachment` (répétable), `--property` (répétable), `--allow-duplicate` (crée même si une tâche ouverte porte le même titre) |
+| | `create` | Créer une tâche | `--title` (obligatoire), `--description` / `--description-stdin` / `--description-file`, `--status`, `--priority`, `--assignee`, `--parent`, `--stage`, `--project`, `--start-date`, `--due-date`, `--attachment` (répétable), `--property` (répétable), `--allow-duplicate` (crée même si une tâche ouverte porte le même titre), `--discovery-reason` (quick-create uniquement : pourquoi la demande est floue, avec `--status investigating`) |
 | | `update <id>` | Mettre à jour les champs d'une tâche | Mêmes champs que `create`, plus `--position`, `--no-start`, `--duplicate-of` |
 | | `assign <id>` | Assigner ou désassigner | `--to` (correspondance approximative sur le nom parmi les membres, les agents et les squads), `--to-id`, `--unassign`, `--no-start` |
 | | `status <id> <status>` | Changer le statut | `--no-start`, `--duplicate-of`, `--blocked-on`, `--waiting-on` |
@@ -611,7 +614,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | | `tasks <id>` | Afficher les exécutions d'un agent | |
 | | `avatar <id>` | Envoyer un avatar | |
 | | `env get/set <agent-id>` | Écrire les variables d'environnement personnalisées et lister leurs clés (propriétaire de l'agent ou owner/admin de l'espace de travail). Aucune valeur n'est renvoyée : `get` affiche chaque clé et sa source, et les réponses de `set`/`patch` masquent toutes les valeurs | `set` : `--custom-env` / `--custom-env-file` / `--custom-env-stdin` ; remplace l'ensemble, et les clés dont la valeur est `****` gardent leur valeur |
-| | `skills list/set/add <agent-id>` | Gérer les skills rattachés | `--skill-ids` (`set` remplace toute la liste, `add` ajoute à la suite) |
+| | `skills list/set/add/remove <agent-id>` | Gérer les skills rattachés | `--skill-ids` (`set` remplace toute la liste, `add` ajoute à la suite) ; `remove` prend un seul `--skill-id` |
 | | `mcp list/add/enable/disable/remove <agent-id>` | Assigner des serveurs MCP de l'espace de travail à cet agent | Récupérez l'ID du serveur avec `workspace mcp list`. Une entrée de la bibliothèque n'a aucun effet tant qu'elle n'est pas ajoutée ici ; `disable` cesse de l'envoyer sans supprimer l'assignation |
 | `autopilot` | `list/get/create/update/delete` | Gérer les automatisations | `create` : `--title`, `--agent`, `--mode` (tous obligatoires), `--description`, `--issue-title-template`, `--project`, `--subscriber` (répétable), `--script`, `--arg` |
 | | `trigger <id>` | Déclencher une exécution manuellement | |

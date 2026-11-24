@@ -1,0 +1,136 @@
+{
+ "total_count": 4,
+ "runners": [
+  {
+   "id": 1,
+   "name": "cheese-x99-repo-2",
+   "os": "linux",
+   "status": "online",
+   "busy": true,
+   "labels": [
+    {
+     "id": 0,
+     "name": "self-hosted",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "Linux",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "X64",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "cheese-x99",
+     "type": "custom"
+    },
+    {
+     "id": 0,
+     "name": "cheese-x99-homedisk",
+     "type": "custom"
+    }
+   ]
+  },
+  {
+   "id": 2,
+   "name": "cheese-x99-repo-4",
+   "os": "linux",
+   "status": "online",
+   "busy": true,
+   "labels": [
+    {
+     "id": 0,
+     "name": "self-hosted",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "Linux",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "X64",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "cheese-x99",
+     "type": "custom"
+    },
+    {
+     "id": 0,
+     "name": "cheese-x99-homedisk",
+     "type": "custom"
+    }
+   ]
+  },
+  {
+   "id": 3,
+   "name": "cheese-x99-repo-9",
+   "os": "linux",
+   "status": "offline",
+   "busy": false,
+   "labels": [
+    {
+     "id": 0,
+     "name": "self-hosted",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "Linux",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "X64",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "cheese-x99",
+     "type": "custom"
+    },
+    {
+     "id": 0,
+     "name": "cheese-x99-homedisk",
+     "type": "custom"
+    }
+   ]
+  },
+  {
+   "id": 4,
+   "name": "cheese-x99-repo-5",
+   "os": "linux",
+   "status": "online",
+   "busy": false,
+   "labels": [
+    {
+     "id": 0,
+     "name": "self-hosted",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "Linux",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "X64",
+     "type": "read-only"
+    },
+    {
+     "id": 0,
+     "name": "cheese-x99",
+     "type": "custom"
+    }
+   ]
+  }
+ ]
+}

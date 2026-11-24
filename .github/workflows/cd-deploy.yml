@@ -39,6 +39,10 @@ run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.e
 # deploy, readback, readback-delay or readback-confirm suspends automatic deploys: the next
 # authorize-c00 finds the latest finished run failed and builds without
 # deploying, until a later deploy succeeds (the owner's dispatch lifts it).
+# A first-attempt run that the quiescence preflight deferred (the marker step in
+# the `deploy` job, CHE-9367) is named as such in the warning, but it still
+# suspends: nothing is skipped yet (CHE-9330). `authorize-c00.py --explain`
+# prints the walk and the deferral streak; the workflow does not call it.
 # The cutover controller rolls back by digest on a failed cutover, and the
 # `rollback` job does the same after a failed readback, readback-delay or readback-confirm.
 #
@@ -120,7 +124,7 @@ jobs:
       notice: ${{ steps.resolve.outputs.notice }}
     steps:
       - name: Checkout the workflow revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -154,7 +158,7 @@ jobs:
       authorized: ${{ steps.gate.outputs.authorized }}
       candidate_sha: ${{ steps.gate.outputs.candidate_sha }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: deploy/cd/authorize-c00.py
@@ -186,7 +190,7 @@ jobs:
       group: c00-approval-notice
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: deploy/cd/notify-approval.sh
@@ -222,7 +226,7 @@ jobs:
       eligible: ${{ steps.candidate.outputs.eligible }}
     steps:
       - name: Checkout the workflow revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -245,7 +249,7 @@ jobs:
         id: app
         # A missing key or environment must not stop a deploy: the pick step below falls back to GITHUB_TOKEN.
         continue-on-error: true
-        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         with:
           app-id: ${{ secrets.C00_MULTICADO_APP_ID }}
           private-key: ${{ secrets.C00_MULTICADO_CI_PRIVATE_KEY }}
@@ -292,7 +296,7 @@ jobs:
       notice: ${{ steps.resolve.outputs.notice }}
     steps:
       - name: Checkout the workflow revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
@@ -319,7 +323,7 @@ jobs:
     runs-on: [self-hosted, linux, x64, cheese-x99]
     timeout-minutes: 2
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           sparse-checkout: deploy/cd/post-stale-notice.sh
@@ -376,7 +380,7 @@ jobs:
           { echo "sha=$CANDIDATE_SHA"; echo "run_id=$run_id"; echo "event=push"; echo "branch=main"; } >> "$GITHUB_OUTPUT"
 
       - name: Checkout the qualified commit
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.q.outputs.sha }}
           # Full history, not a shallow clone: the baseline step resolves the
@@ -544,7 +548,7 @@ jobs:
           fi
 
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ steps.paths.outputs.ref }}
           fetch-depth: 1
@@ -642,7 +646,7 @@ jobs:
       queue: max
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.admission.outputs.ref }}
           fetch-depth: 0
@@ -791,11 +795,28 @@ jobs:
             deploy_status=1
           fi
 
+          # CHE-9367 (CHE-9223): cutover.sh exits 75 only for a quiescence
+          # preflight deferral (nothing drained, incumbent still serving).
+          # Record it only when the window-0 health check above also passed
+          # (a failed check set deploy_status=1). The step still fails below.
+          if [ "$deploy_status" -eq 75 ]; then
+            echo "outcome=deferred" >> "$GITHUB_OUTPUT"
+          fi
+
           # Best-effort cleanup of the staged copy; failure here must
           # never mask the deploy's own exit status.
           rm -rf "$remote_dir" || true
 
           exit "$deploy_status"
+
+      # CHE-9367 (CHE-9223 S1): marks a run whose deploy step was deferred by the
+      # quiescence preflight. The output is written in this attempt by the
+      # deploy step, so no workspace file is read. It only
+      # prints a notice; the job stays failed and authorize-c00 does not read it.
+      - name: C00 deploy deferred by quiescence preflight
+        if: failure() && steps.deploy.outcome == 'failure' && steps.deploy.outputs.outcome == 'deferred'
+        shell: bash
+        run: echo "::notice title=C00 deploy deferred::The quiescence preflight deferred this deploy (exit 75); nothing was cut over."
 
       # Release receipt inputs. The receipt itself is the release-receipt job
       # below: it runs only after the readback and the 15-minute confirm passed.
@@ -845,7 +866,7 @@ jobs:
       restarts: ${{ steps.window.outputs.restarts }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -919,7 +940,7 @@ jobs:
     environment: c00-runtime
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -993,7 +1014,7 @@ jobs:
       queue: max
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0

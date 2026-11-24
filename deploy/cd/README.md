@@ -548,6 +548,45 @@ Temporary-to-durable transition (operator, on C00; no value is printed):
 Source tests (`test-jev-overlay.sh`, `test-cutover.sh`) use synthetic values
 and mocked Docker. They are not production or shadow acceptance.
 
+### Deferred preflight signal (CHE-9367, CHE-9223 S1)
+
+Producer contract. `authorize-c00` reads it only to name the run (CHE-9223 S2):
+`authorized` is the same value as before for every run history, so a marked
+deferral still suspends auto-deploy.
+
+| Step | Contract |
+| --- | --- |
+| `quiescence.mjs preflight` | Prints one JSON line. `admit:false` with `decision:"deferred_contention"` means live contention. An unreadable database is `decision:"observation_failed"`. |
+| `cutover.sh` step 1 (before drain) | Exits **75** only for `admit=false` and `decision="deferred_contention"`. Every other case exits **1**: `observation_failed`, a crash, no or bad JSON, any other decision, and every later gate (final-gate denials after drain, CHE-6850). |
+| `cd-deploy.yml` deploy step | Keeps `deploy_status`. Writes `outcome=deferred` to `$GITHUB_OUTPUT` only when `deploy_status` is still 75 after `ab-health-check.sh --window 0` passed. It still exits non-zero, so the job conclusion stays `failure`. |
+| Marker step `C00 deploy deferred by quiescence preflight` | Runs when `failure() && steps.deploy.outcome == 'failure' && steps.deploy.outputs.outcome == 'deferred'`. Prints one `::notice`. No workspace file. |
+
+A candidate that does not contain this change still exits 1 on a deferral and
+records no marker, so a consumer must treat a missing marker as an ordinary
+failure.
+
+Consumer (`deploy/cd/authorize-c00.py`, CHE-9223 S2). `classify(run, jobs)` gives
+each finished run one class:
+
+| Class | When |
+| --- | --- |
+| deferral | `run_attempt` is 1, the `deploy` job lists the marker step with conclusion success, `deploy` failed, and `readback`, `readback-delay` and `readback-confirm` are skipped or absent. |
+| failure | Any other run with a `failure` in the 4 deploy jobs: a rerun, a legacy unmarked deferral, `observation_failed`, a marker with a failed readback. |
+| success | A `success` and no `failure` in the 4 deploy jobs. |
+| silent | Anything else (built and stopped, cancelled). |
+
+The walk is unchanged (same pages, order, 5-page cap and API calls; it stops at
+the first non-silent run). A deferral suspends, like a failure; only the warning
+differs: `run <id> was deferred by the quiescence preflight; nothing was cut over.
+Automatic retry is not active yet (CHE-9330)`. A failure keeps `run <id> failed
+after deploying`. `python3 deploy/cd/authorize-c00.py --explain` (needs
+`GITHUB_REPOSITORY` and `gh`; read only, writes no `GITHUB_OUTPUT`, not called by
+the workflow) prints one line per walked run (run ID, attempt, event, class),
+walks past deferrals until the first non-deferral or `MAX_DEFERRALS = 3`
+deferrals, then prints `deferral streak k/3` and the `authorized` value gate mode
+returns for the suspension walk (it does not check the merger). Nothing enforces
+the bound yet (CHE-9330).
+
 ### A/B outage runbook
 
 For public 502s, a `Multica A/B cutover outage` annotation, or a failing

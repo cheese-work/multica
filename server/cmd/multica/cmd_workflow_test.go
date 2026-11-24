@@ -894,3 +894,12 @@ func TestWorkflowLintTableStripsControlCharacters(t *testing.T) {
 		}
 	}
 }
+
+func TestWorkflowTableShowsSameAsStep(t *testing.T) {
+	fixture := workflowFixture()
+	fixture["steps"] = []any{map[string]any{"status_key": "merged", "handler": map[string]any{"type": "same_as", "step": "in_review"}}}
+	out, _ := captureStdout(t, func() error { printWorkflowTable(fixture); return nil })
+	if !strings.Contains(out, "same_as: in_review") {
+		t.Fatalf("table missing the same_as step:\n%s", out)
+	}
+}

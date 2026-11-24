@@ -108,6 +108,8 @@ import { RunLifecycleDemo } from "@/components/demos/run-lifecycle-demo";
 
 工作区设置 `run_guard.mode`（`off`、`warn` 或 `block`；默认 `block`）决定限制在达到上限时的行为。`block` 按上文拒绝运行。`warn` 不拒绝任何运行，也不打开卡片，而是每个 issue 每个 ICT 日记录一次本该被拒绝的情况，并在智能体决策简报中列为限制本会拦下的运行。`off` 为工作区关闭此限制。使用 `multica config propose workspace.settings --set 'run_guard:={"mode":"warn"}'` 修改。上限仍由上面的环境变量设置。
 
+止损（工作区设置 `run_guard.stop_loss.mode`：`off`、`warn` 或 `block`；默认 `warn`）。一个 issue 已启动 20 次运行，或已用掉 3000 万 token，且没有关联打开、草稿或已合并的拉取请求时，无论每周计数如何，都不再启动派生运行；进展事件不会解除。仍有未完成子 issue 的 `plan` issue 不计入。在 `block` 模式下，issue 会移到 `need_decision`，并出现一张卡片，列出运行次数、token、最后一次状态变化和剩余工作。自动审批（运行预算和每周运行守卫）不会解除它，只有所有者在卡片上的回答才能解除；批准后增加 10 次运行和按比例增加的 token 额度。在 `warn` 模式下不拒绝任何运行，每个 issue 每个 ICT 日记录一次本应停止的情况，并列入智能体决策简报。`run_guard:={...}` 会替换整个 `run_guard` 对象，所以设置 `mode` 的提案必须同时重复 `stop_loss`：`--set 'run_guard:={"mode":"block","stop_loss":{"mode":"block"}}'`。
+
 ## 失败原因参考
 
 执行日志和[统计](/analytics#错误页签)里的失败原因分两类：不带前缀的原因码由平台记录，`agent_error.*` 由 AI 编程工具的报错归类而来。

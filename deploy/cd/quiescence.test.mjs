@@ -187,3 +187,39 @@ test("the final gate still denies a parallel worker", () => {
   const r = evaluateFinalGate(stateWithWorkers(["20"]));
   assert.equal(r.admit, false);
 });
+
+// CHE-9367 (CHE-9223 S1): a failed observation is not contention. The deploy
+// workflow turns `deferred_contention` into exit 75 and a marker step, so an
+// unreadable database must not carry that label.
+test("a failed observation returns observation_failed, never deferred_contention", () => {
+  const r = evaluatePassivePreflight({ ok: false, reason: "psql timed out" });
+  assert.equal(r.admit, false);
+  assert.equal(r.decision, "observation_failed");
+  assert.match(r.reason, /observation failed: psql timed out/);
+});
+
+test("every contention denial keeps the deferred_contention decision", () => {
+  const old = evaluatePassivePreflight(state([1], { xactStart: new Date(NOW - 20000).toISOString() }));
+  assert.equal(old.decision, "deferred_contention");
+  assert.match(old.reason, /age threshold/);
+
+  const prepared = evaluatePassivePreflight({ ...state([]), prepared: [{ gid: "x" }] });
+  assert.equal(prepared.decision, "deferred_contention");
+  assert.match(prepared.reason, /prepared transaction/);
+
+  const advisory = evaluatePassivePreflight(state([1]));
+  assert.equal(advisory.decision, "deferred_contention");
+  assert.match(advisory.reason, /advisory-lock holder/);
+
+  const unknown = evaluatePassivePreflight(stateWithWorkers(["20"]));
+  assert.equal(unknown.decision, "deferred_contention");
+  assert.match(unknown.reason, /unknown\/unfenceable consumer backend type/);
+
+  const index = evaluatePassivePreflight({ ...state([]), createIndex: [{ pid: 9 }] });
+  assert.equal(index.decision, "deferred_contention");
+  assert.match(index.reason, /concurrent index build/);
+
+  const admitted = evaluatePassivePreflight(state([]));
+  assert.equal(admitted.admit, true);
+  assert.equal(admitted.decision, "preflight_admitted");
+});

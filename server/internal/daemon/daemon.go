@@ -642,6 +642,10 @@ type Daemon struct {
 	// directly. Reset when the WS (re)connects, so a server upgrade that
 	// bounces the connection re-probes the batch route (MUL-4257).
 	batchClaimUnsupported atomic.Bool
+
+	// admission is the charge ledger and mutex (CHE-7236, plan r13 3.4). nil
+	// means the flag is off and the claim path is unchanged.
+	admission *Admission
 	// wsClaimHTTPFallbackAfter is set after an uncertain WS claim outcome. Once
 	// the safety delay elapses, the next claim bypasses WS once and uses HTTP so
 	// a flaky reconnecting WS cannot starve queued tasks indefinitely.
@@ -5795,8 +5799,28 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			continue
 		}
 
+		// Admission (plan r13 3.4): charge n x R_default before the claim is
+		// sent; n is bounded by the remaining budget as well as free slots.
+		batch, admitted := d.admission.Reserve(len(slots))
+		if !admitted {
+			d.exitClaim()
+			releaseSlots(slots)
+			if err := sleepWithContextOrWakeup(pollerCtx, capacityBackoff(d.cfg.PollInterval), wakeup); err != nil {
+				return
+			}
+			continue
+		}
+		if batch.N < len(slots) {
+			releaseSlots(slots[batch.N:])
+			slots = slots[:batch.N]
+		}
+
 		claimResult, err := d.claimTasksWSFirst(pollerCtx, d.cfg.DaemonID, runtimeIDs, len(slots), d.nonDMClaimBudget())
 		if err != nil {
+			// Ambiguous outcome: abandon the batch and refund. A reply that
+			// still arrives is dropped; rows the server committed start only
+			// through a later, separately charged delivery.
+			d.admission.Abandon(batch.ID)
 			d.exitClaim()
 			releaseSlots(slots)
 			if pollerCtx.Err() == nil {
@@ -5807,20 +5831,26 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			}
 			continue
 		}
-		tasks := claimResult.Tasks
+		tasks := d.acceptClaimedTasks(batch.ID, claimResult.Tasks)
 
 		// Dispatch each claimed task into a slot. activeTasks is incremented for
 		// every dispatched task BEFORE exitClaim so the auto-update barrier never
 		// sees a zero-claims / zero-active window between claim and dispatch.
 		dispatched := 0
 		for i := range tasks {
-			if i >= len(slots) || tasks[i] == nil {
+			if i >= len(slots) || tasks[i].task == nil {
 				break
 			}
-			t := *tasks[i]
+			t := *tasks[i].task
+			ref := attemptRef(&t)
 			claim := d.inflight.begin(t.ID, t.DispatchedAt)
 			if claim == nil {
 				d.logger.Info("task already executing on this daemon; ignoring repeat delivery", "task", t.ID)
+				// The running attempt keeps its own charge. Free this delivery's
+				// charge only when it created one (never the running attempt's).
+				if tasks[i].fresh {
+					_ = d.admission.Release(ref)
+				}
 				continue
 			}
 			slot := slots[dispatched]
@@ -5842,7 +5872,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 				// direct Git operations cannot overlap it.
 				cache.CancelMaintenance()
 			}
-			go func(t Task, slot int, claim *inflightClaim, isNonDMTask bool) {
+			go func(t Task, ref AttemptRef, slot int, claim *inflightClaim, isNonDMTask bool) {
 				defer taskWG.Done()
 				defer d.taskDone()
 				defer func() {
@@ -5851,6 +5881,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 					}
 				}()
 				defer d.inflight.end(t.ID, claim)
+				defer func() { _ = d.admission.Release(ref) }()
 				defer func() {
 					// Release local capacity before waking the poller. The task's
 					// terminal callback and local cleanup have both finished at this
@@ -5861,7 +5892,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 					signalPollerWakeup(wakeup)
 				}()
 				d.handleTask(parentCtx, t, slot)
-			}(t, slot, claim, isNonDMTask)
+			}(t, ref, slot, claim, isNonDMTask)
 			dispatched++
 		}
 		d.exitClaim()
@@ -5881,6 +5912,58 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			return
 		}
 	}
+}
+
+// attemptRef identifies one delivery of a task for the admission ledger.
+func attemptRef(t *Task) AttemptRef {
+	return AttemptRef{TaskID: t.ID, Generation: t.DispatchedAt}
+}
+
+// acceptClaimedTasks settles the claim batch under the admission mutex and
+// returns the tasks that may run, with whether each holds a fresh charge. A
+// reply for an abandoned, settled or unknown batch is dropped whole. Tasks
+// accepted under a hold (handing_back) are never returned: they must not prep
+// or start (the hand-back itself is step 10a). With admission off every task is
+// returned unchanged.
+func (d *Daemon) acceptClaimedTasks(batchID string, tasks []*Task) []claimedTask {
+	if d.admission == nil {
+		out := make([]claimedTask, 0, len(tasks))
+		for _, t := range tasks {
+			out = append(out, claimedTask{task: t})
+		}
+		return out
+	}
+	refs := make([]AttemptRef, 0, len(tasks))
+	byRef := make(map[AttemptRef]*Task, len(tasks))
+	for _, t := range tasks {
+		if t == nil {
+			continue
+		}
+		r := attemptRef(t)
+		refs = append(refs, r)
+		byRef[r] = t
+	}
+	accepted, dropped := d.admission.Accept(batchID, refs)
+	if dropped {
+		d.logger.Warn("claim reply dropped: batch no longer pending", "batch", batchID, "tasks", len(refs))
+		return nil
+	}
+	out := make([]claimedTask, 0, len(accepted))
+	for _, a := range accepted {
+		if a.Disposition == dispositionHandingBack {
+			continue
+		}
+		out = append(out, claimedTask{task: byRef[a.Ref], charged: true, fresh: a.Fresh})
+	}
+	return out
+}
+
+// claimedTask is a claimed task plus its admission charge state. charged is
+// false with admission off.
+type claimedTask struct {
+	task    *Task
+	charged bool
+	fresh   bool // this delivery created its own ledger entry
 }
 
 // nonDMClaimBudget is how many more non-chat tasks this daemon may claim:
@@ -8337,6 +8420,16 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		returnErr = fmt.Errorf("%w after %s", errTaskPrepareTimeout, prepareTimeout)
 	}()
 
+	// Containment (CHE-7168 step 5): behind the flag, the attempt gets its cgroup
+	// leaf, and its record, before any process of the attempt exists. The prep
+	// helper is forked into it through prepareCtx; the agent CLI follows through
+	// backendConfig.Launch. Flag off: contain is nil and nothing below changes.
+	contain, prepareCtx, err := d.beginContainment(prepareCtx, task)
+	if err != nil {
+		return TaskResult{}, err
+	}
+	defer contain.End(taskLog)
+
 	// task.Repos is the authoritative repo list for this task — when the
 	// claimed task belongs to a project with github_repo resources the server
 	// has already narrowed it to project repos only. Make sure those URLs are
@@ -9104,7 +9197,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if supplementSupported {
 		taskCapabilities = append(taskCapabilities, taskSupplementCapabilities(task)...)
 	}
-	negotiation, err := d.startTaskWithCurrentClaim(prepareCtx, task, taskCapabilities...)
+	negotiation, err := d.startTaskRecordingClaim(prepareCtx, task, contain.claimRecorder(), taskCapabilities...)
 	if err != nil {
 		stopPrepareLease()
 		return TaskResult{}, fmt.Errorf("start task failed: %w", err)
@@ -9371,6 +9464,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if err != nil {
 		taskLog.Warn("guard shims not installed; run continues without them", "error", err)
 	}
+	// Contained runs cannot start docker, tmux, ssh and the like through PATH.
+	// After the guard shims so it is first on PATH.
+	if err := contain.frontShims(agentEnv, taskTempDir); err != nil {
+		return TaskResult{}, fmt.Errorf("containment: install shims: %w", err)
+	}
 	if provider == "reasonix" {
 		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
 		if err != nil {
@@ -9443,6 +9541,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	if runLaunch != nil {
 		backendConfig.Launch = runLaunch.hook
+	}
+	if hook := contain.Hook(); hook != nil {
+		backendConfig.Launch = hook
 	}
 	if provider == "codex" && d.cfg.RunBindingsDir != "" && task.IssueIdentifier != "" {
 		backendConfig.RunBinding = &runbinding.Spec{Dir: d.cfg.RunBindingsDir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}
@@ -10804,6 +10905,13 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					if msg.Content != "" {
 						flushFirstVisible()
 					}
+				case agent.MessageContextCompacted:
+					taskLog.Info("context compacted", "input", msg.Input)
+					mu.Lock()
+					sealPendingLocked()
+					batch = append(batch, contextCompactedTaskMessage(msg, int(msgSeq.Add(1)), observedAt))
+					mu.Unlock()
+					flushFirstVisible()
 				case agent.MessageError:
 					taskLog.Error("agent error", "content", msg.Content)
 					mu.Lock()

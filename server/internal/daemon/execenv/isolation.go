@@ -140,6 +140,11 @@ func runPreparationProcess(ctx context.Context, command []string, request prepar
 		return nil, fmt.Errorf("execenv: create preparation process controller: %w", err)
 	}
 	defer controller.close()
+	if attach := LaunchAttachFrom(ctx); attach != nil {
+		if err := attach(cmd); err != nil {
+			return nil, fmt.Errorf("execenv: place preparation helper: %w", err)
+		}
+	}
 	cmd.WaitDelay = preparationWaitDelay
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -296,4 +301,21 @@ func RunPreparationHelper(in io.Reader, out io.Writer, logger *slog.Logger) erro
 		return fmt.Errorf("encode preparation response: %w", err)
 	}
 	return nil
+}
+
+type launchAttachKey struct{}
+
+// WithLaunchAttach returns a context whose preparation helpers (PrepareIsolated,
+// ReuseIsolated) run fn on their *exec.Cmd before it starts. The containment flag
+// uses it to fork the helper, and every git process under it, into the attempt's
+// cgroup leaf with CLONE_INTO_CGROUP (CHE-7234). An error from fn stops the
+// preparation: nothing starts outside the leaf.
+func WithLaunchAttach(ctx context.Context, fn func(*exec.Cmd) error) context.Context {
+	return context.WithValue(ctx, launchAttachKey{}, fn)
+}
+
+// LaunchAttachFrom returns the hook WithLaunchAttach stored, or nil.
+func LaunchAttachFrom(ctx context.Context) func(*exec.Cmd) error {
+	fn, _ := ctx.Value(launchAttachKey{}).(func(*exec.Cmd) error)
+	return fn
 }

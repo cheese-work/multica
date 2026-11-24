@@ -20,6 +20,10 @@ DELAY = "c00-readback-delay"  # 15-minute wait timer, main only, no secrets
 RUNTIME = "c00-runtime"  # holds the copied C00 secrets; no reviewers
 C00_RUNNER = ["self-hosted", "linux", "x64", "cheese-c00-deploy"]
 C00_LOCAL_DEPLOY_STEP = "Deploy to C00 on local runner"
+# CHE-9367 (CHE-9223 S1): the marker names a quiescence-preflight deferral.
+DEFERRED_MARKER_STEP = "C00 deploy deferred by quiescence preflight"
+DEFERRED_MARKER_IF = ("failure() && steps.deploy.outcome == 'failure' "
+                      "&& steps.deploy.outputs.outcome == 'deferred'")
 
 
 def needs(job):
@@ -301,6 +305,92 @@ class DeployApprovalTests(unittest.TestCase):
         self.assertLess(script.index('if [ "$decision" = "skip" ]'), script.index("build-cutover-bundle.sh"))
         outcome = next(step for step in steps if step.get("name") == "Record outcome")
         self.assertIn("steps.deploy.outputs.decision != 'skip'", outcome["if"])
+
+
+class DeferredPreflightMarkerTests(unittest.TestCase):
+    """CHE-9367: a quiescence-preflight deferral exits 75, the deploy step records
+    outcome=deferred only after the window-0 health check, and one marker step
+    prints a notice. The job still fails; nothing here changes authorization."""
+
+    def setUp(self):
+        text = (ROOT / ".github/workflows/cd-deploy.yml").read_text()
+        self.text = text
+        self.steps = yaml.safe_load(text)["jobs"]["deploy"]["steps"]
+        self.deploy = next(s for s in self.steps if s.get("id") == "deploy")
+        self.script = self.deploy["run"]
+
+    def markers(self):
+        return [s for s in self.steps if s.get("name") == DEFERRED_MARKER_STEP]
+
+    def test_one_marker_step_with_the_exact_condition(self):
+        markers = self.markers()
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(markers[0]["if"], DEFERRED_MARKER_IF)
+
+    def test_condition_requires_the_deploy_step_to_have_failed(self):
+        self.assertIn("steps.deploy.outcome == 'failure'", self.markers()[0]["if"])
+
+    def test_marker_follows_the_deploy_step_and_only_prints_a_notice(self):
+        marker = self.markers()[0]
+        self.assertLess(self.steps.index(self.deploy), self.steps.index(marker))
+        self.assertNotIn("id", marker)
+        self.assertNotIn("continue-on-error", marker)
+        lines = [l.strip() for l in marker["run"].splitlines() if l.strip() and not l.strip().startswith("#")]
+        self.assertEqual(len(lines), 1, lines)
+        self.assertRegex(lines[0], r"^echo ['\"]::notice")
+
+    def test_no_workspace_file_and_no_hashfiles(self):
+        self.assertNotIn("hashFiles", self.text)
+        marker = yaml.safe_dump(self.markers()[0])
+        for forbidden in ("GITHUB_WORKSPACE", "GITHUB_OUTPUT", "cat ", "test -f", "> "):
+            self.assertNotIn(forbidden, marker)
+
+    def test_outcome_is_written_once_after_the_window_zero_health_check_for_75_only(self):
+        writes = [i for i in range(len(self.script)) if self.script.startswith("outcome=deferred", i)]
+        self.assertEqual(len(writes), 1)
+        health = self.script.index("ab-health-check.sh\" --router-state-dir")
+        guard = self.script.rindex("-eq 75", 0, writes[0])
+        self.assertLess(health, guard)
+        self.assertLess(guard, writes[0])
+        self.assertLess(writes[0], self.script.index('exit "$deploy_status"'))
+        # Between the 75 test and the write there is nothing else: no `||`, no
+        # second status, no other branch.
+        between = self.script[guard:writes[0]]
+        self.assertNotIn("||", between)
+        self.assertNotIn("deploy_status=", between)
+        self.assertIn('$GITHUB_OUTPUT', self.script[writes[0]:writes[0] + 80])
+
+    def test_a_failed_window_zero_health_check_still_forces_status_1(self):
+        health = self.script.index("ab-health-check.sh\" --router-state-dir")
+        write = self.script.index("outcome=deferred")
+        self.assertIn("deploy_status=1", self.script[health:write])
+        self.assertIn('window=0', self.script)
+
+    def test_step_still_exits_with_the_deploy_status(self):
+        self.assertTrue(self.script.rstrip().endswith('exit "$deploy_status"'))
+
+
+class RenderedScriptStatusTests(unittest.TestCase):
+    """CHE-9367: the status of the command the rendered script runs reaches the
+    shell that reads it (`| bash -s`), so exit 75 survives to deploy_status."""
+
+    def run_rendered(self, command):
+        render = ROOT / "deploy/cd/render-cutover-remote-script.sh"
+        pipeline = ('set -o pipefail; bash "$0" --router-state-dir /state -- bash -c "$1" '
+                    '| env -i HOME="$HOME" PATH="$PATH" bash -s')
+        return subprocess.run(["bash", "-c", pipeline, str(render), command],
+                              capture_output=True, text=True, cwd=ROOT).returncode
+
+    def test_a_stub_that_exits_75_gives_75(self):
+        self.assertEqual(self.run_rendered("exit 75"), 75)
+
+    def test_a_stub_that_exits_1_gives_1(self):
+        self.assertEqual(self.run_rendered("exit 1"), 1)
+
+    def test_status_survives_the_real_command_chain_shape(self):
+        # Same shape as the deploy step: `cd ... && ... && bash cutover.sh`.
+        chain = "cd / && true && bash -c 'exit 75'"
+        self.assertEqual(self.run_rendered(chain), 75)
 
 
 class MainRedPauseGuardTests(unittest.TestCase):
