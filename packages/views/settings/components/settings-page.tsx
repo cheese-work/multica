@@ -17,6 +17,7 @@ import {
   Plug,
   Search,
   Server,
+  ScrollText,
   ShieldCheck,
   Settings,
   SlidersHorizontal,
@@ -76,6 +77,7 @@ import { useListColumnCollapsed } from "../../layout/app-shell-context";
 import { ListColumn } from "../../layout/list-column";
 import { ProviderBreakersTab } from "./provider-breakers-tab";
 import { GuardTab } from "./guard-tab";
+import { AuditLogPage } from "./audit-log-page";
 import { useT } from "../../i18n";
 
 export interface ExtraSettingsTab {
@@ -119,6 +121,7 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
   const workspaceName = workspace?.name ?? t(($) => $.page.workspace_fallback);
   const { role } = useCurrentMember(workspace?.id ?? "");
   const isMember = role === "member";
+  // Owners and admins only: export privacy and the audit log (the API refuses members).
   const canManageExportPrivacy = role === "owner" || role === "admin";
   const navigation = useNavigation();
   const listCollapsed = useListColumnCollapsed();
@@ -208,6 +211,11 @@ export function SettingsPage({ extraDeviceTabs = [] }: SettingsPageProps = {}) {
                   ShieldCheck,
                   <ExportPrivacyTab />,
                 )]
+              : []),
+            ...(canManageExportPrivacy
+              ? [entry("audit-log", t(($) => $.page.tabs.audit_log), ScrollText, <AuditLogPage />, {
+                  wide: true,
+                })]
               : []),
             ...(billingEnabled
               ? [

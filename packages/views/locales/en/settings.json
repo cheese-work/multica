@@ -476,6 +476,7 @@
       "workflows": "Workflows",
       "provider_breakers": "Provider breakers",
       "guard": "Guard",
+      "audit_log": "Audit log",
       "background_agents": "Background agents",
       "personal_background_agents": "Background agents"
     },
@@ -1935,5 +1936,51 @@
     "routing_before": "Routing is set for the whole workspace. Owners and admins change it in",
     "routing_link": "Workspace → Background agents",
     "routing_after": "."
+  },
+  "audit_log": {
+    "description": "Who changed what in this workspace, and when. Secret and long-text values are never stored; a changed one shows as \"changed\".",
+    "empty": "No audit events match.",
+    "loading": "Loading audit events…",
+    "load_error": "Could not load the audit log.",
+    "retry": "Retry",
+    "load_more": "Load more",
+    "loading_more": "Loading…",
+    "columns": {
+      "time": "Time",
+      "actor": "Actor",
+      "event": "Event",
+      "target": "Target",
+      "changes": "Changes"
+    },
+    "actor_types": {
+      "member": "Member",
+      "agent": "Agent",
+      "system": "System"
+    },
+    "filters": {
+      "label": "Filters",
+      "kind": "Event kind",
+      "kind_all": "All kinds",
+      "actor": "Actor",
+      "actor_all": "All actors",
+      "since": "From",
+      "until": "To",
+      "clear": "Clear filters"
+    },
+    "kinds": {
+      "agent": "Agents",
+      "runtime": "Runtimes",
+      "skill": "Skills",
+      "squad": "Squads",
+      "project": "Projects",
+      "workspace": "Workspace",
+      "autopilot": "Autopilots",
+      "member": "Members"
+    },
+    "changed": "changed",
+    "changed_hint": "The value is not stored. Only the fact that it changed is.",
+    "target_deleted": "(deleted)",
+    "none": "—",
+    "no_changes": "No field changes recorded."
   }
 }

@@ -16,10 +16,11 @@ import {
 } from "../runtimes/schema";
 import { AffectedMachinesSchema, EMPTY_AFFECTED_MACHINES } from "../runtimes/affected-machines";
 import type { ProviderBreaker } from "../types/provider-breaker";
+import type { AuditEventFilters, AuditEventsPage } from "../types/audit";
 import type { GuardDecision, GuardDecisionFilters, GuardStats } from "../types/guard";
 import type { IssueWakeup, IssueWakeupInput, IssueWakeupSummaryRow, PausedWakeup, SystemWakeup, WakeupRun, WorkspaceSystemWakeup } from "../types/issue-wakeup";
 import type { WorkspaceWakeupPage, WorkspaceWakeupFilters, WakeupDefinition, WakeupDefinitionConfig, WakeupDefinitionList, WakeupDefinitionScope, WakeupEffectiveRule } from "../types/issue-wakeup";
-import { GuardDecisionListSchema, GuardStatsSchema, ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
+import { AuditEventsPageSchema, GuardDecisionListSchema, GuardStatsSchema, ProviderBreakerListSchema, WorkspaceWakeupPageSchema, IssueWakeupSchema, IssueWakeupSummaryRowSchema, PausedWakeupSchema, SystemWakeupSchema, WakeupRunSchema, WorkspaceSystemWakeupSchema, WakeupDefinitionSchema, WakeupDefinitionListSchema, WakeupEffectiveRuleSchema } from "./schemas";
 import type { ArchivedInboxFilters } from "../inbox/filter-store";
 import type { ArchivedInboxPage, ArchivedInboxFacets } from "../types/inbox";
 import { parseRunBudget, parseRunBudgetActionResponse, type RunBudgetActionResponse } from "../run-budget/schema";
@@ -1536,6 +1537,19 @@ export class ApiClient {
 
   async updateWorkspaceSystemWakeup(rule: WorkspaceSystemWakeup["rule"], input: { enabled?: boolean; instruction?: string }): Promise<void> {
     await this.fetch(`/api/system-wakeups/${encodeURIComponent(rule)}`, { method: "PUT", body: JSON.stringify(input) });
+  }
+
+  /** Admin-only audit trail, newest first. Pass the previous page's `next_cursor` as `cursor`. */
+  async listAuditEvents(workspaceId: string, filters: AuditEventFilters = {}): Promise<AuditEventsPage> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== "") params.set(key, String(value));
+    }
+    const query = params.size ? `?${params}` : "";
+    const raw = await this.fetch<unknown>(`/api/workspaces/${encodeURIComponent(workspaceId)}/audit-events${query}`);
+    const parsed = parseWithFallback<AuditEventsPage | null>(raw, AuditEventsPageSchema, null, { endpoint: "GET /api/workspaces/:id/audit-events" });
+    if (!parsed) throw new Error("Could not load the audit log");
+    return parsed;
   }
 
   async listProviderBreakers(workspaceId: string): Promise<ProviderBreaker[]> {

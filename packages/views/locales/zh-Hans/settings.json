@@ -473,6 +473,7 @@
       "workflows": "工作流",
       "provider_breakers": "服务商熔断器",
       "guard": "Guard",
+      "audit_log": "审计日志",
       "background_agents": "后台智能体",
       "personal_background_agents": "后台智能体"
     },
@@ -1921,5 +1922,51 @@
     "routing_before": "路由在整个工作区统一设置。所有者和管理员可在以下位置更改：",
     "routing_link": "工作区 → 后台智能体",
     "routing_after": "。"
+  },
+  "audit_log": {
+    "description": "记录此工作区中谁在何时更改了什么。密钥和长文本不会被存储，被更改的值显示为“changed”。",
+    "empty": "没有匹配的审计事件。",
+    "loading": "正在加载审计事件…",
+    "load_error": "无法加载审计日志。",
+    "retry": "重试",
+    "load_more": "加载更多",
+    "loading_more": "加载中…",
+    "columns": {
+      "time": "时间",
+      "actor": "操作者",
+      "event": "事件",
+      "target": "对象",
+      "changes": "变更"
+    },
+    "actor_types": {
+      "member": "成员",
+      "agent": "智能体",
+      "system": "系统"
+    },
+    "filters": {
+      "label": "筛选",
+      "kind": "事件类型",
+      "kind_all": "所有类型",
+      "actor": "操作者",
+      "actor_all": "所有操作者",
+      "since": "起始",
+      "until": "截止",
+      "clear": "清除筛选"
+    },
+    "kinds": {
+      "agent": "智能体",
+      "runtime": "运行时",
+      "skill": "技能",
+      "squad": "小队",
+      "project": "项目",
+      "workspace": "工作区",
+      "autopilot": "自动驾驶",
+      "member": "成员"
+    },
+    "changed": "已更改",
+    "changed_hint": "值不会被存储，只记录它发生了更改。",
+    "target_deleted": "（已删除）",
+    "none": "—",
+    "no_changes": "没有记录到字段变更。"
   }
 }

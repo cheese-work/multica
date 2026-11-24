@@ -116,6 +116,7 @@
     "./chat/wakeup": "./chat/wakeup.ts",
     "./chat/recent-agents": "./chat/recent-agents.ts",
     "./chat/recent-agents-settings-store": "./chat/recent-agents-settings-store.ts",
+    "./audit/queries": "./audit/queries.ts",
     "./guard/queries": "./guard/queries.ts",
     "./guard/save": "./guard/save.ts",
     "./runtimes": "./runtimes/index.ts",
