@@ -2,6 +2,7 @@ import type React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { toast } from "sonner";
 import type { Issue, Squad, SquadMember, SquadMemberStatus } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { NavigationProvider, type NavigationAdapter } from "../../navigation";
@@ -29,11 +30,20 @@ vi.mock("@tanstack/react-query", () => ({
     ...mocks.queries[(options.queryKey ?? []).join("/")],
   }),
   useQueryClient: () => ({ invalidateQueries: vi.fn(), setQueryData: vi.fn() }),
-  useMutation: ({ mutationFn }: { mutationFn: (input?: unknown) => Promise<unknown> }) => ({
-    mutate: (input?: unknown) => void mutationFn(input),
-    mutateAsync: (input?: unknown) => mutationFn(input),
-    isPending: false,
-  }),
+  useMutation: ({ mutationFn, onError }: {
+    mutationFn: (input?: unknown) => Promise<unknown>;
+    onError?: (error: unknown) => void;
+  }) => {
+    const run = async (input?: unknown) => {
+      try {
+        return await mutationFn(input);
+      } catch (error) {
+        onError?.(error);
+        throw error;
+      }
+    };
+    return { mutate: (input?: unknown) => void run(input).catch(() => undefined), mutateAsync: run, isPending: false };
+  },
 }));
 vi.mock("@multica/core/workspace/queries", () => ({
   agentListOptions: () => ({ queryKey: ["agents"] }),
@@ -205,6 +215,8 @@ beforeEach(() => {
   mocks.userId = "creator";
   mocks.openModal.mockReset();
   mocks.copyText.mockReset().mockResolvedValue(true);
+  vi.mocked(toast.error).mockClear();
+  vi.mocked(toast.success).mockClear();
   mocks.api.updateSquad.mockReset().mockResolvedValue(SQUAD);
   mocks.api.deleteSquad.mockReset().mockResolvedValue(undefined);
   mocks.api.removeSquadMember.mockReset().mockResolvedValue(undefined);
@@ -373,6 +385,35 @@ describe("SquadDetailPage", () => {
     expect(mocks.api.updateSquad).toHaveBeenLastCalledWith("sq-1", {
       description: "Ships the risky stuff carefully",
     });
+  });
+
+  it("reports a failed description save and keeps the draft", async () => {
+    const user = userEvent.setup();
+    mocks.api.updateSquad.mockRejectedValueOnce(new Error("offline"));
+    renderPage();
+
+    await user.click(screen.getByRole("button", { name: /Ships the risky stuff/ }));
+    await user.type(screen.getByPlaceholderText("What is this squad responsible for?"), " carefully");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("offline"));
+    expect(screen.getByPlaceholderText("What is this squad responsible for?")).toHaveValue(
+      "Ships the risky stuff carefully",
+    );
+  });
+
+  it("reports a failed instructions save and keeps the draft open", async () => {
+    const user = userEvent.setup();
+    mocks.api.updateSquad.mockRejectedValueOnce(new Error("offline"));
+    renderPage();
+
+    await user.click(within(section("Instructions")).getByRole("button", { name: "Edit" }));
+    const editor = screen.getByRole("textbox", { name: "Instructions editor" });
+    await user.clear(editor);
+    await user.type(editor, "Ship small.");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("offline"));
+    expect(screen.getByRole("textbox", { name: "Instructions editor" })).toHaveValue("Ship small.");
+    expect(toast.success).not.toHaveBeenCalled();
   });
 
   it("lists the squad's properties in the panel", () => {

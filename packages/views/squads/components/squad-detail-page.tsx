@@ -184,6 +184,9 @@ export function SquadDetailPage() {
       refetchMembers();
       queryClient.invalidateQueries({ queryKey: workspaceKeys.squads(wsId) });
     },
+    // The editors keep their draft on a rejected save; this is the only feedback.
+    onError: (err) =>
+      toast.error(err instanceof Error && err.message ? err.message : t(($) => $.toasts.update_failed)),
   });
 
   const addMemberMut = useMutation({
