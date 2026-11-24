@@ -57,6 +57,15 @@ it("completes only the desktop connection initiated in this workspace and window
   expect(result.current.connectedInstallationID).toBe("");
 });
 
+it("does not start a desktop flow the server gave no connection id for", async () => {
+  mocks.desktop = true;
+  mocks.connect.mockResolvedValue({ configured: true, url: "https://github.com/apps/test/installations/new" });
+  const { result } = renderHook(() => useConnectGitHub("ws-1"));
+  await act(() => result.current.connect("github"));
+  act(() => useGitHubConnectionStore.getState().complete({ installation: { id: "install-1", workspace_id: "ws-1" } }));
+  expect(result.current.connectedInstallationID).toBe("");
+});
+
 it("does not open a browser when GitHub is unconfigured", async () => {
   mocks.connect.mockResolvedValue({ configured: false });
   const { result } = renderHook(() => useConnectGitHub("ws-1"));

@@ -427,6 +427,9 @@ func isGitHubRepositoryBrowseConfigured() bool {
 const (
 	githubStateMaxAge    = 15 * time.Minute
 	githubStateClockSkew = time.Minute
+
+	// githubDesktopNoncePrefix marks a connect started from the desktop shell.
+	githubDesktopNoncePrefix = "desktop-"
 )
 
 // signState produces an opaque token that binds a workspace and return target
@@ -438,10 +441,21 @@ func signState(workspaceID string) (string, error) {
 }
 
 func signStateForReturn(workspaceID, returnTo, origin string) (string, error) {
-	return signStateForReturnAt(workspaceID, returnTo, origin, time.Now())
+	return signStateForConnect(workspaceID, returnTo, origin, false)
+}
+
+// signStateForConnect also marks a desktop-initiated flow: the nonce carries
+// the "desktop-" prefix inside the signature, so the callback can show the
+// "return to Multica" page and the client can match the completion event.
+func signStateForConnect(workspaceID, returnTo, origin string, desktop bool) (string, error) {
+	return signStateAt(workspaceID, returnTo, origin, desktop, time.Now())
 }
 
 func signStateForReturnAt(workspaceID, returnTo, origin string, now time.Time) (string, error) {
+	return signStateAt(workspaceID, returnTo, origin, false, now)
+}
+
+func signStateAt(workspaceID, returnTo, origin string, desktop bool, now time.Time) (string, error) {
 	secret := githubWebhookSecret()
 	if secret == "" {
 		return "", errors.New("github integration is not configured")
@@ -453,11 +467,15 @@ func signStateForReturnAt(workspaceID, returnTo, origin string, now time.Time) (
 	if _, err := rand.Read(nonceBytes); err != nil {
 		return "", err
 	}
+	nonce := hex.EncodeToString(nonceBytes)
+	if desktop {
+		nonce = githubDesktopNoncePrefix + nonce
+	}
 	payload := strings.Join([]string{
 		workspaceID,
 		returnTo,
 		strconv.FormatInt(now.Unix(), 10),
-		hex.EncodeToString(nonceBytes),
+		nonce,
 		base64.RawURLEncoding.EncodeToString([]byte(origin)),
 	}, ".")
 	return payload + "." + signGitHubState(secret, payload), nil
@@ -510,6 +528,17 @@ func verifyStateWithReturnAt(token string, now time.Time) (workspaceID, returnTo
 	return workspaceID, returnTo, string(rawOrigin), true
 }
 
+// githubStateConnectionID returns the flow id (the signed nonce) of a state
+// token that verifyStateWithReturn already accepted. The client matches the
+// completion event against it.
+func githubStateConnectionID(token string) string {
+	parts := strings.Split(token, ".")
+	if len(parts) != 6 {
+		return ""
+	}
+	return parts[3]
+}
+
 func isAllowedGitHubReturnTo(returnTo string) bool {
 	return returnTo == githubReturnToGitHub || returnTo == githubReturnToRepositories
 }
@@ -542,7 +571,7 @@ func (h *Handler) GitHubConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := githubAppSlug()
-	state, err := signStateForReturn(workspaceID, returnTo, util.RequestOrigin(r))
+	state, err := signStateForConnect(workspaceID, returnTo, util.RequestOrigin(r), r.URL.Query().Get("desktop") == "1")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to sign state")
 		return
@@ -552,7 +581,7 @@ func (h *Handler) GitHubConnect(w http.ResponseWriter, r *http.Request) {
 		url.PathEscape(slug),
 		url.QueryEscape(state),
 	)
-	writeJSON(w, http.StatusOK, GitHubConnectResponse{URL: installURL, Configured: true})
+	writeJSON(w, http.StatusOK, GitHubConnectResponse{URL: installURL, Configured: true, ConnectionID: githubStateConnectionID(state)})
 }
 
 // GitHubSetupCallback (GET /api/github/setup) handles the redirect GitHub
@@ -668,9 +697,16 @@ func (h *Handler) GitHubSetupCallback(w http.ResponseWriter, r *http.Request) {
 	if err := h.Queries.DeletePendingGitHubInstallation(r.Context(), installationID); err != nil {
 		slog.Warn("github: failed to clear pending installation metadata", "err", err, "installation_id", installationID)
 	}
+	connectionID := githubStateConnectionID(state)
 	h.publish(protocol.EventGitHubInstallationCreated, workspaceID, "system", "", map[string]any{
-		"installation": githubInstallationToBroadcast(inst),
+		"installation":  githubInstallationToBroadcast(inst),
+		"connection_id": connectionID,
 	})
+	if strings.HasPrefix(connectionID, githubDesktopNoncePrefix) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(w, `<!doctype html><html lang="en"><meta charset="utf-8"><title>GitHub connected</title><body><h1>GitHub connected</h1><p>Return to Multica to confirm your repositories. You can close this tab.</p></body></html>`)
+		return
+	}
 	redirectURL := settingsURL + "&github_connected=1"
 	if returnTo == githubReturnToRepositories {
 		redirectURL += "&github_installation=" + url.QueryEscape(uuidToString(inst.ID))

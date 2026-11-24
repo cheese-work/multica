@@ -24,7 +24,7 @@ export function useConnectGitHub(wsId: string) {
         toast.error(t(($) => $.github.toast_not_configured));
         return;
       }
-      if (isDesktopShell()) {
+      if (isDesktopShell() && response.connection_id) {
         useGitHubConnectionStore.getState().begin(wsId, response.connection_id);
       }
       openExternal(response.url, { webTarget: "same-tab" });
