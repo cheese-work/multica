@@ -93,7 +93,7 @@ func (h *Handler) autoSplitPlanIssue(ctx context.Context, issue db.Issue, c roun
 		_, err := q.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
 			AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Type: "system",
-			Content: fmt.Sprintf("Review round limit: this plan issue has had %d review rounds without a PASS. Decision recorded: auto-Split at round limit (Cheese, 24 Nov 2026, CHE-9483). No decision request was opened. Run the Split path now: one comment with the round count, the candidate hash and the open findings; one backlog issue for the removed work, read back; then move this issue to in_progress. The daily report lists this auto-Split; a veto reopens the decision card.", c.rounds),
+			Content: fmt.Sprintf("Review round limit: this plan issue has had %d review rounds without a PASS. Decision recorded: auto-Split at round limit (CHE-9483). No decision request was opened. Run the Split path now: one comment with the round count, the candidate hash and the open findings; one backlog issue for the removed work, read back; then move this issue to in_progress. The daily report lists this auto-Split; a veto reopens the decision card.", c.rounds),
 		})
 		return err
 	})
