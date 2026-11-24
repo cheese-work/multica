@@ -355,6 +355,10 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				if msg.SessionID != "" {
 					sessionID = msg.SessionID
 				}
+				if msg.Subtype == "compact_boundary" && msg.CompactMetadata != nil {
+					cm := msg.CompactMetadata
+					sendReliable(runCtx, msgCh, NewContextCompactedMessage(cm.Trigger, cm.PreTokens, cm.PostTokens))
+				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
 				if (msg.ResultIndex != nil || msg.UserMessageUUID != "" || msg.UserMessageUUIDs != nil) &&
@@ -792,6 +796,9 @@ type claudeSDKMessage struct {
 	Usage          *claudeUsage                      `json:"usage,omitempty"`
 	ModelUsage     map[string]claudeResultModelUsage `json:"modelUsage,omitempty"`
 
+	// compact_boundary fields (system frame, one per compaction)
+	CompactMetadata *claudeCompactMetadata `json:"compact_metadata,omitempty"`
+
 	// log fields
 	Log *claudeLogEntry `json:"log,omitempty"`
 
@@ -799,6 +806,14 @@ type claudeSDKMessage struct {
 	RequestID string          `json:"request_id,omitempty"`
 	Request   json.RawMessage `json:"request,omitempty"`
 	Response  json.RawMessage `json:"response,omitempty"`
+}
+
+// claudeCompactMetadata is the payload of a system/compact_boundary frame.
+// post_tokens is optional in the CLI schema.
+type claudeCompactMetadata struct {
+	Trigger    string `json:"trigger"`
+	PreTokens  int64  `json:"pre_tokens"`
+	PostTokens int64  `json:"post_tokens"`
 }
 
 type claudeLogEntry struct {
@@ -1254,6 +1269,18 @@ type claudeControlRequestPayload struct {
 }
 
 // ── Shared helpers ──
+
+// sendReliable delivers a message that must not be lost (for example a
+// context_compacted record, where a drop reads as "no compaction happened").
+// It waits for room in the channel and gives up only when ctx ends.
+func sendReliable(ctx context.Context, ch chan<- Message, msg Message) bool {
+	select {
+	case ch <- msg:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
 
 func trySend(ch chan<- Message, msg Message) bool {
 	select {

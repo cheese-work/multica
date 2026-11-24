@@ -62,6 +62,7 @@ var chatRouteClasses = map[string]chatRouteClass{
 	"GET /api/chat/pending-tasks/has-any":        chatRouteMetadata,
 	"GET /api/chat/pinned-agents":                chatRouteMetadata,
 	"GET /api/chat/wakeups":                      chatRouteMetadata,
+	"GET /api/chat/count":                        chatRouteMetadata, // CHE-9364: a count, no message text
 
 	"POST /api/chat/sessions/":                                                   chatRouteWrite,
 	"PATCH /api/chat/sessions/{sessionId}/":                                      chatRouteWrite,

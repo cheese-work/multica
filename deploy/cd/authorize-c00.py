@@ -18,6 +18,12 @@ variable can never lock the owner out or widen the owner's own rights.
   own robot (ROBOT) may send the marker; any other actor is refused. It then
   takes the schedule rules above: same merger check, same suspension.
 
+Suspension (CHE-9223 S2): the walk classifies each finished run (`classify`). A
+first-attempt run the quiescence preflight deferred (marker step in the `deploy` job) is
+named in the warning, but it still suspends, exactly like a failure; nothing is skipped
+yet (CHE-9330). `authorize-c00.py --explain` prints the walk and the deferral streak,
+read only, and is not called by the workflow.
+
 Outputs go to $GITHUB_OUTPUT. `gh` and its token come from the environment.
 """
 import json
@@ -30,6 +36,8 @@ ROBOT = "github-actions[bot]"
 DEPLOY_JOBS = ("deploy", "readback", "readback-delay", "readback-confirm")
 RUNS_PER_PAGE = 100
 RUN_PAGES = 5
+MARKER_STEP = "C00 deploy deferred by quiescence preflight"  # cd-deploy.yml, `deploy` job (CHE-9367)
+MAX_DEFERRALS = 3  # only `--explain` uses it; nothing enforces it yet (CHE-9330)
 
 
 def gh_api(path):
@@ -65,15 +73,42 @@ def merger_of(repo, sha):
     return None
 
 
-def suspended_by(repo, current_run_id):
-    """Why auto-deploy is suspended (a description), or None.
+def classify(run, jobs):
+    """One class for a finished run: "deferral", "failure", "success" or "silent". Pure.
 
-    Walks finished `main` runs newest first until one of them deployed: that
-    run's deploy or readback job failed (suspended) or both succeeded (not
-    suspended). Runs that built and stopped (jobs skipped) and cancelled runs
-    say nothing, however many there are. Running out of history is not
-    suspended; hitting the page cap before finding a deploy is unknown, which
-    stays suspended.
+    A deferral is a first-attempt run the quiescence preflight deferred (CHE-9223): the
+    `deploy` job failed, its marker step succeeded, and no readback job ran. Any other run
+    with a failure in the deploy jobs is a failure (reruns, legacy unmarked deferrals,
+    observation_failed, malformed cases). A success without a failure is a success;
+    anything else (built and stopped, cancelled) is silent.
+    """
+    deploy_jobs = [j for j in jobs if j.get("name") in DEPLOY_JOBS]
+    results = [j.get("conclusion") for j in deploy_jobs]
+    if "failure" not in results:
+        return "success" if "success" in results else "silent"
+    deploy = [j for j in deploy_jobs if j.get("name") == "deploy"]
+    readback = [j for j in deploy_jobs if j.get("name") != "deploy"]
+    marked = any(
+        step.get("name") == MARKER_STEP and step.get("conclusion") == "success"
+        for job in deploy
+        for step in job.get("steps") or []
+    )
+    if (
+        run.get("run_attempt") == 1
+        and deploy
+        and all(j.get("conclusion") == "failure" for j in deploy)
+        and marked
+        and all(j.get("conclusion") == "skipped" for j in readback)
+    ):
+        return "deferral"
+    return "failure"
+
+
+def walk(repo, current_run_id):
+    """Yield (run, class) for finished `main` runs, newest first, 100 a page, at most RUN_PAGES.
+
+    The current run is skipped. Lazy: a consumer that stops reading makes no further API
+    calls. Running out of history ends the walk; hitting the page cap yields (None, "unknown").
     """
     for page in range(1, RUN_PAGES + 1):
         runs = gh_api(
@@ -83,17 +118,67 @@ def suspended_by(repo, current_run_id):
             if str(run["id"]) == str(current_run_id):
                 continue
             jobs = gh_api(f"repos/{repo}/actions/runs/{run['id']}/jobs?per_page=100")["jobs"]
-            results = [j.get("conclusion") for j in jobs if j.get("name") in DEPLOY_JOBS]
-            if "failure" in results:
-                return f"run {run['id']} failed after deploying"
-            if "success" in results:
-                return None
+            yield run, classify(run, jobs)
         if len(runs) < RUNS_PER_PAGE:
+            return
+    yield None, "unknown"
+
+
+def suspended_by(repo, current_run_id):
+    """Why auto-deploy is suspended (a description), or None.
+
+    Walks finished `main` runs newest first until one of them deployed: that run's deploy
+    or readback job failed (suspended; a marked deferral is named as such, but still
+    suspends) or both succeeded (not suspended). Runs that built and stopped (jobs skipped)
+    and cancelled runs say nothing, however many there are. Running out of history is not
+    suspended; hitting the page cap before finding a deploy is unknown, which stays suspended.
+    """
+    for run, kind in walk(repo, current_run_id):
+        if kind == "deferral":
+            return f"run {run['id']} was deferred by the quiescence preflight; nothing was cut over. Automatic retry is not active yet (CHE-9330)"
+        if kind == "failure":
+            return f"run {run['id']} failed after deploying"
+        if kind == "success":
             return None
-    return f"no deploy found in the last {RUN_PAGES * RUNS_PER_PAGE} runs, so the state is unknown"
+        if kind == "unknown":
+            return f"no deploy found in the last {RUN_PAGES * RUNS_PER_PAGE} runs, so the state is unknown"
+    return None
+
+
+def explain(repo, current_run_id):
+    """Print the walk and the deferral streak. Read only; writes no $GITHUB_OUTPUT.
+
+    Walks past deferrals until the first failure or success, or MAX_DEFERRALS deferrals.
+    `authorized` is what gate mode returns for this history: the first non-silent run decides.
+    """
+    streak, decided = 0, None
+    for run, kind in walk(repo, current_run_id):
+        if kind == "unknown":
+            print(f"no deploy found in the last {RUN_PAGES * RUNS_PER_PAGE} runs, so the state is unknown")
+            decided = decided if decided is not None else False
+            break
+        print(f"run {run['id']} attempt {run.get('run_attempt')} event {run.get('event')}: {kind}")
+        if kind == "silent":
+            continue
+        if decided is None:
+            decided = kind == "success"
+        if kind == "deferral":
+            streak += 1
+            if streak == MAX_DEFERRALS:
+                break
+            continue
+        break
+    print(f"deferral streak {streak}/{MAX_DEFERRALS}")
+    # Running out of history with no deploy is not suspended, as in gate mode.
+    print(f"authorized={'true' if decided is None or decided else 'false'}")
 
 
 def main():
+    if sys.argv[1:] == ["--explain"]:
+        explain(os.environ["GITHUB_REPOSITORY"], os.environ.get("GITHUB_RUN_ID", ""))
+        return
+    if sys.argv[1:]:
+        sys.exit(f"usage: authorize-c00.py [--explain]; got {' '.join(sys.argv[1:])}")
     event = os.environ["EVENT_NAME"]
     allowed = allowed_logins()
 

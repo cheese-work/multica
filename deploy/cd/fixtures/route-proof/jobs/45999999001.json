@@ -1,0 +1,43 @@
+{
+ "total_count": 2,
+ "jobs": [
+  {
+   "completed_at": "2026-11-23T05:05:55Z",
+   "conclusion": "success",
+   "created_at": "2026-11-23T04:52:36Z",
+   "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "id": 137999999000,
+   "labels": [
+    "self-hosted",
+    "linux",
+    "x64",
+    "cheese-x99",
+    "cheese-x99-homedisk"
+   ],
+   "name": "build-images (backend)",
+   "run_id": 45999999001,
+   "runner_name": "cheese-x99-repo-2",
+   "started_at": "2026-11-23T04:52:39Z",
+   "status": "completed"
+  },
+  {
+   "completed_at": "2026-11-23T05:03:53Z",
+   "conclusion": "success",
+   "created_at": "2026-11-23T04:52:36Z",
+   "head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "id": 137999999001,
+   "labels": [
+    "self-hosted",
+    "linux",
+    "x64",
+    "cheese-x99",
+    "cheese-x99-homedisk"
+   ],
+   "name": "build-images (web)",
+   "run_id": 45999999001,
+   "runner_name": "cheese-x99-repo-4",
+   "started_at": "2026-11-23T04:52:39Z",
+   "status": "completed"
+  }
+ ]
+}

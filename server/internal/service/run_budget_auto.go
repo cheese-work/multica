@@ -188,6 +188,14 @@ func EvaluateRunGuardAuto(ctx context.Context, q *db.Queries, issue db.Issue, no
 // evaluateAutoWindow judges the runs since a time for a grant of grant runs:
 // anomalies, then progress, then the daily envelope.
 func evaluateAutoWindow(ctx context.Context, q *db.Queries, issue db.Issue, settings []byte, cfg RunBudgetAutoConfig, since time.Time, grant int, now time.Time) (RunBudgetAutoVerdict, error) {
+	// CHE-9340: a stopped issue is released by a person's answer only.
+	stop, err := EvaluateStopLoss(ctx, q, issue.ID)
+	if err != nil {
+		return RunBudgetAutoVerdict{}, err
+	}
+	if stop.Tripped && stop.Mode == WeeklyRunGuardBlock {
+		return RunBudgetAutoVerdict{Reason: "stop_loss", Runs: grant}, nil
+	}
 	sinceTS := pgtype.Timestamptz{Time: since, Valid: true}
 	names, appIDs, workflows := splitExpectedChecks(cfg.ExpectedChecks)
 	runs, err := q.ListRunBudgetWindowRuns(ctx, db.ListRunBudgetWindowRunsParams{IssueID: issue.ID, Since: sinceTS, ExpectedNames: names, ExpectedAppIds: appIDs, ExpectedWorkflows: workflows})
