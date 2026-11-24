@@ -99,10 +99,7 @@ func TestVerdictResolve_NoPRThirdChangesIsCapped(t *testing.T) {
 	if n := l.count(t, "review_rounds_capped"); n != 1 {
 		t.Fatalf("review_rounds_capped rows = %d, want 1", n)
 	}
-	roundCap{l.agentID, l.issueID, l.run}.wantCard(t, 3)
-	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1 AND status = 'open' AND request_fingerprint LIKE 'server:review_rounds:%'`, l.issueID); n != 1 {
-		t.Fatalf("open cap cards = %d, want exactly 1", n)
-	}
+	roundCap{l.agentID, l.issueID, l.run}.wantAutoSplit(t, 3)
 }
 
 // Test 3: a PASS restarts both counts.
@@ -154,5 +151,5 @@ func TestVerdictResolve_ThreeEntriesLeavingThroughBlockedCapTheFourth(t *testing
 	if got := c.status(t); got != "need_decision" {
 		t.Fatalf("status after the 4th entry = %q, want need_decision", got)
 	}
-	c.wantCard(t, 3)
+	c.wantAutoSplit(t, 3)
 }

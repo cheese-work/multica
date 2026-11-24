@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -27,8 +26,8 @@ import (
 
 const (
 	activityHandoffWakeup = "review_handoff_wakeup"
-	// activityRoundsAutoSplit marks a plan issue's round limit that took the
-	// Split path without a decision card (CHE-9483). The daily digest lists
+	// activityRoundsAutoSplit marks a round limit that took the Split path
+	// without a decision card (CHE-9483, CHE-9511). The daily digest lists
 	// these rows; a veto reopens the card for the capped round.
 	activityRoundsAutoSplit = "review_rounds_auto_split"
 	// reviewRoundsFingerprint prefixes the card's fingerprint; the cap's own
@@ -65,22 +64,12 @@ func (h *Handler) openCappedCard(ctx context.Context, issue db.Issue, wf *workfl
 	h.ensureReviewRoundsCard(ctx, issue, *wf.capped)
 }
 
-// isPlanIssueTitle reports whether the title is a plan issue's: the
-// conventional-commit type "plan", with or without a scope.
-func isPlanIssueTitle(title string) bool {
-	t := strings.ToLower(strings.TrimSpace(title))
-	if !strings.HasPrefix(t, "plan") {
-		return false
-	}
-	rest := t[len("plan"):]
-	return strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, ":")
-}
-
-// autoSplitPlanIssue takes the Split path for a plan issue at the round limit
-// with no decision request: it records the decision as an activity row and
+// autoSplitIssue takes the Split path for an issue of any type at the round
+// limit with no decision request (CHE-9483 for plan issues, CHE-9511 for the
+// rest): it records the decision as an activity row and
 // posts one system comment for the need_decision handler. The issue is already
 // in need_decision, so the handler's step runs the split and moves it on.
-func (h *Handler) autoSplitPlanIssue(ctx context.Context, issue db.Issue, c roundsCap) error {
+func (h *Handler) autoSplitIssue(ctx context.Context, issue db.Issue, c roundsCap) error {
 	return h.withPgxTx(ctx, func(tx pgx.Tx) error {
 		q := h.Queries.WithTx(tx)
 		details, _ := json.Marshal(map[string]any{"rounds": c.rounds, "cap_activity_id": uuidToString(c.activityID)})
@@ -93,7 +82,7 @@ func (h *Handler) autoSplitPlanIssue(ctx context.Context, issue db.Issue, c roun
 		_, err := q.CreateComment(ctx, db.CreateCommentParams{
 			ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
 			AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Type: "system",
-			Content: fmt.Sprintf("Review round limit: this plan issue has had %d review rounds without a PASS. Decision recorded: auto-Split at round limit (CHE-9483). No decision request was opened. Run the Split path now: one comment with the round count, the candidate hash and the open findings; one backlog issue for the removed work, read back; then move this issue to in_progress. The daily report lists this auto-Split; a veto reopens the decision card.", c.rounds),
+			Content: fmt.Sprintf("Review round limit: this issue has had %d review rounds without a PASS. Decision recorded: auto-Split at round limit (CHE-9483, CHE-9511). No decision request was opened. Run the Split path now: one comment with the round count, the candidate hash and the open findings; one backlog issue for the removed work, read back; then move this issue to in_progress. The daily report lists this auto-Split; a veto reopens the decision card.", c.rounds),
 		})
 		return err
 	})
@@ -104,17 +93,16 @@ const reviewRoundsCardAttempts = 3
 // errNoCardRecipient means the issue has no owner or asking agent to ask.
 var errNoCardRecipient = errors.New("review rounds: nobody to ask")
 
-// ensureReviewRoundsCard opens the cap's card. The issue is already in
+// ensureReviewRoundsCard takes the cap's auto-Split; only when that write fails
+// does it open the cap's card. The issue is already in
 // need_decision, so a failed attempt is retried, and when every attempt fails
 // the issue gets a system comment that says the card is missing: need_decision
 // never lacks its card silently.
 func (h *Handler) ensureReviewRoundsCard(ctx context.Context, issue db.Issue, c roundsCap) {
-	if isPlanIssueTitle(issue.Title) {
-		if err := h.autoSplitPlanIssue(ctx, issue, c); err != nil {
-			slog.Error("review rounds: plan auto-split not recorded", "err", err, "issue_id", uuidToString(issue.ID))
-		} else {
-			return
-		}
+	if err := h.autoSplitIssue(ctx, issue, c); err != nil {
+		slog.Error("review rounds: auto-split not recorded, opening the card", "err", err, "issue_id", uuidToString(issue.ID))
+	} else {
+		return
 	}
 	var err error
 	for attempt := 1; attempt <= reviewRoundsCardAttempts; attempt++ {
