@@ -305,6 +305,7 @@ multica skill list
 multica skill get <skill-id>
 multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
+multica agent skills remove <agent-id> --skill-id <skill-id>
 ```
 
 `multica agent get <agent-id> --output json` は `background_use` も返します。エージェントが担当するバックグラウンド作業を `{scope, job}` のリストで示します(`scope` は `workspace` または `personal`)。ワークスペースの作業はすべて、個人設定は自分の分のみ表示されます。
@@ -452,6 +453,8 @@ multica me background-agents set dm_title --agent none   # ワークスペース
 
 `multica workspace capability-routing [workspace]` は、`capability_routing` 設定(課題タイプから作成者・レビュアーのエージェントへの対応)を JSON で表示します。未設定なら `{}` です。読み取り専用で、変更は `multica config propose workspace.settings --set 'capability_routing:=<json>'` で行います。[Workflows](/docs/workflows) を参照してください。
 
+`multica workspace agent-role-scope [workspace]` は、`agent_role_scope` 設定(エージェントから、他のエージェントが割り当てられる作業クラス `plan`、`plan_review`、`decision`、`debate`、`security_cosign`、`code_review`、`execution` への対応)を JSON で表示します。未設定なら `{}` です。エントリのないエージェントは制限されません。エージェントが、スコープに作業クラスを含まないエージェントへ課題を割り当てる、またはレビューを依頼すると、サーバーは `capability_routing` の作成者またはレビュアーを示すヒント付きで拒否します。人による割り当ては成功し、課題に監査メモが残ります。作業クラスは、タイトルのタイプ接頭辞(`plan`、`decision`、`debate`)、`review(...)` のスコープ(`plan`、`design`、`spec`、`decision`、`debate` は計画レビュー、`security` を含むそれ以外はコードレビュー)、ゲート対象の課題の下にある `security gate: <親の識別子>` というタイトルの子課題(D8 共同署名)、それ以外は `execution` で決まります。`security` タイプの作業、`security` レビュー、タイトル内のパスは共同署名の作業になりません。読み取り専用で、変更は `multica config propose workspace.settings --set 'agent_role_scope:=<json>'` で行います。`multica agent get <agent>` で個々のエージェントのスコープを確認できます。
+
 `multica workspace queue-order show [workspace]` は、`queue_order`(`priority` または `project_rank`)と `queue_aging_minutes`(5〜720)の有効な値を JSON で表示します。`multica workspace queue-order set [workspace] --order <mode> --aging-minutes <n>` は一方または両方を変更します(オーナーまたは管理者のみ。変更ごとに実行者・旧値・新値・時刻が監査記録に残ります)。既定の `priority` は従来のキュー順序のままです。`project_rank` は、プロジェクトの優先度、親課題の優先度、自身の優先度の順に待機中の実行を順位付けし、待機がエイジング期間続くごとに 1 段階上げます。クレーム処理がこの設定を読むのは後続のリリースからで、現時点では保存と監査記録のみです。不正な値は、許可される値を示して拒否されます。元に戻すには `--order priority` を指定します。
 
 ## ブラウザリース
@@ -570,7 +573,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | --- | --- | --- | --- |
 | `issue` | `list` | タスクを一覧 | `--status`、`--priority`、`--assignee`、`--project`、`--metadata`（繰り返し可）、`--property`（繰り返し可、`"名前=値"` または `"Score>=3"`、`"Due<2026-01-01"`、`"Notes~=text"` のような比較；`__none__` は未設定に一致）、`--limit`、`--offset`、`--sort`（`effective_due`：継承した最も早い期限の順に期限ありを先頭に並べる、および `property:<名前または id>` に対応）、`--full-id`、`--resolve-properties`（JSON のみ；保存された id に加えてプロパティ名・選択肢名・メンバー名を返します）、`--fields`（JSON のみ；カンマ区切りで残すフィールドを指定） |
 | | `get <id>` | 単一のタスクを表示 | `--resolve-properties`（JSON のみ；保存された id に加えてプロパティ名・選択肢名・メンバー名を返します） |
-| | `create` | タスクを作成 | `--title`（必須）、`--description` / `--description-stdin` / `--description-file`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（繰り返し可）、`--property`（繰り返し可）、`--allow-duplicate`（同じタイトルの未完了タスクがあっても作成） |
+| | `create` | タスクを作成 | `--title`（必須）、`--description` / `--description-stdin` / `--description-file`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（繰り返し可）、`--property`（繰り返し可）、`--allow-duplicate`（同じタイトルの未完了タスクがあっても作成）、`--discovery-reason`（クイック作成のみ：依頼が不明確な理由。`--status investigating` と併用） |
 | | `update <id>` | タスクのフィールドを更新 | `create` と同系のフィールドに加え `--position`、`--no-start`、`--duplicate-of` |
 | | `assign <id>` | 割り当てまたは割り当て解除 | `--to`（メンバー、エージェント、スクワッドを名前であいまいマッチ）、`--to-id`、`--unassign`、`--no-start` |
 | | `status <id> <status>` | ステータスを変更 | `--no-start`、`--duplicate-of`、`--blocked-on`、`--waiting-on` |
@@ -601,7 +604,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `tasks <id>` | エージェントの実行を表示 | |
 | | `avatar <id>` | アバターをアップロード | |
 | | `env get/set <agent-id>` | カスタム環境変数の書き込みとキーの一覧（エージェントの所有者、またはワークスペースの owner/admin）。値は返されません。`get` は各キーとそのソースを表示し、`set`/`patch` のレスポンスはすべての値をマスクします | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`。全体を置き換え、値が `****` のキーは元の値を保つ |
-| | `skills list/set/add <agent-id>` | 紐付けられたスキルを管理 | `--skill-ids`（`set` は全置換、`add` は追加） |
+| | `skills list/set/add/remove <agent-id>` | 紐付けられたスキルを管理 | `--skill-ids`（`set` は全置換、`add` は追加）。`remove` は `--skill-id` を 1 つ受け取る |
 | | `mcp list/add/enable/disable/remove <agent-id>` | ワークスペース MCP サーバーをこのエージェントに割り当て | server id は `workspace mcp list` から取得。ライブラリの項目はここで追加するまで機能しません。`disable` は割り当てを残したまま送信を停止します |
 | `autopilot` | `list/get/create/update/delete` | オートパイロットを管理 | `create`: `--title`、`--agent`、`--mode`（いずれも必須）、`--description`、`--issue-title-template`、`--project`、`--subscriber`（繰り返し可）, `--script`, `--arg` |
 | | `trigger <id>` | 手動で 1 回トリガー | |

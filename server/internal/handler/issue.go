@@ -22,7 +22,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/askguard"
 	"github.com/multica-ai/multica/server/internal/channelmedia"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/intakehold"
@@ -39,6 +41,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/weblink"
 	agentpkg "github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -3911,6 +3914,10 @@ type CreateIssueRequest struct {
 	// origin_id=agent_task_queue.id).
 	OriginType *string `json:"origin_type,omitempty"`
 	OriginID   *string `json:"origin_id,omitempty"`
+	// DiscoveryReason is the one-line reason a quick-create run found the
+	// request unclear (CHE-9075). It is used only when the issue is filed in
+	// Discovery; the server then posts the Discovery comment itself.
+	DiscoveryReason *string `json:"discovery_reason,omitempty"`
 
 	AllowDuplicate bool `json:"allow_duplicate,omitempty"`
 }
@@ -4131,6 +4138,80 @@ func (h *Handler) workflowFromTitleType(r *http.Request, wsUUID, workflowProject
 	return id, def, project, true
 }
 
+// quickCreateDiscoveryOn reads the workspace's quick_create_discovery setting.
+// A read failure counts as off.
+func (h *Handler) quickCreateDiscoveryOn(r *http.Request, wsUUID pgtype.UUID) bool {
+	ws, err := h.Queries.GetWorkspace(r.Context(), wsUUID)
+	return err == nil && issueworkflow.QuickCreateDiscovery(ws.Settings)
+}
+
+// discardResponse swallows what a guard writes on refusal. postDiscoveryNote
+// reads only the guard's verdict and decides itself what to do about it.
+type discardResponse struct{ header http.Header }
+
+func (d *discardResponse) Header() http.Header         { return d.header }
+func (d *discardResponse) Write(b []byte) (int, error) { return len(b), nil }
+func (d *discardResponse) WriteHeader(int)             {}
+
+// discoveryNoteContent is the Discovery note the agent comment guard lets an
+// agent author post (CHE-9075). The reason is free text from the run, so it
+// gets the same two content checks as a plain agent comment (askguard member
+// mention, decisiontx.CheckCommentAsk) before anything is stored. A reason
+// that trips either check is replaced by the default one-line reason, so the
+// veto line still reaches the issue and no guard event or recovery run opens.
+func discoveryNoteContent(reason string) string {
+	content := issueworkflow.DiscoveryNote(reason)
+	if len(askguard.MentionedMembers(content)) > 0 || decisiontx.CheckCommentAsk(content) != nil {
+		return issueworkflow.DiscoveryNote("")
+	}
+	return content
+}
+
+// postDiscoveryNote writes the Discovery comment (CHE-9075) as the creator. It
+// exists exactly when the issue was filed in Discovery and starts no run. A
+// failure is logged and never fails the create.
+func (h *Handler) postDiscoveryNote(r *http.Request, issue db.Issue, authorType, authorID, reason string) {
+	h.postGuardedComment(r, issue, authorType, authorID, discoveryNoteContent(reason))
+}
+
+// postGuardedComment stores content as a plain comment of the creator, after an
+// agent author passes the agent comment guard like any plain comment
+// (askGuardAllowsComment, askGuardAllowsWaitingComment). A refusal or a guard
+// failure drops the comment: nothing is stored and no run starts.
+func (h *Handler) postGuardedComment(r *http.Request, issue db.Issue, authorType, authorID, content string) {
+	var task *db.AgentTaskQueue
+	if t, ok := h.taskFromRequestHeader(r); ok {
+		task = &t
+	}
+	sink := &discardResponse{header: http.Header{}}
+	if !h.askGuardAllowsComment(sink, r, issue, authorType, task, nil, content) ||
+		!h.askGuardAllowsWaitingComment(sink, r, issue, authorType, task, nil, CreateCommentRequest{Content: content}) {
+		slog.Warn("quick-create discovery: comment guard refused the note", append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID))...)
+		return
+	}
+	created, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
+		ID:          dbid.NewV7(),
+		IssueID:     issue.ID,
+		WorkspaceID: issue.WorkspaceID,
+		AuthorType:  authorType,
+		AuthorID:    parseUUID(authorID),
+		Content:     content,
+		Type:        "comment",
+	})
+	if err != nil {
+		slog.Warn("quick-create discovery: comment failed", append(logger.RequestAttrs(r), "error", err, "issue_id", uuidToString(issue.ID))...)
+		return
+	}
+	h.publish(protocol.EventCommentCreated, uuidToString(issue.WorkspaceID), authorType, authorID, map[string]any{
+		"comment":             commentToResponse(created.Comment(), nil, nil),
+		"issue_title":         issue.Title,
+		"issue_assignee_type": textToPtr(issue.AssigneeType),
+		"issue_assignee_id":   uuidToPtr(issue.AssigneeID),
+		"issue_status":        issue.Status,
+		"issue_revision":      created.IssueRevision,
+	})
+}
+
 // titleTypeWorkflowHint is the one-line note for a title edit whose type maps
 // to a workflow other than the issue's own. The edit never moves the workflow.
 func (h *Handler) titleTypeWorkflowHint(r *http.Request, issue db.Issue) string {
@@ -4260,8 +4341,12 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
 		return
 	}
-	createActorType, _ := h.resolveActor(r, creatorID, workspaceID)
+	createActorType, createActorID := h.resolveActor(r, creatorID, workspaceID)
 	if status, msg := h.refuseAgentAssignToMember(r.Context(), createActorType, workspaceID, pgtype.UUID{}, db.Issue{}, assigneeType, assigneeID); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
+	if status, msg := h.refuseAgentOutOfScope(r.Context(), createActorType, createActorID, workspaceID, pgtype.UUID{}, db.Issue{}, req.Title, parentIssueID, assigneeType, assigneeID); status != 0 {
 		writeError(w, status, msg)
 		return
 	}
@@ -4296,6 +4381,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// CHE-9075: a quick-create run that asked for Discovery gets it only when the
+	// workflow picked for this issue lists the step; otherwise the start status.
+	discoveryAsked := status == issueworkflow.DiscoveryStatusKey && req.OriginType != nil && *req.OriginType == "quick_create" &&
+		h.quickCreateDiscoveryOn(r, wsUUID)
 	// Outside any project, with no override, the issue takes the Default's
 	// statuses; an override judges it below instead. (MUL-8250, CHE-3459)
 	if !workflowProjectID.Valid && createWorkflow == nil {
@@ -4304,6 +4393,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			slog.Error("create issue: resolve default workflow", append(logger.RequestAttrs(r), "error", err)...)
 			writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
 			return
+		}
+		if discoveryAsked {
+			status = issueworkflow.DiscoveryFallback(outside, status)
 		}
 		if err := issueworkflow.CheckStatusOutsideProject(outside, status); err != nil {
 			writeIssueWorkflowError(w, err)
@@ -4314,6 +4406,9 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		// A creator who picked no status gets the workflow's start status.
 		if req.Status == "" {
 			status = createWorkflow.Start()
+		}
+		if discoveryAsked {
+			status = issueworkflow.DiscoveryFallback(createWorkflow, status)
 		}
 		if err := issueworkflow.CheckStatus(createWorkflow, status); err != nil {
 			writeIssueWorkflowError(w, err)
@@ -4647,6 +4742,10 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 
 	issue := res.Issue
 	slog.Info("issue created", append(logger.RequestAttrs(r), "issue_id", uuidToString(issue.ID), "title", issue.Title, "status", issue.Status, "workspace_id", workspaceID)...)
+
+	if discoveryAsked && issue.Status == issueworkflow.DiscoveryStatusKey {
+		h.postDiscoveryNote(r, issue, creatorType, actualCreatorID, derefString(req.DiscoveryReason))
+	}
 
 	resp := issueToResponse(issue, prefix)
 	h.newReadFilter(r).stubDescription(h, issue, &resp)
@@ -5310,6 +5409,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		if handoff == nil && (touchedType || touchedID) {
 			if status, msg := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+				writeError(w, status, msg)
+				return
+			}
+			if status, msg := h.refuseAgentOutOfScope(r.Context(), actorType, actorID, workspaceID, prevIssue.ID, prevIssue, textOr(params.Title, prevIssue.Title), prevIssue.ParentIssueID, params.AssigneeType, params.AssigneeID); status != 0 {
 				writeError(w, status, msg)
 				return
 			}
@@ -6448,6 +6551,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 			if handoff == nil {
 				if status, _ := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+					continue
+				}
+				if status, _ := h.refuseAgentOutOfScope(r.Context(), actorType, actorID, workspaceID, prevIssue.ID, prevIssue, textOr(params.Title, prevIssue.Title), prevIssue.ParentIssueID, params.AssigneeType, params.AssigneeID); status != 0 {
 					continue
 				}
 			}

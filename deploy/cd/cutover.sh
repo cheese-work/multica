@@ -613,10 +613,26 @@ case "$command" in
     # already-visible hard blocker before an outage is even started.
     database_url="${CUTOVER_DATABASE_URL:?CUTOVER_DATABASE_URL is required, the same DATABASE_URL the compose stacks postgres service uses}"
     echo "==> quiescence preflight"
-    if ! node "$script_dir/quiescence.mjs" preflight --database-url "$database_url" --psql-via-docker-exec "$postgres_container"; then
+    # CHE-9367 (CHE-9223): exit 75 only for a healthy deferral — admit=false
+    # and decision="deferred_contention", before anything is drained. Every
+    # other denial (observation_failed, a crash, no or bad JSON, any other
+    # decision) and every later gate (final-gate, CHE-6850) exits 1.
+    preflight_out=""
+    if ! preflight_out="$(node "$script_dir/quiescence.mjs" preflight --database-url "$database_url" --psql-via-docker-exec "$postgres_container")"; then
+      printf '%s\n' "$preflight_out"
       echo "!! quiescence preflight denied cutover; $from_colour remains active" >&2
+      if printf '%s\n' "$preflight_out" | node -e '
+        const lines = require("node:fs").readFileSync(0, "utf8").trim().split("\n");
+        let r;
+        try { r = JSON.parse(lines[lines.length - 1]); } catch { process.exit(1); }
+        process.exit(r !== null && typeof r === "object" && !Array.isArray(r)
+          && r.admit === false && r.decision === "deferred_contention" ? 0 : 1);
+      ' 2>/dev/null; then
+        exit 75
+      fi
       exit 1
     fi
+    printf '%s\n' "$preflight_out"
 
     if ! ghcr_login; then
       echo "!! ghcr.io login failed; $from_colour remains active" >&2

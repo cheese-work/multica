@@ -187,6 +187,9 @@ deleted_browser_gateway_credential AS (
 deleted_issue_handoff_dispatch AS (
     DELETE FROM issue_handoff_dispatch WHERE workspace_id = $1
 ),
+deleted_issue_handoff_operation AS (
+    DELETE FROM issue_handoff_operation WHERE workspace_id = $1
+),
 deleted_issue_step_assignee AS (
     DELETE FROM issue_step_assignee WHERE workspace_id = $1
 ),
@@ -412,10 +415,15 @@ deleted_issue_views AS (
 deleted_issue_view_preferences AS (
     DELETE FROM issue_view_preference
     WHERE issue_view_preference.workspace_id = $1
+),
+deleted_machine_banner_dismissals AS (
+    DELETE FROM machine_banner_dismissal
+    WHERE machine_banner_dismissal.workspace_id = $1
 )
 DELETE FROM quick_action WHERE quick_action.workspace_id = $1
 `
 
+// CHE-9190: members' offline-banner dismissals carry no FK.
 func (q *Queries) DeleteWorkspaceIssueRoots(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceIssueRoots, workspaceID)
 	return err

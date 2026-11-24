@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -94,6 +95,19 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	if sourceIssueID != issue.ID {
 		writeError(writer, http.StatusBadRequest, "ask.source_issue_id must match issue_id")
 		return
+	}
+	for index, covered := range parsed.CoversIssueIDs {
+		coveredID, ok := parseUUIDOrBadRequest(writer, covered, fmt.Sprintf("ask.covers_issue_ids[%d]", index))
+		if !ok {
+			return
+		}
+		if _, err := handler.Queries.GetIssueInWorkspace(request.Context(), db.GetIssueInWorkspaceParams{WorkspaceID: issue.WorkspaceID, ID: coveredID}); errors.Is(err, pgx.ErrNoRows) {
+			writeError(writer, http.StatusBadRequest, fmt.Sprintf("ask.covers_issue_ids[%d] is not an issue of this workspace", index))
+			return
+		} else if err != nil {
+			writeError(writer, http.StatusInternalServerError, "failed to load covered issue")
+			return
+		}
 	}
 	workspace, err := handler.Queries.GetWorkspace(request.Context(), issue.WorkspaceID)
 	if err != nil {

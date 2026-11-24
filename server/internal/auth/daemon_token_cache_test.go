@@ -17,9 +17,21 @@ func TestDaemonTokenCache_NilSafe(t *testing.T) {
 	c.Invalidate(ctx, "any-hash")
 }
 
-func TestNewDaemonTokenCache_NilRedisReturnsNil(t *testing.T) {
-	if c := NewDaemonTokenCache(nil); c != nil {
-		t.Fatalf("NewDaemonTokenCache(nil) must return nil, got %#v", c)
+// CHE-7639: no Redis means an in-process cache, not "no cache".
+func TestNewDaemonTokenCache_NilRedisReturnsLocalCache(t *testing.T) {
+	c := NewDaemonTokenCache(nil)
+	if c == nil {
+		t.Fatal("NewDaemonTokenCache(nil) must return an in-process cache")
+	}
+	ctx := context.Background()
+	id := DaemonTokenIdentity{WorkspaceID: "w", DaemonID: "d", OwnerID: "o"}
+	c.Set(ctx, "h", id, AuthCacheTTL)
+	if got, ok := c.Get(ctx, "h"); !ok || got != id {
+		t.Fatalf("Get after Set = (%+v, %v)", got, ok)
+	}
+	c.Invalidate(ctx, "h")
+	if _, ok := c.Get(ctx, "h"); ok {
+		t.Fatal("entry must be gone after Invalidate")
 	}
 }
 

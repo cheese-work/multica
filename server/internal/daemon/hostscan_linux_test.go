@@ -140,3 +140,55 @@ func TestHeartbeatRequestReportsHostScan(t *testing.T) {
 		t.Fatal("host scan reported after unconfirmed cleanup")
 	}
 }
+
+// CHE-7234: with the daemon in <unit>/daemon and the run leaves in
+// <unit>/runs/<attempt>, an unreadable environ in a leaf is still a runner that
+// may hide its task id, so the scan is not ok. The exact-cgroup check missed it.
+func TestScanProcTaskIDsUnreadableRunnerInSiblingLeafIsNotOK(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads every environ")
+	}
+	root := fakeProc(t, map[string]string{"101": "MULTICA_TASK_ID=task-a\x00"})
+	if err := os.WriteFile(filepath.Join(root, "self", "cgroup"), []byte("0::/app.slice/multica.service/daemon\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeProcMeta(t, filepath.Join(root, "101"), os.Getuid(), "0::/app.slice/multica.service/runs/att-1")
+	if err := os.Chmod(filepath.Join(root, "101", "environ"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := scanProcTaskIDs(root); ok {
+		t.Fatal("scan ok despite an unreadable same-uid process in a run leaf of the service")
+	}
+}
+
+// A process in another unit that merely shares a name prefix is not in the
+// service subtree.
+func TestScanProcTaskIDsSiblingUnitWithSharedPrefixIsNotInSubtree(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads every environ")
+	}
+	root := fakeProc(t, map[string]string{"101": "MULTICA_TASK_ID=task-a\x00"})
+	if err := os.WriteFile(filepath.Join(root, "self", "cgroup"), []byte("0::/app.slice/multica.service/daemon\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeProcMeta(t, filepath.Join(root, "101"), os.Getuid(), "0::/app.slice/multica.service-other/x")
+	if err := os.Chmod(filepath.Join(root, "101", "environ"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := scanProcTaskIDs(root); !ok {
+		t.Fatal("a different unit must be skipped, not fail the scan")
+	}
+}
+
+// A readable runner in a leaf is reported like any other.
+func TestScanProcTaskIDsFindsRunnerInLeaf(t *testing.T) {
+	root := fakeProc(t, map[string]string{"101": "MULTICA_TASK_ID=task-leaf\x00"})
+	if err := os.WriteFile(filepath.Join(root, "self", "cgroup"), []byte("0::/u/multica.service/daemon\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fakeProcMeta(t, filepath.Join(root, "101"), os.Getuid(), "0::/u/multica.service/runs/a")
+	ids, ok := scanProcTaskIDs(root)
+	if !ok || !reflect.DeepEqual(ids, []string{"task-leaf"}) {
+		t.Fatalf("ids = %v ok = %v", ids, ok)
+	}
+}

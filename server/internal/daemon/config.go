@@ -121,6 +121,10 @@ type Config struct {
 	ReservedChatSlots              int                   // slots only DM (chat) runs may use; issue runs get MaxConcurrentTasks-ReservedChatSlots (default: 0)
 	SandboxMode                    sandbox.Mode          // MULTICA_SANDBOX_MODE: off (default), audit or on. On gives every run an env allowlist, a per-run HOME and a read-only provider credential copy (CHE-2216)
 	Broker                         *BrokerConfig         // MULTICA_BROKER_CONFIG: GitHub App for the per-run push/read broker; nil means none (CHE-2216 A4c)
+	Containment                    bool                  // MULTICA_CONTAINMENT: on gives each run a cgroup leaf (CHE-7168); off (default) is today's launch path
+	ContainmentRoot                string                // MULTICA_CONTAINMENT_ROOT: runs cgroup holding the leaves; empty derives it from the daemon's own cgroup
+	ContainmentStateDir            string                // MULTICA_CONTAINMENT_STATE_DIR: attempt records; empty is <profile dir>/containment/attempts
+	ContainmentCharge              int64                 // MULTICA_CONTAINMENT_CHARGE_BYTES: memory charge recorded per attempt; required when containment is on until admission supplies it
 	RunBindingsDir                 string                // MULTICA_RUN_BINDINGS_DIR: opt-in private host registry for cooperative Codex task bindings
 	SandboxHomeTemplate            string                // MULTICA_SANDBOX_HOME_TEMPLATE: optional read-only config template copied into each per-run HOME
 	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
@@ -604,6 +608,14 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("MULTICA_SANDBOX_MODE: %w", err)
 	}
+	containmentOn, err := parseContainmentMode(os.Getenv("MULTICA_CONTAINMENT"), sandboxMode)
+	if err != nil {
+		return Config{}, fmt.Errorf("MULTICA_CONTAINMENT: %w", err)
+	}
+	containmentCharge, err := parseContainmentCharge(os.Getenv("MULTICA_CONTAINMENT_CHARGE_BYTES"), containmentOn)
+	if err != nil {
+		return Config{}, fmt.Errorf("MULTICA_CONTAINMENT_CHARGE_BYTES: %w", err)
+	}
 	brokerCfg, err := LoadBrokerConfig(strings.TrimSpace(os.Getenv("MULTICA_BROKER_CONFIG")))
 	if err != nil {
 		return Config{}, fmt.Errorf("MULTICA_BROKER_CONFIG: %w", err)
@@ -694,6 +706,10 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		Agents:                          agents,
 		WorkspacesRoot:                  workspacesRoot,
 		SandboxMode:                     sandboxMode,
+		Containment:                     containmentOn,
+		ContainmentRoot:                 strings.TrimSpace(os.Getenv("MULTICA_CONTAINMENT_ROOT")),
+		ContainmentStateDir:             strings.TrimSpace(os.Getenv("MULTICA_CONTAINMENT_STATE_DIR")),
+		ContainmentCharge:               containmentCharge,
 		Broker:                          brokerCfg,
 		RunBindingsDir:                  strings.TrimSpace(os.Getenv("MULTICA_RUN_BINDINGS_DIR")),
 		SandboxHomeTemplate:             strings.TrimSpace(os.Getenv("MULTICA_SANDBOX_HOME_TEMPLATE")),

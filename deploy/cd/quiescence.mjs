@@ -383,7 +383,9 @@ export function evaluatePassivePreflight(state, opts = {}) {
   const thresholdMs = opts.youngTransactionThresholdMs ?? YOUNG_TRANSACTION_THRESHOLD_MS;
 
   if (!state.ok) {
-    return { admit: false, decision: "deferred_contention", reason: `observation failed: ${state.reason}`, evidence: {} };
+    // CHE-9367: an unreadable database is not contention. cutover.sh exits 75
+    // only for deferred_contention, so this must stay a plain failure.
+    return { admit: false, decision: "observation_failed", reason: `observation failed: ${state.reason}`, evidence: {} };
   }
 
   // state.activity already excludes this observation's own connection via

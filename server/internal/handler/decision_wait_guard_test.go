@@ -308,3 +308,217 @@ func TestDecisionWorkerAlertsMissingRequestOnce(test *testing.T) {
 		test.Fatalf("new wait episode alerts = %d, want 2", got)
 	}
 }
+
+// seedWaitRequest inserts a human decision request on issueID in the given status.
+func seedWaitRequest(test *testing.T, fixture intentFixture, issueID, status string) string {
+	test.Helper()
+	session := dbfx.ChatSession(test, fixture.agentID, testutil.Cols{"creator_id": fixture.humanID})
+	id := dbfx.Insert(test, "decision_request", testutil.Cols{
+		"workspace_id": testWorkspaceID, "issue_id": issueID, "asking_agent_id": fixture.agentID, "human_user_id": fixture.humanID,
+		"chat_session_id": session, "ask": "Approve?", "escalation_class": "reversible", "origin": "asked", "status": status,
+	})
+	dbfx.Cleanup(test, `DELETE FROM decision_request WHERE id = $1`, id)
+	return id
+}
+
+func decisionWaitAlerts(test *testing.T, issueID string) int {
+	test.Helper()
+	return dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND handoff_note LIKE 'Decision wait guard:%'`, issueID)
+}
+
+func requireNoWaitFlag(test *testing.T, issueID string) {
+	test.Helper()
+	if got := dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ?| ARRAY['decision_wait_started_at','decision_wait_alert_id','decision_wait_missing_request','decision_wait_route_error']`, issueID); got != 0 {
+		test.Fatal("issue still carries decision wait metadata")
+	}
+}
+
+// CHE-4029 criterion 1: a grouped request lives on the parent.
+func TestDecisionWaitGuardCountsParentGroupedRequest(test *testing.T) {
+	fixture, _, _ := decisionWaitFixture(test)
+	parent := dbfx.Issue(test, "grouped parent", nil)
+	dbfx.Exec(test, `UPDATE issue SET parent_issue_id = $1 WHERE id = $2`, parent, fixture.issueID)
+	seedWaitRequest(test, fixture, parent, "open")
+	if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	if got := decisionWaitAlerts(test, fixture.issueID); got != 0 {
+		test.Fatalf("child of a parent with an open grouped request was alerted %d times", got)
+	}
+	requireNoWaitFlag(test, fixture.issueID)
+}
+
+// CHE-4029 round 2: an ordinary issue_dependency link (related, blocks,
+// blocked_by, either direction) is not evidence that the linked issue's open
+// request covers this issue's wait, so the missing request is still alerted.
+func TestDecisionWaitGuardIgnoresOpenRequestOnLinkedIssue(test *testing.T) {
+	for _, linkType := range []string{"related", "blocks", "blocked_by"} {
+		for _, direction := range []string{"issue_to_linked", "linked_to_issue"} {
+			test.Run(linkType+"/"+direction, func(test *testing.T) {
+				fixture, _, _ := decisionWaitFixture(test)
+				linked := dbfx.Issue(test, "unrelated linked issue", nil)
+				from, to := fixture.issueID, linked
+				if direction == "linked_to_issue" {
+					from, to = linked, fixture.issueID
+				}
+				dep := dbfx.Insert(test, "issue_dependency", testutil.Cols{"issue_id": from, "depends_on_issue_id": to, "type": linkType})
+				dbfx.Cleanup(test, `DELETE FROM issue_dependency WHERE id = $1`, dep)
+				seedWaitRequest(test, fixture, linked, "open")
+				if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+					test.Fatal(err)
+				}
+				if got := decisionWaitAlerts(test, fixture.issueID); got != 1 {
+					test.Fatalf("alerts = %d, want 1: a linked issue's open request must not hide a missing request", got)
+				}
+			})
+		}
+	}
+}
+
+// CHE-4029 criterion 1 (linked groups): an open request whose ask names this
+// issue in covers_issue_ids covers its wait. The link is the ask's own list,
+// so only a request that names the issue counts, and only while it is open.
+func TestDecisionWaitGuardCountsRequestThatCoversIssue(test *testing.T) {
+	cases := []struct {
+		name       string
+		status     string
+		coversSelf bool
+		want       int
+	}{
+		{"open and names the issue", "open", true, 0},
+		{"open but names another issue", "open", false, 1},
+		{"names the issue but answered", "answered", true, 1},
+		{"names the issue but cancelled", "cancelled", true, 1},
+	}
+	for _, tc := range cases {
+		test.Run(tc.name, func(test *testing.T) {
+			fixture, _, _ := decisionWaitFixture(test)
+			group := dbfx.Issue(test, "group card issue", nil)
+			other := dbfx.Issue(test, "other covered issue", nil)
+			covered := other
+			if tc.coversSelf {
+				covered = fixture.issueID
+			}
+			request := seedWaitRequest(test, fixture, group, tc.status)
+			dbfx.Exec(test, `UPDATE decision_request SET ask_json = jsonb_build_object('covers_issue_ids', jsonb_build_array($1::text)) WHERE id = $2`, covered, request)
+			if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+				test.Fatal(err)
+			}
+			if got := decisionWaitAlerts(test, fixture.issueID); got != tc.want {
+				test.Fatalf("alerts = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// An unlinked issue with an open request does not cover the issue.
+func TestDecisionWaitGuardIgnoresUnlinkedRequest(test *testing.T) {
+	fixture, _, _ := decisionWaitFixture(test)
+	unlinked := dbfx.Issue(test, "unlinked issue", nil)
+	seedWaitRequest(test, fixture, unlinked, "open")
+	if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	if got := decisionWaitAlerts(test, fixture.issueID); got != 1 {
+		test.Fatalf("alerts = %d, want 1", got)
+	}
+}
+
+// A parent request that is no longer open does not cover the child.
+func TestDecisionWaitGuardIgnoresClosedParentRequest(test *testing.T) {
+	fixture, _, _ := decisionWaitFixture(test)
+	parent := dbfx.Issue(test, "grouped parent", nil)
+	dbfx.Exec(test, `UPDATE issue SET parent_issue_id = $1 WHERE id = $2`, parent, fixture.issueID)
+	seedWaitRequest(test, fixture, parent, "cancelled")
+	if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+		test.Fatal(err)
+	}
+	if got := decisionWaitAlerts(test, fixture.issueID); got != 1 {
+		test.Fatalf("alerts = %d, want 1", got)
+	}
+}
+
+// CHE-4029 criteria 2 and 3: an answered request is not flagged, including the
+// pass right after the last open request is answered.
+func TestDecisionWaitGuardAnsweredRequest(test *testing.T) {
+	test.Run("answered_only", func(test *testing.T) {
+		fixture, _, _ := decisionWaitFixture(test)
+		seedWaitRequest(test, fixture, fixture.issueID, "answered")
+		if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+			test.Fatal(err)
+		}
+		if got := decisionWaitAlerts(test, fixture.issueID); got != 0 {
+			test.Fatalf("answered request alerted %d times", got)
+		}
+		requireNoWaitFlag(test, fixture.issueID)
+	})
+	test.Run("last_open_answered", func(test *testing.T) {
+		fixture, _, _ := decisionWaitFixture(test)
+		request := seedWaitRequest(test, fixture, fixture.issueID, "open")
+		if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+			test.Fatal(err)
+		}
+		requireNoWaitFlag(test, fixture.issueID)
+		dbfx.Exec(test, `UPDATE decision_request SET status = 'answered' WHERE id = $1`, request)
+		setWaitAge(test, fixture.issueID, 660)
+		if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+			test.Fatal(err)
+		}
+		if got := decisionWaitAlerts(test, fixture.issueID); got != 0 {
+			test.Fatalf("answered last request alerted %d times", got)
+		}
+		requireNoWaitFlag(test, fixture.issueID)
+	})
+	test.Run("cancelled_only_still_flagged", func(test *testing.T) {
+		fixture, _, _ := decisionWaitFixture(test)
+		seedWaitRequest(test, fixture, fixture.issueID, "cancelled")
+		if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+			test.Fatal(err)
+		}
+		if got := decisionWaitAlerts(test, fixture.issueID); got != 1 {
+			test.Fatalf("alerts = %d, want 1", got)
+		}
+	})
+}
+
+// CHE-4029 criterion 4: a squad lookup miss falls back to the project's owning
+// squad (the squad its lead agent leads) before a route error is recorded.
+func TestDecisionWaitGuardProjectSquadFallback(test *testing.T) {
+	for _, scenario := range []string{"member_assignee", "multi_squad_agent", "no_project_squad"} {
+		test.Run(scenario, func(test *testing.T) {
+			fixture, squad, leader := decisionWaitFixture(test)
+			dbfx.Exec(test, `UPDATE issue SET assignee_type = 'member', assignee_id = $1 WHERE id = $2`, fixture.humanID, fixture.issueID)
+			dbfx.Exec(test, `UPDATE squad SET archived_at = clock_timestamp() WHERE id = $1`, squad)
+			projectLeader := createHandlerTestAgent(test, "project leader", []byte("[]"))
+			owning := dbfx.Insert(test, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "project squad", "creator_id": testUserID, "leader_id": projectLeader})
+			lead := projectLeader
+			if scenario == "no_project_squad" {
+				lead = fixture.agentID
+			}
+			project := dbfx.Project(test, "guard project", testutil.Cols{"lead_type": "agent", "lead_id": lead})
+			dbfx.Exec(test, `UPDATE issue SET project_id = $1 WHERE id = $2`, project, fixture.issueID)
+			if scenario == "multi_squad_agent" {
+				other := dbfx.Insert(test, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "other squad", "creator_id": testUserID, "leader_id": leader})
+				for _, id := range []string{owning, other} {
+					dbfx.Exec(test, `INSERT INTO squad_member (squad_id, member_type, member_id, role) VALUES ($1, 'agent', $2, 'member')`, id, fixture.agentID)
+				}
+				dbfx.Exec(test, `UPDATE issue SET assignee_type = 'agent', assignee_id = $1 WHERE id = $2`, fixture.agentID, fixture.issueID)
+			}
+			if err := testHandler.checkDecisionWaits(context.Background()); err != nil {
+				test.Fatal(err)
+			}
+			if scenario == "no_project_squad" {
+				if dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_wait_route_error'`, fixture.issueID) != 1 {
+					test.Fatal("no project squad must still record the route error")
+				}
+				return
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND squad_id = $3 AND is_leader_task AND handoff_note LIKE 'Decision wait guard:%'`, fixture.issueID, projectLeader, owning) != 1 {
+				test.Fatal("project owning squad leader was not alerted")
+			}
+			if dbfx.Count(test, `SELECT count(*) FROM issue WHERE id = $1 AND metadata ? 'decision_wait_route_error'`, fixture.issueID) != 0 {
+				test.Fatal("route error recorded despite a project squad")
+			}
+		})
+	}
+}
