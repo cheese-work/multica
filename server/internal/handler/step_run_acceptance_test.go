@@ -6,9 +6,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/daemon"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -269,93 +270,240 @@ func TestAcceptanceSameThreadCommentKeepsStatusHandoffRun(t *testing.T) {
 	}
 }
 
-// A planned comment (a worker's reply, or the loser of an enqueue race) registers
-// on a queued status handoff holder without touching the run, and the replay
-// answers it. A queued comment run still refuses the append.
-func TestAcceptanceRegisterOnQueuedStatusHandoffHolder(t *testing.T) {
-	s := newStepProject(t, "accept register")
+// finishStep starts the claimed step run and completes it through the daemon
+// completion handler, which replays the comments planned on it.
+func (s realStep) finishStep(t *testing.T) {
+	t.Helper()
+	if _, err := testHandler.TaskService.StartTask(context.Background(), parseUUID(s.stepID)); err != nil {
+		t.Fatal(err)
+	}
+	completeWorkerReplyRun(t, s.stepID)
+}
+
+// wantFollowUp claims the next run after the step run completed and fails unless
+// it is a comment run for the comment that replies in the same thread.
+func wantFollowUp(t *testing.T, runtimeID, stepID, commentID, text string) daemon.Task {
+	t.Helper()
+	followUp := claimNext(t, runtimeID)
+	if followUp == nil {
+		t.Fatal("the comment was lost: no run claimed after the step run completed")
+	}
+	if followUp.ID == stepID || followUp.TriggerCommentID != commentID || followUp.TriggerKind == "status_handoff" {
+		t.Fatalf("follow-up run = %+v, want a comment run triggered by %s", followUp, commentID)
+	}
+	if prompt := daemon.BuildPrompt(*followUp, "codex"); !strings.Contains(prompt, "[NEW COMMENT]") || !strings.Contains(prompt, text) {
+		t.Fatalf("follow-up run does not render the comment:\n%s", prompt)
+	}
+	return *followUp
+}
+
+// A squad worker replies in the handoff thread while the leader's status
+// handoff run is queued. The reply is routed to the leader through the comment
+// dispatch, which cannot fold into the step run, so it registers on it as planned
+// input: the step run keeps its prompt and evidence, and its completion replays
+// the reply as a run of its own.
+func TestAcceptanceWorkerReplyKeepsQueuedStepRun(t *testing.T) {
+	setAgentCommentWakePolicyForTest(t, false)
+	s := newStepProject(t, "accept worker")
 	s.moveIn(t, true)
 	before := s.evidence(t)
-	reply := dbfx.Comment(t, s.issueID, "worker reply", testutil.Cols{"parent_id": s.handoff})
 
-	ok, err := testHandler.registerPlannedCommentForActiveTask(context.Background(), s.issue, s.agent.ID, parseUUID(reply), pgtype.Text{})
-	if err != nil || !ok {
-		t.Fatalf("register on the queued status handoff run = %v, %v; want registered", ok, err)
-	}
-	if !slices.Contains(coalescedIDs(s.task(t, s.stepID)), reply) {
-		t.Fatalf("the reply is not planned on the holder: %v", coalescedIDs(s.task(t, s.stepID)))
-	}
+	workerRuntime := dbfx.Runtime(t, "accept worker runtime")
+	workerID := dbfx.Agent(t, "accept worker", workerRuntime)
+	squadID := dbfx.Squad(t, "accept worker squad", s.agentID)
+	dbfx.SquadMember(t, squadID, "agent", workerID)
+	dbfx.Exec(t, `UPDATE issue SET assignee_type = 'squad', assignee_id = $1 WHERE id = $2`, squadID, s.issueID)
+	sourceID := dbfx.Task(t, s.agentID, testutil.Cols{"runtime_id": s.runtime, "issue_id": s.issueID, "status": "completed", "is_leader_task": true, "squad_id": squadID})
+	delegation := dbfx.Comment(t, s.issueID, "[@Worker](mention://agent/"+workerID+") verify it", testutil.Cols{
+		"author_type": "agent", "author_id": s.agentID, "source_task_id": sourceID, "parent_id": s.handoff,
+	})
+	workerTaskID := dbfx.Task(t, workerID, testutil.Cols{
+		"runtime_id": workerRuntime, "issue_id": s.issueID, "status": "running", "trigger_comment_id": delegation,
+		"squad_id": squadID, "delegated_from_task_id": sourceID,
+	})
+	t.Cleanup(func() { dbfx.Exec(t, "DELETE FROM agent_task_queue WHERE issue_id = $1", s.issueID) })
 
+	req := withURLParam(newRequest(http.MethodPost, "/api/issues/"+s.issueID+"/comments", map[string]any{
+		"content": "Verification complete: please coordinate the repair", "parent_id": delegation,
+	}), "id", s.issueID)
+	req.Header.Set("X-Agent-ID", workerID)
+	req.Header.Set("X-Task-ID", workerTaskID)
+	var reply CommentResponse
+	testutil.Call(t, testHandler.CreateComment, req).Want(http.StatusCreated).JSON(&reply)
+
+	if !slices.Contains(coalescedIDs(s.task(t, s.stepID)), reply.ID) {
+		t.Fatalf("the worker reply is not planned on the queued step run: %v", coalescedIDs(s.task(t, s.stepID)))
+	}
 	s.wantUnchanged(t, before)
 	step := claimNext(t, s.runtime)
 	if step == nil || step.ID != s.stepID {
-		t.Fatalf("first claim = %+v, want the step run", step)
+		t.Fatalf("first claim = %+v, want the step run %s", step, s.stepID)
 	}
 	s.wantKeptStepRun(t, before, *step)
 	if len(step.CoalescedComments) != 0 {
 		t.Fatalf("step claim embedded %d coalesced comments the prompt never renders", len(step.CoalescedComments))
 	}
-	if delivered := uuidsToStrings(s.task(t, s.stepID).DeliveredCommentIds); slices.Contains(delivered, reply) {
+	if delivered := uuidsToStrings(s.task(t, s.stepID).DeliveredCommentIds); slices.Contains(delivered, reply.ID) {
 		t.Fatalf("the step claim receipted the reply as delivered: %v", delivered)
 	}
-	dbfx.Exec(t, "UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1", s.stepID)
-	completed := s.task(t, s.stepID)
-	testHandler.reconcileCommentsOnCompletion(context.Background(), &completed)
-	followUp := claimNext(t, s.runtime)
-	if followUp == nil || followUp.TriggerCommentID != reply {
-		t.Fatalf("follow-up run = %+v, want a run triggered by the reply %s", followUp, reply)
-	}
-	if prompt := daemon.BuildPrompt(*followUp, "codex"); !strings.Contains(prompt, "worker reply") {
-		t.Fatalf("follow-up run does not render the reply:\n%s", prompt)
-	}
+	s.finishStep(t)
+	wantFollowUp(t, s.runtime, s.stepID, reply.ID, "please coordinate the repair")
 }
 
-// The post-insert sibling fold and the budget-resume fold leave a real step run
-// alone, and both runs are claimed with their own prompts.
-func TestAcceptanceSiblingAndResumeFoldsKeepStepRun(t *testing.T) {
-	s := newStepProject(t, "accept folds")
-	s.moveIn(t, false)
+// A delegated worker fails while the coordinator's status handoff run is queued.
+// The recovery signal registers on the step run as planned input, the step run is
+// claimed with its own prompt and evidence, and its completion replays the
+// recovery comment as a run of its own.
+func TestAcceptanceDelegatedFailureKeepsQueuedStepRun(t *testing.T) {
+	s := newStepProject(t, "accept delegated")
+	s.moveIn(t, true)
 	before := s.evidence(t)
 
-	// Post-insert sibling fold: a fresh comment run next to the queued step run.
-	siblingComment := dbfx.Comment(t, s.issueID, "sibling question")
-	siblingID := dbfx.Task(t, s.agentID, testutil.Cols{"runtime_id": s.runtime, "issue_id": s.issueID, "status": "queued", "trigger_comment_id": siblingComment})
-	if testHandler.collapseIntoQueuedSibling(context.Background(), s.issue, s.task(t, siblingID)) {
-		t.Fatal("the comment run was collapsed into the queued step run")
-	}
+	workerRuntime := dbfx.Runtime(t, "accept delegated runtime")
+	workerID := dbfx.Agent(t, "accept delegated worker", workerRuntime)
+	workerIssue := dbfx.Issue(t, "accept delegated worker issue", testutil.Cols{"parent_issue_id": s.issueID, "assignee_type": "agent", "assignee_id": workerID})
+	sourceID := dbfx.Task(t, s.agentID, testutil.Cols{
+		"runtime_id": s.runtime, "issue_id": s.issueID, "status": "completed", "trigger_comment_id": s.handoff,
+		"originator_user_id": testUserID, "accountable_user_id": testUserID,
+	})
+	failedID := dbfx.Task(t, workerID, testutil.Cols{
+		"runtime_id": workerRuntime, "issue_id": workerIssue, "status": "running", "attempt": 2, "max_attempts": 2,
+		"delegated_from_task_id": sourceID, "originator_user_id": testUserID, "accountable_user_id": testUserID,
+		"originator_source": "delegation", "trigger_evidence_kind": "comment",
+	})
+	t.Cleanup(func() { dbfx.Exec(t, "DELETE FROM agent_task_queue WHERE issue_id = $1", workerIssue) })
 
-	// Budget-resume fold: the refused comment is not bound to the step run.
-	refused := dbfx.Comment(t, s.issueID, "refused question")
-	refusal := db.RunBudgetRefusal{TriggerCommentID: parseUUID(refused), AgentID: s.agent.ID, Trigger: "mention"}
-	prep := testHandler.prepareBind(context.Background(), refusal, s.issue)
-	if prep == nil {
-		t.Fatal("no bind prep for the refused comment")
-	}
-	var held error
-	if err := testHandler.underIssueLock(context.Background(), s.issue.ID, func(q *db.Queries) error {
-		_, held = testHandler.bindSurvivor(context.Background(), q, refusal, parseUUID(s.stepID), prep)
-		return nil
-	}); err != nil {
+	if _, err := testHandler.TaskService.FailTask(context.Background(), parseUUID(failedID), "worker exited", "", "", "", "agent_error.process_failure", false, "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if held != errResumeSurvivorHeld {
-		t.Fatalf("bindSurvivor = %v, want errResumeSurvivorHeld", held)
-	}
 
-	s.wantUnchanged(t, before)
-	claimed := s.claimAll(t)
-	step, ok := claimed[s.stepID]
-	if !ok {
-		t.Fatalf("the step run was not claimed (claimed %d runs)", len(claimed))
+	planned := coalescedIDs(s.task(t, s.stepID))
+	if len(planned) != 1 {
+		t.Fatalf("the recovery signal is not planned on the queued step run: %v", planned)
 	}
-	s.wantKeptStepRun(t, before, step)
-	wantCommentRun(t, claimed, s.stepID, siblingComment, "sibling question")
+	s.wantUnchanged(t, before)
+	step := claimNext(t, s.runtime)
+	if step == nil || step.ID != s.stepID {
+		t.Fatalf("first claim = %+v, want the step run %s", step, s.stepID)
+	}
+	s.wantKeptStepRun(t, before, *step)
+	if delivered := uuidsToStrings(s.task(t, s.stepID).DeliveredCommentIds); slices.Contains(delivered, planned[0]) {
+		t.Fatalf("the step claim receipted the recovery comment as delivered: %v", delivered)
+	}
+	s.finishStep(t)
+	var recovery string
+	dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, planned[0]).Scan(&recovery)
+	if !strings.Contains(recovery, "worker exited") {
+		t.Fatalf("planned comment is not the delegated failure signal: %q", recovery)
+	}
+	wantFollowUp(t, s.runtime, s.stepID, planned[0], "worker exited")
 }
 
-// A decision answer while the recipient's only queued run is a step run is
-// delivered as a comment run of its own that replies in the decision thread; the
-// step run keeps its prompt, with the project workflow block. The squad leader's
-// run is covered the same way.
+// A side comment refused by the run budget while the step run is queued is
+// resumed once the cap is raised. The resume does not fold the comment into the
+// step run: the refusal waits, the step run is claimed with its own prompt and
+// evidence, and the comment gets a run of its own after the step run completes.
+func TestAcceptanceBudgetResumeKeepsQueuedStepRun(t *testing.T) {
+	setAgentCommentWakePolicyForTest(t, false)
+	s := newStepProject(t, "accept budget")
+	workflowID := projectWorkflowID(t, s.projectID)
+	dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue = 1, run_budget_since = now() - interval '1 hour' WHERE id = $1`, workflowID)
+	s.moveIn(t, true)
+	before := s.evidence(t)
+
+	// The move opened the budget window; one side comment spends its last run,
+	// and that run is finished so only the step run is left to hold the slot.
+	spent := postIssueComment(t, s.issueID, "a question that fits the budget", "")
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE issue_id = $1 AND trigger_comment_id = $2`, s.issueID, spent)
+
+	events := make(chan service.RunBudgetExhausted, 1)
+	service.SetOnRunBudgetExhausted(func(_ context.Context, e service.RunBudgetExhausted) { events <- e })
+	t.Cleanup(giveBackRunBudgetHooks)
+	// Another agent mentions the step agent: a derived run the spent budget refuses.
+	peerRuntime := dbfx.Runtime(t, "accept budget peer runtime")
+	peerID := dbfx.Agent(t, "accept budget peer", peerRuntime)
+	peerTask := dbfx.Task(t, peerID, testutil.Cols{"runtime_id": peerRuntime, "issue_id": s.issueID, "status": "running"})
+	req := withURLParam(newRequest(http.MethodPost, "/api/issues/"+s.issueID+"/comments", map[string]any{"content": s.mention("a refused question")}), "id", s.issueID)
+	req.Header.Set("X-Agent-ID", peerID)
+	req.Header.Set("X-Task-ID", peerTask)
+	var refusedComment CommentResponse
+	testutil.Call(t, testHandler.CreateComment, req).Want(http.StatusCreated).JSON(&refusedComment)
+	refused := refusedComment.ID
+	var event service.RunBudgetExhausted
+	select {
+	case event = <-events:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the budget did not refuse the side comment")
+	}
+	giveBackRunBudgetHooks()
+	crashAt(t, "after_intent")
+	testHandler.onRunBudgetExhausted(context.Background(), event)
+	ids := refusalIDs(t, budgetCase{edgeCase: edgeCase{issueID: s.issueID}})
+	if len(ids) != 1 {
+		t.Fatalf("refusal rows = %d, want 1", len(ids))
+	}
+	id := ids[0]
+	if row := resumeRowOf(t, id); row.State != "open" {
+		t.Fatalf("refusal = %+v, want open", row)
+	}
+
+	linkRefusal(t, id, resumeRowOf(t, id).Window)
+	dbfx.Exec(t, `UPDATE issue_workflow SET max_runs_per_issue = 30 WHERE id = $1`, workflowID)
+	resume(t, id)
+	wantResume(t, id, "resume_pending", "")
+	s.wantUnchanged(t, before)
+
+	step := claimNext(t, s.runtime)
+	if step == nil || step.ID != s.stepID {
+		t.Fatalf("first claim = %+v, want the step run %s", step, s.stepID)
+	}
+	s.wantKeptStepRun(t, before, *step)
+	if prompt := daemon.BuildPrompt(*step, "codex"); strings.Contains(prompt, "a refused question") {
+		t.Fatalf("the step prompt answers the refused comment:\n%s", prompt)
+	}
+	s.finishStep(t)
+
+	resume(t, id)
+	wantResume(t, id, "run_queued", "")
+	wantFollowUp(t, s.runtime, s.stepID, refused, "a refused question")
+}
+
+// The post-insert sibling fold leaves a real step run alone: a comment run that
+// lands next to the queued step run is not collapsed into it, and both runs are
+// claimed with their own prompts.
+func TestAcceptanceSiblingFoldKeepsStepRun(t *testing.T) {
+	for _, withHandoff := range []bool{false, true} {
+		name := "assignment"
+		if withHandoff {
+			name = "status_handoff"
+		}
+		t.Run(name, func(t *testing.T) {
+			s := newStepProject(t, "accept sibling "+name)
+			s.moveIn(t, withHandoff)
+			before := s.evidence(t)
+
+			siblingComment := dbfx.Comment(t, s.issueID, "sibling question")
+			siblingID := dbfx.Task(t, s.agentID, testutil.Cols{"runtime_id": s.runtime, "issue_id": s.issueID, "status": "queued", "trigger_comment_id": siblingComment})
+			if testHandler.collapseIntoQueuedSibling(context.Background(), s.issue, s.task(t, siblingID)) {
+				t.Fatal("the comment run was collapsed into the queued step run")
+			}
+
+			s.wantUnchanged(t, before)
+			claimed := s.claimAll(t)
+			step, ok := claimed[s.stepID]
+			if !ok {
+				t.Fatalf("the step run was not claimed (claimed %d runs)", len(claimed))
+			}
+			s.wantKeptStepRun(t, before, step)
+			wantCommentRun(t, claimed, s.stepID, siblingComment, "sibling question")
+		})
+	}
+}
+
+// A decision answer while the recipient's only queued run is a step run made by
+// the real status move is delivered as a comment run of its own that replies in
+// the decision thread; the step run keeps its prompt, its workflow block and its
+// evidence. The squad leader's run is covered the same way.
 func TestAcceptanceDecisionAnswerKeepsStepRun(t *testing.T) {
 	for _, squad := range []bool{false, true} {
 		name := "agent"
@@ -368,16 +516,19 @@ func TestAcceptanceDecisionAnswerKeepsStepRun(t *testing.T) {
 			runtimeID := dbfx.Runtime(t, "decision step runtime "+name)
 			dbfx.Exec(t, `UPDATE agent SET runtime_id = $1, max_concurrent_tasks = 8 WHERE id = $2`, runtimeID, fixture.agentID)
 			projectID := deliveryProject(t, "decision step project "+name, fixture.agentID)
-			dbfx.Exec(t, `UPDATE issue SET project_id = $1, status = 'in_progress' WHERE id = $2`, projectID, fixture.issueID)
-			cols := testutil.Cols{"issue_id": fixture.issueID, "status": "queued", "runtime_id": runtimeID, "workflow_step": "in_progress"}
+			dbfx.Exec(t, `UPDATE issue SET project_id = $1, status = 'todo' WHERE id = $2`, projectID, fixture.issueID)
+			t.Cleanup(func() { dbfx.Exec(t, "DELETE FROM agent_task_queue WHERE issue_id = $1", fixture.issueID) })
+			s := realStep{
+				issueFoldFixture: issueFoldFixture{issueID: fixture.issueID, agentID: fixture.agentID, runtime: runtimeID},
+				projectID:        projectID,
+			}
+			s.moveIn(t, true)
 			if squad {
 				squadID := dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Decision step squad", "creator_id": testUserID, "leader_id": fixture.agentID})
 				dbfx.Exec(t, `UPDATE issue SET assignee_type = 'squad', assignee_id = $1 WHERE id = $2`, squadID, fixture.issueID)
-				cols["is_leader_task"] = true
-				cols["squad_id"] = squadID
+				dbfx.Exec(t, `UPDATE agent_task_queue SET is_leader_task = true, squad_id = $2 WHERE id = $1`, s.stepID, squadID)
 			}
-			stepID := dbfx.Task(t, fixture.agentID, cols)
-			t.Cleanup(func() { dbfx.Exec(t, "DELETE FROM agent_task_queue WHERE issue_id = $1", fixture.issueID) })
+			before := s.evidence(t)
 
 			_, runner := newDecisionRunnerFixture(t)
 			decisionPass(t, runner)
@@ -388,21 +539,18 @@ func TestAcceptanceDecisionAnswerKeepsStepRun(t *testing.T) {
 			if stored.WakeOutcome.String != "run_enqueued" {
 				t.Fatalf("wake outcome = %q, want run_enqueued", stored.WakeOutcome.String)
 			}
-			step := (issueFoldFixture{}).task(t, stepID)
-			if step.TriggerCommentID.Valid || len(step.CoalescedCommentIds) != 0 || step.TriggerKind.Valid {
-				t.Fatalf("the decision answer rewrote the step run: trigger=%v coalesced=%v", step.TriggerCommentID, coalescedIDs(step))
-			}
+			s.wantUnchanged(t, before)
 
 			claimed := claimAllOn(t, runtimeID)
-			claimedStep, ok := claimed[stepID]
+			step, ok := claimed[s.stepID]
 			if !ok {
 				t.Fatalf("the step run was not claimed (claimed %d runs)", len(claimed))
 			}
-			wantStepPrompt(t, claimedStep)
-			if prompt := daemon.BuildPrompt(claimedStep, "codex"); !strings.Contains(prompt, "[Project workflow]") {
-				t.Fatalf("step prompt lost the project workflow block:\n%s", prompt)
+			s.wantKeptStepRun(t, before, step)
+			answer := wantCommentRun(t, claimed, s.stepID, uuidToString(recorded.Comment.ID), recorded.Comment.Content)
+			if answer.IssueID != s.issueID {
+				t.Fatalf("decision run issue = %q, want %q", answer.IssueID, s.issueID)
 			}
-			wantCommentRun(t, claimed, stepID, uuidToString(recorded.Comment.ID), recorded.Comment.Content)
 		})
 	}
 }

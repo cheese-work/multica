@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -310,7 +311,7 @@ func TestResumeSurvivorKeepsQueuedStepRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if held != errResumeSurvivorHeld {
+	if !errors.Is(held, errResumeSurvivorHeld) {
 		t.Fatalf("bindSurvivor = %v, want errResumeSurvivorHeld", held)
 	}
 	if step := fx.task(t, stepID); step.TriggerCommentID.Valid || len(step.CoalescedCommentIds) != 0 {
