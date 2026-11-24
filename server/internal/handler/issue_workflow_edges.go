@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -320,6 +321,11 @@ func (h *Handler) loadEdgeFacts(ctx context.Context, q *db.Queries, issue db.Iss
 	if facts.IssueStatuses, err = h.guardedIssueStatuses(ctx, q, issue.WorkspaceID, edges); err != nil {
 		return facts, err
 	}
+	if hasGuard(edges, issueworkflow.GuardHumanDone) {
+		if facts.HumanDone, err = h.humanChoseDone(ctx, q, issue); err != nil {
+			return facts, err
+		}
+	}
 	if hasGuard(edges, issueworkflow.GuardAdoptionLinked) {
 		facts.Adoption = h.loadAdoptionFacts(ctx, q, issue)
 	}
@@ -555,4 +561,38 @@ func runBudgetRaiseTarget(ctx context.Context, q *db.Queries, issueID pgtype.UUI
 		return budgetRaise{}
 	}
 	return budgetRaise{target: target, leaves: leaves}
+}
+
+// humanChoseDone reports whether a member's live answer on one of the issue's
+// decision cards picked an option that closes the issue as done (CHE-9259). A
+// withdrawn or disclaimed answer, and a free-text answer with no chosen option,
+// do not count.
+func (h *Handler) humanChoseDone(ctx context.Context, q *db.Queries, issue db.Issue) (bool, error) {
+	requests, err := q.ListDecisionRequestsByIssue(ctx, db.ListDecisionRequestsByIssueParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if err != nil {
+		return false, err
+	}
+	for _, request := range requests {
+		if request.Status != "answered" {
+			continue
+		}
+		answer, err := q.GetLiveDecisionAnswer(ctx, db.GetLiveDecisionAnswerParams{WorkspaceID: issue.WorkspaceID, ID: request.ID})
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		if !answer.AnsweredByUserID.Valid || !answer.ChosenOptionIndex.Valid {
+			continue
+		}
+		var options []decisiontx.AskOption
+		if json.Unmarshal(request.Options, &options) != nil {
+			continue
+		}
+		if i := int(answer.ChosenOptionIndex.Int32); i >= 0 && i < len(options) && options[i].ChoosesDone() {
+			return true, nil
+		}
+	}
+	return false, nil
 }
