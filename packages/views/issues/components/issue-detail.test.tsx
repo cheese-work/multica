@@ -776,6 +776,7 @@ import {
   IssueSurfaceSelectionProvider,
   useCreateIssueSurfaceSelection,
 } from "../surface/selection-context";
+import { ingestTimeline, readTimeline } from "@multica/core/issues/timeline-store";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1699,10 +1700,10 @@ describe("IssueDetail (shared)", () => {
       </I18nProvider>,
     );
     await waitFor(() => expect(client.getQueryData(issueKeys.tasks("issue-1"))).toEqual([task]));
-    await waitFor(() => expect(client.getQueryData(issueKeys.timeline("issue-1"))).toEqual([]));
+    await waitFor(() => expect(readTimeline(client, "issue-1")).toEqual([]));
     expect(container.querySelector(`[data-run-id="${taskId}"]`)).toBeNull();
     mockApiObj.listTimeline.mockResolvedValue([root]);
-    act(() => client.setQueryData(issueKeys.timeline("issue-1"), [root]));
+    act(() => ingestTimeline(client, "issue-1", [root]));
     await screen.findByText("Waiting for an available agent.");
     const userBlock = container.querySelector(`#comment-body-${root.id}`)!.parentElement!;
     const agentBlock = container.querySelector(`[data-run-comment-id="${taskId}"]`)!;
@@ -1727,7 +1728,7 @@ describe("IssueDetail (shared)", () => {
     mockApiObj.listTasksByIssue.mockResolvedValue([running]);
     mockApiObj.listTimeline.mockResolvedValue([root, reply]);
     act(() => {
-      client.setQueryData(issueKeys.timeline("issue-1"), [root, reply]);
+      ingestTimeline(client, "issue-1", [root, reply]);
     });
     const body = await screen.findByText(reply.content!);
     const replyRow = container.querySelector("#comment-run-reply")!;
@@ -1859,7 +1860,7 @@ describe("IssueDetail (shared)", () => {
     mockApiObj.listTasksByIssue.mockResolvedValue([running]);
     mockApiObj.listTimeline.mockResolvedValue([existing, reply]);
     act(() => {
-      queryClient.setQueryData(issueKeys.timeline("issue-1"), [existing, reply]);
+      ingestTimeline(queryClient, "issue-1", [existing, reply]);
     });
     await waitFor(() => expect(screen.getAllByText(reply.content!)).toHaveLength(1));
     await waitFor(() => expect(container.querySelector(`[data-run-comment-id="${task.id}"]`)).toBeNull());
@@ -2973,7 +2974,7 @@ describe("IssueDetail (shared)", () => {
       mockApiObj.listTimeline.mockResolvedValue(timeline);
       act(() => {
         client.setQueryData(issueKeys.tasks("issue-1"), [...tasks]);
-        client.setQueryData(issueKeys.timeline("issue-1"), timeline);
+        ingestTimeline(client, "issue-1", timeline);
       });
       await screen.findByText(reply.content!);
       // task 0's reply (answer-0) is projected onto root itself (comment-runs.ts
@@ -5733,7 +5734,7 @@ describe("IssueDetail (shared)", () => {
     mockApiObj.listTimeline.mockResolvedValue([mention]);
     mockApiObj.listTasksByIssue.mockResolvedValue([assignment, mentionedRun]);
     act(() => {
-      client.setQueryData(issueKeys.timeline("issue-1"), [mention]);
+      ingestTimeline(client, "issue-1", [mention]);
       client.setQueryData(issueKeys.tasks("issue-1"), [assignment, mentionedRun]);
     });
     await screen.findByText(mention.content!);

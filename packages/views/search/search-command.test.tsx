@@ -7,9 +7,9 @@ import { useCommandBarContextStore, type CommandBarContext } from "@multica/core
 import { chatSessionsOptions, openDecisionRequestsOptions } from "@multica/core/chat/queries";
 import { inboxUnreadSummaryOptions } from "@multica/core/inbox/queries";
 import { I18nProvider } from "@multica/core/i18n/react";
-import { issueDetailOptions, issueTimelineOptions } from "@multica/core/issues/queries";
+import { issueDetailOptions, issueKeys, issueTimelineOptions } from "@multica/core/issues/queries";
 import { WORKSPACE_PAGES } from "@multica/core/paths";
-import type { Issue } from "@multica/core/types";
+import type { Issue, TimelineEntry } from "@multica/core/types";
 import {
   agentListOptions,
   memberListOptions,
@@ -356,6 +356,11 @@ const input = () => screen.getByPlaceholderText(PLACEHOLDER) as HTMLInputElement
 
 function seed(options: { queryKey: readonly unknown[] }, data: unknown) {
   queryData.set(JSON.stringify(options.queryKey), data);
+}
+
+function seedTimeline(issueId: string, entries: TimelineEntry[]) {
+  seed(issueTimelineOptions(issueId), entries.map((e) => e.id));
+  seed({ queryKey: issueKeys.timelineEntities(issueId) }, { byId: Object.fromEntries(entries.map((e) => [e.id, e])) });
 }
 
 function api(name: string): Mock {
@@ -1103,7 +1108,7 @@ describe("SearchCommand", () => {
 
     it("folds all comments, including expanded resolved threads", async () => {
       const user = userEvent.setup();
-      seed(issueTimelineOptions("issue-1"), [
+      seedTimeline("issue-1", [
         { type: "activity", id: "act-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T00:00:00Z", action: "status_changed" },
         { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
         { type: "comment", id: "reply-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T02:00:00Z", parent_id: "root-1" },
@@ -1127,7 +1132,7 @@ describe("SearchCommand", () => {
 
     it("unfolds all comments and expands resolved threads", async () => {
       const user = userEvent.setup();
-      seed(issueTimelineOptions("issue-1"), [
+      seedTimeline("issue-1", [
         { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
         { type: "comment", id: "root-2", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T03:00:00Z", parent_id: null, resolved_at: "2026-01-02T00:00:00Z" },
         { type: "comment", id: "root-3", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T04:00:00Z", parent_id: null },

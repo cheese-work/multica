@@ -71,6 +71,15 @@ const cacheUpdates = vi.hoisted(() => ({
   invalidations: 0,
 }));
 
+// The store is covered in core; here `queryState.data` stands for the rows the
+// hook reads and `cacheUpdates.last` records what a writer would store.
+vi.mock("@multica/core/issues/timeline-store", () => ({
+  updateTimeline: (_qc: unknown, _issueId: string, change: (rows: unknown) => unknown) => {
+    cacheUpdates.last = change(queryState.data);
+  },
+  useResolvedRows: (_issueId: string, rows: unknown) => rows,
+}));
+
 vi.mock("@tanstack/react-query", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-query")>(
     "@tanstack/react-query",

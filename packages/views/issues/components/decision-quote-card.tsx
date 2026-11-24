@@ -20,6 +20,7 @@ import {
   type DisclaimConflict,
 } from "@multica/core/issues/decision-disclaim";
 import { issueKeys } from "@multica/core/issues/queries";
+import { readTimeline } from "@multica/core/issues/timeline-store";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import type { DecisionState, TimelineEntry } from "@multica/core/types";
@@ -120,7 +121,7 @@ export function DecisionQuoteCard({
 
   const review = () => {
     refresh();
-    const timeline = qc.getQueryData<TimelineEntry[]>(issueKeys.timeline(issueId));
+    const timeline = readTimeline(qc, issueId);
     const withdrawal = timeline?.find((e) => e.decision_answer_id === answerId && e.decision_comment_kind === "disclaim");
     if (withdrawal) onJumpToComment?.(withdrawal.id);
   };

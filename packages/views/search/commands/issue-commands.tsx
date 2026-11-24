@@ -33,6 +33,7 @@ import {
   issueTasksOptions,
   issueTimelineOptions,
 } from "@multica/core/issues/queries";
+import { readTimeline } from "@multica/core/issues/timeline-store";
 import { useRetryIssueRun, useToggleIssueSubscriber } from "@multica/core/issues/mutations";
 import { foldAllCommentThreads, unfoldAllCommentThreads } from "@multica/core/issues/stores";
 import { quickActionListOptions } from "@multica/core/quick-actions";
@@ -286,7 +287,8 @@ export function useIssueCommandGroup(
             // action matches the visible state.
             void queryClient
               .ensureQueryData(issueTimelineOptions(single.id))
-              .then((entries) => {
+              .then(() => {
+                const entries = readTimeline(queryClient, single.id) ?? [];
                 // All three fold systems reset together (manual collapse,
                 // resolved-bar expansion, and unresolved-thread length
                 // preference) — description expansion is a separate concern
@@ -307,7 +309,8 @@ export function useIssueCommandGroup(
           run: () => {
             void queryClient
               .ensureQueryData(issueTimelineOptions(single.id))
-              .then((entries) => {
+              .then(() => {
+                const entries = readTimeline(queryClient, single.id) ?? [];
                 unfoldAllCommentThreads(single.id, rootCommentIds(entries), resolvedThreadRootIds(entries));
               })
               .catch(() => {});

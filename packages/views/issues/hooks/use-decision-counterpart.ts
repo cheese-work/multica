@@ -1,5 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
-import { issueKeys } from "@multica/core/issues/queries";
+import { useMemo } from "react";
+import { useTimelineRows } from "@multica/core/issues/timeline-store";
 import type { TimelineEntry } from "@multica/core/types";
 
 /**
@@ -21,11 +21,9 @@ export function decisionCounterpartId(timeline: TimelineEntry[] | undefined, ent
 
 export function useDecisionCounterpart(issueId: string, entry: TimelineEntry): string | undefined {
   const isDecision = entry.decision_comment_kind === "ask" || entry.decision_comment_kind === "quote";
-  const { data } = useQuery({
-    queryKey: issueKeys.timeline(issueId),
-    queryFn: () => Promise.resolve<TimelineEntry[]>([]),
-    enabled: false,
-    select: (timeline: TimelineEntry[]) => (isDecision ? decisionCounterpartId(timeline, entry) : undefined),
-  });
-  return data;
+  const timeline = useTimelineRows(issueId);
+  return useMemo(
+    () => (isDecision ? decisionCounterpartId(timeline, entry) : undefined),
+    [isDecision, timeline, entry],
+  );
 }

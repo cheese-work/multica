@@ -23,6 +23,7 @@ import type {
   TimelineEntry,
   Workspace,
 } from "@multica/core/types";
+import { ingestTimeline, readTimeline } from "@multica/core/issues/timeline-store";
 
 const WS_ID = "ws-1";
 const SLUG = "test";
@@ -495,7 +496,7 @@ describe("useBatchDeleteIssues", () => {
     qc.setQueryData<Attachment[]>(issueKeys.attachments(ISSUE_ID), [
       attachment,
     ]);
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID), timeline);
+    ingestTimeline(qc, ISSUE_ID, timeline);
     qc.setQueryData<IssueLabelsResponse>(
       labelKeys.byIssue(WS_ID, ISSUE_ID),
       issueLabels,
@@ -507,7 +508,7 @@ describe("useBatchDeleteIssues", () => {
     qc.setQueryData<Attachment[]>(issueKeys.attachments(OTHER_ISSUE_ID), [
       { ...attachment, id: "attachment-2", issue_id: OTHER_ISSUE_ID },
     ]);
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(OTHER_ISSUE_ID), [
+    ingestTimeline(qc, OTHER_ISSUE_ID, [
       { ...timeline[0]!, id: "activity-2" },
     ]);
     qc.setQueryData<IssueLabelsResponse>(
@@ -557,7 +558,7 @@ describe("useBatchDeleteIssues", () => {
       expect(qc.getQueryData(issueKeys.attachments(ISSUE_ID))).toEqual([
         attachment,
       ]);
-      expect(qc.getQueryData(issueKeys.timeline(ISSUE_ID))).toEqual(timeline);
+      expect(readTimeline(qc, ISSUE_ID)).toEqual(timeline);
       expect(qc.getQueryData(labelKeys.byIssue(WS_ID, ISSUE_ID))).toEqual(
         issueLabels,
       );
@@ -565,7 +566,7 @@ describe("useBatchDeleteIssues", () => {
       expect(qc.getQueryData(issueKeys.attachments(OTHER_ISSUE_ID))).toEqual([
         { ...attachment, id: "attachment-2", issue_id: OTHER_ISSUE_ID },
       ]);
-      expect(qc.getQueryData(issueKeys.timeline(OTHER_ISSUE_ID))).toEqual([
+      expect(readTimeline(qc, OTHER_ISSUE_ID)).toEqual([
         { ...timeline[0]!, id: "activity-2" },
       ]);
       expect(qc.getQueryData(labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID))).toEqual(

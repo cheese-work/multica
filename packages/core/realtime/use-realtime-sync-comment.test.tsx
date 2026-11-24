@@ -9,6 +9,7 @@ import type { WSClient } from "../api/ws-client";
 import { issueKeys, type IssueSortParam } from "../issues/queries";
 import type { Issue, ListIssuesCache } from "../types";
 import { useRealtimeSync, type RealtimeSyncStores } from "./use-realtime-sync";
+import { ingestTimeline } from "../issues/timeline-store";
 
 vi.mock("../platform/workspace-storage", () => ({
   getCurrentWsId: () => "ws-1",
@@ -90,7 +91,7 @@ describe("useRealtimeSync — comment activity cache coherence", () => {
     qc.setQueryData<ListIssuesCache>(updatedBoardKey, bucketed());
     qc.setQueryData<ListIssuesCache>(positionBoardKey, bucketed());
     qc.setQueryData<ListIssuesCache>(lastActivityBoardKey, bucketed());
-    qc.setQueryData(issueKeys.timeline("issue-1"), []);
+    ingestTimeline(qc, "issue-1", []);
 
     const { ws, handlers } = createRecordingWs();
     renderHook(() => useRealtimeSync(ws, createStores()), {
@@ -120,7 +121,7 @@ describe("useRealtimeSync — comment activity cache coherence", () => {
     qc.setQueryData<ListIssuesCache>(updatedBoardKey, bucketed());
     qc.setQueryData<ListIssuesCache>(positionBoardKey, bucketed());
     qc.setQueryData<ListIssuesCache>(lastActivityBoardKey, bucketed());
-    qc.setQueryData(issueKeys.timeline("issue-1"), []);
+    ingestTimeline(qc, "issue-1", []);
 
     const { ws, handlers } = createRecordingWs();
     renderHook(() => useRealtimeSync(ws, createStores()), {

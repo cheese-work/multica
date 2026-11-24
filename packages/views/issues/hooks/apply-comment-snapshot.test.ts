@@ -2,9 +2,9 @@
 
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
-import { issueKeys } from "@multica/core/issues/queries";
 import type { Comment, TimelineEntry } from "@multica/core/types";
 import { applyCommentSnapshot } from "./use-issue-timeline";
+import { ingestTimeline, readTimeline } from "@multica/core/issues/timeline-store";
 
 const quote: TimelineEntry = {
   type: "comment",
@@ -43,9 +43,9 @@ const snapshot: Comment = {
 
 function applied(next: Comment) {
   const qc = new QueryClient();
-  qc.setQueryData<TimelineEntry[]>(issueKeys.timeline("issue"), [quote]);
+  ingestTimeline(qc, "issue", [quote]);
   applyCommentSnapshot(qc, "issue", next);
-  return qc.getQueryData<TimelineEntry[]>(issueKeys.timeline("issue"))![0]!;
+  return readTimeline(qc, "issue")![0]!;
 }
 
 describe("applyCommentSnapshot with decision cards", () => {
