@@ -140,33 +140,29 @@ var ModeSettingKeys = []string{"auto_close", "blocked_run_skip", "run_guard", "r
 // request refuses.
 func ValidateModeSetting(key string, raw json.RawMessage) error {
 	shape := fmt.Errorf(`%s must be an object {"mode": "off"|"warn"|"block"}`, key)
-	var patch map[string]any
+	var patch map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &patch); err != nil {
 		return shape
 	}
-	want := 1
 	if stop, ok := patch["stop_loss"]; ok && key == "run_guard" {
-		want = 2
-		inner, _ := json.Marshal(stop)
-		if validMode(inner) != nil || len(stop.(map[string]any)) != 1 {
+		if !modeOnly(stop) {
 			return fmt.Errorf(`run_guard.stop_loss must be an object {"mode": "off"|"warn"|"block"}`)
 		}
+		delete(patch, "stop_loss")
 	}
-	if len(patch) != want || validMode(raw) != nil {
+	mode, _ := json.Marshal(patch)
+	if len(patch) != 1 || !modeOnly(mode) {
 		return shape
 	}
 	return nil
 }
 
-// validMode reports whether raw is an object whose mode is off, warn or block.
-func validMode(raw json.RawMessage) error {
+// modeOnly reports whether raw is an object holding exactly a mode of off, warn or block.
+func modeOnly(raw json.RawMessage) bool {
 	var obj map[string]any
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return err
+	if err := json.Unmarshal(raw, &obj); err != nil || len(obj) != 1 {
+		return false
 	}
 	mode, _ := obj["mode"].(string)
-	if mode != "off" && mode != "warn" && mode != "block" {
-		return fmt.Errorf("bad mode")
-	}
-	return nil
+	return mode == "off" || mode == "warn" || mode == "block"
 }
