@@ -158,15 +158,6 @@ func (e *moeEnv) ungranted(t *testing.T) int {
 	return n
 }
 
-func (e *moeEnv) grantedShareRowExclusive(t *testing.T) bool {
-	var n int
-	if err := e.admin.QueryRow(context.Background(),
-		`SELECT count(*) FROM pg_locks WHERE relation = $1::text::regclass AND granted AND mode = 'ShareRowExclusiveLock'`, e.rel).Scan(&n); err != nil {
-		t.Fatalf("pg_locks: %v", err)
-	}
-	return n > 0
-}
-
 func moeWaitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
