@@ -76,6 +76,45 @@ func isPlanIssueTitle(title string) bool {
 	return strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, ":")
 }
 
+const (
+	roundsAutoSplitKey = "review_rounds_auto_split"
+	roundsAutoSplitOn  = "on"
+	roundsAutoSplitOff = "off"
+)
+
+// roundsAutoSplitEnabled reads the workspace setting. Only the stored string
+// "on" enables it, so the card stays the default until the workspace's
+// need_decision step can take the Split path without a request.
+func (h *Handler) roundsAutoSplitEnabled(ctx context.Context, issue db.Issue) bool {
+	ws, err := h.Queries.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil || len(ws.Settings) == 0 {
+		return false
+	}
+	var settings map[string]any
+	if json.Unmarshal(ws.Settings, &settings) != nil {
+		return false
+	}
+	mode, _ := settings[roundsAutoSplitKey].(string)
+	return mode == roundsAutoSplitOn
+}
+
+// validateRoundsAutoSplitSetting checks the review_rounds_auto_split key of a
+// workspace settings object. An absent key is valid; null is not.
+func validateRoundsAutoSplitSetting(value any) error {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	v, present := config[roundsAutoSplitKey]
+	if !present {
+		return nil
+	}
+	if mode, _ := v.(string); mode != roundsAutoSplitOn && mode != roundsAutoSplitOff {
+		return fmt.Errorf("%s must be off or on", roundsAutoSplitKey)
+	}
+	return nil
+}
+
 // autoSplitPlanIssue takes the Split path for a plan issue at the round limit
 // with no decision request: it records the decision as an activity row and
 // posts one system comment for the need_decision handler. The issue is already
@@ -109,7 +148,7 @@ var errNoCardRecipient = errors.New("review rounds: nobody to ask")
 // the issue gets a system comment that says the card is missing: need_decision
 // never lacks its card silently.
 func (h *Handler) ensureReviewRoundsCard(ctx context.Context, issue db.Issue, c roundsCap) {
-	if isPlanIssueTitle(issue.Title) {
+	if isPlanIssueTitle(issue.Title) && h.roundsAutoSplitEnabled(ctx, issue) {
 		if err := h.autoSplitPlanIssue(ctx, issue, c); err != nil {
 			slog.Error("review rounds: plan auto-split not recorded", "err", err, "issue_id", uuidToString(issue.ID))
 		} else {

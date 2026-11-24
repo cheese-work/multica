@@ -340,6 +340,7 @@ func TestRoundCap_RoundsAreCountedPerPR(t *testing.T) {
 // CHE-9483: on a plan(...) issue the capped entry opens no card and records the
 // auto-Split; the issue stays in need_decision for its handler to split.
 func TestRoundCap_PlanIssueCapOpensNoCard(t *testing.T) {
+	enableRoundsAutoSplit(t, testWorkspaceID)
 	c := newRoundCap(t)
 	dbfx.Exec(t, `UPDATE issue SET title = 'plan(WE006): round cap' WHERE id = $1`, c.issueID)
 	for _, ago := range []int{300, 200, 100} {
@@ -354,5 +355,19 @@ func TestRoundCap_PlanIssueCapOpensNoCard(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 1 {
 		t.Fatalf("auto-split rows = %d, want 1", n)
+	}
+}
+
+// With the setting off (the default) a plan issue keeps the card.
+func TestRoundCap_PlanIssueKeepsCardWhileSettingIsOff(t *testing.T) {
+	c := newRoundCap(t)
+	dbfx.Exec(t, `UPDATE issue SET title = 'plan(WE006): round cap' WHERE id = $1`, c.issueID)
+	for _, ago := range []int{300, 200, 100} {
+		c.activity(t, "status_changed", "agent_review", ago)
+	}
+	c.enterReview(t)
+	c.wantCard(t, 3)
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 0 {
+		t.Fatalf("auto-split rows = %d, want 0", n)
 	}
 }

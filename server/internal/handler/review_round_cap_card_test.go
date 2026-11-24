@@ -29,6 +29,7 @@ func TestRoundCap_MissingCardIsAnnouncedOnTheIssue(t *testing.T) {
 // card. The server records the auto-Split as an agent decision and tells the
 // need_decision handler to run the Split path; a non-plan issue keeps the card.
 func TestRoundCap_PlanIssueAutoSplitsWithoutCard(t *testing.T) {
+	enableRoundsAutoSplit(t, testWorkspaceID)
 	issueID := dbfx.Issue(t, "plan(WE006): split the workstream", testutil.Cols{})
 	issue, err := testHandler.Queries.GetIssue(t.Context(), parseUUID(issueID))
 	if err != nil {
@@ -46,6 +47,27 @@ func TestRoundCap_PlanIssueAutoSplitsWithoutCard(t *testing.T) {
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1 AND content LIKE '%could not open its decision card%'`, issueID); n != 0 {
 		t.Fatalf("missing-card notices = %d, want 0", n)
+	}
+}
+
+// enableRoundsAutoSplit turns the workspace setting on for one test.
+func enableRoundsAutoSplit(t *testing.T, wsID string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE workspace SET settings = coalesce(settings, '{}'::jsonb) || '{"review_rounds_auto_split":"on"}'::jsonb WHERE id = $1`, wsID)
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = settings - 'review_rounds_auto_split' WHERE id = $1`, wsID)
+	})
+}
+
+func TestRoundCap_AutoSplitSettingValidation(t *testing.T) {
+	for value, wantErr := range map[any]bool{"on": false, "off": false, "yes": true, nil: true, true: true} {
+		err := validateRoundsAutoSplitSetting(map[string]any{"review_rounds_auto_split": value})
+		if (err != nil) != wantErr {
+			t.Errorf("value %v: err = %v, want error %v", value, err, wantErr)
+		}
+	}
+	if err := validateRoundsAutoSplitSetting(map[string]any{}); err != nil {
+		t.Errorf("absent key: %v", err)
 	}
 }
 
