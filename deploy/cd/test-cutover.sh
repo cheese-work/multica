@@ -64,6 +64,12 @@ case "\$1" in
     control_dir="\${CUTOVER_TEST_CONTROL_DIR:?CUTOVER_TEST_CONTROL_DIR unset}"
     sub="\$2"
     printf '%s %s\n' "\$sub" "\$*" >>"\$control_dir/quiescence-calls.log"
+    # CHE-9367: a scenario can script the exact stdout and exit status of a
+    # sub-command (output-<sub>, exit-<sub>) instead of the admit/deny pair.
+    if [ -f "\$control_dir/output-\$sub" ]; then
+      cat "\$control_dir/output-\$sub"
+      exit "\$(cat "\$control_dir/exit-\$sub" 2>/dev/null || echo 1)"
+    fi
     if [ -f "\$control_dir/deny-\$sub" ]; then
       echo '{"admit":false,"decision":"denied_test"}'
       exit 1
@@ -687,6 +693,60 @@ status=$?
 set -e
 expect_exit 1 "$status" final-gate-denied
 expect_contains "$output" "quiescence final-gate denied cutover" final-gate-denied
+
+# ---------------------------------------------------------------------------
+# CHE-9367 (CHE-9223 S1): the preflight's exit status is a signal. Only a
+# healthy `deferred_contention` denial (admit=false, nothing drained) exits 75,
+# so cd-deploy.yml can mark the run as deferred. Everything else stays 1:
+# an unreadable database, a crash, no or bad JSON, a different decision, an
+# admit=true line, and the final-gate denials after drain (CHE-6850).
+# ---------------------------------------------------------------------------
+preflight_exit_case() {
+  # name, want status, sub-command, stdout of the mock, exit status of the mock
+  local name=$1 want=$2 sub=$3 out=$4 code=$5
+  state_dir="$(fresh_scenario_dir "$name")"
+  mkdir -p "$state_dir/control"
+  printf '%s' "$out" >"$state_dir/control/output-$sub"
+  printf '%s\n' "$code" >"$state_dir/control/exit-$sub"
+  set +e
+  output="$(run_cutover "$state_dir" 2>&1)"
+  status=$?
+  set -e
+  expect_exit "$want" "$status" "$name"
+  if [ "$sub" = preflight ]; then
+    expect_contains "$output" "quiescence preflight denied cutover" "$name"
+  else
+    expect_contains "$output" "quiescence final-gate denied cutover" "$name"
+  fi
+  if [ -f "$state_dir/control/docker-calls.log" ] && grep -q "^compose pull" "$state_dir/control/docker-calls.log"; then
+    echo "scenario $name: docker compose pull was invoked despite the denial" >&2
+    exit 1
+  fi
+}
+preflight_exit_case preflight-deferred-contention-exit-75 75 preflight \
+  '{"admit":false,"decision":"deferred_contention","reason":"a foreign advisory-lock holder is present","evidence":{}}
+' 1
+preflight_exit_case preflight-observation-failed-exit-1 1 preflight \
+  '{"admit":false,"decision":"observation_failed","reason":"observation failed: psql timed out","evidence":{}}
+' 1
+preflight_exit_case preflight-crash-exit-1 1 preflight '' 2
+preflight_exit_case preflight-no-json-exit-1 1 preflight 'node: command crashed
+' 1
+preflight_exit_case preflight-bad-json-exit-1 1 preflight '{"admit":false,"decision":"deferred_contention"' 1
+preflight_exit_case preflight-json-array-exit-1 1 preflight '[{"admit":false,"decision":"deferred_contention"}]
+' 1
+preflight_exit_case preflight-admit-true-deferred-exit-1 1 preflight \
+  '{"admit":true,"decision":"deferred_contention"}
+' 1
+preflight_exit_case preflight-other-decision-exit-1 1 preflight \
+  '{"admit":false,"decision":"final_gate_denied","reason":"x","evidence":{}}
+' 1
+# A deferred_contention-shaped denial from the FINAL gate (after drain) is a
+# real failure, never a deferral.
+preflight_exit_case final-gate-deferred-shape-exit-1 1 final-gate \
+  '{"admit":false,"decision":"deferred_contention","reason":"x","evidence":{}}
+' 1
+echo "preflight exit-status scenarios passed"
 
 # ---------------------------------------------------------------------------
 # Scenario 4 (negative control): a release packet that fails contract

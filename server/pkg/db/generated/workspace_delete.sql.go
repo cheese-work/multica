@@ -412,10 +412,15 @@ deleted_issue_views AS (
 deleted_issue_view_preferences AS (
     DELETE FROM issue_view_preference
     WHERE issue_view_preference.workspace_id = $1
+),
+deleted_machine_banner_dismissals AS (
+    DELETE FROM machine_banner_dismissal
+    WHERE machine_banner_dismissal.workspace_id = $1
 )
 DELETE FROM quick_action WHERE quick_action.workspace_id = $1
 `
 
+// CHE-9190: members' offline-banner dismissals carry no FK.
 func (q *Queries) DeleteWorkspaceIssueRoots(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceIssueRoots, workspaceID)
 	return err

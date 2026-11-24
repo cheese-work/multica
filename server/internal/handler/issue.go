@@ -4338,8 +4338,12 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	if h.refuseAutopilotAssign(w, r, workspaceID, assigneeType, assigneeID, req.Title, derefString(req.Description), nil) {
 		return
 	}
-	createActorType, _ := h.resolveActor(r, creatorID, workspaceID)
+	createActorType, createActorID := h.resolveActor(r, creatorID, workspaceID)
 	if status, msg := h.refuseAgentAssignToMember(r.Context(), createActorType, workspaceID, pgtype.UUID{}, db.Issue{}, assigneeType, assigneeID); status != 0 {
+		writeError(w, status, msg)
+		return
+	}
+	if status, msg := h.refuseAgentOutOfScope(r.Context(), createActorType, createActorID, workspaceID, pgtype.UUID{}, db.Issue{}, req.Title, parentIssueID, assigneeType, assigneeID); status != 0 {
 		writeError(w, status, msg)
 		return
 	}
@@ -5399,6 +5403,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		if handoff == nil && (touchedType || touchedID) {
 			if status, msg := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+				writeError(w, status, msg)
+				return
+			}
+			if status, msg := h.refuseAgentOutOfScope(r.Context(), actorType, actorID, workspaceID, prevIssue.ID, prevIssue, textOr(params.Title, prevIssue.Title), prevIssue.ParentIssueID, params.AssigneeType, params.AssigneeID); status != 0 {
 				writeError(w, status, msg)
 				return
 			}
@@ -6537,6 +6545,9 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 			if handoff == nil {
 				if status, _ := h.refuseAgentAssignToMember(r.Context(), actorType, workspaceID, prevIssue.ID, prevIssue, params.AssigneeType, params.AssigneeID); status != 0 {
+					continue
+				}
+				if status, _ := h.refuseAgentOutOfScope(r.Context(), actorType, actorID, workspaceID, prevIssue.ID, prevIssue, textOr(params.Title, prevIssue.Title), prevIssue.ParentIssueID, params.AssigneeType, params.AssigneeID); status != 0 {
 					continue
 				}
 			}

@@ -1,2 +1,8 @@
 # Upstream multica-ai history (commit 3817e2d8a, 2026-02-05): web-search signing key. Not a Cheese Work credential; CHE-3709.
 3817e2d8a2229fd81d1490aaa4fcaf9197b39ab4:src/agent/tools/web/web-search.ts:generic-api-key:20
+# CHE-6210 / PR 1834: accepted false positives (Cheese decision 2d929c5a, 22 Nov 2026 ICT).
+# Scope: exactly these 2 findings in old history. No history rewrite. New findings are not covered.
+# Map key name `996_ci_watch_action_key_uidx` in the migrate tool (not a secret).
+25eca7cf6b5e57c8f0d6dc837b0565beaed25e6d:server/cmd/migrate/main.go:generic-api-key:160
+# Synthetic PEM test fixture from upstream #10459 (not a secret).
+98c53df049b687cefd238b648d960c484c70d5d2:server/internal/daemon/commit_diff_test.go:private-key:297

@@ -344,6 +344,7 @@ multica skill list
 multica skill get <skill-id>
 multica skill import --url <skill-url>
 multica agent skills add <agent-id> --skill-ids <skill-id>
+multica agent skills remove <agent-id> --skill-id <skill-id>
 ```
 
 `multica agent get <agent-id> --output json` also returns `background_use`: the background jobs the agent serves, as a list of `{scope, job}` (`scope` is `workspace` or `personal`). You see every workspace job and only your own personal picks.
@@ -499,6 +500,8 @@ multica me background-agents set dm_title --agent none   # back to the workspace
 `multica workspace update --compact-agent <id-or-name|null>` is an alias for `set compact` (see Compacting a web DM). `--agent` and `--fallback` take an agent id or name; `none` clears the field. `multica me` covers `dm_title`, `quick_actions` and `compact`; `routing` is workspace-only. Workspace writes need an owner or admin, and both commands refuse task tokens. See [Background Agents](/background-agents) for the no-agent behaviour and deadlines.
 
 `multica workspace capability-routing [workspace]` prints the `capability_routing` setting (issue type to author and reviewer agents) as JSON, or `{}` when it is unset. It only reads; change the setting with `multica config propose workspace.settings --set 'capability_routing:=<json>'`. See [Workflows](/docs/workflows).
+
+`multica workspace agent-role-scope [workspace]` prints the `agent_role_scope` setting (agent to the work classes another agent may assign it: `plan`, `plan_review`, `decision`, `debate`, `security_cosign`, `code_review`, `execution`) as JSON, or `{}` when it is unset. An agent with no entry is unrestricted. When an agent assigns an issue, or requests a review, from an agent whose scope excludes the work class, the server refuses with a hint naming the `capability_routing` author or reviewers; a person's assignment succeeds and leaves an audit note on the issue. The work class comes from the title's type prefix (`plan`, `decision`, `debate`), a `review(...)` scope (`plan`, `design`, `spec`, `decision` and `debate` are plan reviews, anything else, `security` included, is a code review), a child issue titled `security gate: <parent identifier>` under the issue it gates (the D8 co-sign), or else `execution`; security-typed work, a `security` review and a path in a title never make work a co-sign. It only reads; change it with `multica config propose workspace.settings --set 'agent_role_scope:=<json>'`. `multica agent get <agent>` shows one agent's scope.
 
 `multica workspace queue-order show [workspace]` prints the effective `queue_order` (`priority` or `project_rank`) and `queue_aging_minutes` (5 to 720) as JSON. `multica workspace queue-order set [workspace] --order <mode> --aging-minutes <n>` changes one or both (owner or admin only; every change is audited with actor, old value, new value and time). `priority`, the default, keeps today's queue order. `project_rank` ranks queued runs by project priority, then parent issue priority, then their own priority, and each aging period a run waits lifts it one step; the claim path reads this setting in a later release, so for now the setting is stored and audited only. A refused value names the allowed values. Set `--order priority` to roll back.
 
@@ -786,7 +789,7 @@ Migration from CSV parsing: replace `--attachment a,b` with `--attachment a --at
 | | `tasks <id>` | View an agent's runs | |
 | | `avatar <id>` | Upload an avatar | |
 | | `env get/set <agent-id>` | Write custom environment variables and list their keys (agent owner or workspace owner/admin). Values are never returned: `get` shows each key and its source, and `set`/`patch` responses mask every value | `set`: `--custom-env` / `--custom-env-file` / `--custom-env-stdin`; replaces the whole set, and keys whose value is `****` keep their existing value |
-| | `skills list/set/add <agent-id>` | Manage attached skills | `--skill-ids` (`set` replaces the full list, `add` appends) |
+| | `skills list/set/add/remove <agent-id>` | Manage attached skills | `--skill-ids` (`set` replaces the full list, `add` appends); `remove` takes one `--skill-id` |
 | | `mcp list/add/enable/disable/remove <agent-id>` | Assign workspace MCP servers to this agent | Take the server id from `workspace mcp list`. A library entry does nothing until it is added here; `disable` stops sending it without dropping the assignment |
 | `autopilot` | `list/get/create/update/delete` | Manage automations | `create`: `--title`, `--agent`, `--mode` (all required), `--description`, `--issue-title-template`, `--project`, `--subscriber` (repeatable), `--script`, `--arg` |
 | | `trigger <id>` | Trigger a run manually | |
