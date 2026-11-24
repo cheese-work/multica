@@ -336,3 +336,23 @@ func TestRoundCap_RoundsAreCountedPerPR(t *testing.T) {
 		t.Fatalf("status = %q, want need_decision: the first PR's 3rd round", got)
 	}
 }
+
+// CHE-9483: on a plan(...) issue the capped entry opens no card and records the
+// auto-Split; the issue stays in need_decision for its handler to split.
+func TestRoundCap_PlanIssueCapOpensNoCard(t *testing.T) {
+	c := newRoundCap(t)
+	dbfx.Exec(t, `UPDATE issue SET title = 'plan(WE006): round cap' WHERE id = $1`, c.issueID)
+	for _, ago := range []int{300, 200, 100} {
+		c.activity(t, "status_changed", "agent_review", ago)
+	}
+	c.enterReview(t)
+	if got := c.status(t); got != "need_decision" {
+		t.Fatalf("status after the 4th entry = %q, want need_decision", got)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, c.issueID); n != 0 {
+		t.Fatalf("decision requests = %d, want 0", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 1 {
+		t.Fatalf("auto-split rows = %d, want 1", n)
+	}
+}
