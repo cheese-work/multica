@@ -152,7 +152,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				env = append(env, entry)
 			}
 		}
-		cmd.Env = append(env, "MULTICA_RUN_BINDING_ID="+binding.ID)
+		env = append(env, "MULTICA_RUN_BINDING_ID="+binding.ID)
+		cmd.Env = env
 	}
 	// Any return before the lifecycle goroutine owns the binding revokes it.
 	bindingOwned := false
