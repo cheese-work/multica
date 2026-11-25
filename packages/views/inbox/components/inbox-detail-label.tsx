@@ -19,6 +19,7 @@ export function useTypeLabels(): Record<InboxItemType, string> {
   return {
     issue_assigned: t(($) => $.types.issue_assigned),
     issue_subscribed: t(($) => $.types.issue_subscribed),
+    issue_created: t(($) => $.types.issue_created),
     unassigned: t(($) => $.types.unassigned),
     assignee_changed: t(($) => $.types.assignee_changed),
     status_changed: t(($) => $.types.status_changed),
@@ -40,6 +41,11 @@ export function useTypeLabels(): Record<InboxItemType, string> {
     autopilot_quota_exceeded: t(($) => $.types.autopilot_quota_exceeded),
     machine_drained: t(($) => $.types.machine_drained),
     children_done: t(($) => $.types.children_done),
+    project_owner_joined: t(($) => $.types.project_owner_joined),
+    app_action_requested: t(($) => $.types.app_action_requested),
+    app_action_reminder: t(($) => $.types.app_action_reminder),
+    app_connect_requested: t(($) => $.types.app_connect_requested),
+    app_action_result: t(($) => $.types.app_action_result),
   };
 }
 

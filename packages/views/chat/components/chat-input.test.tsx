@@ -20,6 +20,18 @@ import { useChatAnnotations } from "./use-chat-annotations";
 // link/markdownLink fields are ignored by the engine, which re-derives them).
 const mockApiUploadFile = vi.hoisted(() => vi.fn());
 const mockToastInfo = vi.hoisted(() => vi.fn());
+const voiceOptions = vi.hoisted(() => ({ last: null as { scope?: string; hidden?: boolean } | null }));
+
+vi.mock("../../voice/use-composer-voice", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../voice/use-composer-voice")>();
+  return {
+    ...actual,
+    useComposerVoice: (options: Parameters<typeof actual.useComposerVoice>[0]) => {
+      voiceOptions.last = options;
+      return actual.useComposerVoice(options);
+    },
+  };
+});
 vi.mock("sonner", () => ({
   toast: Object.assign(vi.fn(), { info: mockToastInfo, error: vi.fn(), success: vi.fn() }),
 }));
@@ -482,6 +494,43 @@ describe("ChatInput new-chat draft identity", () => {
   });
 });
 
+// The editor is shared across sessions and agents, so voice input is scoped to
+// what the composer is writing to: changing it cancels dictation in flight.
+describe("ChatInput voice scope", () => {
+  const state = () =>
+    useChatStore.getState() as unknown as { activeSessionId: string | null; selectedAgentId: string };
+
+  it("changes when the conversation or the agent changes", () => {
+    state().activeSessionId = "session-a";
+    const { rerender } = render(element({}));
+    expect(voiceOptions.last?.scope).toBe("session-a:agent-1");
+
+    state().activeSessionId = "session-b";
+    rerender(element({}));
+    expect(voiceOptions.last?.scope).toBe("session-b:agent-1");
+
+    state().activeSessionId = null;
+    rerender(element({}));
+    expect(voiceOptions.last?.scope).toBe("__draft_new__:agent-1");
+
+    state().selectedAgentId = "agent-2";
+    rerender(element({}));
+    expect(voiceOptions.last?.scope).toBe("__draft_new__:agent-2");
+  });
+
+  it("uses an embedded surface's own draft key", () => {
+    render(element({ draftKeyOverride: "builder:agent-9" }));
+    expect(voiceOptions.last?.scope).toBe("builder:agent-9");
+  });
+
+  it("passes hidden through so a closed window stops listening", () => {
+    const { rerender } = render(element({}));
+    expect(voiceOptions.last?.hidden).toBe(false);
+    rerender(element({ hidden: true }));
+    expect(voiceOptions.last?.hidden).toBe(true);
+  });
+});
+
 describe("ChatInput focusRequest", () => {
   it("focuses the editor when focusRequest becomes a non-zero value (new chat)", () => {
     const { rerender } = render(
@@ -782,6 +831,134 @@ describe("ChatInput @ context wiring", () => {
 
     expect(editorProps.last?.mentionMode).toBe("context");
     expect(editorProps.last?.mentionContextItems).toBe(contextItems);
+  });
+});
+
+describe("ChatInput page context", () => {
+  const page = {
+    id: "issue-1", label: "MUL-1", description: "Fix [the] cache", type: "issue" as const, group: "current" as const,
+  };
+  const sendButton = () => screen.getByRole("button", { name: /^Send/ });
+  const pageChip = () => document.querySelector('[data-slot="chat-page-context"]');
+
+  beforeEach(() => {
+    (useChatStore.getState() as unknown as { activeSessionId: string | null }).activeSessionId = "session-1";
+  });
+
+  it("offers nothing off an issue or project page", () => {
+    renderInput({ pageContext: null });
+    expect(screen.queryByRole("button", { name: "Add this page as context" })).not.toBeInTheDocument();
+  });
+
+  it("Tab in the editor attaches the page and sends it ahead of the message, once", async () => {
+    const onSend = vi.fn<ChatInputOnSend>((_content, _ids, commitInput) => {
+      commitInput();
+      return true;
+    });
+    renderInput({ onSend, pageContext: page });
+    const editor = screen.getByTestId("editor");
+
+    expect(fireEvent.keyDown(editor, { key: "Tab" })).toBe(false);
+    expect(pageChip()).toHaveTextContent("MUL-1Fix [the] cache");
+    expect(screen.getByRole("button", { name: "Add this page as context" })).toHaveAttribute("aria-pressed", "true");
+
+    fireEvent.change(editor, { target: { value: "why is this slow?" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe("[MUL-1](mention://issue/issue-1)\n\nwhy is this slow?");
+    expect(pageChip()).toBeNull();
+  });
+
+  // The chip clears in the same commit that scrubs the editor, not once the
+  // owner's promise settles: the owner commits before its own follow-up work.
+  it("drops the page when the owner commits, while the send is still pending", async () => {
+    let finishSend!: (accepted: boolean) => void;
+    const onSend = vi.fn<ChatInputOnSend>((_content, _ids, commitInput) => {
+      commitInput();
+      return new Promise<boolean>((resolve) => { finishSend = resolve; });
+    });
+    renderInput({ onSend, pageContext: page });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Tab" });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "why is this slow?" } });
+
+    fireEvent.click(sendButton());
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(pageChip()).toBeNull();
+
+    await act(async () => finishSend(true));
+    expect(pageChip()).toBeNull();
+  });
+
+  // Stop before the task starts: the owner commits, cancels, restores the sent
+  // text (mention included) and reports false. A chip left behind would put the
+  // page in front of that restored text a second time.
+  it("keeps the page off after a committed send the owner then cancels", async () => {
+    const onSend = vi.fn<ChatInputOnSend>(async (_content, _ids, commitInput) => {
+      commitInput();
+      return false;
+    });
+    renderInput({ onSend, pageContext: page });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Tab" });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "why is this slow?" } });
+
+    await act(async () => fireEvent.click(sendButton()));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(pageChip()).toBeNull();
+  });
+
+  it("keeps the page for a retry when the owner rejects without committing", async () => {
+    const onSend = vi.fn<ChatInputOnSend>(async () => false);
+    renderInput({ onSend, pageContext: page });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Tab" });
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "why is this slow?" } });
+
+    await act(async () => fireEvent.click(sendButton()));
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(pageChip()).toHaveTextContent("MUL-1");
+  });
+
+  it("leaves Tab alone when the editor already used it, or it came from outside the editor", () => {
+    renderInput({ pageContext: page });
+    const editor = screen.getByTestId("editor");
+
+    editor.addEventListener("keydown", (event) => event.preventDefault(), { once: true });
+    fireEvent.keyDown(editor, { key: "Tab" });
+    fireEvent.keyDown(editor, { key: "Tab", shiftKey: true });
+    expect(fireEvent.keyDown(screen.getByRole("button", { name: "Add this page as context" }), { key: "Tab" })).toBe(true);
+    expect(pageChip()).toBeNull();
+  });
+
+  it("toggles from the button and drops the page when the page changes", () => {
+    const { rerender } = renderInput({ pageContext: page });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add this page as context" }));
+    expect(pageChip()).not.toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Remove page context" }));
+    expect(pageChip()).toBeNull();
+
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Tab" });
+    rerender(element({ pageContext: { ...page, id: "issue-2", label: "MUL-2" } }));
+    expect(pageChip()).toBeNull();
+  });
+
+  it.each([
+    ["another page", { ...page, id: "issue-2", label: "MUL-2" }],
+    ["a page with no context", null],
+  ])("does not send the page after leaving it for %s and coming back", async (_, away) => {
+    const onSend = vi.fn<ChatInputOnSend>(() => true);
+    const { rerender } = renderInput({ onSend, pageContext: page });
+    fireEvent.keyDown(screen.getByTestId("editor"), { key: "Tab" });
+    expect(pageChip()).not.toBeNull();
+
+    rerender(element({ onSend, pageContext: away }));
+    rerender(element({ onSend, pageContext: page }));
+    expect(pageChip()).toBeNull();
+    expect(screen.getByRole("button", { name: "Add this page as context" })).toHaveAttribute("aria-pressed", "false");
+
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "A new question" } });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    expect(onSend.mock.calls[0]![0]).toBe("A new question");
   });
 });
 

@@ -95,6 +95,10 @@ vi.mock("@multica/views/layout", () => ({
   MachineBannerHeaderSlot: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+vi.mock("@multica/views/voice", () => ({
+  VoiceWorkspaceWords: () => null,
+}));
+
 // The point of this whole test: assert the desktop layout mounts the
 // SourceBackfillModal. We stub the real component with a marker that
 // renders only when the layout actually rendered it (and not e.g.

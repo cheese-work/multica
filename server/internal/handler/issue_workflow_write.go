@@ -73,7 +73,7 @@ type workflowWrite struct {
 	// refusedIntake is the intake_call of a write the entry gate refused. The
 	// refusal rolls the transaction back, so the handler writes it after.
 	refusedIntake *intakeCall
-	stopRuns      []db.AgentTaskQueue
+	stopRuns      []db.ListAssigneeRunsForHandoffRow
 	stopFrom      service.TaskAssignee
 	// system marks a move the platform makes by itself (edge, CI, run budget).
 	// Step entry gates bind explicit status writes only.

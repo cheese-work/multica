@@ -179,6 +179,11 @@ test("owned gitleaks ignore list carries the two accepted PR 1834 fingerprints",
   }
 });
 
+// CHE-9001: the PR gate must read the same owned ignore list, or the accepted fingerprints still fail every PR that carries that history.
+test("PR secret-scan gate reads the owned ignore list", () => {
+  assert.match(read("scripts/secret-scan.sh"), /^exec "\$bin" git [^\n]*--gitleaks-ignore-path scripts\/security-weekly /m);
+});
+
 test("CODEOWNERS routes the whole security-weekly toolchain to the owner", () => {
   assert.match(read(".github/CODEOWNERS"), /^\/scripts\/security-weekly\/\s+@congvc-dev/m);
 });

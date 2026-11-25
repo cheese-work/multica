@@ -33,6 +33,9 @@ const AddProjectIssueModal = lazy(() =>
 const RenameIssueModal = lazy(() =>
   import("./rename-issue").then((m) => ({ default: m.RenameIssueModal })),
 );
+const RenameProjectModal = lazy(() =>
+  import("./rename-project").then((m) => ({ default: m.RenameProjectModal })),
+);
 const DeleteIssueConfirmModal = lazy(() =>
   import("./delete-issue-confirm").then((m) => ({ default: m.DeleteIssueConfirmModal })),
 );
@@ -90,6 +93,9 @@ export function ModalRegistry() {
       break;
     case "project-add-issue":
       activeModal = <AddProjectIssueModal onClose={close} data={data} />;
+      break;
+    case "project-rename":
+      activeModal = <RenameProjectModal onClose={close} data={data} />;
       break;
     case "issue-rename":
       activeModal = <RenameIssueModal onClose={close} data={data} />;

@@ -274,7 +274,7 @@ func (h *Handler) resolveWriteScopeIssue(r *http.Request, workspaceID pgtype.UUI
 	if id, err := util.ParseUUID(ref); err == nil {
 		return id, true
 	}
-	issue, ok := h.resolveIssueByIdentifier(r.Context(), ref, util.UUIDToString(workspaceID))
+	issue, ok, _ := h.resolveIssueByIdentifier(r.Context(), ref, util.UUIDToString(workspaceID))
 	return issue.ID, ok
 }
 

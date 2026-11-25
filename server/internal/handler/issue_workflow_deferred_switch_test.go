@@ -2,7 +2,9 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -313,5 +316,191 @@ func TestDeferredSwitchListenerAppliesOnTaskTerminalEvents(t *testing.T) {
 			}
 			f.wantFollows(t, f.to)
 		})
+	}
+}
+
+// refuseApply runs the apply half of a deferred switch and returns the refusal
+// it rolled back with, so a test can change the world before the settlement
+// that production runs in a separate call (CHE-9721, A5e F13).
+func (f deferredSwitchFixture) refuseApply(t *testing.T) *deferredSwitchRefusal {
+	t.Helper()
+	err := testHandler.applyDeferredWorkflowSwitch(context.Background(), util.MustParseUUID(f.issueID))
+	var refusal *deferredSwitchRefusal
+	if !errors.As(err, &refusal) {
+		t.Fatalf("apply returned %v, want a deferredSwitchRefusal", err)
+	}
+	if f.pendingRows(t) != 1 {
+		t.Fatal("the refused apply must roll back with the row still pending")
+	}
+	return refusal
+}
+
+func (f deferredSwitchFixture) settle(t *testing.T, refusal *deferredSwitchRefusal) {
+	t.Helper()
+	if err := testHandler.refuseDeferredWorkflowSwitch(context.Background(), util.MustParseUUID(f.issueID), refusal); err != nil {
+		t.Fatalf("settle refusal: %v", err)
+	}
+}
+
+func (f deferredSwitchFixture) wantPending(t *testing.T, workflowID, reason string) {
+	t.Helper()
+	var gotWorkflow, gotReason string
+	dbfx.QueryRow(t, `SELECT workflow_id::text, reason FROM issue_workflow_switch_pending WHERE issue_id = $1`, f.issueID).Scan(&gotWorkflow, &gotReason)
+	if gotWorkflow != workflowID || gotReason != reason {
+		t.Fatalf("pending request = (%s, %q), want the newer request (%s, %q)", gotWorkflow, gotReason, workflowID, reason)
+	}
+}
+
+func (f deferredSwitchFixture) wantUntouched(t *testing.T) {
+	t.Helper()
+	wantIssueStatus(t, f.issueID, "in_progress")
+	if n := f.refusalComments(t); n != 0 {
+		t.Fatalf("refusal comments = %d, a stale refusal writes none", n)
+	}
+	if reason := f.blockedReason(t); reason != "" {
+		t.Fatalf("blocked_reason = %q, a stale refusal records none", reason)
+	}
+}
+
+// The apply rolls back and releases its locks before the refusal settles. A
+// newer request that commits in that gap is a different request: the stale
+// refusal must neither block the issue for the old cause nor delete it.
+func TestDeferredSwitchStaleRefusalLeavesANewerRequestForAnotherTarget(t *testing.T) {
+	f := newDeferredSwitchFixture(t)
+	f.pend(t, uuid.NewString())
+	refusal := f.refuseApply(t)
+
+	dbfx.Exec(t, `INSERT INTO issue_workflow_switch_pending (issue_id, workspace_id, workflow_id, reason)
+		VALUES ($1, $2, $3, 'newer') ON CONFLICT (issue_id) DO UPDATE
+		SET workflow_id = EXCLUDED.workflow_id, reason = EXCLUDED.reason, created_at = now()`, f.issueID, testWorkspaceID, f.to)
+	f.settle(t, refusal)
+
+	f.wantPending(t, f.to, "newer")
+	f.wantUntouched(t)
+}
+
+// Same target, same reason, new request: a request made after the target was
+// repaired names the same workflow, so only its generation tells it apart.
+func TestDeferredSwitchStaleRefusalLeavesANewerRequestForTheSameTarget(t *testing.T) {
+	f := newDeferredSwitchFixture(t)
+	missing := uuid.NewString()
+	f.pend(t, missing)
+	refusal := f.refuseApply(t)
+
+	dbfx.Exec(t, `INSERT INTO issue_workflow_switch_pending (issue_id, workspace_id, workflow_id, reason)
+		VALUES ($1, $2, $3, 'test') ON CONFLICT (issue_id) DO UPDATE
+		SET workflow_id = EXCLUDED.workflow_id, reason = EXCLUDED.reason, created_at = now()`, f.issueID, testWorkspaceID, missing)
+	f.settle(t, refusal)
+
+	f.wantPending(t, missing, "test")
+	f.wantUntouched(t)
+}
+
+// The refusal was made for the issue as it stood. If the issue moved to another
+// workflow in the gap, the old refusal says nothing about the new state: the
+// request stays and the next event applies it again.
+func TestDeferredSwitchStaleRefusalLeavesTheRequestWhenTheIssueMoved(t *testing.T) {
+	f := newDeferredSwitchFixture(t)
+	missing := uuid.NewString()
+	f.pend(t, missing)
+	refusal := f.refuseApply(t)
+
+	other := createTestWorkflow(t, "Moved to "+workflowTestSuffix(), "in_progress")
+	setIssueOverride(t, f.issueID, other.ID)
+	f.settle(t, refusal)
+
+	f.wantPending(t, missing, "test")
+	f.wantUntouched(t)
+}
+
+// Settlement checks the refused request, then writes the refusal. A newer
+// request upserted in between, on a workflow with no blocked step (which
+// skips the conditional delete), must not commit while settlement holds the
+// request: the old refusal would be written for the replacement's issue
+// (CHE-9721, A5e F13 follow-up). The settlement is paused at its comment
+// insert, after the identity check, by an advisory lock the test holds.
+func TestDeferredSwitchSettlementHoldsTheRequestAgainstAReplacementWithoutABlockedStep(t *testing.T) {
+	f := newDeferredSwitchFixture(t)
+	noBlocked := createTestWorkflowSteps(t, "No blocked "+workflowTestSuffix(), statusSteps("backlog", "in_progress"))
+	setIssueOverride(t, f.issueID, noBlocked.ID)
+	missing := uuid.NewString()
+	f.pend(t, missing)
+	refusal := f.refuseApply(t)
+
+	ctx := context.Background()
+	key := int64(uuid.New().ID() >> 1) // below 2^31: classid 0, objid = key
+	suffix := strings.ReplaceAll(f.issueID, "-", "")
+	dbfx.Exec(t, `CREATE FUNCTION deferred_switch_pause_`+suffix+`() RETURNS trigger LANGUAGE plpgsql AS
+		$$ BEGIN IF NEW.issue_id = '`+f.issueID+`' THEN PERFORM pg_advisory_xact_lock(`+strconv.FormatInt(key, 10)+`); END IF; RETURN NEW; END $$`)
+	dbfx.Exec(t, `CREATE TRIGGER deferred_switch_pause_`+suffix+` BEFORE INSERT ON comment
+		FOR EACH ROW EXECUTE FUNCTION deferred_switch_pause_`+suffix+`()`)
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DROP TRIGGER IF EXISTS deferred_switch_pause_`+suffix+` ON comment`)
+		testPool.Exec(ctx, `DROP FUNCTION IF EXISTS deferred_switch_pause_`+suffix+`()`)
+	})
+	holder, err := testPool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire holder connection: %v", err)
+	}
+	defer holder.Release()
+	if _, err := holder.Exec(ctx, `SELECT pg_advisory_lock($1)`, key); err != nil {
+		t.Fatalf("hold the pause lock: %v", err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			holder.Exec(ctx, `SELECT pg_advisory_unlock($1)`, key)
+		}
+	}
+	defer release()
+
+	settled := make(chan error, 1)
+	go func() {
+		settled <- testHandler.refuseDeferredWorkflowSwitch(ctx, util.MustParseUUID(f.issueID), refusal)
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		dbfx.QueryRow(t, `SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = $1::bigint::oid`, key).Scan(&waiting)
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			release()
+			t.Fatal("settlement never reached its comment insert")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	replaced := make(chan error, 1)
+	go func() {
+		replaced <- testHandler.Queries.UpsertIssueWorkflowSwitchPending(ctx, db.UpsertIssueWorkflowSwitchPendingParams{
+			IssueID: util.MustParseUUID(f.issueID), WorkspaceID: util.MustParseUUID(testWorkspaceID),
+			WorkflowID: util.MustParseUUID(f.to), Reason: "newer",
+		})
+	}()
+	committedWhileHeld := false
+	select {
+	case <-replaced:
+		committedWhileHeld = true
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	release()
+	if err := <-settled; err != nil {
+		t.Fatalf("settle refusal: %v", err)
+	}
+	if !committedWhileHeld {
+		if err := <-replaced; err != nil {
+			t.Fatalf("replace request: %v", err)
+		}
+	}
+	if committedWhileHeld {
+		t.Fatal("a replacement request committed while settlement held the refused request: the old refusal is written for the replacement")
+	}
+	f.wantPending(t, f.to, "newer")
+	if n := f.refusalComments(t); n != 1 {
+		t.Fatalf("refusal comments = %d, want the one written before the replacement", n)
 	}
 }

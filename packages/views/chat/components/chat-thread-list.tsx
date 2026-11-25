@@ -11,6 +11,7 @@ import {
   Clock,
   Eye,
   EyeOff,
+  Link2,
   ListChecks,
   Loader2,
   MinusIcon,
@@ -25,6 +26,7 @@ import {
 import { Button } from "@multica/ui/components/ui/button";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { cn } from "@multica/ui/lib/utils";
+import { copyText } from "@multica/ui/lib/clipboard";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { useWorkspacePresenceMap } from "@multica/core/agents";
@@ -134,6 +136,7 @@ export function ChatThreadList({
   onEnterSelectMode,
 }: ChatThreadListProps) {
   const { t } = useT("chat");
+  const { t: tLayout } = useT("layout");
   const locale = useLocale();
   const wsId = useWorkspaceId();
   // Null-safe slug (not useWorkspacePaths, which throws): the list renders in
@@ -467,7 +470,23 @@ export function ChatThreadList({
                   onSelect: () => onArchive(session),
                 },
           ];
-    const menuGroups = [rowActions, [renameItem, ...selectItem]];
+    const href = sessionHref(session.id);
+    const copyLinkItem: RowActionItem[] =
+      session.status !== "archived" && href && getShareableUrl
+        ? [
+            {
+              key: "copy-link",
+              icon: <Link2 className="size-3.5" />,
+              label: tLayout(($) => $.rail.copy_link),
+              onSelect: () => {
+                void copyText(getShareableUrl(href)).then((ok) => {
+                  if (ok) toast.success(tLayout(($) => $.rail.link_copied));
+                });
+              },
+            },
+          ]
+        : [];
+    const menuGroups = [rowActions, [renameItem, ...copyLinkItem, ...selectItem]];
     const shortcutItems = menuGroups.flat();
     const isRenaming = renamingId === session.id;
     const isPicked = selecting && selection.selected.has(session.id);
@@ -526,12 +545,12 @@ export function ChatThreadList({
         onLongPress={selecting ? undefined : () => enterSelect(session)}
       >
       <RowContextMenu
-        groups={isConfirmingAction || selecting ? [] : menuGroups}
+        groups={isConfirmingAction || isRenaming || selecting ? [] : menuGroups}
         data-testid="chat-thread-row"
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
         onClick={(e) => {
-          if (isConfirmingAction || e.defaultPrevented) return;
+          if (isConfirmingAction || isRenaming || e.defaultPrevented) return;
           if (selecting) {
             selection.toggle(session.id);
             return;
@@ -566,7 +585,7 @@ export function ChatThreadList({
           window.open(getShareableUrl(href), "_blank", "noopener,noreferrer");
         }}
         onKeyDown={(e) => {
-          if (isConfirmingAction) return;
+          if (isConfirmingAction || isRenaming) return;
           if (selecting) {
             if (e.key === "Escape") selection.exit();
             else handleRowActivationKey(e, () => selection.toggle(session.id));

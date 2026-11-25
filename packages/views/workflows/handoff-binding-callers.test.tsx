@@ -2,7 +2,7 @@
 
 import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithI18n } from "../test/i18n";
 import { WorkflowHandoffModal } from "../modals/workflow-handoff";
 
@@ -19,12 +19,13 @@ vi.mock("./handoff-confirm-dialog", () => ({
 }));
 
 const mutate = vi.hoisted(() => vi.fn());
-vi.mock("@multica/core/issues/mutations", () => ({ useUpdateIssue: () => ({ mutate }) }));
+vi.mock("@multica/core/issues/mutations", () => ({ useUpdateIssue: () => ({ mutateAsync: mutate }) }));
 
 afterEach(() => {
   cleanup();
   mutate.mockReset();
 });
+beforeEach(() => mutate.mockResolvedValue(undefined));
 
 describe("callers of the handoff confirmation", () => {
   it("the context-menu modal sends the previewed binding with the status change", () => {

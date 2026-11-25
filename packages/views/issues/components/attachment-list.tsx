@@ -91,7 +91,7 @@ export function AttachmentList({
     <AttachmentDownloadProvider attachments={attachments}>
       <div className={cn("flex flex-col gap-2", className)}>
         {images.length > 0 && (
-          <div className="flex flex-col items-start gap-2">{images.map(render)}</div>
+          <div data-comment-image-list className="flex flex-col items-start gap-2">{images.map(render)}</div>
         )}
         {files.length > 0 && (
           <div className="grid grid-cols-[repeat(auto-fill,minmax(min(15rem,100%),1fr))] gap-2">

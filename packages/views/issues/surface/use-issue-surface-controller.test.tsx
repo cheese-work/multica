@@ -165,6 +165,7 @@ describe("useIssueSurfaceController", () => {
   let listIssueTableFacets: ReturnType<typeof vi.fn>;
   let listSubscribedIssueIds: ReturnType<typeof vi.fn<() => Promise<string[]>>>;
   let listAgents: ReturnType<typeof vi.fn<() => Promise<Agent[]>>>;
+  let listInvolvedSquadIds: ReturnType<typeof vi.fn<() => Promise<string[]>>>;
   // Every row the current fixture holds, kept outside the mocked list endpoint
   // so the working-agents facet stand-in can read it without registering a
   // call that Table-isolation tests assert never happens.
@@ -192,6 +193,7 @@ describe("useIssueSurfaceController", () => {
     listIssueUnread = vi.fn(() => Promise.resolve([]));
     listSubscribedIssueIds = vi.fn(() => never<string[]>());
     listAgents = vi.fn(() => Promise.resolve([] satisfies Agent[]));
+    listInvolvedSquadIds = vi.fn(() => Promise.resolve([]));
     setApiInstance({
       // The board pages by category, so every surface stub answers the catalog
       // read. Empty is the real shape for a workspace with no custom statuses:
@@ -208,6 +210,7 @@ describe("useIssueSurfaceController", () => {
       listIssueUnread,
       getChildIssueProgress: vi.fn(() => never()),
       listAgents,
+      listInvolvedSquadIds,
       listSubscribedIssueIds,
     } as unknown as ApiClient);
     pruneIssueSurfaceViewStates([]);
@@ -1751,6 +1754,68 @@ describe("useIssueSurfaceController", () => {
     expect(listIssueTableRows).toHaveBeenCalledWith(expect.objectContaining({
       query: expect.objectContaining({ filters: expect.objectContaining({ working_issue_ids: [] }) }),
     }));
+  });
+
+  it.each(["list", "board", "table", "swimlane"] as const)("gates %s Idle on the activity snapshot and keeps the working count unfiltered", async (mode) => {
+    mockListByStatus({ todo: [makeIssue({ id: "todo-1", status: "todo" })] });
+    const store = getIssueSurfaceViewStore("project:p1");
+    store.getState().setViewMode(mode);
+    store.getState().toggleAgentIdleFilter();
+    let finish!: (tasks: AgentTask[]) => void;
+    getAgentTaskSnapshot.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const { result } = renderHook(
+      () => useIssueSurfaceController({ scope: { type: "project", projectId: "p1" }, modes: [mode] }),
+      { wrapper: makeWrapper(qc) },
+    );
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.isEmpty).toBe(false);
+    expect(listIssueTableRows).not.toHaveBeenCalled();
+    await waitFor(() => expect(getAgentTaskSnapshot).toHaveBeenCalled());
+    await act(async () => finish([]));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.tableQuerySpec.filters).toMatchObject({ idle_only: true });
+    expect(result.current.tableQuerySpec.filters.working_issue_ids).toBeUndefined();
+    const chipRequests = listIssueTableFacets.mock.calls.filter(([r]) => r.facets.some((f: { kind: string }) => f.kind === "working_agents"));
+    expect(chipRequests.length).toBeGreaterThan(0);
+    for (const [request] of chipRequests) expect(request.query.filters.idle_only).toBeUndefined();
+  });
+
+  it("retries a failed Idle snapshot instead of claiming everything is idle", async () => {
+    mockListByStatus({ todo: [makeIssue({ id: "todo-1", status: "todo" })] });
+    getIssueSurfaceViewStore("project:p1").getState().toggleAgentIdleFilter();
+    getAgentTaskSnapshot.mockRejectedValueOnce(new Error("offline")).mockResolvedValue([]);
+    const { result } = renderHook(
+      () => useIssueSurfaceController({ scope: { type: "project", projectId: "p1" }, modes: ["list"] }),
+      { wrapper: makeWrapper(qc) },
+    );
+    await waitFor(() => expect(result.current.filterDependencyError?.kind).toBe("working"));
+    expect(listIssueTableRows).not.toHaveBeenCalled();
+    expect(result.current.isEmpty).toBe(false);
+    act(() => result.current.filterDependencyError!.retry());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.filterDependencyError).toBeNull();
+    expect(result.current.tableQuerySpec.filters.idle_only).toBe(true);
+  });
+
+  // Fork wins (CHE-7026): Gantt v2 (CHE-4312 G5) reads its own timeline query for
+  // every scope, so the upstream project-only gantt list never runs and this
+  // controller hands the canvas no rows. Upstream's idle/running Gantt filtering
+  // test targeted that dead path.
+  it("leaves Gantt rows to the timeline query instead of listing them itself", async () => {
+    const rows = ["running", "queued", "idle"].map((id) => makeIssue({ id, status: "todo", start_date: "2026-01-01" }));
+    listIssues.mockResolvedValue({ issues: rows, total: rows.length });
+    getAgentTaskSnapshot.mockResolvedValue([makeRunningTask("t1", "a1", "running")]);
+    const store = getIssueSurfaceViewStore("project:p1");
+    store.getState().setViewMode("gantt");
+    store.getState().toggleAgentIdleFilter();
+    const { result } = renderHook(
+      () => useIssueSurfaceController({ scope: { type: "project", projectId: "p1" }, modes: ["gantt"] }),
+      { wrapper: makeWrapper(qc) },
+    );
+    await waitFor(() => expect(result.current.viewMode).toBe("gantt"));
+    expect(result.current.allowGantt).toBe(true);
+    expect(result.current.filteredGanttIssues).toEqual([]);
+    expect(listIssues).not.toHaveBeenCalled();
   });
 
   it("keeps Table loading until working membership resolves, and lets the filter be disabled while pending", async () => {

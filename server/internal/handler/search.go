@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/multica-ai/multica/server/internal/middleware"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -48,7 +46,7 @@ func scanSearchIssue(rows pgx.Rows) (searchResult, error) {
 	err := rows.Scan(
 		&result.issue.ID, &result.issue.WorkspaceID, &result.issue.Title, &result.issue.Description,
 		&result.issue.Status, &result.issue.Priority, &result.issue.AssigneeType, &result.issue.AssigneeID,
-		&result.issue.CreatorType, &result.issue.CreatorID, &result.issue.ParentIssueID,
+		&result.issue.CreatorType, &result.issue.CreatorID, &result.issue.RequesterUserID, &result.issue.ParentIssueID,
 		&result.issue.AcceptanceCriteria, &result.issue.ContextRefs, &result.issue.Position,
 		&result.issue.StartDate, &result.issue.DueDate, &result.issue.CreatedAt, &result.issue.UpdatedAt,
 		&result.issue.LastActivityAt, &result.issue.Number, &result.issue.ProjectID, &result.issue.Revision,
@@ -68,7 +66,10 @@ func scanSearchProject(rows pgx.Rows) (searchProjectResult, error) {
 		&result.project.ID, &result.project.WorkspaceID, &result.project.Title, &result.project.Description,
 		&result.project.Icon, &result.project.Status, &result.project.Priority, &result.project.LeadType,
 		&result.project.LeadID, &result.project.StartDate, &result.project.DueDate,
-		&result.project.CreatedAt, &result.project.UpdatedAt, &result.matchSource,
+		&result.project.CreatedAt, &result.project.UpdatedAt,
+		&result.project.Visibility, &result.project.CreatorType, &result.project.CreatorID,
+		&result.project.ArchivedAt, &result.project.ArchivedByType, &result.project.ArchivedByID,
+		&result.matchSource,
 	)
 	return result, err
 }
@@ -258,23 +259,4 @@ func isSearchStatementTimeout(err error) bool {
 		return pgErr.Code == "57014"
 	}
 	return false
-}
-
-// writeSearchCancellation classifies an abandoned search without counting it as
-// a server failure or a successful request. PostgreSQL may surface disconnect
-// cancellation as SQLSTATE 57014, so the request context distinguishes it from
-// the database's statement timeout. Unrelated database errors remain failures.
-// Successful paths pass the context error to catch cancellation after commit
-// or during supplementary reads before writing a response.
-func writeSearchCancellation(w http.ResponseWriter, r *http.Request, err error) bool {
-	if !errors.Is(r.Context().Err(), context.Canceled) {
-		return false
-	}
-	if !errors.Is(err, context.Canceled) && !isSearchStatementTimeout(err) {
-		return false
-	}
-	// The client has disconnected; retain the status for logs and metrics but
-	// avoid encoding a response body for a request that no longer needs it.
-	w.WriteHeader(middleware.StatusClientClosedRequest)
-	return true
 }
