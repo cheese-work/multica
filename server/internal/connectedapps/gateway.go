@@ -510,6 +510,20 @@ func (s *Service) toolRun(ctx context.Context, rn *run, toolSlug string, args ma
 		s.recordCall(ctx, call)
 		return textResult(fmt.Sprintf("rate limited: this %s account already ran %d calls in the last minute. Wait a minute before the next call, and batch work where the app allows it.", slug, s.perMinute), true)
 	}
+	// Policy B (CHE-9518): a tainted or downgraded run keeps read access but
+	// cannot change anything outside, whatever the app grant says. Read the
+	// run's state now, not from the copy loaded when the request arrived.
+	if class != ClassRead {
+		restricted, err := s.runRestricted(ctx, rn.task.ID)
+		if err != nil || restricted {
+			if err != nil {
+				slog.Warn("connectedapps: run state unreadable; refusing write", "task_id", util.UUIDToString(rn.task.ID), "error", err)
+			}
+			call.outcome = "blocked"
+			s.recordCall(ctx, call)
+			return textResult(fmt.Sprintf("blocked: %s calls (%s) are not allowed in this run because it handled untrusted input or was downgraded. Reads still work. Do not work around this; tell the person what you would have done.", class, tool.Slug), true)
+		}
+	}
 	resp, err := s.composio.ExecuteTool(ctx, acct.connectedAccountID, acct.composioUserID, *tool, args)
 	s.touch(ctx, rn.workspaceID, acct)
 	if err != nil {
@@ -527,6 +541,40 @@ func (s *Service) toolRun(ctx context.Context, rn *run, toolSlug string, args ma
 	call.outcome = "ok"
 	s.recordCall(ctx, call)
 	return jsonResult(resp.Data)
+}
+
+// elevationElevated is the task_elevation state of a run that still holds its
+// elevated grants; any other state means the run was fenced or downgraded.
+const elevationElevated = "elevated"
+
+// runRestricted reports whether the task is tainted (its own or its issue's)
+// or downgraded. It reads the database on every call and fails closed: the
+// caller refuses a write when err is not nil.
+func (s *Service) runRestricted(ctx context.Context, taskID pgtype.UUID) (bool, error) {
+	task, err := s.q.GetAgentTask(ctx, taskID)
+	if err != nil {
+		return false, err
+	}
+	if len(task.TaintIds) > 0 {
+		return true, nil
+	}
+	if task.IssueID.Valid {
+		issueTaint, err := s.q.GetIssueTaintIDs(ctx, task.IssueID)
+		if err != nil {
+			return false, err
+		}
+		if len(issueTaint) > 0 {
+			return true, nil
+		}
+	}
+	te, err := s.q.GetTaskElevation(ctx, taskID)
+	if isNoRows(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return te.State != elevationElevated, nil
 }
 
 func (s *Service) toolRequestConnection(ctx context.Context, rn *run, slug, summary string) map[string]any {
