@@ -45,3 +45,45 @@ func TestQoderAgentWritesValidateEffectiveSettings(t *testing.T) {
 	put(testHandler.SetAgentSkills, qoderAgent, "/skills", map[string]any{"skill_ids": []string{skillID}}).Want(http.StatusBadRequest)
 	put(testHandler.SetAgentSkills, qoderAgent, "/skills", map[string]any{"skill_ids": []string{}}).Want(http.StatusOK)
 }
+
+// PATCH /env is a key-scoped writer that shares one merge path with the
+// approved env.patch decision action. It must apply the same restriction PUT
+// does to the effective merged map: a Qoder agent may not gain a custom env,
+// but may still shed one it already carries.
+func TestQoderAgentEnvPatchValidatesEffectiveMap(t *testing.T) {
+	if testPool == nil {
+		t.Skip("database not available")
+	}
+	qoderRuntime := dbfx.Runtime(t, "qoder env patch runtime", testutil.Cols{"provider": "qoder_cloud"})
+	localRuntime := dbfx.Runtime(t, "local env patch runtime")
+	qoderAgent := dbfx.Agent(t, "qoder env patch agent", qoderRuntime)
+	legacyAgent := dbfx.Agent(t, "qoder legacy env agent", qoderRuntime, testutil.Cols{"custom_env": testutil.Raw(`'{"OLD":"v","KEEP":"v"}'::jsonb`)})
+	localAgent := dbfx.Agent(t, "local env patch agent", localRuntime)
+
+	patch := func(agentID string, body map[string]any) *testutil.Response {
+		return testutil.Call(t, testHandler.PatchAgentEnv, withURLParam(newRequest(http.MethodPatch, "/api/agents/"+agentID+"/env", body), "id", agentID))
+	}
+
+	// (a) a PATCH that leaves a nonempty env on a Qoder agent is rejected and writes nothing.
+	patch(qoderAgent, map[string]any{"set": map[string]string{"EXAMPLE": "value"}}).Want(http.StatusBadRequest)
+	if got := storedAgentEnv(t, qoderAgent); len(got) != 0 {
+		t.Fatalf("rejected PATCH wrote env: %v", got)
+	}
+
+	// (b) cleanup path: a partial unset that still leaves keys is rejected;
+	// removing the last key is allowed.
+	patch(legacyAgent, map[string]any{"unset": []string{"OLD"}}).Want(http.StatusBadRequest)
+	if got := storedAgentEnv(t, legacyAgent); len(got) != 2 {
+		t.Fatalf("rejected PATCH changed env: %v", got)
+	}
+	patch(legacyAgent, map[string]any{"unset": []string{"OLD", "KEEP"}}).Want(http.StatusOK)
+	if got := storedAgentEnv(t, legacyAgent); len(got) != 0 {
+		t.Fatalf("cleanup PATCH left env: %v", got)
+	}
+
+	// (c) non-Qoder PATCH is unchanged.
+	patch(localAgent, map[string]any{"set": map[string]string{"EXAMPLE": "value"}}).Want(http.StatusOK)
+	if got := storedAgentEnv(t, localAgent); got["EXAMPLE"] != "value" {
+		t.Fatalf("local PATCH did not store env: %v", got)
+	}
+}
