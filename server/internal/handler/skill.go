@@ -1887,7 +1887,8 @@ func (h *Handler) githubSkillAuthContext(ctx context.Context, workspaceID pgtype
 			continue
 		}
 		client := &http.Client{Timeout: 15 * time.Second}
-		token, err := mintGitHubInstallationToken(ctx, client, row.InstallationID, `{"permissions":{"contents":"read"}}`)
+		installationToken, err := mintGitHubInstallationToken(ctx, client, row.InstallationID, `{"permissions":{"contents":"read"}}`)
+		token := installationToken.Token
 		if err != nil {
 			slog.Warn("skill github auth: installation token unavailable; falling back to GITHUB_TOKEN",
 				"installation_id", row.InstallationID, "err", err)

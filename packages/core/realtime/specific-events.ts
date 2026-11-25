@@ -12,7 +12,7 @@ export const specificEvents = new Set([
   "subscriber:added", "subscriber:removed",
   "daemon:heartbeat",
   // Chat events are handled explicitly below; do not double-invalidate.
-  "chat:message", "chat:done", "chat:quick_actions", "chat:cancel_finalized", "chat:session_read", "chat:supplement_updated",
+  "chat:message", "chat:done", "chat:reply_notification", "chat:quick_actions", "chat:cancel_finalized", "chat:session_read", "chat:supplement_updated",
   "chat:session_created", "chat:session_deleted", "chat:session_updated",
   // task:message stays out of the prefix path because it fires per
   // streamed message during a long run — invalidating the snapshot on

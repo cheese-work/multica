@@ -8,10 +8,10 @@ import { ApiClient } from "@multica/core/api/client";
 import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { ApiError } from "@multica/core/api/client";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
 import { useIssueTitleDraftStore } from "@multica/core/issues/stores/unsent-edit-drafts";
-import { ApiError } from "@multica/core/api/client";
 // Imported from the barrel (not the submodule path) so this is the exact
 // same module instance issue-detail.tsx reads through the barrel mock below
 // — the submodule path resolves to a second, disconnected instance under
@@ -26,6 +26,13 @@ import enAgents from "../../locales/en/agents.json";
 import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
 import { useRichContentScrollRoot } from "../../rich-content/scroll-root";
+import { useIssueSidebarSectionsStore } from "@multica/core/issues/stores/issue-sidebar-sections-store";
+
+vi.mock("./issue-wakeup-header-chip", () => ({
+  IssueWakeupHeaderChip: ({ onOpen }: { onOpen: () => void }) => (
+    <button type="button" onClick={onOpen}>Review open wakeups</button>
+  ),
+}));
 
 const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, issues: enIssues } };
 
@@ -208,7 +215,11 @@ vi.mock("@multica/core/paths", async () => {
 });
 
 // Mock navigation
-vi.mock("../../navigation", () => ({
+vi.mock("../../navigation", async () => ({
+  // Real hold hook (pure React) the header's Inbox actions read through.
+  ...(await vi.importActual<typeof import("../../navigation/use-held-until-arrival")>(
+    "../../navigation/use-held-until-arrival",
+  )),
   AppLink: ({ children, href, ...props }: any) => (
     <a href={href} {...props}>
       {children}
@@ -296,6 +307,7 @@ vi.mock("../../editor", async () => ({
       onReady,
       selectionAction,
       onUploadFile,
+      ariaLabel,
     }: any,
     ref: any,
   ) {
@@ -360,6 +372,7 @@ vi.mock("../../editor", async () => ({
           onUpdate?.(e.target.value, baseRef.current);
         }}
         placeholder={placeholder}
+        aria-label={ariaLabel}
         data-testid="rich-text-editor"
         data-flush-on-unmount={flushPendingOnUnmount ? "true" : undefined}
       />
@@ -411,6 +424,7 @@ vi.mock("../../projects/components/project-picker", () => ({
 
 // Mock api
 const mockApiObj = vi.hoisted(() => ({
+  getBaseUrl: () => "",
   getIssue: vi.fn(),
   listTimeline: vi.fn().mockResolvedValue([]),
   listComments: vi.fn().mockResolvedValue([]),
@@ -447,6 +461,7 @@ const mockApiObj = vi.hoisted(() => ({
   listRuntimes: vi.fn().mockResolvedValue([]),
   getProject: vi.fn(),
   listProjects: vi.fn().mockResolvedValue({ projects: [] }),
+  listPins: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -491,6 +506,10 @@ vi.mock("@multica/core/issues/stores", async () => ({
   ...(await vi.importActual<
     typeof import("@multica/core/issues/stores/unsent-edit-drafts")
   >("@multica/core/issues/stores/unsent-edit-drafts")),
+  // Real store, in-memory: the sidebar reads its section order and visibility.
+  ...(await vi.importActual<
+    typeof import("@multica/core/issues/stores/issue-sidebar-sections-store")
+  >("@multica/core/issues/stores/issue-sidebar-sections-store")),
   useRecentIssuesStore: Object.assign(
     (selector?: any) => {
       const state = { byWorkspace: {}, recordVisit: mockRecordVisit, pruneWorkspaces: vi.fn() };
@@ -588,10 +607,8 @@ vi.mock("@multica/core/issues/stores", async () => ({
 }));
 
 // Mock react-virtuoso: jsdom has no real layout, so the real Virtuoso would
-// compute a 0-height viewport and render nothing. The mock renders every item
-// inline so id="comment-..." nodes are always present in the DOM — this
-// matches the production cold-path where `initialItemCount` force-mounts
-// items[0..targetIdx], giving the deep-link effect a real target node.
+// compute a 0-height viewport and render nothing. Most tests render every item;
+// the windowed regression requires index navigation to mount an offscreen row.
 //
 // scrollIntoViewSpy: the deep-link effect no longer calls native
 // scrollIntoView (it drives the timeline container's scrollTop directly to
@@ -611,6 +628,8 @@ vi.mock("react-virtuoso", () => ({
       initialTopMostItemIndex?: { index: number; align?: string; offset?: number };
       itemContent: (i: number, item: unknown) => unknown;
       computeItemKey: (i: number, item: unknown) => React.Key;
+      customScrollParent?: HTMLElement;
+      totalListHeightChanged?: (height: number) => void;
     },
     ref: any,
   ) {
@@ -772,6 +791,7 @@ const mockTimeline: TimelineEntry[] = [
 // ---------------------------------------------------------------------------
 
 import { IssueDetail, groupSubIssuesByStage } from "./issue-detail";
+import { READING_COLUMN } from "../../layout/reading-column";
 import {
   IssueSurfaceSelectionProvider,
   useCreateIssueSurfaceSelection,
@@ -780,6 +800,8 @@ import {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const READING_COLUMN_SELECTOR = READING_COLUMN.split(" ").map((cls) => `.${CSS.escape(cls)}`).join("");
 
 function createTestQueryClient() {
   return new QueryClient({
@@ -919,8 +941,11 @@ describe("IssueDetail (shared)", () => {
     mockViewport.isMobile = false;
     // Default: issue loads successfully
     mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    mockApiObj.listPins.mockResolvedValue([]);
     // /timeline returns the entries flat in chronological order (oldest first).
     mockApiObj.listTimeline.mockResolvedValue(mockTimeline);
+    mockApiObj.listAttachments.mockResolvedValue([]);
+    mockApiObj.listComments.mockResolvedValue([]);
     mockApiObj.listIssueReactions.mockResolvedValue([]);
     mockApiObj.listIssueSubscribers.mockResolvedValue([]);
     mockApiObj.listChildIssues.mockResolvedValue({ issues: [] });
@@ -940,6 +965,109 @@ describe("IssueDetail (shared)", () => {
     // Reset project mock — individual tests override per case. Default fixture
     // has project_id: null so getProject is not invoked.
     mockApiObj.getProject.mockReset();
+    useIssueSidebarSectionsStore.getState().reset();
+  });
+
+  // CHE-9612: a loaded comment target that does not exist must not cost the
+  // reader their previous position; pixel restoration is the fallback.
+  it.each(["control", "missing-no-anchor", "missing-stale-anchor"])(
+    "CHE-9612 missing target fallback: %s",
+    async (scenario) => {
+      const visited = renderIssueDetail();
+      await screen.findByText("Started working on this");
+      const firstScroller = visited.container.querySelector<HTMLElement>('[data-tab-scroll-root="main:issue-1"]')!;
+      expect(firstScroller).not.toBeNull();
+      firstScroller.scrollTop = 520;
+      fireEvent.scroll(firstScroller);
+      visited.unmount();
+
+      // Web has no pixel-memento adapter. A saved semantic anchor is either
+      // absent or cannot resolve to any currently loaded timeline row.
+      const adapter: ScrollRestorationAdapter = {
+        get: () => undefined,
+        getViewState: (key) => scenario === "missing-stale-anchor" && key === "scroll-anchor:issue-1"
+          ? JSON.stringify({ key: "comment:deleted-anchor", offset: 11 }) : undefined,
+        setViewState: vi.fn(),
+      };
+      const queryClient = createTestQueryClient();
+      const returned = render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <ScrollRestorationProvider adapter={adapter}>
+              <IssueDetail issueId="issue-1" highlightCommentId={scenario === "control" ? undefined : "deleted-landing-target"} />
+            </ScrollRestorationProvider>
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+      await screen.findByText("Started working on this");
+      const returnedScroller = returned.container.querySelector<HTMLElement>('[data-tab-scroll-root="main:issue-1"]')!;
+      await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 120)); });
+      expect(document.getElementById("comment-deleted-landing-target")).toBeNull();
+      expect(scrollToIndexSpy).not.toHaveBeenCalled();
+      expect(adapter.setViewState).not.toHaveBeenCalledWith("highlight:issue-1", "deleted-landing-target");
+      // A loaded missing target permits the same previous-position fallback
+      // as the control; no successful landing is fabricated.
+      expect(returnedScroller.scrollTop).toBe(520);
+    },
+  );
+
+  describe("sidebar section settings", () => {
+    const wakeupsSlot = (container: HTMLElement) => container.querySelector('[data-issue-sidebar-section="wakeups"]');
+    const wakeupsSwitch = async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Customize sidebar" }));
+      return within(await screen.findByRole("dialog")).getByRole("switch", { name: "Wakeups" });
+    };
+
+    it("hides wakeups from settings after the header chip opened them", async () => {
+      const { container } = renderIssueDetail();
+      fireEvent.click(await screen.findByRole("button", { name: "Review open wakeups" }));
+      expect(wakeupsSlot(container)).not.toBeNull();
+
+      fireEvent.click(await wakeupsSwitch());
+      expect(useIssueSidebarSectionsStore.getState().hidden).toContain("wakeups");
+      expect(wakeupsSlot(container)).toBeNull();
+    });
+
+    it("lets settings hide again the wakeups the header chip revealed", async () => {
+      useIssueSidebarSectionsStore.getState().setHidden("wakeups", true);
+      const { container } = renderIssueDetail();
+      fireEvent.click(await screen.findByRole("button", { name: "Review open wakeups" }));
+      expect(wakeupsSlot(container)).not.toBeNull();
+      expect(useIssueSidebarSectionsStore.getState().hidden).toContain("wakeups");
+
+      const toggle = await wakeupsSwitch();
+      fireEvent.click(toggle);
+      expect(useIssueSidebarSectionsStore.getState().hidden).not.toContain("wakeups");
+      fireEvent.click(toggle);
+      expect(useIssueSidebarSectionsStore.getState().hidden).toContain("wakeups");
+      expect(wakeupsSlot(container)).toBeNull();
+    });
+
+    it("ends the header chip's reveal when the reader moves to another issue", async () => {
+      useIssueSidebarSectionsStore.getState().setHidden("wakeups", true);
+      const issue2 = { ...mockIssue, id: "issue-2", title: "Second issue", description: "Second description" };
+      mockApiObj.getIssue.mockImplementation((issueId: string) =>
+        Promise.resolve(issueId === "issue-2" ? issue2 : mockIssue),
+      );
+      const queryClient = createTestQueryClient();
+      queryClient.setQueryData(["issues", "ws-1", "detail", "issue-2"], issue2);
+      const ui = (issueId: string) => (
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail issueId={issueId} />
+          </QueryClientProvider>
+        </I18nProvider>
+      );
+      const { container, rerender } = render(ui("issue-1"));
+      fireEvent.click(await screen.findByRole("button", { name: "Review open wakeups" }));
+      expect(wakeupsSlot(container)).not.toBeNull();
+
+      rerender(ui("issue-2"));
+      await screen.findByDisplayValue("Second description");
+      rerender(ui("issue-1"));
+      await screen.findByDisplayValue("Add JWT auth to the backend");
+      expect(wakeupsSlot(container)).toBeNull();
+    });
   });
 
   it("passes the issue's agent assignment to the local-directory hint", async () => {
@@ -1008,6 +1136,40 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByRole("button", { name: "report.md, version 2" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "View all 1 deliverable" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "brief.pdf" })).toBeNull();
+  });
+
+  it("keeps images from comments outside the loaded history in deliverables", async () => {
+    const image: Attachment = { id: "historical-chart", workspace_id: "ws-1", issue_id: "issue-1", comment_id: "older-comment",
+      chat_session_id: null, chat_message_id: null, uploader_type: "agent", uploader_id: "agent-1",
+      filename: "historical-chart.png", content_type: "image/png", size_bytes: 100,
+      url: "/chart.png", download_url: "/chart.png", markdown_url: "/chart.png", created_at: "2026-01-01T00:00:00Z",
+      comment_author_type: "agent", comment_author_id: "agent-1", comment_created_at: "2026-01-01T00:00:00Z" };
+    mockApiObj.listTimeline.mockResolvedValue([]);
+    // The issue attachment list alone supplies the historical file and its origin.
+    mockApiObj.listAttachments.mockResolvedValue([image]);
+    const root = {
+      id: "older-root", issue_id: "issue-1", author_type: "agent", author_id: "agent-1",
+      content: "Historical image discussion", type: "comment", parent_id: null,
+      created_at: image.created_at, updated_at: image.created_at, reactions: [], attachments: [],
+      resolved_at: null, resolved_by_type: null, resolved_by_id: null,
+    };
+    mockApiObj.listComments.mockResolvedValue([root, {
+      ...root, id: "older-comment", parent_id: root.id,
+      content: "Historical chart explanation", attachments: [image],
+    }]);
+    renderIssueDetail();
+    expect(await screen.findByRole("button", { name: "historical-chart.png" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "View all 1 deliverable" }));
+    expect(await screen.findByTitle("historical-chart.png")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show in comments" })).toBeInTheDocument();
+    expect(mockApiObj.listComments).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Show in comments" }));
+    await waitFor(() => expect(hasHighlightedCommentBackground(
+      document.getElementById("comment-older-comment"),
+    )).toBe(true));
+    expect(mockApiObj.listComments).toHaveBeenCalledWith("issue-1", { thread: "older-comment" });
+    expect(screen.getByText("Historical chart explanation")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: /deliverables$/ })).toBeNull();
   });
 
   it("opens source-context creation from both a root comment and a reply", async () => {
@@ -1088,6 +1250,21 @@ describe("IssueDetail (shared)", () => {
     }
   });
 
+  it("keeps an embedded host's sidebar closed while loading", () => {
+    mockApiObj.getIssue.mockReturnValue(new Promise(() => {}));
+    const queryClient = createTestQueryClient();
+    const view = render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail issueId="issue-1" defaultSidebarOpen={false} />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    expect(view.container.querySelector(".w-80.border-l")).toBeNull();
+    view.unmount();
+    queryClient.clear();
+  });
+
   // CHE-7426 (CHE-4317 slice 1): the locked compact-sidebar design puts the
   // Pull requests section directly above Wakeups.
   it("renders the Pull requests section above the Wakeups section in the sidebar", async () => {
@@ -1132,6 +1309,27 @@ describe("IssueDetail (shared)", () => {
     expect(mockApiObj.listIssues).not.toHaveBeenCalled();
   });
 
+  it("sizes the skeleton and the loaded column from the same reading container", async () => {
+    // The column's cap is relative to its scroller (`cqi`), so both scrollers
+    // have to be the container or the skeleton and the loaded column resolve
+    // the same clamp against different widths and jump when content mounts.
+    mockApiObj.getIssue.mockReturnValue(new Promise(() => {}));
+    const loadingRender = renderIssueDetail();
+    const skeletonColumn = loadingRender.container.querySelector(READING_COLUMN_SELECTOR);
+    expect(skeletonColumn).toBeTruthy();
+    expect(skeletonColumn!.parentElement).toHaveClass("@container");
+    loadingRender.unmount();
+
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    const { container } = renderIssueDetail();
+    await waitFor(() => {
+      expect(screen.getByText("Implement authentication")).toBeInTheDocument();
+    });
+    const column = container.querySelector(READING_COLUMN_SELECTOR);
+    expect(column).toBeTruthy();
+    expect(column!.parentElement).toHaveClass("@container");
+  });
+
   it("gives the skeleton the same horizontal gutters as the loaded column", async () => {
     // The skeleton is the loaded column's stand-in, so a gutter change has to
     // land on both or the column jumps sideways at the moment the issue
@@ -1147,7 +1345,7 @@ describe("IssueDetail (shared)", () => {
     mockApiObj.getIssue.mockReturnValue(new Promise(() => {}));
     const loadingRender = renderIssueDetail();
     const skeletonGutters = horizontalGutters(
-      loadingRender.container.querySelector(".max-w-4xl"),
+      loadingRender.container.querySelector(READING_COLUMN_SELECTOR),
     );
     loadingRender.unmount();
 
@@ -1160,7 +1358,7 @@ describe("IssueDetail (shared)", () => {
     // Non-empty guard: without it a renamed column class passes vacuously.
     expect(skeletonGutters.length).toBeGreaterThan(0);
     expect(skeletonGutters).toEqual(
-      horizontalGutters(container.querySelector(".max-w-4xl")),
+      horizontalGutters(container.querySelector(READING_COLUMN_SELECTOR)),
     );
   });
 
@@ -1553,6 +1751,65 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByRole("button", { name: "Close preview" })).toBeInTheDocument();
     // The header leaf names the issue by identifier only — the title is right below.
     expect(screen.getByRole("link", { name: mockIssue.identifier })).toBeInTheDocument();
+  });
+
+  describe("header icon buttons", () => {
+    function renderWithDone() {
+      const queryClient = createTestQueryClient();
+      return render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail issueId="issue-1" onDone={() => {}} />
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+    }
+
+    it("names Mark as done and Pin after their tooltips on an open issue", async () => {
+      renderWithDone();
+
+      expect(
+        await screen.findByRole("button", { name: enIssues.detail.mark_done_tooltip }),
+      ).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: enIssues.detail.pin_tooltip })).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: enIssues.detail.archive_tooltip }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("names Archive after its tooltip once the issue is done", async () => {
+      mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, status: "done" });
+      renderWithDone();
+
+      expect(
+        await screen.findByRole("button", { name: enIssues.detail.archive_tooltip }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: enIssues.detail.mark_done_tooltip }),
+      ).not.toBeInTheDocument();
+    });
+
+    it("names the pin toggle Unpin while the issue is pinned", async () => {
+      mockApiObj.listPins.mockResolvedValue([
+        {
+          id: "pin-1",
+          workspace_id: "ws-1",
+          user_id: "user-1",
+          item_type: "issue",
+          item_id: "issue-1",
+          position: 0,
+          created_at: "2026-01-15T00:00:00Z",
+        },
+      ]);
+      renderIssueDetail();
+
+      expect(
+        await screen.findByRole("button", { name: enIssues.detail.unpin_tooltip }),
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: enIssues.detail.pin_tooltip }),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("pins the comment composer to the scroll viewport on a wide screen", async () => {
@@ -3173,6 +3430,53 @@ describe("IssueDetail (shared)", () => {
       await waitFor(() => expect(container.querySelector(`#comment-failure-notice [data-run-id="${task.id}"]`)).not.toBeNull());
       expectStatedOnce(container.querySelector("#comment-failure-notice") as HTMLElement);
     });
+
+    // A task_failed notification names the task (MUL-9340); the run renders
+    // under its notice's id when it left one, and under the task id otherwise.
+    describe("lands a failed run's notification", () => {
+      const taskId = failedRun().id;
+
+      it.each(["failure-notice", taskId])("in a thread with a notice, through %s", async (target) => {
+        const root = mockTimeline[0]!;
+        const task = failedRun({ trigger_comment_id: root.id, delivered_comment_ids: [root.id] });
+        mockApiObj.listTimeline.mockResolvedValue([root, notice(task, root.id)]);
+        mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+        const { container } = renderIssueDetailWithHighlight(target);
+
+        await waitFor(() => expect(container.querySelector("#comment-failure-notice [data-run-id]")).not.toBeNull());
+        await waitFor(() => expect(hasHighlightedCommentBackground(container.querySelector("#comment-failure-notice"))).toBe(true));
+      });
+
+      it("in a thread without a notice, through the task id", async () => {
+        const root = mockTimeline[0]!;
+        const task = failedRun({ trigger_comment_id: root.id, delivered_comment_ids: [root.id] });
+        mockApiObj.listTimeline.mockResolvedValue([root]);
+        mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+        const { container } = renderIssueDetailWithHighlight(task.id);
+
+        await waitFor(() => expect(container.querySelector(`#comment-${task.id}`)).not.toBeNull());
+        await waitFor(() => expect(hasHighlightedCommentBackground(container.querySelector(`#comment-${task.id}`))).toBe(true));
+      });
+
+      it("at the top level with a notice, through the task id", async () => {
+        const task = failedRun();
+        mockApiObj.listTimeline.mockResolvedValue([...mockTimeline, notice(task, null)]);
+        mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+        const { container } = renderIssueDetailWithHighlight(task.id);
+
+        await waitFor(() => expect(container.querySelector(`#comment-failure-notice [data-run-comment-id="${task.id}"]`)).not.toBeNull());
+        await waitFor(() => expect(hasHighlightedCommentBackground(container.querySelector("#comment-failure-notice"))).toBe(true));
+      });
+
+      it("at the top level without a notice, through the task id", async () => {
+        const task = failedRun();
+        mockApiObj.listTasksByIssue.mockResolvedValue([task]);
+        const { container } = renderIssueDetailWithHighlight(task.id);
+
+        await waitFor(() => expect(container.querySelector(`#comment-${task.id}`)).not.toBeNull());
+        await waitFor(() => expect(hasHighlightedCommentBackground(container.querySelector(`#comment-${task.id}`))).toBe(true));
+      });
+    });
   });
 
   // Details is creator + immutable timestamps, so it ranks below the
@@ -3207,6 +3511,29 @@ describe("IssueDetail (shared)", () => {
     ).toBeTruthy();
   });
 
+  it("keeps an unsaved comment mounted when the primary background refresh fails", async () => {
+    const queryClient = createTestQueryClient();
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail issueId="issue-1" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    await screen.findByText("Implement authentication");
+    fireEvent.click(screen.getByTestId("comment-composer-shell"));
+    const editor = await screen.findByPlaceholderText("Leave a comment...");
+    fireEvent.change(editor, { target: { value: "Unsaved synthetic comment" } });
+    mockApiObj.getIssue.mockRejectedValue(new ApiError("unavailable", 503, "Unavailable"));
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: issueKeys.detail("ws-1", "issue-1"), exact: true });
+    });
+    expect(queryClient.getQueryState(issueKeys.detail("ws-1", "issue-1"))?.status).toBe("error");
+    expect(editor).toBeInTheDocument();
+    expect(editor).toHaveValue("Unsaved synthetic comment");
+    expect(screen.queryByText("Could not load issue.")).not.toBeInTheDocument();
+  });
+
   it("shows 'not found' message when issue does not exist", async () => {
     mockApiObj.getIssue.mockRejectedValue(new ApiError("Not found", 404, "Not Found"));
 
@@ -3221,7 +3548,7 @@ describe("IssueDetail (shared)", () => {
 
   // Regression (CHE-3411): a 5xx/401 on a decision-card link read as "deleted".
   it("offers a retry, not the deleted message, when the load fails with a non-404", async () => {
-    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unauthorized", 401, "Unauthorized"));
+    mockApiObj.getIssue.mockRejectedValueOnce(new ApiError("unavailable", 503, "Service Unavailable"));
 
     renderIssueDetail("issue-1");
 
@@ -3387,6 +3714,75 @@ describe("IssueDetail (shared)", () => {
 
     await screen.findByText("System coordination update.");
     expect(screen.queryByRole("button", { name: "Retry run" })).not.toBeInTheDocument();
+  });
+
+  describe("an issue an agent created for a member (#7995)", () => {
+    const created = (actorType: "agent" | "member", actorId: string): TimelineEntry => ({
+      type: "activity",
+      id: "act-created",
+      actor_type: actorType,
+      actor_id: actorId,
+      action: "created",
+      details: {},
+      created_at: "2026-01-15T00:00:00Z",
+    });
+
+    it("names the requester in the created entry and under the creator", async () => {
+      mockApiObj.getIssue.mockResolvedValue({
+        ...mockIssue,
+        creator_type: "agent",
+        creator_id: "agent-1",
+        requester_id: "user-1",
+      });
+      mockApiObj.listTimeline.mockResolvedValue([created("agent", "agent-1")]);
+
+      renderIssueDetail();
+
+      expect(await screen.findByText("created this issue on behalf of Test User")).toBeInTheDocument();
+      // Fork default: Details starts open (upstream v0.10.0 starts collapsed).
+      const creatorRow = screen.getByText("Created by").parentElement!;
+      expect(creatorRow).toHaveTextContent("Claude Agent");
+      expect(within(creatorRow).getByRole("link", { name: "On behalf of Test User" }))
+        .toHaveAttribute("href", "/test/members/user-1");
+      expect(screen.queryByText("Requested by")).not.toBeInTheDocument();
+    });
+
+    it.each([
+      { creatorType: "agent", creatorId: "agent-1", requesterId: null },
+      { creatorType: "agent", creatorId: "agent-1", requesterId: undefined },
+      { creatorType: "member", creatorId: "user-1", requesterId: "user-1" },
+    ] as const)("keeps plain creation for $creatorType with requester $requesterId", async ({ creatorType, creatorId, requesterId }) => {
+      mockApiObj.getIssue.mockResolvedValue({
+        ...mockIssue,
+        creator_type: creatorType,
+        creator_id: creatorId,
+        requester_id: requesterId,
+      });
+      mockApiObj.listTimeline.mockResolvedValue([created(creatorType, creatorId)]);
+
+      renderIssueDetail();
+
+      expect(await screen.findByText("created this issue")).toBeInTheDocument();
+      // Fork default: Details starts open.
+      expect(screen.queryByText(/On behalf of/)).not.toBeInTheDocument();
+      expect(screen.queryByText("Requested by")).not.toBeInTheDocument();
+    });
+
+    it("uses the existing member-name fallback when the requester is unavailable", async () => {
+      mockApiObj.getIssue.mockResolvedValue({
+        ...mockIssue,
+        creator_type: "agent",
+        creator_id: "agent-1",
+        requester_id: "former-member",
+      });
+      mockApiObj.listTimeline.mockResolvedValue([created("agent", "agent-1")]);
+
+      renderIssueDetail();
+
+      expect(await screen.findByText("created this issue on behalf of Unknown")).toBeInTheDocument();
+      // Fork default: Details starts open.
+      expect(screen.getByText("Created by").parentElement).toHaveTextContent("On behalf of Unknown");
+    });
   });
 
   it("collapses non-trailing activity blocks and expands the last one by default", async () => {
@@ -3698,7 +4094,7 @@ describe("IssueDetail (shared)", () => {
         screen.getByText(/from In Review to Awaiting Response/i),
       ).toBeInTheDocument();
     });
-    expect(statusChangeIcon("Awaiting Response").style.color).toBe("rgb(255, 0, 0)");
+    expect(statusChangeIcon("Awaiting Response").style.color).toBe("var(--palette-red, #ff0000)");
   });
 
   it("leaves a built-in status-change activity on its semantic token colour", async () => {
@@ -3723,7 +4119,7 @@ describe("IssueDetail (shared)", () => {
     });
     const icon = statusChangeIcon("In Review");
     expect(icon.style.color).toBe("");
-    expect(icon.getAttribute("class")).toContain("text-success");
+    expect(icon.getAttribute("class")).toContain("text-status-in-review");
   });
 
   it("truncates the trailing activity block to the most recent 8 entries with a show-more toggle", async () => {
@@ -3860,7 +4256,42 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText(/Show \d+ more activit/i)).not.toBeInTheDocument();
   });
 
+  it("does not mount offscreen reply bodies in a long discussion", async () => {
+    vi.stubGlobal("IntersectionObserver", class {
+      observe() {} unobserve() {} disconnect() {}
+    });
+    const root = { ...mockTimeline[0]!, id: "long-thread-root", parent_id: null, content: "Long discussion root" };
+    const replies = Array.from({ length: 200 }, (_, index) => ({
+      ...root, id: `offscreen-reply-${index}`, parent_id: root.id, content: `Offscreen body ${index}`,
+    }));
+    mockApiObj.listTimeline.mockResolvedValue([root, ...replies]);
+    mockApiObj.listTasksByIssue.mockResolvedValue([]);
+    try {
+      renderIssueDetail();
+      await screen.findByText("Long discussion root");
+      // Fork wins (CHE-7026): long threads fold to a short tail (thread-length fold +
+      // Virtuoso rows), so the 200 replies are never all mounted. Upstream's test
+      // assumed every reply gets a VirtualThreadRow anchor; the bound that matters
+      // — offscreen bodies are not mounted — holds more strongly under the fold.
+      expect(document.getElementById("comment-offscreen-reply-0")).toBeNull();
+      expect(screen.queryByText("Offscreen body 0")).toBeNull();
+      expect(readonlyContentRenders.filter((body) => body.startsWith("Offscreen body")).length).toBeLessThan(10);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   describe("highlightCommentId scroll-to-comment", () => {
+    it("waits for run grouping before consuming the comment landing", async () => {
+      let finishTasks!: (tasks: AgentTask[]) => void;
+      mockApiObj.listTasksByIssue.mockReturnValue(new Promise<AgentTask[]>((resolve) => { finishTasks = resolve; }));
+      renderIssueDetailWithHighlight("comment-2");
+      await waitFor(() => expect(document.getElementById("comment-comment-2")).not.toBeNull());
+      await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 60)); });
+      const landedBeforeGrouping = hasHighlightedCommentBackground(document.getElementById("comment-comment-2"));
+      await act(async () => { finishTasks([]); });
+      await waitFor(() => expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(true));
+      expect(landedBeforeGrouping).toBe(false);
+    });
+
     it.each(["root", "reply"])("reveals a virtualized-out %s annotation from the footer and preserves the pending edit", async (sourceKind) => {
       virtualWindow.size = 1;
       virtualWindow.initialIndex = 41;
@@ -4146,10 +4577,7 @@ describe("IssueDetail (shared)", () => {
     it("scrolls to the highlighted comment after both issue and timeline finish loading", async () => {
       renderIssueDetailWithHighlight("comment-2");
 
-      // Wait for the comment row to mount. With initialItemCount in
-      // production, items[0..targetIdx] are force-mounted on first commit;
-      // the mock unconditionally inline-renders every item, so this just
-      // waits for the regular render pass.
+      // Wait for the requested row to mount before checking its highlight.
       await waitFor(() => {
         expect(
           document.getElementById("comment-comment-2"),
@@ -5595,6 +6023,46 @@ describe("IssueDetail (shared)", () => {
   // showed a Subscribe button to people who were already subscribed, and a
   // click landing in that window sent a subscribe instead of the unsubscribe
   // they meant (MUL-5714).
+  describe("subscription inherited from the project", () => {
+    beforeEach(() => {
+      mockApiObj.listIssueSubscribers.mockResolvedValue([
+        {
+          issue_id: "issue-1",
+          user_type: "member" as const,
+          user_id: "user-1",
+          reason: "project" as const,
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ]);
+      mockApiObj.listChildIssues.mockResolvedValue({ issues: [] });
+    });
+
+    afterEach(() => {
+      document.body.innerHTML = "";
+    });
+
+    it("labels the project source and leaves only this issue", async () => {
+      renderIssueDetail();
+
+      expect(await screen.findByText("Via project")).toBeInTheDocument();
+      const button = await waitFor(() => {
+        const el = screen.getByText("Unsubscribe");
+        expect(el.getAttribute("aria-haspopup")).toBeNull();
+        return el;
+      });
+      fireEvent.click(button);
+
+      await waitFor(() =>
+        expect(mockApiObj.unsubscribeFromIssue).toHaveBeenCalledWith(
+          "issue-1",
+          "user-1",
+          "member",
+        ),
+      );
+      expect(mockApiObj.unsubscribeFromIssueSubtree).not.toHaveBeenCalled();
+    });
+  });
+
   describe("subscription state before the query resolves", () => {
     afterEach(() => {
       document.body.innerHTML = "";
@@ -5634,7 +6102,7 @@ describe("IssueDetail (shared)", () => {
     async function openSubscriberPicker() {
       const heading = await screen.findByText("Activity");
       const header = heading.parentElement?.parentElement;
-      const trigger = header?.querySelector('[data-slot="popover-trigger"]');
+      const trigger = header?.querySelector('[data-trigger="popover"]');
       if (!trigger) throw new Error("subscriber picker trigger not found");
       fireEvent.click(trigger);
       return waitFor(() => {

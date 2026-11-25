@@ -99,6 +99,11 @@ func (h *Handler) PatchAgentEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusPreconditionFailed, "env changed since if_revision; re-read and retry")
 		return
 	}
+	var rejected qoderEnvRejection
+	if errors.As(err, &rejected) {
+		writeError(w, http.StatusBadRequest, rejected.Error())
+		return
+	}
 	if failedAudit(w, r, err, "agent.env.update") {
 		return
 	}
@@ -135,6 +140,11 @@ type verifiedApprover struct {
 
 var errEnvRevisionMismatch = errors.New("env changed since if_revision")
 
+// qoderEnvRejection is the refusal when a patch would leave a Qoder agent with
+// a custom env the bridge rejects at run time. The message is the one PUT
+// returns for the same condition.
+type qoderEnvRejection struct{ error }
+
 // applyAgentEnvPatch merges req into the locked agent's env and writes the
 // audit row in the caller's transaction. It takes no locks and publishes
 // nothing: the caller owns both, so an approved action and the PATCH
@@ -155,6 +165,16 @@ func applyAgentEnvPatch(ctx context.Context, queries *db.Queries, locked db.Agen
 		delete(next, k)
 	}
 	_, audit := mergeAgentEnv(existing, next)
+
+	// Same rule as PUT, on the effective merged map: removing the last key is
+	// the cleanup path and stays allowed.
+	if len(next) > 0 {
+		if rt, err := queries.GetAgentRuntimeForWorkspace(ctx, db.GetAgentRuntimeForWorkspaceParams{ID: locked.RuntimeID, WorkspaceID: locked.WorkspaceID}); err == nil && rt.Provider == "qoder_cloud" {
+			if err := (qoderOverrides{customEnv: len(next)}).validate(); err != nil {
+				return db.Agent{}, nil, qoderEnvRejection{err}
+			}
+		}
+	}
 
 	envBytes, err := json.Marshal(next)
 	if err != nil {

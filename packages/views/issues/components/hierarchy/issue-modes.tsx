@@ -46,7 +46,7 @@ export function ModeSwitch({ modes, activeId, onChange }: { modes: readonly Issu
   return (
     <div role="group" aria-label={t(($) => $.view.section)} className="flex flex-wrap items-center gap-1">
       {modes.map(({ id, label, icon: Icon }) => (
-        <Button key={id} type="button" variant="outline" size="xs" aria-pressed={id === activeId} onClick={() => onChange(id)} className="rounded-full aria-pressed:border-info aria-pressed:bg-info/10">
+        <Button key={id} type="button" variant="outline" size="xs" aria-pressed={id === activeId} onClick={() => onChange(id)} className="rounded-md aria-pressed:border-info aria-pressed:bg-info/10">
           <Icon className="size-3.5" />{label(t)}
         </Button>
       ))}

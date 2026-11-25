@@ -157,7 +157,7 @@ function ArtifactDialogContent({ artifact, attachment, onRetryChanges }: { artif
   const tabId = (key: TabKey) => `${id}-tab-${key}`;
 
   return (
-    <DialogContent data-testid="decision-artifact-dialog" className="h-dvh max-h-none w-full max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 rounded-none p-0 sm:h-[85dvh] sm:max-w-4xl sm:grid-cols-[17rem_minmax(0,1fr)] sm:grid-rows-[auto_minmax(0,1fr)] sm:rounded-xl">
+    <DialogContent data-testid="decision-artifact-dialog" className="h-full max-h-none w-full max-w-none grid-rows-[auto_minmax(0,1fr)_auto] gap-0 rounded-none p-0 sm:h-[85%] sm:max-w-4xl sm:grid-cols-[17rem_minmax(0,1fr)] sm:grid-rows-[auto_minmax(0,1fr)] sm:rounded-xl">
       <DialogHeader className="p-4 pr-12 sm:col-start-1 sm:row-start-1 sm:border-r sm:border-surface-border sm:pr-4">
         <DialogTitle className="sr-only">{artifact.label}</DialogTitle>
         <div className="flex items-start gap-2.5">

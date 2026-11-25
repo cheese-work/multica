@@ -61,6 +61,8 @@ vi.mock("./pickers", () => ({
   StatusPicker: () => <div />,
   PriorityPicker: () => <div />,
   AssigneePicker: () => <div />,
+  DueDatePicker: () => <div />,
+  StartDatePicker: () => <div />,
 }));
 
 const workflow = (id: string, name: string): IssueWorkflow =>
@@ -77,8 +79,8 @@ const workflow = (id: string, name: string): IssueWorkflow =>
     updated_at: "",
   });
 const PROJECTS = [
-  { id: "p-dev", workflow_id: null },
-  { id: "p-ops", workflow_id: null },
+  { id: "p-dev", title: "Dev project", workflow_id: null },
+  { id: "p-ops", title: "Ops project", workflow_id: null },
 ] as Project[];
 
 function makeIssue(overrides: Partial<Issue>): Issue {

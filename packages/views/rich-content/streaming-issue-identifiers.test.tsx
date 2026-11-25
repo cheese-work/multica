@@ -10,6 +10,7 @@ vi.mock("../issues/hooks", () => ({
 }));
 
 vi.mock("../issues/components/issue-chip", () => ({
+  useChipIssue: () => undefined,
   IssueChip: ({ issueId }: { issueId: string }) => (
     <span data-testid="issue-chip">{issueId}</span>
   ),

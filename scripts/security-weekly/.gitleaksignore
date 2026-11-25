@@ -6,3 +6,5 @@
 25eca7cf6b5e57c8f0d6dc837b0565beaed25e6d:server/cmd/migrate/main.go:generic-api-key:160
 # Synthetic PEM test fixture from upstream #10459 (not a secret).
 98c53df049b687cefd238b648d960c484c70d5d2:server/internal/daemon/commit_diff_test.go:private-key:297
+# CHE-9429: synthetic token-masking test fixture from upstream #11143 (v0.12.2 range); value is "0123456789abcdef".repeat(2)+"01234567", not a secret. Needs Cheese risk acceptance.
+b385c8c5e12abc40bc2a6868ace6142d7e4adda7:packages/core/security/redact-secrets.test.ts:generic-api-key:6

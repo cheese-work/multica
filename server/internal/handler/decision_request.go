@@ -413,11 +413,33 @@ func (handler *Handler) createDecisionRequestTx(request *http.Request, issue db.
 	queries := handler.Queries.WithTx(transaction)
 	var createdSession *db.ChatSession
 	var session db.ChatSession
+	typed := input.Parsed != nil && len(input.Parsed.TypedOptionPaths()) > 0
+	typedSendHook("before_fence")
+	if typed {
+		// Same fence as the single-call branch: first lock of the send, so a settings write
+		// that turns a fenced key off waits for this transaction (CHE-9716, A5e F12).
+		if err := queries.LockTypedSettingsFenceShared(ctx, issue.WorkspaceID); err != nil {
+			return empty, err
+		}
+	}
+	typedSendHook("after_fence")
 	if _, err := queries.LockWorkspaceForChatSessionCreate(ctx, issue.WorkspaceID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return empty, deny
 		}
 		return empty, err
+	}
+	typedSendHook("after_row_lock")
+	if typed {
+		// The authoritative read of decision_server_actions: inside the transaction, after the locks.
+		workspace, err := queries.GetWorkspace(ctx, issue.WorkspaceID)
+		if err != nil {
+			return empty, err
+		}
+		if !decisiontx.ServerActionsOn(workspace.Settings) {
+			return empty, decisionIntentRefusal{http.StatusBadRequest, decisiontx.ServerActionsOffCode + ": " + input.Parsed.TypedOptionPaths()[0] + " needs the workspace setting decision_server_actions to be on; it is off"}
+		}
+		typedSendHook("after_setting_read")
 	}
 	if prior, err := findDecisionRequestRetry(ctx, queries, issue, located.AgentID, located.TaskID, input); err != nil || prior.Request.ID.Valid {
 		return prior, err
