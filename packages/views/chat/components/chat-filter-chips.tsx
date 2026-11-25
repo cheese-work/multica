@@ -137,7 +137,7 @@ export function ChatFilterChips({
               onFocus={() => setFocused(slot)}
               onClick={() => onChange(viewOf(slot))}
               className={cn(
-                "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-caption outline-none transition-colors motion-reduce:transition-none md:h-7 md:px-2.5",
+                "inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md border px-3 text-caption outline-none transition-colors motion-reduce:transition-none md:h-7 md:px-2.5",
                 "focus-visible:ring-2 focus-visible:ring-ring",
                 selected
                   ? "border-transparent bg-foreground font-semibold text-background"

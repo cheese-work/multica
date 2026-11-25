@@ -79,6 +79,7 @@ vi.mock("./components/chat-empty-state", () => ({ EmptyState: () => <div>empty</
 vi.mock("./components/new-chat-button", () => ({ NewChatButton: () => null }));
 vi.mock("./components/offline-banner", () => ({ OfflineBanner: () => null }));
 vi.mock("./components/no-agent-banner", () => ({ NoAgentBanner: () => null }));
+vi.mock("../common/app-requests", () => ({ ChatAppRequests: () => null }));
 vi.mock("./components/archived-agent-banner", () => ({ ArchivedAgentBanner: () => null }));
 vi.mock("react-resizable-panels", () => ({
   useDefaultLayout: () => ({ defaultLayout: undefined, onLayoutChanged: vi.fn() }),

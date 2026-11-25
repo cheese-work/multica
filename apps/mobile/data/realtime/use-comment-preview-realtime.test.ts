@@ -24,7 +24,7 @@ vi.mock("@/lib/use-ws-subscriptions", () => ({
   },
 }));
 
-function connect() {
+function useConnect() {
   useCommentPreviewRealtime();
   const handlers = new Map<string, EventHandler>();
   let reconnect: (() => void) | undefined;
@@ -51,19 +51,19 @@ describe("useCommentPreviewRealtime", () => {
   });
 
   it("refreshes one preview when its comment is edited", () => {
-    const { handlers } = connect();
+    const { handlers } = useConnect();
     handlers.get("comment:updated")?.({ comment: { id: "c1", issue_id: "i1" } });
     expect(keys()).toEqual([["issues", "ws-1", "comment-preview", "c1"]]);
   });
 
   it("refreshes one preview when its comment is deleted", () => {
-    const { handlers } = connect();
+    const { handlers } = useConnect();
     handlers.get("comment:deleted")?.({ comment_id: "c2", issue_id: "i1" });
     expect(keys()).toEqual([["issues", "ws-1", "comment-preview", "c2"]]);
   });
 
   it("refreshes every preview on reconnect", () => {
-    const { reconnect } = connect();
+    const { reconnect } = useConnect();
     reconnect();
     expect(invalidateQueries).toHaveBeenCalledTimes(1);
     const arg = invalidateQueries.mock.calls[0]![0];
