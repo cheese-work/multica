@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -27,8 +26,8 @@ import (
 
 const (
 	activityHandoffWakeup = "review_handoff_wakeup"
-	// activityRoundsAutoSplit marks a plan issue's round limit that took the
-	// Split path without a decision card (CHE-9483). The daily digest lists
+	// activityRoundsAutoSplit marks a round limit that took the Split path
+	// without a decision card (CHE-9483, CHE-9511). The daily digest lists
 	// these rows; a veto reopens the card for the capped round.
 	activityRoundsAutoSplit = "review_rounds_auto_split"
 	// reviewRoundsFingerprint prefixes the card's fingerprint; the cap's own
@@ -72,17 +71,42 @@ func recordRoundsCapMarker(ctx context.Context, q *db.Queries, issue db.Issue, a
 	return roundsCap{rounds: rounds, activityID: row.ID}, err
 }
 
-// maybeAutoSplit records the auto-Split decision for a plan issue when the
-// workspace setting is on, and marks the cap so it opens no card.
+// maybeAutoSplit records the auto-Split decision for an issue of any type when
+// the workspace setting is on, and marks the cap so it opens no card.
 func maybeAutoSplit(ctx context.Context, q *db.Queries, issue db.Issue, c *roundsCap) error {
-	if !isPlanIssueTitle(issue.Title) || !roundsAutoSplitEnabled(ctx, q, issue) {
+	if !roundsAutoSplitEnabled(ctx, q, issue) {
 		return nil
 	}
-	if err := recordAutoSplit(ctx, q, issue, *c); err != nil {
-		return err
+	// The write runs in a savepoint: a failed insert aborts the whole
+	// transaction otherwise, and the move to need_decision would roll back with
+	// it. On failure only the auto-Split rows are undone, the cap commits
+	// without autoSplit, and the issue opens the card as it does with the
+	// setting off (CHE-9511).
+	if err := inSavepoint(ctx, q, func(sq *db.Queries) error { return recordAutoSplit(ctx, sq, issue, *c) }); err != nil {
+		slog.Warn("review rounds: auto-Split not recorded, opening the card", "err", err, "issue_id", uuidToString(issue.ID))
+		return nil
 	}
 	c.autoSplit = true
 	return nil
+}
+
+// inSavepoint runs fn in a savepoint of q's transaction. A failure rolls back
+// to the savepoint, so the outer transaction stays usable. Outside a
+// transaction fn runs directly.
+func inSavepoint(ctx context.Context, q *db.Queries, fn func(*db.Queries) error) error {
+	tx, ok := q.Conn().(pgx.Tx)
+	if !ok {
+		return fn(q)
+	}
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	if err := fn(q.WithTx(sp)); err != nil {
+		_ = sp.Rollback(ctx)
+		return err
+	}
+	return sp.Commit(ctx)
 }
 
 // openCappedCard opens the card for a write that capped the issue, after its
@@ -92,17 +116,6 @@ func (h *Handler) openCappedCard(ctx context.Context, issue db.Issue, wf *workfl
 		return
 	}
 	h.ensureReviewRoundsCard(ctx, issue, *wf.capped)
-}
-
-// isPlanIssueTitle reports whether the title is a plan issue's: the
-// conventional-commit type "plan", with or without a scope.
-func isPlanIssueTitle(title string) bool {
-	t := strings.ToLower(strings.TrimSpace(title))
-	if !strings.HasPrefix(t, "plan") {
-		return false
-	}
-	rest := t[len("plan"):]
-	return strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, ":")
 }
 
 const (
@@ -144,7 +157,7 @@ func validateRoundsAutoSplitSetting(value any) error {
 	return nil
 }
 
-// recordAutoSplit records the Split decision for a plan issue at the round
+// recordAutoSplit records the Split decision for an issue at the round
 // limit: one activity row for the daily digest and one system comment for the
 // need_decision handler. It runs in the transaction that moves the issue, so
 // both rows commit with the status change; the handler's run, which that
@@ -160,7 +173,7 @@ func recordAutoSplit(ctx context.Context, q *db.Queries, issue db.Issue, c round
 	_, err := q.CreateComment(ctx, db.CreateCommentParams{
 		ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
 		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Type: "system",
-		Content: fmt.Sprintf("Review round limit: this plan issue has had %d review rounds without a PASS. Decision recorded: auto-Split at round limit (CHE-9483). No decision request was opened. Run the Split path now: one comment with the round count, the candidate hash and the open findings; one backlog issue for the removed work, read back; then move this issue to in_progress. The daily report lists this auto-Split; a veto reopens the decision card.", c.rounds),
+		Content: fmt.Sprintf("Review round limit: this issue has had %d review rounds without a PASS. Decision recorded: auto-Split at round limit (CHE-9483, CHE-9511). No decision request was opened. Run the Split path now: one comment with the round count, the candidate hash and the open findings; one backlog issue for the removed work, read back; then move this issue to in_progress. The daily report lists this auto-Split; a veto reopens the decision card.", c.rounds),
 	})
 	return err
 }
@@ -285,9 +298,9 @@ func (h *Handler) capReviewHandoff(ctx context.Context, issue db.Issue, run db.A
 		return false, err
 	}
 	var capped roundsCap
-	// A plan issue that takes the auto-Split path needs its need_decision
+	// An issue that takes the auto-Split path needs its need_decision
 	// handler to run: the wakeup path has no verdict move that starts it.
-	startHandler := isPlanIssueTitle(issue.Title) && roundsAutoSplitEnabled(ctx, h.Queries, issue)
+	startHandler := roundsAutoSplitEnabled(ctx, h.Queries, issue)
 	moved, _, err := h.tryMoveIssueOnEdgeWritten(ctx, issue, statusNeedDecision, "review_rounds", nil, startHandler, func(ctx context.Context, q *db.Queries) (bool, error) {
 		var err error
 		capped, err = recordRoundsCapMarker(ctx, q, issue, run.AgentID, int(prior)+1)

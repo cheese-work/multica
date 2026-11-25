@@ -28,12 +28,19 @@ func TestRoundCap_MissingCardIsAnnouncedOnTheIssue(t *testing.T) {
 	}
 }
 
-// CHE-9483: a plan(...) issue that reaches the round limit gets no decision
-// card. The server records the auto-Split as an agent decision and tells the
-// need_decision handler to run the Split path; a non-plan issue keeps the card.
-func TestRoundCap_PlanIssueAutoSplitsWithoutCard(t *testing.T) {
+// CHE-9483, CHE-9511: an issue of any type that reaches the round limit gets no
+// decision card when the setting is on. The server records the auto-Split as an
+// agent decision and tells the need_decision handler to run the Split path.
+func TestRoundCap_AnyIssueTypeAutoSplitsWithoutCard(t *testing.T) {
 	enableRoundsAutoSplit(t, testWorkspaceID)
-	issueID := dbfx.Issue(t, "plan(WE006): split the workstream", testutil.Cols{})
+	for _, title := range []string{"plan(WE006): split the workstream", "fix(handler): split the fix", "task: split the task", "no type prefix"} {
+		t.Run(title, func(t *testing.T) { wantAutoSplitWithoutCard(t, title) })
+	}
+}
+
+func wantAutoSplitWithoutCard(t *testing.T, title string) {
+	t.Helper()
+	issueID := dbfx.Issue(t, title, testutil.Cols{})
 	issue, err := testHandler.Queries.GetIssue(t.Context(), parseUUID(issueID))
 	if err != nil {
 		t.Fatal(err)
@@ -82,16 +89,5 @@ func TestRoundCap_AutoSplitSettingValidation(t *testing.T) {
 	}
 	if err := validateRoundsAutoSplitSetting(map[string]any{}); err != nil {
 		t.Errorf("absent key: %v", err)
-	}
-}
-
-func TestRoundCap_IsPlanIssue(t *testing.T) {
-	for title, want := range map[string]bool{
-		"plan(WE006): x": true, "Plan(x): y": true, "plan: x": true, "  plan(x): y": true,
-		"feat(plan): x": false, "planning notes": false, "explan(x): y": false, "": false,
-	} {
-		if got := isPlanIssueTitle(title); got != want {
-			t.Errorf("isPlanIssueTitle(%q) = %v, want %v", title, got, want)
-		}
 	}
 }

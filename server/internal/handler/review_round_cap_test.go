@@ -337,12 +337,20 @@ func TestRoundCap_RoundsAreCountedPerPR(t *testing.T) {
 	}
 }
 
-// CHE-9483: on a plan(...) issue the capped entry opens no card and records the
-// auto-Split; the issue stays in need_decision for its handler to split.
-func TestRoundCap_PlanIssueCapOpensNoCard(t *testing.T) {
+// CHE-9483, CHE-9511: on an issue of any type the capped entry opens no card
+// and records the auto-Split; the issue stays in need_decision for its handler
+// to split.
+func TestRoundCap_CapOpensNoCardOnAnyIssueType(t *testing.T) {
 	enableRoundsAutoSplit(t, testWorkspaceID)
+	for _, title := range []string{"plan(WE006): round cap", "fix(handler): round cap", "task: round cap", "round cap"} {
+		t.Run(title, func(t *testing.T) { wantCapOpensNoCard(t, title) })
+	}
+}
+
+func wantCapOpensNoCard(t *testing.T, title string) {
+	t.Helper()
 	c := newRoundCap(t)
-	dbfx.Exec(t, `UPDATE issue SET title = 'plan(WE006): round cap' WHERE id = $1`, c.issueID)
+	dbfx.Exec(t, `UPDATE issue SET title = $2 WHERE id = $1`, c.issueID, title)
 	for _, ago := range []int{300, 200, 100} {
 		c.activity(t, "status_changed", "agent_review", ago)
 	}
@@ -357,6 +365,36 @@ func TestRoundCap_PlanIssueCapOpensNoCard(t *testing.T) {
 		t.Fatalf("auto-split rows = %d, want 1", n)
 	}
 	c.wantAutoSplitInMoveTx(t)
+}
+
+// failAutoSplit makes the auto-Split's activity write fail for one issue, so
+// the fallback to the decision card runs. The trigger is dropped at cleanup.
+func (c roundCap) failAutoSplit(t *testing.T) {
+	t.Helper()
+	name := "che9511_fail_" + strings.ReplaceAll(c.issueID, "-", "")
+	dbfx.Exec(t, `CREATE OR REPLACE FUNCTION `+name+`() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'che9511 test: auto-split write refused'; END $$`)
+	dbfx.Exec(t, `CREATE TRIGGER `+name+` BEFORE INSERT ON activity_log FOR EACH ROW WHEN (NEW.action = 'review_rounds_auto_split' AND NEW.issue_id = '`+c.issueID+`') EXECUTE FUNCTION `+name+`()`)
+	t.Cleanup(func() { dbfx.Exec(t, `DROP FUNCTION IF EXISTS `+name+`() CASCADE`) })
+}
+
+// CHE-9511: the auto-Split write fails. The move to need_decision still
+// commits and the card opens, as it did before the setting.
+func TestRoundCap_AutoSplitWriteFailsOpensCard(t *testing.T) {
+	enableRoundsAutoSplit(t, testWorkspaceID)
+	c := newRoundCap(t)
+	dbfx.Exec(t, `UPDATE issue SET title = 'fix(handler): write fails' WHERE id = $1`, c.issueID)
+	c.failAutoSplit(t)
+	for _, ago := range []int{300, 200, 100} {
+		c.activity(t, "status_changed", "agent_review", ago)
+	}
+	c.enterReview(t)
+	if got := c.status(t); got != "need_decision" {
+		t.Fatalf("status after the 4th entry = %q, want need_decision", got)
+	}
+	c.wantCard(t, 3)
+	if n := dbfx.Count(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_rounds_auto_split'`, c.issueID); n != 0 {
+		t.Fatalf("auto-split rows = %d, want 0", n)
+	}
 }
 
 // wantAutoSplitInMoveTx checks the ordering the need_decision handler relies
@@ -379,10 +417,10 @@ func (c roundCap) wantAutoSplitInMoveTx(t *testing.T) {
 
 // The reviewer's wakeup path (agent_review step 4b) records the decision in the
 // same transaction as the move too.
-func TestRoundCap_PlanIssueWakeupCapRecordsAutoSplitWithTheMove(t *testing.T) {
+func TestRoundCap_WakeupCapRecordsAutoSplitWithTheMoveOnFixIssue(t *testing.T) {
 	enableRoundsAutoSplit(t, testWorkspaceID)
 	c := newRoundCap(t)
-	dbfx.Exec(t, `UPDATE issue SET title = 'plan(WE006): round cap' WHERE id = $1`, c.issueID)
+	dbfx.Exec(t, `UPDATE issue SET title = 'fix(handler): round cap' WHERE id = $1`, c.issueID)
 	run := c.inReview(t)
 	author := otherReadyAgentID(t)
 	for round := 1; round <= 2; round++ {
@@ -398,10 +436,10 @@ func TestRoundCap_PlanIssueWakeupCapRecordsAutoSplitWithTheMove(t *testing.T) {
 	c.wantAutoSplitInMoveTx(t)
 }
 
-// With the setting off (the default) a plan issue keeps the card.
-func TestRoundCap_PlanIssueKeepsCardWhileSettingIsOff(t *testing.T) {
+// With the setting off (the default) an issue of any type keeps the card.
+func TestRoundCap_FixIssueKeepsCardWhileSettingIsOff(t *testing.T) {
 	c := newRoundCap(t)
-	dbfx.Exec(t, `UPDATE issue SET title = 'plan(WE006): round cap' WHERE id = $1`, c.issueID)
+	dbfx.Exec(t, `UPDATE issue SET title = 'fix(handler): round cap' WHERE id = $1`, c.issueID)
 	for _, ago := range []int{300, 200, 100} {
 		c.activity(t, "status_changed", "agent_review", ago)
 	}
