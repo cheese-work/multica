@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -139,7 +140,7 @@ func TestUnknownMemberRoleGrantsNoMembership(t *testing.T) {
 				Details:       []byte(`{}`),
 			})
 			if role == "guest" {
-				if err != pgx.ErrNoRows {
+				if !errors.Is(err, pgx.ErrNoRows) {
 					t.Errorf("guest inbox delivery: err %v, want pgx.ErrNoRows (quiet skip)", err)
 				}
 				continue
