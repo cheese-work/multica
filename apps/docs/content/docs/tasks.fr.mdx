@@ -96,6 +96,8 @@ Lorsqu'une tâche n'a aucune autre exécution active et aucune nouvelle relance 
 
 Multica refuse l'exécution d'un agent sur une tâche lorsque cet agent a déjà démarré 5 exécutions sur cette tâche au cours des 30 dernières minutes. L'exécution refusée est la 6e. La tâche passe à `blocked` avec le motif `loop-breaker: <agent> started N runs in 30 min`, et un commentaire système nomme l'agent et les types de déclencheur de ses dernières exécutions. Multica publie au plus un commentaire de ce type par tâche et par agent et par heure. Les exécutions des autres agents sur la tâche et les tâches de chat sans tâche associée ne sont pas comptées.
 
+Une exécution de revue d'une pull request qui attend dans la file d'étape de son propriétaire n'est pas abandonnée : la tâche reste dans son statut de revue au lieu de passer à `blocked`, le commentaire système indique que l'exécution est en file, et elle démarre d'elle-même dès que moins d'exécutions que la limite tombent dans la fenêtre.
+
 Définissez `MULTICA_LOOP_BREAKER_MAX_RUNS` (par défaut `6` ; `0` désactive le coupe-circuit) et `MULTICA_LOOP_BREAKER_WINDOW` (par défaut `30m`) sur le serveur pour modifier ces limites.
 
 ## Garde hebdomadaire des runs

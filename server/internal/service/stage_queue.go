@@ -25,6 +25,15 @@ func withStageTaint(ctx context.Context, taint []string) context.Context {
 	return context.WithValue(ctx, stageTaintKey{}, taint)
 }
 
+type stageReleaseKey struct{}
+
+// stageReleaseFrom reports a run the release job retries: a refusal it meets
+// again was already announced when the run was first refused.
+func stageReleaseFrom(ctx context.Context) bool {
+	v, _ := ctx.Value(stageReleaseKey{}).(bool)
+	return v
+}
+
 // WithTaint is withStageTaint for a caller outside the package: a hook that
 // resumes a refusal after a restart restores the taint it recorded.
 func WithTaint(ctx context.Context, taint []string) context.Context {
@@ -248,8 +257,11 @@ func releaseStageQueues(ctx context.Context, q *db.Queries, enqueue func(ctx con
 				errs = append(errs, fmt.Errorf("stage queue release %s: read refusal: %w", e.Ref, err))
 				continue
 			}
-			if err := enqueue(withStageTaint(ctx, w.TaintIds), issue, w.ActorUserID, w.TriggerCommentID); err != nil &&
-				!errors.Is(err, ErrDuplicatePendingTask) && !errors.Is(err, ErrStageQueueFull) {
+			// A loop-breaker refusal keeps the wait: the next tick retries once
+			// the breaker's window has cleared.
+			rctx := context.WithValue(withStageTaint(ctx, w.TaintIds), stageReleaseKey{}, true)
+			if err := enqueue(rctx, issue, w.ActorUserID, w.TriggerCommentID); err != nil &&
+				!errors.Is(err, ErrDuplicatePendingTask) && !errors.Is(err, ErrStageQueueFull) && !errors.Is(err, ErrLoopBreaker) {
 				errs = append(errs, fmt.Errorf("stage queue release %s: %w", e.Ref, err))
 			}
 		}
