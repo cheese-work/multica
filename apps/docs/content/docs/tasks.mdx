@@ -84,7 +84,7 @@ The execution log also totals the issue's **Spent**, **Tokens**, and **Agent tim
 
 ## Failures and automatic retries
 
-Transient faults — a runtime going briefly offline, a daemon restart, an execution timeout, or a network interruption in the AI coding tool — can trigger an automatic retry. A regular run executes at most twice by default; tool network interruptions get up to three attempts.
+Transient faults — a runtime going briefly offline, a daemon restart, an execution timeout, or a network interruption in the AI coding tool — can trigger an automatic retry. A regular run executes at most twice by default; tool network interruptions get up to three attempts. When the provider account rejects a run for exceeding its concurrency limit, the retries wait 2 minutes and then 10 minutes, and each retry is logged as a system comment on the issue.
 
 Errors returned by the agent itself are usually not retried automatically. Expired credentials, exhausted quota, misconfiguration, or a model unable to complete the request all need the cause fixed first, then a manual retry.
 
