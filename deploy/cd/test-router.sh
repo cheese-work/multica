@@ -55,6 +55,24 @@ docker run -d --name "$router_container" \
   -v "$privacy_config:/etc/nginx/nginx.conf:ro" \
   nginx:1.27-alpine >/dev/null
 
+expect_request_body_status() {
+  local port=$1 path=$2 length=$3 expected=$4 status_line
+  status_line="$(printf 'POST %s HTTP/1.1\r\nHost: localhost\r\nExpect: 100-continue\r\nContent-Length: %s\r\n\r\n' "$path" "$length" |
+    docker exec -i "$router_container" sh -c 'timeout 3 nc 127.0.0.1 "$1" | head -n 1' sh "$port")"
+  if [[ "$status_line" != "HTTP/1.1 $expected "* ]]; then
+    echo "nginx on $port: POST $path with Content-Length $length returned '$status_line', expected $expected" >&2
+    exit 1
+  fi
+}
+
+upload_body_limit=$((101 * 1024 * 1024))
+for port in 8081 3000; do
+  expect_request_body_status "$port" /api/upload-file "$upload_body_limit" 100
+  expect_request_body_status "$port" /api/upload-file "$((upload_body_limit + 1))" 413
+  expect_request_body_status "$port" /api/other "$((1024 * 1024 + 1))" 413
+done
+echo "nginx attachment body limit fixture passed"
+
 nginx_request() {
   local port=$1 path=$2 query=$3 referrer=$4 output
   output="$(docker exec "$router_container" wget -S -O /dev/null \
