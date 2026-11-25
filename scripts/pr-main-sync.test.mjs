@@ -183,6 +183,28 @@ test("a rate-limit 403 mid-run ends the run without failing and without touching
   assert.deepEqual(f.log.updates, []);
 });
 
+// CHE-9801: the PR list itself can hit the rate limit (before the loop); that must not fail the job, other errors still do.
+test("a rate-limit 403 while listing PRs ends the run without failing; other list errors still throw", async () => {
+  const f = fakes({ prs: [pr(1)] });
+  f.gh.openPrs = async () => {
+    throw new Error("gh api --paginate failed: gh: API rate limit exceeded for installation ID 1 (HTTP 403)");
+  };
+  await run(f); // must not throw
+  assert.deepEqual(f.log.updates, []);
+  f.gh.openPrs = async () => {
+    throw new Error("boom");
+  };
+  await assert.rejects(run(f), /boom/);
+});
+
+test("update-branch outcomes: a stacked-PR 403 is a skip, an unknown error stays a failure", async () => {
+  const { updateOutcome } = await load();
+  assert.equal(updateOutcome("gh: Updating a stacked PR's branch via this endpoint is not supported. (HTTP 403)"), "stacked");
+  assert.equal(updateOutcome("merge conflict between base and head"), "conflict");
+  assert.equal(updateOutcome("expected head sha didn't match"), "moved");
+  assert.equal(updateOutcome("HTTP 500"), null);
+});
+
 // Review of PR #1768: no bypass. Without a usable multica CLI and token the run fails closed, dry run included.
 test("fail closed: no multica token or no CLI stops the run before any PR is read", async () => {
   const { requireMultica } = await load();

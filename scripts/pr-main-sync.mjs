@@ -31,11 +31,18 @@ const rateLimited = (e) => /rate limit/i.test(e.message);
 
 export async function syncPrs({ gh, multica, repo, base, only, print = console.log }) {
   const failures = [];
-  const prs = (await gh.openPrs()).filter((p) => !only || only.includes(p.number));
-  if (gh.remaining) {
-    const need = prs.filter((p) => !p.draft).length * 2 + 50;
-    const left = await gh.remaining();
-    if (left < need) return print(`skipped: low API budget (${left} left, need ${need})`);
+  let prs;
+  try {
+    prs = (await gh.openPrs()).filter((p) => !only || only.includes(p.number));
+    if (gh.remaining) {
+      const need = prs.filter((p) => !p.draft).length * 2 + 50;
+      const left = await gh.remaining();
+      if (left < need) return print(`skipped: low API budget (${left} left, need ${need})`);
+    }
+  } catch (e) {
+    // The budget can already be spent when the PR list is read (CHE-9801): same outcome as a mid-run hit.
+    if (rateLimited(e)) return print(`stopped, API rate limit hit before any PR was read; the next main push retries`);
+    throw e;
   }
   for (const pr of prs) {
     try {
@@ -88,6 +95,10 @@ export const requireMultica = (env = process.env, probe = () => spawnSync("multi
   if (probe().error) throw new Error("multica CLI not found on PATH: the active-run check and conflict tasks need it");
 };
 
+// update-branch error text -> outcome; null = a real failure. GitHub refuses stacked PRs (another PR's base) with a 403 (CHE-9801): the stack owner merges them top-down, so skip.
+export const updateOutcome = (err) =>
+  /merge conflict/i.test(err) ? "conflict" : /expected head sha|head ref/i.test(err) ? "moved" : /stacked PR/i.test(err) ? "stacked" : null;
+
 export const taskTitle = (n) => `main-sync conflict: PR #${n}`;
 
 export const ghFor = (repo, base, dryRun) => ({
@@ -109,8 +120,8 @@ export const ghFor = (repo, base, dryRun) => ({
     }
     const r = run("gh", ["api", "-X", "PUT", `repos/${repo}/pulls/${number}/update-branch`, "-f", `expected_head_sha=${expectedHeadSha}`]);
     if (r.ok) return "merged";
-    if (/merge conflict/i.test(r.err)) return "conflict";
-    if (/expected head sha|head ref/i.test(r.err)) return "moved";
+    const outcome = updateOutcome(r.err);
+    if (outcome) return outcome;
     throw new Error(`update-branch PR #${number} failed: ${r.err}`);
   },
 });
