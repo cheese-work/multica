@@ -40,6 +40,9 @@ func newObserverHold(test *testing.T) observerHold {
 	projectID := createWorkflowTestProject(test, "CHE-9484 observer hold "+workflowTestSuffix())
 	setProjectWorkflow(test, projectID, map[string]any{"workflow_id": workflow.ID}).Want(http.StatusOK)
 	dbfx.Exec(test, `UPDATE issue SET project_id = $1 WHERE id = $2`, projectID, fixture.issueID)
+	// The wakeup API attributes a rule to the human behind the running task, so
+	// A's task carries one, as every task started for a member does.
+	dbfx.Exec(test, `UPDATE agent_task_queue SET originator_user_id = $1, accountable_user_id = $1, originator_source = 'trigger_owner' WHERE id = $2`, fixture.humanID, fixture.taskID)
 	dbfx.Cleanup(test, `DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id = $1)`, fixture.issueID)
 	dbfx.Cleanup(test, `DELETE FROM issue_wakeup WHERE issue_id = $1`, fixture.issueID)
 	dbfx.Cleanup(test, `DELETE FROM agent_task_queue WHERE issue_id = $1`, fixture.issueID)
