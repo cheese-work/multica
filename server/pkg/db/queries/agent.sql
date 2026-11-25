@@ -824,6 +824,18 @@ SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
 WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
 
+-- name: CancelIssueAgentTasks :many
+-- Cancels the active tasks of one issue after an issue update on an inactive
+-- project. Same status set and keep_running rule as CancelProjectAgentTasks:
+-- a pause drains, so its running run lives on; cancelled and completed stop it.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL,
+    cancelled_by_type = 'system', cancelled_by_id = NULL, cancelled_by_name = NULL
+WHERE issue_id = sqlc.arg(issue_id)
+  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+  AND NOT (sqlc.arg(keep_running)::bool AND status = 'running')
+RETURNING *;
+
 -- name: CancelPendingTasksByIssueAndAgent :many
 -- Cancels the not-yet-started tasks for a single (issue, agent) pair, so the
 -- manual rerun flow can enqueue a replacement without colliding with

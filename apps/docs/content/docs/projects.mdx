@@ -116,7 +116,7 @@ A project that is `paused`, `cancelled`, or `completed` starts no new agent runs
 
 | Status | Queued runs | Running runs | Agent edits and comments on its issues |
 |---|---|---|---|
-| `paused` | Cancelled | Run to their end | Allowed for a run that is still running on an issue of this project |
+| `paused` | Cancelled | Run to their end, also after an edit or move of their issue | Allowed for a run that is still running on an issue of this project |
 | `cancelled` | Cancelled | Cancelled at once | Refused with `project_inactive` |
 | `completed` | Cancelled | Cancelled at once | Refused with `project_inactive` |
 

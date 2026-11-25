@@ -116,7 +116,7 @@ Un projet `paused`, `cancelled` ou `completed` ne démarre aucune nouvelle exéc
 
 | Statut | Exécutions en file d'attente | Exécutions en cours | Modifications et commentaires d'un agent sur ses tâches |
 |---|---|---|---|
-| `paused` | Annulées | Vont jusqu'à leur fin | Autorisés pour une exécution encore en cours sur une tâche de ce projet |
+| `paused` | Annulées | Vont jusqu'à leur fin, même après une modification ou un déplacement de leur tâche | Autorisés pour une exécution encore en cours sur une tâche de ce projet |
 | `cancelled` | Annulées | Annulées immédiatement | Refusés avec `project_inactive` |
 | `completed` | Annulées | Annulées immédiatement | Refusés avec `project_inactive` |
 

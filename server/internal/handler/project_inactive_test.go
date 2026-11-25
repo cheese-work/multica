@@ -184,8 +184,16 @@ func TestInactiveProjectMoveCancelsRuns(test *testing.T) {
 				} else {
 					testutil.Call(test, testHandler.UpdateIssue, withURLParam(newRequest(http.MethodPut, "/api/issues/"+issueID, body), "id", issueID)).Want(http.StatusOK)
 				}
-				if count := dbfx.Count(test, "SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status <> 'cancelled'", issueID); count != 0 {
-					test.Errorf("moving into %s left %d active runs", status, count)
+				// A pause drains: only the running run survives a move into it.
+				wantLive := 0
+				if status == "paused" {
+					wantLive = 1
+				}
+				if count := dbfx.Count(test, "SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status <> 'cancelled'", issueID); count != wantLive {
+					test.Errorf("moving into %s left %d active runs, want %d", status, count, wantLive)
+				}
+				if status == "paused" && dbfx.Count(test, "SELECT count(*) FROM agent_task_queue WHERE issue_id=$1 AND status='running'", issueID) != 1 {
+					test.Error("moving into paused cancelled the running run")
 				}
 			})
 		}
