@@ -63,9 +63,19 @@ func (h *Handler) RequestWorkflowSwitch(ctx context.Context, workspaceID, issueI
 
 // deferredSwitchRefusal is a switch the target workflow cannot take: the issue
 // is blocked with the reason, instead of retrying on every later event.
+//
+// It names the request and the issue state it was made for (CHE-9721): the
+// apply rolls back and releases its locks before the refusal settles, so a
+// newer request or a move of the issue can land in between. Settlement acts
+// only while both still hold.
 type deferredSwitchRefusal struct {
 	target pgtype.UUID
 	cause  error
+	// requestedAt is the pending row's created_at, set again by every upsert.
+	requestedAt pgtype.Timestamptz
+	// issueStatus and issueWorkflow are the issue's state at the refusal.
+	issueStatus   string
+	issueWorkflow pgtype.UUID
 }
 
 func (e *deferredSwitchRefusal) Error() string {
@@ -191,7 +201,12 @@ func (h *Handler) applyDeferredWorkflowSwitch(ctx context.Context, issueID pgtyp
 	if err != nil {
 		return err
 	}
-	refuse := func(cause error) error { return &deferredSwitchRefusal{target: row.WorkflowID, cause: cause} }
+	refuse := func(cause error) error {
+		return &deferredSwitchRefusal{
+			target: row.WorkflowID, cause: cause, requestedAt: row.CreatedAt,
+			issueStatus: issue.Status, issueWorkflow: issue.WorkflowID,
+		}
+	}
 
 	def, _, err := issueworkflow.ForIssue(ctx, qtx, issue.WorkspaceID, row.WorkflowID, issue.ProjectID)
 	if isWorkflowRefusal(err) {
@@ -302,11 +317,17 @@ func (h *Handler) settleDeferredSwitchRefusal(ctx context.Context, issueID pgtyp
 	}
 	defer lk.close(ctx)
 	qtx, issue := lk.qtx, lk.issue
-	// The apply rolled back with the row. A concurrent settle may have consumed
-	// it since; settling twice would comment twice.
-	pending, err := qtx.HasIssueWorkflowSwitchPending(ctx, issueID)
+	// The apply rolled back with the row and released its locks. A concurrent
+	// settle may have consumed it since (settling twice would comment twice), a
+	// newer request may have replaced it, and the issue may have moved. A
+	// refusal never settles another request or another state of the issue.
+	pending, err := qtx.HasIssueWorkflowSwitchPendingRequest(ctx, db.HasIssueWorkflowSwitchPendingRequestParams{IssueID: issueID, CreatedAt: refusal.requestedAt})
 	if err != nil || !pending {
 		return err
+	}
+	if issue.Status != refusal.issueStatus || issue.WorkflowID != refusal.issueWorkflow {
+		slog.Info("deferred workflow switch: issue changed since the refusal, row kept for the next event", "issue_id", uuidToString(issueID))
+		return nil
 	}
 	reason := refusal.Error()
 	blocked, finished := issue.Status == issuestatus.Blocked, h.onQueries(qtx).deferredSwitchFinished(ctx, issue)
@@ -335,7 +356,7 @@ func (h *Handler) settleDeferredSwitchRefusal(ctx context.Context, issueID pgtyp
 		}
 	}
 	if blocked || finished {
-		if _, err := qtx.DeleteIssueWorkflowSwitchPending(ctx, issueID); err != nil {
+		if _, err := qtx.DeleteIssueWorkflowSwitchPendingRequest(ctx, db.DeleteIssueWorkflowSwitchPendingRequestParams{IssueID: issueID, CreatedAt: refusal.requestedAt}); err != nil {
 			return err
 		}
 	} else if recordedBlockedReason(issue.Metadata) == reason {

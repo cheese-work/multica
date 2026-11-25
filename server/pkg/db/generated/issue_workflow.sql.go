@@ -303,6 +303,33 @@ func (q *Queries) DeleteIssueWorkflowSwitchPending(ctx context.Context, issueID 
 	return i, err
 }
 
+const deleteIssueWorkflowSwitchPendingRequest = `-- name: DeleteIssueWorkflowSwitchPendingRequest :one
+DELETE FROM issue_workflow_switch_pending
+WHERE issue_id = $1::uuid AND created_at = $2::timestamptz
+RETURNING issue_id, workspace_id, workflow_id, reason, created_at
+`
+
+type DeleteIssueWorkflowSwitchPendingRequestParams struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// Consumes one request, not the issue's row: created_at is set again on every
+// upsert, so it names the request a refusal was made for. No row means a newer
+// request replaced it or another event settled it; the caller writes nothing.
+func (q *Queries) DeleteIssueWorkflowSwitchPendingRequest(ctx context.Context, arg DeleteIssueWorkflowSwitchPendingRequestParams) (IssueWorkflowSwitchPending, error) {
+	row := q.db.QueryRow(ctx, deleteIssueWorkflowSwitchPendingRequest, arg.IssueID, arg.CreatedAt)
+	var i IssueWorkflowSwitchPending
+	err := row.Scan(
+		&i.IssueID,
+		&i.WorkspaceID,
+		&i.WorkflowID,
+		&i.Reason,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const deleteIssueWorkflowsForWorkspace = `-- name: DeleteIssueWorkflowsForWorkspace :exec
 DELETE FROM issue_workflow WHERE workspace_id = $1::uuid
 `
@@ -426,6 +453,25 @@ SELECT EXISTS (SELECT 1 FROM issue_workflow_switch_pending WHERE issue_id = $1::
 
 func (q *Queries) HasIssueWorkflowSwitchPending(ctx context.Context, issueID pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, hasIssueWorkflowSwitchPending, issueID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const hasIssueWorkflowSwitchPendingRequest = `-- name: HasIssueWorkflowSwitchPendingRequest :one
+SELECT EXISTS (
+  SELECT 1 FROM issue_workflow_switch_pending
+  WHERE issue_id = $1::uuid AND created_at = $2::timestamptz
+)
+`
+
+type HasIssueWorkflowSwitchPendingRequestParams struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) HasIssueWorkflowSwitchPendingRequest(ctx context.Context, arg HasIssueWorkflowSwitchPendingRequestParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasIssueWorkflowSwitchPendingRequest, arg.IssueID, arg.CreatedAt)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
