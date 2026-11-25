@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useCanonicalIssue } from "@multica/core/issues/canonical-id";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -8,10 +8,11 @@ import { useMarkMentionsReadOnOpen } from "@multica/core/inbox";
 import { issueTasksOptions } from "@multica/core/issues/queries";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
+import { useInboxSelectionStore } from "@multica/core/inbox/selection-store";
 import { useNavigation } from "../../navigation";
 import { DecisionActionPanel } from "./decision-action-panel";
 import { TranscriptButton } from "../../common/task-transcript";
-import { IssueDetail, IssueDetailSkeleton, IssueNotFound } from "./issue-detail";
+import { IssueDetail, IssueDetailSkeleton, IssueLoadError, IssueNotFound } from "./issue-detail";
 import { IssuePeekHost } from "./issue-peek";
 
 interface IssueDetailRouteProps {
@@ -22,6 +23,11 @@ interface IssueDetailRouteProps {
    */
   routeId: string;
   onDelete?: () => void;
+  /**
+   * The decoded file name of a `/{ws}/issues/{segment}/deliverables/{name}`
+   * link: open the newest version of that deliverable.
+   */
+  deliverable?: string;
 }
 
 /**
@@ -35,11 +41,16 @@ export function useCanonicalIssueUrl(
   routeId: string,
   identifier: string | undefined,
   hash = "",
+  deliverable?: string,
   search = "",
 ) {
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
-  const canonicalHref = identifier ? `${paths.issueDetail(identifier)}${search}${hash}` : null;
+  // A deliverable link keeps its `/deliverables/{name}` tail: dropping it
+  // would turn the address into a plain issue link while the file is open.
+  const canonicalHref = identifier
+    ? `${deliverable ? paths.issueDeliverable(identifier, deliverable) : paths.issueDetail(identifier)}${search}${hash}`
+    : null;
   // `useWorkspacePaths()` and the navigation adapter are both rebuilt on
   // render, so this ref — not the dependency array — is what guarantees the
   // replace runs once per target instead of on every commit.
@@ -58,10 +69,16 @@ export function parseCommentHighlightHash(hash: string): string | undefined {
   return match?.[1];
 }
 
-function useCommentHighlightHash(): { hash: string; commentId?: string } {
+/** `#app-request-<id>`: an app's confirmation request on the issue, as a notification links it. */
+export function parseAppRequestHighlightHash(hash: string): string | undefined {
+  const match = /^#app-request-([A-Za-z0-9_-]+)$/.exec(hash);
+  return match?.[1];
+}
+
+function useHighlightHash(): { hash: string; commentId?: string; appRequestId?: string } {
   const { hash } = useNavigation();
 
-  return { hash, commentId: parseCommentHighlightHash(hash) };
+  return { hash, commentId: parseCommentHighlightHash(hash), appRequestId: parseAppRequestHighlightHash(hash) };
 }
 
 /**
@@ -103,12 +120,18 @@ function RequestedRun({ issueId, runId, path }: { issueId: string; runId: string
  *    the route and only the route — the inbox renders `IssueDetail` in a side
  *    panel, where replacing the URL would navigate the user out of the inbox.
  */
-export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
+export function IssueDetailRoute({ routeId, onDelete, deliverable }: IssueDetailRouteProps) {
   const wsId = useWorkspaceId();
-  const { canonicalId, issue, isResolving, notFound, loadError, dataError, retry, authoritative } = useCanonicalIssue(wsId, routeId);
-  const highlight = useCommentHighlightHash();
-  const { searchParams } = useNavigation();
+  const {
+    canonicalId, issue, isResolving, notFound, loadFailed, isRetrying, retry, authoritative, hasLoaded,
+  } = useCanonicalIssue(wsId, routeId);
+  const highlight = useHighlightHash();
+  const landingToken = useInboxSelectionStore((s) =>
+    s.landing && s.landing.issueId === canonicalId ? s.landing.token : 0,
+  );
   const paths = useWorkspacePaths();
+  const navigation = useNavigation();
+  const { searchParams } = navigation;
   const runId = searchParams.get("run");
   // The approve URL a run-budget request prints names the action to approve.
   const approveId = searchParams.get("approve");
@@ -116,16 +139,34 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
   if (runId) keep.set("run", runId);
   if (approveId) keep.set("approve", approveId);
 
-  useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash, keep.size ? `?${keep.toString()}` : "");
+  useCanonicalIssueUrl(routeId, issue?.identifier, highlight.hash, deliverable, keep.size ? `?${keep.toString()}` : "");
   useMarkMentionsReadOnOpen(canonicalId);
+  // A UUID or differently-cased address is about to be rewritten, which mounts
+  // a new page (a new route segment on web). Landing here would scroll a page
+  // that is about to go, and record the landing as done for the next one.
+  const landsHere = routeId === issue?.identifier;
 
-  if (isResolving) return <IssueDetailSkeleton />;
+  // Once the link has opened its file and the viewer has closed (or the file
+  // is missing), the address becomes the plain issue page. A replace: Back
+  // should leave the issue, not re-open the file.
+  const issueRef = issue?.identifier ?? routeId;
+  const latestNav = useRef({ paths, navigation });
+  latestNav.current = { paths, navigation };
+  const onDeliverableLinkDone = useCallback(() => {
+    const { paths, navigation } = latestNav.current;
+    navigation.replace(paths.issueDetail(issueRef));
+  }, [issueRef]);
+
+  if (loadFailed) {
+    return <IssueLoadError showBackLink={!onDelete} onRetry={retry} isRetrying={isRetrying} />;
+  }
+
+  if (isResolving || (!issue && !notFound)) return <IssueDetailSkeleton />;
 
   // Render not-found here rather than handing the unresolved segment down.
   // `IssueDetail` would mount a second observer on the query that just failed,
   // refetch it, and restart this component's resolve/remount cycle — an
   // unbounded request loop that never settles. See `CanonicalIssue.notFound`.
-  if (loadError) return <IssueNotFound showBackLink={!onDelete} onRetry={retry} dataError={dataError} issueKey={routeId} />;
   if (notFound || !canonicalId) return <IssueNotFound showBackLink={!onDelete} />;
 
   // The page hosts a side peek so Shift+Click on an issue mention in the
@@ -135,9 +176,14 @@ export function IssueDetailRoute({ routeId, onDelete }: IssueDetailRouteProps) {
     <IssuePeekHost key={canonicalId}>
       <IssueDetail
         issueId={canonicalId}
+        skipInitialRefetch={hasLoaded}
         onDelete={onDelete}
-        highlightCommentId={highlight.commentId}
+        highlightCommentId={landsHere ? highlight.commentId : undefined}
+        highlightAppRequestId={landsHere ? highlight.appRequestId : undefined}
+        highlightRequestToken={landingToken}
         authoritative={authoritative}
+        openDeliverable={deliverable}
+        onDeliverableLinkDone={deliverable ? onDeliverableLinkDone : undefined}
       />
       {approveId && <DecisionActionPanel key={approveId} actionId={approveId} issueId={canonicalId} issueLabel={issue?.identifier ?? routeId} />}
       {runId && <RequestedRun key={runId} issueId={canonicalId} runId={runId} path={`${paths.issueDetail(issue?.identifier ?? routeId)}${highlight.hash}`} />}

@@ -58,7 +58,7 @@ const issue = {
 function renderRow() {
   return render(
     <NavigationProvider value={navigation}>
-      <ListRow issue={issue} />
+      <ListRow issue={issue} parity="even" />
     </NavigationProvider>,
   );
 }

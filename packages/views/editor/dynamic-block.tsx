@@ -339,7 +339,7 @@ function CollapsibleBody({
             type="button"
             variant="outline"
             size="sm"
-            className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-surface shadow-[var(--surface-shadow)]"
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-surface shadow-[var(--surface-shadow)]"
             onClick={onExpand}
           >
             <ChevronDown />
@@ -396,7 +396,7 @@ function SelfCollapsingBody({ children }: { children: ReactNode }) {
             type="button"
             variant="outline"
             size="sm"
-            className="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full bg-surface shadow-[var(--surface-shadow)]"
+            className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-surface shadow-[var(--surface-shadow)]"
             onClick={() => setExpanded(true)}
           >
             <ChevronDown />

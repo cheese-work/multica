@@ -1,0 +1,3 @@
+{"type": "user", "timestamp": "2026-11-01T00:00:00Z", "message": {"content": "start"}}
+{"type": "assistant", "timestamp": "2026-11-14T10:00:00Z", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "echo \"abc  $SKILL_DIR/scripts/mwg.sh\" | sha256sum -c --status && sh \"$SKILL_DIR/scripts/mwg.sh\" search \"focus order\""}}]}}
+{"type": "result", "sessionId": "sD2"}

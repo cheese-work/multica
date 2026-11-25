@@ -7,7 +7,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { useSyncExternalStore } from "react";
 import type { Agent } from "@multica/core/types";
 import { useChatStore } from "@multica/core/chat";
-import { useSearchStore } from "../search/search-store";
+import { useSearchStore } from "@multica/core/command-bar";
 import { chatKeys } from "@multica/core/chat/queries";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -101,6 +101,12 @@ vi.mock("./components/offline-banner", () => ({
 }));
 vi.mock("./components/no-agent-banner", () => ({
   NoAgentBanner: () => null,
+}));
+vi.mock("../common/app-requests", () => ({
+  ChatAppRequests: () => null,
+}));
+vi.mock("../common/app-requests", () => ({
+  ChatAppRequests: () => null,
 }));
 vi.mock("./components/archived-agent-banner", () => ({
   ArchivedAgentBanner: () => null,

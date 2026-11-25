@@ -4,6 +4,8 @@ import { Suspense } from "react";
 import { DashboardLayout } from "@multica/views/layout";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { FloatingChat } from "@multica/views/chat/floating-chat";
+import { StarPrompt } from "@multica/views/star-prompt";
+import { WhatsNewDeck } from "@multica/views/whats-new";
 import { WebNotificationBridge } from "@/components/web-notification-bridge";
 import { WorkspaceDocumentTitle } from "@/platform/workspace-document-title";
 import { WorkspaceSearchCommand } from "@/components/workspace-search-command";
@@ -26,6 +28,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </Suspense>
             <WebNotificationBridge />
             <FloatingChat />
+            <StarPrompt />
+            <WhatsNewDeck />
           </>
         }
       >

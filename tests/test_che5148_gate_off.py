@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 
 WF = Path(__file__).resolve().parents[1] / ".github/workflows"
-FILES = ["security-gate.yml", "security-gate-queue.yml", "security-gate-sweep.yml"]
+FILES = ["security-gate.yml", "security-gate-sweep.yml"]
 DESC = "security gate off (CHE-5126)"
 
 
@@ -55,8 +55,13 @@ class GateOff(unittest.TestCase):
     def test_gate_job_name_is_stable(self):
         jobs = load("security-gate.yml")["jobs"]
         self.assertEqual(jobs["security-gate"]["name"], "security-gate-eval")
-        self.assertEqual(jobs["queue-handoff"]["name"], "queue-handoff")
         self.assertIn("mechanical-tier", jobs)
+
+    def test_the_always_skipped_queue_workflow_is_gone(self):
+        # CHE-9846: security-gate-queue.yml (and the queue-handoff job that fed it) ran 27 of 27 skipped while the gate is off.
+        # The security-gate job posts the queue status itself; a revert of the CHE-9846 PR brings the queue path back.
+        self.assertFalse((WF / "security-gate-queue.yml").exists())
+        self.assertNotIn("queue-handoff", load("security-gate.yml")["jobs"])
 
     def test_ci_policy_still_lists_security_gate(self):
         text = (WF.parent / "ci-policy.yml").read_text()

@@ -18,16 +18,29 @@ var (
 	markdownMarks = regexp.MustCompile("[#*`>~_]")
 	markdownLink  = regexp.MustCompile(`!?\[([^\]]*)\]\([^)]*\)`)
 	titleSpace    = regexp.MustCompile(`[[:space:]]+`)
+	// A line of nothing but mention links, such as the page a message was
+	// sent from, which clients put ahead of what the user wrote.
+	mentionsOnly = regexp.MustCompile(`^(?:\[(?:\\.|[^\]\\])*\]\(mention://[^)]*\)\s*)+$`)
 )
 
-// Derive is the deterministic DM title: first non-empty line, Markdown and
-// whitespace cleaned, at most 80 Unicode code points, cut at a word boundary
-// when that keeps at least 2/3 of the limit (else a hard cut). It never adds an ellipsis; the UI truncates at the container
-// edge. Twin: deriveChatTitle in packages/core/chat/title.ts.
+// Derive is the single deterministic title policy for a Chat's first message,
+// shared by first-party clients (which create sessions untitled) and channels:
+// first non-empty line that is not only mentions (or the first non-empty line
+// when every line is), Markdown and whitespace cleaned, at most 80 Unicode code
+// points, cut at a word boundary when that keeps at least 2/3 of the limit
+// (else a hard cut). It never adds an ellipsis; the UI truncates at the
+// container edge. Twin: deriveChatTitle in packages/core/chat/title.ts.
 func Derive(body string) string {
 	line := ""
 	for _, candidate := range strings.Split(body, "\n") {
-		if strings.TrimSpace(candidate) != "" {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" {
+			continue
+		}
+		if line == "" {
+			line = candidate
+		}
+		if !mentionsOnly.MatchString(trimmed) {
 			line = candidate
 			break
 		}
