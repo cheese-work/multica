@@ -404,3 +404,48 @@ func TestHeldRetryReleasesWithoutPreexistingBreaker(t *testing.T) {
 		}
 	})
 }
+
+// CHE-9722: a run whose first start fails with a 429 starts again with no
+// manual wakeup. The failure leaves a held retry; the release tick frees it,
+// the promotion tick makes it dispatchable, and the next claim after the
+// 429 cooldown starts it.
+func TestRateLimitedFirstStartIsRetriedAndStarts(t *testing.T) {
+	const reason = "agent_error.provider_capacity_or_rate_limit"
+	o := newOwnerFixture(t)
+	ctx := context.Background()
+	if _, err := o.Pool.Exec(ctx, `UPDATE agent SET model='gpt-5.5' WHERE id=$1`, o.agentID); err != nil {
+		t.Fatal(err)
+	}
+	failedID := o.runningTask(t, nil)
+	if s := o.failWith(t, failedID, reason); s.children != 1 {
+		t.Fatalf("children=%d, want one held retry", s.children)
+	}
+	var childID, runtimeID, provider string
+	if err := o.Pool.QueryRow(ctx, `
+		SELECT id::text, runtime_id::text, context->'provider_hold'->>'provider'
+		FROM agent_task_queue WHERE retry_of_task_id=$1 OR parent_task_id=$1`, failedID).Scan(&childID, &runtimeID, &provider); err != nil {
+		t.Fatal(err)
+	}
+	o.Cleanup(t, `DELETE FROM provider_breaker WHERE workspace_id=$1 AND provider=$2`, o.WorkspaceID, provider)
+	o.Exec(t, `UPDATE agent_runtime SET status='online', last_seen_at=now() WHERE id=$1`, runtimeID)
+
+	// The 429 cooldown passes: the failure is old enough and the retry is due.
+	o.Exec(t, `UPDATE agent_task_queue SET completed_at = now() - interval '11 minutes' WHERE id=$1`, failedID)
+	o.Exec(t, `UPDATE agent_task_queue SET fire_at = now() - interval '1 minute' WHERE id=$1`, childID)
+
+	if err := o.svc.TaskSvc.ReleaseProviderHeldTasks(ctx, time.Now()); err != nil {
+		t.Fatalf("release tick: %v", err)
+	}
+	if _, err := o.q.PromoteDueDeferredTasksForRuntime(ctx, db.PromoteDueDeferredTasksForRuntimeParams{
+		RuntimeID: parseTestUUID(t, runtimeID), RuntimeStaleSecs: 3600,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := o.svc.TaskSvc.ClaimTask(ctx, parseTestUUID(t, o.agentID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || util.UUIDToString(got.ID) != childID {
+		t.Fatalf("claim after the 429 retry = %v, want the retry %s to start", got, childID)
+	}
+}

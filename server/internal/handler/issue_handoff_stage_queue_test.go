@@ -3,7 +3,9 @@ package handler
 import (
 	"net/http"
 	"testing"
+	"time"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -131,5 +133,63 @@ func TestRefusedReviewHandoffStartsWhenSlotFrees(t *testing.T) {
 	}
 	if n := taskCount(t, issueID); n != 1 {
 		t.Fatalf("tasks after a slot frees = %d, want 1: the refused handoff must start without a manual wakeup", n)
+	}
+}
+
+// CHE-9722: a review handoff the loop breaker refuses is queued, not blocked.
+// The issue stays in agent_review with a notice on it, and the run starts on
+// its own once the breaker's window clears. While the window is still full the
+// release tick starts nothing and posts no second notice.
+func TestLoopBreakerRefusedReviewHandoffIsQueuedAndRetried(t *testing.T) {
+	seedTestCatalog(t)
+	t.Setenv("MULTICA_LOOP_BREAKER_MAX_RUNS", "6")
+	agentID := seededReadyAgentID(t)
+	issueID := reviewHandoffIssue(t, agentID)
+	for i := 0; i < 5; i++ {
+		at := time.Now().Add(-10 * time.Minute).Add(time.Duration(i) * time.Second)
+		dbfx.Task(t, agentID, testutil.Cols{
+			"issue_id": issueID, "status": "completed", "created_at": at, "started_at": at, "completed_at": at,
+			"trigger_evidence_kind": "comment",
+		})
+	}
+	before := taskCount(t, issueID)
+
+	testutil.Call(t, testHandler.MoveIssue, moveStatus(issueID, "agent_review")).Want(http.StatusOK)
+	service.WaitRunBudgetHooks()
+
+	if got := taskCount(t, issueID); got != before {
+		t.Fatalf("tasks = %d, want %d: the breaker refuses the run", got, before)
+	}
+	var status string
+	dbfx.QueryRow(t, `SELECT status FROM issue WHERE id = $1`, issueID).Scan(&status)
+	if status != "agent_review" {
+		t.Fatalf("issue is %s, want agent_review: a queued review run must not block the issue", status)
+	}
+	notices := func() int {
+		return dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id=$1 AND author_type='system' AND content LIKE '%Loop breaker%queued%'`, issueID)
+	}
+	if n := notices(); n != 1 {
+		t.Fatalf("loop-breaker notices = %d, want 1 on the issue", n)
+	}
+
+	// Window still full: the release tick retries quietly and starts nothing.
+	if err := testHandler.TaskService.ReleaseStageQueues(t.Context()); err != nil {
+		t.Fatalf("release (window full): %v", err)
+	}
+	service.WaitRunBudgetHooks()
+	if got := taskCount(t, issueID); got != before {
+		t.Fatalf("tasks while the window is full = %d, want %d", got, before)
+	}
+	if n := notices(); n != 1 {
+		t.Fatalf("loop-breaker notices after a retry = %d, want still 1", n)
+	}
+
+	// The window clears: the next tick starts the run, with no manual wakeup.
+	dbfx.Exec(t, `UPDATE agent_task_queue SET created_at = now() - interval '2 hours' WHERE issue_id = $1`, issueID)
+	if err := testHandler.TaskService.ReleaseStageQueues(t.Context()); err != nil {
+		t.Fatalf("release (window clear): %v", err)
+	}
+	if got := taskCount(t, issueID); got != before+1 {
+		t.Fatalf("tasks after the window clears = %d, want %d", got, before+1)
 	}
 }
