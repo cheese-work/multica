@@ -3373,6 +3373,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// cached prompt prefix (MUL-5377 seam). Best-effort — see
 		// loadIssueCheckpointBlock's doc comment for the degrade path.
 		resp.CheckpointBlock = h.loadIssueCheckpointBlock(r.Context(), issue, task.AgentID)
+		if pointer := h.timeoutRetryPointer(r.Context(), *task); pointer != "" {
+			resp.CheckpointBlock = strings.TrimSpace(pointer + "\n\n" + resp.CheckpointBlock)
+		}
 
 		// Squad-leader briefing injection: keyed off the task being a
 		// leader-task (is_leader_task) carrying a squad_id — NOT off the
@@ -6408,6 +6411,11 @@ type TaskFailRequest struct {
 	// to report" — this says "never hand this id to a later run". Older
 	// daemons omit it, which is exactly the pre-fix behaviour.
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
+	// TimeoutCheckpoint (CHE-9761): the daemon's facts about a run that hit its
+	// time cap. Raw on purpose: a malformed field is dropped by the service
+	// validator, never turned into a 400 for the fail report itself. Older
+	// daemons omit it.
+	TimeoutCheckpoint json.RawMessage `json:"timeout_checkpoint,omitempty"`
 }
 
 func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
@@ -6428,6 +6436,10 @@ func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
 	// here lands in a TEXT column too and a NUL in any one of them fails the
 	// same transaction (GH #7098).
 	sanitizeTaskFailRequest(&req)
+
+	// CHE-9761: post the checkpoint comment first, so it exists before the fail
+	// transaction mints the retry that is pointed at it. Best-effort.
+	h.TaskService.PostTimeoutCheckpoint(r.Context(), parseUUID(taskID), req.Error, req.FailureReason, req.TimeoutCheckpoint)
 
 	h.failTask(w, r, taskID, workspaceID, req)
 }
