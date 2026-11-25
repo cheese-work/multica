@@ -68,7 +68,7 @@ func TestBlockedMemberCommentWakesAssignee_CHE2393(t *testing.T) {
 						replyID := postCommentForTriggerPreviewTest(t, issueID, body)
 						wantRuns := wantAssignee
 						if pending {
-							wantRuns = 1 // the seeded run stays whether or not the reply joins it
+							wantRuns++ // the seeded step run stays; the reply gets its own run (CHE-9605)
 						}
 						if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != wantRuns {
 							t.Fatalf("assignee runs = %d after reply %d, want %d", got, i+1, wantRuns)

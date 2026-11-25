@@ -39,7 +39,8 @@ func TestDeliverDecisionWakeReceiptByRecipientTaskState(test *testing.T) {
 			want := map[string]string{"queued": "merged_into_queued", "running": "planned_input", "idle": "run_enqueued"}[state]
 			var active string
 			if state != "idle" {
-				active = dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": state, "runtime_id": handlerTestRuntimeID(test)})
+				// A comment run in the tag thread: a queued step run is never merged into (CHE-9605).
+				active = dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": state, "runtime_id": handlerTestRuntimeID(test), "trigger_comment_id": fixture.tagID})
 				dbfx.Exec(test, `UPDATE agent_task_queue SET comment_thread_id = $1 WHERE id = $2`, fixture.tagID, active)
 			}
 			receipt := receiptIDFor(test, fixture.decision.ID, fixture.agentID)

@@ -125,6 +125,19 @@ func TestRunBudgetResumeQueuedSurvivorOfAnotherCommentTakesTheStoredComment(t *t
 			b := newBindCase(t, int64(2860200+i), p, true)
 			dbfx.Exec(t, `UPDATE run_budget_refusal SET taint_ids=ARRAY[$2]::text[] WHERE id=$1`, b.id, joinTaint)
 			survivor := b.survivor(t, p, "queued", b.own(p))
+			if p.slot {
+				// An assignment-level survivor is a step run (CHE-9605): it is never
+				// rewritten, so the refusal waits for it, then queues its own run.
+				resume(t, b.id)
+				wantResume(t, b.id, "resume_pending", "")
+				if answers(t, survivor, b.c2) {
+					t.Fatal("the stored comment was folded into a queued step run")
+				}
+				dbfx.Exec(t, `UPDATE agent_task_queue SET status='running' WHERE id=$1`, survivor)
+				testHandler.sweepRunBudgetResumes(context.Background(), time.Now().Add(time.Minute))
+				wantResume(t, b.id, "run_queued", "")
+				return
+			}
 			before := issueRuns(t, b.c)
 			resume(t, b.id)
 			wantResume(t, b.id, "run_queued", "")
@@ -134,7 +147,7 @@ func TestRunBudgetResumeQueuedSurvivorOfAnotherCommentTakesTheStoredComment(t *t
 			if !answers(t, survivor, b.c2) {
 				t.Fatal("the refusal ended on a run that never takes the refused comment")
 			}
-			if !p.slot && !answers(t, survivor, b.c1) {
+			if !answers(t, survivor, b.c1) {
 				t.Fatal("the survivor lost its own comment")
 			}
 			if n := issueRuns(t, b.c); n != before {
