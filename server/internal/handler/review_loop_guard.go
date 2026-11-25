@@ -233,9 +233,12 @@ func (w *workflowWrite) recordRoundsCapped(ctx context.Context, q *db.Queries, m
 	if err != nil {
 		return err
 	}
-	id, err := recordRoundsCap(ctx, q, moved, w.caller.run.AgentID)
-	w.capped = &roundsCap{rounds: int(rounds), activityID: id}
-	return err
+	c, err := recordRoundsCap(ctx, q, moved, w.caller.run.AgentID, int(rounds))
+	if err != nil {
+		return err
+	}
+	w.capped = &c
+	return nil
 }
 
 // recordVerdict stores an accepted verdict with its findings, PR and head, in
@@ -282,7 +285,10 @@ func (w *workflowWrite) recordVerdict(ctx context.Context, q *db.Queries, moved 
 	if err != nil {
 		return err
 	}
-	id, err := recordRoundsCap(ctx, q, moved, w.caller.run.AgentID)
-	w.capped = &roundsCap{rounds: int(rounds), activityID: id}
-	return err
+	c, err := recordRoundsCap(ctx, q, moved, w.caller.run.AgentID, int(rounds))
+	if err != nil {
+		return err
+	}
+	w.capped = &c
+	return nil
 }

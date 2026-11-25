@@ -185,6 +185,15 @@ type edgeRunSettle func(ctx context.Context, tx pgx.Tx, taskID pgtype.UUID) (fun
 // tryMoveIssueOnEdgeSettle is tryMoveIssueOnEdgeIf with a settle step that
 // shares the move's transaction (CHE-5241).
 func (h *Handler) tryMoveIssueOnEdgeSettle(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool, guard func(context.Context, *db.Queries) (bool, error), settle edgeRunSettle) (moved, ranHandler bool, err error) {
+	return h.tryMoveIssueOnEdgeWritten(ctx, issue, to, source, extra, startHandler, guard, settle, nil)
+}
+
+// tryMoveIssueOnEdgeWritten is tryMoveIssueOnEdgeSettle with a write that
+// shares the move's transaction and runs after the status write, before the
+// commit. A write that bumps the issue revision (a comment does) belongs here,
+// not in the guard: the move's expected revision is the one read before the
+// guard. An error rolls the whole move back (CHE-9483).
+func (h *Handler) tryMoveIssueOnEdgeWritten(ctx context.Context, issue db.Issue, to, source string, extra map[string]any, startHandler bool, guard func(context.Context, *db.Queries) (bool, error), settle edgeRunSettle, written func(context.Context, *db.Queries) error) (moved, ranHandler bool, err error) {
 	// The lock holds through the commit, so a person's move cannot read this
 	// issue's status between this write and its grant. The block an exhausted
 	// budget causes neither grants nor needs it: it runs under the refused
@@ -219,6 +228,11 @@ func (h *Handler) tryMoveIssueOnEdgeSettle(ctx context.Context, issue db.Issue, 
 			h.recordStopNotConfirmed(ctx, issue, "system", "", notConfirmed)
 		}
 		return false, false, err
+	}
+	if written != nil {
+		if err := written(ctx, h.Queries.WithTx(tx)); err != nil {
+			return false, false, err
+		}
 	}
 	var afterSettle func(context.Context)
 	if settle != nil && move.RunRefused == nil && move.TaskID.Valid {

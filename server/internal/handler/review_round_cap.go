@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -26,6 +27,10 @@ import (
 
 const (
 	activityHandoffWakeup = "review_handoff_wakeup"
+	// activityRoundsAutoSplit marks a plan issue's round limit that took the
+	// Split path without a decision card (CHE-9483). The daily digest lists
+	// these rows; a veto reopens the card for the capped round.
+	activityRoundsAutoSplit = "review_rounds_auto_split"
 	// reviewRoundsFingerprint prefixes the card's fingerprint; the cap's own
 	// activity id follows, so each cap opens one card.
 	reviewRoundsFingerprint = serverDecisionFingerprint + "review_rounds:"
@@ -36,19 +41,48 @@ const (
 type roundsCap struct {
 	rounds     int
 	activityID pgtype.UUID
+	// autoSplit means the same transaction that moved the issue also recorded
+	// the auto-Split decision, so the issue opens no card.
+	autoSplit bool
 }
 
 // errReviewRoundsCapped refuses the wakeup that would have been the issue's
 // third CHANGES round.
 var errReviewRoundsCapped = errors.New("this was the third review round without a PASS: the platform did not wake the author, moved the issue to need_decision and opened one decision card; stop here")
 
-// recordRoundsCap stores the cap marker, which restarts the count.
-func recordRoundsCap(ctx context.Context, q *db.Queries, issue db.Issue, agentID pgtype.UUID) (pgtype.UUID, error) {
+// recordRoundsCap stores the cap marker, which restarts the count, and the
+// auto-Split decision when the cap qualifies (maybeAutoSplit). It runs in the
+// transaction that moves the issue to need_decision, so the need_decision
+// handler can never start before the decision is visible (CHE-9483).
+func recordRoundsCap(ctx context.Context, q *db.Queries, issue db.Issue, agentID pgtype.UUID, rounds int) (roundsCap, error) {
+	c, err := recordRoundsCapMarker(ctx, q, issue, agentID, rounds)
+	if err != nil {
+		return roundsCap{}, err
+	}
+	err = maybeAutoSplit(ctx, q, issue, &c)
+	return c, err
+}
+
+// recordRoundsCapMarker stores only the cap marker.
+func recordRoundsCapMarker(ctx context.Context, q *db.Queries, issue db.Issue, agentID pgtype.UUID, rounds int) (roundsCap, error) {
 	row, err := q.CreateActivity(ctx, db.CreateActivityParams{
 		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: strToText("agent"),
 		ActorID: agentID, Action: activityRoundsCapped, Details: []byte(`{}`),
 	})
-	return row.ID, err
+	return roundsCap{rounds: rounds, activityID: row.ID}, err
+}
+
+// maybeAutoSplit records the auto-Split decision for a plan issue when the
+// workspace setting is on, and marks the cap so it opens no card.
+func maybeAutoSplit(ctx context.Context, q *db.Queries, issue db.Issue, c *roundsCap) error {
+	if !isPlanIssueTitle(issue.Title) || !roundsAutoSplitEnabled(ctx, q, issue) {
+		return nil
+	}
+	if err := recordAutoSplit(ctx, q, issue, *c); err != nil {
+		return err
+	}
+	c.autoSplit = true
+	return nil
 }
 
 // openCappedCard opens the card for a write that capped the issue, after its
@@ -60,16 +94,91 @@ func (h *Handler) openCappedCard(ctx context.Context, issue db.Issue, wf *workfl
 	h.ensureReviewRoundsCard(ctx, issue, *wf.capped)
 }
 
+// isPlanIssueTitle reports whether the title is a plan issue's: the
+// conventional-commit type "plan", with or without a scope.
+func isPlanIssueTitle(title string) bool {
+	t := strings.ToLower(strings.TrimSpace(title))
+	if !strings.HasPrefix(t, "plan") {
+		return false
+	}
+	rest := t[len("plan"):]
+	return strings.HasPrefix(rest, "(") || strings.HasPrefix(rest, ":")
+}
+
+const (
+	roundsAutoSplitKey = "review_rounds_auto_split"
+	roundsAutoSplitOn  = "on"
+	roundsAutoSplitOff = "off"
+)
+
+// roundsAutoSplitEnabled reads the workspace setting. Only the stored string
+// "on" enables it, so the card stays the default until the workspace's
+// need_decision step can take the Split path without a request.
+func roundsAutoSplitEnabled(ctx context.Context, q *db.Queries, issue db.Issue) bool {
+	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
+	if err != nil || len(ws.Settings) == 0 {
+		return false
+	}
+	var settings map[string]any
+	if json.Unmarshal(ws.Settings, &settings) != nil {
+		return false
+	}
+	mode, _ := settings[roundsAutoSplitKey].(string)
+	return mode == roundsAutoSplitOn
+}
+
+// validateRoundsAutoSplitSetting checks the review_rounds_auto_split key of a
+// workspace settings object. An absent key is valid; null is not.
+func validateRoundsAutoSplitSetting(value any) error {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	v, present := config[roundsAutoSplitKey]
+	if !present {
+		return nil
+	}
+	if mode, _ := v.(string); mode != roundsAutoSplitOn && mode != roundsAutoSplitOff {
+		return fmt.Errorf("%s must be off or on", roundsAutoSplitKey)
+	}
+	return nil
+}
+
+// recordAutoSplit records the Split decision for a plan issue at the round
+// limit: one activity row for the daily digest and one system comment for the
+// need_decision handler. It runs in the transaction that moves the issue, so
+// both rows commit with the status change; the handler's run, which that
+// change starts, finds the comment on its first read.
+func recordAutoSplit(ctx context.Context, q *db.Queries, issue db.Issue, c roundsCap) error {
+	details, _ := json.Marshal(map[string]any{"rounds": c.rounds, "cap_activity_id": uuidToString(c.activityID)})
+	if _, err := q.CreateActivity(ctx, db.CreateActivityParams{
+		ID: dbid.NewV7(), WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, ActorType: strToText("system"),
+		Action: activityRoundsAutoSplit, Details: details,
+	}); err != nil {
+		return err
+	}
+	_, err := q.CreateComment(ctx, db.CreateCommentParams{
+		ID: dbid.NewV7(), IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		AuthorType: "system", AuthorID: pgtype.UUID{Valid: true}, Type: "system",
+		Content: fmt.Sprintf("Review round limit: this plan issue has had %d review rounds without a PASS. Decision recorded: auto-Split at round limit (CHE-9483). No decision request was opened. Run the Split path now: one comment with the round count, the candidate hash and the open findings; one backlog issue for the removed work, read back; then move this issue to in_progress. The daily report lists this auto-Split; a veto reopens the decision card.", c.rounds),
+	})
+	return err
+}
+
 const reviewRoundsCardAttempts = 3
 
 // errNoCardRecipient means the issue has no owner or asking agent to ask.
 var errNoCardRecipient = errors.New("review rounds: nobody to ask")
 
-// ensureReviewRoundsCard opens the cap's card. The issue is already in
+// ensureReviewRoundsCard opens the cap's card, unless the cap took the
+// auto-Split path (nothing to ask). The issue is already in
 // need_decision, so a failed attempt is retried, and when every attempt fails
 // the issue gets a system comment that says the card is missing: need_decision
 // never lacks its card silently.
 func (h *Handler) ensureReviewRoundsCard(ctx context.Context, issue db.Issue, c roundsCap) {
+	if c.autoSplit {
+		return
+	}
 	var err error
 	for attempt := 1; attempt <= reviewRoundsCardAttempts; attempt++ {
 		if err = h.openReviewRoundsCard(ctx, issue, c); err == nil || errors.Is(err, errNoCardRecipient) {
@@ -175,11 +284,17 @@ func (h *Handler) capReviewHandoff(ctx context.Context, issue db.Issue, run db.A
 	if err != nil || prior+1 < maxChangesRounds {
 		return false, err
 	}
-	var capID pgtype.UUID
-	moved, _, err := h.tryMoveIssueOnEdgeIf(ctx, issue, statusNeedDecision, "review_rounds", nil, false, func(ctx context.Context, q *db.Queries) (bool, error) {
+	var capped roundsCap
+	// A plan issue that takes the auto-Split path needs its need_decision
+	// handler to run: the wakeup path has no verdict move that starts it.
+	startHandler := isPlanIssueTitle(issue.Title) && roundsAutoSplitEnabled(ctx, h.Queries, issue)
+	moved, _, err := h.tryMoveIssueOnEdgeWritten(ctx, issue, statusNeedDecision, "review_rounds", nil, startHandler, func(ctx context.Context, q *db.Queries) (bool, error) {
 		var err error
-		capID, err = recordRoundsCap(ctx, q, issue, run.AgentID)
+		capped, err = recordRoundsCapMarker(ctx, q, issue, run.AgentID, int(prior)+1)
 		return err == nil, err
+	}, nil, func(ctx context.Context, q *db.Queries) error {
+		// The decision rides in the move's transaction, after the status write.
+		return maybeAutoSplit(ctx, q, issue, &capped)
 	})
 	if err != nil || !moved {
 		return false, err
@@ -187,7 +302,7 @@ func (h *Handler) capReviewHandoff(ctx context.Context, issue db.Issue, run db.A
 	if after, err := h.Queries.GetIssue(ctx, issue.ID); err == nil {
 		issue = after
 	}
-	h.ensureReviewRoundsCard(ctx, issue, roundsCap{rounds: int(prior) + 1, activityID: capID})
+	h.ensureReviewRoundsCard(ctx, issue, capped)
 	return true, nil
 }
 
