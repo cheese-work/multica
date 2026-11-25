@@ -33,18 +33,18 @@ function message(seq: number): TaskMessagePayload {
   return { task_id: taskId, issue_id: issueId, seq, type: "text", content: `row ${seq}` };
 }
 
-function connect() {
+function useConnect() {
   useRunTranscriptRealtime(issueId, taskId);
   const handlers = new Map<string, (payload: unknown) => void>();
-  let reconnect = () => {};
+  const reconnect = { run: () => {} };
   const ws = {
     on: (event: string, handler: (payload: unknown) => void) => {
       handlers.set(event, handler);
       return () => { handlers.delete(event); };
     },
     onReconnect: (handler: () => void) => {
-      reconnect = handler;
-      return () => { reconnect = () => {}; };
+      reconnect.run = handler;
+      return () => { reconnect.run = () => {}; };
     },
   };
   const cleanup = () => { for (const unsubscribe of unsubscribes) unsubscribe(); };
@@ -52,7 +52,7 @@ function connect() {
   cleanups.push(cleanup);
   return {
     emit: (event: string, payload: unknown) => { handlers.get(event)?.(payload); },
-    reconnect: () => reconnect(),
+    reconnect: () => reconnect.run(),
     cleanup,
   };
 }
@@ -101,7 +101,7 @@ describe("run transcript cache lifecycle", () => {
   });
 
   it("accepts the final flush after cancellation, in order and without duplicates", async () => {
-    const ws = connect();
+    const ws = useConnect();
     open();
     await expectRows([1]);
     ws.emit("task:cancelled", { task_id: taskId, issue_id: issueId });
@@ -114,7 +114,7 @@ describe("run transcript cache lifecycle", () => {
 
   it.each(["task:completed", "task:failed", "task:cancelled", "reconnect"])(
     "backfills messages and run metadata on %s", async (event) => {
-      const ws = connect();
+      const ws = useConnect();
       open();
       await expectRows([1]);
       vi.mocked(api.listTaskMessages).mockResolvedValue([message(1), message(2)]);
@@ -128,7 +128,7 @@ describe("run transcript cache lifecycle", () => {
   it("keeps live rows when an older HTTP snapshot finishes afterward", async () => {
     let resolve!: (rows: TaskMessagePayload[]) => void;
     vi.mocked(api.listTaskMessages).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
-    const ws = connect();
+    const ws = useConnect();
     open();
     ws.emit("task:message", message(2));
     resolve([message(1)]);
@@ -147,7 +147,7 @@ describe("run transcript cache lifecycle", () => {
     vi.mocked(api.listTaskMessages)
       .mockImplementationOnce(() => new Promise((done) => { resolveOld = done; }))
       .mockResolvedValue([message(1), message(2)]);
-    const ws = connect();
+    const ws = useConnect();
     open();
     ws.emit("task:completed", { task_id: taskId, issue_id: issueId });
     resolveOld([message(1)]);
@@ -159,7 +159,7 @@ describe("run transcript cache lifecycle", () => {
     vi.mocked(api.listTaskMessages)
       .mockImplementationOnce(() => new Promise(() => {}))
       .mockResolvedValue([message(1)]);
-    const ws = connect();
+    const ws = useConnect();
     const observer = open();
     const statuses: string[] = [];
     cleanups.push(observer.subscribe((result) => { statuses.push(result.status); }));
@@ -171,7 +171,7 @@ describe("run transcript cache lifecycle", () => {
   });
 
   it("ignores other runs/issues and stops responding after cleanup", async () => {
-    const ws = connect();
+    const ws = useConnect();
     open();
     await expectRows([1]);
     for (const payload of [

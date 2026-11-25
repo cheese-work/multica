@@ -587,10 +587,11 @@ describe("MermaidViewer touch containment", () => {
     expect(dialog()).toHaveClass("touch-none", "overscroll-contain");
   });
 
+  // Upstream wins (CHE-7026): the dialog fills the safe area (%), not the screen (vw/dvh).
   it("fills the screen below md, so there is no backdrop strip to touch", () => {
     render(<Harness />);
 
-    expect(dialog()).toHaveClass("max-md:!inset-0", "max-md:!w-screen", "max-md:!h-dvh");
+    expect(dialog()).toHaveClass("max-md:!inset-0", "max-md:!w-full", "max-md:!h-full");
   });
 
   it("swallows an iOS gesturestart that starts anywhere in the dialog", () => {

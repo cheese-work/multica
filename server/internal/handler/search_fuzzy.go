@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"time"
 	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // Typo-tolerant fallback for issue search (CHE-2944, CHE-5869). It runs only
@@ -49,9 +51,12 @@ func shouldRunFuzzyFallback(query string, hasNum bool, offset, normalResults int
 // scans both with scanSearchIssue. Run it with fuzzySearchSetup. Ranking: a title
 // match ranks above a description or comment match; inside that split by score,
 // updated_at, id. match_source is the best-scoring field of the issue, kept
-// apart from the ranking. Args: $1 folded query, $2 workspace_id (filled by the caller), [$3
-// terminal status keys], then limit and offset (the last two, filled by the caller).
-func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatusKeys []string) (string, []any) {
+// apart from the ranking. Args: $1 folded query, $2 workspace_id (filled by the caller), [terminal
+// status keys], [hidden project ids], [project filter], then limit and offset (the last two,
+// filled by the caller). The project filter and the hidden projects are applied in every
+// candidate arm, before the page LIMIT, exactly like buildSearchQuery: a typo must not reach
+// an issue the exact query hides or one outside the requested project.
+func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatusKeys []string, projectID pgtype.UUID, hiddenProjectIDs ...pgtype.UUID) (string, []any) {
 	args := []any{foldedQuery, nil}
 	nextArg := func(value any) string {
 		args = append(args, value)
@@ -61,6 +66,12 @@ func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatu
 	openIssue := ""
 	if !includeClosed {
 		openIssue = fmt.Sprintf(" AND NOT (i.status = ANY(%s::text[]))", nextArg(terminalStatusKeys))
+	}
+	if len(hiddenProjectIDs) > 0 {
+		openIssue += " AND " + hiddenProjectPredicate("i.project_id", nextArg(hiddenProjectIDs))
+	}
+	if projectID.Valid {
+		openIssue += fmt.Sprintf(" AND i.project_id = %s", nextArg(projectID))
 	}
 	limitParam := nextArg(nil)
 	offsetParam := nextArg(nil)
@@ -93,7 +104,7 @@ func buildFuzzySearchQuery(foldedQuery string, includeClosed bool, terminalStatu
 		LIMIT %[2]s OFFSET %[3]s
 	)
 	SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
-		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+		i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.requester_user_id,
 		i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position,
 		i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id,
 		i.revision, i.duplicate_of_issue_id, i.description_external_read,

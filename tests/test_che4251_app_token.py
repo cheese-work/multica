@@ -135,12 +135,12 @@ class Guard(unittest.TestCase):
             self.assertTrue(any(k.startswith("permission-") for k in w))
             self.assertNotIn("write", {v for k, v in w.items() if k != "permission-statuses"})
 
-    def test_queue_handoff_holds_no_secret_and_the_gate_skips_the_queue_once_trusted(self):
+    def test_the_gate_always_posts_the_queue_status_itself(self):
+        # CHE-9846: the queue-handoff job and security-gate-queue.yml are gone; no variable switches the gate off for merge_group.
         sg = dict(workflows())["security-gate.yml"]["jobs"]
-        self.assertEqual(sg["queue-handoff"]["permissions"], {})
-        self.assertIn("vars.SECURITY_GATE_QUEUE_TRUSTED != 'true'", sg["security-gate"]["if"])
-        q = dict(workflows())["security-gate-queue.yml"]["jobs"]["security-gate-queue"]
-        self.assertIn("vars.SECURITY_GATE_QUEUE_TRUSTED == 'true'", q["if"])
+        self.assertNotIn("queue-handoff", sg)
+        self.assertNotIn("if", sg["security-gate"])
+        self.assertNotIn("security-gate-queue.yml", dict(workflows()))
 
 
 class Wiring(unittest.TestCase):
@@ -216,7 +216,7 @@ class GateBackoffDeferred(unittest.TestCase):
         gate = (ROOT / "scripts/security-gate/security_gate.py").read_text()
         for needle in ("RATE_LIMIT", "RateLimited", "StaleDecision", "_reserve_write_budget"):
             self.assertNotIn(needle, gate)
-        for name in ("security-gate.yml", "security-gate-queue.yml"):
+        for name in ("security-gate.yml",):
             text = (WORKFLOWS / name).read_text()
             for needle in ("gh_retry", "sleep ", "rate limit", "return 75"):
                 self.assertNotIn(needle, text, f"{name}: {needle}")

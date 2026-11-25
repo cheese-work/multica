@@ -39,13 +39,15 @@ import {
   type DynamicBlockError,
 } from "./dynamic-block";
 import { useThemeVersion } from "./hooks/use-theme-version";
+import { readEmbedTheme } from "../common/embed-theme";
 import {
+  HTML_BLOCK_EMBED_OPTIONS,
   HTML_BLOCK_MESSAGE_KEY,
   INITIAL_HTML_BLOCK_HEIGHT,
   buildHtmlBlockDocument,
+  htmlBlockTheme,
   nextHtmlBlockHeight,
   readHtmlBlockMessage,
-  readHtmlBlockTheme,
 } from "./utils/html-block-document";
 import { hashSource } from "./utils/source-hash";
 import { useStandaloneMedia } from "../media/media-context";
@@ -138,7 +140,7 @@ export function HtmlBlockPreview({ html, title }: HtmlBlockPreviewProps) {
     const host = hostRef.current;
     if (!host) return;
     setError(null);
-    setSrcDoc(buildHtmlBlockDocument(html, readHtmlBlockTheme(getComputedStyle(host))));
+    setSrcDoc(buildHtmlBlockDocument(html, htmlBlockTheme(readEmbedTheme(host, HTML_BLOCK_EMBED_OPTIONS))));
   }, [html, themeVersion]);
 
   if (standalone) return <div ref={hostRef} className="flex h-full min-h-0 flex-col"><HtmlViewer html={html} document={srcDoc} title={title ?? frameTitle} onReload={reload} /></div>;

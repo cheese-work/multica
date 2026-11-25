@@ -84,6 +84,11 @@ http {
       proxy_pass http://ACTIVE_BACKEND_UPSTREAM;
     }
 
+    location = /api/upload-file {
+      client_max_body_size 101m;
+      proxy_pass http://ACTIVE_BACKEND_UPSTREAM;
+    }
+
     location / {
       proxy_pass http://ACTIVE_BACKEND_UPSTREAM;
     }
@@ -116,6 +121,11 @@ http {
 
     location ~ ^/api/(?:issues|projects)/search$ {
       error_log /dev/null emerg;
+      proxy_pass http://ACTIVE_FRONTEND_UPSTREAM;
+    }
+
+    location = /api/upload-file {
+      client_max_body_size 101m;
       proxy_pass http://ACTIVE_FRONTEND_UPSTREAM;
     }
 

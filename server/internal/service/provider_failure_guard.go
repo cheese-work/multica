@@ -298,7 +298,7 @@ func (s *TaskService) publishProviderFailureNotice(ctx context.Context, q *db.Qu
 	if s.Bus == nil {
 		return
 	}
-	item, err := q.GetInboxItem(ctx, failedTaskID)
+	item, err := q.GetInboxItemInWorkspace(ctx, db.GetInboxItemInWorkspaceParams{ID: failedTaskID, WorkspaceID: workspaceID})
 	if err != nil {
 		slog.Warn("provider recovery owner notice readback failed",
 			"failed_task_id", util.UUIDToString(failedTaskID),

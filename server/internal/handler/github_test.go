@@ -1714,6 +1714,57 @@ func TestLinkIssuePullRequest_ByURL(t *testing.T) {
 	}
 }
 
+// TestListIssuePullRequestSummaries: the workspace-wide read behind the issue
+// views' "Pull requests" display option returns each linked PR under its
+// issue, and drops a PR once it is unlinked.
+func TestListIssuePullRequestSummaries(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	secret := "pr-summaries-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+	const installationID int64 = 30264009
+	created := prAutoCompleteTestIssue(t, "pr summaries", installationID)
+
+	firePRWebhook(t, secret, installationID, 61, created.Identifier+": first", "", "fix/first", "opened")
+	firePRWebhook(t, secret, installationID, 62, created.Identifier+": second", "", "fix/second", "merged")
+
+	summaries := func() map[int32]IssuePullRequestSummaryResponse {
+		t.Helper()
+		req := newRequest("GET", "/api/issues/pull-requests?workspace_id="+testWorkspaceID, nil)
+		w := testutil.Call(t, testHandler.ListIssuePullRequestSummaries, req).Want(http.StatusOK)
+		var body struct {
+			PullRequests []IssuePullRequestSummaryResponse `json:"pull_requests"`
+		}
+		if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+			t.Fatalf("decode summaries: %v", err)
+		}
+		out := map[int32]IssuePullRequestSummaryResponse{}
+		for _, pr := range body.PullRequests {
+			if pr.IssueID == created.ID {
+				out[pr.Number] = pr
+			}
+		}
+		return out
+	}
+
+	got := summaries()
+	if len(got) != 2 {
+		t.Fatalf("summaries for issue = %+v, want #61 and #62", got)
+	}
+	if pr := got[61]; pr.State != "open" || pr.Provider != "github" || pr.RepoName != "widget" || pr.HTMLURL == "" {
+		t.Errorf("#61 = %+v, want an open github PR on widget with a URL", pr)
+	}
+	if pr := got[62]; pr.State != "merged" {
+		t.Errorf("#62 state = %q, want merged", pr.State)
+	}
+
+	unlinkPRForTest(t, created.ID, githubPRIDForTest(t, "widget", 61))
+	if got := summaries(); len(got) != 1 || got[62].Number != 62 {
+		t.Errorf("after unlinking #61: summaries = %+v, want only #62", got)
+	}
+}
+
 // setWorkspacePRMergeStatusForTest pins settings.pr_merge_status for the test
 // workspace and restores the previous settings afterwards. An empty value
 // removes the key (the Done default).
@@ -2788,7 +2839,7 @@ func TestFetchGitHubInstallationRepositories(t *testing.T) {
 				http.Error(w, "overbroad token permissions", http.StatusBadRequest)
 				return
 			}
-			writeJSON(w, http.StatusCreated, map[string]any{"token": "installation-secret"})
+			writeJSON(w, http.StatusCreated, map[string]any{"token": "installation-secret", "repository_selection": "selected"})
 		case r.Method == http.MethodGet && r.URL.Path == "/installation/repositories":
 			if got := r.Header.Get("Authorization"); got != "Bearer installation-secret" {
 				http.Error(w, "bad installation token", http.StatusUnauthorized)
@@ -2831,6 +2882,9 @@ func TestFetchGitHubInstallationRepositories(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("fetchGitHubInstallationRepositories: %v", err)
+	}
+	if got.RepositorySelection != "selected" {
+		t.Fatalf("repository selection = %q", got.RepositorySelection)
 	}
 	if len(got.Repositories) != 1 {
 		t.Fatalf("repositories = %d, want 1", len(got.Repositories))
@@ -3928,5 +3982,142 @@ func TestGitHubStateCarriesOriginAndRejectsTamper(t *testing.T) {
 	u, _ := url.Parse(body.URL)
 	if _, _, got, ok := verifyStateWithReturn(u.Query().Get("state")); !ok || got != "https://multica.congvc.dev" {
 		t.Fatalf("connect state origin = %q ok=%v", got, ok)
+	}
+}
+
+// CHE-9584 (A5e P2 5): the connect response names the flow, the state carries
+// the desktop marker, and the callback echoes both so a desktop window
+// completes only the flow it started.
+func TestGitHubConnectNamesTheFlowAndMarksDesktop(t *testing.T) {
+	t.Setenv("GITHUB_APP_SLUG", "multica-test")
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
+	t.Setenv("GITHUB_APP_CLIENT_ID", "test-client-id")
+	t.Setenv("GITHUB_APP_CLIENT_SECRET", "test-client-secret")
+	t.Setenv("GITHUB_APP_ID", "12345")
+	pemBytes, _ := generateTestRSAKeyPEM(t)
+	t.Setenv("GITHUB_APP_PRIVATE_KEY", string(pemBytes))
+	wsID := "11111111-2222-3333-4444-555555555555"
+
+	connect := func(query string) (GitHubConnectResponse, string) {
+		t.Helper()
+		req := withURLParam(httptest.NewRequest(http.MethodGet, "/api/workspaces/"+wsID+"/github/connect"+query, nil), "id", wsID)
+		rec := httptest.NewRecorder()
+		(&Handler{}).GitHubConnect(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GitHubConnect%s: got %d (%s)", query, rec.Code, rec.Body.String())
+		}
+		var body GitHubConnectResponse
+		if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		u, err := url.Parse(body.URL)
+		if err != nil {
+			t.Fatalf("parse install URL: %v", err)
+		}
+		return body, u.Query().Get("state")
+	}
+
+	desktop, desktopState := connect("?desktop=1&return_to=repositories")
+	if !strings.HasPrefix(desktop.ConnectionID, "desktop-") {
+		t.Fatalf("desktop connection_id = %q, want desktop- prefix", desktop.ConnectionID)
+	}
+	if got := githubStateConnectionID(desktopState); got != desktop.ConnectionID {
+		t.Fatalf("signed state connection id = %q, want %q", got, desktop.ConnectionID)
+	}
+	if _, returnTo, _, ok := verifyStateWithReturn(desktopState); !ok || returnTo != githubReturnToRepositories {
+		t.Fatalf("desktop state return target = %q valid=%v, want repositories", returnTo, ok)
+	}
+
+	web, webState := connect("")
+	if web.ConnectionID == "" || strings.HasPrefix(web.ConnectionID, "desktop-") {
+		t.Fatalf("web connection_id = %q, want a non-desktop id", web.ConnectionID)
+	}
+	if got := githubStateConnectionID(webState); got != web.ConnectionID {
+		t.Fatalf("signed state connection id = %q, want %q", got, web.ConnectionID)
+	}
+	if web.ConnectionID == desktop.ConnectionID {
+		t.Fatal("two connects shared one connection_id")
+	}
+
+	// The marker is inside the signature: stripping it must not verify.
+	forged := strings.Replace(desktopState, "desktop-", "", 1)
+	if _, _, _, ok := verifyStateWithReturn(forged); ok {
+		t.Fatal("state with the desktop marker removed was accepted")
+	}
+}
+
+func TestGitHubSetupCallbackCorrelatesDesktopConnection(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	t.Setenv("GITHUB_WEBHOOK_SECRET", "test-secret-123")
+	t.Setenv("FRONTEND_ORIGIN", "https://app.example.test")
+
+	const installationID int64 = 95849584
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE installation_id = $1`, installationID)
+	})
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "octocat",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("seed installation row: %v", err)
+	}
+
+	got := make(chan events.Event, 4)
+	testHandler.Bus.Subscribe(protocol.EventGitHubInstallationCreated, func(e events.Event) {
+		if p, ok := e.Payload.(map[string]any); ok && p["connection_id"] != nil {
+			select {
+			case got <- e:
+			default:
+			}
+		}
+	})
+
+	for _, tc := range []struct {
+		name    string
+		desktop bool
+	}{{"desktop", true}, {"web", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, err := signStateForConnect(testWorkspaceID, githubReturnToRepositories, "", tc.desktop)
+			if err != nil {
+				t.Fatalf("signStateForConnect: %v", err)
+			}
+			wantID := githubStateConnectionID(state)
+			req := httptest.NewRequest(http.MethodGet,
+				fmt.Sprintf("/api/github/setup?installation_id=%d&setup_action=update&state=%s", installationID, url.QueryEscape(state)), nil)
+			rec := httptest.NewRecorder()
+			testHandler.GitHubSetupCallback(rec, req)
+
+			select {
+			case e := <-got:
+				payload := e.Payload.(map[string]any)
+				if payload["connection_id"] != wantID {
+					t.Fatalf("event connection_id = %v, want %q", payload["connection_id"], wantID)
+				}
+			default:
+				t.Fatal("github_installation:created carried no connection_id")
+			}
+
+			if tc.desktop {
+				if rec.Code != http.StatusOK {
+					t.Fatalf("desktop callback: got %d, want the return-to-Multica page", rec.Code)
+				}
+				if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+					t.Fatalf("desktop callback content type = %q, want text/html", ct)
+				}
+				if !strings.Contains(rec.Body.String(), "Return to Multica") {
+					t.Fatalf("desktop callback body lacks the return prompt: %q", rec.Body.String())
+				}
+				return
+			}
+			loc := rec.Header().Get("Location")
+			if rec.Code != http.StatusFound || !strings.HasPrefix(loc, "https://app.example.test/settings?tab=repositories&github_connected=1&github_installation=") {
+				t.Fatalf("web callback = %d %q, want redirect to repository settings with the installation", rec.Code, loc)
+			}
+		})
 	}
 }

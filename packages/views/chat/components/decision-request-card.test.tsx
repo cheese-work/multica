@@ -28,6 +28,7 @@ vi.mock("../../navigation", async (importActual) => ({
 }));
 
 vi.mock("../../issues/components/issue-chip", () => ({
+  useChipIssue: () => undefined,
   IssueChip: ({ fallbackLabel, children }: { fallbackLabel?: string; children?: React.ReactNode }) => <span data-testid="issue-chip">{children ?? fallbackLabel}</span>,
 }));
 

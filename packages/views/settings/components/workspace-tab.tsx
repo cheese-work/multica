@@ -61,6 +61,7 @@ import { AgentDecisionsRow } from "./agent-decisions-row";
 import { AutoCompactTokensRow } from "./auto-compact-tokens-row";
 import { DelegatedWritesSection } from "./delegated-writes-section";
 import { DeleteWorkspaceDialog } from "./delete-workspace-dialog";
+import { PrivateProjectsSection } from "./private-projects-section";
 import { useT } from "../../i18n";
 import {
   SettingsCard,
@@ -728,6 +729,8 @@ export function WorkspaceTab() {
       {membersFetched && (
         <DelegatedWritesSection wsId={workspace.id} canEdit={canManageWorkspace} />
       )}
+
+      {membersFetched && isOwner ? <PrivateProjectsSection /> : null}
 
       {/* Danger Zone — gated on the member query settling so the owner-only
           Delete button and the sole-owner Leave guidance don't flash in

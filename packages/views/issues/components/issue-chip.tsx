@@ -57,17 +57,11 @@ export interface IssueChipProps {
 
 export const ISSUE_CHIP_CLASS = ISSUE_CHIP_BASE_CLASS;
 
-export function IssueChip({
-  issueId,
-  fallbackLabel,
-  children,
-  className,
-  stableWidth,
-}: IssueChipProps) {
+/** The issue a chip shows, from the issue list cache or, past its first page,
+ *  the issue's own query. Undefined until it loads, or when it is gone. */
+export function useChipIssue(issueId: string) {
   const wsId = useWorkspaceId();
-  const { colorOf: statusColorOf, iconOf: statusIconOf } = useIssueStatuses(wsId);
   const { data: issues = [] } = useQuery(issueListOptions(wsId));
-  const compact = useCompactIssueChips();
   const listIssue = issues.find((i) => i.id === issueId);
 
   // Fallback fetch for issues outside the list's first page (the first
@@ -87,7 +81,20 @@ export function IssueChip({
   const lastResolved = useRef<{ issueId: string; issue: Issue }>(null);
   const resolved = listIssue ?? detailIssue;
   if (resolved) lastResolved.current = { issueId, issue: resolved };
-  const issue = resolved ?? (lastResolved.current?.issueId === issueId ? lastResolved.current.issue : undefined);
+  return resolved ?? (lastResolved.current?.issueId === issueId ? lastResolved.current.issue : undefined);
+}
+
+export function IssueChip({
+  issueId,
+  fallbackLabel,
+  children,
+  className,
+  stableWidth,
+}: IssueChipProps) {
+  const wsId = useWorkspaceId();
+  const { colorOf: statusColorOf, iconOf: statusIconOf } = useIssueStatuses(wsId);
+  const compact = useCompactIssueChips();
+  const issue = useChipIssue(issueId);
   const cls = [ISSUE_CHIP_CLASS, stableWidth && ISSUE_CHIP_STABLE_WIDTH_CLASS, className]
     .filter(Boolean)
     .join(" ");

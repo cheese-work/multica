@@ -120,7 +120,7 @@ beforeEach(() => {
       workflow("flow-b", ["todo", "review"]),
     ],
   });
-  api.listProjects.mockResolvedValue({ projects: [{ id: "p", workflow_id: "project-flow" } as Project], total: 1 });
+  api.listProjects.mockResolvedValue({ projects: [{ id: "p", title: "Project P", workflow_id: "project-flow" } as Project], total: 1 });
 });
 
 afterEach(() => {
