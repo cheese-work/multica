@@ -240,8 +240,7 @@ func TestCHE9484ObserverHoldWithdrawRestoresInProgress(test *testing.T) {
 		test.Fatalf("enabled condition rules = %d, want 1", count)
 	}
 
-	metadata := withURLParam(hold.asTask(newRequest(http.MethodPut, "/api/issues/"+hold.issueID+"/metadata/hold", map[string]any{"value": "waiting_che9449"})), "id", hold.issueID)
-	metadata = withURLParam(metadata, "key", "hold")
+	metadata := withURLParams(hold.asTask(newRequest(http.MethodPut, "/api/issues/"+hold.issueID+"/metadata/hold", map[string]any{"value": "waiting_che9449"})), "id", hold.issueID, "key", "hold")
 	testutil.Call(test, testHandler.SetIssueMetadataKey, metadata).Want(http.StatusOK)
 	var held string
 	dbfx.QueryRow(test, `SELECT COALESCE(metadata ->> 'hold', '') FROM issue WHERE id = $1`, hold.issueID).Scan(&held)
@@ -301,8 +300,7 @@ func TestCHE9484ObserverHoldIdleGuardSelectsOnlyWithoutARule(test *testing.T) {
 	if selected() {
 		test.Fatal("the idle guard selected the issue while the cron rule is enabled")
 	}
-	disable := withURLParam(newRequest(http.MethodPost, "/api/issues/"+hold.issueID+"/wakeups/"+uuidToString(rule.ID)+"/disable", nil), "id", hold.issueID)
-	disable = withURLParam(disable, "wakeupID", uuidToString(rule.ID))
+	disable := withURLParams(newRequest(http.MethodPost, "/api/issues/"+hold.issueID+"/wakeups/"+uuidToString(rule.ID)+"/disable", nil), "id", hold.issueID, "wakeupID", uuidToString(rule.ID))
 	testutil.Call(test, testHandler.DisableIssueWakeup, disable).Want(http.StatusOK)
 	if enabled, _ := hold.enabledCron(test, rule.ID); enabled {
 		test.Fatal("the rule is still enabled after the disable call")
