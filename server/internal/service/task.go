@@ -7741,7 +7741,7 @@ func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// NULL for an immediate child), and write the reason-aware ceiling into the
 	// child's max_attempts so the retry chain stays self-consistent.
 	var retryFireAt pgtype.Timestamptz
-	if delay := retryDelayForAttempt(reason, parent.Attempt); delay > 0 {
+	if delay := retryDelayForFailure(reason, parent.Error.String, parent.Attempt); delay > 0 {
 		retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
 	}
 	// Same advisory slot check as FailTask's path, for the same reason: skip the
@@ -7900,6 +7900,11 @@ func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if child.Status == "queued" {
 		s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, child)
 		s.NotifyTaskEnqueued(ctx, child)
+	}
+	// Same notice as FailTask's in-tx retry (CHE-9849): budget-resume and the
+	// sweeper retry through here, so the account limit must show on the issue.
+	if parent.IssueID.Valid && reason == string(taskfailure.ReasonAgentProviderNetwork) && taskfailure.IsConcurrencyLimit(parent.Error.String) {
+		s.createAgentComment(ctx, parent.IssueID, parent.AgentID, concurrencyLimitRetryNotice(&child), "system", parent.TriggerCommentID, parent.ID)
 	}
 	return &child, nil
 }
