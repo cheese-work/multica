@@ -10,12 +10,12 @@ import (
 func TestParseTimeoutCheckpoint_DropsInvalidEntriesKeepsValid(t *testing.T) {
 	head := strings.Repeat("A", 40)
 	repos := []string{
-		fmt.Sprintf(`{"path":"ok","branch":"feat/x","head":"%s","ahead":1,"dirty":0}`, head),
-		fmt.Sprintf(`{"path":"%s","branch":"b","head":"%s"}`, strings.Repeat("p", 121), head), // path too long
-		fmt.Sprintf(`{"path":"p","branch":"bad branch","head":"%s"}`, head),                   // not ref-format
-		fmt.Sprintf(`{"path":"p","branch":"b..c","head":"%s"}`, head),
+		fmt.Sprintf(`{"path":"ok","branch":"feat/x","head":%q,"ahead":1,"dirty":0}`, head),
+		fmt.Sprintf(`{"path":%q,"branch":"b","head":%q}`, strings.Repeat("p", 121), head), // path too long
+		fmt.Sprintf(`{"path":"p","branch":"bad branch","head":%q}`, head),                 // not ref-format
+		fmt.Sprintf(`{"path":"p","branch":"b..c","head":%q}`, head),
 		`{"path":"p","branch":"b","head":"abc"}`, // not 40-hex
-		fmt.Sprintf(`{"path":"p","branch":"b","head":"%s","ahead":-1}`, head),
+		fmt.Sprintf(`{"path":"p","branch":"b","head":%q,"ahead":-1}`, head),
 		`"not an object"`,
 	}
 	raw := `{"repos":[` + strings.Join(repos, ",") + `],"warning":{"state":"maybe"},"last_actions":[{"tool":"","input":"x"},{"tool":"Bash","input":"ls"}]}`
@@ -38,10 +38,10 @@ func TestParseTimeoutCheckpoint_Caps(t *testing.T) {
 	head := strings.Repeat("a", 40)
 	var repos, actions []string
 	for i := 0; i < 8; i++ {
-		repos = append(repos, fmt.Sprintf(`{"path":"r%d","branch":"b","head":"%s"}`, i, head))
+		repos = append(repos, fmt.Sprintf(`{"path":"r%d","branch":"b","head":%q}`, i, head))
 	}
 	for i := 0; i < 12; i++ {
-		actions = append(actions, fmt.Sprintf(`{"tool":"T%d","input":"%s"}`, i, strings.Repeat("x", 300)))
+		actions = append(actions, fmt.Sprintf(`{"tool":"T%d","input":%q}`, i, strings.Repeat("x", 300)))
 	}
 	cp := ParseTimeoutCheckpoint(json.RawMessage(`{"repos":[` + strings.Join(repos, ",") + `],"last_actions":[` + strings.Join(actions, ",") + `],"total_tool_calls":50}`))
 	if len(cp.Repos) != 5 {
