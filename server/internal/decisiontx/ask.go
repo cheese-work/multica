@@ -41,12 +41,14 @@ type Ask struct {
 	// RecommendedOption is the exact label of the recommended option (CHE-3628). Required with two or more options; the server moves it first. The recommendation prose is never read for order.
 	RecommendedOption string `json:"recommended_option,omitempty"`
 	// Confidence is the asking agent's own 0..1 confidence that its recommendation is right (optional, CHE-3628).
-	Confidence       *float64    `json:"confidence,omitempty"`
-	DefaultIfNoReply string      `json:"default_if_no_reply"`
-	SourceIssueID    string      `json:"source_issue_id"`
-	SourceCommentID  string      `json:"source_comment_id"`
-	HumanSteps       []HumanStep `json:"human_steps"`
-	Probes           []string    `json:"probes"`
+	Confidence       *float64 `json:"confidence,omitempty"`
+	DefaultIfNoReply string   `json:"default_if_no_reply"`
+	SourceIssueID    string   `json:"source_issue_id"`
+	// CoversIssueIDs names the other issues whose wait this open card covers (CHE-4029). The decision wait guard reads it from the stored ask.
+	CoversIssueIDs  []string    `json:"covers_issue_ids,omitempty"`
+	SourceCommentID string      `json:"source_comment_id"`
+	HumanSteps      []HumanStep `json:"human_steps"`
+	Probes          []string    `json:"probes"`
 	// StateClaims are required on every agent-sent ask (CHE-5950).
 	StateClaims []StateClaim `json:"state_claims,omitempty"`
 	AfterDone   string       `json:"after_done"`
@@ -100,7 +102,7 @@ func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
-	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "source_comment_id", "human_steps", "probes", "state_claims", "after_done", "subject", "artifacts", "topic", "waiver", "settings_needed"}
+	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "covers_issue_ids", "source_comment_id", "human_steps", "probes", "state_claims", "after_done", "subject", "artifacts", "topic", "waiver", "settings_needed"}
 	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key", "after_choice", "agent_surface", "agent_commands", "action", "after_wait"}
 	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
 	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id", "observed", "files", "dry_run", "state_claims", "settings_needed"}
@@ -240,6 +242,9 @@ func DecodeAsk(raw []byte) (Ask, error) {
 		return ask, err
 	}
 	if err := decodeSettingsNeeded(fields["settings_needed"], &ask.SettingsNeeded); err != nil {
+		return ask, err
+	}
+	if err := decodeCoversIssueIDs(fields["covers_issue_ids"], &ask.CoversIssueIDs); err != nil {
 		return ask, err
 	}
 	if err := decodeArtifacts(fields["artifacts"], &ask.Artifacts); err != nil {
@@ -485,4 +490,30 @@ func (ask Ask) actionContent(workspaceSlug string) string {
 	}
 	return fmt.Sprintf("**Context**\n%s\n\n**Why you**\n%s\n\n**Steps**\n%s%s\n**Done when**\n%s\n\n**Default if no reply**\n%s\n\n%s<details>\n<summary>Details</summary>\n\n%s**Agent did**\n%s\n\n</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
 		ask.ContextELI10, ask.WhyHuman, steps.String(), askEvidence{ask.Observed, ask.Files, ask.DryRun}.lines(), ask.DoneWhen, ask.DefaultIfNoReply, ask.askedByLine(), ask.stateClaimsContent(), ask.AgentDid, ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
+}
+
+const maxCoversIssueIDs = 25
+
+func decodeCoversIssueIDs(raw json.RawMessage, into *[]string) error {
+	if err := decodeStrings("ask.covers_issue_ids", raw, into); err != nil {
+		return err
+	}
+	if len(*into) > maxCoversIssueIDs {
+		return &AskError{"ask.covers_issue_ids", fmt.Sprintf("takes at most %d issues", maxCoversIssueIDs)}
+	}
+	seen := map[string]bool{}
+	for i, id := range *into {
+		field := fmt.Sprintf("ask.covers_issue_ids[%d]", i)
+		parsed, err := util.ParseUUID(id)
+		if err != nil {
+			return &AskError{field, "must be an issue UUID"}
+		}
+		key := util.UUIDToString(parsed)
+		if seen[key] {
+			return &AskError{field, "repeats an earlier issue"}
+		}
+		seen[key] = true
+		(*into)[i] = key
+	}
+	return nil
 }

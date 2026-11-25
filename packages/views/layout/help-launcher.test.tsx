@@ -1,7 +1,10 @@
 import { cloneElement, type ReactElement, type ReactNode } from "react";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render as rtlRender, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configStore } from "@multica/core/config";
+import { githubStarsOptions } from "@multica/core/github/stars";
+import { markStarPromptStarred } from "@multica/core/star-prompt";
 import enLayout from "../locales/en/layout.json";
 import { isDesktopShell } from "../platform/local-directory";
 import { HelpLauncher } from "./help-launcher";
@@ -13,8 +16,12 @@ vi.mock("../platform/local-directory", () => ({
   isDesktopShell: vi.fn(() => false),
 }));
 
-// The What's new entry is covered with the real menu in whats-new-launcher.test.tsx.
-vi.mock("../whats-new/whats-new-launcher", () => ({
+vi.mock("@multica/core/star-prompt", () => ({
+  markStarPromptStarred: vi.fn(() => Promise.resolve()),
+}));
+
+// The What's new entry is covered with the real menu in whats-new-menu-panel.test.tsx.
+vi.mock("../whats-new/whats-new-menu-panel", () => ({
   useWhatsNewMenuPanel: () => ({ available: false }),
   WhatsNewMenuPanel: () => null,
 }));
@@ -63,10 +70,12 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", async () => {
     DropdownMenuItem: ({
       children,
       render,
+      onClick,
     }: {
       children: ReactNode;
       render?: ReactElement;
-    }) => (render ? cloneElement(render, undefined, children) : <>{children}</>),
+      onClick?: () => void;
+    }) => (render ? cloneElement(render, { onClick } as object, children) : <>{children}</>),
     DropdownMenuGroup: ({ children }: { children: ReactNode }) => (
       <GroupContext.Provider value={true}>{children}</GroupContext.Provider>
     ),
@@ -83,7 +92,14 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", async () => {
   };
 });
 
+let qc: QueryClient;
+
+function render(ui: ReactElement) {
+  return rtlRender(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+}
+
 beforeEach(() => {
+  qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   vi.mocked(isDesktopShell).mockReturnValue(false);
   i18nState.language = "en";
 });
@@ -93,6 +109,7 @@ afterEach(() => {
   configStore.getState().setServerBuild("");
   configStore.getState().setServerCommit("");
   configStore.setState({ daemonAppUrl: "" });
+  qc.clear();
 });
 
 describe("HelpLauncher", () => {
@@ -128,6 +145,7 @@ describe("HelpLauncher", () => {
   it.each([
     ["en", "https://multica.ai/docs"],
     ["zh-Hans", "https://multica.ai/docs/zh"],
+    ["zh-Hant", "https://multica.ai/docs/zh-Hant"],
     ["fr", "https://multica.ai/docs/fr"],
   ])("links Docs to the %s docs", (language, href) => {
     i18nState.language = language;
@@ -165,5 +183,19 @@ describe("HelpLauncher", () => {
     expect(screen.queryByText("Desktop app")).not.toBeInTheDocument();
     // The rest of the menu is unaffected by the gate.
     expect(screen.getByText("Docs")).toBeInTheDocument();
+  });
+
+  it("links to the GitHub repo and retires the star prompt on click", () => {
+    render(<HelpLauncher />);
+    const link = screen.getByRole("link", { name: /Star on GitHub/ });
+    expect(link).toHaveAttribute("href", "https://github.com/multica-ai/multica");
+    fireEvent.click(link);
+    expect(markStarPromptStarred).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the star count once it is known", () => {
+    qc.setQueryData(githubStarsOptions().queryKey, 37_612);
+    render(<HelpLauncher />);
+    expect(screen.getByRole("link", { name: /Star on GitHub/ })).toHaveTextContent("37.6k");
   });
 });

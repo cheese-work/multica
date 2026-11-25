@@ -1,6 +1,7 @@
 import { infiniteQueryOptions, queryOptions, useQuery, type QueryClient } from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { api } from "../api";
+import { ingestChatMessages, ingestChatMessagesPage } from "./message-cache";
 import type { TaskMessagePayload } from "../types/events";
 import type {
   ChatQuickActionsFailureState,
@@ -23,12 +24,10 @@ import type {
  */
 export const QUICK_ACTIONS_PENDING_TIMEOUT_MS = 12_000;
 
-// NOTE on workspace scoping:
-// `wsId` is used only as part of queryKey for cache isolation per workspace.
-// The actual workspace context comes from ApiClient's X-Workspace-Slug header,
-// which is set by the URL-driven [workspaceSlug] layout. Callers must ensure
-// the header is in sync with the wsId they pass here — otherwise cache writes
-// will be misattributed during a workspace switch race window.
+// Sessions, pinned agents, pending tasks, and the running indicator explicitly
+// bind requests to the workspace UUID in their query key. Other session/task
+// queries still use ApiClient's current workspace header, which callers must
+// keep aligned with the resource's workspace and any wsId in the query key.
 
 export const chatKeys = {
   all: (wsId: string) => ["chat", wsId] as const,
@@ -44,6 +43,10 @@ export const chatKeys = {
   usage: (wsId: string, id: string) => [...chatKeys.all(wsId), "usage", id] as const,
   messagesAll: () => ["chat", "messages"] as const,
   messages: (sessionId: string) => [...chatKeys.messagesAll(), sessionId] as const,
+  /** By-id store: one row per chat message across sessions (B1a.1). */
+  messageEntities: () => ["chat", "message-entities"] as const,
+  /** Ordered message ids of one session; the rows live in `messageEntities`. */
+  messageIds: (sessionId: string) => ["chat", "message-ids", sessionId] as const,
   messagesPageAll: () => ["chat", "messages-page"] as const,
   messagesPage: (sessionId: string) => [...chatKeys.messagesPageAll(), sessionId] as const,
   pendingTaskAll: () => ["chat", "pending-task"] as const,
@@ -101,7 +104,7 @@ export function chatSessionUsageOptions(wsId: string, sessionId: string | null) 
 export function chatSessionsOptions(wsId: string) {
   return queryOptions({
     queryKey: chatKeys.sessions(wsId),
-    queryFn: () => api.listChatSessions({ status: "all" }),
+    queryFn: () => api.listChatSessions({ status: "all" }, { workspaceId: wsId }),
     staleTime: Infinity,
   });
 }
@@ -167,12 +170,16 @@ export function sortArchivedChatSessions(sessions: ChatSession[]): ChatSession[]
 }
 
 export function sortChatSessions(sessions: ChatSession[]): ChatSession[] {
-  return [...sessions].sort((a, b) => {
-    const ap = a.pinned ? 1 : 0;
-    const bp = b.pinned ? 1 : 0;
-    if (ap !== bp) return bp - ap;
-    return sessionActivityTime(b) - sessionActivityTime(a);
-  });
+  // Parse dates once per session, rather than on each comparison.
+  return sessions
+    .map((session) => ({ session, activity: sessionActivityTime(session) }))
+    .sort((a, b) => {
+      const ap = a.session.pinned ? 1 : 0;
+      const bp = b.session.pinned ? 1 : 0;
+      if (ap !== bp) return bp - ap;
+      return b.activity - a.activity;
+    })
+    .map(({ session }) => session);
 }
 
 /** Views behind the DM list filter chips (CHE-5511 slice 1). */
@@ -239,7 +246,7 @@ export function countUnreadChatSessions(sessions: ChatSession[]): number {
 export function chatPinnedAgentsOptions(wsId: string) {
   return queryOptions({
     queryKey: chatKeys.pinnedAgents(wsId),
-    queryFn: () => api.listChatPinnedAgents(),
+    queryFn: () => api.listChatPinnedAgents({ workspaceId: wsId }),
     staleTime: Infinity,
   });
 }
@@ -256,7 +263,8 @@ export function chatSessionOptions(wsId: string, id: string) {
 export function chatMessagesOptions(sessionId: string) {
   return queryOptions({
     queryKey: chatKeys.messages(sessionId),
-    queryFn: () => api.listChatMessages(sessionId),
+    queryFn: async ({ client, signal }) =>
+      ingestChatMessages(client, sessionId, await api.listChatMessages(sessionId), signal),
     enabled: !!sessionId,
     staleTime: Infinity,
   });
@@ -265,8 +273,14 @@ export function chatMessagesOptions(sessionId: string) {
 export function chatMessagesPageOptions(sessionId: string, limit = 50) {
   return infiniteQueryOptions({
     queryKey: chatKeys.messagesPage(sessionId),
-    queryFn: ({ pageParam }) =>
-      api.listChatMessagesPage(sessionId, { before: pageParam, limit }),
+    queryFn: async ({ pageParam, client, signal }) =>
+      ingestChatMessagesPage(
+        client,
+        sessionId,
+        pageParam,
+        await api.listChatMessagesPage(sessionId, { before: pageParam, limit }),
+        signal,
+      ),
     initialPageParam: null as { created_at: string; id: string } | null,
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.next_cursor ?? undefined : undefined,
@@ -466,7 +480,7 @@ export function isTaskMessageTimelineHeld(
 export function pendingChatTasksOptions(wsId: string) {
   return queryOptions({
     queryKey: chatKeys.pendingTasks(wsId),
-    queryFn: () => api.listPendingChatTasks(),
+    queryFn: () => api.listPendingChatTasks({ workspaceId: wsId }),
     staleTime: Infinity,
   });
 }
@@ -481,7 +495,7 @@ export function pendingChatTasksOptions(wsId: string) {
 export function hasPendingChatTasksOptions(wsId: string) {
   return queryOptions({
     queryKey: chatKeys.pendingTasksHasAny(wsId),
-    queryFn: () => api.hasAnyPendingChatTasks(),
+    queryFn: () => api.hasAnyPendingChatTasks({ workspaceId: wsId }),
     staleTime: Infinity,
   });
 }

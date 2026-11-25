@@ -85,6 +85,19 @@ var workspaceCapabilityRoutingCmd = &cobra.Command{
 	RunE: runWorkspaceCapabilityRouting,
 }
 
+var workspaceAgentRoleScopeCmd = &cobra.Command{
+	Use:   "agent-role-scope [workspace-id|slug|prefix]",
+	Short: "Show the agent_role_scope setting (agent to the work classes it may be given)",
+	Long: "Prints the workspace setting agent_role_scope: per agent, the work classes another " +
+		"agent may assign it (plan, plan_review, decision, debate, security_cosign, code_review, " +
+		"execution). Only a " +
+		"'security gate: <parent identifier>' child issue is a co-sign; security-typed work, review(security) and a path in a title are not. An agent with no entry is unrestricted. Prints {} when it is unset. Read-only; change it with " +
+		"'multica config propose workspace.settings --set agent_role_scope:=<json>'. " +
+		"'multica agent get <agent>' shows one agent's scope.",
+	Args: cobra.MaximumNArgs(1),
+	RunE: runWorkspaceAgentRoleScope,
+}
+
 var workspaceMemberCmd = &cobra.Command{
 	Use:   "member",
 	Short: "Manage workspace members",
@@ -197,6 +210,7 @@ func init() {
 	workspaceCmd.AddCommand(workspaceCreateCmd)
 	workspaceCmd.AddCommand(workspaceGetCmd)
 	workspaceCmd.AddCommand(workspaceCapabilityRoutingCmd)
+	workspaceCmd.AddCommand(workspaceAgentRoleScopeCmd)
 	workspaceCmd.AddCommand(workspaceMemberCmd)
 	workspaceMemberCmd.AddCommand(workspaceMemberListCmd)
 	workspaceMemberCmd.AddCommand(workspaceMemberInviteCmd)
@@ -212,9 +226,9 @@ func init() {
 	workspaceListCmd.Flags().Bool("full-id", false, "Show full UUIDs in table output")
 	workspaceCreateCmd.Flags().String("name", "", "Workspace name")
 	workspaceCreateCmd.Flags().String("slug", "", "Workspace slug")
-	workspaceCreateCmd.Flags().String("description", "", "Workspace description (decodes \\n, \\r, \\t, \\\\; pipe via --description-stdin to preserve literal backslashes)")
+	workspaceCreateCmd.Flags().String("description", "", "Workspace description (preserves literal text. Use --description-stdin for multi-line input)")
 	workspaceCreateCmd.Flags().Bool("description-stdin", false, "Read description from stdin (preserves multi-line content verbatim)")
-	workspaceCreateCmd.Flags().String("context", "", "Workspace context (decodes \\n, \\r, \\t, \\\\; pipe via --context-stdin to preserve literal backslashes)")
+	workspaceCreateCmd.Flags().String("context", "", "Workspace context (preserves literal text. Use --context-stdin for multi-line input)")
 	workspaceCreateCmd.Flags().Bool("context-stdin", false, "Read context from stdin (preserves multi-line content verbatim)")
 	workspaceCreateCmd.Flags().String("issue-prefix", "", "Issue prefix (uppercased server-side)")
 	workspaceCreateCmd.Flags().String("output", "json", "Output format: table or json")
@@ -224,9 +238,9 @@ func init() {
 	workspaceMemberInviteCmd.Flags().String("output", "table", "Output format: table or json")
 
 	workspaceUpdateCmd.Flags().String("name", "", "New workspace name")
-	workspaceUpdateCmd.Flags().String("description", "", "New description (decodes \\n, \\r, \\t, \\\\; pipe via --description-stdin to preserve literal backslashes)")
+	workspaceUpdateCmd.Flags().String("description", "", "New description (preserves literal text. Use --description-stdin for multi-line input)")
 	workspaceUpdateCmd.Flags().Bool("description-stdin", false, "Read description from stdin (preserves multi-line content verbatim)")
-	workspaceUpdateCmd.Flags().String("context", "", "New workspace context (decodes \\n, \\r, \\t, \\\\; pipe via --context-stdin to preserve literal backslashes)")
+	workspaceUpdateCmd.Flags().String("context", "", "New workspace context (preserves literal text. Use --context-stdin for multi-line input)")
 	workspaceUpdateCmd.Flags().Bool("context-stdin", false, "Read context from stdin (preserves multi-line content verbatim)")
 	workspaceUpdateCmd.Flags().String("context-file", "", "Read context from a file, byte-for-byte (no escape decoding)")
 	workspaceUpdateCmd.Flags().String("issue-prefix", "", "New issue prefix (uppercased server-side)")
@@ -565,6 +579,14 @@ func runWorkspaceGet(cmd *cobra.Command, args []string) error {
 }
 
 func runWorkspaceCapabilityRouting(cmd *cobra.Command, args []string) error {
+	return printWorkspaceSetting(cmd, args, "capability_routing")
+}
+
+func runWorkspaceAgentRoleScope(cmd *cobra.Command, args []string) error {
+	return printWorkspaceSetting(cmd, args, "agent_role_scope")
+}
+
+func printWorkspaceSetting(cmd *cobra.Command, args []string, key string) error {
 	wsID, err := resolveWorkspaceArg(cmd, args)
 	if err != nil {
 		return err
@@ -584,13 +606,13 @@ func runWorkspaceCapabilityRouting(cmd *cobra.Command, args []string) error {
 	if err := client.GetJSON(ctx, "/api/workspaces/"+wsID, &ws); err != nil {
 		return fmt.Errorf("get workspace: %w", err)
 	}
-	table := ws.Settings["capability_routing"]
+	table := ws.Settings[key]
 	if len(table) == 0 || string(table) == "null" {
 		table = json.RawMessage("{}")
 	}
 	var out any
 	if err := json.Unmarshal(table, &out); err != nil {
-		return fmt.Errorf("capability_routing is not JSON: %w", err)
+		return fmt.Errorf("%s is not JSON: %w", key, err)
 	}
 	return cli.PrintJSON(os.Stdout, out)
 }

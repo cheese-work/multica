@@ -244,3 +244,75 @@ func indexOfID(ids []string, id string) int {
 	}
 	return -1
 }
+
+// fuzzyIDsAs runs SearchIssues as userID and reports the matched issue IDs and
+// how many search transactions ran (2 means the typo fallback fired).
+func fuzzyIDsAs(t *testing.T, userID, rawQuery string) ([]string, int) {
+	t.Helper()
+	counter := &countingTxStarter{inner: testHandler.TxStarter}
+	h := *testHandler
+	h.TxStarter = counter
+	path := fmt.Sprintf("/api/issues/search?workspace_id=%s&limit=50&%s", testWorkspaceID, rawQuery)
+	req := newRequest("GET", path, nil)
+	req.Header.Set("X-User-ID", userID)
+	w := httptest.NewRecorder()
+	h.SearchIssues(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("SearchIssues(%q): expected 200, got %d: %s", rawQuery, w.Code, w.Body.String())
+	}
+	var response struct {
+		Issues []SearchIssueResponse `json:"issues"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+		t.Fatalf("decode search response: %v", err)
+	}
+	ids := make([]string, 0, len(response.Issues))
+	for _, issue := range response.Issues {
+		ids = append(ids, issue.ID)
+	}
+	return ids, int(counter.begun.Load())
+}
+
+// A typo query with project_id must stay inside that project: the normal query
+// scopes to it, so the fallback must too (CHE-6930 P1).
+func TestSearchIssues_FuzzyFallbackKeepsProjectFilter(t *testing.T) {
+	target := dbfx.Project(t, "fuzzy scope target")
+	other := dbfx.Project(t, "fuzzy scope other")
+	inTarget := dbfx.Issue(t, "marmoset telemetry exporter", testutil.Cols{"project_id": target})
+	inOther := dbfx.Issue(t, "marmoset telemetry exporter", testutil.Cols{"project_id": other})
+	noProject := dbfx.Issue(t, "marmoset telemetry exporter")
+
+	ids, begun := searchIssueIDs(t, "project_id="+target+"&q="+url.QueryEscape("marmoet telemetri exportr"))
+	if begun != 2 {
+		t.Fatalf("search transactions = %d, want 2 (the typo fallback must run)", begun)
+	}
+	if !containsID(ids, inTarget) {
+		t.Fatalf("scoped typo search missed the issue in the target project; got %v", ids)
+	}
+	if containsID(ids, inOther) || containsID(ids, noProject) {
+		t.Fatalf("scoped typo search leaked issues outside the project; got %v", ids)
+	}
+}
+
+// A typo query must not reach an issue in a project the reader cannot see: the
+// normal query excludes hidden projects, so the fallback must too (CHE-6930 P1).
+func TestSearchIssues_FuzzyFallbackExcludesHiddenProjects(t *testing.T) {
+	f := newPrivateProjectFixture(t)
+	secret := dbfx.Issue(t, "quokka telemetry exporter", testutil.Cols{"project_id": f.projectID})
+	open := dbfx.Issue(t, "quokka telemetry exporter")
+	query := "q=" + url.QueryEscape("quoka telemetri exportr")
+
+	outsider, begun := fuzzyIDsAs(t, f.outsider, query)
+	if begun != 2 {
+		t.Fatalf("search transactions = %d, want 2 (the typo fallback must run)", begun)
+	}
+	if containsID(outsider, secret) {
+		t.Fatalf("typo search returned an issue from a private project to an outsider; got %v", outsider)
+	}
+	if !containsID(outsider, open) {
+		t.Fatalf("typo search lost the visible issue for the outsider; got %v", outsider)
+	}
+	if insider, _ := fuzzyIDsAs(t, f.insider, query); !containsID(insider, secret) {
+		t.Fatalf("typo search hid the private issue from a project member; got %v", insider)
+	}
+}

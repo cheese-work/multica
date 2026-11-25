@@ -389,7 +389,7 @@ func (q *Queries) ListOpenWeeklyRunGuardRefusals(ctx context.Context, arg ListOp
 const listWeeklyRunGuardIncidentsSince = `-- name: ListWeeklyRunGuardIncidentsSince :many
 SELECT i.number::bigint AS number, a.details, a.action
 FROM activity_log a JOIN issue i ON i.id = a.issue_id
-WHERE a.workspace_id = $1::uuid AND a.action IN ('weekly_run_guard_tripped', 'weekly_run_guard_warned')
+WHERE a.workspace_id = $1::uuid AND a.action IN ('weekly_run_guard_tripped', 'weekly_run_guard_warned', 'stop_loss_warned')
   AND a.created_at >= $2::timestamptz
 ORDER BY a.created_at DESC
 `

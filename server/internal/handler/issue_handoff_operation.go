@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -186,7 +187,7 @@ func (h *Handler) writeStoredHandoffResult(ctx context.Context, w http.ResponseW
 	if len(op.Response) > 0 {
 		var stored IssueResponse
 		if err := json.Unmarshal(op.Response, &stored); err == nil {
-			h.fillStatusCategory(ctx, op.WorkspaceID, &stored)
+			h.fillStatusCategory(ctx, op.WorkspaceID, projectaccess.Hidden{}, &stored)
 			writeJSON(w, http.StatusOK, stored)
 			return
 		}
@@ -198,7 +199,7 @@ func (h *Handler) writeStoredHandoffResult(ctx context.Context, w http.ResponseW
 		return
 	}
 	resp := issueToResponse(issue, h.getIssuePrefix(ctx, issue.WorkspaceID))
-	h.fillStatusCategory(ctx, issue.WorkspaceID, &resp)
+	h.fillStatusCategory(ctx, issue.WorkspaceID, projectaccess.Hidden{}, &resp)
 	writeJSON(w, http.StatusOK, resp)
 }
 

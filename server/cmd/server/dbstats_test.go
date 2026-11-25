@@ -193,3 +193,39 @@ func TestReplicaPoolHonorsExplicitConnectionLifetime(t *testing.T) {
 		t.Fatalf("replica max lifetime = %s, want 11m", cfg.MaxConnLifetime)
 	}
 }
+
+// CHE-7639 PR 2: the primary pool trims pgx's per-connection prepared
+// statement cache (default 512) to the A/B winner. The replica keeps pgx's
+// default, and an explicit statement_cache_capacity URL param wins.
+const (
+	pgxDefaultStatementCacheCapacity = 512
+	wantPrimaryStatementCacheCap     = 128
+)
+
+func TestPrimaryPoolDefaultsStatementCacheCapacity(t *testing.T) {
+	cfg := resolvedPoolConfig(t, "postgres://u:p@primary/db?sslmode=disable", "", "", primaryPoolSizing)
+	if got := cfg.ConnConfig.StatementCacheCapacity; got != wantPrimaryStatementCacheCap {
+		t.Fatalf("primary StatementCacheCapacity = %d, want %d", got, wantPrimaryStatementCacheCap)
+	}
+}
+
+func TestPrimaryPoolStatementCacheCapacityURLParamWins(t *testing.T) {
+	cfg := resolvedPoolConfig(t, "postgres://u:p@primary/db?sslmode=disable&statement_cache_capacity=300", "", "", primaryPoolSizing)
+	if got := cfg.ConnConfig.StatementCacheCapacity; got != 300 {
+		t.Fatalf("primary StatementCacheCapacity = %d, want 300 from the URL param", got)
+	}
+}
+
+func TestPrimaryPoolStatementCacheCapacityURLParamMayRestorePgxDefault(t *testing.T) {
+	cfg := resolvedPoolConfig(t, "postgres://u:p@primary/db?sslmode=disable&statement_cache_capacity=512", "", "", primaryPoolSizing)
+	if got := cfg.ConnConfig.StatementCacheCapacity; got != pgxDefaultStatementCacheCapacity {
+		t.Fatalf("primary StatementCacheCapacity = %d, want %d from the URL param", got, pgxDefaultStatementCacheCapacity)
+	}
+}
+
+func TestReplicaPoolKeepsPgxStatementCacheCapacity(t *testing.T) {
+	cfg := resolvedPoolConfig(t, "postgres://u:p@replica/db?sslmode=disable", "", "", replicaPoolSizing)
+	if got := cfg.ConnConfig.StatementCacheCapacity; got != pgxDefaultStatementCacheCapacity {
+		t.Fatalf("replica StatementCacheCapacity = %d, want pgx default %d", got, pgxDefaultStatementCacheCapacity)
+	}
+}

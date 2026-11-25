@@ -238,7 +238,7 @@ func withBase(in service.ChatWakeupInput, taskID pgtype.UUID, at time.Time, titl
 // chatWatchIssue resolves an issue by UUID or identifier inside the caller's workspace.
 func (h *Handler) chatWatchIssue(w http.ResponseWriter, r *http.Request, ref string) (db.Issue, bool) {
 	wsID := h.resolveWorkspaceID(r)
-	if issue, ok := h.resolveIssueByIdentifier(r.Context(), ref, wsID); ok {
+	if issue, ok, _ := h.resolveIssueByIdentifier(r.Context(), ref, wsID); ok {
 		return issue, true
 	}
 	issueID, err1 := util.ParseUUID(ref)

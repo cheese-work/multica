@@ -120,7 +120,7 @@ func TestReconciliationKey_CrossChannelReplayCollapsesToSameKey(t *testing.T) {
 func TestSquadOperatingProtocolReplayProvenThroughProductionBriefing(t *testing.T) {
 	const mergedSHA = "19c756bce4ad20bb9ed5a479c3ba58fedeb00b4e"
 
-	protocol := squadOperatingProtocolFor(true)
+	protocol := squadOperatingProtocolFor(true, leaderNoWorkflow)
 
 	webhookKey := ReconciliationKey(ReconciliationEvent{CandidateSHA: mergedSHA, ReportingCommentID: "webhook-comment-1"})
 	humanKey := ReconciliationKey(ReconciliationEvent{CandidateSHA: mergedSHA, ReportingCommentID: "human-comment-2"})
@@ -163,10 +163,10 @@ func TestSquadOperatingProtocolReplayProvenThroughProductionBriefing(t *testing.
 	// replaced. Assert directly that no raw placeholder reaches the
 	// rendered briefing, for both ownsIssueStatus branches.
 	if strings.Contains(protocol, "{{RECONCILIATION_KEYING_PARAGRAPH}}") {
-		t.Fatalf("squadOperatingProtocolFor(true) leaks a raw {{RECONCILIATION_KEYING_PARAGRAPH}} placeholder into the rendered briefing — strings.Replace's one-shot count=1 only guarantees the FIRST occurrence is substituted\n--- protocol ---\n%s", protocol)
+		t.Fatalf("squadOperatingProtocolFor(true, leaderNoWorkflow) leaks a raw {{RECONCILIATION_KEYING_PARAGRAPH}} placeholder into the rendered briefing — strings.Replace's one-shot count=1 only guarantees the FIRST occurrence is substituted\n--- protocol ---\n%s", protocol)
 	}
-	if notOwned := squadOperatingProtocolFor(false); strings.Contains(notOwned, "{{RECONCILIATION_KEYING_PARAGRAPH}}") {
-		t.Fatalf("squadOperatingProtocolFor(false) leaks a raw {{RECONCILIATION_KEYING_PARAGRAPH}} placeholder into the rendered briefing\n--- protocol ---\n%s", notOwned)
+	if notOwned := squadOperatingProtocolFor(false, leaderNoWorkflow); strings.Contains(notOwned, "{{RECONCILIATION_KEYING_PARAGRAPH}}") {
+		t.Fatalf("squadOperatingProtocolFor(false, leaderNoWorkflow) leaks a raw {{RECONCILIATION_KEYING_PARAGRAPH}} placeholder into the rendered briefing\n--- protocol ---\n%s", notOwned)
 	}
 }
 
@@ -189,7 +189,7 @@ func TestSquadOperatingProtocolReplayProvenThroughProductionBriefing(t *testing.
 //     exactly what TestReconciliationKey_CrossChannelReplayCollapsesToSameKey
 //     above catches.
 func TestSquadOperatingProtocolKeyingParagraphIsGeneratedFromReconciliationKey(t *testing.T) {
-	protocol := squadOperatingProtocolFor(true)
+	protocol := squadOperatingProtocolFor(true, leaderNoWorkflow)
 	generated := reconciliationKeyingParagraph()
 
 	if !strings.Contains(protocol, generated) {

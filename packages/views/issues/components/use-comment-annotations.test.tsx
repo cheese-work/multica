@@ -1,38 +1,82 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAnnotationNoteDraftStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { useCommentAnnotations } from "./use-comment-annotations";
-import { Profiler } from "react";
+import { Profiler, useState } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "sonner";
 
+// The composer is lazy-loaded; warm its module so the first render does not wait on a cold transform.
+beforeAll(() => import("./annotation-composer"), 30_000);
+
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+
+const previewCommentTriggers = vi.hoisted(() => vi.fn(async () => ({ agents: [], blocked: [] })));
+vi.mock("@multica/core/api", async (original) => {
+  const actual = await original<typeof import("@multica/core/api")>();
+  return { ...actual, api: { ...actual.api, previewCommentTriggers, listTasksByIssue: vi.fn(async () => []) } };
+});
+vi.mock("../../editor/content-editor", async () => {
+  const { forwardRef, useRef, useImperativeHandle } = await import("react");
+  return { ContentEditor: forwardRef(function Editor({ defaultValue, ariaLabel, onUpdate, onSubmit, onEnter }: {
+    defaultValue?: string; ariaLabel?: string; onUpdate?: (value: string) => void; onSubmit?: () => void; onEnter?: () => void;
+  }, ref) {
+    const input = useRef<HTMLTextAreaElement>(null);
+    useImperativeHandle(ref, () => ({
+      getMarkdown: () => input.current?.value ?? "",
+      focus: () => input.current?.focus(), hasActiveUploads: () => false,
+    }));
+    return <textarea ref={input} aria-label={ariaLabel} defaultValue={defaultValue}
+      onChange={(event) => onUpdate?.(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" && !event.shiftKey && !event.metaKey && !event.ctrlKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+          event.preventDefault(); onEnter?.();
+        }
+        if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+          event.preventDefault(); onSubmit?.();
+        }
+      }} />;
+  }) };
+});
+
 
 const entry: TimelineEntry = { type: "comment", id: "root", actor_type: "agent", actor_id: "emacs", content: "Selected text", created_at: "2026-09-10T00:00:00Z" };
 const key = "reply:issue:root" as const;
 
-function Fixture({ actorType = "agent", sourceKey = "initial" }: { actorType?: string; sourceKey?: string }) {
+function Fixture({ actorType = "agent", sourceKey = "initial", child = false, deleted = false }: {
+  actorType?: string; sourceKey?: string; child?: boolean; deleted?: boolean;
+}) {
+  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
   const annotation = useCommentAnnotations({
-    draftKey: key, sources: [{ id: entry.id, name: actorType }], enabled: true,
+    issueId: "issue", draftKey: key,
+    sources: [{ id: entry.id, name: actorType }, ...(child && !deleted ? [{ id: "child", name: "Child author" }] : [])], enabled: true,
   });
-  return <div ref={annotation.cardRef} {...annotation.captureProps}>
+  return <QueryClientProvider client={client}><div ref={annotation.cardRef} {...annotation.captureProps}>
     {annotation.popup}
+    {annotation.composer?.render()}
     <div key={sourceKey} data-comment-content="root" tabIndex={0}>Selected text</div>
-  </div>;
+    {child && !deleted && <div data-comment-content="child" tabIndex={0}>Other text</div>}
+  </div></QueryClientProvider>;
 }
 
-function DescriptionFixture({ issueId = "issue", loaded = true }: { issueId?: string; loaded?: boolean }) {
+function DescriptionFixture({ issueId = "issue", loaded = true }: {
+  issueId?: string; loaded?: boolean;
+}) {
+  const [client] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false } } }));
   const sourceId = `description:${issueId}`;
   const annotations = useCommentAnnotations({
+    issueId,
     draftKey: `new:${issueId}`, sources: [{ id: sourceId, name: "Description" }], enabled: loaded, editable: true,
   });
   if (!loaded) return null;
-  return <div ref={annotations.cardRef} {...annotations.captureProps}>
+  return <QueryClientProvider client={client}><div ref={annotations.cardRef} {...annotations.captureProps}>
     {annotations.popup}
+    {annotations.composer?.render()}
     <div data-comment-content={sourceId}><div contentEditable suppressContentEditableWarning>Selected text</div></div>
     <button onMouseDown={(event) => event.preventDefault()} onClick={annotations.addSelection}>Add to comment</button>
-  </div>;
+  </div></QueryClientProvider>;
 }
 
 function ThreadRowFixture({ sourceId, sourceKey = "initial" }: { sourceId?: string; sourceKey?: string }) {
@@ -46,8 +90,8 @@ function ThreadRowFixture({ sourceId, sourceKey = "initial" }: { sourceId?: stri
   </div>;
 }
 
-function selectText(container: HTMLElement, input: "mouse" | "keyboard" = "mouse") {
-  const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
+function selectText(container: HTMLElement, input: "mouse" | "keyboard" = "mouse", selector = "[data-comment-content]") {
+  const source = container.querySelector<HTMLElement>(selector)!;
   if (input === "mouse") {
     fireEvent.pointerDown(source, { pointerType: "mouse", button: 0 });
     fireEvent.mouseDown(source, { button: 0 });
@@ -72,6 +116,7 @@ function selectText(container: HTMLElement, input: "mouse" | "keyboard" = "mouse
 }
 
 beforeEach(() => {
+  previewCommentTriggers.mockClear();
   useCommentDraftStore.setState({ drafts: {} });
   useAnnotationNoteDraftStore.setState({ drafts: {} });
   // jsdom has no layout; give Floating UI a viewport for its real hide middleware.
@@ -133,6 +178,27 @@ describe("selection to reply", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
     expect(useCommentDraftStore.getState().getAnnotations(key)[0]?.note).toBe("Updated reply note");
     expect(await screen.findAllByTestId("annotation-marker")).toHaveLength(1);
+  });
+
+  it("keeps owned portal controls open and lets their first Escape close only the nested control", async () => {
+    const { container } = renderWithI18n(<Fixture />);
+    selectText(container);
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    const note = await screen.findByRole("textbox", { name: "Comment" });
+    const portal = document.createElement("button");
+    portal.setAttribute("data-editor-overlay-owner", key);
+    document.body.append(portal);
+    try {
+      fireEvent.pointerDown(portal); portal.focus();
+      fireEvent.keyDown(portal, { key: "Escape" });
+      expect(note).toBeInTheDocument();
+      note.focus();
+      // Tiptap's blur shortcut handles Escape before it bubbles to the host.
+      const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+      escape.preventDefault();
+      fireEvent(note, escape);
+      expect(note).not.toBeInTheDocument();
+    } finally { portal.remove(); }
   });
 
   it.each([false, true])("does not rerender the host when unannotated source text changes (description: %s)", async (description) => {
@@ -318,7 +384,7 @@ describe("selection to reply", () => {
     expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(1);
   });
 
-  it.each([false, true])("uses Enter to confirm and Shift + Enter for newlines (description: %s)", async (description) => {
+  it.each([false, true])("saves on plain Enter and keeps Shift+Enter for newlines (description: %s)", async (description) => {
     const draftKey = description ? "new:issue" as const : key;
     const { container } = renderWithI18n(description ? <DescriptionFixture /> : <Fixture />);
     selectText(container);

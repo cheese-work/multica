@@ -145,6 +145,12 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 			r.Header.Del("X-Agent-ID")
 			r.Header.Del("X-Task-ID")
 
+			// The user identity is server-set too. Every user-credential
+			// branch below stamps it, but the mdt_ branch does not, so a
+			// client value would otherwise reach handlers that read it as
+			// the caller (requestUserID).
+			r.Header.Del("X-User-ID")
+
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
 				slog.Debug("daemon_auth: missing authorization header", "path", r.URL.Path)
@@ -177,6 +183,7 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 					writeError(w, http.StatusUnauthorized, "invalid daemon token")
 					return
 				}
+				fence := daemonCache.Begin() // before the read: a revoke in between must win
 				dt, err := queries.GetDaemonTokenByHash(r.Context(), hash)
 				if err != nil {
 					slog.Warn("daemon_auth: invalid daemon token", "path", r.URL.Path, "error", err)
@@ -212,7 +219,7 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 					expiresAt = dt.ExpiresAt.Time
 				}
 				if cacheable {
-					daemonCache.Set(r.Context(), hash, identity, auth.TTLForExpiry(time.Now(), expiresAt))
+					daemonCache.SetIfNotInvalidated(r.Context(), fence, hash, identity, auth.TTLForExpiry(time.Now(), expiresAt))
 				}
 
 				ctx := context.WithValue(r.Context(), ctxKeyDaemonWorkspaceID, identity.WorkspaceID)
@@ -286,6 +293,7 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 					writeError(w, http.StatusUnauthorized, "invalid token")
 					return
 				}
+				fence := patCache.Begin() // before the read: a revoke in between must win
 				pat, err := queries.GetPersonalAccessTokenByHash(r.Context(), hash)
 				if err != nil {
 					slog.Warn("daemon_auth: invalid PAT", "path", r.URL.Path, "error", err)
@@ -308,7 +316,7 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 				if pat.ExpiresAt.Valid {
 					expiresAt = pat.ExpiresAt.Time
 				}
-				patCache.Set(r.Context(), hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
+				patCache.SetIfNotInvalidated(r.Context(), fence, hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
 
 				// Cache miss = first request in this TTL window. Refresh
 				// last_used_at; subsequent hits skip the write entirely.

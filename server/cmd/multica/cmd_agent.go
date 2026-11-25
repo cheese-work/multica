@@ -137,6 +137,13 @@ var agentSkillsAddCmd = &cobra.Command{
 	RunE:  runAgentSkillsAdd,
 }
 
+var agentSkillsRemoveCmd = &cobra.Command{
+	Use:   "remove <agent-id>",
+	Short: "Remove one skill from an agent without touching its other assignments",
+	Args:  exactArgs(1),
+	RunE:  runAgentSkillsRemove,
+}
+
 func init() {
 	agentCmd.AddCommand(agentListCmd)
 	agentCmd.AddCommand(agentGetCmd)
@@ -152,6 +159,7 @@ func init() {
 	agentSkillsCmd.AddCommand(agentSkillsListCmd)
 	agentSkillsCmd.AddCommand(agentSkillsSetCmd)
 	agentSkillsCmd.AddCommand(agentSkillsAddCmd)
+	agentSkillsCmd.AddCommand(agentSkillsRemoveCmd)
 
 	agentEnvCmd.AddCommand(agentEnvGetCmd)
 	agentEnvCmd.AddCommand(agentEnvSetCmd)
@@ -251,6 +259,10 @@ func init() {
 	agentSkillsAddCmd.Flags().StringSlice("skill-ids", nil, "Skill IDs to add (comma-separated)")
 	agentSkillsAddCmd.Flags().String("output", "json", "Output format: table or json")
 
+	// agent skills remove
+	agentSkillsRemoveCmd.Flags().String("skill-id", "", "Skill ID to remove")
+	agentSkillsRemoveCmd.Flags().String("output", "json", "Output format: table or json")
+
 	// agent env get
 	agentEnvGetCmd.Flags().String("output", "json", "Output format: json or table")
 
@@ -284,13 +296,12 @@ func newAPIClient(cmd *cobra.Command) (*cli.APIClient, error) {
 	token := resolveToken(cmd)
 	if taskContext && !strings.HasPrefix(token, "mat_") {
 		// When the ONLY daemon signal is a workdir marker (no MULTICA_AGENT_ID /
-		// MULTICA_TASK_ID / MULTICA_DAEMON_PORT), the likeliest cause outside a
-		// real task is a leftover marker from a crashed daemon task in a
-		// local_directory. Name the exact file so a normal user can recover
-		// instead of hitting an opaque "requires mat_ token" error. Shares its
-		// wording with requireHumanLocalCommand: same cause, same remedy.
-		if markerPath := leftoverDaemonTaskMarkerPath(); markerPath != "" {
-			return nil, fmt.Errorf("agent execution context requires MULTICA_TOKEN to be a task-scoped mat_ token%s", leftoverMarkerSuffix(markerPath))
+		// MULTICA_TASK_ID / MULTICA_DAEMON_PORT), name the exact file and say
+		// whether it can be a leftover, instead of an opaque "requires mat_
+		// token" error. Shares its wording with requireHumanLocalCommand: same
+		// cause, same remedy.
+		if hint := taskMarkerHint(); hint != "" {
+			return nil, fmt.Errorf("agent execution context requires MULTICA_TOKEN to be a task-scoped mat_ token%s", hint)
 		}
 		return nil, fmt.Errorf("agent execution context requires MULTICA_TOKEN to be a task-scoped mat_ token%s", daemonPortOnlyContextHint())
 	}
@@ -439,8 +450,8 @@ func requireTaskLocalConfigRoot() error {
 		// too: a user hitting this one through `config show` or `auth status`
 		// is as stuck as one hitting the others, and "which command did you
 		// happen to run first" must not decide whether the error is actionable.
-		if markerPath := leftoverDaemonTaskMarkerPath(); markerPath != "" {
-			return fmt.Errorf("daemon-managed task requires a task-local Multica config root in %s%s", cli.TaskConfigRootEnv, leftoverMarkerSuffix(markerPath))
+		if hint := taskMarkerHint(); hint != "" {
+			return fmt.Errorf("daemon-managed task requires a task-local Multica config root in %s%s", cli.TaskConfigRootEnv, hint)
 		}
 		return fmt.Errorf("daemon-managed task requires a task-local Multica config root in %s%s", cli.TaskConfigRootEnv, daemonPortOnlyContextHint())
 	}
@@ -461,8 +472,8 @@ func requireHumanLocalCommand(command string) error {
 	// until someone deletes the file by hand (MUL-6132). Name it, so the user
 	// knows which file that is; the bare message below sends them to the source
 	// instead. Mirrors newAPIClient's leftover-marker handling.
-	if markerPath := leftoverDaemonTaskMarkerPath(); markerPath != "" {
-		return fmt.Errorf("%s is not available inside a daemon-managed task%s", command, leftoverMarkerSuffix(markerPath))
+	if hint := taskMarkerHint(); hint != "" {
+		return fmt.Errorf("%s is not available inside a daemon-managed task%s", command, hint)
 	}
 	return fmt.Errorf("%s is not available inside a daemon-managed task", command)
 }
@@ -479,6 +490,11 @@ func daemonTaskContextMarkerPath() string {
 	if err != nil {
 		return ""
 	}
+	return daemonTaskContextMarkerPathFrom(dir)
+}
+
+// daemonTaskContextMarkerPathFrom is daemonTaskContextMarkerPath starting at dir.
+func daemonTaskContextMarkerPathFrom(dir string) string {
 	for {
 		markerPath := filepath.Join(dir, execenv.TaskContextMarkerRelPath)
 		// Only a marker we can read AND whose managed_by matches counts as a
@@ -613,7 +629,7 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, agent)
 	}
 
-	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION", "PAUSED"}
+	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION", "PAUSED", "ROLE_SCOPE"}
 	rows := [][]string{{
 		strVal(agent, "id"),
 		strVal(agent, "name"),
@@ -623,9 +639,26 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		strVal(agent, "avatar_url"),
 		strVal(agent, "description"),
 		strVal(agent, "scheduling_paused_at"),
+		roleScopeCell(agent),
 	}}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil
+}
+
+// roleScopeCell renders an agent's role_scope (CHE-9192); "all" is an agent with
+// no agent_role_scope entry.
+func roleScopeCell(agent map[string]any) string {
+	list, _ := agent["role_scope"].([]any)
+	if len(list) == 0 {
+		return "all"
+	}
+	names := make([]string, 0, len(list))
+	for _, v := range list {
+		if s, ok := v.(string); ok {
+			names = append(names, s)
+		}
+	}
+	return strings.Join(names, ",")
 }
 
 // applyAgentPermissionFlags translates the invocation-permission flags
@@ -1144,6 +1177,29 @@ func runAgentSkillsAdd(cmd *cobra.Command, args []string) error {
 	var result json.RawMessage
 	if err := client.PostJSON(ctx, "/api/agents/"+args[0]+"/skills/add", body, &result); err != nil {
 		return fmt.Errorf("add agent skills: %w", err)
+	}
+
+	return printAgentSkillsMutationResult(cmd, args[0], result)
+}
+
+func runAgentSkillsRemove(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	skillID, _ := cmd.Flags().GetString("skill-id")
+	skillID = strings.TrimSpace(skillID)
+	if skillID == "" {
+		return fmt.Errorf("--skill-id is required")
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	var result json.RawMessage
+	if err := client.DeleteJSONResponse(ctx, "/api/agents/"+args[0]+"/skills/"+url.PathEscape(skillID), &result); err != nil {
+		return fmt.Errorf("remove agent skill: %w", err)
 	}
 
 	return printAgentSkillsMutationResult(cmd, args[0], result)

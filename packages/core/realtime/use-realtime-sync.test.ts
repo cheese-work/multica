@@ -108,8 +108,13 @@ describe("applyChatDoneToCache", () => {
 
     applyChatDoneToCache(qc, donePayload());
 
-    expect(setQueryData.mock.calls[0]?.[0]).toEqual(messagesKey);
-    expect(setQueryData.mock.calls[2]?.[0]).toEqual(pendingKey);
+    // The door writes the by-id store and the derived caches (B1a.1); the
+    // order that matters is message first, pending marker last.
+    const written = setQueryData.mock.calls.map((call) => JSON.stringify(call[0]));
+    expect(written.indexOf(JSON.stringify(messagesKey))).toBeGreaterThanOrEqual(0);
+    expect(written.indexOf(JSON.stringify(messagesKey))).toBeLessThan(
+      written.indexOf(JSON.stringify(pendingKey)),
+    );
     expect(qc.getQueryData<ChatPendingTask>(pendingKey)).toEqual({});
     expect(qc.getQueryData<ChatMessage[]>(messagesKey)).toEqual([
       userMessage(),
@@ -891,6 +896,33 @@ describe("handleInboxNew", () => {
     await handleInboxNew(qc, inboxItem());
 
     expect(showNotification).not.toHaveBeenCalled();
+  });
+
+  it("skips the banner for a move to in_progress but still refreshes the inbox", async () => {
+    const qc = createQueryClient();
+    qc.setQueryData<Workspace[]>(workspaceKeys.list(), [workspace()]);
+    qc.setQueryData(notificationPreferenceKeys.all("ws-a"), {
+      preferences: { system_notifications: "all" },
+    });
+    const invalidate = vi.spyOn(qc, "invalidateQueries");
+    const showNotification = stubDesktopAPI();
+
+    await handleInboxNew(
+      qc,
+      inboxItem({ type: "status_changed", details: { from: "todo", to: "in_progress" } }),
+    );
+    expect(showNotification).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith(
+        expect.objectContaining({ queryKey: inboxKeys.all("ws-a") }),
+      ),
+    );
+
+    await handleInboxNew(
+      qc,
+      inboxItem({ type: "status_changed", details: { from: "in_progress", to: "in_review" } }),
+    );
+    expect(showNotification).toHaveBeenCalledTimes(1);
   });
 
   // The tests below exercise the COLD-cache mute path (source preference not

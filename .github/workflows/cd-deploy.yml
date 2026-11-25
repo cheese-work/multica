@@ -39,6 +39,10 @@ run-name: CD deploy to C00 · ${{ inputs.candidate_sha || inputs.ref || github.e
 # deploy, readback, readback-delay or readback-confirm suspends automatic deploys: the next
 # authorize-c00 finds the latest finished run failed and builds without
 # deploying, until a later deploy succeeds (the owner's dispatch lifts it).
+# A first-attempt run that the quiescence preflight deferred (the marker step in
+# the `deploy` job, CHE-9367) is named as such in the warning, but it still
+# suspends: nothing is skipped yet (CHE-9330). `authorize-c00.py --explain`
+# prints the walk and the deferral streak; the workflow does not call it.
 # The cutover controller rolls back by digest on a failed cutover, and the
 # `rollback` job does the same after a failed readback, readback-delay or readback-confirm.
 #
@@ -791,11 +795,28 @@ jobs:
             deploy_status=1
           fi
 
+          # CHE-9367 (CHE-9223): cutover.sh exits 75 only for a quiescence
+          # preflight deferral (nothing drained, incumbent still serving).
+          # Record it only when the window-0 health check above also passed
+          # (a failed check set deploy_status=1). The step still fails below.
+          if [ "$deploy_status" -eq 75 ]; then
+            echo "outcome=deferred" >> "$GITHUB_OUTPUT"
+          fi
+
           # Best-effort cleanup of the staged copy; failure here must
           # never mask the deploy's own exit status.
           rm -rf "$remote_dir" || true
 
           exit "$deploy_status"
+
+      # CHE-9367 (CHE-9223 S1): marks a run whose deploy step was deferred by the
+      # quiescence preflight. The output is written in this attempt by the
+      # deploy step, so no workspace file is read. It only
+      # prints a notice; the job stays failed and authorize-c00 does not read it.
+      - name: C00 deploy deferred by quiescence preflight
+        if: failure() && steps.deploy.outcome == 'failure' && steps.deploy.outputs.outcome == 'deferred'
+        shell: bash
+        run: echo "::notice title=C00 deploy deferred::The quiescence preflight deferred this deploy (exit 75); nothing was cut over."
 
       # Release receipt inputs. The receipt itself is the release-receipt job
       # below: it runs only after the readback and the 15-minute confirm passed.

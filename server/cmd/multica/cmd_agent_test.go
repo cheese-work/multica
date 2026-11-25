@@ -1395,6 +1395,73 @@ func TestAgentSkillsAddRequiresSkillIDs(t *testing.T) {
 	}
 }
 
+func TestAgentSkillsRemoveCallsDeleteEndpoint(t *testing.T) {
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		json.NewEncoder(w).Encode([]map[string]any{
+			{"id": "skill-b", "name": "Skill B", "description": ""},
+		})
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := &cobra.Command{Use: "remove"}
+	cmd.Flags().String("skill-id", "", "")
+	cmd.Flags().String("output", "json", "")
+	cmd.Flags().String("profile", "", "")
+	if err := cmd.Flags().Set("skill-id", "skill-a"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := runAgentSkillsRemove(cmd, []string{"agent-123"}); err != nil {
+		t.Fatalf("runAgentSkillsRemove: %v", err)
+	}
+	if gotMethod != http.MethodDelete {
+		t.Fatalf("method = %s, want DELETE", gotMethod)
+	}
+	if gotPath != "/api/agents/agent-123/skills/skill-a" {
+		t.Fatalf("path = %q, want /api/agents/agent-123/skills/skill-a", gotPath)
+	}
+}
+
+func TestAgentSkillsRemoveRequiresSkillID(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+	}))
+	defer srv.Close()
+
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	for name, set := range map[string]string{"missing": "", "blank": "  "} {
+		t.Run(name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "remove"}
+			cmd.Flags().String("skill-id", "", "")
+			cmd.Flags().String("output", "json", "")
+			cmd.Flags().String("profile", "", "")
+			if set != "" {
+				if err := cmd.Flags().Set("skill-id", set); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := runAgentSkillsRemove(cmd, []string{"agent-123"})
+			if err == nil || !strings.Contains(err.Error(), "--skill-id is required") {
+				t.Fatalf("expected required --skill-id error, got %v", err)
+			}
+		})
+	}
+	if requests != 0 {
+		t.Fatalf("made %d requests, want 0", requests)
+	}
+}
+
 // TestAgentAvatarHappyPath verifies the full flow: agent pre-check, file upload,
 // and avatar update all succeed.
 func TestAgentAvatarHappyPath(t *testing.T) {

@@ -1,0 +1,266 @@
+{
+ "window": {
+  "start": "2026-11-01T00:00:00.000Z",
+  "end": "2026-11-15T00:00:00.000Z",
+  "reviewCutoff": "2026-11-16T00:00:00.000Z",
+  "mwgEnd": "2026-11-14T00:00:00.000Z"
+ },
+ "agents": {
+  "x99-claude-sonnet-200k": {
+   "units": {
+    "state": "measured",
+    "web": 13,
+    "reviewed": 6,
+    "unreviewed": 7,
+    "unlinked": 0,
+    "list": [
+     {
+      "repo": "cheese-work/doop",
+      "number": 110,
+      "issue": "CHE-9010",
+      "reviewed": true,
+      "m2": 0,
+      "transcript": "full"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 101,
+      "issue": "CHE-9001",
+      "reviewed": true,
+      "m2": 2,
+      "transcript": "full"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 102,
+      "issue": "CHE-9002",
+      "reviewed": true,
+      "m2": 0,
+      "transcript": "partial"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 103,
+      "issue": "CHE-9003",
+      "reviewed": false,
+      "m2": null,
+      "transcript": "full"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 104,
+      "issue": "CHE-9004",
+      "reviewed": false,
+      "m2": null,
+      "transcript": "full"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 108,
+      "issue": "CHE-9008",
+      "reviewed": true,
+      "m2": 0,
+      "transcript": "missing"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 111,
+      "issue": "CHE-9011",
+      "reviewed": true,
+      "m2": 0,
+      "transcript": "missing"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 112,
+      "issue": "CHE-9011",
+      "reviewed": false,
+      "m2": null,
+      "transcript": "missing"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 113,
+      "issue": "CHE-9012",
+      "reviewed": false,
+      "m2": null,
+      "transcript": "missing"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 114,
+      "issue": "CHE-9012",
+      "reviewed": false,
+      "m2": null,
+      "transcript": "missing"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 115,
+      "issue": "CHE-9013",
+      "reviewed": true,
+      "m2": 0,
+      "transcript": "missing"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 116,
+      "issue": "CHE-9013",
+      "reviewed": false,
+      "m2": null,
+      "transcript": "missing"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 117,
+      "issue": "CHE-9014",
+      "reviewed": false,
+      "m2": null,
+      "transcript": "missing"
+     }
+    ]
+   },
+   "metrics": {
+    "M1": {
+     "state": "insufficient",
+     "n": 4,
+     "hits": 1,
+     "value": 0.25
+    },
+    "M1s": {
+     "state": "measured",
+     "n": 13,
+     "hits": 1,
+     "value": 0.0769
+    },
+    "M2": {
+     "state": "insufficient",
+     "n": 6,
+     "findings": 2,
+     "perReviewedPr": 0.3333
+    },
+    "M2f": {
+     "state": "not_run",
+     "reason": "no sloplint source (CHE-6854) is wired into this script"
+    },
+    "M3": {
+     "state": "insufficient",
+     "n": 6,
+     "unitsWithHarm": 0
+    },
+    "M3p": {
+     "state": "measured",
+     "runs": 7,
+     "runsWithTranscript": 6,
+     "coverage": 0.8571,
+     "hits": 2,
+     "unconfirmed": 0,
+     "hitList": [
+      {
+       "run": "tA3",
+       "kind": "unsanctioned",
+       "at": "2026-11-04T10:02:00Z",
+       "confirmed": true
+      },
+      {
+       "run": "tA9",
+       "kind": "unsanctioned",
+       "at": "2026-11-10T10:03:00Z",
+       "confirmed": true
+      }
+     ]
+    },
+    "M4": {
+     "state": "measured",
+     "runs": 7,
+     "listingBytesMedian": 934,
+     "runDurationSecMedian": 300,
+     "units": 4,
+     "toolCallsPerUnitMean": 2.5,
+     "toolCallsPerUnitMedian": 1.5
+    }
+   }
+  },
+  "x99-claude-sonnet-design": {
+   "units": {
+    "state": "measured",
+    "web": 2,
+    "reviewed": 2,
+    "unreviewed": 0,
+    "unlinked": 0,
+    "list": [
+     {
+      "repo": "cheese-work/doop",
+      "number": 201,
+      "issue": "CHE-9101",
+      "reviewed": true,
+      "m2": 0,
+      "transcript": "full"
+     },
+     {
+      "repo": "cheese-work/multica",
+      "number": 203,
+      "issue": "CHE-9103",
+      "reviewed": true,
+      "m2": 1,
+      "transcript": "full"
+     }
+    ]
+   },
+   "metrics": {
+    "M1": {
+     "state": "insufficient",
+     "n": 2,
+     "hits": 2,
+     "value": 1
+    },
+    "M1s": {
+     "state": "measured",
+     "n": 2,
+     "hits": 0,
+     "value": 0
+    },
+    "M2": {
+     "state": "insufficient",
+     "n": 2,
+     "findings": 1,
+     "perReviewedPr": 0.5
+    },
+    "M2f": {
+     "state": "not_run",
+     "reason": "no sloplint source (CHE-6854) is wired into this script"
+    },
+    "M3": {
+     "state": "insufficient",
+     "n": 2,
+     "unitsWithHarm": 1
+    },
+    "M3p": {
+     "state": "measured",
+     "runs": 2,
+     "runsWithTranscript": 2,
+     "coverage": 1,
+     "hits": 1,
+     "unconfirmed": 0,
+     "hitList": [
+      {
+       "run": "tD2",
+       "kind": "late",
+       "at": "2026-11-14T10:00:00Z",
+       "confirmed": true
+      }
+     ]
+    },
+    "M4": {
+     "state": "measured",
+     "runs": 2,
+     "listingBytesMedian": 934,
+     "runDurationSecMedian": 217170,
+     "units": 2,
+     "toolCallsPerUnitMean": 1,
+     "toolCallsPerUnitMedian": 1
+    }
+   }
+  }
+ }
+}

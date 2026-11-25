@@ -168,6 +168,22 @@ test("gitleaks reads its ignore list and config from scripts/security-weekly, no
   assert.match(wf, /rm -f \.gitleaksignore\n[\s\S]*gitleaks" git /);
 });
 
+// CHE-9231: the two findings Cheese accepted on CHE-6210 (22 Nov 2026 ICT) live in the owned ignore list, not a root file.
+test("owned gitleaks ignore list carries the two accepted PR 1834 fingerprints", () => {
+  const list = readFileSync(new URL("./.gitleaksignore", import.meta.url), "utf8");
+  for (const fp of [
+    "25eca7cf6b5e57c8f0d6dc837b0565beaed25e6d:server/cmd/migrate/main.go:generic-api-key:160",
+    "98c53df049b687cefd238b648d960c484c70d5d2:server/internal/daemon/commit_diff_test.go:private-key:297",
+  ]) {
+    assert.ok(list.split("\n").includes(fp), `missing fingerprint ${fp}`);
+  }
+});
+
+// CHE-9001: the PR gate must read the same owned ignore list, or the accepted fingerprints still fail every PR that carries that history.
+test("PR secret-scan gate reads the owned ignore list", () => {
+  assert.match(read("scripts/secret-scan.sh"), /^exec "\$bin" git [^\n]*--gitleaks-ignore-path scripts\/security-weekly /m);
+});
+
 test("CODEOWNERS routes the whole security-weekly toolchain to the owner", () => {
   assert.match(read(".github/CODEOWNERS"), /^\/scripts\/security-weekly\/\s+@congvc-dev/m);
 });

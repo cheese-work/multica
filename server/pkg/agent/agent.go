@@ -111,6 +111,20 @@ type ExecOptions struct {
 	// knows the resume is gone, and the backend covers only the case the daemon
 	// cannot see — a live resume RPC rejected mid-run.
 	ResumeContinuityNotice string
+	// TaskToken is the task-scoped Multica API credential (mat_...) the server
+	// mints at claim time. CLI backends receive it as MULTICA_TOKEN in the
+	// subprocess environment. Backends that delegate remotely (museapp) forward
+	// it in their wire request so the remote worker can call the Multica API
+	// with the same scoped identity. Empty when the server did not provide one.
+	TaskToken string
+	// MulticaServerURL is the Multica API base URL (e.g.
+	// https://multica.example.com). Remote backends forward it so the worker
+	// knows where to call; CLI backends get it as MULTICA_SERVER_URL.
+	MulticaServerURL string
+	// MulticaWorkspaceID is the workspace UUID for this task. Remote backends
+	// forward it so the worker can pass it as a query param; CLI backends get
+	// it as MULTICA_WORKSPACE_ID.
+	MulticaWorkspaceID string
 	// ExtraArgs is honoured only by backends that opt in by reading it; the
 	// rest ignore it. Deliberately not enumerated here — the previous list
 	// went stale as backends were added, which is how MULTICA_QWENPAW_ARGS
@@ -262,7 +276,29 @@ const (
 	MessageStatus     MessageType = "status"
 	MessageError      MessageType = "error"
 	MessageLog        MessageType = "log"
+	// MessageContextCompacted marks one compaction of the run's context. Its
+	// Input carries trigger, tokens_before and tokens_after (see
+	// NewContextCompactedMessage); the daemon stores it as a run message so
+	// compaction is measurable after the fact (CHE-9299).
+	MessageContextCompacted MessageType = "context_compacted"
 )
+
+// NewContextCompactedMessage builds the run message for one compaction. A
+// zero count means the backend did not report it and is omitted rather than
+// recorded as a misleading 0.
+func NewContextCompactedMessage(trigger string, tokensBefore, tokensAfter int64) Message {
+	in := map[string]any{}
+	if trigger != "" {
+		in["trigger"] = trigger
+	}
+	if tokensBefore > 0 {
+		in["tokens_before"] = tokensBefore
+	}
+	if tokensAfter > 0 {
+		in["tokens_after"] = tokensAfter
+	}
+	return Message{Type: MessageContextCompacted, Input: in}
+}
 
 // Message is a unified event emitted by an agent during execution.
 type Message struct {
@@ -471,11 +507,14 @@ var SupportedTypes = []string{
 	"grok",
 	"qwen",
 	"qwenpaw",
+	"droid",
+	"amp",
 	"mcode",
 	"muse",
 	"dim",
 	"devin",
 	"zeroclaw",
+	"museapp",
 	"zcode",
 }
 
@@ -509,6 +548,8 @@ var resumeRejectionUndetectable = map[string]bool{
 	"deveco":      true,
 	"opencode":    true,
 	"codearts":    true,
+	"droid":       true,
+	"amp":         true,
 }
 
 // ResumeRejectionUndetectable reports whether agentType is a backend that
@@ -594,6 +635,10 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &qwenBackend{cfg: cfg}, nil
 	case "qwenpaw":
 		return &qwenpawBackend{cfg: cfg}, nil
+	case "droid":
+		return &droidBackend{cfg: cfg}, nil
+	case "amp":
+		return &ampBackend{cfg: cfg}, nil
 	case "mcode":
 		return &mcodeBackend{cfg: cfg}, nil
 	case "devin":
@@ -602,6 +647,8 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &museBackend{cfg: cfg}, nil
 	case "zeroclaw":
 		return &zeroclawBackend{cfg: cfg}, nil
+	case "museapp":
+		return &museappBackend{cfg: cfg}, nil
 	case "zcode":
 		return &zcodeBackend{cfg: cfg}, nil
 	default:
@@ -648,11 +695,14 @@ var launchHeaders = map[string]string{
 	"grok":        "grok agent stdio",
 	"qwen":        "qwen -p (stream-json)",
 	"qwenpaw":     "qwenpaw acp",
+	"droid":       "droid exec (stream-json)",
+	"amp":         "amp --execute (stream-json)",
 	"dim":         "dim acp",
 	"devin":       "devin acp",
 	"mcode":       "mcode acp",
 	"muse":        "muse serve (msp)",
 	"zeroclaw":    "zeroclaw acp",
+	"museapp":     "museapp (remote receptionist)",
 	"zcode":       "zcode app-server",
 }
 

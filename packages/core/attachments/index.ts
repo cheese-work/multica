@@ -10,6 +10,7 @@ export {
 } from "./plan-revisions";
 export {
   collectDeliverableFiles,
+  deliverableInventoryFromAttachments,
   deliverableKey,
   findDeliverableVersion,
   type DeliverableFile,

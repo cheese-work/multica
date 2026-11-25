@@ -52,6 +52,9 @@ var auditedRoutes = map[string]string{
 // auditExemptRoutes need no audit row, with the reason.
 var auditExemptRoutes = map[string]string{
 	"DELETE /api/workspaces/{id}/": "workspace deletion removes the workspace's audit rows in the same tx (audit_workspace_delete)",
+
+	"POST /api/runtimes/affected/dismiss": "a banner dismissal is a personal view preference; no workspace setting, credential or grant changes",
+	"POST /api/runtimes/affected/reopen":  "a banner dismissal is a personal view preference; no workspace setting, credential or grant changes",
 }
 
 // auditPendingL5b lists in-scope admin routes whose audit kind is not wired

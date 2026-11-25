@@ -100,6 +100,25 @@ workspace setting `capability_routing`: per issue type, the author agent and
 the ordered reviewer agents. It prints `{}` when unset. Read-only; change it
 with `multica config propose workspace.settings --set capability_routing:=<json>`.
 
+## Agent role scope
+
+`multica workspace agent-role-scope [workspace-id|slug|prefix]` prints the
+workspace setting `agent_role_scope`: per agent, the work classes another agent
+may assign it. An agent with no entry is unrestricted. An agent that assigns an
+issue, or requests a review, from an out-of-scope agent is refused with the
+`capability_routing` author or reviewers named; a person is not. Read-only;
+change it with `multica config propose workspace.settings --set agent_role_scope:=<json>`.
+`multica agent get <agent>` shows one agent's scope.
+
+The work class is read from the issue title: `plan`/`design`/`spec`, `decision`,
+and `debate` by type; `review(plan|design|spec|decision|debate)` is a plan
+review, any other `review` (including `review(security)`) is a code review;
+everything else is execution, security-typed implementation work included. A
+co-sign is only a child issue titled `security gate: <parent identifier>` under
+the work it gates. A path or a `security` type in a title never makes work a
+co-sign. To get Sol's co-sign on D8 paths, create that gate issue under the PR's
+issue.
+
 ## Workspace MCP servers
 
 ```bash
@@ -190,19 +209,41 @@ multica github intake list --since <RFC3339> [--limit 50]  # read-only webhook d
 - `on` and `off` change dispatch for the whole scope. Run them only when a
   person asked for it.
 
-## Attachment revisions
+## Other commands
 
-- `multica attachment history <attachment-id> [--output json]` lists every
-  revision of an attachment: time, actor, SHA-256.
-- `multica attachment diff <attachment-id> --from N --to M` prints a unified
-  diff between two revisions of a text attachment (md, html, json, yaml, code).
-  A binary file prints "binary, sizes and SHA differ".
+One line per verb. Run `multica <command> --help` for flags. Read verbs have no side effects.
 
-## Saved views
-
-`multica view get <view> [--output json]` reads one saved issue view's
-definition. `<view>` is a view ID, an ID prefix or an exact name
-(case-insensitive). Read-only.
+| Command | What it does |
+|---|---|
+| `multica attachment history <attachment-id>` | List every revision of an attachment (time, actor, SHA-256) |
+| `multica attachment diff <attachment-id> --from N --to M` | Unified diff between two revisions of a text attachment |
+| `multica issue description history <id>` | List recorded description revisions |
+| `multica issue description diff <id> --from N --to M` | Unified diff between two description revisions |
+| `multica issue route <id> --status S [--owner O]` | Move status, optionally hand off, and record reason and confidence in one call (routing steps) |
+| `multica issue urgent-orphans` | Open urgent issues with no task and no enabled wakeup |
+| `multica issue-status list` | List the workspace status catalog |
+| `multica issue-status get <key-or-name>` | Show one status |
+| `multica issue-status create --name N --category C` | Add a custom status (write) |
+| `multica issue-status archive <key-or-name>` | Archive a status; owner/admin only, refused while a workflow uses it (write) |
+| `multica view get <view>` | One saved view's definition (id, id prefix or exact name) |
+| `multica wakeup-definition delete <rule>` | Delete a custom wakeup rule or reset one to its inherited settings (write) |
+| `multica chat attention` | DMs that wait for you, oldest first |
+| `multica chat later <session> [duration\|time]` | Snooze a DM; reuse `--request-id` on retry |
+| `multica ci-watch get <owner/name>` | Show a repo's CI watcher settings |
+| `multica ci-watch events <owner/name>` | List a repo's recent watcher events |
+| `multica ci-watch set <owner/name>` | Change watcher settings; only passed flags are sent (write) |
+| `multica decision shadow-report` | Read the System 1 shadow predictor report |
+| `multica system1 report` | Read the System 1 qualification report |
+| `multica system1 label-queue` | Read the blind label queue |
+| `multica system1 label submit` | Write one label for one observation (write) |
+| `multica runtime breaker list` | Provider circuit breakers in the workspace |
+| `multica runtime breaker reset <provider>` | Close a breaker now; audited (write) |
+| `multica git read-token` | Used by the restricted-run `gh` wrapper; the broker holds the token in memory |
+| `multica guard check-pr <pr>` | Check a PR against workspace policy and `.github/agent-rules.yml` read from the protected base; edits nothing |
+| `multica guard exec <tool> -- <args...>` | Run a tool after the guard has checked, fixed or refused the call |
+| `multica guard plugin list` | List the plugins of every scope in the stored policy |
+| `multica guard plugin get <name>` | Show every scope's definition of one plugin |
+| `multica guard plugin set --file <policy.json>` | Validate a policy and write the action file for `decision request --action-file`; changes nothing until approved |
 
 ## CI failure watcher
 

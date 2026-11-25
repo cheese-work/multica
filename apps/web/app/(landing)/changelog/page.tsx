@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { pageMetadata } from "@/features/landing/utils/page-metadata";
 import { ChangelogPageClient } from "@/features/landing/components/changelog-page-client";
 import { forkBuildStamp, liveVersion, parseForkChangelog, unavailableFork } from "@/features/landing/components/fork-changelog";
 
@@ -12,19 +13,9 @@ const fork = (() => {
   }
 })();
 
-export const metadata: Metadata = {
-  title: "Changelog",
-  description:
-    "See what's new in Multica — latest features, improvements, and fixes.",
-  openGraph: {
-    title: "Changelog | Multica",
-    description: "Latest updates and releases from Multica.",
-    url: "/changelog",
-  },
-  alternates: {
-    canonical: "/changelog",
-  },
-};
+export function generateMetadata(): Promise<Metadata> {
+  return pageMetadata("changelog", "/changelog");
+}
 
 export default function ChangelogPage() {
   return (
