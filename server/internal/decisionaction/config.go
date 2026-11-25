@@ -134,18 +134,35 @@ func WorkflowDigest(workflowID string, steps json.RawMessage) (string, error) {
 var ModeSettingKeys = []string{"auto_close", "blocked_run_skip", "run_guard", "run_budget", "wakeup_live_join"}
 
 // ValidateModeSetting checks a non-null value of a ModeSettingKeys key: an
-// object holding exactly a mode of off, warn or block. The server request path
-// and the config propose dry run share it (CHE-7716), so a preview refuses what
-// the request refuses.
+// object holding exactly a mode of off, warn or block. run_guard may also hold
+// a stop_loss object of the same shape (CHE-9340). The server request path and
+// the config propose dry run share it (CHE-7716), so a preview refuses what the
+// request refuses.
 func ValidateModeSetting(key string, raw json.RawMessage) error {
 	shape := fmt.Errorf(`%s must be an object {"mode": "off"|"warn"|"block"}`, key)
-	var patch map[string]any
-	if err := json.Unmarshal(raw, &patch); err != nil || len(patch) != 1 {
+	var patch map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &patch); err != nil {
 		return shape
 	}
-	mode, _ := patch["mode"].(string)
-	if mode != "off" && mode != "warn" && mode != "block" {
+	if stop, ok := patch["stop_loss"]; ok && key == "run_guard" {
+		if !modeOnly(stop) {
+			return fmt.Errorf(`run_guard.stop_loss must be an object {"mode": "off"|"warn"|"block"}`)
+		}
+		delete(patch, "stop_loss")
+	}
+	mode, _ := json.Marshal(patch)
+	if len(patch) != 1 || !modeOnly(mode) {
 		return shape
 	}
 	return nil
+}
+
+// modeOnly reports whether raw is an object holding exactly a mode of off, warn or block.
+func modeOnly(raw json.RawMessage) bool {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil || len(obj) != 1 {
+		return false
+	}
+	mode, _ := obj["mode"].(string)
+	return mode == "off" || mode == "warn" || mode == "block"
 }

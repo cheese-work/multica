@@ -46,7 +46,9 @@ func (h *Handler) onLoopBreakerTripped(ctx context.Context, e service.LoopBreake
 		agentName = agent.Name
 	}
 	reason := loopBreakerReason(agentName, e)
-	if !service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
+	// A deferred review run waits in the stage queue and starts when the window
+	// clears (CHE-9722): the issue stays where it is, and the notice is the log.
+	if !e.Deferred && !service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
 		h.blockLoopBreakerIssue(ctx, issue, reason, e)
 	}
 	h.postLoopBreakerNotice(ctx, issue, agentName, reason, e)
@@ -120,10 +122,15 @@ func (h *Handler) postLoopBreakerNotice(ctx context.Context, issue db.Issue, age
 func (h *Handler) loopBreakerNoticeText(ctx context.Context, issue db.Issue, agentName, reason string, e service.LoopBreakerTripped) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "**Loop breaker.** %s. The next run was refused", reason)
-	if issue.Status != issuestatus.Blocked && !service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
+	if e.Deferred {
+		fmt.Fprintf(&b, " and is queued: it starts on its own once fewer than the limit of runs fall inside the window, and the issue stays in %s", issue.Status)
+	} else if issue.Status != issuestatus.Blocked && !service.IsFinishedStatus(ctx, h.Queries, issue.WorkspaceID, issue.Status) {
 		b.WriteString(" and the issue is blocked")
 	}
 	fmt.Fprintf(&b, ".\n\n- Agent: %s\n- Trigger types of the last %d runs, newest first: %s\n", agentName, len(e.Triggers), strings.Join(e.Triggers, ", "))
+	if e.Deferred {
+		return b.String()
+	}
 	if id, ok := h.blockedAgentHandler(ctx, issue); ok {
 		name := "Tofu"
 		if tofu, err := h.Queries.GetAgent(ctx, parseUUID(id)); err == nil {
