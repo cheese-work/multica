@@ -400,6 +400,10 @@ type TaskResult struct {
 	// the terminal report so the server clears the resume pointer and flags the
 	// continuity gap for the next claim. Not part of the wire result itself.
 	SessionRolloutMissing bool `json:"-"`
+	// TimeoutCheckpoint is the git state, last tool calls and near-limit
+	// warning outcome of a run that hit its wall-clock cap. Forwarded on the
+	// fail callback only; nil for every other outcome (CHE-9762).
+	TimeoutCheckpoint *timeoutCheckpoint `json:"-"`
 	// RetiredSessionID names a session this run was told to resume and then
 	// abandoned as unresumable (GH #6066). Forwarded on every terminal path,
 	// including the completed one: a fresh-session retry that SUCCEEDS is
