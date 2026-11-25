@@ -129,3 +129,10 @@ SELECT type, COALESCE(CASE WHEN type = 'text' THEN content END, '')::text AS con
 FROM task_message
 WHERE task_id = $1 AND type IN ('text', 'tool_use', 'error')
 ORDER BY seq ASC;
+
+-- name: ListTaskContextCompactedMessages :many
+-- The run messages a mid-turn compaction notice is projected from (CHE-9935).
+-- Only the columns the notice needs; output is never read.
+SELECT id, created_at, input FROM task_message
+WHERE task_id = $1 AND type = 'context_compacted'
+ORDER BY seq ASC;

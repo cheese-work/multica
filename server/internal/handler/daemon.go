@@ -6525,6 +6525,16 @@ func sealsChatText(rows []db.CreateTaskMessagesRow) bool {
 	return false
 }
 
+// batchHasContextCompacted reports whether a batch holds a compaction event.
+func batchHasContextCompacted(messages []TaskMessageRequest) bool {
+	for _, m := range messages {
+		if m.Type == string(agent.MessageContextCompacted) {
+			return true
+		}
+	}
+	return false
+}
+
 // ReportTaskMessages receives a batch of agent execution messages from the daemon.
 func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
@@ -6697,6 +6707,20 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 				ChatSessionOwnerID: scope.ChatSessionOwnerID,
 				Payload:            taskMessageToPayload(db.TaskMessage(m), taskID, uuidToString(task.IssueID)),
 			})
+		}
+	}
+
+	// A mid-turn compaction gets its DM notice as soon as its run message is
+	// stored, whatever the task status: a cancel settles the task before the
+	// daemon flushes its transcript. Keyed on the request, not on the rows just
+	// created, so a replayed batch retries a notice an earlier call failed to
+	// write. The run messages are stored and the daemon does not retry, so a
+	// writer error is logged and does not fail the request (CHE-9935).
+	if task.ChatSessionID.Valid && batchHasContextCompacted(req.Messages) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+		defer cancel()
+		if _, err := h.TaskService.ReconcileCompactNotices(ctx, task.ID); err != nil {
+			slog.Warn("write compact notices failed", "task_id", taskID, "error", err)
 		}
 	}
 

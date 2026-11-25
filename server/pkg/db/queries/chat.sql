@@ -989,6 +989,23 @@ VALUES (
 )
 RETURNING *;
 
+-- name: CreateCompactNoticeIdempotent :one
+-- One mid-turn compaction notice per context_compacted run message (CHE-9935).
+-- The caller derives id from the run message id, so a replay conflicts and
+-- inserts nothing: no row comes back and the caller publishes nothing. The
+-- notice sits at the event time, clamped above the segment floor (Rule W, see
+-- CreateChatMessage). It carries no task_id: like the layer B notice, it is not
+-- a reply of the task.
+INSERT INTO chat_message (id, chat_session_id, role, content, message_kind, sent_via, created_at)
+VALUES (
+    sqlc.arg('id'), sqlc.arg('chat_session_id'), 'assistant', sqlc.arg('content'),
+    'compact_notice', 'system',
+    GREATEST(sqlc.arg('event_at')::timestamptz,
+             COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = sqlc.arg('chat_session_id')), sqlc.arg('event_at')::timestamptz))
+)
+ON CONFLICT (id) DO NOTHING
+RETURNING *;
+
 -- name: BindChatMessageDecisionAnswer :one
 UPDATE chat_message message
 SET decision_answer_id = sqlc.arg('answer_id')

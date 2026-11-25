@@ -1074,6 +1074,68 @@ func (q *Queries) CreateChatTask(ctx context.Context, arg CreateChatTaskParams) 
 	return i, err
 }
 
+const createCompactNoticeIdempotent = `-- name: CreateCompactNoticeIdempotent :one
+INSERT INTO chat_message (id, chat_session_id, role, content, message_kind, sent_via, created_at)
+VALUES (
+    $1, $2, 'assistant', $3,
+    'compact_notice', 'system',
+    GREATEST($4::timestamptz,
+             COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $2), $4::timestamptz))
+)
+ON CONFLICT (id) DO NOTHING
+RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id, reanchored_at
+`
+
+type CreateCompactNoticeIdempotentParams struct {
+	ID            pgtype.UUID        `json:"id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	Content       string             `json:"content"`
+	EventAt       pgtype.Timestamptz `json:"event_at"`
+}
+
+// One mid-turn compaction notice per context_compacted run message (CHE-9935).
+// The caller derives id from the run message id, so a replay conflicts and
+// inserts nothing: no row comes back and the caller publishes nothing. The
+// notice sits at the event time, clamped above the segment floor (Rule W, see
+// CreateChatMessage). It carries no task_id: like the layer B notice, it is not
+// a reply of the task.
+func (q *Queries) CreateCompactNoticeIdempotent(ctx context.Context, arg CreateCompactNoticeIdempotentParams) (ChatMessage, error) {
+	row := q.db.QueryRow(ctx, createCompactNoticeIdempotent,
+		arg.ID,
+		arg.ChatSessionID,
+		arg.Content,
+		arg.EventAt,
+	)
+	var i ChatMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChatSessionID,
+		&i.Role,
+		&i.Content,
+		&i.TaskID,
+		&i.CreatedAt,
+		&i.FailureReason,
+		&i.ElapsedMs,
+		&i.MessageKind,
+		&i.ChannelMediaPendingUntil,
+		&i.ChannelIngested,
+		&i.QuickActions,
+		&i.ChannelContextRevision,
+		&i.ChannelOutboundType,
+		&i.ChannelOutboundInstallationID,
+		&i.ChannelOutboundChatID,
+		&i.ChannelOutboundMessageIds,
+		&i.ChannelTypingSettled,
+		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
+		&i.ClientMessageID,
+		&i.ReanchoredAt,
+	)
+	return i, err
+}
+
 const createMikaOnboardingOpening = `-- name: CreateMikaOnboardingOpening :one
 INSERT INTO chat_message (chat_session_id, role, content, message_kind, created_at, id, sent_via)
 VALUES (
