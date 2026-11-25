@@ -54,10 +54,12 @@ func (h *Handler) carryOverBlock(ctx context.Context, session db.ChatSession, in
 		label = "Last answer before the summary and the messages since"
 	}
 
-	// The earlier human messages skip every row already shown above (the
-	// claiming input and the tail fallback).
+	// The earlier human messages skip the claiming input and the segment rows
+	// rendered whole below. A row the 32 KB cap dropped or cut is not shown in
+	// full, so the earlier block may still carry it.
+	entries, whole := fitNewestFirst(messages, carryOverMaxBytes)
 	shown := params.ExcludedIds
-	for _, message := range messages {
+	for _, message := range messages[:whole] {
 		shown = append(shown, message.ID)
 	}
 	earlier, err := h.earlierHumanBlock(ctx, session.ID, divider.CreatedAt, divider.ID, shown)
@@ -78,7 +80,7 @@ func (h *Handler) carryOverBlock(ctx context.Context, session db.ChatSession, in
 	summary := strings.ReplaceAll(decisions+agentText, carryOverSummaryClose, `<\/compaction_summary>`)
 	block.WriteString("<compaction_summary>\n" + summary + "\n" + carryOverSummaryClose + "\n")
 	block.WriteString(earlier)
-	if entries := fitNewestFirst(messages, carryOverMaxBytes); len(entries) > 0 {
+	if len(entries) > 0 {
 		block.WriteString("\n<segment_messages>\n" + label + ":\n")
 		for _, entry := range entries {
 			block.WriteString(entry)
@@ -98,23 +100,25 @@ func hasAssistantMessage(messages []db.ChatMessage) bool {
 }
 
 // fitNewestFirst renders the newest-first messages that fit the budget, whole,
-// and returns them oldest first. The newest message alone over the budget keeps
-// its start.
-func fitNewestFirst(messages []db.ChatMessage, budget int) []string {
-	newestFirst := newestFirstEntries(messages, budget, carryOverSegmentClose)
+// and returns them oldest first, with how many of the newest messages are
+// rendered whole. The newest message alone over the budget keeps its start.
+func fitNewestFirst(messages []db.ChatMessage, budget int) ([]string, int) {
+	newestFirst, whole := newestFirstEntries(messages, budget, carryOverSegmentClose)
 	oldestFirst := make([]string, len(newestFirst))
 	for i, entry := range newestFirst {
 		oldestFirst[len(newestFirst)-1-i] = entry
 	}
-	return oldestFirst
+	return oldestFirst, whole
 }
 
 // newestFirstEntries renders the newest-first messages that fit the budget,
-// whole, still newest first. A closing tag inside a message is escaped so the
+// whole, still newest first, with how many messages are rendered whole (a cut
+// newest message is not). A closing tag inside a message is escaped so the
 // message cannot end its block early.
-func newestFirstEntries(messages []db.ChatMessage, budget int, closeTag string) []string {
+func newestFirstEntries(messages []db.ChatMessage, budget int, closeTag string) ([]string, int) {
 	escaped := `<\/` + closeTag[2:]
 	var entries []string
+	whole := 0
 	for _, message := range messages {
 		content := forkSlashSkillLink.ReplaceAllString(message.Content, "/$1")
 		content = strings.ReplaceAll(content, closeTag, escaped)
@@ -129,7 +133,8 @@ func newestFirstEntries(messages []db.ChatMessage, budget int, closeTag string) 
 			break
 		}
 		entries = append(entries, entry)
+		whole++
 		budget -= len(entry)
 	}
-	return entries
+	return entries, whole
 }

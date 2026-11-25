@@ -108,6 +108,23 @@ func TestCarryOverHuman_NoRepeatOfTheTailFallback(t *testing.T) {
 	wantInClaim(t, humanBlock(t, got), "OLD-QUESTION-FIRST", "OLD-QUESTION-SECOND")
 }
 
+// A current message that fills the 32 KB segment cap pushes the tail fallback
+// out of the segment block; its human text must then appear in the earlier
+// block instead of in neither (review round 1, P1).
+func TestCarryOverHuman_TailRowDroppedByTheCapIsKept(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	dm := newCarryOverDM(t)
+	dm.compact(t, "SUMMARY-TEXT")
+	dm.userMessage(t, strings.Repeat("BIG-CURRENT ", carryOverMaxBytes/4))
+	got := dm.claim(t, "NEXT-QUESTION").ChatMessage
+	if n := strings.Count(got, "OLD-USER-AFTER-ANSWER"); n != 1 {
+		t.Errorf("OLD-USER-AFTER-ANSWER appears %d times, want once (in the earlier block):\n%.2000s", n, got)
+	}
+	wantInClaim(t, humanBlock(t, got), "OLD-USER-AFTER-ANSWER", "OLD-QUESTION-FIRST")
+}
+
 // A question queued before the compact and not claimed stays out of the block.
 func TestCarryOverHuman_QueuedFollowUpExcluded(t *testing.T) {
 	if testHandler == nil || testPool == nil {

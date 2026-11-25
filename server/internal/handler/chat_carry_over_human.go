@@ -24,7 +24,8 @@ func earlierHumanEntries(messages []db.ChatMessage, budget int) []string {
 		message.Content = redactDecisionWords(message.Content, false)
 		redacted[i] = message
 	}
-	return newestFirstEntries(redacted, budget, earlierHumanClose)
+	entries, _ := newestFirstEntries(redacted, budget, earlierHumanClose)
+	return entries
 }
 
 // earlierHumanBlock renders the human's own messages from before the boundary
