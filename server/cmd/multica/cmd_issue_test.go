@@ -4875,14 +4875,14 @@ func TestRunIssueStatusSendsReviewFindings(t *testing.T) {
 	newDuplicateMarkTestServer(t, true, &body)
 
 	cmd := newIssueStatusTestCmd()
-	_ = cmd.Flags().Set("finding", "P1: leaks the token")
-	_ = cmd.Flags().Set("finding", "P3:naming")
+	_ = cmd.Flags().Set("finding", "P1@secret_leak: leaks the token")
+	_ = cmd.Flags().Set("finding", "P3@naming:naming")
 	if err := runIssueStatus(cmd, []string{"MUL-2", "in_progress"}); err != nil {
 		t.Fatalf("runIssueStatus: %v", err)
 	}
 	want := map[string]any{"status": "in_progress", "review_findings": []any{
-		map[string]any{"severity": "P1", "summary": "leaks the token"},
-		map[string]any{"severity": "P3", "summary": "naming"},
+		map[string]any{"severity": "P1", "summary": "leaks the token", "category": "secret_leak"},
+		map[string]any{"severity": "P3", "summary": "naming", "category": "naming"},
 	}}
 	if !reflect.DeepEqual(body, want) {
 		t.Fatalf("body = %#v, want %#v", body, want)

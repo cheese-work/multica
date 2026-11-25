@@ -283,7 +283,7 @@ func (c roundCap) statusVerdict(t *testing.T, run string) *testutil.Response {
 	t.Helper()
 	c.backToReview(t, run)
 	return agentUpdateIssue(t, c.issueID, c.agentID, run, map[string]any{
-		"status": "in_progress", "review_findings": []map[string]any{{"severity": "P1", "summary": "finding P1"}},
+		"status": "in_progress", "review_findings": []map[string]any{{"severity": "P1", "summary": "finding P1", "category": "unverified_claim"}},
 	})
 }
 

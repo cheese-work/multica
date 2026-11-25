@@ -95,7 +95,7 @@ func (l reviewLoop) newPR(t *testing.T, head string) string {
 }
 
 func finding(severity string) map[string]any {
-	return map[string]any{"severity": severity, "summary": "finding " + severity}
+	return map[string]any{"severity": severity, "summary": "finding " + severity, "category": "unverified_claim"}
 }
 
 func TestReviewLoop_ChangesVerdictWithoutP0P1IsRejected(t *testing.T) {
