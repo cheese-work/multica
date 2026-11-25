@@ -1,9 +1,15 @@
 "use client";
 
 import { createContext, useContext } from "react";
+import type { CSSProperties } from "react";
 import { cn } from "@multica/ui/lib/utils";
 import { SidebarTrigger, useSidebarSafe } from "@multica/ui/components/ui/sidebar";
 import { ActionShortcutKeycaps } from "../common/shortcut-keycaps";
+import {
+  useWindowTitleBar,
+  WINDOW_TITLE_BAR_CLASS,
+  windowTitleBarStyle,
+} from "../platform/window-title-bar";
 import { useAppShell } from "./app-shell-context";
 
 /**
@@ -16,14 +22,14 @@ import { useAppShell } from "./app-shell-context";
  * anywhere that edge matters instead of writing the class again; a page that
  * spells its own gutter is the bug coming back.
  */
+export const PAGE_GUTTER = "px-[var(--page-padding-x,var(--space-md,1rem))]";
+
 /**
  * What every `PageHeader` shows at its right end. The shell that mounts the
  * pages fills it (the machine banner icon); a header rendered outside a shell,
  * as in isolated tests, shows nothing and needs no providers for it.
  */
 export const PageHeaderTrailingContext = createContext<React.ReactNode>(null);
-
-export const PAGE_GUTTER = "px-4";
 
 /**
  * The centred column a detail page reads inside: `runtimes`, and the agent and
@@ -102,6 +108,30 @@ export function CollapsedNavTrigger() {
   );
 }
 
+/**
+ * What a page's top row needs when the window has no title bar of its own
+ * (see `WindowTitleBarProvider`): the drag region, and a leading inset past
+ * the native window controls. Empty everywhere else.
+ *
+ * `PageHeader` applies it itself. A surface that draws its own header-shaped
+ * row in that slot (a loading or error state standing in for the page) spreads
+ * it too, and renders the row even when it has nothing to put in it, so the
+ * window stays draggable whichever state is on screen.
+ */
+export function usePageHeaderTitleBar(): {
+  active: boolean;
+  className?: string;
+  style?: CSSProperties;
+} {
+  const titleBar = useWindowTitleBar();
+  if (!titleBar) return { active: false };
+  return {
+    active: true,
+    className: WINDOW_TITLE_BAR_CLASS,
+    style: windowTitleBarStyle(titleBar),
+  };
+}
+
 interface PageHeaderProps {
   children: React.ReactNode;
   /**
@@ -136,14 +166,18 @@ interface PageHeaderProps {
  * every page, and the toolbar beneath the header reads the same constant.
  */
 export function PageHeader({ children, leading, className }: PageHeaderProps) {
+  const titleBar = usePageHeaderTitleBar();
   const trailing = useContext(PageHeaderTrailingContext);
   return (
     <header
+      data-mc="page-header"
       className={cn(
         "flex h-12 shrink-0 items-center gap-2 border-b",
         className,
         PAGE_GUTTER,
+        titleBar.className,
       )}
+      style={titleBar.style}
     >
       {leading ?? <CollapsedNavTrigger />}
       {children}

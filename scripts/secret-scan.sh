@@ -14,4 +14,5 @@ if [[ -z "$bin" ]]; then
   "$(dirname "$0")/fetch-verified.sh" "https://github.com/gitleaks/gitleaks/releases/download/v$V/gitleaks_${V}_linux_x64.tar.gz" "$SHA256" "$d/gl.tgz"
   tar -xzf "$d/gl.tgz" -C "$d" gitleaks
 fi
-exec "$bin" git --no-banner --redact --log-opts="$range" .
+# The owner-protected ignore list (scripts/security-weekly/.gitleaksignore, CODEOWNERS-covered) is the only place accepted findings live (CHE-9231).
+exec "$bin" git --no-banner --redact --gitleaks-ignore-path scripts/security-weekly --log-opts="$range" .

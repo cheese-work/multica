@@ -32,39 +32,15 @@ import { NeedsYouList } from "../../../packages/views/chat/components/needs-you-
 import { QuickAgentBar } from "../../../packages/views/chat/components/quick-agent-bar";
 import { DelegatedWritesSection } from "../../../packages/views/settings/components/delegated-writes-section";
 import { chatKeys } from "@multica/core/chat/queries";
-import { TelegramTab } from "../../../packages/views/settings/components/telegram-tab";
-import { SlackTab } from "../../../packages/views/settings/components/slack-tab";
-import { LarkTab } from "../../../packages/views/settings/components/lark-tab";
 import { WecomTab } from "../../../packages/views/settings/components/wecom-tab";
-import { DingTalkTab } from "../../../packages/views/settings/components/dingtalk-tab";
-import { telegramKeys } from "@multica/core/telegram";
-import { slackKeys } from "@multica/core/slack";
-import { larkKeys } from "@multica/core/lark";
 import { wecomKeys } from "@multica/core/wecom";
-import { dingtalkKeys } from "@multica/core/dingtalk";
-import { CreateAgentDialog } from "../../../packages/views/agents/components/create-agent-dialog";
-import { ConcurrencyPicker } from "../../../packages/views/agents/components/inspector/concurrency-picker";
-import { SkillAttach } from "../../../packages/views/agents/components/inspector/skill-attach";
-import { VisibilityPicker } from "../../../packages/views/agents/components/inspector/visibility-picker";
-import { InstructionsEditor } from "../../../packages/views/agents/components/instructions-editor";
-import { runtimeModelsKeys } from "../../../packages/core/runtimes/models";
 import { AddTriggerDialog } from "../../../packages/views/autopilots/components/add-trigger-dialog";
-import { ExpandableDescription } from "../../../packages/views/common/expandable-description";
 import { HtmlViewer } from "../../../packages/views/editor/html-viewer";
 import { PlanRevisionViewer } from "../../../packages/views/editor/plan-revision-viewer";
-import { ResourceLabelPicker } from "../../../packages/views/labels/resource-label-picker";
-import { labelKeys } from "@multica/core/labels";
 import { MediaLinkAction, ViewerActions, MediaSourceProvider } from "../../../packages/views/media/media-context";
 import { MediaPage, MediaUnavailablePage } from "../../../packages/views/media/media-page";
 import { mediaContentId } from "../../../packages/views/media/media-id";
-import { LocalDirectoryModeDialog } from "../../../packages/views/projects/components/local-directory-mode-dialog";
 import { NextSelfMention } from "../../../packages/views/rich-content/next-self-mention";
-import { ProjectWorkflowMenuHost } from "../../../packages/views/workflows/project-workflow-menu";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@multica/ui/components/ui/dropdown-menu";
-import { projectListOptions } from "@multica/core/projects/queries";
-import { issueWorkflowListOptions } from "@multica/core/issue-workflows";
-import { configStore } from "@multica/core/config";
-import type { IssueWorkflow, Project } from "@multica/core/types";
 import { emptyWakeupDraft, type WakeupCondition, type WakeupDraft } from "../../../packages/views/issues/components/wakeup-draft";
 
 const WS = "ws-harness";
@@ -170,7 +146,6 @@ export function seedRawElements(qc: QueryClient) {
   seedSS3(set);
   seedSS5(set);
   seedSS6(set);
-  seedSS7(set);
   for (const id of ["rq-open", "rq-used"]) set(decisionArtifactKeys.list(id), []);
 }
 
@@ -499,7 +474,7 @@ export function DelegatedWritesPage() {
   );
 }
 
-// ---- SS4 (CHE-5537): dingtalk-tab, lark-tab, slack-tab, telegram-tab, wecom-tab ----
+// ---- SS4 (CHE-5537): wecom-tab (dingtalk/lark/slack/telegram tabs removed upstream in v0.10.0) ----
 // Each tab reads one installation list for the one workspace the harness has, so each variant gets its own
 // client (seeded, never stale) and the page stacks the states: not enabled, empty, listed.
 const T0 = "2026-11-13T02:30:00Z";
@@ -509,11 +484,6 @@ const inst = (id: string, agent: string, extra: Record<string, unknown> = {}) =>
 const OFF = { installations: [], configured: false };
 const EMPTY = { installations: [], configured: true, install_supported: true };
 const listed = (installations: unknown[], extra: Record<string, unknown> = {}) => ({ installations, configured: true, install_supported: true, ...extra });
-const TG = listed([
-  inst("tg1", AGENT, { bot_username: "design_capture_bot" }),
-  inst("tg2", "agent-ux", { bot_username: "terra_review_bot", status: "revoked" }),
-]);
-const SL = listed([inst("sl1", AGENT, { team_id: "T01", bot_user_id: "U01" }), inst("sl2", "agent-ops", { team_id: "T01", bot_user_id: "U02", status: "revoked" })]);
 const LARK_LIST = listed([
   inst("lk1", AGENT, { app_id: "cli_a1", bot_open_id: "ou_1", region: "feishu", first_message_received_at: "2026-11-13T03:10:00Z" }),
   inst("lk2", "agent-ux", { app_id: "cli_a2", bot_open_id: "ou_2", region: "lark", first_message_received_at: "2026-11-13T03:10:00Z" }),
@@ -523,7 +493,6 @@ const WC = listed([
   { id: "wc1", workspace_id: WS, agent_id: AGENT, bot_id: "aibot-1", installer_user_id: "u1", status: "active" },
   { id: "wc2", workspace_id: WS, agent_id: "agent-ops", bot_id: "aibot-2", installer_user_id: "u1", status: "revoked" },
 ], { scan_install_supported: true });
-const DT = listed([inst("dt1", AGENT, { bound_dingtalk_user_ids: ["staff-1"] }), inst("dt2", "agent-ux"), inst("dt3", "agent-ops", { status: "revoked" })]);
 const DT_GROUPS = {
   group_discovery_supported: true,
   groups: [
@@ -567,141 +536,10 @@ function IntegrationTabPage({ keyOf, off, empty, full, fullLabel, children, extr
   );
 }
 
-export function TelegramTabPage() {
-  return <IntegrationTabPage keyOf={telegramKeys.installations} off={OFF} empty={EMPTY} full={TG} fullLabel="owner: 1 active bot, 1 revoked"><TelegramTab /></IntegrationTabPage>;
-}
-export function SlackTabPage() {
-  return <IntegrationTabPage keyOf={slackKeys.installations} off={OFF} empty={EMPTY} full={SL} fullLabel="owner: 1 active app, 1 revoked"><SlackTab /></IntegrationTabPage>;
-}
-export function LarkTabPage() {
-  return <IntegrationTabPage keyOf={larkKeys.installations} off={OFF} empty={EMPTY} full={LARK_LIST} fullLabel="owner: Feishu verified, Lark verified, 1 revoked"><LarkTab /></IntegrationTabPage>;
-}
 export function WecomTabPage() {
   return <IntegrationTabPage keyOf={wecomKeys.installations} off={OFF} empty={EMPTY} full={WC} fullLabel="owner: 1 active bot, 1 revoked"><WecomTab /></IntegrationTabPage>;
 }
-export function DingTalkTabPage() {
-  return (
-    <IntegrationTabPage keyOf={dingtalkKeys.installations} off={OFF} empty={EMPTY} full={DT} fullLabel="owner: 2 active robots with groups and identity states, 1 revoked"
-      extra={(qc) => qc.setQueryData(dingtalkKeys.groups(WS), DT_GROUPS)}><DingTalkTab /></IntegrationTabPage>
-  );
-}
-
-// ---- SS5 (CHE-5538): create-agent-dialog, concurrency-picker, skill-attach, visibility-picker, instructions-editor ----
-const RT_SS5 = {
-  id: "rt-ss5", workspace_id: WS, daemon_id: "d-x99", name: "x99 (Claude)", runtime_mode: "local", provider: "claude", launch_header: "",
-  status: "online", device_info: "Linux x86_64", metadata: {}, owner_id: "u1", visibility: "private", pause: null,
-  daemon_running_tasks: 0, last_seen_at: NOW, created_at: "2026-11-01T00:00:00Z", updated_at: NOW,
-};
-const MODELS_SS5 = { supported: true, cached: false, models: [
-  { id: "claude-opus-5-5", label: "Claude Opus 5.5", provider: "anthropic", default: true },
-  { id: "claude-sonnet-5-5", label: "Claude Sonnet 5.5", provider: "anthropic" },
-  { id: "claude-haiku-5-5", label: "Claude Haiku 5.5", provider: "anthropic" },
-] };
-const skill = (id: string, name: string, description: string) => ({
-  id, workspace_id: WS, name, description, config: {}, created_by: "u1", created_at: NOW, updated_at: NOW,
-});
-const SKILLS_SS5 = [
-  skill("sk1", "ponytail", "Pick the laziest solution that works."),
-  skill("sk2", "tdd", "Test-driven development: red, green, refactor."),
-  skill("sk3", "code-review", "Review a change against standards and spec."),
-];
-const AGENT_SS5 = {
-  id: AGENT, workspace_id: WS, name: "x99-claude-sonnet-design", skills: [{ id: "sk1", name: "ponytail", description: SKILLS_SS5[0]!.description }],
-};
-
-function seedSS5(set: (key: readonly unknown[], data: unknown) => void) {
-  set(stub.skillListOptions(WS).queryKey, SKILLS_SS5);
-  set(runtimeModelsKeys.forRuntime(RT_SS5.id), MODELS_SS5);
-}
-
-export function CreateAgentDialogPage() {
-  return (
-    <div className="p-6">
-      <CreateAgentDialog
-        runtimes={[RT_SS5] as never}
-        members={[{ id: "m1", user_id: "u1", workspace_id: WS, name: "Cheese", email: "c@example.com", role: "owner" }] as never}
-        currentUserId="u1"
-        onClose={noop}
-        onCreate={async () => {}}
-      />
-    </div>
-  );
-}
-
-export function ConcurrencyPickerPage() {
-  const open = (root: HTMLElement) => root.querySelector<HTMLElement>("button[aria-label]");
-  return (
-    <div className="max-w-[420px] p-6">
-      <Label>read-only (cannot edit)</Label>
-      <ConcurrencyPicker value={6} canEdit={false} onChange={noop} />
-      <Label>editable chip</Label>
-      <ConcurrencyPicker value={6} onChange={noop} />
-      <Label>popover open: range hint, number field, Save</Label>
-      <div className="min-h-[120px]">
-        <After pick={open} delay={400}><ConcurrencyPicker value={6} onChange={noop} /></After>
-      </div>
-    </div>
-  );
-}
-
-export function VisibilityPickerPage() {
-  const open = (root: HTMLElement) => root.querySelector<HTMLElement>("button[aria-label]");
-  return (
-    <div className="max-w-[420px] p-6">
-      <Label>read-only badge: workspace, private</Label>
-      <div className="flex gap-2">
-        <VisibilityPicker value="workspace" canEdit={false} onChange={noop} />
-        <VisibilityPicker value="private" canEdit={false} onChange={noop} />
-      </div>
-      <Label>editable chips: workspace, private</Label>
-      <div className="flex gap-2">
-        <VisibilityPicker value="workspace" onChange={noop} />
-        <VisibilityPicker value="private" onChange={noop} />
-      </div>
-      <Label>popover open (workspace selected)</Label>
-      <div className="min-h-[160px]">
-        <After pick={open} delay={400}><VisibilityPicker value="workspace" onChange={noop} /></After>
-      </div>
-    </div>
-  );
-}
-
-export function SkillAttachPage() {
-  const all = { ...AGENT_SS5, skills: SKILLS_SS5.map(({ id, name, description }) => ({ id, name, description })) };
-  return (
-    <div className="grid max-w-[520px] gap-2 p-6">
-      <Variant label="2 workspace skills left to attach: dashed + Attach chip" seed={(qc) => qc.setQueryData(stub.skillListOptions(WS).queryKey, SKILLS_SS5)}>
-        <SkillAttach agent={AGENT_SS5 as never} />
-      </Variant>
-      <Variant label="canEdit false: nothing renders" seed={(qc) => qc.setQueryData(stub.skillListOptions(WS).queryKey, SKILLS_SS5)}>
-        <SkillAttach agent={AGENT_SS5 as never} canEdit={false} />
-      </Variant>
-      <Variant label="every skill already attached: nothing renders" seed={(qc) => qc.setQueryData(stub.skillListOptions(WS).queryKey, SKILLS_SS5)}>
-        <SkillAttach agent={all as never} />
-      </Variant>
-    </div>
-  );
-}
-
-export function InstructionsEditorPage() {
-  const expand = (root: HTMLElement) => root.querySelector<HTMLElement>("button");
-  return (
-    <div className="max-w-[640px] p-6">
-      <Label>collapsed, empty (placeholder)</Label>
-      <InstructionsEditor value="" onChange={noop} />
-      <Label>collapsed, 2-line preview of the value</Label>
-      <InstructionsEditor value={"You are the design capture agent.\nCapture each raw-element file at 1440 and 390.\nNever replace earlier captures."} onChange={noop} />
-      <Label>expanded: markdown editor and Collapse button</Label>
-      <After pick={expand}><InstructionsEditor value="Capture each file at 1440 and 390." onChange={noop} /></After>
-    </div>
-  );
-}
-
 // ---- SS6 (CHE-5539): add-trigger-dialog, expandable-description, html-viewer, plan-revision-viewer, resource-label-picker ----
-const LABELS_SS6 = [
-  { id: "lb1", name: "design-system", color: "#3b82f6" }, { id: "lb2", name: "needs-review", color: "#f59e0b" },
-  { id: "lb3", name: "x99-only", color: "#10b981" }, { id: "lb4", name: "blocked-on-doop", color: "#ef4444" },
-];
 const planAtt = (id: string, filename: string, created_at: string) => ({
   id, workspace_id: WS, issue_id: "iss-5420", comment_id: null, chat_session_id: null, chat_message_id: null,
   uploader_type: "agent", uploader_id: AGENT, filename, url: `/uploads/${id}.md`, download_url: `/uploads/${id}.md`,
@@ -716,9 +554,6 @@ const PLAN_TEXT: Record<string, string> = {
   pa3: "## Goal\n\nCapture the Patterns frames and the S0b raw-element files.\n\n## Do\n\n1. Capture 37 frames.\n2. Mark entries.\n3. Capture raw files onto one doop frame.\n4. Flip the validator.\n\n## Done when\n\n- No pending entries.\n- Validator fails pending.",
 };
 function seedSS6(set: (key: readonly unknown[], data: unknown) => void) {
-  set(labelListOptions(WS, "agent").queryKey, { labels: LABELS_SS6 });
-  set(labelKeys.byResource(WS, "agent", "res-chips"), { labels: LABELS_SS6.slice(0, 2) });
-  set(labelKeys.byResource(WS, "agent", "res-empty"), { labels: [] });
   set(["plan-revisions", WS, "iss-5420"], PLAN_ATTACHMENTS);
   set(["plan-revision-issue", WS, "iss-5420"], { id: "iss-5420", identifier: "CHE-5420" });
   for (const [id, text] of Object.entries(PLAN_TEXT)) set(["attachment-content", id], { text, originalContentType: "text/markdown" });
@@ -727,21 +562,6 @@ function seedSS6(set: (key: readonly unknown[], data: unknown) => void) {
 export function AddTriggerDialogPage() {
   // The dialog fades in; a still taken mid-fade is washed out, so the animation is switched off for the capture.
   return <div className="p-6"><style>{"*,*::before,*::after{animation:none!important;transition:none!important}"}</style><AddTriggerDialog open onOpenChange={noop} autopilotId="ap-harness" /></div>;
-}
-
-const LONG = "Captures every raw-element file the S4b audit lists onto one doop reference frame, 1440 and 390, labelled with the file path. Each batch edits the same frame, so batches run in sequence; earlier captures are never replaced. The draft PR records the minutes per capture and marks each file captured in ui-drift.md.";
-export function ExpandableDescriptionPage() {
-  const expand = (root: HTMLElement) => root.querySelector<HTMLElement>("button");
-  return (
-    <div className="max-w-[640px] p-6">
-      <Label>short text: no toggle</Label>
-      <ExpandableDescription>Captures the raw-element files.</ExpandableDescription>
-      <Label>long text, clamped to two lines with the Show more toggle</Label>
-      <ExpandableDescription>{LONG}</ExpandableDescription>
-      <Label>long text, expanded with the Show less toggle</Label>
-      <After pick={expand} delay={300}><ExpandableDescription>{LONG}</ExpandableDescription></After>
-    </div>
-  );
 }
 
 const DOC = `<!doctype html><html><body style="font:14px system-ui;padding:16px"><h2>Capture report</h2><p>25 of 35 files captured.</p><table border="1" cellpadding="6"><tr><th>Batch</th><th>Files</th></tr><tr><td>SS5</td><td>5</td></tr><tr><td>SS6</td><td>5</td></tr></table></body></html>`;
@@ -773,41 +593,9 @@ export function PlanRevisionViewerPage() {
   );
 }
 
-export function ResourceLabelPickerPage() {
-  const open = (root: HTMLElement) => root.querySelector<HTMLElement>("button");
-  return (
-    <div className="max-w-[420px] p-6">
-      <Label>read-only, with labels</Label>
-      <ResourceLabelPicker resourceType="agent" resourceId="res-chips" canEdit={false} />
-      <Label>read-only, no labels</Label>
-      <ResourceLabelPicker resourceType="agent" resourceId="res-empty" canEdit={false} />
-      <Label>editable, 2 labels attached</Label>
-      <ResourceLabelPicker resourceType="agent" resourceId="res-chips" canEdit />
-      <Label>editable, empty (Add label)</Label>
-      <ResourceLabelPicker resourceType="agent" resourceId="res-empty" canEdit />
-      <Label>popover open: search, catalog, check on attached</Label>
-      <div className="min-h-[300px]"><After pick={open} delay={400}><ResourceLabelPicker resourceType="agent" resourceId="res-chips" canEdit /></After></div>
-    </div>
-  );
-}
-
-// ---- SS7 (CHE-5540): media-context, media-page, local-directory-mode-dialog, next-self-mention, project-workflow-menu ----
+// ---- SS7 (CHE-5540): media-context, media-page, next-self-mention (local-directory-mode-dialog and project-workflow-menu do not exist in the v0.10.0 sync) ----
 const MEDIA_HTML = `<div style="font:14px system-ui;padding:16px"><h2>Capture report</h2><p>35 of 35 files on the reference frame.</p></div>`;
 const MEDIA_ISSUE = issue(5420, "in_progress", "Capture the S0b raw-element files", { id: "iss-media", workspace_id: WS, description: "Report:\n\n```html\n" + MEDIA_HTML + "\n```\n" });
-
-const wfStep = (status_key: string, handler: IssueWorkflow["steps"][number]["handler"]) => ({ status_key, handler, instructions: "" });
-const WORKFLOWS: IssueWorkflow[] = [
-  { id: "wf-default", workspace_id: WS, name: "Default", description: "", is_default: true, owner_id: null, project_ids: [], created_at: NOW, updated_at: NOW,
-    steps: [wfStep("backlog", { type: "none" }), wfStep("todo", { type: "agent", id: AGENT }), wfStep("in_progress", { type: "agent", id: AGENT }), wfStep("in_review", { type: "member", id: "u1" }), wfStep("done", { type: "none" })] },
-  { id: "wf-design", workspace_id: WS, name: "Design", description: "", is_default: false, owner_id: "u1", project_ids: ["pj1"], created_at: NOW, updated_at: NOW,
-    steps: [wfStep("backlog", { type: "none" }), wfStep("todo", { type: "agent", id: AGENT }), wfStep("in_progress", { type: "agent", id: AGENT }), wfStep("in_review", { type: "member", id: "u1" }), wfStep("done", { type: "none" })] },
-];
-const PROJECT = { id: "pj1", workspace_id: WS, title: "Design system", description: null, icon: null, status: "in_progress", priority: "medium", lead_type: "member", lead_id: "u1", workflow_id: "wf-design", created_at: NOW, updated_at: NOW } as unknown as Project;
-function seedSS7(set: (key: readonly unknown[], data: unknown) => void) {
-  set(projectListOptions(WS).queryKey, { projects: [PROJECT], total: 1 });
-  set(issueWorkflowListOptions(WS).queryKey, { workflows: WORKFLOWS });
-  configStore.getState().setFeatureFlags({ project_workflows_v1: true });
-}
 
 const SOURCE = { type: "issues" as const, id: "iss-media" };
 export function MediaContextPage() {
@@ -835,17 +623,6 @@ export function MediaPagePage() {
       <div className="h-[260px] overflow-hidden rounded-md border">{mediaId ? <MediaPage route={route} /> : null}</div>
       <Label>MediaUnavailablePage: 404 or denied</Label>
       <div className="overflow-hidden rounded-md border"><div className="scale-90"><MediaUnavailablePage /></div></div>
-    </div>
-  );
-}
-
-export function LocalDirectoryModePage() {
-  // One modal state per page: the dialog with the worktree option blocked and a server-side rejection shown.
-  return (
-    <div className="p-6">
-      <style>{"*,*::before,*::after{animation:none!important;transition:none!important}"}</style>
-      <LocalDirectoryModeDialog open onOpenChange={noop} path="/home/cheese/work/multica-fork" value="in_place" unavailableReason="not_git"
-        errorMessage="This machine cannot create a worktree for that folder." confirmLabel="Save" onConfirm={noop} />
     </div>
   );
 }
@@ -880,25 +657,5 @@ function OneMention() {
       </div>
       <NextSelfMention scrollEl={el} flags={flags} onJump={noop} positionClassName="absolute bottom-4 right-4 z-20" />
     </>
-  );
-}
-
-export function ProjectWorkflowMenuPage() {
-  // The project title menu with the Workflow submenu opened (portal content, so the pick reads document).
-  const openSub = () => document.querySelector<HTMLElement>("[data-slot=dropdown-menu-sub-trigger], [role=menuitem][aria-haspopup=menu]");
-  return (
-    <div className="min-h-[360px] p-6">
-      <style>{"*,*::before,*::after{animation:none!important;transition:none!important}"}</style>
-      <ProjectWorkflowMenuHost project={PROJECT}>
-        {(submenu) => (
-          <After pick={openSub} delay={400}>
-            <DropdownMenu open>
-              <DropdownMenuTrigger className="rounded-md border px-3 py-1.5 text-body">Design system</DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="w-64">{submenu}</DropdownMenuContent>
-            </DropdownMenu>
-          </After>
-        )}
-      </ProjectWorkflowMenuHost>
-    </div>
   );
 }

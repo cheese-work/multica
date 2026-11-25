@@ -25,9 +25,13 @@ const (
 
 // decisionAskReachable reports whether the task's runtime can load the MCP
 // config that carries decision_ask. Pi fails to start with any MCP config below
-// its MCP floor, and decision_ask would put one on every issue task, so the
-// tool stays off pi runs that cannot take it; those use `multica agent decision ask`.
+// its MCP floor, and Droid and Amp reject any managed MCP config. decision_ask
+// would put one on every issue task, so the tool stays off runs that cannot take
+// it; those use `multica agent decision ask`.
 func decisionAskReachable(provider, cliVersion string, builtinRuntime bool) bool {
+	if provider == "droid" || provider == "amp" {
+		return false // these backends refuse any Multica-managed MCP config
+	}
 	return provider != "pi" || agent.PiAcceptsMCP(cliVersion, builtinRuntime)
 }
 

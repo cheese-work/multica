@@ -65,6 +65,8 @@ vi.mock("./pickers", () => ({
   ),
   PriorityPicker: () => <div />,
   AssigneePicker: () => <div />,
+  DueDatePicker: () => <div />,
+  StartDatePicker: () => <div />,
 }));
 
 const WORKFLOW = {
@@ -82,7 +84,7 @@ const WORKFLOW = {
   created_at: "",
   updated_at: "",
 } as IssueWorkflow;
-const PROJECT = { id: "p-dev", workflow_id: "dev" } as Project;
+const PROJECT = { id: "p-dev", title: "Dev project", workflow_id: "dev" } as Project;
 
 // A batch status write binds one result for every issue: none of them hands off.
 // The ones that would are written one by one with their own confirmation.
@@ -373,7 +375,7 @@ describe("BatchActionToolbar status change on an incomplete catalog", () => {
 
   it("applies the batch when the project names no workflow and none is stored", async () => {
     api.listIssueWorkflows.mockResolvedValue({ workflows: [] });
-    api.listProjects.mockResolvedValue({ projects: [{ id: "p-plain", workflow_id: null }], total: 1 });
+    api.listProjects.mockResolvedValue({ projects: [{ id: "p-plain", title: "Plain project", workflow_id: null }], total: 1 });
     mount([makeIssue({ id: "d", identifier: "MUL-4", project_id: "p-plain" })]);
     await chooseStatus();
 

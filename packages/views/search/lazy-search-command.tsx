@@ -1,7 +1,7 @@
 "use client";
 
 import { lazy, Suspense, useState } from "react";
-import { useSearchStore } from "./search-store";
+import { useSearchStore } from "@multica/core/command-bar";
 
 const SearchCommandImpl = lazy(() =>
   import("./search-command").then((m) => ({ default: m.SearchCommand })),

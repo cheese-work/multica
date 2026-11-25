@@ -246,5 +246,5 @@ export function RichTableDialog({ model, open, onOpenChange, getMarkdown, standa
         </p>
     </>;
   if (standalone) return <div data-testid="media-stage" className="flex h-full min-h-0 flex-1 flex-col overflow-hidden">{content}</div>;
-  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent showCloseButton={false} className="flex h-[min(85dvh,56rem)] w-[min(72rem,calc(100vw-4rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">{content}</DialogContent></Dialog>;
+  return <Dialog open={open} onOpenChange={onOpenChange}><DialogContent showCloseButton={false} className="flex h-[min(85%,56rem)] w-[min(72rem,calc(100%-4rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none">{content}</DialogContent></Dialog>;
 }

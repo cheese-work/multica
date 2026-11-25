@@ -6,6 +6,12 @@ export interface ChatAnnotationScope {
   agentName?: string;
   /** An earlier DM's message loads after the hook renders; it joins the commentable sources here. */
   registerSource?: (id: string, name: string) => void;
+  /** A saved comment's source row may be unmounted (virtualized or in an older page): the list brings this message into view, loading older pages while it is not loaded yet. */
+  revealMessageId?: string | null;
+  /** The list could not bring `revealMessageId` into view. */
+  onRevealMissing?: () => void;
+  /** An annotatable source mounted; a pending reveal waiting on it can open its editor. */
+  onSourceMounted?: (sourceId: string) => void;
 }
 
 export const ChatAnnotationContext = createContext<ChatAnnotationScope>({ enabled: false });

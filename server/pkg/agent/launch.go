@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -92,6 +94,13 @@ type Command struct {
 	// logger reports prefix/argument conflicts at the moment a process is
 	// built. Optional: a zero Command logs nothing.
 	logger *slog.Logger
+	// probeDir isolates discovery from the daemon's inherited directory.
+	// Task commands leave it empty and keep their execution directory.
+	probeDir string
+	// versionArgs replaces `--version` in detectCLIVersion for a provider
+	// whose plain `--version` is not a cheap local read. Empty means
+	// `--version`. Set only through ForVersionProbe.
+	versionArgs []string
 	// hook is the owning Config's launch hook (nil: plain launch).
 	hook LaunchHook
 }
@@ -147,6 +156,28 @@ func launchHookEntries() []*exec.Cmd {
 	return out
 }
 
+// ForVersionProbe returns c set up to probe provider's version the way that
+// provider can answer it without side effects. Most CLIs answer `--version`
+// locally; for them this returns c unchanged.
+//
+// Hermes is the exception. `hermes --version` runs a synchronous update check
+// that talks to GitHub (`git ls-remote`, and a `git fetch` on older installs).
+// On a slow network that outlasts detectVersionTimeout, the kill leaves a
+// partial `tmp_pack_*` in the Hermes checkout on every registration round, and
+// because Hermes caches the update result only after the check finishes, the
+// next round fetches again (MUL-9132). `hermes acp --version` prints the same
+// version from the local install stamp or `git rev-parse` and never checks for
+// updates. It is also the entry point the backend launches.
+func (c Command) ForVersionProbe(provider string) Command {
+	if provider == "hermes" {
+		c.versionArgs = hermesVersionProbeArgs
+	}
+	if provider == "amp" {
+		c.versionArgs = []string{"version"}
+	}
+	return c
+}
+
 // NewCommand builds a Command from a resolved executable path and a launch
 // prefix. Callers inside this package normally go through Config.commandAt
 // instead, which carries the prefix the daemon configured for the runtime.
@@ -177,7 +208,31 @@ func (c Command) Argv(args ...string) []string {
 // reintroduce GH #7046. TestOnlyLaunchGoSpawnsRuntimeProcesses enforces it.
 func (c Command) exec(ctx context.Context, args ...string) *exec.Cmd {
 	warnLaunchPrefixOverlap(c.Prefix, args, c.logger)
-	return registerLaunchHook(ctx, newRuntimeCmd(exec.CommandContext(ctx, c.Path, c.Argv(args...)...)), c.hook)
+	cmd := exec.CommandContext(ctx, c.Path, c.Argv(args...)...)
+	cmd.Dir = c.probeDir
+	return registerLaunchHook(ctx, newRuntimeCmd(cmd), c.hook)
+}
+
+// withProbeDirectory resolves the executable before moving into an empty
+// directory. Sandboxed wrappers may refuse to launch from the daemon's cwd
+// (notably HOME for GUI launches). HOME and the rest of the environment remain
+// intact so user-level credentials, configuration and extensions still load.
+func (c Command) withProbeDirectory() (Command, func(), error) {
+	path, err := exec.LookPath(c.Path)
+	if err != nil {
+		return c, nil, err
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return c, nil, err
+	}
+	dir, err := os.MkdirTemp("", "multica-probe-*")
+	if err != nil {
+		return c, nil, err
+	}
+	c.Path = path
+	c.probeDir = dir
+	return c, func() { _ = os.RemoveAll(dir) }, nil
 }
 
 // newRuntimeCmd applies the process-lifecycle defaults every runtime process in
@@ -335,7 +390,9 @@ type invocationChooser func(execName, lookedUp string, args []string, logger *sl
 func (c Command) execVia(ctx context.Context, choose invocationChooser, lookedUp string, args []string, logger *slog.Logger) (*exec.Cmd, string, []string) {
 	warnLaunchPrefixOverlap(c.Prefix, args, logger)
 	argv0, cmdArgs := choose(c.Path, lookedUp, c.Argv(args...), logger)
-	return registerLaunchHook(ctx, newRuntimeCmd(exec.CommandContext(ctx, argv0, cmdArgs...)), c.hook), argv0, cmdArgs
+	cmd := exec.CommandContext(ctx, argv0, cmdArgs...)
+	cmd.Dir = c.probeDir
+	return registerLaunchHook(ctx, newRuntimeCmd(cmd), c.hook), argv0, cmdArgs
 }
 
 // withFilteredPrefix returns a copy of the command whose prefix has been
@@ -550,6 +607,8 @@ var launchPrefixBlockedArgs = map[string]map[string]blockedArgMode{
 	"qoderclicn":  qoderBlockedArgs,
 	"qwen":        qwenBlockedArgs,
 	"qwenpaw":     qwenpawBlockedArgs,
+	"droid":       droidBlockedArgs,
+	"amp":         ampBlockedArgs,
 	"reasonix":    reasonixBlockedArgs,
 	"traecli":     traecliBlockedArgs,
 	"dim":         dimBlockedArgs,
@@ -589,6 +648,9 @@ func ValidateCustomArgs(agentType string, args []string) error {
 func FilterLaunchPrefix(agentType string, prefix []string, logger *slog.Logger) []string {
 	if family, ok := RuntimeProtocolFamily(agentType); ok {
 		agentType = family
+	}
+	if agentType == "amp" {
+		prefix = normalizeAmpArgs(prefix)
 	}
 	return filterLaunchPrefix(prefix, agentType, logger)
 }

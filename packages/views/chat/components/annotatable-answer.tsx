@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useT } from "../../i18n";
 import { useChatAnnotationScope } from "./chat-annotation-context";
 
@@ -14,7 +14,10 @@ import { useChatAnnotationScope } from "./chat-annotation-context";
  */
 export function AnnotatableAnswer({ messageId, children, readOnly = false }: { messageId?: string; children: ReactNode; readOnly?: boolean }) {
   const { t } = useT("chat");
-  const { enabled, agentName } = useChatAnnotationScope();
+  const { enabled, agentName, onSourceMounted } = useChatAnnotationScope();
+  useEffect(() => {
+    if (enabled && messageId && !readOnly) onSourceMounted?.(messageId);
+  }, [enabled, messageId, readOnly, onSourceMounted]);
   if (!enabled) return <>{children}</>;
   return (
     <div data-annotation-overlay-host>

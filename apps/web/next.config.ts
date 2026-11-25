@@ -89,6 +89,10 @@ const nextConfig: NextConfig = {
   images: {
     formats: ["image/avif", "image/webp"],
     qualities: [75, 80, 85],
+    localPatterns: [
+      { pathname: "/images/**", search: "" },
+      { pathname: "/usecases/**", search: "" },
+    ],
   },
   async rewrites() {
     return {
@@ -128,10 +132,6 @@ const nextConfig: NextConfig = {
               source: "/auth/:path*",
               destination: `${remoteApiUrl}/auth/:path*`,
             },
-            {
-              source: "/uploads/:path*",
-              destination: `${remoteApiUrl}/uploads/:path*`,
-            },
           ]
         : [],
       fallback: [],
@@ -139,10 +139,6 @@ const nextConfig: NextConfig = {
   },
 };
 
-// fumadocs-mdx@12 is incompatible with Next 16's Turbopack: its loader fails to
-// dynamic-import `.source/source.config.mjs` under the Turbopack Node evaluator
-// (see fumadocs#2658). `dev`/`build` scripts pass `--webpack` to opt out.
-// Drop the flag once fumadocs-mdx ships a Turbopack-compatible loader.
-const withMDX = createMDX() as (config: NextConfig) => NextConfig;
+const withMDX = createMDX();
 
 export default withMDX(nextConfig);
