@@ -88,7 +88,7 @@ func (h *Handler) sameAsReviewer(ctx context.Context, q *db.Queries, workspaceID
 // passSignerRuleSince is when the PASS-signer rule starts (CHE-9318). An issue
 // that left agent_review before it keeps the route it had until it closes. Set
 // it to the deploy time when the rule ships.
-var passSignerRuleSince = time.Date(2026, time.November, 24, 0, 0, 0, 0, time.UTC)
+var passSignerRuleSince = time.Date(2026, time.November, 25, 21, 17, 0, 0, time.UTC)
 
 // bindsPassSigner reports whether a step hands the issue to the PASS signer:
 // a same_as step that names agent_review, for an issue that is in agent_review
