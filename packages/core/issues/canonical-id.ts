@@ -1,13 +1,8 @@
 import { useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "../types";
-import { isSchemaValidationError } from "../api/schema";
-import {
-  issueDetailOptions,
-  issueFetchRetryDelay,
-  issueKeys,
-  retryIssueFetch,
-} from "./queries";
+import { issueDetailOptions, issueKeys } from "./queries";
+import { useIssueReadState } from "./read-state";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -33,6 +28,8 @@ export interface CanonicalIssue {
    * it resolved to nothing.
    */
   canonicalId: string | null;
+  /** A request made during this mount succeeded; cached data from an earlier visit does not count. */
+  hasLoaded: boolean;
   /** The issue itself, read from the UUID-keyed entry. */
   issue: Issue | undefined;
   isResolving: boolean;
@@ -43,7 +40,7 @@ export interface CanonicalIssue {
    */
   authoritative: boolean;
   /**
-   * Terminal: this identifier does not name an issue in this workspace.
+   * Terminal: the primary read returned an opaque unavailable response.
    *
    * Callers MUST branch on this and render a not-found state rather than
    * handing the unresolved segment to a view that will query it again. A
@@ -53,11 +50,10 @@ export interface CanonicalIssue {
    * that never settles on "not found".
    */
   notFound: boolean;
-  /** Terminal, but not a 404: the lookup failed and `retry` may succeed. */
-  loadError: boolean;
-  /** The lookup returned 2xx but the body failed schema validation. */
-  dataError: boolean;
-  retry: () => void;
+  /** The primary read failed for a reason other than an opaque refusal; `retry` may succeed. */
+  loadFailed: boolean;
+  isRetrying: boolean;
+  retry: () => Promise<void>;
 }
 
 /**
@@ -78,18 +74,22 @@ export interface CanonicalIssue {
  * canonical query never observes an empty cache and never fires a fetch of its
  * own. Seeding the cache from an effect instead would run after that decision
  * and leave the single-request property resting on hook ordering.
+ *
+ * `enabled: false` keeps the cache subscriptions without starting requests.
  */
-export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue {
+export function useCanonicalIssue(
+  wsId: string,
+  routeId: string,
+  { enabled = true }: { enabled?: boolean } = {},
+): CanonicalIssue {
   const qc = useQueryClient();
   // Entries older than this mount were not refreshed by it.
   const [mountedAt] = useState(() => Date.now());
   const isUuid = isIssueUuid(routeId);
-  const resolveEnabled = !isUuid && !!wsId && !!routeId;
+  const resolveEnabled = enabled && !isUuid && !!wsId && !!routeId;
 
   const resolve = useQuery({
     ...issueDetailOptions(wsId, routeId),
-    retry: retryIssueFetch,
-    retryDelay: issueFetchRetryDelay,
     enabled: resolveEnabled,
   });
 
@@ -97,7 +97,7 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
 
   const detail = useQuery({
     ...issueDetailOptions(wsId, canonicalId ?? ""),
-    enabled: !!canonicalId && !!wsId,
+    enabled: enabled && !!canonicalId && !!wsId,
     // Ignored once the entry holds data, so a row already patched by a realtime
     // event is never overwritten by this older resolution response.
     initialData: isUuid ? undefined : resolve.data,
@@ -123,25 +123,26 @@ export function useCanonicalIssue(wsId: string, routeId: string): CanonicalIssue
     );
   }, [qc, wsId, loadedIdentifier, loadedIssue, routeId]);
 
-  // Read the resolution query's own settled state rather than "pending and no
-  // data": a failed resolution must present as terminally not-found, never as
-  // still-resolving, or the caller flips back to a loading frame and the
-  // remount loop described on `notFound` starts.
-  const failed = resolveEnabled && resolve.isError;
-  const notFound = failed && isNotFoundError(resolve.error);
+  // A failed identifier must settle here without mounting a second observer.
+  // Once resolved, the UUID entry owns both the data and background failures.
+  const readState = useIssueReadState(
+    wsId,
+    canonicalId ?? routeId,
+    canonicalId ? detail : resolve,
+  );
 
   return {
     canonicalId,
+    hasLoaded:
+      (resolve.isSuccess && resolve.isFetchedAfterMount) ||
+      (detail.isSuccess && detail.isFetchedAfterMount),
     issue: detail.data,
-    isResolving: resolveEnabled && !failed && resolve.data === undefined,
+    isResolving: resolveEnabled && !canonicalId && !readState.notFound && !readState.loadFailed,
     authoritative:
       !isUuid &&
       detail.data !== undefined &&
       detail.data === resolve.data &&
       resolve.dataUpdatedAt >= mountedAt,
-    notFound,
-    loadError: failed && !notFound,
-    dataError: failed && isSchemaValidationError(resolve.error),
-    retry: () => void resolve.refetch(),
+    ...readState,
   };
 }

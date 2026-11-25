@@ -66,7 +66,7 @@ export function HierarchyDialog({ issue, headingRef, modes, onClose }: { issue: 
 
   return (
     <Dialog open onOpenChange={(next) => { if (!next) { clearTimeout(timer.current); pending.current = undefined; onClose(); } }}>
-      <DialogContent ref={popupRef} overlayClassName="supports-backdrop-filter:backdrop-blur-none" style={collapse ?? undefined} data-testid="hierarchy-dialog" initialFocus={viewportRef} finalFocus={headingRef} className="flex h-[min(48rem,90dvh)] flex-col gap-3 sm:max-w-6xl">
+      <DialogContent ref={popupRef} overlayClassName="supports-backdrop-filter:backdrop-blur-none" style={collapse ?? undefined} data-testid="hierarchy-dialog" initialFocus={viewportRef} finalFocus={headingRef} className="flex h-[min(48rem,90%)] flex-col gap-3 sm:max-w-6xl">
         <DialogHeader className="flex-row flex-wrap items-center gap-x-3 gap-y-2 pr-8">
           <DialogTitle>{t(($) => $.hierarchy.title)} <span aria-hidden="true" className="ml-2 font-mono text-caption text-muted-foreground">{issue.identifier}</span></DialogTitle>
           <DialogDescription className="sr-only">{t(($) => $.hierarchy.dialog_description)}</DialogDescription>

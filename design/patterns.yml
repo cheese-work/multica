@@ -23,7 +23,7 @@
   status: active
   components: ["packages/ui/components/ui/card.tsx", "packages/ui/components/ui/alert-dialog.tsx"]
   copy: {revoked: "settings:slack.revoked_badge", installed: "settings:slack.installed_at_label", not_enabled: "settings:slack.not_enabled_title", empty: "settings:slack.empty_title", disconnected: "settings:slack.toast_disconnected"}
-  surfaces: ["integrations-tab", "dingtalk-tab", "lark-tab", "slack-tab", "telegram-tab", "wecom-tab"]
+  surfaces: ["wecom-tab"]
   build: "One shared integration tab (copied 5 times). S3 items 3 to 8 merge the 5 duplicated keys."
   frame: {state: patterns, url: "https://congvc-c00.taila6fa8a.ts.net:34443/c/mRAnnjvGod?frame=IiowtxABGu"}
 - id: diff-dialog

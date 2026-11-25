@@ -103,7 +103,7 @@ func TestIsolatedSeedingKeepsShallowGuardInPlace(t *testing.T) {
 			if err := gitFetch(barePath); err != nil {
 				t.Fatalf("gitFetch: %v", err)
 			}
-			base, err := resolveCommit(barePath, "HEAD")
+			base, err := resolveCommitContext(context.Background(), barePath, "HEAD")
 			if err != nil {
 				t.Fatalf("resolve HEAD: %v", err)
 			}

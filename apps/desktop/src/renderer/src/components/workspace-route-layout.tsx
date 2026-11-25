@@ -11,6 +11,7 @@ import { isWorkspaceDeletePending } from "@multica/core/workspace/pending-delete
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
 import { MachineBannerHeaderSlot, MachinePauseBanner, WorkspacePresencePrefetch } from "@multica/views/layout";
+import { VoiceWorkspaceWords } from "@multica/views/voice";
 import { SourceBackfillModal } from "@multica/views/onboarding";
 import { useTabStore } from "@/stores/tab-store";
 import { useWindowOverlayStore } from "@/stores/window-overlay-store";
@@ -176,6 +177,7 @@ export function WorkspaceRouteLayout() {
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
       <WorkspacePresencePrefetch />
+      <VoiceWorkspaceWords />
       {/* Warns about paused or offline machines that affect the viewer; web mounts
        *  it in DashboardLayout, which desktop does not use. */}
       <MachinePauseBanner />

@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - name: Alarm when C00 does not run main's head 90 min after merge
+      - name: Alarm when C00 does not run main's head 90 min after its deploy slot
         env:
           GH_TOKEN: ${{ github.token }}
           C00_API_URL: ${{ vars.C00_API_URL || 'https://congvc-c00.taila6fa8a.ts.net:19444' }}
