@@ -1,6 +1,6 @@
 # CI warning sources
 
-The `warning-budget` CI job was removed (CHE-9821): it timed out on large sync PRs and its only catch was a data race that the backend shard step hid with `| tee`. Backend race failures now fail the job through `shell: bash` (pipefail); `scripts/ci-test-gates.test.mjs` guards that.
+The `warning-budget` CI job was removed (CHE-9821): it timed out on large sync PRs and was not a required check.
 
 ## CD warning sources
 

@@ -870,8 +870,6 @@ jobs:
           MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
           MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
-        # `shell: bash` adds pipefail: without it `| tee` hides a failed test or a data race from the job.
-        shell: bash
         run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
 
       - name: Report peak memory
