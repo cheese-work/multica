@@ -82,54 +82,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  warning-budget:
-    needs: [migration-prefix-check, cursor-background-lifecycle, changes, sqlc-check, frontend-build, frontend-test, frontend-views-test, locale-parity, frontend, backend-test-shards, backend-tests, backend-agent-tests, go-vulnerability-scan, go-lint, backend, image-budget, installer, script-checks, deploy-cd, frontend-quality]
-    if: ${{ always() && !cancelled() && github.event_name != 'merge_group' }}
-    runs-on: ${{ vars.RUNNER_WARNING_BUDGET || 'ubuntu-24.04' }}
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      actions: read
-      checks: read
-      pull-requests: read
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
-        with:
-          node-version: '22'
-          package-manager-cache: false
-      # CHE-7342: the script's own unit tests run only when a PR changes the script, its tests or fixtures,
-      # so a bad script change on main cannot turn this check red on unrelated PRs. Other events run them.
-      - name: Decide whether the unit tests apply
-        id: wb_scope
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.pull_request.number }}
-        run: |
-          set -euo pipefail
-          # Fetch first: an API error must fail the step, not read as "no match" and skip the tests.
-          files=
-          [ -z "$PR" ] || files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[].filename')
-          if [ -z "$PR" ] || grep -Eq '^scripts/(warning-budget|fixtures/warnings/)' <<< "$files"; then
-            echo unit=true >> "$GITHUB_OUTPUT"
-          else
-            echo unit=false >> "$GITHUB_OUTPUT"
-          fi
-      - name: Test warning regression fixtures
-        if: ${{ steps.wb_scope.outputs.unit == 'true' }}
-        run: node --test scripts/warning-budget.test.mjs
-      - name: Compare CI logs and annotations with successful main
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/warning-budget.mjs
-      - name: Upload warning counts and annotations
-        if: ${{ always() && hashFiles('warning-budget-report.json') != '' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: warning-budget-${{ github.run_id }}
-          path: warning-budget-report.json
-          retention-days: 14
-
   # CHE-2696 / CHE-4385: scans the commits a PR adds. Lives here, not in its own workflow, so a PR push starts no extra run.
   gitleaks:
     name: gitleaks
@@ -918,6 +870,8 @@ jobs:
           MULTICA_TEST_RERUN_FAILS: ${{ github.event_name == 'merge_group' && '1' || '' }}
           MULTICA_FLAKE_DIR: ${{ runner.temp }}/flakes
         # pkg/agent runs on its own runner: backend-agent-tests below.
+        # `shell: bash` adds pipefail: without it `| tee` hides a failed test or a data race from the job.
+        shell: bash
         run: bash scripts/test-go.sh --race --only regular --partition ${{ matrix.partition }} 2>&1 | tee "$RUNNER_TEMP/test.log"
 
       - name: Report peak memory

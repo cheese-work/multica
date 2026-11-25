@@ -18,7 +18,7 @@ import (
 
 // testLogger forwards to the default logger but drops WARN and below: the
 // codex sandbox WARN fires in dozens of tests, and interleaved parallel test
-// output can split its timestamp so warning-budget counts a stray line (CHE-4202).
+// output can split its timestamp and leave a stray line in the CI log (CHE-4202).
 func testLogger() *slog.Logger {
 	return slog.New(errorOnlyHandler{slog.Default().Handler()})
 }

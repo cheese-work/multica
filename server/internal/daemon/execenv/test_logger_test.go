@@ -7,8 +7,7 @@ import (
 )
 
 // The codex sandbox WARN fires once per Prepare/Reuse in dozens of tests.
-// Parallel test output can split its timestamp off, and warning-budget then
-// counts the stray line as a new CI warning (CHE-4202).
+// Parallel test output can split its timestamp off and leave a stray line in the CI log (CHE-4202).
 func TestTestLoggerDropsWarnButKeepsError(t *testing.T) {
 	var buf bytes.Buffer
 	prev := slog.Default()
