@@ -10244,13 +10244,22 @@ func (s *TaskService) failureNoticeText(ctx context.Context, agentID pgtype.UUID
 var nonIssueMentionScheme = regexp.MustCompile(`\]\(mention://(member|agent|squad|all)/`)
 
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {
+	if _, err := s.createAgentCommentGuarded(ctx, issueID, agentID, content, commentType, parentID, sourceTaskID, nil); err != nil {
+		slog.Warn("create agent comment failed", "error", err, "issue_id", util.UUIDToString(issueID), "agent_id", util.UUIDToString(agentID))
+	}
+}
+
+// createAgentCommentGuarded is createAgentComment with a duplicate guard that
+// runs inside the comment transaction: when it reports true the comment is not
+// created. It reports whether a comment was created.
+func (s *TaskService) createAgentCommentGuarded(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID, skip func(*db.Queries) (bool, error)) (bool, error) {
 	if content == "" {
-		return
+		return false, nil
 	}
 	// Look up issue to get workspace ID for mention expansion and broadcasting.
 	issue, err := s.Queries.GetIssue(ctx, issueID)
 	if err != nil {
-		return
+		return false, nil
 	}
 	// Resolve the thread root for thread-level side effects without overwriting
 	// parentID. The stored parent_id must remain the exact comment being replied
@@ -10270,7 +10279,18 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	// comment:unresolved EVENT publish waits until after commit.
 	var clearedResolution []db.Comment
 	var created db.CreateCommentRow
+	var skipped bool
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if skip != nil {
+			dup, err := skip(qtx)
+			if err != nil {
+				return err
+			}
+			if dup {
+				skipped = true
+				return nil
+			}
+		}
 		if err := qtx.SetWakeupMutationSource(ctx, db.SetWakeupMutationSourceParams{
 			ActorType: "agent", ActorID: util.UUIDToString(agentID), SourceTaskID: util.UUIDToString(sourceTaskID),
 		}); err != nil {
@@ -10294,8 +10314,10 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 		})
 		return err
 	}); err != nil {
-		slog.Warn("create agent comment failed", "error", err, "issue_id", util.UUIDToString(issueID), "agent_id", util.UUIDToString(agentID))
-		return
+		return false, err
+	}
+	if skipped {
+		return false, nil
 	}
 	comment := created.Comment()
 	commentFields := commentEventFields(comment)
@@ -10313,6 +10335,7 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 		},
 	})
 	s.PublishThreadUnresolvedOnReply(clearedResolution, util.UUIDToString(issue.WorkspaceID), "agent", util.UUIDToString(agentID))
+	return true, nil
 }
 
 // PublishThreadUnresolvedOnReply broadcasts one comment:unresolved event per

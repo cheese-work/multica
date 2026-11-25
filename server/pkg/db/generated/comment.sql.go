@@ -1124,6 +1124,63 @@ func (q *Queries) GetThreadRoot(ctx context.Context, arg GetThreadRootParams) (C
 	return i, err
 }
 
+const getTimeoutCheckpointComment = `-- name: GetTimeoutCheckpointComment :one
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read, notify_only, ask_source_root_id FROM comment
+WHERE issue_id = $1
+  AND source_task_id = $2
+  AND author_type = 'agent'
+  AND type = 'system'
+  AND content LIKE 'Coverage:%'
+  AND deleted_at IS NULL
+ORDER BY created_at ASC
+LIMIT 1
+`
+
+type GetTimeoutCheckpointCommentParams struct {
+	IssueID      pgtype.UUID `json:"issue_id"`
+	SourceTaskID pgtype.UUID `json:"source_task_id"`
+}
+
+// CHE-9761: the checkpoint comment the server posted for one timed-out task.
+// The failure notice shares (author, type, source_task_id), so the checkpoint
+// is told apart by its first line, which always starts with the word Coverage.
+func (q *Queries) GetTimeoutCheckpointComment(ctx context.Context, arg GetTimeoutCheckpointCommentParams) (Comment, error) {
+	row := q.db.QueryRow(ctx, getTimeoutCheckpointComment, arg.IssueID, arg.SourceTaskID)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.SourceTaskID,
+		&i.QuickActionID,
+		&i.ViaPluginID,
+		&i.Revision,
+		&i.RecoverySettledAt,
+		&i.DeletedAt,
+		&i.SuppressedAgentIds,
+		&i.DecisionRequestID,
+		&i.DecisionAnswerID,
+		&i.DecisionIntentID,
+		&i.DecisionCommentKind,
+		&i.GithubNotifyOnly,
+		&i.TaintIds,
+		&i.ExternalRead,
+		&i.NotifyOnly,
+		&i.AskSourceRootID,
+	)
+	return i, err
+}
+
 const hasAgentCommentedSince = `-- name: HasAgentCommentedSince :one
 SELECT EXISTS (
     SELECT 1 FROM comment
@@ -3111,6 +3168,17 @@ func (q *Queries) LockLiveComment(ctx context.Context, arg LockLiveCommentParams
 		&i.AskSourceRootID,
 	)
 	return i, err
+}
+
+const lockTimeoutCheckpoint = `-- name: LockTimeoutCheckpoint :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':timeout_checkpoint', 0))
+`
+
+// CHE-9761: serializes concurrent duplicate FailTask posts for one task so
+// the check-then-insert of the checkpoint comment cannot double-post.
+func (q *Queries) LockTimeoutCheckpoint(ctx context.Context, sourceTaskID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockTimeoutCheckpoint, sourceTaskID)
+	return err
 }
 
 const resolveComment = `-- name: ResolveComment :one
