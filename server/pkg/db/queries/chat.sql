@@ -107,6 +107,27 @@ WHERE m.chat_session_id = sqlc.arg('chat_session_id')
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT sqlc.arg('row_limit');
 
+-- name: ListChatEarlierHumanMessages :many
+-- Carry-over block, earlier human messages (CHE-10002): the human's ordinary
+-- messages before the boundary (the segment floor, or the latest summary row),
+-- newest first. Same exclusions as ListChatCarryOverMessages: a queued
+-- follow-up is not delivered yet, and the claiming task's own input batch is
+-- delivered by the claim. The source message of a withdrawn decision stays out,
+-- as the withdrawn decision does (CHE-4447).
+SELECT m.* FROM chat_message m
+WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+  AND m.role = 'user'
+  AND m.message_kind = 'message'
+  AND (m.created_at, m.id) < (sqlc.arg('before_created_at')::timestamptz, sqlc.arg('before_id')::uuid)
+  AND NOT (m.id = ANY(sqlc.arg('excluded_ids')::uuid[]))
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued')
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_answer da
+      WHERE da.disclaimed_at IS NOT NULL AND m.id = ANY(da.chat_message_ids))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT sqlc.arg('row_limit');
+
 -- name: ListChatSegmentTail :many
 -- Carry-over fallback when the current segment holds no assistant message yet:
 -- the last assistant message of the previous segment and the messages after it,
