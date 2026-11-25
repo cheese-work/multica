@@ -125,7 +125,7 @@ type Config struct {
 	ContainmentRoot                string                // MULTICA_CONTAINMENT_ROOT: runs cgroup holding the leaves; empty derives it from the daemon's own cgroup
 	ContainmentStateDir            string                // MULTICA_CONTAINMENT_STATE_DIR: attempt records; empty is <profile dir>/containment/attempts
 	ContainmentCharge              int64                 // MULTICA_CONTAINMENT_CHARGE_BYTES: memory charge recorded per attempt; required when containment is on until admission supplies it
-	RunBindingsDir                 string                // MULTICA_RUN_BINDINGS_DIR: opt-in private host registry for cooperative Codex task bindings
+	RunBindingsDir                 string                // MULTICA_RUN_BINDINGS_DIR: opt-in private host registry for cooperative Codex and Claude task bindings
 	SandboxHomeTemplate            string                // MULTICA_SANDBOX_HOME_TEMPLATE: optional read-only config template copied into each per-run HOME
 	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
 	GCInterval                     time.Duration         // how often the GC loop runs (default: 2h)
