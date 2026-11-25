@@ -1435,6 +1435,22 @@ describe("ChatMessageList compact notice", () => {
     expect(divider).toHaveClass("w-full");
   });
 
+  // CHE-9935: the server's mid-turn notice reads "Compacted mid-turn at Xk tokens (kept Yk)".
+  it.each([
+    ["with token counts", "Compacted mid-turn at 397k tokens (kept 31k). Earlier details may be lost.", /^Compacted · \d{2}:\d{2} \S+ · 397k tokens$/],
+    ["without token counts", "Compacted mid-turn. Earlier details may be lost.", /^Compacted · \d{2}:\d{2} \S+$/],
+  ])("draws the divider for a mid-turn compaction notice %s", (_name, content, label) => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={[{ ...notice, content }]} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    expect(screen.getByRole("separator")).toHaveTextContent(label);
+    expect(screen.getByRole("note")).toHaveTextContent(content);
+  });
+
   it.each([
     "Preset set to fast for the next run.",
     "Auto-compact failed (failed). Type /compact to retry.",
