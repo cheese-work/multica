@@ -56,7 +56,7 @@ func TestRepositoryAccessBeforeToolExecution(t *testing.T) {
 }
 
 func TestCanonicalRepositoryPolicy(t *testing.T) {
-	raw, err := os.ReadFile("../../../config/tevo-prod1-guard.json")
+	raw, err := os.ReadFile("testdata/repository_allowlist.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +64,7 @@ func TestCanonicalRepositoryPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Cheese's latest attached list supersedes the initial team-only roster.
-	for repo, allowed := range map[string]bool{"tevo-studio/sa039-astrology": true, "tevo-studio/code-android-template": true, "tevo-studio/mMonetize": true, "tevo-studio/sa041-downloader-5": false, "tevo-studio/st008-palios": true, "tevo-studio/tt025-ai-home-design": true, "tevo-studio/sa079-reelora": true, "tevo-studio/tt016-vpn2": false, "tevo-studio/sa061-flash-light-2": false} {
+	for repo, allowed := range map[string]bool{"example-org/app-one": true, "example-org/app-template": true, "example-org/app-three": true, "example-org/not-listed": false} {
 		if got := p.Resolve(Target{Repo: repo}).CheckRepository(repo) == nil; got != allowed {
 			t.Errorf("%s allowed=%v", repo, got)
 		}
