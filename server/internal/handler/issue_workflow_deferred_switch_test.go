@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -324,8 +325,8 @@ func TestDeferredSwitchListenerAppliesOnTaskTerminalEvents(t *testing.T) {
 func (f deferredSwitchFixture) refuseApply(t *testing.T) *deferredSwitchRefusal {
 	t.Helper()
 	err := testHandler.applyDeferredWorkflowSwitch(context.Background(), util.MustParseUUID(f.issueID))
-	refusal, ok := err.(*deferredSwitchRefusal)
-	if !ok {
+	var refusal *deferredSwitchRefusal
+	if !errors.As(err, &refusal) {
 		t.Fatalf("apply returned %v, want a deferredSwitchRefusal", err)
 	}
 	if f.pendingRows(t) != 1 {
