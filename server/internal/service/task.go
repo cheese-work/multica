@@ -7403,8 +7403,8 @@ func retryDelayForAttempt(reason string, failedAttempt int32) time.Duration {
 }
 
 // concurrencyLimitRetryWaits is the backoff after the first and second failure
-// of a provider account concurrency rejection (CHE-9849). The final wait stays
-// within gatewayFailureCooldown so the retry does not outlive the agent hold.
+// of a provider account concurrency rejection (CHE-9849). The cap reuses
+// gatewayFailureCooldown, the longest wait any provider failure already has.
 var concurrencyLimitRetryWaits = [...]time.Duration{2 * time.Minute, gatewayFailureCooldown}
 
 // retryDelayForFailure is retryDelayForAttempt with the failure text in view:
@@ -11048,7 +11048,7 @@ func (s *TaskService) RevokeTaskTokens(ctx context.Context, task db.AgentTaskQue
 func concurrencyLimitRetryNotice(retry *db.AgentTaskQueue) string {
 	when := "now"
 	if retry.FireAt.Valid {
-		when = "after " + time.Until(retry.FireAt.Time).Round(time.Minute).String()
+		when = fmt.Sprintf("in about %d min", int(time.Until(retry.FireAt.Time).Round(time.Minute)/time.Minute))
 	}
 	return fmt.Sprintf("The provider account hit its concurrency limit. Retrying automatically (attempt %d of %d, %s).", retry.Attempt, retry.MaxAttempts, when)
 }
