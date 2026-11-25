@@ -458,25 +458,6 @@ func (q *Queries) HasIssueWorkflowSwitchPending(ctx context.Context, issueID pgt
 	return exists, err
 }
 
-const hasIssueWorkflowSwitchPendingRequest = `-- name: HasIssueWorkflowSwitchPendingRequest :one
-SELECT EXISTS (
-  SELECT 1 FROM issue_workflow_switch_pending
-  WHERE issue_id = $1::uuid AND created_at = $2::timestamptz
-)
-`
-
-type HasIssueWorkflowSwitchPendingRequestParams struct {
-	IssueID   pgtype.UUID        `json:"issue_id"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-}
-
-func (q *Queries) HasIssueWorkflowSwitchPendingRequest(ctx context.Context, arg HasIssueWorkflowSwitchPendingRequestParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasIssueWorkflowSwitchPendingRequest, arg.IssueID, arg.CreatedAt)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const hasLiveTaskForIssue = `-- name: HasLiveTaskForIssue :one
 SELECT EXISTS (
     SELECT 1 FROM agent_task_queue
@@ -862,6 +843,27 @@ func (q *Queries) ListProjectsUsingIssueWorkflow(ctx context.Context, arg ListPr
 		return nil, err
 	}
 	return items, nil
+}
+
+const lockIssueWorkflowSwitchPendingRequest = `-- name: LockIssueWorkflowSwitchPendingRequest :one
+SELECT issue_id FROM issue_workflow_switch_pending
+WHERE issue_id = $1::uuid AND created_at = $2::timestamptz
+FOR UPDATE
+`
+
+type LockIssueWorkflowSwitchPendingRequestParams struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// Locks the one request a refusal was made for, until the caller's transaction
+// ends. An upsert of a newer request waits for it, so the refusal's writes
+// cannot land after a replacement. No row means it was replaced or settled.
+func (q *Queries) LockIssueWorkflowSwitchPendingRequest(ctx context.Context, arg LockIssueWorkflowSwitchPendingRequestParams) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockIssueWorkflowSwitchPendingRequest, arg.IssueID, arg.CreatedAt)
+	var issue_id pgtype.UUID
+	err := row.Scan(&issue_id)
+	return issue_id, err
 }
 
 const lockProjectForIssueWrite = `-- name: LockProjectForIssueWrite :one

@@ -321,8 +321,12 @@ func (h *Handler) settleDeferredSwitchRefusal(ctx context.Context, issueID pgtyp
 	// settle may have consumed it since (settling twice would comment twice), a
 	// newer request may have replaced it, and the issue may have moved. A
 	// refusal never settles another request or another state of the issue.
-	pending, err := qtx.HasIssueWorkflowSwitchPendingRequest(ctx, db.HasIssueWorkflowSwitchPendingRequestParams{IssueID: issueID, CreatedAt: refusal.requestedAt})
-	if err != nil || !pending {
+	// The check locks the request until commit: an upsert of a newer one waits
+	// for this settlement, so no write below lands after a replacement.
+	if _, err := qtx.LockIssueWorkflowSwitchPendingRequest(ctx, db.LockIssueWorkflowSwitchPendingRequestParams{IssueID: issueID, CreatedAt: refusal.requestedAt}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
 		return err
 	}
 	if issue.Status != refusal.issueStatus || issue.WorkflowID != refusal.issueWorkflow {

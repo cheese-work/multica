@@ -294,11 +294,13 @@ SET workflow_id = EXCLUDED.workflow_id, reason = EXCLUDED.reason, created_at = n
 -- name: HasIssueWorkflowSwitchPending :one
 SELECT EXISTS (SELECT 1 FROM issue_workflow_switch_pending WHERE issue_id = sqlc.arg('issue_id')::uuid);
 
--- name: HasIssueWorkflowSwitchPendingRequest :one
-SELECT EXISTS (
-  SELECT 1 FROM issue_workflow_switch_pending
-  WHERE issue_id = sqlc.arg('issue_id')::uuid AND created_at = sqlc.arg('created_at')::timestamptz
-);
+-- name: LockIssueWorkflowSwitchPendingRequest :one
+-- Locks the one request a refusal was made for, until the caller's transaction
+-- ends. An upsert of a newer request waits for it, so the refusal's writes
+-- cannot land after a replacement. No row means it was replaced or settled.
+SELECT issue_id FROM issue_workflow_switch_pending
+WHERE issue_id = sqlc.arg('issue_id')::uuid AND created_at = sqlc.arg('created_at')::timestamptz
+FOR UPDATE;
 
 -- name: DeleteIssueWorkflowSwitchPendingRequest :one
 -- Consumes one request, not the issue's row: created_at is set again on every
