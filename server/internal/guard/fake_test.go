@@ -257,9 +257,17 @@ func (f *fakeEnv) gh(args []string) Result {
 		if f.repoViewFails {
 			return Result{Exit: 1, Stderr: "HTTP 502"}
 		}
+		// Like real gh: the repository is positional; repo view has no --repo flag.
 		repo := f.defaultRepo
-		if r := val(args, "--repo", "-R"); r != "" {
-			repo = r
+		for i, a := range args[2:] {
+			switch {
+			case a == "--json":
+			case i > 0 && args[1+i] == "--json":
+			case a == "--repo" || a == "-R" || strings.HasPrefix(a, "--repo="):
+				return Result{Exit: 1, Stderr: "unknown flag: --repo"}
+			case !strings.HasPrefix(a, "-"):
+				repo = a
+			}
 		}
 		return Result{Stdout: mustJSON(map[string]any{
 			"nameWithOwner": repo, "defaultBranchRef": map[string]string{"name": f.defaultBranch}})}

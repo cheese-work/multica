@@ -194,7 +194,7 @@ func (e *Engine) prCreate(ctx context.Context, pl *Plugin, args []string) (decis
 
 	repoView := []string{"repo", "view"}
 	if r, ok := find(flags, "repo"); ok && r.hasVal {
-		repoView = append(repoView, "--repo", r.value)
+		repoView = append(repoView, r.value) // gh repo view takes the repository positionally; it has no --repo flag
 	}
 	var rv struct {
 		NameWithOwner    string `json:"nameWithOwner"`
