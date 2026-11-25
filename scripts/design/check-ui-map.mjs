@@ -15,6 +15,7 @@
  *       state: building | shipped | unmapped | upstream
  *     An `upstream` entry owns screens that came from the upstream project and have no design lock: it has no
  *     lock, lock_export_sha256 or blocks_map, and needs `paths` or `routes`. Rules 1 and 2 apply to it as to any entry.
+ *     Only the exact files and routes in UPSTREAM_ALLOWLIST are accepted (no glob); any other path fails upstream-out-of-scope.
  *
  * Rules (each failure has a named reason):
  *   1 ambiguous-owner     a changed UI file matches two named entries (a named entry wins over legacy)
@@ -24,7 +25,7 @@
  *     lock-pin-mismatch   an entry's lock_export_sha256 differs from its LOCK.json
  *   4 new-unmapped        `unmapped` only for a lock that exists at seed_sha with the same pin; a new or re-pinned
  *                         entry needs state `building` and an existing blocks map
- * Also: bad-map (schema or missing file), seed-unreachable (seed_sha is not in the clone).
+ * Also: upstream-out-of-scope (an upstream entry owns a path or route outside UPSTREAM_ALLOWLIST), bad-map (schema or missing file), seed-unreachable (seed_sha is not in the clone).
  * Rules 0, 5 and 6 (trigger, ratchet, crash) belong to the ui-fidelity job (steps 8 and 8b).
  *
  * Run: node scripts/design/check-ui-map.mjs [--base <ref> [--head <ref>]]
@@ -40,7 +41,71 @@ import { parse } from "yaml";
 import { isUiPath } from "./check-ui-pattern-ref.mjs";
 
 export const MAP_PATH = "design/ui-map.yml";
+const CHECK_PATH = "scripts/design/check-ui-map.mjs";
 export const ROUTES_PATH = "apps/desktop/src/renderer/src/routes.tsx";
+// The only files and routes an `upstream` entry may own (Cheese decision on CHE-9575: "Allow upstream state" for these 55 files and 1 route,
+// the UI the v0.10.0 merge brought in). Exact paths only: no glob, no directory. A new upstream file or route needs its own design lock
+// entry, or a new decision that edits this list.
+export const UPSTREAM_ALLOWLIST = {
+  paths: [
+    "apps/web/app/(landing)/blog/page.tsx",
+    "apps/web/app/(landing)/careers/page.tsx",
+    "apps/web/app/(landing)/customers/page.tsx",
+    "apps/web/app/(landing)/press/page.tsx",
+    "apps/web/app/(landing)/pricing/page.tsx",
+    "apps/web/app/(landing)/product/[slug]/page.tsx",
+    "apps/web/app/(landing)/product/page.tsx",
+    "apps/web/app/(landing)/security/page.tsx",
+    "apps/web/app/(landing)/solutions/[slug]/page.tsx",
+    "apps/web/app/(landing)/solutions/page.tsx",
+    "apps/web/app/[workspaceSlug]/(dashboard)/issues/[id]/deliverables/[name]/page.tsx",
+    "apps/web/components/i18n/bundles/en.tsx",
+    "apps/web/components/i18n/bundles/es.tsx",
+    "apps/web/components/i18n/bundles/fr.tsx",
+    "apps/web/components/i18n/bundles/ja.tsx",
+    "apps/web/components/i18n/bundles/ko.tsx",
+    "apps/web/components/i18n/bundles/ru.tsx",
+    "apps/web/components/i18n/bundles/zh-Hans.tsx",
+    "apps/web/components/i18n/bundles/zh-Hant.tsx",
+    "apps/web/components/i18n/locale-bundle.tsx",
+    "apps/web/features/landing/site/auto-advance.tsx",
+    "apps/web/features/landing/site/chat-page.tsx",
+    "apps/web/features/landing/site/cli-page.tsx",
+    "apps/web/features/landing/site/cloud-page.tsx",
+    "apps/web/features/landing/site/cta-band.tsx",
+    "apps/web/features/landing/site/demo/chat-visuals.tsx",
+    "apps/web/features/landing/site/demo/cli-visuals.tsx",
+    "apps/web/features/landing/site/demo/cloud-visuals.tsx",
+    "apps/web/features/landing/site/demo/desktop-visuals.tsx",
+    "apps/web/features/landing/site/demo/feature-visuals.tsx",
+    "apps/web/features/landing/site/demo/hero-blocks.tsx",
+    "apps/web/features/landing/site/demo/hero-board.tsx",
+    "apps/web/features/landing/site/demo/hero-demo.tsx",
+    "apps/web/features/landing/site/demo/mobile-visuals.tsx",
+    "apps/web/features/landing/site/demo/mock-kit.tsx",
+    "apps/web/features/landing/site/desktop-page.tsx",
+    "apps/web/features/landing/site/footer-wordmark.tsx",
+    "apps/web/features/landing/site/home-page.tsx",
+    "apps/web/features/landing/site/locale-suggestion.tsx",
+    "apps/web/features/landing/site/mobile-page.tsx",
+    "apps/web/features/landing/site/pricing-page.tsx",
+    "apps/web/features/landing/site/primitives.tsx",
+    "apps/web/features/landing/site/site-footer.tsx",
+    "apps/web/features/landing/site/site-header.tsx",
+    "apps/web/features/landing/site/site-page.tsx",
+    "apps/web/features/landing/site/surface-kit.tsx",
+    "packages/views/dev-toolbar/actions-panel.tsx",
+    "packages/views/dev-toolbar/dev-toolbar.tsx",
+    "packages/views/dev-toolbar/panels.tsx",
+    "packages/views/dev-toolbar/realtime-panels.tsx",
+    "packages/views/star-prompt/star-prompt.tsx",
+    "packages/views/voice/dialog-footer.tsx",
+    "packages/views/voice/voice-models.tsx",
+    "packages/views/voice/voice-ui.tsx",
+    "packages/views/voice/workspace-words.tsx",
+  ],
+  routes: ["issues/:id/deliverables/:name"],
+};
 const STATES = new Set(["building", "shipped", "unmapped", "upstream"]);
 const NEW_SCREEN = /^apps\/web\/app\/(?:.+\/)?page\.tsx$/;
 const LOCK_FOLDER = /^design\/([^/]+)\/approved\//;
@@ -155,6 +220,12 @@ function validateMap(doc) {
       // An upstream screen comes from the upstream project and has no design lock here: it needs an owned path or route, and no lock fields.
       if (e.lock !== undefined || e.lock_export_sha256 !== undefined) errors.push(err("bad-map", `${at}: an upstream entry has no lock or lock_export_sha256`));
       if (!e.paths?.length && !e.routes?.length) errors.push(err("bad-map", `${at}: an upstream entry needs paths or routes`));
+      for (const p of isList(e.paths) ? e.paths : []) {
+        if (!UPSTREAM_ALLOWLIST.paths.includes(p)) errors.push(err("upstream-out-of-scope", `${at}: upstream path ${p} is not one of the approved upstream files (a glob is never accepted). Fix: give the screen a design lock entry, or get the allowlist in ${CHECK_PATH} extended by a decision.`));
+      }
+      for (const r of isList(e.routes) ? e.routes : []) {
+        if (!UPSTREAM_ALLOWLIST.routes.includes(r)) errors.push(err("upstream-out-of-scope", `${at}: upstream route ${r} is not one of the approved upstream routes. Fix: give the screen a design lock entry, or get the allowlist in ${CHECK_PATH} extended by a decision.`));
+      }
     } else {
       if (typeof e?.lock !== "string" || !e.lock) errors.push(err("bad-map", `${at}: lock (the design/<topic> name) is required`));
       if (typeof e?.lock_export_sha256 !== "string" || !/^[0-9a-f]{64}$/.test(e.lock_export_sha256)) errors.push(err("bad-map", `${at}: lock_export_sha256 must be a 64-hex sha256`));

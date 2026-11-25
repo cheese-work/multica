@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 
-import { checkUiMap, fsTree, globToRegExp, gitTree, lockPin, readChanges } from "./check-ui-map.mjs";
+import { UPSTREAM_ALLOWLIST, checkUiMap, fsTree, globToRegExp, gitTree, lockPin, readChanges } from "./check-ui-map.mjs";
 import { isUiPath } from "./check-ui-pattern-ref.mjs";
 
 // Each test builds a throwaway git repo: `seed` is the commit the map's legacy entry records, `base` the PR base, `head` the PR head.
@@ -278,15 +279,19 @@ test("the committed design/ui-map.yml passes rules 3 and 4 on the working tree",
 });
 
 // ---- upstream-owned screens (no design lock) ----
-const upstream = (over = {}) => ({ screen: "up-voice", paths: ["packages/views/voice/**"], state: "upstream", ...over });
+// An `upstream` entry may own only the explicit allowlist (UPSTREAM_ALLOWLIST: 55 files and 1 route, Cheese decision on CHE-9575).
+const UP_PAGE = "apps/web/app/(landing)/blog/page.tsx";
+const UP_FILE = "packages/views/voice/voice-ui.tsx";
+const UP_ROUTE = "issues/:id/deliverables/:name";
+const upstream = (over = {}) => ({ screen: "up-voice", paths: [UP_FILE], state: "upstream", ...over });
 
-test("upstream: an entry with no lock owns a new page, a file in a new directory and a new route", (t) => {
+test("upstream: an entry with no lock owns an allowlisted new page, a file in a new directory and a new route", (t) => {
   const r = run(t, {
-    entries: [entry(), upstream({ paths: ["packages/views/voice/**", "apps/web/app/voice/page.tsx"], routes: ["voice"] })],
+    entries: [entry(), upstream({ paths: [UP_FILE, UP_PAGE], routes: [UP_ROUTE] })],
     head: {
-      "packages/views/voice/panel.tsx": "export const P = 1;\n",
-      "apps/web/app/voice/page.tsx": "export default function P() { return null; }\n",
-      [ROUTES]: routes("issues", "voice"),
+      [UP_FILE]: "export const P = 1;\n",
+      [UP_PAGE]: "export default function P() { return null; }\n",
+      [ROUTES]: routes("issues", UP_ROUTE),
     },
   });
   assert.deepEqual(r.errors, []);
@@ -296,9 +301,9 @@ test("upstream: without the entry the same changes fail unowned-ui and unowned-s
   const r = run(t, {
     entries: [entry()],
     head: {
-      "packages/views/voice/panel.tsx": "export const P = 1;\n",
-      "apps/web/app/voice/page.tsx": "export default function P() { return null; }\n",
-      [ROUTES]: routes("issues", "voice"),
+      [UP_FILE]: "export const P = 1;\n",
+      [UP_PAGE]: "export default function P() { return null; }\n",
+      [ROUTES]: routes("issues", UP_ROUTE),
     },
   });
   assert.deepEqual(reasons(r), ["unowned-screen", "unowned-screen", "unowned-ui"]);
@@ -306,8 +311,8 @@ test("upstream: without the entry the same changes fail unowned-ui and unowned-s
 
 test("upstream: an entry still takes part in rule 1, and needs paths or routes and no lock", (t) => {
   const r = run(t, {
-    entries: [entry(), upstream(), upstream({ screen: "up-two", paths: ["packages/views/voice/*.tsx"] })],
-    head: { "packages/views/voice/panel.tsx": "export const P = 1;\n" },
+    entries: [entry(), upstream(), upstream({ screen: "up-two" })],
+    head: { [UP_FILE]: "export const P = 1;\n" },
   });
   assert.deepEqual(reasons(r), ["ambiguous-owner"]);
   assert.ok(reasons(run(t, { entries: [entry(), upstream({ paths: [] })] })).includes("bad-map"));
@@ -315,8 +320,35 @@ test("upstream: an entry still takes part in rule 1, and needs paths or routes a
 });
 
 test("upstream: two upstream entries do not trip rule 3 or 4 (no lock folder to own)", (t) => {
-  const r = run(t, { entries: [entry(), upstream(), upstream({ screen: "up-two", paths: ["packages/views/other/**"] })] }, { withBase: false });
+  const r = run(t, { entries: [entry(), upstream(), upstream({ screen: "up-two", paths: [UP_PAGE] })] }, { withBase: false });
   assert.deepEqual(r.errors, []);
+});
+
+// ---- the upstream state is limited to the approved allowlist (CHE-9575, Cheese: "Allow upstream state" for the listed files only) ----
+test("upstream scope: an upstream entry for a path outside the allowlist is rejected", (t) => {
+  const r = run(t, { entries: [entry(), upstream({ paths: ["packages/views/billing/invoice.tsx"] })] }, { withBase: false });
+  assert.deepEqual(reasons(r), ["upstream-out-of-scope"]);
+  assert.match(r.errors[0].message, /packages\/views\/billing\/invoice\.tsx/);
+});
+
+test("upstream scope: a glob is rejected even when it covers allowlisted files", (t) => {
+  for (const glob of ["packages/views/voice/**", "packages/views/voice/*.tsx", "apps/web/features/landing/**", "packages/views/voice/voice-?i.tsx"]) {
+    const r = run(t, { entries: [entry(), upstream({ paths: [glob] })] }, { withBase: false });
+    assert.deepEqual(reasons(r), ["upstream-out-of-scope"], glob);
+  }
+});
+
+test("upstream scope: a route outside the allowlist is rejected", (t) => {
+  const r = run(t, { entries: [entry(), upstream({ paths: [UP_FILE], routes: ["billing"] })] }, { withBase: false });
+  assert.deepEqual(reasons(r), ["upstream-out-of-scope"]);
+});
+
+test("upstream scope: a new file next to an allowlisted one is not owned (no directory-wide ownership)", (t) => {
+  const r = run(t, {
+    entries: [entry(), upstream({ paths: [UP_PAGE] })],
+    head: { [UP_PAGE]: "export default function P() { return null; }\n", "apps/web/app/(landing)/extra/page.tsx": "export default function P() { return null; }\n" },
+  });
+  assert.deepEqual(reasons(r), ["unowned-screen"]);
 });
 
 // ---- the v0.10.0 merge (CHE-9575): the 56 files and routes the merge brought in need a named owner ----
@@ -378,6 +410,18 @@ const REPORTED_FILES = [
   "packages/views/voice/workspace-words.tsx",
 ];
 const REPORTED_ROUTES = ["issues/:id/deliverables/:name"];
+
+test("the upstream allowlist is exactly the files and routes the v0.10.0 merge reported", () => {
+  assert.deepEqual([...UPSTREAM_ALLOWLIST.paths].sort(), [...REPORTED_FILES].sort());
+  assert.deepEqual([...UPSTREAM_ALLOWLIST.routes].sort(), [...REPORTED_ROUTES].sort());
+  assert.equal(UPSTREAM_ALLOWLIST.paths.length + UPSTREAM_ALLOWLIST.routes.length, 56);
+});
+
+test("the committed map has no glob in an upstream entry and owns each allowlisted file exactly", () => {
+  const doc = parse(readFileSync("design/ui-map.yml", "utf8"));
+  const owned = doc.entries.filter((e) => e.state === "upstream").flatMap((e) => e.paths);
+  assert.deepEqual([...owned].sort(), [...REPORTED_FILES].sort());
+});
 
 test("the committed map owns every UI file and desktop route the v0.10.0 merge brought in", () => {
   const changes = {

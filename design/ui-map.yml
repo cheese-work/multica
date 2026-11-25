@@ -5,7 +5,7 @@
 #   exists there; a lock pin that equals the pin at that commit may stay `unmapped`.
 # entries: one per lock folder design/<topic>/approved/. state `building` (fidelity check runs), `shipped` (goldens), `unmapped`.
 #   state `upstream` is for a screen that came from the upstream project and has no design lock here: it lists the
-#   `paths` and `routes` it owns and has no lock fields. Give a screen a lock entry when a design is drawn for it.
+#   exact `paths` (no glob) and `routes` it owns and has no lock fields. Only the files and routes in UPSTREAM_ALLOWLIST (scripts/design/check-ui-map.mjs) are accepted. Give a screen a lock entry when a design is drawn for it.
 #   lock_export_sha256 is the lock's LOCK.json export_sha256 (a per-file object is pinned as the sha256 of its sorted
 #   sha256sum lines). Whoever merges second of a design PR and a code PR updates the pin.
 legacy:
@@ -98,28 +98,76 @@ entries:
     state: unmapped
   - screen: upstream-landing
     paths:
-      - apps/web/app/(landing)/**
-      - apps/web/features/landing/**
+      - apps/web/app/(landing)/blog/page.tsx
+      - apps/web/app/(landing)/careers/page.tsx
+      - apps/web/app/(landing)/customers/page.tsx
+      - apps/web/app/(landing)/press/page.tsx
+      - apps/web/app/(landing)/pricing/page.tsx
+      - apps/web/app/(landing)/product/[slug]/page.tsx
+      - apps/web/app/(landing)/product/page.tsx
+      - apps/web/app/(landing)/security/page.tsx
+      - apps/web/app/(landing)/solutions/[slug]/page.tsx
+      - apps/web/app/(landing)/solutions/page.tsx
+      - apps/web/features/landing/site/auto-advance.tsx
+      - apps/web/features/landing/site/chat-page.tsx
+      - apps/web/features/landing/site/cli-page.tsx
+      - apps/web/features/landing/site/cloud-page.tsx
+      - apps/web/features/landing/site/cta-band.tsx
+      - apps/web/features/landing/site/demo/chat-visuals.tsx
+      - apps/web/features/landing/site/demo/cli-visuals.tsx
+      - apps/web/features/landing/site/demo/cloud-visuals.tsx
+      - apps/web/features/landing/site/demo/desktop-visuals.tsx
+      - apps/web/features/landing/site/demo/feature-visuals.tsx
+      - apps/web/features/landing/site/demo/hero-blocks.tsx
+      - apps/web/features/landing/site/demo/hero-board.tsx
+      - apps/web/features/landing/site/demo/hero-demo.tsx
+      - apps/web/features/landing/site/demo/mobile-visuals.tsx
+      - apps/web/features/landing/site/demo/mock-kit.tsx
+      - apps/web/features/landing/site/desktop-page.tsx
+      - apps/web/features/landing/site/footer-wordmark.tsx
+      - apps/web/features/landing/site/home-page.tsx
+      - apps/web/features/landing/site/locale-suggestion.tsx
+      - apps/web/features/landing/site/mobile-page.tsx
+      - apps/web/features/landing/site/pricing-page.tsx
+      - apps/web/features/landing/site/primitives.tsx
+      - apps/web/features/landing/site/site-footer.tsx
+      - apps/web/features/landing/site/site-header.tsx
+      - apps/web/features/landing/site/site-page.tsx
+      - apps/web/features/landing/site/surface-kit.tsx
     state: upstream
   - screen: upstream-web-i18n
     paths:
-      - apps/web/components/i18n/**
+      - apps/web/components/i18n/bundles/en.tsx
+      - apps/web/components/i18n/bundles/es.tsx
+      - apps/web/components/i18n/bundles/fr.tsx
+      - apps/web/components/i18n/bundles/ja.tsx
+      - apps/web/components/i18n/bundles/ko.tsx
+      - apps/web/components/i18n/bundles/ru.tsx
+      - apps/web/components/i18n/bundles/zh-Hans.tsx
+      - apps/web/components/i18n/bundles/zh-Hant.tsx
+      - apps/web/components/i18n/locale-bundle.tsx
     state: upstream
   - screen: upstream-issue-deliverable
     paths:
-      - apps/web/app/[workspaceSlug]/(dashboard)/issues/[id]/deliverables/**
+      - apps/web/app/[workspaceSlug]/(dashboard)/issues/[id]/deliverables/[name]/page.tsx
     routes:
       - issues/:id/deliverables/:name
     state: upstream
   - screen: upstream-dev-toolbar
     paths:
-      - packages/views/dev-toolbar/**
+      - packages/views/dev-toolbar/actions-panel.tsx
+      - packages/views/dev-toolbar/dev-toolbar.tsx
+      - packages/views/dev-toolbar/panels.tsx
+      - packages/views/dev-toolbar/realtime-panels.tsx
     state: upstream
   - screen: upstream-star-prompt
     paths:
-      - packages/views/star-prompt/**
+      - packages/views/star-prompt/star-prompt.tsx
     state: upstream
   - screen: upstream-voice
     paths:
-      - packages/views/voice/**
+      - packages/views/voice/dialog-footer.tsx
+      - packages/views/voice/voice-models.tsx
+      - packages/views/voice/voice-ui.tsx
+      - packages/views/voice/workspace-words.tsx
     state: upstream
