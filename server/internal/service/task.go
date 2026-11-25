@@ -6812,7 +6812,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			// Defer this attempt when the reason's schedule calls for a backoff
 			// (provider_network's final attempt waits ~5s); a zero delay leaves
 			// fire_at NULL so the child is created immediately-claimable.
-			if delay := retryDelayForAttempt(failureReason, parent.Attempt); delay > 0 {
+			if delay := retryDelayForFailure(failureReason, errMsg, parent.Attempt); delay > 0 {
 				retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
 			}
 			if agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID); aerr != nil {
@@ -7212,6 +7212,11 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, *retried)
 			s.NotifyTaskEnqueued(ctx, *retried)
 		}
+		// Other retries stay silent; this one is logged so a reader of the issue
+		// sees the account limit and the backoff, not a missing run (CHE-9849).
+		if task.IssueID.Valid && failureReason == string(taskfailure.ReasonAgentProviderNetwork) && taskfailure.IsConcurrencyLimit(errMsg) {
+			s.createAgentComment(ctx, task.IssueID, task.AgentID, concurrencyLimitRetryNotice(retried), "system", task.TriggerCommentID, task.ID)
+		}
 	}
 
 	// A delegated task that has reached a terminal failure must hand control
@@ -7395,6 +7400,29 @@ func retryDelayForAttempt(reason string, failedAttempt int32) time.Duration {
 		return providerCapacityRetryWait
 	}
 	return 0
+}
+
+// concurrencyLimitRetryWaits is the backoff after the first and second failure
+// of a provider account concurrency rejection (CHE-9849). The cap reuses
+// gatewayFailureCooldown, the longest wait any provider failure already has.
+var concurrencyLimitRetryWaits = [...]time.Duration{2 * time.Minute, gatewayFailureCooldown}
+
+// retryDelayForFailure is retryDelayForAttempt with the failure text in view:
+// an account concurrency rejection (provider_network by reason) waits through
+// a growing backoff, because the immediate and 5s retries all land while the
+// account is still saturated. Other failures keep their reason schedule.
+func retryDelayForFailure(reason, errMsg string, failedAttempt int32) time.Duration {
+	if reason == string(taskfailure.ReasonAgentProviderNetwork) && taskfailure.IsConcurrencyLimit(errMsg) {
+		i := int(failedAttempt) - 1
+		if i < 0 {
+			i = 0
+		}
+		if i >= len(concurrencyLimitRetryWaits) {
+			i = len(concurrencyLimitRetryWaits) - 1
+		}
+		return concurrencyLimitRetryWaits[i]
+	}
+	return retryDelayForAttempt(reason, failedAttempt)
 }
 
 func resumeUnsafeFailureReason(reason string) bool {
@@ -7713,7 +7741,7 @@ func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// NULL for an immediate child), and write the reason-aware ceiling into the
 	// child's max_attempts so the retry chain stays self-consistent.
 	var retryFireAt pgtype.Timestamptz
-	if delay := retryDelayForAttempt(reason, parent.Attempt); delay > 0 {
+	if delay := retryDelayForFailure(reason, parent.Error.String, parent.Attempt); delay > 0 {
 		retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
 	}
 	// Same advisory slot check as FailTask's path, for the same reason: skip the
@@ -7872,6 +7900,11 @@ func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if child.Status == "queued" {
 		s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, child)
 		s.NotifyTaskEnqueued(ctx, child)
+	}
+	// Same notice as FailTask's in-tx retry (CHE-9849): budget-resume and the
+	// sweeper retry through here, so the account limit must show on the issue.
+	if parent.IssueID.Valid && reason == string(taskfailure.ReasonAgentProviderNetwork) && taskfailure.IsConcurrencyLimit(parent.Error.String) {
+		s.createAgentComment(ctx, parent.IssueID, parent.AgentID, concurrencyLimitRetryNotice(&child), "system", parent.TriggerCommentID, parent.ID)
 	}
 	return &child, nil
 }
@@ -11036,4 +11069,14 @@ func (s *TaskService) RevokeTaskTokens(ctx context.Context, task db.AgentTaskQue
 		slog.Error("task end: failed to record token deletion failure",
 			"task_id", util.UUIDToString(task.ID), "error", mergeErr)
 	}
+}
+
+// concurrencyLimitRetryNotice is the issue comment logged for a retry of an
+// account concurrency rejection.
+func concurrencyLimitRetryNotice(retry *db.AgentTaskQueue) string {
+	when := "now"
+	if retry.FireAt.Valid {
+		when = fmt.Sprintf("in about %d min", int(time.Until(retry.FireAt.Time).Round(time.Minute)/time.Minute))
+	}
+	return fmt.Sprintf("The provider account hit its concurrency limit. Retrying automatically (attempt %d of %d, %s).", retry.Attempt, retry.MaxAttempts, when)
 }
