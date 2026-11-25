@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -24,7 +25,14 @@ func writeProjectAdmissionError(writer http.ResponseWriter, err error) bool {
 	if !service.IsProjectInactive(err) {
 		return false
 	}
-	writeJSON(writer, http.StatusForbidden, map[string]string{"error": "project_inactive", "reason_code": "project_inactive"})
+	body := map[string]string{"error": "project_inactive", "reason_code": "project_inactive"}
+	var inactive *service.ProjectInactiveError
+	if errors.As(err, &inactive) {
+		body["message"] = inactive.Message()
+	} else {
+		body["message"] = "Project is not active: agents cannot write here."
+	}
+	writeJSON(writer, http.StatusForbidden, body)
 	return true
 }
 
