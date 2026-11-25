@@ -33,8 +33,12 @@ func newObserverHold(test *testing.T) observerHold {
 	resetDecisionLease(test)
 	fixture := newParkFixture(test)
 	handlerID := createHandlerTestAgent(test, "need-decision handler "+fixture.agentName, []byte("[]"))
-	projectID := createWorkflowTestProject(test, "CHE-9484 observer hold")
-	setColumnHandoff(test, projectID, "need_decision", handToAgent(handlerID, "Decide it.")).Want(http.StatusOK)
+	// The project's own workflow lists need_decision, so its handoff to agent B
+	// can be set; the shared Default workflow of the test workspace may not.
+	workflow := createTestWorkflowSteps(test, "CHE-9484 observer hold "+workflowTestSuffix(), statusSteps("backlog", "todo", "in_progress", "need_decision", "blocked", "done"))
+	setWorkflowHandoff(test, workflow.ID, "need_decision", handToAgent(handlerID, "Decide it.")).Want(http.StatusOK)
+	projectID := createWorkflowTestProject(test, "CHE-9484 observer hold "+workflowTestSuffix())
+	setProjectWorkflow(test, projectID, map[string]any{"workflow_id": workflow.ID}).Want(http.StatusOK)
 	dbfx.Exec(test, `UPDATE issue SET project_id = $1 WHERE id = $2`, projectID, fixture.issueID)
 	dbfx.Cleanup(test, `DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE issue_id = $1)`, fixture.issueID)
 	dbfx.Cleanup(test, `DELETE FROM issue_wakeup WHERE issue_id = $1`, fixture.issueID)
