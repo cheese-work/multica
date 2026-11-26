@@ -541,6 +541,7 @@ export default function ChatTab() {
     async (
       content: string,
       attachmentIds: string[] = [],
+      options: { queue?: boolean } = {},
     ) => {
       if (activeSession?.status === "archived") {
         const archivedSession = activeSession;
@@ -564,7 +565,7 @@ export default function ChatTab() {
           const confirmUnarchiveAndSend = () => {
             unarchiveThenSendOnce(
               () => handleUnarchive(archivedSession),
-              () => executeSend(content, attachmentIds),
+              () => executeSend(content, attachmentIds, options),
             ).then(resolve, reject);
           };
 
@@ -599,7 +600,7 @@ export default function ChatTab() {
         });
       }
 
-      return executeSend(content, attachmentIds);
+      return executeSend(content, attachmentIds, options);
     },
     [activeSession, sessions, t, handleUnarchive, executeSend],
   );
