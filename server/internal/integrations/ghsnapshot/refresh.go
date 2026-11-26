@@ -2,6 +2,7 @@ package ghsnapshot
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"math/rand"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/dbreader"
+	"github.com/multica-ai/multica/server/internal/reviewindependence"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -111,6 +113,9 @@ type Manager struct {
 	// rate-limit/backoff machinery around process() (and do not wire a DB)
 	// stub this directly, the same way they stub fetch.
 	listRows func(ctx context.Context, params db.ListGitHubPRRowsByAddressParams) ([]db.ListGitHubPRRowsByAddressRow, error)
+	// commits reads a PR's commits for the review-independence rule (CHE-9319);
+	// a seam so tests need no GitHub. Defaults to the client's PRCommits.
+	commits func(ctx context.Context, installationID int64, owner, repo string, number int32) ([]reviewindependence.PRCommit, error)
 
 	// workspaceFilter, when set, returns the workspaces allowed to receive a
 	// snapshot for an installation; rows of other workspaces are never fetched
@@ -214,6 +219,7 @@ func newManager(client *Client, queries *db.Queries, pool TxBeginner, fetch func
 		rateUntil:           map[int64]time.Time{},
 	}
 	manager.listRows = manager.listGitHubPRRowsByAddress
+	manager.commits = manager.readPRCommits
 	return manager
 }
 
@@ -473,6 +479,7 @@ func (manager *Manager) process(ctx context.Context, addr address) {
 	anyApplied := false
 	anyOpenApplied := false
 	staleOpen := false
+	var commitRead commitRead
 	for _, row := range rows {
 		staleOpen = staleOpen || (snap.Closed && (row.State == "open" || row.State == "draft"))
 		applied, err := manager.applySnapshotGuarded(ctx, row.ID, snap, manager.bindingGuard(addr.InstallationID, row.WorkspaceID))
@@ -487,6 +494,7 @@ func (manager *Manager) process(ctx context.Context, addr address) {
 		if row.State == "open" || row.State == "draft" {
 			anyOpenApplied = true
 		}
+		manager.storeCommitIdentities(ctx, addr, row.ID, snap.HeadSHA, &commitRead)
 		if manager.onApplied != nil {
 			manager.onApplied(ctx, row.ID)
 		}
@@ -1059,5 +1067,54 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 		return false
 	case <-t.C:
 		return true
+	}
+}
+
+// commitRead memoizes one PR's commit read across the workspaces that mirror it.
+type commitRead struct {
+	done    bool
+	commits []reviewindependence.PRCommit
+	err     error
+}
+
+func (manager *Manager) readPRCommits(ctx context.Context, installationID int64, owner, repo string, number int32) ([]reviewindependence.PRCommit, error) {
+	commits, err := manager.client.PRCommits(ctx, installationID, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]reviewindependence.PRCommit, len(commits))
+	for i, c := range commits {
+		out[i] = reviewindependence.PRCommit(c)
+	}
+	return out, nil
+}
+
+// storeCommitIdentities keeps the identities named on the commits of the head a
+// snapshot was just applied for (CHE-9319), so the merge gate can judge a PASS
+// against them without calling GitHub. It runs once per head and only for a
+// workspace with the review_independence setting. A failed read stores nothing;
+// the gate then keeps the run-based rule (fail closed) and the next refresh tries
+// again.
+func (manager *Manager) storeCommitIdentities(ctx context.Context, addr address, prID pgtype.UUID, head string, read *commitRead) {
+	needs, err := manager.queries.GitHubPRNeedsCommitIdentities(ctx, db.GitHubPRNeedsCommitIdentitiesParams{PrID: prID, HeadSha: head})
+	if err != nil || !needs.Valid || !needs.Bool || manager.commits == nil {
+		return
+	}
+	if !read.done {
+		read.done = true
+		read.commits, read.err = manager.commits(ctx, addr.InstallationID, addr.Owner, addr.Repo, addr.Number)
+	}
+	if read.err != nil || len(read.commits) == 0 {
+		if read.err != nil {
+			slog.Warn("ghsnapshot: commit identities not read", "owner", addr.Owner, "repo", addr.Repo, "number", addr.Number, "err", read.err.Error())
+		}
+		return
+	}
+	raw, err := json.Marshal(reviewindependence.NewStoredCommits(head, read.commits))
+	if err != nil {
+		return
+	}
+	if _, err := manager.queries.SetGitHubPRCommitIdentities(ctx, db.SetGitHubPRCommitIdentitiesParams{PrID: prID, HeadSha: head, CommitIdentities: raw}); err != nil {
+		slog.Warn("ghsnapshot: commit identities not stored", "err", err.Error())
 	}
 }

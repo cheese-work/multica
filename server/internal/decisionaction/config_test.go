@@ -64,6 +64,7 @@ func TestCheckConfigChangeDeniesByDefault(t *testing.T) {
 		{"guard policy", "workspace.settings", []string{"guard_policy"}, false},
 		{"title type to workflow map", "workspace.settings", []string{"workflow_by_type"}, false},
 		{"capability routing", "workspace.settings", []string{"capability_routing"}, false},
+		{"review independence", "workspace.settings", []string{"review_independence"}, false},
 		{"ask guard mode", "workspace.settings", []string{"ask_guard_mode"}, false},
 		{"quick create discovery", "workspace.settings", []string{"quick_create_discovery"}, false},
 		{"decision ask park", "workspace.settings", []string{"decision_ask_park"}, false},
