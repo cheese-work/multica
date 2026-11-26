@@ -235,11 +235,14 @@ export function daily(deps) {
 const gh = (...args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 
 // Added hunks under server/cmd/multica only; the flag readback must not pick up flags from other Go code.
-const cliDiff = (diff) => diff.split(/^(?=diff --git )/m).filter((part) => /^diff --git a\/server\/cmd\/multica\//.test(part)).join("");
+// Test files (`*_test.go`) register fixture flags (`test --help`), not CLI flags, so they are dropped.
+const isCliSource = (file) => file.startsWith("server/cmd/multica/") && !file.endsWith("_test.go");
+export const cliDiff = (diff) =>
+  diff.split(/^(?=diff --git )/m).filter((part) => isCliSource(/^diff --git a\/(\S+)/.exec(part)?.[1] ?? "")).join("");
 
 // `gh pr diff` refuses a PR over 300 files (HTTP 406, an upstream merge has about 3000). The files API pages them, with a patch each.
 export const diffFromFiles = (files) =>
-  files.filter((f) => f.filename.startsWith("server/cmd/multica/") && f.patch).map((f) => `diff --git a/${f.filename} b/${f.filename}\n+++ b/${f.filename}\n${f.patch}\n`).join("");
+  files.filter((f) => isCliSource(f.filename) && f.patch).map((f) => `diff --git a/${f.filename} b/${f.filename}\n+++ b/${f.filename}\n${f.patch}\n`).join("");
 
 function prCliDiff(number, repo) {
   try {

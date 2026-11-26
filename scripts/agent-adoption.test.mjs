@@ -8,6 +8,7 @@ import {
   buildDaily,
   checkAgentFacing,
   daily,
+  cliDiff,
   diffFromFiles,
   lastAdoption,
   main,
@@ -418,4 +419,14 @@ test("diffFromFiles rebuilds the CLI diff from the PR files API when the PR diff
   const diff = diffFromFiles(files);
   assert.deepEqual(newCliFlags(diff), [{ command: "issue list", flag: "resolved" }]);
   assert.doesNotMatch(diff, /apps\/web/);
+});
+
+test("diffFromFiles and cliDiff drop _test.go files: test fixtures are not CLI flags (CHE-10123 review P1)", () => {
+  const files = [
+    { filename: "server/cmd/multica/cmd_issue_test.go", patch: '@@ -1 +1,2 @@\n+\ttestCmd.Flags().Bool("help", false, "x")' },
+    { filename: "server/cmd/multica/cmd_issue.go", patch: '@@ -1 +1,2 @@\n+\tissueListCmd.Flags().Bool("resolved", false, "x")' },
+  ];
+  assert.deepEqual(newCliFlags(diffFromFiles(files)), [{ command: "issue list", flag: "resolved" }]);
+  const full = files.map((f) => `diff --git a/${f.filename} b/${f.filename}\n+++ b/${f.filename}\n${f.patch}\n`).join("");
+  assert.deepEqual(newCliFlags(cliDiff(full)), [{ command: "issue list", flag: "resolved" }]);
 });
