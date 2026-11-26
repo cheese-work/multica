@@ -7,6 +7,12 @@
 -- in one transaction. Every fork row is converted or counted as dropped; the
 -- NOTICE reports the three counts and chat_wakeup_fork_conversion records the
 -- fork row count and digest as they were before any change.
+--
+-- The down file is a real reverse. Before it changes anything, this file copies
+-- every fork row, orphans included, to chat_wakeup_fork_saved and the prior
+-- message_kind of every fired input row to chat_wakeup_fork_saved_input, both
+-- keyed by the conversion record's id. The down file rebuilds the fork table
+-- from them and checks the result against the recorded digest.
 
 CREATE TABLE IF NOT EXISTS chat_wakeup_fork_conversion (
     id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -46,6 +52,40 @@ BEGIN
 END
 $fn$;
 
+-- The fork rows as they were, every column of the fork table plus the id of
+-- the conversion that saved them. No defaults and no foreign keys.
+CREATE TABLE IF NOT EXISTS chat_wakeup_fork_saved (
+    conversion_id BIGINT NOT NULL,
+    id UUID NOT NULL,
+    workspace_id UUID NOT NULL,
+    chat_session_id UUID NOT NULL,
+    agent_id UUID NOT NULL,
+    instruction TEXT NOT NULL,
+    fire_at TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL,
+    created_by_task_id UUID,
+    fired_task_id UUID,
+    created_at TIMESTAMPTZ NOT NULL,
+    resolved_at TIMESTAMPTZ,
+    title TEXT NOT NULL,
+    issue_id UUID,
+    event_type TEXT NOT NULL,
+    filter_actor_type TEXT NOT NULL,
+    filter_actor_id UUID,
+    until_status TEXT NOT NULL,
+    on_timeout TEXT NOT NULL,
+    PRIMARY KEY (conversion_id, id)
+);
+
+-- message_kind of each chat_message that X may mark as a wakeup input, as it
+-- was before X.
+CREATE TABLE IF NOT EXISTS chat_wakeup_fork_saved_input (
+    conversion_id BIGINT NOT NULL,
+    message_id UUID NOT NULL,
+    message_kind TEXT NOT NULL,
+    PRIMARY KEY (conversion_id, message_id)
+);
+
 ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS wakeup_id UUID;
 
 DO $convert$
@@ -53,6 +93,7 @@ DECLARE
     fork_exists BOOLEAN;
     fork_rows INTEGER := 0;
     fork_digest TEXT;
+    conversion BIGINT;
     n_active INTEGER := 0;
     n_terminal INTEGER := 0;
 BEGIN
@@ -71,15 +112,30 @@ BEGIN
     END IF;
 
     INSERT INTO chat_wakeup_fork_conversion (attempt_id, converted_at, fork_rows, fork_digest)
-    VALUES (nullif(current_setting('multica.contract_attempt', true), ''), now(), fork_rows, fork_digest);
+    VALUES (nullif(current_setting('multica.contract_attempt', true), ''), now(), fork_rows, fork_digest)
+    RETURNING id INTO conversion;
 
     IF fork_exists THEN
         -- Index names are schema-wide: move the fork's aside so the new table
-        -- can use them; the table is dropped below.
+        -- can use them; the table is dropped below, after its rows are saved.
         ALTER TABLE chat_wakeup RENAME TO chat_wakeup_fork_old;
         ALTER INDEX IF EXISTS chat_wakeup_pkey RENAME TO chat_wakeup_fork_old_pkey;
         ALTER INDEX IF EXISTS idx_chat_wakeup_pending RENAME TO chat_wakeup_fork_old_pending;
         ALTER INDEX IF EXISTS idx_chat_wakeup_fired_task RENAME TO chat_wakeup_fork_old_fired_task;
+    END IF;
+
+    IF fork_exists THEN
+        -- Everything the down file needs, before any row is converted. Rows
+        -- with no chat_session are kept here although they convert to nothing.
+        INSERT INTO chat_wakeup_fork_saved
+        SELECT conversion, w.* FROM chat_wakeup_fork_old w;
+
+        INSERT INTO chat_wakeup_fork_saved_input (conversion_id, message_id, message_kind)
+        SELECT DISTINCT conversion, cm.id, cm.message_kind
+          FROM chat_wakeup_fork_old w
+          JOIN chat_message cm ON cm.role = 'user' AND cm.task_id = w.fired_task_id
+                              AND cm.chat_session_id = w.chat_session_id
+         WHERE w.status = 'fired';
     END IF;
 
     -- Exactly 99zzz15's table.

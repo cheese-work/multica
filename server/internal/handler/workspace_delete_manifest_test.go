@@ -134,6 +134,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"chat_session":                       workspaceDelete,
 	"chat_submission_receipt":            workspaceDelete,
 	"chat_wakeup":                        workspaceDelete,
+	"chat_wakeup_fork_conversion":        workspaceDeleteKeep, // CHE-10195 audit record of migration 99zzz00, no workspace_id.
+	"chat_wakeup_fork_saved":             workspaceDeleteKeep, // CHE-10195 recovery copy of fork rows, emptied by the 99zzz00 down; has workspace_id, no FK.
+	"chat_wakeup_fork_saved_input":       workspaceDeleteKeep, // CHE-10195 prior message_kind of wakeup input rows, no workspace_id.
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
 	"comment_idempotency_receipt":        workspaceDelete,
