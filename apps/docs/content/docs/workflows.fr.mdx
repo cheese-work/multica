@@ -157,6 +157,10 @@ Les deux garde-fous échouent par défaut : une valeur illisible compte comme un
 
 `pr.none_open` est un troisième garde-fou d’entrée, qui lit les PR et non ce qu’un agent a écrit. Il est satisfait quand aucune PR ouverte ou en brouillon n’est liée au ticket, ni à ses enfants quand le workflow inclut les PR des enfants. Les PR fusionnées ou fermées ne le bloquent pas, et un ticket sans PR passe. Placez-le sur l’étape où un agent clôt (par exemple `agent_accepted`) et donnez à l’étape précédente une arête `agent_done` vers elle : un agent peut alors clore un ticket `in_review` sans rien à fusionner. Un agent ne peut jamais utiliser ce raccourci tant qu’une PR est ouverte : le refus liste chaque PR ouverte (par exemple `acme/widget#12 (draft)`) avec le correctif, qui est de la fusionner ou de la fermer. Comme les autres garde-fous d’entrée, il n’est pas accepté comme garde de transition, et `multica workflow lint` l’accepte dans `entry`.
 
+## Verdicts refusés [#refused-verdicts]
+
+Le serveur refuse le verdict d'un relecteur avec `400` et l'un de trois codes : `review_verdict_findings_required` (un verdict de modifications demande un constat P0 ou P1), `review_finding_category_required` (chaque constat demande une catégorie) et `review_round_new_blocker` (dès le tour 2, un nouveau P0 ou P1 demande `@revision`). Le refus donne la forme CLI dans `error` et dans `cli_form` : `--finding "P1@<category>:<summary>"`, ou `--finding "P1@<category>@revision:<summary>"` pour `review_round_new_blocker`. Si votre CLI est plus ancienne que `0.10.0-20261125-1520`, `review_round_new_blocker` l'indique aussi et ajoute `client_version`, `min_client_version` et `client_outdated` ; mettez à jour la CLI multica. Une version de CLI que le serveur ne sait pas comparer (`dev`, absente) n'est jamais signalée comme obsolète.
+
 ## Guides associés
 
 - [Projets](/projects) — regrouper les tâches qui suivent un workflow.
