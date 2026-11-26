@@ -1393,6 +1393,31 @@ describe("ChatMessageList onboarding starter cards", () => {
   });
 });
 
+// CHE-10140: a server-authored runtime model change renders as a muted note,
+// never as an assistant reply and never with the compaction divider.
+describe("ChatMessageList model change notice", () => {
+  const notice = {
+    id: "model-notice", chat_session_id: "44444444-4444-4444-8444-444444444444", role: "assistant" as const,
+    content: "Runtime is retrying Opus 5.5 → Opus 4.8. Reason: provider safety classification cyber. Scope: session.",
+    message_kind: "model_change_notice", task_id: null, created_at: "2026-10-16T00:00:00Z",
+  } as unknown as ChatMessage;
+
+  it("shows the announcement once as a muted note without a divider", () => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={[notice]} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    const notes = screen.getAllByRole("note");
+    expect(notes).toHaveLength(1);
+    expect(notes[0]).toHaveTextContent(notice.content);
+    expect(notes[0]).toHaveClass("text-muted-foreground");
+    expect(screen.queryByRole("separator")).toBeNull();
+  });
+});
+
 // CHE-1807: the server-authored reason for an automatic compaction renders as a
 // muted note, never as an assistant reply.
 describe("ChatMessageList compact notice", () => {
