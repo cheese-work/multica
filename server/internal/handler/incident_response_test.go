@@ -97,3 +97,28 @@ func TestSweepIncidentsClosesAfterQuietWindow(t *testing.T) {
 		t.Fatalf("after the quiet window: status %q, %d closing comments, want done and 1", status, closing)
 	}
 }
+
+func TestValidateIncidentResponseSetting(t *testing.T) {
+	const uuid = "8f4d3a52-2b6e-4f0a-9d3e-5a1c7b9e0f11"
+	cases := []struct {
+		name    string
+		value   any
+		wantErr bool
+	}{
+		{"absent key", map[string]any{"other": 1}, false},
+		{"not an object settings", "x", false},
+		{"off needs nothing", map[string]any{"incident_response": map[string]any{"mode": "off"}}, false},
+		{"shadow needs nothing", map[string]any{"incident_response": map[string]any{"mode": "shadow"}}, false},
+		{"act with notify user", map[string]any{"incident_response": map[string]any{"mode": "act", "notify_user_id": uuid, "project_id": uuid}}, false},
+		{"act without notify user", map[string]any{"incident_response": map[string]any{"mode": "act"}}, true},
+		{"act with bad notify user", map[string]any{"incident_response": map[string]any{"mode": "act", "notify_user_id": "nope"}}, true},
+		{"bad project id", map[string]any{"incident_response": map[string]any{"mode": "shadow", "project_id": "nope"}}, true},
+		{"unknown mode", map[string]any{"incident_response": map[string]any{"mode": "loud"}}, true},
+		{"not an object value", map[string]any{"incident_response": "act"}, true},
+	}
+	for _, c := range cases {
+		if err := validateIncidentResponseSetting(c.value); (err != nil) != c.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", c.name, err, c.wantErr)
+		}
+	}
+}

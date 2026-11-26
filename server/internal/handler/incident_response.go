@@ -28,6 +28,44 @@ type incidentSettings struct {
 	} `json:"incident_response"`
 }
 
+// validateIncidentResponseSetting rejects a settings.incident_response that the sweep could not use:
+// an unknown mode, a malformed ID, or act mode with nobody to tell.
+func validateIncidentResponseSetting(value any) error {
+	config, ok := value.(map[string]any)
+	if !ok {
+		return nil
+	}
+	v, present := config["incident_response"]
+	if !present {
+		return nil
+	}
+	raw, err := json.Marshal(map[string]any{"incident_response": v})
+	if err != nil {
+		return err
+	}
+	var settings incidentSettings
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return fmt.Errorf("incident_response: %w", err)
+	}
+	cfg := settings.Incident
+	switch cfg.Mode {
+	case "off", "shadow", "act":
+	default:
+		return fmt.Errorf("incident_response.mode must be off, shadow or act, got %q", cfg.Mode)
+	}
+	if cfg.ProjectID != "" {
+		if _, err := util.ParseUUID(cfg.ProjectID); err != nil {
+			return fmt.Errorf("incident_response.project_id: %w", err)
+		}
+	}
+	if cfg.Mode == "act" || cfg.NotifyUserID != "" {
+		if _, err := util.ParseUUID(cfg.NotifyUserID); err != nil {
+			return fmt.Errorf("incident_response.notify_user_id is required in act mode: %w", err)
+		}
+	}
+	return nil
+}
+
 // SweepIncidents is the scheduler entry point: per workspace it reads the failed runs of the
 // last incident.Window, plans open, comment and close steps, and applies them in act mode.
 func (handler *Handler) SweepIncidents(ctx context.Context) error {
