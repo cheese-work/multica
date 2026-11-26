@@ -68,15 +68,15 @@ const reversibleAskFix = "Standing Delivery Authorization (CHE-584) lets agents 
 // reversible: the ask is for work Standing Delivery Authorization already
 // allows. Action, proposal and batch requests are the approval-gated path
 // (CHE-5167) and stay open, as does the typed discovery_brief subject on an issue
-// that follows the Plan (gstack) workflow (CHE-10271). The reversible_ask_guard setting decides: off allows,
+// that has the brief shape (two options, "Tiếp tục" and "Dừng", no artifacts) on a Plan (gstack) issue (CHE-10271). The reversible_ask_guard setting decides: off allows,
 // warn logs, block refuses. Set it to off to revert; no data changes.
 func (handler *Handler) refuseReversibleAsk(ctx context.Context, issue db.Issue, input decisionRequestInput) error {
 	if input.EscalationClass != "reversible" || input.Action != nil || input.Proposal != nil || input.Batch != nil || input.Kind == decisiontx.KindAction {
 		return nil
 	}
-	if input.Parsed != nil && input.Parsed.Subject == decisiontx.SubjectDiscoveryBrief {
-		// The subject is a caller-supplied label. It exempts the ask only on an
-		// issue the server can verify follows the Discovery plan workflow.
+	if input.Parsed != nil && input.Parsed.IsDiscoveryBrief() {
+		// The subject is a caller-supplied label. It exempts the ask only when the ask
+		// has the brief shape and the issue follows the Discovery plan workflow.
 		def, err := handler.issueWorkflowDef(ctx, issue)
 		if err != nil {
 			return err

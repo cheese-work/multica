@@ -213,3 +213,29 @@ func TestSupersedesSignatureIsStored(test *testing.T) {
 		test.Fatalf("previous signature is not stored: %s", stored)
 	}
 }
+
+func TestAskIsDiscoveryBrief(t *testing.T) {
+	opts := func(labels ...string) []AskOption {
+		var out []AskOption
+		for _, label := range labels {
+			out = append(out, AskOption{Label: label})
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		ask  Ask
+		want bool
+	}{
+		{"brief", Ask{Subject: SubjectDiscoveryBrief, Options: opts("Tiếp tục", "Dừng")}, true},
+		{"brief, stop first", Ask{Subject: SubjectDiscoveryBrief, Options: opts("Dừng", "Tiếp tục")}, true},
+		{"no subject", Ask{Options: opts("Tiếp tục", "Dừng")}, false},
+		{"ordinary options", Ask{Subject: SubjectDiscoveryBrief, Options: opts("Proceed", "Hold")}, false},
+		{"third option", Ask{Subject: SubjectDiscoveryBrief, Options: opts("Tiếp tục", "Dừng", "Hold")}, false},
+		{"artifacts", Ask{Subject: SubjectDiscoveryBrief, Options: opts("Tiếp tục", "Dừng"), Artifacts: []Artifact{{Label: "f"}}}, false},
+	} {
+		if got := tc.ask.IsDiscoveryBrief(); got != tc.want {
+			t.Errorf("%s: IsDiscoveryBrief = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
