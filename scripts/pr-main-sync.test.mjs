@@ -196,3 +196,35 @@ test("the sync job builds the multica CLI and passes the token secret (no CLI-le
   assert.match(y, /go build -o "\$RUNNER_TEMP\/multica" \.\/cmd\/multica/);
   assert.match(y, /MULTICA_TOKEN: \$\{\{ secrets\.PR_MAIN_SYNC_MULTICA_TOKEN \}\}/);
 });
+
+// CHE-9846: 26 of 31 recent runs failed on two causes that are not sync defects.
+test("a rate-limit 403 while listing PRs or reading the budget ends the run without failing", async () => {
+  const limited = async () => {
+    throw new Error("gh api --paginate repos/o/r/pulls failed: gh: API rate limit exceeded for installation ID 1 (HTTP 403)");
+  };
+  const lines = [];
+  const list = fakes({ prs: [pr(1)] });
+  list.gh.openPrs = limited;
+  await (await load()).syncPrs({ ...list, repo: "o/r", base: "main", print: (l) => lines.push(l) });
+  assert.deepEqual(list.log.updates, []);
+  const budget = fakes({ prs: [pr(1)] });
+  budget.gh.remaining = limited;
+  await (await load()).syncPrs({ ...budget, repo: "o/r", base: "main", print: (l) => lines.push(l) });
+  assert.deepEqual(budget.log.updates, []);
+  assert.equal(lines.filter((l) => /rate limit/i.test(l)).length, 2);
+});
+
+test("a stacked PR (update-branch refused) is skipped and does not fail the run", async () => {
+  const f = fakes({ prs: [pr(10), pr(11)], update: { 10: "stacked" } });
+  await run(f);
+  assert.deepEqual(f.log.updates, [[10, "sha10"], [11, "sha11"]]);
+  assert.deepEqual(f.log.created, []);
+});
+
+test("classifyUpdateError maps GitHub's refusals to outcomes and leaves other errors to throw", async () => {
+  const { classifyUpdateError } = await load();
+  assert.equal(classifyUpdateError("gh: Updating a stacked PR's branch via this endpoint is not supported. (HTTP 403)"), "stacked");
+  assert.equal(classifyUpdateError("merge conflict between base and head"), "conflict");
+  assert.equal(classifyUpdateError("expected head sha didn't match"), "moved");
+  assert.equal(classifyUpdateError("HTTP 500"), undefined);
+});

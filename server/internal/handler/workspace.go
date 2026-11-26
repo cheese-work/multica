@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"regexp"
 	"strings"
@@ -17,10 +19,15 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	"github.com/multica-ai/multica/server/internal/askguard"
+	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
+	"github.com/multica-ai/multica/server/internal/mergequeue"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
-	"github.com/multica-ai/multica/server/internal/projectaccess"
+	"github.com/multica-ai/multica/server/internal/queueorder"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -108,7 +115,11 @@ type WorkspaceResponse struct {
 	AvatarURL   *string `json:"avatar_url"`
 	CreatedAt   string  `json:"created_at"`
 	UpdatedAt   string  `json:"updated_at"`
-	PinnedAt    *string `json:"pinned_at,omitempty"`
+	// SchedulingPausedAt / SchedulingPausedBy are set while an owner or admin
+	// holds claims for every agent in the workspace. Both null when scheduling runs.
+	SchedulingPausedAt *string `json:"scheduling_paused_at"`
+	SchedulingPausedBy *string `json:"scheduling_paused_by"`
+	PinnedAt           *string `json:"pinned_at,omitempty"`
 }
 
 func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
@@ -138,38 +149,10 @@ func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
 		AvatarURL:   h.resolveAvatarURLPtr(textToPtr(w.AvatarUrl)),
 		CreatedAt:   timestampToString(w.CreatedAt),
 		UpdatedAt:   timestampToString(w.UpdatedAt),
-	}
-}
 
-// guestWorkspaceSettings are the settings a guest's issue page reads to decide
-// what to show; everything else in settings configures the workspace.
-var guestWorkspaceSettings = []string{
-	"github_enabled",
-	"github_pr_sidebar_enabled",
-	"github_auto_link_prs_enabled",
-}
-
-// workspaceResponseFor is workspaceToResponse narrowed to the viewer's role.
-// A guest (MUL-9420) gets what identifies and displays the workspace, not the
-// agent instructions (context), repositories, or settings that configure it.
-// The fields stay present, empty, so every client parses the same shape.
-func (h *Handler) workspaceResponseFor(w db.Workspace, role string) WorkspaceResponse {
-	resp := h.workspaceToResponse(w)
-	if !projectaccess.IsGuestRole(role) {
-		return resp
+		SchedulingPausedAt: timestampToPtr(w.SchedulingPausedAt),
+		SchedulingPausedBy: uuidToPtr(w.SchedulingPausedBy),
 	}
-	settings := map[string]any{}
-	if all, ok := resp.Settings.(map[string]any); ok {
-		for _, key := range guestWorkspaceSettings {
-			if v, ok := all[key]; ok {
-				settings[key] = v
-			}
-		}
-	}
-	resp.Context = nil
-	resp.Settings = settings
-	resp.Repos = []any{}
-	return resp
 }
 
 type MemberResponse struct {
@@ -202,31 +185,22 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A task token is bound to one workspace, and Auth stamps that workspace
-	// into X-Workspace-ID. List only that one, so an agent the owner started
-	// in one workspace never sees the owner's other workspaces.
-	boundWorkspaceID := ""
-	if r.Header.Get("X-Actor-Source") == "task_token" {
-		boundWorkspaceID = r.Header.Get("X-Workspace-ID")
-	}
-
-	resp := make([]WorkspaceResponse, 0, len(workspaces))
-	for _, ws := range workspaces {
-		if boundWorkspaceID != "" && uuidToString(ws.ID) != boundWorkspaceID {
-			continue
-		}
-		item := h.workspaceResponseFor(db.Workspace{
+	resp := make([]WorkspaceResponse, len(workspaces))
+	for i, ws := range workspaces {
+		resp[i] = h.workspaceToResponse(db.Workspace{
 			ID: ws.ID, Name: ws.Name, Slug: ws.Slug, Description: ws.Description,
 			Settings: ws.Settings, CreatedAt: ws.CreatedAt, UpdatedAt: ws.UpdatedAt,
 			Context: ws.Context, Repos: ws.Repos, IssuePrefix: ws.IssuePrefix,
 			IssueCounter: ws.IssueCounter, AvatarUrl: ws.AvatarUrl,
 			AttributionFailClosed: ws.AttributionFailClosed,
-		}, ws.Role)
+			ExportRedactionMode:   ws.ExportRedactionMode, ExportManifestRetentionDays: ws.ExportManifestRetentionDays,
+			DecisionPasskeyGate: ws.DecisionPasskeyGate, PolicyRevision: ws.PolicyRevision,
+			SchedulingPausedAt: ws.SchedulingPausedAt, SchedulingPausedBy: ws.SchedulingPausedBy,
+		})
 		if ws.PinnedAt.Valid {
 			pinnedAt := timestampToString(ws.PinnedAt)
-			item.PinnedAt = &pinnedAt
+			resp[i].PinnedAt = &pinnedAt
 		}
-		resp = append(resp, item)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -274,17 +248,12 @@ func (h *Handler) GetWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	member, ok := h.workspaceMember(w, r, id)
-	if !ok {
-		return
-	}
-
 	ws, err := h.Queries.GetWorkspace(r.Context(), idUUID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "workspace not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, h.workspaceResponseFor(ws, member.Role))
+	writeJSON(w, http.StatusOK, h.workspaceToResponse(ws))
 }
 
 type CreateWorkspaceRequest struct {
@@ -391,6 +360,13 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Orders this membership against the passkey gate checks, as the joins do.
+	if err := qtx.LockUserForMembershipChange(r.Context(), parseUUID(userID)); err != nil {
+		slog.Warn("lock owner failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to add owner")
+		return
+	}
+
 	_, err = qtx.CreateMember(r.Context(), db.CreateMemberParams{
 		WorkspaceID: ws.ID,
 		UserID:      parseUUID(userID),
@@ -408,6 +384,14 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if err := issuestatus.Ensure(r.Context(), qtx, ws.ID); err != nil {
 		slog.Warn("seed issue statuses failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to seed issue statuses")
+		return
+	}
+
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "workspace.create", WorkspaceID: ws.ID, TargetID: ws.ID,
+		After: workspaceCreateAuditFields(ws),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "workspace.create")
 		return
 	}
 
@@ -445,6 +429,69 @@ type UpdateWorkspaceRequest struct {
 	Repos       any     `json:"repos"`
 	IssuePrefix *string `json:"issue_prefix"`
 	AvatarURL   *string `json:"avatar_url"`
+	// CompactPrompt sets settings.compact_prompt alone (CHE-1612); null resets
+	// it to the built-in default. Raw so an explicit null is distinguishable
+	// from an absent key.
+	CompactPrompt json.RawMessage `json:"compact_prompt"`
+	// WakeupsPaused flips the workspace wakeup pause alone (CHE-1727). The
+	// server applies it to the settings it reads under the workspace lock, so a
+	// client never sends, and never overwrites with, a snapshot of the blob.
+	WakeupsPaused *bool `json:"wakeups_paused"`
+	// AutoCompact patches settings.auto_compact alone (CHE-1806): named fields
+	// overwrite, absent fields keep their saved value, null resets to the
+	// defaults. Raw for the same reason as CompactPrompt.
+	AutoCompact json.RawMessage `json:"auto_compact"`
+	// HarnessProfile sets settings.harness_profile alone (CHE-3706); null
+	// removes it so the workspace falls back to personal.
+	HarnessProfile json.RawMessage `json:"harness_profile"`
+	// IdleStartedGuard patches settings.idle_started_guard alone (CHE-3296):
+	// named fields overwrite, absent fields keep their saved value. Owner only.
+	IdleStartedGuard json.RawMessage `json:"idle_started_guard"`
+	// TimeWakeupSkip sets settings.time_wakeup_skip alone (CHE-5987): the
+	// object {"mode": off|warn|block}. Owner only.
+	TimeWakeupSkip json.RawMessage `json:"time_wakeup_skip"`
+	// AutoClose sets settings.auto_close alone (CHE-6969): the object
+	// {"mode": off|warn|block}. Owner only.
+	AutoClose json.RawMessage `json:"auto_close"`
+	// BlockedRunSkip sets settings.blocked_run_skip alone (CHE-6973): the
+	// object {"mode": off|warn|block}. Owner only.
+	BlockedRunSkip json.RawMessage `json:"blocked_run_skip"`
+	// RunGuard sets settings.run_guard alone (CHE-9026): the object
+	// {"mode": off|warn|block}. Owner only.
+	RunGuard json.RawMessage `json:"run_guard"`
+	// RunBudget sets settings.run_budget alone (CHE-9026): the object
+	// {"mode": off|warn|block}. Owner only.
+	RunBudget json.RawMessage `json:"run_budget"`
+	// WakeupLiveJoin sets settings.wakeup_live_join alone (CHE-6992): the object
+	// {"mode": off|warn|block}. Owner only.
+	WakeupLiveJoin json.RawMessage `json:"wakeup_live_join"`
+	// AskGuardMode sets settings.ask_guard_mode alone (CHE-6123): the string
+	// off|warn|block. Owner only.
+	AskGuardMode json.RawMessage `json:"ask_guard_mode"`
+	// DecisionAskPark sets settings.decision_ask_park alone (CHE-6460): the
+	// string always|on_wait. Owner only.
+	DecisionAskPark json.RawMessage `json:"decision_ask_park"`
+	// The merge-queue settings (CHE-7408, plan 4.6) each set one settings key
+	// alone. Owner only; mergequeue.ValidateSetting checks the values.
+	MergeQueueRouting  json.RawMessage `json:"merge_queue_dequeue_routing"`
+	MergeQueueBindings json.RawMessage `json:"merge_queue_actor_bindings"`
+	MergeQueueWatch    json.RawMessage `json:"merge_queue_watch_issue"`
+	// QueueOrder and QueueAgingMinutes each set one settings key alone
+	// (CHE-8761): queue_order priority|project_rank and queue_aging_minutes
+	// 5 to 720. Owner or admin; queueorder.ValidateSetting checks the values.
+	QueueOrder        json.RawMessage `json:"queue_order"`
+	QueueAgingMinutes json.RawMessage `json:"queue_aging_minutes"`
+	// GitHubReviewMembers and GitHubReviewAuthors each replace one settings
+	// map alone (CHE-2269); validateGitHubReviewMapping checks the entries.
+	GitHubReviewMembers json.RawMessage `json:"github_review_members"`
+	GitHubReviewAuthors json.RawMessage `json:"github_review_authors"`
+
+	// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
+	// exception (hermesExceptionMatchesWorkspaceContext: this exact
+	// workspace, a `context` write, from exactly agent hermesExceptionAgentID)
+	// and CHE-1300's owner-only CAS (governed_instruction_owner_cas.go).
+	// Every other caller is refused when the key is present.
+	ExpectedBeforeDigest string `json:"expected_before_digest"`
 }
 
 type workspaceRepoRef struct {
@@ -495,9 +542,97 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
 	var req UpdateWorkspaceRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	// CHE-455: this route sits behind RequireWorkspaceRoleFromURL(owner,
+	// admin), which trusts X-User-ID — stamped from the agent's owning
+	// human even for mat_-authenticated requests — so it does not reject
+	// agent actors. Field-scoped on purpose: this endpoint also carries
+	// name, settings, repos, issue_prefix, avatar_url, which agent actors
+	// may legitimately write; only `context` is governed. Gated on
+	// req.Context != nil — the decoded struct field the write below
+	// actually branches on — not a raw JSON key lookup, which a
+	// case-varied key ("Context") bypasses (encoding/json matches keys to
+	// struct fields case-insensitively).
+	actorType, actorID := h.resolveActor(r, requestUserID(r), id)
+
+	// CHE-3482: a machine identity needs a passkey-approved action for the
+	// context and for the settings the allow table covers. Before every older
+	// exception below.
+	if refuseMachineCoveredWrite(w, r, actorType, req.Context != nil, workspaceContextAction) {
+		return
+	}
+	if refuseMachineCoveredWrite(w, r, actorType, req.CompactPrompt != nil || req.AutoCompact != nil || req.IdleStartedGuard != nil || req.WakeupsPaused != nil, settingsPatchAction) {
+		return
+	}
+
+	// CHE-764: a single, human-approved, narrowly-scoped exception to the
+	// CHE-455 rule immediately above — see
+	// governed_instruction_hermes_exception.go for the full predicate and
+	// provenance. This is checked BEFORE the default-deny call so the one
+	// permitted (agent, workspace, field) triple never reaches — and is
+	// never rejected by — the generic guard; every other request continues
+	// straight into the unmodified CHE-455 path below.
+	if hermesExceptionIdentityMatches(actorType, actorID) && hermesExceptionMatchesWorkspaceContext(id, req.Context != nil) {
+		var rawFields map[string]json.RawMessage
+		if err := json.Unmarshal(bodyBytes, &rawFields); err != nil || !hermesExceptionOnlyAllowedKeys(rawFields, "context", "expected_before_digest") {
+			writeError(w, http.StatusBadRequest, "this request may only include context and expected_before_digest")
+			return
+		}
+		result, reason, swapErr := h.hermesExceptionVerifyAndSwapWorkspaceContext(r.Context(), r, id, hermesExceptionRequest{
+			NewContent:           *req.Context,
+			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
+		})
+		logHermesExceptionOutcome(r, actorID, "workspace.context", id, result, reason, swapErr)
+		if failedAudit(w, r, swapErr, "workspace.context") {
+			return
+		}
+		if reason != hermesExceptionRejectNone {
+			hermesExceptionWriteRejection(w, r, reason, swapErr)
+			return
+		}
+		ws, err := h.Queries.GetWorkspace(r.Context(), idUUID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to reload workspace after hermes exception write")
+			return
+		}
+		resp := h.workspaceToResponse(ws)
+		// Publish the same live-update event the ordinary human path emits
+		// below (h.publish(protocol.EventWorkspaceUpdated, ...)) so UI
+		// clients watching this workspace see the change; the exception path
+		// returns before reaching that call (security review finding,
+		// CHE-764).
+		h.publish(protocol.EventWorkspaceUpdated, id, "agent", actorID, map[string]any{"workspace": resp})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"workspace":     resp,
+			"before_digest": result.BeforeDigest,
+			"after_digest":  result.AfterDigest,
+		})
+		return
+	}
+
+	var rawFields map[string]json.RawMessage
+	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
+
+	// CHE-1862: the vote receipt entry; only a human reaches it.
+	if voteEntered(actorType, req.Context != nil, rawFields) {
+		h.ownerCASUpdateWorkspace(w, r, id, actorType, actorID, rawFields)
+		return
+	}
+
+	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
+	// guard above so a machine actor never reaches it.
+	if ownerCASRequested(rawFields) {
+		h.ownerCASUpdateWorkspace(w, r, id, actorType, actorID, rawFields)
 		return
 	}
 
@@ -519,19 +654,204 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.Context = pgtype.Text{String: *req.Context, Valid: true}
 	}
 	if req.Settings != nil {
-		if incoming, ok := req.Settings.(map[string]any); ok {
-			// Only an old client's flip of the retired PR switch needs the
-			// stored value; see reconcilePRMergeSettings.
-			var stored map[string]any
-			if _, sent := incoming[prAutoCompleteLegacyKey]; sent {
-				if existing, err := h.Queries.GetWorkspace(r.Context(), idUUID); err == nil {
-					_ = json.Unmarshal(existing.Settings, &stored)
-				}
-			}
-			reconcilePRMergeSettings(stored, incoming)
+		// What depends on the stored settings (the pause guard, the PR merge
+		// switch) is decided under the workspace row lock in saveWorkspace.
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateLongThreadSettings(req.Settings), validateAskLoopBackSetting(req.Settings), validateDecisionAskParkSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateReviewFindingsCategorySetting(req.Settings), validateProviderHoldSetting(req.Settings), validateIncidentResponseSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateCardThreadSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateQuickFirstSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings), queueorder.ValidateSetting(req.Settings)); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
-		s, _ := json.Marshal(req.Settings)
-		params.Settings = s
+	}
+	if req.CompactPrompt != nil {
+		// Only a literal null resets; a value that fails to decode (1e400)
+		// must not fall through as nil.
+		var prompt any
+		err := json.Unmarshal(req.CompactPrompt, &prompt)
+		if err == nil {
+			err = validateCompactPromptConfig(map[string]any{"compact_prompt": prompt})
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if text, ok := prompt.(string); ok {
+			params.CompactPrompt = pgtype.Text{String: text, Valid: true}
+		} else {
+			params.CompactPromptReset = pgtype.Bool{Bool: true, Valid: true}
+		}
+	}
+	if req.AutoCompact != nil {
+		var incoming any
+		err := json.Unmarshal(req.AutoCompact, &incoming)
+		if err != nil {
+			err = errAutoCompactShape
+		} else {
+			err = validateAutoCompactPatch(incoming)
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if incoming == nil {
+			params.AutoCompactReset = pgtype.Bool{Bool: true, Valid: true}
+		} else {
+			params.AutoCompact = clearStalePct(req.AutoCompact)
+		}
+	}
+	if req.HarnessProfile != nil {
+		var profile any
+		err := json.Unmarshal(req.HarnessProfile, &profile)
+		if err == nil {
+			err = validateHarnessProfileConfig(map[string]any{"harness_profile": profile})
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if text, ok := profile.(string); ok {
+			params.HarnessProfile = pgtype.Text{String: text, Valid: true}
+		} else {
+			params.HarnessProfileReset = pgtype.Bool{Bool: true, Valid: true}
+		}
+	}
+	if req.IdleStartedGuard != nil {
+		// The route admits admins; this switch is the owner's.
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateIdleGuardPatch(req.IdleStartedGuard); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.IdleStartedGuard = req.IdleStartedGuard
+	}
+	if req.TimeWakeupSkip != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateTimeWakeupSkipPatch(req.TimeWakeupSkip); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.TimeWakeupSkip = req.TimeWakeupSkip
+	}
+	if req.AutoClose != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateAutoClosePatch(req.AutoClose); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.AutoClose = req.AutoClose
+	}
+	if req.BlockedRunSkip != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := validateBlockedRunSkipPatch(req.BlockedRunSkip); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.BlockedRunSkip = req.BlockedRunSkip
+	}
+	for _, mode := range []struct {
+		key  string
+		raw  json.RawMessage
+		dest *[]byte
+	}{
+		{"run_guard", req.RunGuard, &params.RunGuard},
+		{"run_budget", req.RunBudget, &params.RunBudget},
+		{"wakeup_live_join", req.WakeupLiveJoin, &params.WakeupLiveJoin},
+	} {
+		if mode.raw == nil {
+			continue
+		}
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := decisionaction.ValidateModeSetting(mode.key, mode.raw); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		*mode.dest = mode.raw
+	}
+	if req.AskGuardMode != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		var mode any
+		_ = json.Unmarshal(req.AskGuardMode, &mode)
+		if _, isString := mode.(string); !isString {
+			writeError(w, http.StatusBadRequest, "ask_guard_mode must be off, warn or block")
+			return
+		}
+		if err := validateAskGuardSetting(map[string]any{askguard.SettingKey: mode}); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.AskGuardMode = req.AskGuardMode
+	}
+	if req.DecisionAskPark != nil {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		var mode any
+		_ = json.Unmarshal(req.DecisionAskPark, &mode)
+		if err := validateDecisionAskParkSetting(map[string]any{decisionAskParkKey: mode}); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.DecisionAskPark = req.DecisionAskPark
+	}
+	// Both field groups reach the update as one settings object that replaces
+	// only its own keys (params.MergeQueue).
+	fieldPatch := map[string]any{}
+	if patch := mergeQueueFieldPatch(req.MergeQueueRouting, req.MergeQueueBindings, req.MergeQueueWatch); len(patch) > 0 {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner"); !ok {
+			return
+		}
+		if err := mergequeue.ValidateSetting(patch); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		maps.Copy(fieldPatch, patch)
+	}
+	if patch := queueOrderFieldPatch(req.QueueOrder, req.QueueAgingMinutes); len(patch) > 0 {
+		if _, ok := h.requireWorkspaceRole(w, r, id, "workspace not found", "owner", "admin"); !ok {
+			return
+		}
+		if err := queueorder.ValidateSetting(patch); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		maps.Copy(fieldPatch, patch)
+	}
+	if len(fieldPatch) > 0 {
+		merged, _ := json.Marshal(fieldPatch)
+		params.MergeQueue = merged
+	}
+	for _, mapping := range []struct {
+		field string
+		raw   json.RawMessage
+		dest  *[]byte
+	}{
+		{"github_review_members", req.GitHubReviewMembers, &params.GithubReviewMembers},
+		{"github_review_authors", req.GitHubReviewAuthors, &params.GithubReviewAuthors},
+	} {
+		if mapping.raw == nil {
+			continue
+		}
+		clean, err := h.validateGitHubReviewMapping(r.Context(), idUUID, mapping.field, mapping.raw)
+		var invalid reviewMappingError
+		if errors.As(err, &invalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to validate "+mapping.field)
+			return
+		}
+		*mapping.dest = clean
 	}
 	if req.Repos != nil {
 		reposJSON, err := validateAndNormalizeWorkspaceRepos(req.Repos)
@@ -566,7 +886,27 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	ws, err := h.Queries.UpdateWorkspace(r.Context(), params)
+	ws, pauseAction, activity, err := h.saveWorkspace(r, params, req.Settings, req.WakeupsPaused, requestUserID(r), actorType, actorID, isGovernedFieldMachineActor(r, actorType))
+	var rejected settingsRejectedError
+	if errors.Is(err, errBackgroundAgentsHumanOnly) {
+		writeBackgroundAgentsRefused(w)
+		return
+	}
+	if errors.Is(err, errSettingsPasskeyRequired) {
+		writePasskeyActionRequired(w, settingsPatchAction)
+		return
+	}
+	if errors.Is(err, errCannotDoOwnerOnly) {
+		writeError(w, http.StatusForbidden, err.Error())
+		return
+	}
+	if errors.As(err, &rejected) {
+		writeError(w, http.StatusBadRequest, rejected.Error())
+		return
+	}
+	if failedAudit(w, r, err, "workspace.update") {
+		return
+	}
 	if err != nil {
 		slog.Warn("update workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update workspace")
@@ -574,6 +914,9 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("workspace updated", append(logger.RequestAttrs(r), "workspace_id", id)...)
+	if pauseAction != "" {
+		h.publishWakeupsPauseActivity(ws, actorType, actorID, activity)
+	}
 	userID := requestUserID(r)
 	h.publish(protocol.EventWorkspaceUpdated, uuidToString(ws.ID), "member", userID, map[string]any{"workspace": h.workspaceToResponse(ws)})
 	// A rename changes what daemons display; a settings edit changes how they
@@ -623,9 +966,6 @@ type MemberWithUserResponse struct {
 	Name        string  `json:"name"`
 	Email       string  `json:"email"`
 	AvatarURL   *string `json:"avatar_url"`
-	// ProjectIDs lists a guest's projects. Omitted for other roles, and for
-	// guests when a guest is asking.
-	ProjectIDs []string `json:"project_ids,omitempty"`
 }
 
 func (h *Handler) ListMembersWithUser(w http.ResponseWriter, r *http.Request) {
@@ -641,55 +981,9 @@ func (h *Handler) ListMembersWithUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.Queries.ListGuestProjects(r.Context(), wsUUID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list members")
-		return
-	}
-	guestProjects := map[[16]byte][]string{}
-	for _, row := range rows {
-		guestProjects[row.UserID.Bytes] = append(guestProjects[row.UserID.Bytes], uuidToString(row.ProjectID))
-	}
-	// A guest sees the members, itself, and only those guests it shares a
-	// project with: guests are often outside people who should not learn of
-	// each other. Nobody's projects are listed to a guest.
-	requester, _ := ctxMember(r.Context())
-	requesterIsGuest := projectaccess.IsGuestRole(requester.Role)
-	includeGuests := clientRendersGuestRole(r)
-	// Everyone else sees a guest's grants only on projects they can see
-	// themselves: a private project's id is not shown outside its members,
-	// owners and admins included (MUL-9284).
-	var requesterHidden projectaccess.Hidden
-	if !requesterIsGuest {
-		if requesterHidden, ok = h.requestHiddenProjects(w, r, uuidToString(wsUUID)); !ok {
-			return
-		}
-	}
-	visibleGuests := map[[16]byte]bool{requester.UserID.Bytes: true}
-	if requesterIsGuest {
-		mine := map[string]bool{}
-		for _, id := range guestProjects[requester.UserID.Bytes] {
-			mine[id] = true
-		}
-		for userID, ids := range guestProjects {
-			for _, id := range ids {
-				if mine[id] {
-					visibleGuests[userID] = true
-					break
-				}
-			}
-		}
-	}
-	resp := make([]MemberWithUserResponse, 0, len(members))
-	for _, m := range members {
-		guest := projectaccess.IsGuestRole(m.Role)
-		if guest && !includeGuests {
-			continue
-		}
-		if requesterIsGuest && guest && !visibleGuests[m.UserID.Bytes] {
-			continue
-		}
-		item := MemberWithUserResponse{
+	resp := make([]MemberWithUserResponse, len(members))
+	for i, m := range members {
+		resp[i] = MemberWithUserResponse{
 			ID:          uuidToString(m.ID),
 			WorkspaceID: uuidToString(m.WorkspaceID),
 			UserID:      uuidToString(m.UserID),
@@ -699,10 +993,6 @@ func (h *Handler) ListMembersWithUser(w http.ResponseWriter, r *http.Request) {
 			Email:       m.UserEmail,
 			AvatarURL:   h.resolveAvatarURLPtr(textToPtr(m.UserAvatarUrl)),
 		}
-		if guest && !requesterIsGuest {
-			item.ProjectIDs = visibleProjectIDs(requesterHidden, guestProjects[m.UserID.Bytes])
-		}
-		resp = append(resp, item)
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -711,8 +1001,6 @@ func (h *Handler) ListMembersWithUser(w http.ResponseWriter, r *http.Request) {
 type CreateMemberRequest struct {
 	Email string `json:"email"`
 	Role  string `json:"role"`
-	// ProjectIDs are required for a guest and ignored otherwise.
-	ProjectIDs []string `json:"project_ids,omitempty"`
 }
 
 func (h *Handler) memberWithUserResponse(member db.Member, user db.User) MemberWithUserResponse {
@@ -728,13 +1016,6 @@ func (h *Handler) memberWithUserResponse(member db.Member, user db.User) MemberW
 	}
 }
 
-// clientRendersGuestRole reports whether the caller declared it can render
-// guest rows. Member and invitation lists hide guests from older clients,
-// whose role tables have no guest entry and crash on one.
-func clientRendersGuestRole(r *http.Request) bool {
-	return requestHasClientCapability(r, protocol.AppCapabilityWorkspaceGuestsV1)
-}
-
 func normalizeMemberRole(role string) (string, bool) {
 	if role == "" {
 		return "member", true
@@ -742,7 +1023,7 @@ func normalizeMemberRole(role string) (string, bool) {
 
 	role = strings.TrimSpace(role)
 	switch role {
-	case "owner", "admin", "member", projectaccess.RoleGuest:
+	case "owner", "admin", "member":
 		return role, true
 	default:
 		return "", false
@@ -751,8 +1032,6 @@ func normalizeMemberRole(role string) (string, bool) {
 
 type UpdateMemberRequest struct {
 	Role string `json:"role"`
-	// ProjectIDs are required when the member becomes a guest.
-	ProjectIDs []string `json:"project_ids,omitempty"`
 }
 
 func (h *Handler) UpdateMember(w http.ResponseWriter, r *http.Request) {
@@ -806,33 +1085,30 @@ func (h *Handler) UpdateMember(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	wasGuest := projectaccess.IsGuestRole(target.Role)
-	toGuest := projectaccess.IsGuestRole(role)
-	var updatedMember db.Member
-	var guestProjects []pgtype.UUID
-	switch {
-	case toGuest && !wasGuest:
-		var admission featureAdmission
-		if admission, ok = h.requireGuestAddition(w, r, target.WorkspaceID, "make_guest"); !ok {
-			return
-		}
-		if guestProjects, ok = h.parseGuestProjectIDs(w, r, target.WorkspaceID, req.ProjectIDs); !ok {
-			return
-		}
-		updatedMember, ok = h.demoteMemberToGuest(w, r, requester, target, guestProjects)
-		if ok {
-			admission.admitted(r.Context())
-		}
-	case wasGuest && !toGuest:
-		updatedMember, ok = h.promoteGuest(w, r, target, role)
-	default:
-		updatedMember, err = h.updateMemberRoleFrom(r.Context(), target, role)
-		if err != nil {
-			writeMemberUpdateError(w, err)
-			return
-		}
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update member")
+		return
 	}
-	if !ok {
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	updatedMember, err := qtx.UpdateMemberRole(r.Context(), db.UpdateMemberRoleParams{
+		ID:   target.ID,
+		Role: role,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update member")
+		return
+	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind: "member.update", WorkspaceID: updatedMember.WorkspaceID, TargetID: updatedMember.ID,
+		Before: memberAuditFields(target), After: memberAuditFields(updatedMember),
+	}); err != nil {
+		writeAuditFailure(w, r, err, "member.update")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update member")
 		return
 	}
 
@@ -844,47 +1120,12 @@ func (h *Handler) UpdateMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := h.memberWithUserResponse(updatedMember, user)
 	userID := requestUserID(r)
-	// The event reaches every member, so it carries no projects: a guest's
-	// projects are shown per viewer (ListMembersWithUser).
 	h.publish(protocol.EventMemberUpdated, uuidToString(requester.WorkspaceID), "member", userID, map[string]any{
-		"member": resp,
+		"member": h.memberWithUserResponse(updatedMember, user),
 	})
-	if toGuest {
-		resp.ProjectIDs = uuidsToStrings(guestProjects)
-	}
 
-	writeJSON(w, http.StatusOK, resp)
-}
-
-// updateMemberRoleFrom changes a role that neither starts nor ends as guest.
-// The row is locked and must still hold target's role: a concurrent change
-// (say the member became a guest and gave up its seat) is never overwritten
-// by a request decided on the role it had before.
-func (h *Handler) updateMemberRoleFrom(ctx context.Context, target db.Member, role string) (db.Member, error) {
-	tx, err := h.TxStarter.Begin(ctx)
-	if err != nil {
-		return db.Member{}, err
-	}
-	defer tx.Rollback(ctx)
-	qtx := h.Queries.WithTx(tx)
-	if target.Role == "owner" && role != "owner" {
-		if err := lockOtherOwner(ctx, qtx, target.WorkspaceID, target.ID); err != nil {
-			return db.Member{}, err
-		}
-	}
-	if _, err := lockMemberRole(ctx, qtx, target.ID, target.Role); err != nil {
-		return db.Member{}, err
-	}
-	updated, err := qtx.UpdateMemberRole(ctx, db.UpdateMemberRoleParams{ID: target.ID, Role: role})
-	if err != nil {
-		return db.Member{}, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return db.Member{}, err
-	}
-	return updated, nil
+	writeJSON(w, http.StatusOK, h.memberWithUserResponse(updatedMember, user))
 }
 
 func (h *Handler) DeleteMember(w http.ResponseWriter, r *http.Request) {
@@ -923,12 +1164,11 @@ func (h *Handler) DeleteMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	requesterUserID := requestUserID(r)
-	result, err := h.revokeAndRemoveMember(r.Context(), target.WorkspaceID, target.UserID, target.ID, parseUUID(requesterUserID))
-	if errors.Is(err, errLastOwner) {
-		writeError(w, http.StatusBadRequest, errLastOwner.Error())
-		return
-	}
+	result, err := h.removeMemberAudited(r.Context(), r, "member.remove", target.WorkspaceID, target.UserID, target.ID, parseUUID(requesterUserID))
 	if err != nil {
+		if failedAudit(w, r, err, "member.remove") {
+			return
+		}
 		slog.Warn("delete member failed", append(logger.RequestAttrs(r), "error", err, "member_id", memberID, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete member")
 		return
@@ -972,12 +1212,11 @@ func (h *Handler) LeaveWorkspace(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := h.revokeAndRemoveMember(r.Context(), member.WorkspaceID, member.UserID, member.ID, member.UserID)
-	if errors.Is(err, errLastOwner) {
-		writeError(w, http.StatusBadRequest, errLastOwner.Error())
-		return
-	}
+	result, err := h.removeMemberAudited(r.Context(), r, "member.leave", member.WorkspaceID, member.UserID, member.ID, member.UserID)
 	if err != nil {
+		if failedAudit(w, r, err, "member.leave") {
+			return
+		}
 		slog.Warn("leave workspace failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to leave workspace")
 		return
@@ -1096,6 +1335,11 @@ var workspaceDeleteOwnerPageSize int32 = 500
 // tenant with rows left behind.
 const workspaceDeleteVerifyPasses = 3
 
+// workspaceDeleteMaxRestarts caps how often one delete rolls back and starts again
+// because a task page named an issue it had not locked. Past the cap the delete
+// fails closed with the workspace intact.
+const workspaceDeleteMaxRestarts = 3
+
 // deleteWorkspaceTasks removes every agent_task_queue row a workspace owns,
 // together with the rows that hang off those tasks, in bounded keyset pages.
 //
@@ -1208,6 +1452,25 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 		},
 	}
 
+	// Every issue any task page will touch is locked here, once and in ascending
+	// order, before the first task row of the first page. A page that met a new
+	// issue later would lock it while the delete holds the rows of earlier pages,
+	// against a writer that holds that issue and waits on one of those rows.
+	held := make(map[pgtype.UUID]struct{})
+	for _, kind := range ownerKinds {
+		if err := discoverTaskIssues(ctx, qtx, kind.ownerFirstPage, kind.ownerPage, kind.taskFirstPage, kind.taskPage, held); err != nil {
+			return err
+		}
+	}
+	heldIDs := make([]pgtype.UUID, 0, len(held))
+	for id := range held {
+		heldIDs = append(heldIDs, id)
+	}
+	heldIDs = service.MergeSortedUUIDs(heldIDs, nil)
+	if err := qtx.LockIssuesByID(ctx, heldIDs); err != nil {
+		return fmt.Errorf("lock issues of every task page: %w", err)
+	}
+
 	for _, kind := range ownerKinds {
 		owners, err := kind.ownerFirstPage(ctx, workspaceDeleteOwnerPageSize)
 		if err != nil {
@@ -1217,6 +1480,9 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 			for _, ownerID := range owners {
 				if err := sweepTasksForOwner(ctx, kind.label, ownerID,
 					kind.taskFirstPage, kind.taskPage,
+					func(ctx context.Context, ids []pgtype.UUID) ([]pgtype.UUID, error) {
+						return lockTaskPageIssuesFirst(ctx, qtx, ownerID, ids, held)
+					},
 					qtx.DetachTaskBatchReferences, qtx.DeleteTaskBatch); err != nil {
 					return err
 				}
@@ -1235,6 +1501,105 @@ func deleteWorkspaceTasks(ctx context.Context, qtx *db.Queries, workspaceID pgty
 	return nil
 }
 
+// issuesWidenedError reports that a task page names issues the page did not lock
+// before it locked its task rows: a run created after the issue lock query names a
+// task of the page as its parent, on an issue nobody holds. The page must not lock
+// that issue while it holds task rows, so the teardown rolls back, which releases
+// every lock, and starts again with these issues locked first.
+type issuesWidenedError struct{ IDs []pgtype.UUID }
+
+func (e *issuesWidenedError) Error() string {
+	return fmt.Sprintf("task page names %d issue(s) it did not lock first", len(e.IDs))
+}
+
+// discoverTaskIssues reads every task page of every owner of one kind, locks
+// nothing, and adds the issues the deletion of each page touches to held.
+func discoverTaskIssues(
+	ctx context.Context,
+	qtx *db.Queries,
+	ownerFirstPage func(context.Context, int32) ([]pgtype.UUID, error),
+	ownerPage func(context.Context, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	taskFirstPage func(context.Context, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	taskPage func(context.Context, pgtype.UUID, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	held map[pgtype.UUID]struct{},
+) error {
+	owners, err := ownerFirstPage(ctx, workspaceDeleteOwnerPageSize)
+	if err != nil {
+		return fmt.Errorf("discover task issues: list owners: %w", err)
+	}
+	for len(owners) > 0 {
+		for _, ownerID := range owners {
+			ids, err := taskFirstPage(ctx, ownerID, workspaceDeleteTaskPageSize)
+			for err == nil && len(ids) > 0 {
+				var issueIDs []pgtype.UUID
+				if issueIDs, err = qtx.ListIssueIDsOfTaskBatch(ctx, ids); err != nil {
+					break
+				}
+				for _, id := range issueIDs {
+					held[id] = struct{}{}
+				}
+				ids, err = taskPage(ctx, ownerID, ids[len(ids)-1], workspaceDeleteTaskPageSize)
+			}
+			if err != nil {
+				return fmt.Errorf("discover task issues: %w", err)
+			}
+		}
+		if owners, err = ownerPage(ctx, owners[len(owners)-1], workspaceDeleteOwnerPageSize); err != nil {
+			return fmt.Errorf("discover task issues: list owners: %w", err)
+		}
+	}
+	return nil
+}
+
+// lockTaskPageIssuesFirst prepares one task page in the order every other writer
+// uses: the issues first, then the run rows. AuthorizeElevatedOp holds a run's
+// issue and then waits on the run row, so a page that held run rows (its own or
+// an earlier page's) and then asked for another issue would be aborted with 40P01.
+//
+// held is every issue the teardown has locked, found by discoverTaskIssues before
+// the first page. A page never locks an issue itself:
+//
+//  1. The issues of the page's tasks and of their children are read. One that is
+//     not in held was created after the discovery.
+//  2. The task rows are locked; a row that moved to another owner or is gone drops
+//     out of the returned ids.
+//  3. The children of the locked rows are read again, for a child created after
+//     step 1.
+//
+// At step 1 or 3 an issue outside held makes the page return an issuesWidenedError
+// without locking it, and the teardown rolls back, which releases every lock, and
+// starts again with those issues locked first.
+func lockTaskPageIssuesFirst(ctx context.Context, qtx *db.Queries, ownerID pgtype.UUID, pageIDs []pgtype.UUID, held map[pgtype.UUID]struct{}) ([]pgtype.UUID, error) {
+	unheldOf := func(ids []pgtype.UUID) []pgtype.UUID {
+		var unheld []pgtype.UUID
+		for _, id := range ids {
+			if _, ok := held[id]; !ok {
+				unheld = append(unheld, id)
+			}
+		}
+		return unheld
+	}
+	need, err := qtx.ListIssueIDsOfTaskBatch(ctx, pageIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list issues of task page: %w", err)
+	}
+	if unheld := unheldOf(need); len(unheld) > 0 {
+		return nil, &issuesWidenedError{IDs: unheld}
+	}
+	locked, err := qtx.LockTaskBatch(ctx, db.LockTaskBatchParams{TaskIds: pageIDs, OwnerID: ownerID})
+	if err != nil {
+		return nil, fmt.Errorf("lock task page: %w", err)
+	}
+	current, err := qtx.ListIssueIDsOfTaskBatch(ctx, locked)
+	if err != nil {
+		return nil, fmt.Errorf("list issues of locked task page: %w", err)
+	}
+	if unheld := unheldOf(current); len(unheld) > 0 {
+		return nil, &issuesWidenedError{IDs: unheld}
+	}
+	return locked, nil
+}
+
 // sweepTasksForOwner deletes one owner's tasks, then re-verifies that owner.
 //
 // Each pass walks the owner's tasks by keyset and deletes each page. A pass that
@@ -1248,6 +1613,7 @@ func sweepTasksForOwner(
 	ownerID pgtype.UUID,
 	taskFirstPage func(context.Context, pgtype.UUID, int32) ([]pgtype.UUID, error),
 	taskPage func(context.Context, pgtype.UUID, pgtype.UUID, int32) ([]pgtype.UUID, error),
+	lockPage func(context.Context, []pgtype.UUID) ([]pgtype.UUID, error),
 	detach func(context.Context, []pgtype.UUID) error,
 	deletePage func(context.Context, []pgtype.UUID) error,
 ) error {
@@ -1258,13 +1624,19 @@ func sweepTasksForOwner(
 			return fmt.Errorf("list tasks by %s: %w", label, err)
 		}
 		for len(taskIDs) > 0 {
-			if err := detach(ctx, taskIDs); err != nil {
-				return fmt.Errorf("detach task page references: %w", err)
+			locked, err := lockPage(ctx, taskIDs)
+			if err != nil {
+				return fmt.Errorf("lock task page: %w", err)
 			}
-			if err := deletePage(ctx, taskIDs); err != nil {
-				return fmt.Errorf("delete task page: %w", err)
+			if len(locked) > 0 {
+				if err := detach(ctx, locked); err != nil {
+					return fmt.Errorf("detach task page references: %w", err)
+				}
+				if err := deletePage(ctx, locked); err != nil {
+					return fmt.Errorf("delete task page: %w", err)
+				}
+				deleted += len(locked)
 			}
-			deleted += len(taskIDs)
 			if taskIDs, err = taskPage(ctx, ownerID, taskIDs[len(taskIDs)-1], workspaceDeleteTaskPageSize); err != nil {
 				return fmt.Errorf("list tasks by %s: %w", label, err)
 			}
@@ -1315,14 +1687,7 @@ func lockWorkspaceTaskOwners(ctx context.Context, qtx *db.Queries, workspaceID p
 	return nil
 }
 
-// DeleteWorkspace refuses machine credentials: a task token or cloud node PAT
-// authenticates as its owner, and deleting a workspace takes every issue, doc
-// and agent in it, so only a human may do it.
 func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
-	if isMachineCredentialActor(r) {
-		writeError(w, http.StatusForbidden, "this endpoint is only available to human actors")
-		return
-	}
 	workspaceID := workspaceIDFromURL(r, "id")
 
 	// Defense in depth: the route is already gated by the
@@ -1373,11 +1738,64 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	// delete window would otherwise slip in a session nobody locked, and its
 	// restore would outlive the cascade the same way. Holding the workspace row
 	// FOR UPDATE blocks that insert on its workspace FK (FOR KEY SHARE).
+	// A task page can name an issue created after its lock query. The attempt then
+	// rolls back, which releases every lock, and runs again with that issue locked
+	// first. The restarts are bounded; past the bound the delete fails closed.
+	var extraIssueIDs []pgtype.UUID
+	var snap *workspaceDeleteSnapshot
+	for restarts := 0; ; restarts++ {
+		var widened []pgtype.UUID
+		var ok bool
+		snap, widened, ok = h.deleteWorkspaceAttempt(w, r, requester, workspaceID, extraIssueIDs)
+		if ok {
+			break
+		}
+		if len(widened) == 0 {
+			return
+		}
+		if restarts >= workspaceDeleteMaxRestarts {
+			failWorkspaceDelete(w, r, workspaceID, "lock task page issues",
+				fmt.Errorf("task pages kept naming unlocked issues after %d restarts: %w", restarts, &issuesWidenedError{IDs: widened}))
+			return
+		}
+		extraIssueIDs = service.MergeSortedUUIDs(extraIssueIDs, widened)
+	}
+	for _, runtimeID := range snap.runtimeIDs {
+		h.NotifyRuntimeGone(uuidToString(runtimeID))
+	}
+	for _, machine := range snap.machines {
+		PublishMachineRefresh(r.Context(), h.Queries, h.Bus, machine.MachineOwnerID, machine.DaemonID, pgtype.UUID{}, "", "member", requestUserID(r), "resume")
+	}
+	h.deleteS3Objects(r.Context(), snap.objectURLs)
+
+	slog.Info("workspace deleted", append(logger.RequestAttrs(r), "workspace_id", workspaceID)...)
+	h.publish(protocol.EventWorkspaceDeleted, workspaceID, "member", requestUserID(r), map[string]any{
+		"workspace_id": workspaceID,
+	})
+	h.notifyDaemonWorkspacesChanged(affectedUserIDs...)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// workspaceDeleteSnapshot is what a committed delete attempt read for the work
+// that follows the commit.
+type workspaceDeleteSnapshot struct {
+	runtimeIDs []pgtype.UUID
+	machines   []db.ListMachinesOfWorkspaceRow
+	objectURLs []string
+}
+
+// deleteWorkspaceAttempt runs one delete transaction. It returns the snapshot
+// when the transaction committed. When a task page named an issue it had not
+// locked, it rolls back, writes nothing and returns those issues so the caller
+// can run again. On any other failure it writes the response and returns no
+// snapshot and no issues.
+func (h *Handler) deleteWorkspaceAttempt(w http.ResponseWriter, r *http.Request, requester db.Member, workspaceID string, extraIssueIDs []pgtype.UUID) (*workspaceDeleteSnapshot, []pgtype.UUID, bool) {
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		slog.Warn("begin workspace delete tx failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
+		return nil, nil, false
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
@@ -1391,12 +1809,18 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	lockTimeoutMs := int(effectiveWorkspaceDeleteLockTimeout() / time.Millisecond)
 	if _, err := tx.Exec(r.Context(), fmt.Sprintf("SET LOCAL lock_timeout = %d", lockTimeoutMs)); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "set lock timeout", err)
-		return
+		return nil, nil, false
 	}
 
 	if _, err := qtx.LockWorkspaceForDelete(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "lock workspace", err)
-		return
+		return nil, nil, false
+	}
+	// A restart locks the issues the earlier attempt found too late, in id order,
+	// before any task row.
+	if err := qtx.LockIssuesByID(r.Context(), extraIssueIDs); err != nil {
+		failWorkspaceDelete(w, r, workspaceID, "lock issues found by an earlier attempt", err)
+		return nil, nil, false
 	}
 	// Take a best-effort snapshot for post-commit daemon invalidation. Runtime
 	// registration does not participate in the workspace delete lock protocol,
@@ -1405,20 +1829,30 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	runtimeIDs, err := qtx.ListAgentRuntimeIDsByWorkspace(r.Context(), requester.WorkspaceID)
 	if err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list runtimes", err)
-		return
+		return nil, nil, false
+	}
+
+	// The sweep below removes the runtimes and the pauses this workspace set, which
+	// can lift a machine pause for the owner's other workspaces. Pause does not take
+	// the delete lock, so one can land after this read: note the machines, not the
+	// pauses, and refresh their other workspaces after commit regardless.
+	machines, err := qtx.ListMachinesOfWorkspace(r.Context(), requester.WorkspaceID)
+	if err != nil {
+		failWorkspaceDelete(w, r, workspaceID, "list workspace machines", err)
+		return nil, nil, false
 	}
 
 	if _, err := qtx.LockChatSessionsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "lock chat sessions", err)
-		return
+		return nil, nil, false
 	}
 	if sourceContextAttachmentURLs, err = qtx.ListSourceContextAttachmentURLsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list source context attachment objects", err)
-		return
+		return nil, nil, false
 	}
 	if sourceContextIntentURLs, err = qtx.ListSourceContextObjectIntentURLsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "list source context pending objects", err)
-		return
+		return nil, nil, false
 	}
 
 	// Keep the relationship graph in the application layer. Each step is a
@@ -1466,8 +1900,8 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
-			name: "delete chat supplements",
-			run:  func() error { return qtx.DeleteChatTaskSupplementsByWorkspace(ctx, requester.WorkspaceID) },
+			name: "delete dm progress follows",
+			run:  func() error { return qtx.DeleteDMProgressByWorkspace(ctx, requester.WorkspaceID) },
 		},
 		{
 			name: "delete chat pins",
@@ -1500,6 +1934,14 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
+			name: "delete provider breakers",
+			run:  func() error { return qtx.DeleteProviderBreakersForWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
+			name: "delete provider breaker audit",
+			run:  func() error { return qtx.DeleteProviderBreakerAuditForWorkspace(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete leaf data",
 			run:  func() error { return qtx.DeleteWorkspaceLeafData(ctx, requester.WorkspaceID) },
 		},
@@ -1516,22 +1958,6 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceAutopilotQuotaPeriods(ctx, requester.WorkspaceID) },
 		},
 		{
-			name: "delete app tool call quota periods",
-			run:  func() error { return qtx.DeleteWorkspaceAppToolCallQuotaPeriods(ctx, requester.WorkspaceID) },
-		},
-		{
-			name: "delete entitlement limit overages",
-			run:  func() error { return qtx.DeleteWorkspaceEntitlementLimitOverages(ctx, requester.WorkspaceID) },
-		},
-		{
-			name: "delete entitlement feature attempts",
-			run:  func() error { return qtx.DeleteWorkspaceEntitlementFeatureAttempts(ctx, requester.WorkspaceID) },
-		},
-		{
-			name: "delete dashboard range views",
-			run:  func() error { return qtx.DeleteWorkspaceDashboardRangeViews(ctx, requester.WorkspaceID) },
-		},
-		{
 			name: "delete chat messages",
 			run:  func() error { return qtx.DeleteWorkspaceChatMessages(ctx, requester.WorkspaceID) },
 		},
@@ -1541,17 +1967,13 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		},
 		{
 			name: "delete comments",
-			run:  func() error { return qtx.DeleteWorkspaceComments(ctx, requester.WorkspaceID) },
+			run:  func() error { return deleteWorkspaceComments(ctx, qtx, requester.WorkspaceID) },
 		},
 		{
 			// Teardown mode keeps the triggers from logging the deletes above
 			// and below; this clears what normal writes logged before.
 			name: "delete search index changes",
 			run:  func() error { return qtx.DeleteWorkspaceSearchIndexChanges(ctx, requester.WorkspaceID) },
-		},
-		{
-			name: "delete search access markers",
-			run:  func() error { return qtx.DeleteWorkspaceMemberSearchAccess(ctx, requester.WorkspaceID) },
 		},
 		// Keep source-context object intents after the workspace row is gone.
 		// They are the durable retry ledger for an upload that began before the
@@ -1593,8 +2015,10 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		{
-			name: "delete docs",
-			run:  func() error { return qtx.DeleteWorkspaceDocs(ctx, requester.WorkspaceID) },
+			name: "delete issue workflow lint overrides",
+			run: func() error {
+				return qtx.DeleteIssueWorkflowLintOverridesForWorkspace(ctx, requester.WorkspaceID)
+			},
 		},
 		{
 			name: "delete autopilot children",
@@ -1633,6 +2057,15 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceAdministration(ctx, requester.WorkspaceID) },
 		},
 		{
+			// The one place audit rows may go: the SQL function sets the purge
+			// flag inside this tx (CHE-2774).
+			name: "delete audit events",
+			run: func() error {
+				_, err := qtx.AuditWorkspaceDelete(ctx, requester.WorkspaceID)
+				return err
+			},
+		},
+		{
 			// At this point workspaceMember has resolved → workspaceID is a
 			// valid UUID, so reuse the resolved value. The existing final
 			// statement also sweeps any expand-phase compatibility leftovers.
@@ -1642,26 +2075,32 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, step := range deleteSteps {
 		if err := step.run(); err != nil {
+			var widened *issuesWidenedError
+			if errors.As(err, &widened) {
+				return nil, widened.IDs, false
+			}
 			failWorkspaceDelete(w, r, workspaceID, step.name, err)
-			return
+			return nil, nil, false
 		}
 	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		slog.Warn("commit workspace delete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to delete workspace")
-		return
+		return nil, nil, false
 	}
-	for _, runtimeID := range runtimeIDs {
-		h.NotifyRuntimeGone(uuidToString(runtimeID))
+	return &workspaceDeleteSnapshot{
+		runtimeIDs: runtimeIDs, machines: machines,
+		objectURLs: append(sourceContextAttachmentURLs, sourceContextIntentURLs...),
+	}, nil, true
+}
+
+// deleteWorkspaceComments deletes the workspace's comments after it locks the
+// issues of the runs that name them: the delete nulls those runs' trigger, which
+// locks each run's issue, and that issue comes before the run row on every path.
+func deleteWorkspaceComments(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID) error {
+	if err := qtx.LockIssuesOfWorkspaceCommentTasks(ctx, workspaceID); err != nil {
+		return err
 	}
-	h.deleteS3Objects(r.Context(), append(sourceContextAttachmentURLs, sourceContextIntentURLs...))
-
-	slog.Info("workspace deleted", append(logger.RequestAttrs(r), "workspace_id", workspaceID)...)
-	h.publish(protocol.EventWorkspaceDeleted, workspaceID, "member", requestUserID(r), map[string]any{
-		"workspace_id": workspaceID,
-	})
-	h.notifyDaemonWorkspacesChanged(affectedUserIDs...)
-
-	w.WriteHeader(http.StatusNoContent)
+	return qtx.DeleteWorkspaceComments(ctx, workspaceID)
 }

@@ -15,12 +15,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/daemon/localenv"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	"github.com/multica-ai/multica/server/pkg/httptransport"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
-	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
 
 // requestError is returned by postJSON/getJSON when the server responds with an error status.
@@ -214,16 +214,21 @@ func daemonCommonCapabilities() []string {
 		protocol.DaemonCapabilityPlatformSkillV1,
 		protocol.DaemonCapabilityCheckoutKeepsWorkV1,
 		protocol.DaemonCapabilityJoinedWakeupsV1,
-		protocol.DaemonCapabilityWorkflowStatusRulesV1,
-		protocol.DaemonCapabilityWorkflowStatusMapV1,
 		protocol.DaemonCapabilityCLICommentSteerV1,
-		protocol.DaemonCapabilityDocCommentV1,
+		protocol.DaemonCapabilityAppliedSettingsV1,
+		protocol.DaemonCapabilityBackgroundOutputOnlyV1,
+		protocol.DaemonCapabilityRuntimeProfileV1,
 	}
 }
 
 // SetToken sets the auth token for authenticated requests.
 func (c *Client) SetToken(token string) {
 	c.token = token
+}
+
+// BaseURL returns the server's HTTP base URL.
+func (c *Client) BaseURL() string {
+	return c.baseURL
 }
 
 // Token returns the current auth token.
@@ -316,36 +321,47 @@ func (c *Client) ClaimTasks(ctx context.Context, daemonID string, runtimeIDs []s
 	return result.Tasks, err
 }
 
-// claimTasksWithHints issues the HTTP batch claim and returns the full
-// claimTasksResult, including any scheduling hints and the #7452
-// force_rechecked_runtime_ids acknowledgement. forceRecheckIDs are the runtimes
-// woken since the last claim; they ride along in the request body so the server
-// bypasses their cached "empty" verdict for exactly this claim.
+// claimTasksWithHints issues the HTTP batch claim with no non-DM limit and
+// returns the full claimTasksResult, including any scheduling hints and the
+// #7452 force_rechecked_runtime_ids acknowledgement. forceRecheckIDs are the
+// runtimes woken since the last claim; they ride along in the request body so
+// the server bypasses their cached "empty" verdict for exactly this claim.
 func (c *Client) claimTasksWithHints(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, forceRecheckIDs ...string) (claimTasksResult, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, batchClaimRequestTimeout)
-	defer cancel()
-	var resp claimTasksResult
-	if err := c.postJSON(reqCtx, "/api/daemon/tasks/claim", claimTasksBody(daemonID, runtimeIDs, maxTasks, forceRecheckIDs...), &resp); err != nil {
-		return claimTasksResult{}, err
-	}
-	return resp, nil
+	return c.claimTasksWithLimit(ctx, daemonID, runtimeIDs, maxTasks, nil, forceRecheckIDs...)
 }
 
-// claimTasksBody builds the batch-claim request body shared by the HTTP and
-// WS-first transports so both stay byte-identical. force_recheck_runtime_ids
-// (#7452) is an optional, additive field: it is omitted when no runtime was
-// woken so a steady-state poll is exactly the pre-#7452 request, and an older
-// server that does not know the field simply ignores it.
-func claimTasksBody(daemonID string, runtimeIDs []string, maxTasks int, forceRecheckIDs ...string) map[string]any {
+// claimTasksBody is the shared request body of the batch claim, over HTTP and
+// the tasks.claim WS RPC, so both transports stay byte-identical.
+// force_recheck_runtime_ids (#7452) lists the runtimes woken since the last
+// claim; the server bypasses their cached "empty" verdict for exactly this
+// claim. maxNonDMTasks (nil = no limit) caps how many of the returned tasks may
+// be non-DM tasks (issue or group channel tasks), which keeps
+// reserved_chat_slots free for DM runs.
+func claimTasksBody(daemonID string, runtimeIDs []string, maxTasks int, maxNonDMTasks *int, forceRecheckIDs ...string) map[string]any {
 	body := map[string]any{
 		"daemon_id":   daemonID,
 		"runtime_ids": runtimeIDs,
 		"max_tasks":   maxTasks,
 	}
+	if maxNonDMTasks != nil {
+		body["max_non_dm_tasks"] = *maxNonDMTasks
+	}
 	if len(forceRecheckIDs) > 0 {
 		body["force_recheck_runtime_ids"] = forceRecheckIDs
 	}
 	return body
+}
+
+// claimTasksWithLimit is claimTasksWithHints plus the reserved_chat_slots
+// non-DM budget (nil = no limit).
+func (c *Client) claimTasksWithLimit(ctx context.Context, daemonID string, runtimeIDs []string, maxTasks int, maxNonDMTasks *int, forceRecheckIDs ...string) (claimTasksResult, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, batchClaimRequestTimeout)
+	defer cancel()
+	var resp claimTasksResult
+	if err := c.postJSON(reqCtx, "/api/daemon/tasks/claim", claimTasksBody(daemonID, runtimeIDs, maxTasks, maxNonDMTasks, forceRecheckIDs...), &resp); err != nil {
+		return claimTasksResult{}, err
+	}
+	return resp, nil
 }
 
 // isBatchClaimUnsupported reports whether err is a 404 from the batch claim
@@ -479,6 +495,39 @@ type TaskSupplement struct {
 	Content    string `json:"content"`
 }
 
+// TaskPREvent is a typed PR-event notice for a live run: structured fields
+// only, never PR text or a member author.
+type TaskPREvent struct {
+	EventID    string `json:"event_id"`
+	Kind       string `json:"kind"`
+	PRNumber   int32  `json:"pr_number"`
+	HeadSHA    string `json:"head_sha"`
+	OldHeadSHA string `json:"old_head_sha"`
+	BaseSHA    string `json:"base_sha"`
+	CheckName  string `json:"check_name"`
+	// WakeupID and Text are set only on a kind "wakeup" item (v2).
+	WakeupID string `json:"wakeup_id"`
+	Text     string `json:"text"`
+}
+
+func (c *Client) ClaimTaskPREvent(ctx context.Context, taskID string) (*TaskPREvent, error) {
+	var event TaskPREvent
+	if err := c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/pr-events/claim", taskID), map[string]any{}, &event); err != nil {
+		return nil, err
+	}
+	if event.EventID == "" {
+		return nil, nil
+	}
+	return &event, nil
+}
+
+func (c *Client) AckTaskPREvent(ctx context.Context, taskID, eventID string, delivered bool, errText string) error {
+	return c.postJSONWithRetry(ctx,
+		fmt.Sprintf("/api/daemon/tasks/%s/pr-events/%s/ack", taskID, eventID),
+		map[string]any{"delivered": delivered, "error": errText}, nil,
+		[]time.Duration{0, 100 * time.Millisecond, 300 * time.Millisecond})
+}
+
 func (c *Client) ClaimTaskSupplement(ctx context.Context, taskID string) (*TaskSupplement, error) {
 	var supplement TaskSupplement
 	if err := c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/supplements/claim", taskID), map[string]any{
@@ -515,8 +564,18 @@ const (
 
 var errStartClaimRejected = errors.New("task start claim rejected")
 
-func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...string) (bool, error) {
-	var negotiated bool
+// TaskNegotiation is what the server committed for one run, read from the
+// start response rather than from the daemon's own offer.
+type TaskNegotiation struct {
+	Supplement bool
+	PREvent    bool
+	// PREventWakeups is set only for a v2 echo: the run may be handed
+	// kind "wakeup" items (CHE-6971). A v1 echo leaves it false.
+	PREventWakeups bool
+}
+
+func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...string) (TaskNegotiation, error) {
+	var negotiated TaskNegotiation
 	var decodeResponse responseDecoder = func(r io.Reader) error {
 		data, err := io.ReadAll(io.LimitReader(r, maxStartTaskResponseBytes+1))
 		if err != nil {
@@ -527,6 +586,7 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 		}
 		var response struct {
 			SupplementCapability     string `json:"supplement_capability"`
+			PREventCapability        string `json:"pr_event_capability"`
 			ProcessCleanupCapability string `json:"process_cleanup_capability"`
 		}
 		// Empty acknowledgements start the task without negotiating supplements.
@@ -536,7 +596,13 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 				return fmt.Errorf("%w: task start: %w", errInvalidResponseBody, err)
 			}
 		}
-		negotiated = response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1
+		negotiated = TaskNegotiation{
+			Supplement: response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementV1 ||
+				response.SupplementCapability == protocol.DaemonCapabilityTaskSupplementChatV1,
+			PREvent: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV1 ||
+				response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV2,
+			PREventWakeups: response.PREventCapability == protocol.DaemonCapabilityTaskSupplementPREventV2,
+		}
 		if slices.Contains(capabilities, protocol.DaemonCapabilityMuseAppProcessCleanupV1) && response.ProcessCleanupCapability != protocol.DaemonCapabilityMuseAppProcessCleanupV1 {
 			return fmt.Errorf("%w: Muse app requires server support for remote execution cleanup; upgrade the Multica server before using this runtime", errInvalidResponseBody)
 		}
@@ -546,10 +612,13 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 	if !task.StartClaimSupported {
 		// Old servers have no safe replay contract. Preserve one attempt.
 		err := c.postJSON(ctx, path, map[string]any{"capabilities": capabilities}, decodeResponse)
-		return err == nil && negotiated, err
+		if err != nil {
+			return TaskNegotiation{}, err
+		}
+		return negotiated, nil
 	}
 	if task.RuntimeID == "" || task.DispatchedAt == "" {
-		return false, fmt.Errorf("start task: claim is missing runtime_id or dispatched_at")
+		return TaskNegotiation{}, fmt.Errorf("start task: claim is missing runtime_id or dispatched_at")
 	}
 	ctx, cancel := context.WithTimeout(ctx, startTaskTimeout)
 	defer cancel()
@@ -560,9 +629,41 @@ func (c *Client) StartTask(ctx context.Context, task Task, capabilities ...strin
 	}, decodeResponse, startTaskRetrySchedule)
 	var reqErr *requestError
 	if errors.As(err, &reqErr) && reqErr.StatusCode == http.StatusConflict {
-		return false, fmt.Errorf("%w: %w", errStartClaimRejected, err)
+		return TaskNegotiation{}, fmt.Errorf("%w: %w", errStartClaimRejected, err)
 	}
-	return err == nil && negotiated, err
+	if err != nil {
+		return TaskNegotiation{}, err
+	}
+	return negotiated, nil
+}
+
+// AppliedSettings is the launch selection the daemon resolved for one claim.
+type AppliedSettings struct {
+	Model, ThinkingLevel, ServiceTier string
+	ContextArgs                       []string
+}
+
+// ReportAppliedSettings records the launch selection against the claim
+// generation. One bounded attempt: the report is advisory, so callers log and
+// carry on when it fails.
+func (c *Client) ReportAppliedSettings(ctx context.Context, task Task, applied AppliedSettings) error {
+	if task.RuntimeID == "" || task.DispatchedAt == "" {
+		return fmt.Errorf("report applied settings: claim is missing runtime_id or dispatched_at")
+	}
+	contextArgs := applied.ContextArgs
+	if contextArgs == nil {
+		contextArgs = []string{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, startTaskTimeout)
+	defer cancel()
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/applied-settings", task.ID), map[string]any{
+		"runtime_id":             task.RuntimeID,
+		"dispatched_at":          task.DispatchedAt,
+		"applied_model":          applied.Model,
+		"applied_thinking_level": applied.ThinkingLevel,
+		"applied_service_tier":   applied.ServiceTier,
+		"applied_context_args":   contextArgs,
+	}, nil)
 }
 
 // MarkTaskWaitingLocalDirectory parks a freshly-dispatched task in the
@@ -582,6 +683,9 @@ func (c *Client) MarkTaskWaitingLocalDirectory(ctx context.Context, taskID, reas
 
 // TaskCancelAck is the payload of the daemon's cancel acknowledgement.
 type TaskCancelAck struct {
+	// CancelAckProof is the claim-time proof the server checks before it
+	// treats this ack as confirmation that the runner stopped.
+	CancelAckProof string
 	// Nil is an older daemon with no explicit cleanup acknowledgement.
 	ProcessCleanupConfirmed *bool
 	// BranchName: a cancelled worktree task has already finalized — its
@@ -617,6 +721,9 @@ type TaskCancelAck struct {
 // The server never overwrites already-recorded values, so replays are safe.
 func (c *Client) AckTaskCancelled(ctx context.Context, taskID string, ack TaskCancelAck) error {
 	body := map[string]any{}
+	if ack.CancelAckProof != "" {
+		body["cancel_ack_proof"] = ack.CancelAckProof
+	}
 	if ack.ProcessCleanupConfirmed != nil {
 		body["process_cleanup_confirmed"] = *ack.ProcessCleanupConfirmed
 	}
@@ -672,11 +779,20 @@ func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages
 	}, nil)
 }
 
-func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
-	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, defaultTerminalRetrySchedule)
+// ReportSilenceAlert asks the server to leave one comment on the task's issue
+// for the silent segment. The server dedupes on (task, segment).
+func (c *Client) ReportSilenceAlert(ctx context.Context, taskID, segmentID string, silentFor time.Duration) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/silence-alert", taskID), map[string]any{
+		"segment_id":         segmentID,
+		"silent_for_seconds": int(silentFor.Seconds()),
+	}, nil)
 }
 
-func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, schedule []time.Duration) error {
+func (c *Client) CompleteTask(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
+	return c.completeTaskWithRetrySchedule(ctx, taskID, output, branchName, sessionID, workDir, sessionRolloutMissing, retiredSessionID, durableWorkDir, 0, 0, nil, defaultTerminalRetrySchedule)
+}
+
+func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, output, branchName, sessionID, workDir string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, contextTokens, contextWindow int64, initContext *initctx.Report, schedule []time.Duration) error {
 	body := map[string]any{"output": output}
 	if branchName != "" {
 		body["branch_name"] = branchName
@@ -695,6 +811,12 @@ func (c *Client) completeTaskWithRetrySchedule(ctx context.Context, taskID, outp
 	}
 	if retiredSessionID != "" {
 		body["retired_session_id"] = retiredSessionID
+	}
+	if contextTokens > 0 && contextWindow > 0 {
+		body["context"] = map[string]int64{"tokens": contextTokens, "window": contextWindow}
+	}
+	if initContext != nil {
+		body["init_context"] = initContext
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/complete", taskID), body, nil, schedule)
 }
@@ -763,15 +885,6 @@ func (c *Client) ReportTaskContextReceipt(ctx context.Context, taskID string, re
 	}, nil)
 }
 
-// ReportTaskRateLimits posts the subscription rate-limit snapshot the agent
-// CLI reported while running the task; the server keeps the newest one as the
-// state of the task's runtime.
-func (c *Client) ReportTaskRateLimits(ctx context.Context, taskID string, snapshot agent.RateLimitSnapshot) error {
-	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/rate-limits", taskID), map[string]any{
-		"rate_limits": snapshot,
-	}, nil)
-}
-
 // EnvironmentCommand is a stop, restart, start or log read a member asked
 // for from the issue sidebar.
 type EnvironmentCommand struct {
@@ -817,31 +930,41 @@ func (c *Client) ReportTaskUsageSnapshot(ctx context.Context, taskID string, usa
 	}, nil)
 }
 
-func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
-	return c.failTaskWithRetrySchedule(ctx, terminalTaskReport{
-		taskID: taskID, errorMessage: errMsg, sessionID: sessionID, workDir: workDir, branchName: branchName,
-		failureReason: failureReason, sessionRolloutMissing: sessionRolloutMissing, retiredSessionID: retiredSessionID, durableWorkDir: durableWorkDir,
-	}, defaultTerminalRetrySchedule)
+func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, checkpoint *timeoutCheckpoint) error {
+	return c.failTaskWithRetrySchedule(ctx, taskID, errMsg, sessionID, workDir, branchName, failureReason, sessionRolloutMissing, retiredSessionID, durableWorkDir, checkpoint, defaultTerminalRetrySchedule)
 }
 
-func (c *Client) failTaskWithRetrySchedule(ctx context.Context, report terminalTaskReport, schedule []time.Duration) error {
-	body := protocol.TaskFailRequest{
-		Error:                 report.errorMessage,
-		SessionID:             report.sessionID,
-		WorkDir:               report.workDir,
-		DurableWorkDir:        report.durableWorkDir,
-		BranchName:            report.branchName,
-		FailureReason:         report.failureReason,
-		SessionRolloutMissing: report.sessionRolloutMissing,
-		RetiredSessionID:      report.retiredSessionID,
-		NoToolCallsStarted:    report.noToolCallsStarted,
+func (c *Client) failTaskWithRetrySchedule(ctx context.Context, taskID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, checkpoint *timeoutCheckpoint, schedule []time.Duration) error {
+	body := map[string]any{"error": errMsg}
+	if sessionID != "" {
+		body["session_id"] = sessionID
 	}
-	// Older servers automatically replay a provider_network failure. Keep the
-	// original server-error label on the wire when the turn cannot be verified.
-	if !body.NoToolCallsStarted && body.FailureReason == taskfailure.ReasonAgentProviderNetwork.String() && taskfailure.IsTraePromptStreamDisconnect(body.Error) {
-		body.FailureReason = taskfailure.ReasonAgentProviderServerError.String()
+	if workDir != "" {
+		body["work_dir"] = workDir
 	}
-	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/fail", report.taskID), body, nil, schedule)
+	if durableWorkDir != "" {
+		body["durable_work_dir"] = durableWorkDir
+	}
+	// A failed run can still have delivered a branch: worktree mode commits
+	// whatever the agent left before removing the worktree, so partial work
+	// survives — but only if its name travels with the failure report.
+	if branchName != "" {
+		body["branch_name"] = branchName
+	}
+	if failureReason != "" {
+		body["failure_reason"] = failureReason
+	}
+	if sessionRolloutMissing {
+		body["session_rollout_missing"] = true
+	}
+	if retiredSessionID != "" {
+		body["retired_session_id"] = retiredSessionID
+	}
+	// Optional: an older server ignores the unknown field.
+	if checkpoint != nil {
+		body["timeout_checkpoint"] = checkpoint
+	}
+	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/fail", taskID), body, nil, schedule)
 }
 
 // PinTaskSession persists the agent's session_id and work_dir on the task
@@ -880,6 +1003,25 @@ func (c *Client) GetTaskStatus(ctx context.Context, taskID string) (string, erro
 	return resp.Status, nil
 }
 
+// BrokerPolicyName is the server policy record the push broker enforces.
+const BrokerPolicyName = "default"
+
+// BrokerPolicy returns the push broker's Policy: it reads the workspace's
+// protected-path record from the server on every call, so an admin edit applies
+// to the next push and a failed read is an error the broker refuses on.
+func (c *Client) BrokerPolicy(workspaceID string) func(context.Context) ([]string, error) {
+	path := fmt.Sprintf("/api/daemon/workspaces/%s/protected-path-policies/%s", workspaceID, BrokerPolicyName)
+	return func(ctx context.Context) ([]string, error) {
+		var resp struct {
+			Patterns []string `json:"patterns"`
+		}
+		if err := c.getJSON(ctx, path, &resp); err != nil {
+			return nil, err
+		}
+		return resp.Patterns, nil
+	}
+}
+
 // HeartbeatResponse, PendingUpdate, etc. alias the wire types so HTTP and WS
 // heartbeat paths share a single type and a single decoder shape. Aliases
 // (rather than wrappers) keep call sites unchanged.
@@ -891,13 +1033,9 @@ type (
 	PendingLocalSkillImport = protocol.DaemonHeartbeatPendingLocalSkillImport
 )
 
-func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string) (*HeartbeatResponse, error) {
+func (c *Client) SendHeartbeat(ctx context.Context, req protocol.DaemonHeartbeatRequestPayload) (*HeartbeatResponse, error) {
 	var resp HeartbeatResponse
-	if err := c.postJSON(ctx, "/api/daemon/heartbeat", map[string]any{
-		"runtime_id":             runtimeID,
-		"supports_batch_import":  true,
-		"supports_queued_update": true,
-	}, &resp); err != nil {
+	if err := c.postJSON(ctx, "/api/daemon/heartbeat", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -1197,9 +1335,10 @@ const RuntimeOfflineCodeNotExecutable = "not_executable"
 // queued forever. The exception is an install the daemon is running right now,
 // which Installing states explicitly.
 //
-// Missing profiles and confirmed manual-repair configurations reach this code.
-// A profile that answers with a protocol this daemon does not drive remains
-// non-demotable: the daemon can be the stale side of that separate skew.
+// Only an ABSENT profile reaches this code. A profile that is present but
+// answers with a protocol this daemon does not drive never takes a live runtime
+// offline at all: the daemon can be the stale side of that skew, so it reports
+// the incompatibility and leaves the runtime alone.
 const RuntimeOfflineCodeDshProfile = "dsh_profile"
 
 // RuntimeOfflineReason is why a runtime went offline, in the form clients can
@@ -1272,7 +1411,6 @@ func (c *Client) GetWorkspaceRepos(ctx context.Context, workspaceID string) (*Wo
 type RuntimeProfile struct {
 	ID             string   `json:"id"`
 	WorkspaceID    string   `json:"workspace_id"`
-	DaemonID       *string  `json:"daemon_id"`
 	DisplayName    string   `json:"display_name"`
 	ProtocolFamily string   `json:"protocol_family"`
 	RuntimeType    string   `json:"runtime_type"`
@@ -1295,9 +1433,9 @@ type RuntimeProfilesResponse struct {
 // Mirrors GetWorkspaceRepos. Callers must treat this as best-effort: an older
 // server with no profiles route returns 404, which the daemon swallows and
 // continues with built-in runtimes only.
-func (c *Client) GetRuntimeProfiles(ctx context.Context, workspaceID, daemonID string) (*RuntimeProfilesResponse, error) {
+func (c *Client) GetRuntimeProfiles(ctx context.Context, workspaceID string) (*RuntimeProfilesResponse, error) {
 	var resp RuntimeProfilesResponse
-	if err := c.getJSON(ctx, fmt.Sprintf("/api/daemon/workspaces/%s/runtime-profiles?daemon_id=%s", workspaceID, url.QueryEscape(daemonID)), &resp); err != nil {
+	if err := c.getJSON(ctx, fmt.Sprintf("/api/daemon/workspaces/%s/runtime-profiles", workspaceID), &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -1544,6 +1682,16 @@ func (c *Client) postJSONWithToken(ctx context.Context, path, token string, reqB
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(respBody)
+}
+
+// AskDecision opens one decision request for the task's issue. It carries the
+// agent's task token: the server derives issue, agent and person from it.
+func (c *Client) AskDecision(ctx context.Context, taskToken string, ask json.RawMessage) (json.RawMessage, error) {
+	var response json.RawMessage
+	if err := c.postJSONWithToken(ctx, "/api/decisions/ask", taskToken, ask, &response); err != nil {
+		return nil, err
+	}
+	return response, nil
 }
 
 // InvokeAgentPluginHook asks the server to make one agent-triggered hook call.

@@ -9,7 +9,7 @@ import { PrLinkDemo } from "@/components/demos/pr-link-demo";
 
 Une fois GitHub connecté, Multica associe automatiquement les pull requests à partir des identifiants de tâche. Le détail de la tâche affiche directement l'état de la PR, l'ampleur des modifications, les résultats de la CI et les conflits de fusion.
 
-L'intégration GitHub se contente de lire les dépôts autorisés lors de l'installation ; elle ne pousse jamais de commits, de commentaires ni de status checks.
+L'intégration GitHub se contente de lire les dépôts autorisés lors de l'installation ; elle ne pousse jamais de commits, de commentaires ni de status checks. La seule écriture est facultative : quand la [liaison automatique des piles](#stack-auto-linking) est réglée sur `link`, elle relie les PR dépendantes dans une pile GitHub.
 
 Multica auto-hébergé peut aussi connecter en parallèle des instances Forgejo, Gitea ou GitLab auto-hébergées, avec la même association automatique des PR, le même changement de statut à la fusion et le même affichage de la CI. Le point d'entrée est **Paramètres → Code** ; voir [Fournisseurs Git auto-hébergés](/vcs-integration). Multica Cloud ne propose pas ce point d'entrée.
 
@@ -33,10 +33,6 @@ Sur GitHub, choisissez le compte ou l'organisation, puis autorisez tous les dép
 Revenez sur Multica une fois l'installation terminée.
 </Step>
 </Steps>
-
-Choisissez **Ajouter un compte ou une organisation** dans la ligne GitHub ou le menu **Ajouter un dépôt** pour connecter une autre installation sans déconnecter les précédentes. Chaque connexion affiche le compte et la personne qui l’a connectée ; le sélecteur de dépôts permet de changer de compte. **Mettre en pause les fonctionnalités GitHub** s’applique à toutes les connexions de l’espace de travail.
-
-Si GitHub ne renvoie pas d’autorisation utilisateur, Multica ne peut pas vérifier une nouvelle connexion, même si l’App est déjà installée ou connectée à un autre espace. Reconnectez-vous et terminez l’autorisation ; si cela se répète, demandez à votre opérateur Multica de vérifier les réglages d’autorisation utilisateur de l’App. Modifier uniquement l’accès aux dépôts peut ne pas suffire.
 
 L'état de la connexion s'affiche sur la même page. Les membres ordinaires peuvent consulter cet état, mais ne peuvent ni connecter, ni déconnecter, ni modifier les interrupteurs.
 
@@ -82,7 +78,9 @@ Resolves MUL-123
 
 Une simple mention dans la description, comme `Related to MUL-123`, n'associe pas du tout la PR à cette tâche. Les messages de commit et les commentaires de PR ne déclenchent pas non plus l'association.
 
-Vous pouvez aussi associer une PR à la main : dans le bloc **Pull requests** de la tâche, cliquez sur **+** et collez l'URL de la PR. Tant que la tâche n'a aucune PR, le bloc est masqué : utilisez plutôt la ligne **Ajouter …** en bas de la barre latérale, par exemple **Ajouter une pull request** ou **Ajouter un réveil ou une pull request**. Pour retirer une PR d'une tâche, ouvrez le menu **⋯** de sa ligne et choisissez **Retirer de la tâche** ; Multica ne la réassociera plus à partir de son titre ou de sa branche.
+Une PR issue d'un fork s'associe automatiquement seulement si le fork a le même propriétaire que le dépôt de base. La fusion d'une telle PR ne fait pas avancer la tâche. Associez à la main les PR issues de forks d'autres propriétaires.
+
+Vous pouvez aussi associer une PR à la main : dans le bloc **Pull requests** de la tâche, cliquez sur **+** et collez l'URL de la PR. Pour retirer une PR d'une tâche, ouvrez le menu **⋯** de sa ligne et choisissez **Retirer de la tâche** ; Multica ne la réassociera plus à partir de son titre ou de sa branche.
 
 ## Voir les PR d'une tâche
 
@@ -90,13 +88,13 @@ Une fois associées, les PR apparaissent dans le bloc **Pull requests** du déta
 
 - le dépôt, le numéro, le titre et l'auteur ;
 - l'état `Ouverte`, `Brouillon`, `Fusionnée` ou `Fermée` ;
-- le nombre de lignes ajoutées et supprimées, juste après le numéro, par exemple `#19 · +48 −12` ; le nombre de fichiers modifiés s'affiche au survol de la ligne ;
+- le nombre de lignes ajoutées et supprimées, et le nombre de fichiers modifiés ;
 - le statut CI : toutes les vérifications ont réussi (avec leur nombre), certaines sont en échec (avec le nom des vérifications concernées) ou certaines sont en cours ; les PR sans vérification configurée n'affichent pas cet élément, et « aucune vérification » n'est jamais considéré comme une réussite ;
 - la possibilité de fusion : « Prête à fusionner » (uniquement lorsque GitHub signale un état de fusion propre), « Conflits de fusion », « Bloquée » ou « En retard sur la base ».
 
 Le statut CI et la possibilité de fusion proviennent d'instantanés que Multica récupère depuis l'API GitHub, et les deux sont indépendants ; les PR fusionnées ou fermées n'affichent plus ni l'un ni l'autre. Lorsque GitHub est momentanément indisponible, la carte conserve le dernier instantané et le signale comme périmé.
 
-Sous la liste, une ligne indique ce qui va se passer : par exemple *Passe à Terminé quand #19 est fusionnée*, ou quelle PR a été fermée sans fusion. Quand une seule PR attend sa fusion, sa ligne l'indique directement : *À la fusion → Terminé*. Cette ligne n'apparaît pas lorsque l'espace de travail ne change pas le statut ou que la tâche a déjà le statut cible.
+Sous la liste, une ligne indique ce qui va se passer : par exemple *Passe à Terminé quand #19 est fusionnée*, ou quelle PR a été fermée sans fusion. Cette ligne n'apparaît pas lorsque l'espace de travail ne change pas le statut ou que la tâche a déjà le statut cible.
 
 Cliquez sur une entrée pour ouvrir la PR sur GitHub. Désactiver la **Barre latérale des pull requests** masque seulement ce bloc ; cela ne déconnecte rien.
 
@@ -107,7 +105,7 @@ Une PR fusionnée ne signifie pas forcément que la tâche est terminée : c'est
 Une tâche passe au statut choisi lorsque toutes les conditions suivantes sont réunies :
 
 1. toutes les PR associées sont `Merged` : une PR `Open` ou `Draft` fait attendre la tâche, tout comme une PR fermée sans fusion tant que vous ne l'avez pas retirée de la tâche ;
-2. la tâche n'est pas `done` ou `cancelled`, n'a pas déjà le statut cible et n'a pas été exclue pour elle seule (**Pull requests → ⋯ → Garder le statut à la fusion des PR**).
+2. la tâche n'est pas `done` ou `cancelled`, n'est pas en Triage, n'a pas déjà le statut cible et n'a pas été exclue pour elle seule (**Pull requests → ⋯ → Garder le statut à la fusion des PR**).
 
 <PrLinkDemo />
 
@@ -115,7 +113,23 @@ La façon dont une PR a été associée ne change rien : le titre, le nom de bra
 
 La vérification a lieu lorsqu'un événement de PR touche la tâche : une PR associée est fusionnée, une PR est associée, ou une association est retirée. Rouvrir une tâche ne la fait pas repasser au statut cible ; c'est la prochaine PR associée fusionnée qui le fait. Modifier le réglage ne change pas les tâches dont les PR ont été fusionnées auparavant.
 
-Le changement de statut est inscrit dans la chronologie comme une action système qui nomme les PR, et les membres abonnés à la tâche sont notifiés s'ils ont activé les notifications de changement de statut.
+Le changement de statut est inscrit dans la chronologie comme une action système qui nomme les PR, et les membres abonnés à la tâche sont notifiés.
+
+### Dans un workflow
+
+Lorsque le workflow de la tâche contient le statut cible et que cette étape prévoit un passage de relais, le déplacement dû à la fusion est un passage de relais : la tâche est confiée au responsable de l'étape et, si c'est un agent, une exécution démarre, comme pour tout autre déplacement vers cette étape. Une étape sans responsable ne change que le statut et ne démarre aucune exécution. Si le workflow ne contient pas le statut cible, la tâche ne bouge pas. Le réveil « PR fusionnée » de la même fusion se joint à cette exécution : une fusion ne démarre qu'une seule exécution. Si cette exécution se termine avant d'avoir démarré, le réveil en démarre une à sa place. Voir [Réveils de tâche](/issue-wakeups#pr-merged).
+
+### Inclure les PR des sous-tâches
+
+Quand l'option **Inclure les PR des sous-tickets** du workflow est activée (voir [Workflows](/workflows)), la vérification lit les PR de la tâche et celles de ses sous-tâches directes. La tâche passe au statut cible lorsqu'au moins une de ces PR est `Merged` et qu'aucune n'est `Open` ou `Draft`. Une PR fermée sans fusion ne bloque pas, et les statuts des sous-tâches ne sont pas vérifiés. Un événement de PR sur une sous-tâche relance la vérification pour sa tâche parente.
+
+Quand l'option est désactivée, seules les PR de la tâche elle-même comptent, et une tâche parente dont les PR sont fusionnées attend que toutes ses sous-tâches soient `done` ou `cancelled`. La vérification est relancée quand la dernière sous-tâche atteint l'un de ces statuts : le parent passe alors au statut cible, sans nouvel événement de PR.
+
+### Quand une vérification ne peut pas aboutir
+
+Si une vérification ne peut pas aboutir, par exemple parce que le déplacement a été refusé ou que le serveur s'est arrêté juste après un événement de PR, Multica garde une nouvelle tentative pour cette tâche. La première tentative est prévue 2 minutes après l'événement. Après un échec, l'attente commence à 30 secondes et double jusqu'à 1 heure. Inutile de renvoyer le webhook ou d'associer à nouveau la PR. Une vérification terminée supprime la nouvelle tentative. Cela vaut aussi pour les événements de PR des hôtes Git auto-hébergés.
+
+Une transition `PR fusionnée` enregistrée dans un workflow est obsolète. Le réglage ci-dessus la remplace ; voir [Workflows](/workflows#pr-merged).
 
 ## Plusieurs espaces de travail
 
@@ -125,11 +139,168 @@ Par exemple, une PR qui référence à la fois `MUL-1` et `ENG-2` peut être ass
 
 Si un même identifiant correspond à une tâche dans plusieurs des espaces de travail connectés (possible lorsqu'ils partagent un préfixe), Multica ne l'associe automatiquement dans aucun d'eux, afin que la fusion de la PR ne termine pas une tâche sans rapport. Associez la PR à la main dans le bon espace de travail.
 
+## Relier les PR dépendantes en piles GitHub [#stack-auto-linking]
+
+Quand la branche de base d'une PR est la branche de tête d'une autre PR ouverte du même dépôt, les deux PR forment une chaîne. Multica peut relier la chaîne en une seule pile GitHub, sans que personne n'ait à lancer `gh stack link` à la main.
+
+### Ce qu'elle fait et ne fait jamais
+
+Une PR associée à une tâche Multica la déclenche. Les PR ancêtres n'ont pas besoin de tâche. Multica descend de cette PR le long des PR de base, puis fait l'une de ces actions :
+
+| Résultat du parcours | Action |
+|---|---|
+| La base de la PR est la branche par défaut | Rien. La PR peut devenir le bas d'une pile quand une couche suivante arrive. |
+| La PR est déjà dans une pile, juste au-dessus de sa PR de base | Rien. |
+| Aucune PR de la chaîne n'est dans une pile | Crée une pile, couche du bas en premier. |
+| Le parcours atteint une PR qui est le **haut** d'une pile existante | Ajoute les nouvelles PR (et les PR non empilées entre les deux) à cette pile, du bas vers le haut. |
+| Tout autre cas (voir les [codes de rapport](#stack-report-codes)) | N'écrit rien et le signale. |
+
+Elle ne déplace jamais une PR d'une pile à une autre, ne désempile jamais, ne réordonne jamais, et ne fusionne, ne rebase ni ne pousse jamais. Une chaîne dont un ancêtre pose problème n'est pas reliée du tout : Multica ne crée donc jamais de pile tronquée. Les piles GitHub fusionnent de bas en haut, et une personne fusionne toujours le code. Le parcours couvre au plus 10 ancêtres et ne compte que les PR dont la branche de tête est dans le même dépôt (une tête issue d'un fork ne compte pas).
+
+Elle se déclenche quand une PR associée est ouverte, rouverte, passée en « prête pour la revue », synchronisée, ou quand sa branche de base est modifiée, ou quand une PR en dessous est fusionnée. Un passage borné dans la réconciliation toutes les 10 minutes vérifie aussi les PR ouvertes associées dont la branche de base ne s'appelle ni `main` ni `master`, afin de rattraper un webhook manqué. Le passage ne cherche pas la vraie branche par défaut du dépôt : si elle porte un autre nom, ses PR sont vérifiées aussi, et le passage ne change rien quand la PR ne fait pas partie d'une pile. Une seule tâche s'exécute à la fois par dépôt. Une erreur GitHub ne fait jamais échouer le traitement de la PR ni le webhook.
+
+### Choisir un mode
+
+Le réglage d'espace de travail `github_stack_autolink` contient un mode, et des modes facultatifs par dépôt :
+
+```json
+{ "mode": "report", "repos": { "owner/repo": "link" } }
+```
+
+| Mode | Effet |
+|---|---|
+| `off` | Ne fait rien. |
+| `report` | Lit, décide et consigne ce qu'elle ferait. N'écrit jamais. C'est la valeur par défaut quand la clé est absente. |
+| `link` | Écrit aussi la pile sur GitHub. |
+
+Ordre : `off` < `report` < `link`. Règles :
+
+1. Un `mode` d'espace de travail à `off` coupe tout. Une entrée de dépôt ne peut pas le relever.
+2. Sinon, une entrée de dépôt l'emporte sur le `mode` de l'espace de travail. Elle peut relever `report` à `link` pour un seul dépôt, ou abaisser n'importe quoi à `off`.
+3. La même installation de GitHub App peut être connectée à plusieurs espaces de travail (voir [Plusieurs espaces de travail](#plusieurs-espaces-de-travail)). Le **mode final** d'un dépôt est le mode effectif le plus bas parmi tous les espaces de travail connectés à cette installation. Une écriture exige que tous résolvent `link`.
+4. La variable d'environnement serveur `GITHUB_STACK_AUTOLINK=0` force `off` pour tous les dépôts et tous les espaces de travail.
+5. Le mode est relu juste avant chaque écriture. Un mode abaissé pendant qu'une tâche attendait donne zéro écriture.
+
+Un réglage illisible compte comme `off`.
+
+### CLI
+
+```bash
+multica github stack-autolink status --repo owner/repo
+multica github stack-autolink set [--repo owner/repo] --mode off|report|link
+```
+
+`status` est ouvert à tout membre. Il affiche le mode final, si le kill par variable d'environnement est actif, et le mode effectif de chacun de vos espaces de travail connectés à l'installation du propriétaire du dépôt. Les autres espaces de travail sont seulement comptés. `set` exige un propriétaire ou un administrateur de l'espace de travail : sans `--repo` il règle le mode de l'espace de travail, avec `--repo` il règle l'entrée de ce dépôt. Les deux acceptent `--output json`.
+
+<Callout type="info">
+Tant que le mode n'est pas `link` pour votre dépôt, reliez les PR empilées à la main avec `gh stack link`. Après l'ouverture d'une PR empilée en mode `link`, lisez une fois `GET repos/{owner}/{repo}/stacks?pull_request=<numéro>`. S'il n'y a pas de pile, reliez-la à la main.
+</Callout>
+
+### Codes de rapport [#stack-report-codes]
+
+Chaque résultat est ajouté à l'activité de chaque tâche associée à la PR, dans chaque espace de travail dont le propre mode est `report` ou `link`. Un résultat identique au dernier résultat de la tâche pour cette PR et cette branche de base est ignoré. Les résultats alimentent aussi une métrique et une ligne de journal serveur.
+
+| Code | Signification | Écriture |
+|---|---|---|
+| `created` | Une nouvelle pile a été créée et relue. | Oui |
+| `extended` | Des PR ont été ajoutées à une pile existante et relues. | Oui |
+| `would_create` | Mode `report` : une pile serait créée. | Non |
+| `would_extend` | Mode `report` : des PR seraient ajoutées à une pile. | Non |
+| `in_other_stack` | La PR est dans une pile, mais pas juste au-dessus de sa PR de base. | Non |
+| `branching_chain` | La chaîne rejoint une pile à une PR qui n'en est pas le haut. | Non |
+| `ambiguous_base` | Plusieurs PR ouvertes du dépôt ont la branche de base comme tête. | Non |
+| `stale_base` | La branche de base n'a pas de PR ouverte et n'est pas la branche par défaut, ou sa PR est fusionnée. Une personne doit la rebaser. | Non |
+| `closed_ancestor` | Une PR ancêtre a été fermée sans fusion. | Non |
+| `cycle` | La chaîne revient sur une branche déjà parcourue. | Non |
+| `depth_limit` | La chaîne dépasse 10 ancêtres. | Non |
+| `conflict` | GitHub a répondu `422` deux fois, même après que Multica a tout relu. | Non |
+| `unsupported` | Le dépôt n'a pas d'API de piles (`404`). | Non |
+| `no_permission` | L'App n'a pas la permission (`403`). Voir [Configuration en auto-hébergement](#configuration-en-auto-hébergement). | Non |
+| `schema` | La réponse de l'API des piles de GitHub a une forme que Multica ne connaît pas. | Non |
+| `readback_failed` | L'écriture a réussi, mais la relecture n'a pas retrouvé la pile dans l'ordre. Vérifiez la PR sur GitHub. | Oui |
+
+L'API des piles est en préversion chez GitHub : un changement de forme apparaît donc comme `schema`, jamais comme un webhook en échec.
+
+## Créer un dépôt avec une carte d'approbation [#repo-create]
+
+Un agent ne peut pas créer seul un dépôt GitHub. Il prépare un fichier d'action, et le propriétaire de l'espace de travail l'approuve avec une clé d'accès. Le serveur crée ensuite le dépôt avec un identifiant d'administrateur d'organisation que l'agent ne voit jamais.
+
+```bash
+multica github repo-create --org tevo-studio --name we006 \
+  --template tevo-studio/code-android-template --private \
+  --description "WE-006 app" --out repo-create.json
+multica decision request <issue> --action-file repo-create.json
+```
+
+| Option | Sens |
+|---|---|
+| `--org` | L'organisation. Seules `tevo-studio` et `cheese-work` sont acceptées. |
+| `--name` | Le nom du dépôt. |
+| `--template` | Modèle `owner/repo` facultatif. Son propriétaire doit aussi être une organisation approuvée. L'API de génération de GitHub n'accepte pas de référence : la branche par défaut du modèle est utilisée. |
+| `--private`, `--visibility` | `private` (par défaut), `internal` ou `public`. Un dépôt public est une publication : demandez avec `--class publish`. |
+| `--description` | Une ligne, 290 caractères au plus. Le serveur ajoute un marqueur `[multica-action:<id>]` à la description du dépôt. |
+| `--out`, `--dry-run`, `--expires-in` | Écrire le fichier d'action, seulement l'afficher, ou fixer la durée d'ouverture de la carte. |
+
+À l'approbation, le serveur crée le dépôt, le relit, puis l'ajoute au registre des dépôts de l'espace de travail. Si l'organisation a déjà une entrée dans `guard_policy.repository_allowlist`, il y ajoute aussi le dépôt. Une organisation sans entrée reste sans restriction, car en ajouter une exclurait le reste de l'organisation. Une carte rejetée ou expirée ne crée rien. Si GitHub refuse la demande, l'action se termine en échec et les lignes de l'espace de travail restent inchangées.
+
+### Auto-hébergement
+
+Définissez l'identifiant sur le serveur d'API uniquement. C'est un objet JSON qui associe chaque organisation à un jeton autorisé à y créer des dépôts :
+
+```dotenv
+MULTICA_GITHUB_REPO_ADMIN_TOKENS={"tevo-studio":"<token>","cheese-work":"<token>"}
+```
+
+Le daemon retire cette variable de tout environnement d'agent, et aucune carte, aucun résultat ni aucun journal ne la contient. Sans elle, une carte approuvée se termine en échec avec `credential_not_configured`. L'application GitHub elle-même n'a besoin d'aucune permission Administration pour cela.
+
 ## Déconnecter
 
-Dans **Paramètres → Code**, choisissez **Déconnecter** à côté du compte à retirer. Seule la connexion de cette installation à l’espace courant est supprimée ; les autres continuent de recevoir des événements. L’App reste installée sur GitHub et les PR et liens existants sont conservés.
+Choisir **Déconnecter** dans le menu **⋯** de la ligne GitHub, sur **Paramètres → Code**, supprime seulement la relation entre l'espace de travail Multica courant et l'installation ; cela ne désinstalle pas l'App de GitHub à votre place. Les enregistrements de PR existants sont conservés, et les nouveaux événements cessent d'arriver dans cet espace de travail.
 
 Pour révoquer l'autorisation d'accès aux dépôts côté GitHub, désinstallez l'App ou ajustez son périmètre de dépôts depuis la page des installations de GitHub Apps de votre compte personnel ou de votre organisation. Après la désinstallation, tous les espaces de travail Multica liés à cette installation cessent de recevoir des événements.
+
+## Réveils sur vérifications réussies
+
+Définissez `github_wake_on_ci_success` à `true` dans les paramètres de l'espace de travail pour lancer une exécution lorsque les vérifications d'une PR ouverte ou brouillon liée réussissent sur son commit courant. Ce paramètre est désactivé par défaut. Une PR dont la seule vérification non terminée est le statut de verdict `security-gate` compte comme réussie. Un nouveau commit réveille à nouveau. Une exécution en échec relancée jusqu'au vert sur le même commit réveille une fois de plus. La même réussite livrée de nouveau ne réveille pas.
+
+L'exécution va à l'agent auteur de la PR, déterminé comme pour les réveils sur conflit et sur échec de vérifications. Si l'auteur est inconnu, elle va à l'assigné de la tâche. Si l'assigné est une personne et qu'aucun agent auteur n'est connu, la personne reçoit une notification.
+
+## Attendre une exécution GitHub Actions
+
+Un réveil (wakeup) peut attendre une exécution GitHub Actions, par exemple un déploiement qui s'arrête à une porte d'approbation d'environnement, sans interrogation périodique. L'exécution n'a pas besoin de PR liée.
+
+```bash
+multica issue wakeup create ISSUE --until-gh-run OWNER/REPO:RUN_ID --until-gh-run-state completed --expires-in 3h --on-timeout wake --instruction-file ./instruction.md
+```
+
+`--until-gh-run` accepte l'une des trois formes suivantes :
+
+| Forme | Sélectionne |
+|---|---|
+| `owner/repo:RUN_ID` | L'exécution portant cet ID |
+| `owner/repo:WORKFLOW_FILE@SHA` | L'exécution de ce fichier de workflow dont le `head_sha` propre est le SHA complet de 40 caractères |
+| `https://github.com/owner/repo/actions/runs/RUN_ID` | L'exécution portant cet ID |
+
+`--until-gh-run-state` vaut `completed` (par défaut) ou `waiting`. `waiting` se déclenche chaque fois qu'un job de l'exécution se met en attente à une porte d'environnement. Consultez `waiting_now` dans les facts avant de demander à une personne d'approuver une porte : il vaut `false` lorsque la porte est déjà fermée. La forme `SHA` correspond au commit propre de l'exécution. Une exécution de déploiement qui déploie un autre commit, comme `cd-deploy.yml`, exige son ID d'exécution.
+
+L'App doit être installée pour le propriétaire du dépôt dans cet espace de travail. Elle doit aussi être abonnée aux événements **Workflow run** et **Workflow job**, qui exigent la permission **Actions: read**. Les enregistrements sont conservés 30 jours.
+
+### Limite : événements observés uniquement
+
+La règle est satisfaite par les événements webhook que Multica a reçus après l'abonnement de l'App. Ce n'est pas une lecture de l'état actuel d'une exécution.
+
+- GitHub ne renvoie pas de lui-même une livraison échouée. Un événement `completed` perdu laisse l'exécution enregistrée à `in_progress`.
+- Une exécution ou une porte commencée avant l'abonnement de l'App reste invisible.
+- Pour récupérer, renvoyez l'événement à la main depuis la page **Advanced → Recent Deliveries** de l'App.
+- Définissez toujours `--expires-in` avec `--on-timeout wake`. À l'échéance, la valeur par défaut est `end`, qui ne lance aucune exécution.
+
+### Recette : attendre un déploiement après une fusion
+
+1. Attendez l'exécution de qualification du commit de fusion `M` :
+   `--until-gh-run cheese-work/multica:cd-qualification.yml@M --until-gh-run-state completed --expires-in 3h --on-timeout wake`
+2. L'exécution réveillée trouve l'ID de l'exécution de déploiement : `gh run list -R cheese-work/multica --workflow cd-deploy.yml --json databaseId,displayTitle`. Choisissez l'exécution dont le titre contient `M`.
+3. Attendez la porte d'approbation : `--until-gh-run cheese-work/multica:RUN_ID --until-gh-run-state waiting --expires-in 6h --on-timeout wake`
+4. Après l'approbation, attendez la fin avec la même règle et `--until-gh-run-state completed`.
 
 ## Configuration en auto-hébergement
 
@@ -155,17 +326,31 @@ Permissions de dépôt (Repository permissions) :
 | Permission | Niveau |
 |---|---|
 | Metadata | Read-only |
-| Pull requests | Read-only |
+| Pull requests | Lecture et écriture ; l'écriture sert à la [liaison automatique des piles](#stack-auto-linking) |
+| Actions | Read-only ; nécessaire aux réveils `--until-gh-run` |
 | Checks | Read-only ; sert à afficher le statut CI |
 | Commit statuses | Read-only ; sert à agréger la CI basée sur les statuts hérités (legacy statuses) |
+| Variables | Read-only ; nécessaire pour lire les variables de dépôt `AGENT_MERGE_PAUSED` et `MAIN_RED_PAUSED` pour les contrôles de pause de fusion |
 | Actions | Facultatif, Read-only ; permet au statut CI d'ignorer une exécution annulée remplacée par une exécution plus récente du même workflow sur le même commit |
+
+Permissions d'organisation (Organization permissions) :
+
+| Permission | Niveau |
+|---|---|
+| Members | Read-only ; nécessaire pour vérifier que l'utilisateur qui se connecte est un admin actif de l'organisation |
 
 Abonnez-vous à ces événements :
 
 - **Pull request** ;
+- **Pull request review**, **Pull request review comment** et **Issue comment**, si des réveils sur revue humaine sont configurés ;
+- **Workflow run** et **Workflow job**, nécessaires aux réveils `--until-gh-run` ;
 - **Check suite**, **Check run** et **Status**, qui déclenchent l'actualisation de la CI et de la possibilité de fusion.
 
 Les instantanés de PR utilisent les API REST Pull requests, Checks et Commit statuses. La permission Contents n'est pas nécessaire. Avec la permission facultative Actions, Multica lit aussi les exécutions de workflow du commit. Sans elle, une exécution annulée compte toujours comme un échec, même après la réussite d'une exécution plus récente du même workflow.
+
+L'import ou l'actualisation d'une compétence depuis un dépôt privé utilise un jeton d'installation de courte durée pour l'installation de l'espace de travail sur le compte du propriétaire du dépôt, avec repli sur le `GITHUB_TOKEN` du serveur. Ce jeton exige la permission facultative **Contents: read** ; sans elle, ou sans installation pour ce propriétaire, la récupération utilise `GITHUB_TOKEN` ou aucun identifiant. Le jeton n'est envoyé qu'aux hôtes GitHub.
+
+La liaison automatique des piles appelle l'API des piles de GitHub et exige la permission Pull requests en **écriture**. Une App en lecture seule continue de faire tout le reste ; les résultats de pile affichent `no_permission` (voir les [codes de rapport](#stack-report-codes)). Si vous élevez la permission d'une App déjà installée, le propriétaire de chaque installation doit l'approuver sur GitHub pour qu'elle prenne effet.
 
 <Callout type="warning">
 Il s'agit du **Webhook secret**, et non du Client secret OAuth. Si les deux côtés n'ont pas le même secret de webhook, les livraisons GitHub renvoient `401 invalid signature`.
@@ -197,6 +382,16 @@ GITHUB_APP_PRIVATE_KEY=<full PEM private key, keeping the BEGIN/END lines and ne
 
 Générez la clé privée dans **Private keys → Generate a private key** de la GitHub App. Sans ces deux variables, la connexion est désactivée. Les connexions existantes continuent de refléter les PR et de mettre à jour les tâches via les webhooks, mais les cartes de PR n’affichent ni CI ni état de fusion.
 
+Si vous ajoutez la permission Members ou Actions à une App déjà installée, approuvez le changement de permission dans chaque organisation cible avant de la connecter à un nouvel espace de travail. Les installations existantes doivent accepter la nouvelle permission ; tant qu'elles ne l'ont pas fait, les réveils `--until-gh-run` ne reçoivent aucun événement de workflow.
+
+Définissez éventuellement `GITHUB_ALLOWED_ACCOUNT_IDS` avec une liste d'ID numériques de comptes GitHub séparés par des virgules (l'`id` de l'utilisateur ou de l'organisation, pas son login). Non définie ou vide, tout compte qui passe la vérification ci-dessus peut se connecter. Une fois définie, Multica refuse de lier une installation dont l'ID de compte n'est pas listé : le callback de configuration redirige avec `github_error=installation_not_allowed` et ne crée aucune liaison. Un callback **Redirect on update** sans code est évalué avec l'ID de compte déjà stocké pour cette liaison. Une liaison sans ID de compte stocké est refusée (échec fermé). Une valeur mal formée, comme un login, arrête le serveur au démarrage.
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+Les événements GitHub `deleted` et `suspend` suppriment toujours la liaison, quelle que soit la liste.
+
 </Step>
 <Step>
 
@@ -217,6 +412,7 @@ Redémarrez le serveur API, puis effectuez la connexion dans **Paramètres → C
 
 - **Bouton de connexion désactivé** : vérifiez les six variables GitHub ci-dessus, la première Callback URL et **Request user authorization (OAuth) during installation**.
 - **Le webhook renvoie 401** : vérifiez que la GitHub App et l'API utilisent le même secret de webhook, puis relancez la livraison depuis **Recent Deliveries** sur GitHub.
+- **PR toujours ouverte dans Multica après sa fusion sur GitHub** : le webhook `closed` a été perdu. Si `GITHUB_APP_ID` et `GITHUB_APP_PRIVATE_KEY` sont configurés, la prochaine actualisation CI lit la PR sur GitHub et enregistre la fusion ou la fermeture comme si le webhook était arrivé. Ouvrez la tâche pour lancer une actualisation, ou attendez l'actualisation périodique en arrière-plan. Sans ces identifiants, relancez la livraison depuis **Recent Deliveries**.
 - **PR non associée** : vérifiez que le dépôt fait partie du périmètre autorisé de l'App, que l'association automatique est activée, que l'identifiant appartient à l'espace de travail courant et que personne n'a retiré la PR de la tâche.
 - **Identifiant dans la description, mais PR non associée** : placez-le juste après un mot-clé de clôture (`Closes MUL-123`), ou dans le nom de branche ou le titre de la PR, ou associez la PR à la main.
 - **Aucun statut CI** : vérifiez que `GITHUB_APP_ID` et `GITHUB_APP_PRIVATE_KEY` sont configurées, et que l'App dispose des permissions Pull requests, Checks et Commit statuses en lecture seule, avec les événements correspondants souscrits. La permission Contents n'est pas nécessaire. Après l'ajout de permissions à une App déjà installée, le propriétaire de chaque installation doit les approuver sur GitHub pour qu'elles prennent effet.

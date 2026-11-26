@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/decisionaction"
+	"github.com/multica-ai/multica/server/internal/githubrepo"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -66,6 +67,9 @@ type decisionActionExecution struct {
 	// ProjectID is the project the approval locked: the one the issue was in
 	// when the plan read it. Set for issue.workflow.set only.
 	ProjectID pgtype.UUID
+	// GitHubRepos creates repositories with the server-held admin credential.
+	// Only github.repo.create reads it; it never reaches an agent.
+	GitHubRepos githubrepo.Creator
 }
 
 type decisionActionExecutor func(ctx context.Context, execution decisionActionExecution) (json.RawMessage, error)
@@ -85,6 +89,7 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	decisionaction.ProjectWorkflowQuickSet: executeProjectWorkflowQuickSetAction,
 	doopDeployLiftAction:                   executeDoopDeployLiftAction,
 	decisionaction.ProjectStatusSet:        executeProjectStatusSetAction,
+	decisionaction.GitHubRepoCreate:        executeGitHubRepoCreateAction,
 }
 
 // decisionActionPermitted applies the rule of the action's own HTTP path to
@@ -555,7 +560,7 @@ func (handler *Handler) executeApproved(ctx context.Context, transaction pgx.Tx,
 	finish, err := executeInSavepoint(ctx, transaction, queries, plan.executor, decisionActionExecution{
 		Queries: queries, Approver: verifiedApprover{UserID: caller.userID, DecisionActionID: action.ID},
 		Action: action, Agent: targets.agent, Runtime: locked.runtime, Secrets: secrets, Workflow: targets.workflow, Squad: targets.squad, Workspace: targets.workspace,
-		CredentialID: credential, IssueID: current.IssueID, Tx: transaction, ProjectID: plan.project,
+		CredentialID: credential, IssueID: current.IssueID, Tx: transaction, ProjectID: plan.project, GitHubRepos: handler.GitHubRepoCreator,
 	})
 	if err != nil {
 		return empty, err

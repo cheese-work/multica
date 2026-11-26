@@ -556,6 +556,25 @@ describe("ChatPage responsive layout", () => {
     expect(screen.getByRole("button", { name: "Chat" })).toBeInTheDocument();
   });
 
+  // The DM list virtualizes against the nearest `overflow-y: auto` ancestor
+  // (`findScrollParent`); the page must provide one or the list stays a short
+  // seed slice that never scrolls (CHE-10067). jsdom loads no Tailwind, so the
+  // utility class stands in for the computed style.
+  it.each([
+    ["desktop", DESKTOP],
+    ["compact", FOLD_INNER_PORTRAIT],
+  ])("gives the thread list a scrolling ancestor on %s", (_name, width) => {
+    layout.width = width;
+    renderPage("");
+
+    let el: HTMLElement | null = screen.getByRole("button", { name: "select-thread" });
+    let scrolls = false;
+    while ((el = el.parentElement)) {
+      if (el.classList.contains("overflow-y-auto")) scrolls = true;
+    }
+    expect(scrolls).toBe(true);
+  });
+
   it.each([TABLET, FOLD_INNER_LANDSCAPE])("keeps both panes at %spx", (width) => {
     // 768px is the first width that keeps two panes. The nav auto-collapses
     // there instead (see the sidebar), so the thread list stays on screen next

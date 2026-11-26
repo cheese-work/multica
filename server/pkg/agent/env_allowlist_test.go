@@ -4,6 +4,8 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/githubrepo"
 )
 
 // secretNames are daemon-held credentials a restricted run must never inherit.
@@ -80,5 +82,24 @@ func TestSplitEnvReportsNamesOnly(t *testing.T) {
 	}
 	if strings.Join(dropped, ",") != "GH_TOKEN,HOME" {
 		t.Errorf("dropped = %v", dropped)
+	}
+}
+
+// CHE-9525: the org-admin token map belongs to the server process alone; no
+// agent child may inherit it, restricted or not.
+func TestBaseEnvironNeverCarriesTheRepoAdminCredential(t *testing.T) {
+	const secret = "ghp_sentinel_admin_token"
+	t.Setenv(githubrepo.AdminTokensEnv, `{"tevo-studio":"`+secret+`"}`)
+	t.Setenv("MULTICA_TEST_KEEP", "kept")
+	for _, restricted := range []bool{false, true} {
+		SetRestrictedEnv(restricted)
+		env := strings.Join(BaseEnviron(), "\n")
+		SetRestrictedEnv(false)
+		if strings.Contains(env, secret) || strings.Contains(env, githubrepo.AdminTokensEnv) {
+			t.Fatalf("restricted=%v: the admin credential reached the agent environment", restricted)
+		}
+		if !restricted && !strings.Contains(env, "MULTICA_TEST_KEEP=kept") {
+			t.Fatal("an ordinary variable was dropped from the unrestricted environment")
+		}
 	}
 }

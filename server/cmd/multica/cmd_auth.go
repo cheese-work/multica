@@ -59,13 +59,12 @@ var authLogoutCmd = &cobra.Command{
 	RunE:  runAuthLogout,
 }
 
-// callbackHostFlag lets users override the host that goes into the OAuth
-// cli_callback URL when the auto-detected address isn't one the browser can
-// reach. The value must pass isSupportedCallbackHost; hostnames other than
-// localhost are rejected because the web login never accepts them.
+// callbackHostFlag lets users pick between the two loopback spellings that go
+// into the OAuth cli_callback URL. The value must pass isSupportedCallbackHost;
+// the web login never accepts any other host.
 const callbackHostFlag = "callback-host"
 
-const callbackHostFlagHelp = "Callback host reachable from the browser: localhost, 127.0.0.1, or an RFC 1918 IPv4 address. For SSH-only machines, use the printed tunnel hint instead."
+const callbackHostFlagHelp = "Loopback host for the browser callback: localhost (default) or 127.0.0.1. The callback never leaves this machine; for a browser on another machine, forward the port with the printed ssh -L hint."
 
 func init() {
 	authCmd.AddCommand(authStatusCmd)
@@ -141,119 +140,32 @@ func runAuthLogin(cmd *cobra.Command, args []string) error {
 	return runAuthLoginBrowser(cmd)
 }
 
-// resolveCallbackBinding picks the host that goes into the `cli_callback`
-// URL and the interface the CLI should bind its local HTTP listener to.
+// resolveCallbackBinding returns the host that goes into the `cli_callback`
+// URL and the interface the CLI binds its local HTTP listener to.
 //
-// The browser running the login flow is on the *server's* machine (or
-// wherever the user clicked the link), not on the CLI host. That means the
-// callback URL must resolve to an address the browser can actually reach,
-// which is different in each topology:
-//
-//   - hosted / public app URL: browser and CLI are on the same machine,
-//     localhost works.
-//   - self-host, CLI on server box: same as above.
-//   - self-host, CLI on a different LAN box: the callback URL must point at
-//     the CLI's own LAN IP, not the server's.
-//   - routes through a virtual adapter: the detected address may not be a
-//     supported callback host; ask the user to supply --callback-host.
-//
-// detectOutbound is injected so tests can exercise the routing decisions
-// without real network calls.
-func resolveCallbackBinding(flagHost, serverURL, appURL string, detectOutbound func(string) net.IP) (callbackHost, bindAddr string, err error) {
-	// Explicit flag always wins. Bind on all interfaces so the browser can
-	// reach us regardless of which interface the host name resolves to.
-	if h := strings.TrimSpace(flagHost); h != "" {
-		if !isSupportedCallbackHost(h) {
-			return "", "", callbackHostError(h)
-		}
-		return h, "0.0.0.0", nil
-	}
-
-	appIP := urlPrivateIP(appURL)
-	if appIP == nil {
-		// Public hostname, FQDN without private-IP mapping, or parse error.
-		// Loopback is the only safe default — on hosted/public setups the
-		// browser and CLI live on the same machine.
+// The browser redirects the login JWT to this listener in the URL query over
+// plain HTTP. Any non-loopback bind would expose that JWT to every device that
+// can observe the network path, so the listener is always loopback-only. A
+// browser on another machine reaches it through SSH port forwarding
+// (see browserLoginInstructions).
+func resolveCallbackBinding(flagHost string) (callbackHost, bindAddr string, err error) {
+	h := strings.TrimSpace(flagHost)
+	if h == "" {
 		return "localhost", "127.0.0.1", nil
 	}
-
-	// app_url is a private LAN IP. Figure out whether the CLI is on that
-	// same box or a different one by asking the kernel which local address
-	// it would use to reach the server. Same box → loopback is fine.
-	// Different box → use the CLI's outbound IP so the browser can reach us.
-	cliIP := detectOutbound(serverURL)
-	if cliIP == nil {
-		// Detection failed (offline, unreachable server, etc.). Fall back to
-		// the app IP — preserves the pre-existing same-machine behaviour.
-		return appIP.String(), "0.0.0.0", nil
+	if !isSupportedCallbackHost(h) {
+		return "", "", callbackHostError(h)
 	}
-	if cliIP.Equal(appIP) {
-		return "localhost", "127.0.0.1", nil
-	}
-	if !isSupportedCallbackHost(cliIP.String()) {
-		return "", "", callbackHostError(cliIP.String())
-	}
-	return cliIP.String(), "0.0.0.0", nil
+	return h, "127.0.0.1", nil
 }
 
 // Keep this host policy aligned with validateCliCallback in packages/views/auth.
 func isSupportedCallbackHost(host string) bool {
-	if host == "localhost" || host == "127.0.0.1" {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && !strings.Contains(host, ":") && ip.To4() != nil && ip.IsPrivate()
+	return host == "localhost" || host == "127.0.0.1"
 }
 
 func callbackHostError(host string) error {
-	return fmt.Errorf("cannot use %q as the login callback host: the web app accepts only localhost, 127.0.0.1, or RFC 1918 IPv4 addresses. If the browser runs on this machine, retry with --callback-host 127.0.0.1; otherwise use --callback-host <this-machine-LAN-IP> or sign in with multica login --token", host)
-}
-
-// urlPrivateIP returns the hostname of rawURL parsed as an RFC 1918 IP, or
-// nil if the URL is unparsable or the host is not a private literal.
-func urlPrivateIP(rawURL string) net.IP {
-	parsed, err := url.Parse(rawURL)
-	if err != nil {
-		return nil
-	}
-	ip := net.ParseIP(parsed.Hostname())
-	if ip == nil || ip.To4() == nil || !ip.IsPrivate() {
-		return nil
-	}
-	return ip
-}
-
-// detectOutboundIP returns the local IPv4 address the OS would use to reach
-// serverURL, or nil if detection fails. The UDP dial does not send packets —
-// it just causes the kernel to pick a source IP for the destination route.
-func detectOutboundIP(serverURL string) net.IP {
-	parsed, err := url.Parse(serverURL)
-	if err != nil || parsed.Hostname() == "" {
-		return nil
-	}
-	port := parsed.Port()
-	if port == "" {
-		if parsed.Scheme == "https" {
-			port = "443"
-		} else {
-			port = "80"
-		}
-	}
-	conn, err := net.Dial("udp4", net.JoinHostPort(parsed.Hostname(), port))
-	if err != nil {
-		return nil
-	}
-	defer conn.Close()
-	local, ok := conn.LocalAddr().(*net.UDPAddr)
-	if !ok || local.IP == nil {
-		return nil
-	}
-	// Normalise to 4-byte form so Equal() comparisons match net.ParseIP
-	// output consistently.
-	if v4 := local.IP.To4(); v4 != nil {
-		return v4
-	}
-	return local.IP
+	return fmt.Errorf("cannot use %q as the login callback host: the login JWT is sent to it over plain HTTP, so only localhost or 127.0.0.1 is allowed. If the browser runs on another machine, forward the callback port with `ssh -L <port>:127.0.0.1:<port> <user>@<this-machine>` and keep --callback-host unset (or 127.0.0.1), or sign in with multica login --token", host)
 }
 
 func runAuthLoginBrowser(cmd *cobra.Command) error {
@@ -261,15 +173,14 @@ func runAuthLoginBrowser(cmd *cobra.Command) error {
 	appURL := resolveAppURL(cmd)
 
 	flagHost := callbackHostFlagValue(cmd)
-	callbackHost, bindAddr, err := resolveCallbackBinding(flagHost, serverURL, appURL, detectOutboundIP)
+	callbackHost, bindAddr, err := resolveCallbackBinding(flagHost)
 	if err != nil {
 		return err
 	}
 
 	// Pin to "tcp4" — a bare "tcp" on macOS can produce an IPv6-only socket
 	// that IPv4 clients (including browsers resolving localhost → 127.0.0.1)
-	// cannot reach. The callback host is always localhost or an IPv4 literal,
-	// so an IPv4 listener is what the browser actually needs.
+	// cannot reach. The callback host is always localhost or 127.0.0.1.
 	listener, err := net.Listen("tcp4", bindAddr+":0")
 	if err != nil {
 		return fmt.Errorf("could not start the local login callback server (used to receive the browser sign-in); a firewall or another process may be blocking local ports: %w", err)

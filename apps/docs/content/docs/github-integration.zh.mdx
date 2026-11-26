@@ -9,7 +9,7 @@ import { PrLinkDemo } from "@/components/demos/pr-link-demo";
 
 连接 GitHub 后，Multica 根据任务编号自动关联 pull request。任务详情中可直接查看 PR 状态、改动规模、CI 结果和合并冲突。
 
-GitHub 集成只读取安装时授权的仓库，不会提交代码、评论或 status check。
+GitHub 集成只读取安装时授权的仓库，不会提交代码、评论或 status check。唯一的写入是可选的：把[堆叠 PR 自动关联](#stack-auto-linking)设为 `link` 后，它会把相互依赖的 PR 关联进一个 GitHub 堆栈。
 
 自部署的 Multica 还可以并行连接自托管的 Forgejo、Gitea 或 GitLab 实例，获得同样的 PR 自动关联、合并后改状态和 CI 展示，入口在 **设置 → 代码**，详见[自托管 Git 代码托管](/vcs-integration)。Multica Cloud 不提供该入口。
 
@@ -33,10 +33,6 @@ GitHub 集成只读取安装时授权的仓库，不会提交代码、评论或 
 安装完成后回到 Multica。
 </Step>
 </Steps>
-
-在 GitHub 一行或**添加仓库** 菜单中选择 **添加账号或组织**，即可连接另一个安装，无需先断开已有连接。每条连接分别显示账号和连接人；仓库选择器可切换账号。**暂停 GitHub 功能** 对工作区内所有连接生效。
-
-如果 GitHub 未返回用户授权，即使 App 已安装或已连接其他工作区，Multica 也无法验证新连接。请重新连接并完成授权；若反复失败，请联系 Multica 运维人员检查 App 的用户授权设置。仅修改仓库范围不一定能完成新连接。
 
 连接状态会显示在同一页面。普通成员可以查看状态，但不能连接、断开或修改开关。
 
@@ -82,7 +78,9 @@ Resolves MUL-123
 
 正文中的普通提及，例如 `Related to MUL-123`，不会与该任务建立关联。Commit message 和 PR 评论也不会触发关联。
 
-也可以手动关联：在任务的 **Pull requests** 区块点 **+**，粘贴 PR 链接。任务还没有 PR 时这个区块不显示，改用侧栏底部以“添加”开头的那一行，例如**添加 Pull Request**或**添加唤醒或 Pull Request**。要把 PR 从任务上移除，打开这一行的 **⋯** 菜单，选择 **移除关联**；之后 Multica 不会再根据标题或分支把它关联回来。
+来自 fork 的 PR 仅在该 fork 与基础仓库属于同一所有者时才会自动关联。合并这类 PR 不会推进任务状态。来自其他所有者 fork 的 PR 请手动关联。
+
+也可以手动关联：在任务的 **Pull requests** 区块点 **+**，粘贴 PR 链接。要把 PR 从任务上移除，打开这一行的 **⋯** 菜单，选择 **移除关联**；之后 Multica 不会再根据标题或分支把它关联回来。
 
 ## 在任务中查看 PR
 
@@ -90,13 +88,13 @@ Resolves MUL-123
 
 - 仓库、编号、标题和作者；
 - `Open`、`Draft`、`Merged` 或 `Closed` 状态；
-- 新增、删除行数，紧跟在编号后面，例如 `#19 · +48 −12`；改动文件数在悬停这一行时显示；
+- 新增、删除行数和改动文件数；
 - CI 状态：全部通过（带计数）、若干个失败（点名失败的 check），或若干个进行中；没有配置任何 check 的 PR 不显示这一项，"没有 check"不会被当成通过；
 - 可合并性：可合并（仅当 GitHub 报告合并状态为 clean）、有冲突、blocked 或 behind。
 
 CI 状态和可合并性来自 Multica 从 GitHub API 拉取的快照，两者互相独立；已合并或已关闭的 PR 不再显示这两项。GitHub 暂时不可用时，卡片保留上一次的快照并标记为过期。
 
-列表下方有一行说明接下来会发生什么，例如"等待 #19 合并后改为 已完成"，或者哪个 PR 已关闭、未合并。只有一个 PR 等待合并时，改为直接显示在它那一行，例如“合并后 → 已完成”。工作区设置为不改变、或者任务已经是目标状态时，不显示这行说明。
+列表下方有一行说明接下来会发生什么，例如"等待 #19 合并后改为 已完成"，或者哪个 PR 已关闭、未合并。工作区设置为不改变、或者任务已经是目标状态时，不显示这行说明。
 
 点击记录可以打开 GitHub 上的 PR。关闭 **PR 侧栏** 只会隐藏这个区块，不会断开连接。
 
@@ -107,7 +105,7 @@ PR 合并不一定代表任务已完成，所以由工作区决定合并后做�
 以下条件同时成立时，任务会改为选定的状态：
 
 1. 所有关联 PR 都是 `Merged`。仍为 `Open` 或 `Draft` 的 PR 会让任务继续等待；关闭但未合并的 PR 也一样，直到你把它从任务上移除；
-2. 任务当前不是 `done` 或 `cancelled`，还不是目标状态，也没有单独设置合并后不改状态（**Pull requests → ⋯ → 此任务合并后不改状态**）。
+2. 任务当前不是 `done` 或 `cancelled`，不在 Triage 中，还不是目标状态，也没有单独设置合并后不改状态（**Pull requests → ⋯ → 此任务合并后不改状态**）。
 
 <PrLinkDemo />
 
@@ -115,7 +113,23 @@ PR 是怎么关联上的，不影响结果：标题、分支名和正文里的 `
 
 只有 PR 事件会触发判断：关联 PR 合并、新增关联或移除关联。重新打开任务后，它不会被改回去，下一个关联 PR 合并时才会。修改这项设置，也不会改动此前已合并的任务。
 
-状态变化会以系统操作写入时间线并列出相关 PR，订阅该任务且打开了状态变更通知的成员会收到通知。
+状态变化会以系统操作写入时间线并列出相关 PR，订阅该任务的成员会收到通知。
+
+### 在工作流中
+
+任务的工作流包含目标状态，并且该步骤设有交接时，合并引起的移动就是一次交接：任务交给该步骤的处理人；处理人是智能体时，会像进入该步骤的其他移动一样启动一次运行。没有处理人的步骤只改状态，不启动运行。工作流不包含目标状态时，任务不会移动。同一次合并的"PR 合并"唤醒会并入这次运行，所以一次合并只启动一次运行。如果这次运行在启动前就结束了，唤醒会代替它启动一次运行。参见[唤醒](/issue-wakeups#pr-merged)。
+
+### 包含子任务的 PR
+
+工作流的**包含子 Issue 的 PR** 开关打开时（见[工作流](/workflows)），检查会读取任务自身及其直接子任务的 PR。这些 PR 中至少有一个是 `Merged`，并且没有 `Open` 或 `Draft` 的，任务就会移动。关闭但未合并的 PR 不会阻止移动，也不检查子任务的状态。子任务上的 PR 事件会让其父任务重新检查。
+
+开关关闭时，只计入任务自身的 PR；已有 PR 合并的父任务要等所有子任务都是 `done` 或 `cancelled`。最后一个子任务进入其中一个状态时会重新检查，所以父任务在那时移动，不需要新的 PR 事件。
+
+### 检查无法完成时
+
+如果检查无法完成，例如移动被拒绝，或服务器在 PR 事件刚发生后停止，Multica 会为该任务保留一次重试。第一次尝试在事件发生 2 分钟后。尝试失败后，等待时间从 30 秒开始，每次翻倍，最长 1 小时。你不需要重新投递 Webhook，也不需要重新关联 PR。检查完成后，重试就会被删除。自托管 Git 服务的 PR 事件同样适用。
+
+工作流里保存的 `PR merged` 转换已弃用，上面的设置会取代它。参见[工作流](/workflows#pr-merged)。
 
 ## 多个工作区
 
@@ -125,11 +139,168 @@ PR 是怎么关联上的，不影响结果：标题、分支名和正文里的 `
 
 如果同一个编号在多个已连接的工作区中都对应到任务（前缀相同时可能出现），Multica 不会在任何一个工作区自动关联，避免合并时完成无关的任务。请在正确的工作区手动关联。
 
+## 把相互依赖的 PR 关联进 GitHub 堆栈 [#stack-auto-linking]
+
+当一个 PR 的 base 分支正是同一仓库里另一个未关闭 PR 的 head 分支时，这两个 PR 就组成一条链。Multica 可以把整条链关联成一个 GitHub 堆栈，不用再有人手动运行 `gh stack link`。
+
+### 它做什么，永远不做什么
+
+由关联了 Multica 任务的 PR 触发。祖先 PR 不需要关联任务。Multica 从该 PR 出发，沿着各层 base PR 向下走，然后做下面其中一件事：
+
+| 向下走的结果 | 动作 |
+|---|---|
+| PR 的 base 是默认分支 | 什么都不做。之后有上层加入时，它可以成为堆栈的最底层。 |
+| PR 已在某个堆栈中，且正好在它的 base PR 之上 | 什么都不做。 |
+| 链上没有任何 PR 在堆栈中 | 创建一个堆栈，最底层在前。 |
+| 走到的 PR 是某个现有堆栈的**最顶层** | 把新的 PR（以及中间尚未入栈的 PR）从下到上加入该堆栈。 |
+| 其他情况（见[报告代码](#stack-report-codes)） | 不写入，只报告。 |
+
+它永远不会把 PR 从一个堆栈移到另一个，不会拆除堆栈，不会调整顺序，也不会合并、rebase 或 push。只要链上有任何一个祖先有问题，整条链都不会被关联，所以 Multica 不会创建残缺的堆栈。GitHub 堆栈按自下而上的顺序合并，代码仍由人来合并。最多向下检查 10 个祖先，只计入 head 在同一仓库内的 PR（来自 fork 的 head 不算）。
+
+关联的 PR 被打开、重新打开、标记为可评审、同步、修改 base 分支，或者它下面的 PR 被合并时，都会触发。每 10 分钟的对账里还有一个有上限的步骤，检查已关联且 base 分支名既不是 `main` 也不是 `master` 的未关闭 PR，用来补上漏掉的 webhook。该步骤不会查询仓库真实的默认分支：默认分支若是别的名字，它的 PR 也会被检查，PR 不属于任何栈时这一步不做任何改动。每个仓库同一时间只运行一个任务。GitHub 一侧的失败不会让 PR 处理或 webhook 失败。
+
+### 选择模式
+
+工作区设置 `github_stack_autolink` 保存一个模式，以及可选的按仓库模式：
+
+```json
+{ "mode": "report", "repos": { "owner/repo": "link" } }
+```
+
+| 模式 | 效果 |
+|---|---|
+| `off` | 什么都不做。 |
+| `report` | 读取、判断，并记录本来会做什么。从不写入。键不存在时的默认值。 |
+| `link` | 同时把堆栈写入 GitHub。 |
+
+顺序是 `off` < `report` < `link`。规则：
+
+1. 工作区的 `mode` 为 `off` 就是整体关闭，仓库条目不能把它调高。
+2. 否则，仓库条目优先于工作区的 `mode`。它可以只为一个仓库把 `report` 调到 `link`，也可以把任何值降到 `off`。
+3. 同一个 GitHub App installation 可以连接到多个工作区（见[多个工作区](#多个工作区)）。仓库的**最终模式**是连接到该 installation 的所有工作区的有效模式中最低的那个。要写入，所有工作区都必须解析为 `link`。
+4. 服务器环境变量 `GITHUB_STACK_AUTOLINK=0` 会把所有仓库和工作区强制设为 `off`。
+5. 每次写入之前都会重新读取模式。任务排队期间模式被调低，就不会写入。
+
+无法读取的设置按 `off` 处理。
+
+### CLI
+
+```bash
+multica github stack-autolink status --repo owner/repo
+multica github stack-autolink set [--repo owner/repo] --mode off|report|link
+```
+
+`status` 对所有成员开放，会输出最终模式、是否设置了环境变量关闭，以及你所属的、连接到该仓库所有者 installation 的每个工作区的有效模式。其他工作区只计数。`set` 只有工作区所有者或管理员能用：不带 `--repo` 设置工作区模式，带 `--repo` 设置该仓库的条目。两者都支持 `--output json`。
+
+<Callout type="info">
+在你的仓库还不是 `link` 之前，请用 `gh stack link` 手动关联堆叠的 PR。在 `link` 模式下打开堆叠 PR 后，读一次 `GET repos/{owner}/{repo}/stacks?pull_request=<编号>`。如果没有堆栈，就手动关联。
+</Callout>
+
+### 报告代码 [#stack-report-codes]
+
+每个结果都会记录到该 PR 关联的每个任务的活动里，范围是自身模式为 `report` 或 `link` 的工作区。对同一个 PR 和 base 分支，与任务最近一条结果相同的会被跳过。结果同时进入一个指标和一行服务器日志。
+
+| 代码 | 含义 | 写入 |
+|---|---|---|
+| `created` | 创建了新堆栈，并已回读确认。 | 是 |
+| `extended` | 把 PR 加入了现有堆栈，并已回读确认。 | 是 |
+| `would_create` | `report` 模式：本来会创建一个堆栈。 | 否 |
+| `would_extend` | `report` 模式：本来会把 PR 加入某个堆栈。 | 否 |
+| `in_other_stack` | PR 在某个堆栈中，但不在它的 base PR 正上方。 | 否 |
+| `branching_chain` | 链与堆栈相接的那个 PR 不是该堆栈的最顶层。 | 否 |
+| `ambiguous_base` | 仓库里有多个未关闭 PR 以该 base 分支作为 head。 | 否 |
+| `stale_base` | base 分支没有未关闭的 PR 且不是默认分支，或它的 PR 已合并。需要人来重新指定 base。 | 否 |
+| `closed_ancestor` | 某个祖先 PR 未合并就被关闭。 | 否 |
+| `cycle` | 链绕回了已经走过的分支。 | 否 |
+| `depth_limit` | 链的深度超过 10 个祖先。 | 否 |
+| `conflict` | Multica 重新读取全部信息后，GitHub 仍两次返回 `422`。 | 否 |
+| `unsupported` | 仓库没有堆栈 API（`404`）。 | 否 |
+| `no_permission` | App 没有权限（`403`）。请检查[自托管配置](#自托管配置)。 | 否 |
+| `schema` | GitHub 堆栈 API 的响应格式是 Multica 不认识的。 | 否 |
+| `readback_failed` | 写入成功，但回读时没有按顺序找到该堆栈。请到 GitHub 上检查这个 PR。 | 是 |
+
+堆栈 API 在 GitHub 上还是预览版，格式变化会表现为 `schema`，不会变成 webhook 失败。
+
+## 通过审批卡片创建仓库 [#repo-create]
+
+智能体不能自己创建 GitHub 仓库。智能体准备好操作文件,由工作区所有者用通行密钥批准。批准后,服务器使用智能体看不到的组织管理员凭据创建仓库。
+
+```bash
+multica github repo-create --org tevo-studio --name we006 \
+  --template tevo-studio/code-android-template --private \
+  --description "WE-006 app" --out repo-create.json
+multica decision request <issue> --action-file repo-create.json
+```
+
+| 参数 | 含义 |
+|---|---|
+| `--org` | 组织。只接受 `tevo-studio` 和 `cheese-work`。 |
+| `--name` | 仓库名称。 |
+| `--template` | 可选的 `owner/repo` 模板。其所有者也必须是已批准的组织。GitHub 的 generate API 不接受 ref,因此使用模板的默认分支。 |
+| `--private`、`--visibility` | `private`(默认)、`internal` 或 `public`。公开仓库属于公开发布,请用 `--class publish` 提出请求。 |
+| `--description` | 一行,最多 290 个字符。服务器会在仓库描述末尾加上 `[multica-action:<id>]` 标记。 |
+| `--out`、`--dry-run`、`--expires-in` | 写出操作文件、只打印、或设置卡片保持开放的时长。 |
+
+批准后,服务器创建仓库并回读确认,然后把它加入工作区的仓库登记。如果该组织在 `guard_policy.repository_allowlist` 中已有条目,也会把仓库加到那里。没有条目的组织保持不受限制,因为新增条目会把该组织的其他仓库挡在外面。被拒绝或已过期的卡片不会创建任何内容。如果 GitHub 拒绝请求,该操作以失败结束,工作区的数据保持不变。
+
+### 自托管
+
+只在 API 服务器上设置该凭据。它是一个 JSON 对象,把每个组织映射到有权在该组织创建仓库的令牌:
+
+```dotenv
+MULTICA_GITHUB_REPO_ADMIN_TOKENS={"tevo-studio":"<token>","cheese-work":"<token>"}
+```
+
+守护进程会从所有智能体环境中移除该变量,卡片、结果和日志中也都不会出现它。未设置时,已批准的卡片会以 `credential_not_configured` 失败。GitHub App 本身不需要为此增加 Administration 权限。
+
 ## 断开连接
 
-在 **设置 → 代码** 中，点击目标账号旁的 **断开**。这只移除该安装与当前工作区的连接，其他连接继续接收事件。App 仍安装在 GitHub，已有 PR 记录与关联会保留。
+在 **设置 → 代码** 的 GitHub 一行，从 **⋯** 菜单选择 **断开**，只会移除当前 Multica 工作区与该 installation 的关系，不会替你从 GitHub 卸载 App。已有 PR 记录会保留，新的事件不再进入该工作区。
 
 撤销 GitHub 侧的仓库授权，需到个人或组织的 GitHub App installations 页面卸载或调整仓库范围。卸载后，与该 installation 关联的所有 Multica 工作区都会停止接收事件。
+
+## 检查通过唤醒
+
+在工作区设置中将 `github_wake_on_ci_success` 设为 `true` 后，已关联的打开或草稿 PR 的检查在当前提交上通过时会启动一次运行。该设置默认关闭。唯一未完成的检查是 `security-gate` 裁决状态的 PR 视为已通过。新提交会再次唤醒。失败的运行在同一提交上重跑变绿时会再唤醒一次。重复投递同一次通过不会再唤醒。
+
+运行会交给 PR 的作者智能体，解析方式与冲突和检查失败唤醒相同。作者未知时交给议题的负责人。负责人是人且作者智能体未知时，该人会收到通知。
+
+## 等待 GitHub Actions 运行
+
+唤醒可以等待某次 GitHub Actions 运行，例如停在环境审批关卡的部署，无需轮询。该运行不需要关联 PR。
+
+```bash
+multica issue wakeup create ISSUE --until-gh-run OWNER/REPO:RUN_ID --until-gh-run-state completed --expires-in 3h --on-timeout wake --instruction-file ./instruction.md
+```
+
+`--until-gh-run` 接受三种写法之一：
+
+| 写法 | 选中的运行 |
+|---|---|
+| `owner/repo:RUN_ID` | 该 ID 的运行 |
+| `owner/repo:WORKFLOW_FILE@SHA` | 该工作流文件中，自身 `head_sha` 等于完整 40 位 SHA 的运行 |
+| `https://github.com/owner/repo/actions/runs/RUN_ID` | 该 ID 的运行 |
+
+`--until-gh-run-state` 取 `completed`（默认）或 `waiting`。`waiting` 会在运行中的作业每次开始等待环境关卡时触发。请先查看 facts 中的 `waiting_now` 再请人审批关卡：关卡已关闭时它为 `false`。`SHA` 写法匹配的是运行自身的提交。部署其他提交的部署运行（例如 `cd-deploy.yml`）需要使用它的运行 ID。
+
+该 App 必须已为本工作区中的仓库所有者安装，并订阅 **Workflow run** 与 **Workflow job** 事件，这两类事件需要 **Actions: read** 权限。记录保留 30 天。
+
+### 限制：仅限已观察到的事件
+
+规则由 App 订阅之后 Multica 收到的 webhook 事件满足，而不是对运行当前状态的查询。
+
+- GitHub 不会自动重新投递失败的投递。丢失 `completed` 事件会使已存储的运行一直停在 `in_progress`。
+- App 订阅之前就已开始的运行或关卡不可见。
+- 恢复方法：在 App 的 **Advanced → Recent Deliveries** 页面手动重新投递该事件。
+- 务必同时设置 `--expires-in` 和 `--on-timeout wake`。到期时的默认值是 `end`，不会启动任何运行。
+
+### 示例：合并后等待部署
+
+1. 等待合并提交 `M` 的资格验证运行：
+   `--until-gh-run cheese-work/multica:cd-qualification.yml@M --until-gh-run-state completed --expires-in 3h --on-timeout wake`
+2. 被唤醒的运行查找部署运行 ID：`gh run list -R cheese-work/multica --workflow cd-deploy.yml --json databaseId,displayTitle`。选择标题包含 `M` 的运行。
+3. 等待审批关卡：`--until-gh-run cheese-work/multica:RUN_ID --until-gh-run-state waiting --expires-in 6h --on-timeout wake`
+4. 审批通过后，用同一规则和 `--until-gh-run-state completed` 等待完成。
 
 ## 自托管配置
 
@@ -145,8 +316,9 @@ Multica Cloud 无需执行本节。自托管需要先创建自己的 GitHub App�
 | 字段 | 值 |
 |---|---|
 | Homepage URL | Multica 前端地址，例如 `https://multica.example.com` |
-| Callback URL | `https://<api-host>/api/github/setup` |
-| Request user authorization (OAuth) during installation | 启用 |
+| Callback URL | `https://<api-host>/api/github/setup`，与 Setup URL 相同 |
+| Request user authorization (OAuth) during installation | 勾选 |
+| Setup URL | `https://<api-host>/api/github/setup`，并启用 **Redirect on update** |
 | Webhook URL | `https://<api-host>/api/webhooks/github` |
 | Webhook secret | 一段长期保存的随机字符串 |
 
@@ -155,17 +327,31 @@ Repository permissions：
 | 权限 | 级别 |
 |---|---|
 | Metadata | Read-only |
-| Pull requests | Read-only |
+| Pull requests | 读写；写权限用于[堆叠 PR 自动关联](#stack-auto-linking) |
+| Actions | Read-only；`--until-gh-run` 唤醒所需 |
 | Checks | Read-only；用于显示 CI 状态 |
 | Commit statuses | Read-only；用于汇总 legacy status 形式的 CI |
+| Variables | Read-only；合并暂停检查需要读取仓库变量 `AGENT_MERGE_PAUSED` 和 `MAIN_RED_PAUSED` |
 | Actions | 可选，Read-only；同一提交上，被同一工作流的新运行取代的已取消运行不再计入 CI 状态 |
+
+Organization permissions：
+
+| 权限 | 级别 |
+|---|---|
+| Members | Read-only；用于确认连接用户是 organization 的 active admin |
 
 订阅以下事件：
 
 - **Pull request**；
+- **Pull request review**、**Pull request review comment** 和 **Issue comment**，在配置人工评审唤醒时使用；
+- **Workflow run** 和 **Workflow job**，`--until-gh-run` 唤醒所需；
 - **Check suite**、**Check run** 和 **Status**，用于触发 CI 与可合并性刷新。
 
 PR 快照通过 Pull requests、Checks 和 Commit statuses 的 REST API 获取，不需要 Contents 权限。授予可选的 Actions 权限后，还会读取该提交的工作流运行记录；未授予时，即使同一工作流的新运行已通过，被取消的旧运行仍按失败计算。
+
+从私有仓库导入或刷新技能时，会使用工作区在仓库所有者账号下的 installation 签发的短期 token，不可用时回退到服务器的 `GITHUB_TOKEN`。该 token 需要可选的 **Contents: read** 权限；没有该权限或该所有者没有 installation 时，使用 `GITHUB_TOKEN` 或不带凭据。token 只会发送给 GitHub 主机。
+
+堆叠 PR 自动关联会调用 GitHub 的堆栈 API，需要 Pull requests 的**写**权限。只有读权限的 App 其余功能照常工作，堆栈结果会显示 `no_permission`（见[报告代码](#stack-report-codes)）。给已安装的 App 提升权限后，需要各 installation 的所有者在 GitHub 上批准才会生效。
 
 <Callout type="warning">
 这里需要的是 **Webhook secret**，不是 OAuth Client secret。两边填写的 Webhook secret 不一致时，GitHub delivery 会返回 `401 invalid signature`。
@@ -181,42 +367,48 @@ PR 快照通过 Pull requests、Checks 和 Commit statuses 的 REST API 获取�
 ```dotenv
 GITHUB_APP_SLUG=multica-acme
 GITHUB_WEBHOOK_SECRET=<创建 App 时填写的 webhook secret>
-GITHUB_APP_CLIENT_ID=<Client ID>
-GITHUB_APP_CLIENT_SECRET=<Client secret>
+GITHUB_APP_CLIENT_ID=<App 的 Client ID>
+GITHUB_APP_CLIENT_SECRET=<在 App 设置页生成的 client secret>
 FRONTEND_ORIGIN=https://multica.example.com
 ```
 
-新连接需要本节的全部六个 GitHub 变量，包括 `GITHUB_APP_ID` 和 `GITHUB_APP_PRIVATE_KEY`。缺少任意一个都会禁用连接按钮；webhook 接入只要求 `GITHUB_WEBHOOK_SECRET`。已有绑定继续工作。部署前，将第一个 Callback URL 设为此端点，并启用安装时 OAuth 授权。启用此选项后，GitHub 不再使用单独的 Setup URL。
-
-新连接以及 PR 卡片的 CI 状态、可合并性还需要以下两个变量。Multica 用只读 metadata token 获取安装的完整仓库列表，并与操作者可管理的仓库列表核对：
+下面的 App 凭据让 Multica 能在绑定前以 App 身份权威查询 installation；仓库选择器以及 CI 与可合并性快照也会使用它们：
 
 ```dotenv
 GITHUB_APP_ID=<GitHub App 的数字 ID>
 GITHUB_APP_PRIVATE_KEY=<完整 PEM 私钥，保留 BEGIN/END 行和换行>
 ```
 
-私钥在 GitHub App 的 **Private keys → Generate a private key** 中生成。不配置这两个变量时，连接按钮会被禁用。已有绑定仍通过 webhook 镜像 PR、更新任务，但 PR 卡片不显示 CI 或合并状态。
+私钥在 GitHub App 的 **Private keys → Generate a private key** 中生成。即使没有这些 App 凭据，现有 installation 仍可接收签名 webhook，PR 仍会镜像，任务仍会自动关联并在合并时更新状态。但创建新绑定、浏览仓库以及刷新 CI 或可合并状态都需要这些凭据，因此配置前 PR 卡片不会显示 CI 或合并状态。
+
+连接按钮需要全部六个 GitHub 配置值。新连接时，Multica 会交换 GitHub 的用户授权 code，以 App 身份查询 installation，然后要求个人账号的 ID 和 login 精确匹配，或要求用户是 organization 的 active admin。仅能在用户的 installation 列表中看到它不足以证明 organization 管理权限。任何验证错误都会拒绝连接，临时 user token 会在检查后撤销。
+
+如果为已经安装的 App 新增 Members 或 Actions 权限，请先在每个目标 organization 中批准权限变更，再把它连接到新工作区。已有的 installation 必须接受新权限；在此之前，`--until-gh-run` 唤醒收不到 workflow 事件。
+
+可选：将 `GITHUB_ALLOWED_ACCOUNT_IDS` 设置为以逗号分隔的 GitHub 账号数字 ID 列表（用户或 organization 的 `id`，不是 login）。未设置或为空时，任何通过上述检查的账号都可以连接。设置后，Multica 会拒绝绑定账号 ID 不在列表中的 installation：setup 回调会重定向到 `github_error=installation_not_allowed`，且不创建绑定。不带 code 的 **Redirect on update** 回调按该绑定已存储的账号 ID 判断；没有已存储账号 ID 的绑定会被拒绝（fail closed）。格式错误的值（例如 login）会使服务器在启动时终止。
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+无论列表如何，GitHub 的 `deleted` 和 `suspend` 事件始终会移除绑定。
 
 </Step>
 <Step>
 
-### 更新数据库并连接 [#3-更新数据库并连接]
+### 3. 重启并连接
 
-升级已有部署时，先执行常规数据库迁移：
-
-```bash
-make migrate-up
-```
-
-重启 API 服务，再到 **设置 → 代码** 完成连接。
+此变更不需要数据库迁移。使用新环境变量重启 API 服务，批准现有 installation 请求的权限更新，再到 **设置 → 代码** 完成连接。可用 **Add account or organization** 把更多 installation 连接到同一工作区。
 
 </Step>
 </Steps>
 
 ## 常见问题
 
-- **连接按钮不可用**：检查以上六个 GitHub 变量、第一个 Callback URL，以及 **Request user authorization (OAuth) during installation**。
+- **连接按钮不可用**：检查 `GITHUB_APP_SLUG`、`GITHUB_WEBHOOK_SECRET`、`GITHUB_APP_CLIENT_ID`、`GITHUB_APP_CLIENT_SECRET`、`GITHUB_APP_ID` 和 `GITHUB_APP_PRIVATE_KEY` 是否都已进入 API 进程。
+- **安装完成后连接失败**：启用 **Request user authorization (OAuth) during installation**，把 callback URL 和 setup URL 都设为 `/api/github/setup`，并授予 Members read-only。连接用户必须是个人账号所有者或 organization 的 active admin。
 - **Webhook 返回 401**：确认 GitHub App 与 API 使用同一个 Webhook secret，然后在 GitHub 的 **Recent Deliveries** 中重新投递。
+- **PR 已在 GitHub 合并，但在 Multica 中仍为 open**：`closed` Webhook 已丢失。配置了 `GITHUB_APP_ID` 和 `GITHUB_APP_PRIVATE_KEY` 时，下一次 CI 刷新会从 GitHub 读取该 PR，并像收到 Webhook 一样记录合并或关闭。打开任务即可触发刷新，或等待定期的后台刷新。未配置这些凭据时，请在 **Recent Deliveries** 中重新投递该事件。
 - **PR 没有关联**：检查仓库是否在 App 授权范围内、自动关联是否开启、编号是否属于当前工作区，以及是否有人把它从任务上移除过。
 - **正文写了编号但没关联**：改用 `Closes MUL-123`，或把编号放到分支名、PR 标题中，或者手动关联。
 - **没有 CI 状态**：确认 `GITHUB_APP_ID` 和 `GITHUB_APP_PRIVATE_KEY` 已配置，App 具有 Pull requests、Checks 与 Commit statuses 的只读权限并订阅了对应事件。不需要 Contents 权限。给已安装的 App 补加权限后，需要各 installation 的所有者在 GitHub 上批准才会生效。

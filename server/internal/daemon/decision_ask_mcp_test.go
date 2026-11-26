@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -85,5 +86,14 @@ func TestDecisionAskReachableFollowsMcpSupport(t *testing.T) {
 func TestDecisionAskToolIsAbsentWhenRuntimeCannotLoadIt(t *testing.T) {
 	if tools := taskHookTools(Task{ID: "task-1", IssueID: "issue-1"}, false); len(tools) != 0 {
 		t.Fatalf("tools = %v, want none", tools)
+	}
+}
+
+// The tool description names options[].design and says frame_updated_at is the server's (CHE-7064 S10).
+func TestDecisionAskDescriptionNamesTheDesignOptionField(t *testing.T) {
+	for _, want := range []string{"design {frame_url, attestation_id}", "frame_updated_at", "design_version_server_owned"} {
+		if !strings.Contains(decisionAskDescription, want) {
+			t.Errorf("decision_ask description does not mention %q", want)
+		}
 	}
 }

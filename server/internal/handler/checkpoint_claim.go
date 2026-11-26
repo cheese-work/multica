@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/checkpoint"
+	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -181,4 +182,25 @@ func rowFromDB(r db.IssueCheckpoint) checkpoint.Row {
 		ResolvedThreads:     r.ResolvedThreads,
 		BuiltAt:             builtAt,
 	}
+}
+
+// timeoutRetryPointer (CHE-9761) is the claim-time paragraph for a retry whose
+// parent task failed on its time cap and has a checkpoint comment. Empty when
+// there is nothing to point at, so the normal brief and thread scan apply.
+func (h *Handler) timeoutRetryPointer(ctx context.Context, task db.AgentTaskQueue) string {
+	if !task.ParentTaskID.Valid || !task.IssueID.Valid {
+		return ""
+	}
+	parent, err := h.Queries.GetAgentTask(ctx, task.ParentTaskID)
+	if err != nil || parent.IssueID != task.IssueID || parent.Status != "failed" || !service.IsTimeoutCheckpointReason(parent.FailureReason.String) {
+		return ""
+	}
+	comment, err := h.Queries.GetTimeoutCheckpointComment(ctx, db.GetTimeoutCheckpointCommentParams{IssueID: task.IssueID, SourceTaskID: parent.ID})
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("timeout checkpoint: comment lookup failed", "task_id", uuidToString(task.ID), "error", err)
+		}
+		return ""
+	}
+	return service.TimeoutCheckpointRetryPointer(parent.Attempt, uuidToString(comment.ID), comment.Content)
 }

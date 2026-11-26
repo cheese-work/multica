@@ -63,6 +63,8 @@ type persistedTerminalTaskReport struct {
 	ContextTokens         int64     `json:"context_tokens,omitempty"`
 	ContextWindow         int64     `json:"context_window,omitempty"`
 
+	TimeoutCheckpoint *timeoutCheckpoint `json:"timeout_checkpoint,omitempty"`
+
 	InitContext *initctx.Report `json:"init_context,omitempty"`
 
 	PermanentRejectionCount   int        `json:"permanent_rejection_count,omitempty"`
@@ -159,6 +161,7 @@ func persistedTerminalReport(report terminalTaskReport, createdAt time.Time) (pe
 		ContextTokens:         report.contextTokens,
 		ContextWindow:         report.contextWindow,
 		InitContext:           report.initContext,
+		TimeoutCheckpoint:     report.timeoutCheckpoint,
 	}, nil
 }
 
@@ -194,6 +197,7 @@ func (record persistedTerminalTaskReport) terminalReport() (terminalTaskReport, 
 		contextTokens:         record.ContextTokens,
 		contextWindow:         record.ContextWindow,
 		initContext:           record.InitContext,
+		timeoutCheckpoint:     record.TimeoutCheckpoint,
 	}, nil
 }
 

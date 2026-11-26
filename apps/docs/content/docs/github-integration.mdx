@@ -9,7 +9,7 @@ import { PrLinkDemo } from "@/components/demos/pr-link-demo";
 
 Once GitHub is connected, Multica automatically links pull requests based on issue identifiers. Issue detail shows PR state, change size, CI results, and merge conflicts in place.
 
-The GitHub integration only reads the repositories authorized at install time; it never pushes commits, comments, or status checks.
+The GitHub integration only reads the repositories authorized at install time; it never pushes commits, comments, or status checks. The one write is optional: when [stack auto-linking](#stack-auto-linking) is set to `link`, it links dependent PRs into a GitHub stack.
 
 Self-hosted Multica can also connect self-hosted Forgejo, Gitea, or GitLab instances in parallel, with the same PR auto-linking, merge-driven status changes, and CI display. The entry point is **Settings → Code**; see [Self-hosted Git hosting](/vcs-integration). Multica Cloud does not offer this entry point.
 
@@ -34,10 +34,6 @@ Return to Multica after the installation completes.
 </Step>
 </Steps>
 
-Use **Add account or organization** in the GitHub row or the **Add repository** menu to connect another installation without disconnecting an existing one. Each connection lists its account and who connected it; the repository picker lets you switch between accounts. **Pause GitHub features** applies to all connections in the workspace.
-
-If GitHub returns no user authorization, Multica cannot verify a new connection, even if the App is already installed or connected to another workspace. Retry connecting and complete authorization; if this repeats, ask your Multica operator to check the App’s user authorization settings. Changing repository access alone may not complete a new connection.
-
 The connection status shows on the same page. Regular members can view the status but can't connect, disconnect, or change the switches.
 
 <Callout type="info">
@@ -52,8 +48,8 @@ The **Pull requests & issues** section of **Settings → Code** has these settin
 |---|---|
 | PR sidebar | Shows linked pull requests in issue detail. |
 | Co-authored-by | Adds `Co-authored-by: multica-agent <github@multica.ai>` to commits created by agents. |
-| Auto-link PRs | Links a PR to the issue whose identifier is in its branch name or title, or follows a closing keyword in its body. |
-| After PRs merge, move the issue to | What merging every PR linked to an issue does: move it to a status (`Done` by default) or leave it alone. See [When merged PRs move an issue](#when-merged-prs-move-an-issue). |
+| Auto-link PRs | Links a PR to the issue whose identifier is in its branch name or title, or follows a closing or reference keyword in its body. |
+| After PRs merge, move the issue to | What merging every delivery PR linked to an issue does: move it to a status (`Done` by default) or leave it alone. Reference links do not move the issue. See [When merged PRs move an issue](#when-merged-prs-move-an-issue). |
 | PR card → CI & mergeability | For each linked PR, Multica fetches a GitHub API snapshot as the App and shows its CI status and mergeability on the card. See [View PRs on an issue](#view-prs-on-an-issue). |
 
 **After PRs merge, move the issue to** applies to every code host, including [self-hosted Git hosting](/vcs-integration).
@@ -80,9 +76,13 @@ Fixes MUL-123
 Resolves MUL-123
 ```
 
+For a reference-only GitHub link, use `Refs MUL-123` or `Part of MUL-123` in the PR body. The PR stays visible on the issue, but does not move the issue on merge or delay another delivery PR's merge automation. Adding a reference after the PR has merged also links without moving the issue. If the same issue also appears in the title, branch, or a closing keyword, the link is a closing link instead. Manual links also count as delivery PRs.
+
 A bare mention in the body, such as `Related to MUL-123`, doesn't link the PR at all. Commit messages and PR comments don't trigger linking either.
 
-You can also link a PR by hand: in the issue's **Pull requests** block, click **+** and paste the PR URL. While the issue has no PRs, the block is hidden: use the **Add …** row at the bottom of the sidebar instead, such as **Add pull request** or **Add wakeup or pull request**. To take a PR off an issue, open the **⋯** menu on its row and choose **Remove from issue**; Multica won't link it again from its title or branch.
+A PR from a fork links automatically only when the fork has the same owner as the base repository. Merging such a PR does not move the issue. Link PRs from forks with other owners by hand.
+
+You can also link a PR by hand: in the issue's **Pull requests** block, click **+** and paste the PR URL. To take a PR off an issue, open the **⋯** menu on its row and choose **Remove from issue**; Multica won't link it again from its title or branch.
 
 ## View PRs on an issue
 
@@ -90,13 +90,13 @@ Once linked, PRs appear in the **Pull requests** block of issue detail. Each ent
 
 - repository, number, title, and author;
 - `Open`, `Draft`, `Merged`, or `Closed` state;
-- added and deleted lines after the number, such as `#19 · +48 −12`; hover the row for the number of changed files;
+- added and deleted lines and the number of changed files;
 - CI status: all passed (with a count), some failed (naming the failing checks), or some in progress; PRs with no checks configured don't show this item, and "no checks" is never treated as passing;
 - mergeability: mergeable (only when GitHub reports a clean merge state), conflicting, blocked, or behind.
 
 CI status and mergeability come from snapshots Multica pulls from the GitHub API, and the two are independent; merged or closed PRs no longer show either. When GitHub is temporarily unavailable, the card keeps the last snapshot and marks it stale.
 
-Under the list, one line says what happens next: for example *Moves to Done when #19 merges*, or which PR closed without merging. When a single PR is waiting to merge, its row says it instead: *On merge → Done*. There's no line when the workspace leaves status alone or the issue already has the target status.
+Under the list, one line says what happens next: for example *Moves to Done when #19 merges*, or which PR closed without merging. There's no line when the workspace leaves status alone or the issue already has the target status.
 
 Click an entry to open the PR on GitHub. Turning off the **PR sidebar** only hides this block; it doesn't disconnect anything.
 
@@ -106,16 +106,32 @@ A merged PR doesn't necessarily mean the issue is finished, so the workspace dec
 
 An issue moves to the chosen status when all of the following hold:
 
-1. every linked PR is `Merged`: an `Open` or `Draft` PR keeps the issue waiting, and so does a PR closed without merging until you remove it from the issue;
-2. the issue isn't `done` or `cancelled`, doesn't already have the target status, and hasn't been switched off for this issue (**Pull requests → ⋯ → Keep status when PRs merge**).
+1. at least one delivery PR is linked and every delivery PR is `Merged`: an `Open` or `Draft` delivery PR keeps the issue waiting, and so does a delivery PR closed without merging until you remove it from the issue. Reference-only GitHub links are excluded;
+2. the issue isn't `done` or `cancelled`, isn't in Triage, doesn't already have the target status, and hasn't been switched off for this issue (**Pull requests → ⋯ → Keep status when PRs merge**).
 
 <PrLinkDemo />
 
-How a PR was linked doesn't matter: the title, the branch name, and a `Closes MUL-123` in the body only link it. When a PR delivers only part of the issue, or a release or a check has to follow the merge, keep that issue's status from its **Pull requests** menu.
+The title, the branch name, and a `Closes MUL-123` in the body create closing links. When a GitHub PR delivers only part of the issue, use a reference-only body link and keep the issue identifier out of the title and branch. If a release or a check has to follow the merge, keep that issue's status from its **Pull requests** menu.
 
 The check runs when a PR event touches the issue: a linked PR merges, a PR is linked, or a link is removed. Reopening an issue doesn't move it back; the next linked PR that merges does. Changing the setting doesn't move issues whose PRs merged earlier.
 
-The status change is written to the timeline as a system action naming the PRs, and members subscribed to the issue are notified if they turned on status change notifications.
+The status change is written to the timeline as a system action naming the PRs, and members subscribed to the issue are notified.
+
+### In a workflow
+
+When the issue's workflow lists the target status and that step hands off to someone, the merge move is a handoff: the issue goes to the step's handler, and an agent handler starts a run, like any other move into that step. A step with no handler only changes the status and starts no run. If the workflow doesn't list the target status, the issue doesn't move. The *PR merged* wakeup for the same merge joins that run, so one merge starts one run. If that run ends before it starts, the wakeup starts one in its place. See [Issue wakeups](/issue-wakeups#pr-merged).
+
+### Include child PRs
+
+When the workflow's **Include child PRs** switch is on (see [Workflows](/workflows)), the check reads the PRs of the issue and of its direct sub-issues. The issue moves when at least one of those PRs is `Merged` and none is `Open` or `Draft`. A PR closed without merging doesn't block it, and the sub-issues' statuses aren't checked. A PR event on a sub-issue runs the check again for its parent.
+
+With the switch off, only the issue's own PRs count, and a parent with merged PRs waits until every sub-issue is `done` or `cancelled`. The check runs again when the last sub-issue reaches one of those statuses, so the parent moves then, with no new PR event.
+
+### When a check can't finish
+
+If a check can't finish, for example because the move was refused or the server stopped right after a PR event, Multica keeps a retry for that issue. The first attempt is due 2 minutes after the event. After a failed attempt, the wait starts at 30 seconds and doubles up to 1 hour. You don't need to redeliver the webhook or link the PR again. A completed check removes the retry. This also applies to PR events on self-hosted Git hosts.
+
+A `PR merged` transition stored in a workflow is deprecated. The setting above replaces it; see [Workflows](/workflows#pr-merged).
 
 ## Multiple workspaces
 
@@ -125,11 +141,217 @@ For example, a PR that references both `MUL-1` and `ENG-2` can link in two works
 
 If one identifier matches an issue in more than one of the connected workspaces (possible when they share a prefix), Multica doesn't link it automatically in any of them, so merging the PR can't complete an unrelated issue. Link the PR by hand in the right workspace.
 
+## Link stacked PRs into GitHub stacks [#stack-auto-linking]
+
+When a PR's base branch is the head branch of another open PR in the same repository, the two PRs form a chain. Multica can link the chain into one GitHub stack, so nobody has to run `gh stack link` by hand.
+
+### What it does and never does
+
+A PR linked to a Multica issue triggers it. Ancestor PRs do not need an issue. Multica walks down from that PR through the base PRs and then does one of these:
+
+| Walk result | Action |
+|---|---|
+| The PR's base is the default branch | Nothing. The PR can become the bottom of a stack when a later layer arrives. |
+| The PR is already in a stack, directly above its base PR | Nothing. |
+| No PR in the chain is in a stack | Creates one stack, bottom layer first. |
+| The walk reaches a PR that is the **top** of an existing stack | Adds the new PRs (and any unstacked PRs between) to that stack, bottom first. |
+| Anything else (see [report codes](#stack-report-codes)) | Writes nothing and reports. |
+
+It never moves a PR from one stack to another, never unstacks, never reorders, and never merges, rebases or pushes. A chain with any bad ancestor is not linked at all, so Multica never creates a truncated stack. GitHub stacks merge bottom-up, and a person still merges the code. The walk covers at most 10 ancestors and counts only PRs whose head branch is in the same repository (a fork head does not count).
+
+It runs when a linked PR is opened, reopened, marked ready for review, synchronized, has its base branch edited, or when a PR below it merges. A bounded pass in the 10 minute reconcile also checks linked open PRs whose base branch is not named `main` or `master`, so a missed webhook is caught. The sweep does not look up the repository's real default branch: if the default branch has another name, its PRs are checked too, and the pass changes nothing when the PR is not part of a stack. One job runs per repository at a time. A GitHub failure never fails PR handling or the webhook.
+
+### Choose a mode
+
+The workspace setting `github_stack_autolink` holds a mode, and optional per-repo modes:
+
+```json
+{ "mode": "report", "repos": { "owner/repo": "link" } }
+```
+
+| Mode | Effect |
+|---|---|
+| `off` | Does nothing. |
+| `report` | Reads, decides and records what it would do. Never writes. This is the default when the key is absent. |
+| `link` | Also writes the stack to GitHub. |
+
+Order: `off` < `report` < `link`. Rules:
+
+1. A workspace `mode` of `off` is a shutdown. A repo entry cannot raise it.
+2. Otherwise a repo entry wins over the workspace `mode`. It can raise `report` to `link` for one repo, or lower anything to `off`.
+3. The same GitHub App installation can be connected to several workspaces (see [Multiple workspaces](#multiple-workspaces)). The **final mode** for a repo is the lowest effective mode across every workspace connected to that installation. A write needs all of them to resolve `link`.
+4. The server environment variable `GITHUB_STACK_AUTOLINK=0` forces `off` for every repo and workspace.
+5. The mode is read again right before each write. A mode lowered while a job was queued means no write.
+
+Settings that cannot be read count as `off`.
+
+### CLI
+
+```bash
+multica github stack-autolink status --repo owner/repo
+multica github stack-autolink set [--repo owner/repo] --mode off|report|link
+```
+
+`status` is open to any member. It prints the final mode, whether the env kill is set, and the effective mode of each of your workspaces connected to the repo owner's installation. Other workspaces are only counted. `set` needs a workspace owner or admin: without `--repo` it sets the workspace mode, with `--repo` it sets that repo's entry. Both accept `--output json`.
+
+<Callout type="info">
+Until stacking is `link` for your repo, link stacked PRs by hand with `gh stack link`. After you open a stacked PR in `link` mode, read `GET repos/{owner}/{repo}/stacks?pull_request=<number>` once. If no stack is there, link it by hand.
+</Callout>
+
+### Report codes [#stack-report-codes]
+
+Each outcome goes to the activity of every issue linked to the PR, in each workspace whose own mode is `report` or `link`. An outcome equal to the issue's latest one for that PR and base branch is skipped. Outcomes also feed a metric and a server log line.
+
+| Code | Meaning | Write |
+|---|---|---|
+| `created` | A new stack was created and read back. | Yes |
+| `extended` | PRs were added to an existing stack and read back. | Yes |
+| `would_create` | `report` mode: a stack would be created. | No |
+| `would_extend` | `report` mode: PRs would be added to a stack. | No |
+| `in_other_stack` | The PR is in a stack, but not directly above its base PR. | No |
+| `branching_chain` | The chain meets a stack at a PR that is not the top of that stack. | No |
+| `ambiguous_base` | More than one open PR in the repository has the base branch as its head. | No |
+| `stale_base` | The base branch has no open PR and is not the default branch, or its PR has merged. A person has to retarget. | No |
+| `closed_ancestor` | An ancestor PR was closed without merging. | No |
+| `cycle` | The chain loops back on a branch it already walked. | No |
+| `depth_limit` | The chain is deeper than 10 ancestors. | No |
+| `conflict` | GitHub answered `422` twice, even after Multica re-read everything. | No |
+| `unsupported` | The repository has no stacks API (`404`). | No |
+| `no_permission` | The App lacks permission (`403`). Check [Self-hosting setup](#self-hosting-setup). | No |
+| `schema` | GitHub's stacks response has a shape Multica does not know. | No |
+| `readback_failed` | The write succeeded, but the read-back did not find the stack in order. Check the PR on GitHub. | Yes |
+
+The stacks API is in preview on GitHub, so a shape change shows up as `schema` and never as a failed webhook.
+
+## Create a repository through an approval card [#repo-create]
+
+An agent cannot create a GitHub repository by itself. It prepares an action file, and the workspace owner approves it with a passkey. The server then creates the repository with an organization-admin credential that the agent never sees.
+
+```bash
+multica github repo-create --org tevo-studio --name we006 \
+  --template tevo-studio/code-android-template --private \
+  --description "WE-006 app" --out repo-create.json
+multica decision request <issue> --action-file repo-create.json
+```
+
+| Flag | Meaning |
+|---|---|
+| `--org` | The organization. Only `tevo-studio` and `cheese-work` are accepted. |
+| `--name` | The repository name. |
+| `--template` | Optional `owner/repo` template. Its owner must also be an approved organization. GitHub's generate API takes no ref, so the template's default branch is used. |
+| `--private`, `--visibility` | `private` (default), `internal` or `public`. A public repository is a publication: ask with `--class publish`. |
+| `--description` | One line, 290 characters at most. The server adds a `[multica-action:<id>]` marker to the repo description. |
+| `--out`, `--dry-run`, `--expires-in` | Write the action file, only print it, or set how long the card stays open. |
+
+On approval the server creates the repository, reads it back, and adds it to the workspace repo registry. If the organization already has an entry in `guard_policy.repository_allowlist`, it adds the repository there too. An organization with no entry is left unrestricted, because adding one would lock out the rest of the organization. A rejected or expired card creates nothing. If GitHub refuses the request, the action ends as failed and the workspace rows stay unchanged.
+
+### Self-hosting
+
+Set the credential on the API server only. It is a JSON object that maps each organization to a token with permission to create repositories there:
+
+```dotenv
+MULTICA_GITHUB_REPO_ADMIN_TOKENS={"tevo-studio":"<token>","cheese-work":"<token>"}
+```
+
+The daemon removes this variable from every agent environment, and no card, result or log carries it. Without it, an approved card ends as failed with `credential_not_configured`. The GitHub App itself needs no Administration permission for this.
+
 ## Disconnect
 
-On **Settings → Code**, choose **Disconnect** beside the account you want to remove. Only that installation’s connection to the current workspace is removed; other connections keep receiving events. The App remains installed on GitHub, and existing PR records and links are kept.
+Choosing **Disconnect** from the GitHub row's **⋯** menu on **Settings → Code** only removes the relationship between the current Multica workspace and the installation; it does not uninstall the App from GitHub for you. Existing PR records are kept, and new events stop flowing into that workspace.
 
 To revoke repository authorization on the GitHub side, uninstall the App or adjust its repository scope from your personal or organization GitHub App installations page. After uninstalling, every Multica workspace linked to that installation stops receiving events.
+
+## Human review wakeups
+
+A submitted GitHub review can notify the PR's author agent on every linked issue. Multica posts one system-authored comment with the review summary, permalink, and all inline comments, then queues the author agent. Individual inline-comment events, review edits, and dismissals do not queue additional runs.
+
+This uses the existing signed `/api/webhooks/github` endpoint. It does not create a public endpoint or enable a tunnel. The App must subscribe to **Pull request review**, and its Pull requests read permission must allow the server to fetch the submitted review's comments.
+
+An owner or admin configures an explicit mapping in the workspace's `settings` JSON through `PATCH /api/workspaces/{id}`. The keys are immutable numeric GitHub user IDs; the values are Multica **user IDs**, not workspace membership-row IDs:
+
+```json
+{
+  "github_review_members": {
+    "123456": "11111111-1111-4111-8111-111111111111"
+  }
+}
+```
+
+Preserve the workspace's other settings when updating this object. No mapping means no review wakeups. Only mapped GitHub accounts of type `User` qualify, and the mapped user must still belong to this workspace. Bot accounts never qualify. Do not map an account used for agent automation: GitHub cannot distinguish a person from automation using the same human credentials.
+
+The author agent is resolved from existing task provenance within this workspace. A managed `agent/<agent-slug>/<issue>-<task-key>` branch identifies its original task. Custom branches use the recorded branch of a task on a linked issue that started before the PR was created. An unknown or ambiguous author is skipped rather than guessed from the current issue assignee or an agent's display name.
+
+For a legacy PR without usable task provenance, an owner or admin can explicitly bind its author in `settings.github_review_authors`. Use a lowercase `owner/repository#number` key and a workspace agent UUID as its value. This binding takes precedence over inferred task provenance:
+
+```json
+{
+  "github_review_authors": {
+    "acme/widget#2019": "22222222-2222-4222-8222-222222222222"
+  }
+}
+```
+
+Bindings cannot target an agent outside this workspace. The normal invocation-permission, archived-agent, runtime-readiness, and project/triage gates still apply. Disabling the workspace's GitHub integration disables review wakeups too.
+
+The comment, queued run, and review receipt commit together. GitHub redelivery cannot create a second run for that review and issue, even after the run completes or its comment is deleted. Failed API fetches or task writes return `500` without a partial comment or receipt, so the same delivery can be retried. Review content is external input; embedded Multica mention links are neutralized.
+
+After deployment, submit a review on a test PR linked to a test issue. Read back the issue comment and the author's run. Redeliver the same review and confirm that the comment/run counts do not increase. Confirm that a bot review does not queue a run, and that a request with an invalid webhook signature is rejected.
+
+## Green-checks wakeups
+
+Set `github_wake_on_ci_success` to `true` in the workspace settings to start a run when the checks of a linked open or draft PR pass on its current head. The setting is off by default. A PR whose only unfinished check is the `security-gate` verdict status counts as passed, so the run does not wait for a review verdict that the run itself may be asked to request. A new head wakes again. A failing run that is re-run to green on the same head wakes once more. The same green delivered again does not.
+
+The run goes to the PR's author agent, resolved as for conflict and failed-check wakeups. If the author is unknown, the run goes to the issue's assignee. When the assignee is a person and no author agent is known, the person gets a notification instead.
+
+## Wait for a GitHub Actions run
+
+A wakeup can wait for a GitHub Actions run, such as a deploy that stops at an environment approval gate, without polling. The run needs no linked PR.
+
+```bash
+multica issue wakeup create ISSUE --until-gh-run OWNER/REPO:RUN_ID --until-gh-run-state completed --expires-in 3h --on-timeout wake --instruction-file ./instruction.md
+```
+
+`--until-gh-run` takes one of three forms:
+
+| Form | Selects |
+|---|---|
+| `owner/repo:RUN_ID` | The run with that ID |
+| `owner/repo:WORKFLOW_FILE@SHA` | The run of that workflow file whose own `head_sha` is the full 40-character SHA |
+| `https://github.com/owner/repo/actions/runs/RUN_ID` | The run with that ID |
+
+`--until-gh-run-state` is `completed` (default) or `waiting`. `waiting` fires each time a job in the run starts waiting at an environment gate. Check `waiting_now` in the facts before you ask a person to approve a gate: it is `false` when the gate has already closed. The `SHA` form matches the run's own commit. A deploy run that deploys another commit, such as `cd-deploy.yml`, needs its run ID.
+
+The App must be installed for the repository owner in this workspace. The App must also subscribe to **Workflow run** and **Workflow job** events, which need **Actions: read**. Rows are kept for 30 days.
+
+### Limitation: observed events only
+
+The rule is satisfied by webhook events that Multica received after the App subscribed. It is not a lookup of a run's current state.
+
+- GitHub does not redeliver a failed delivery by itself. A lost `completed` event leaves the stored run `in_progress`.
+- A run or gate that began before the App subscribed is invisible.
+- To recover, redeliver the event by hand from the App's **Advanced → Recent Deliveries** page.
+- Always set `--expires-in` with `--on-timeout wake`. The default at the deadline is `end`, which starts no run.
+
+### Recipe: wait for a deploy after a merge
+
+1. Wait for the qualification run of the merge commit `M`:
+   `--until-gh-run cheese-work/multica:cd-qualification.yml@M --until-gh-run-state completed --expires-in 3h --on-timeout wake`
+2. The woken run finds the deploy run ID: `gh run list -R cheese-work/multica --workflow cd-deploy.yml --json databaseId,displayTitle`. Pick the run whose title contains `M`.
+3. Wait for the approval gate: `--until-gh-run cheese-work/multica:RUN_ID --until-gh-run-state waiting --expires-in 6h --on-timeout wake`
+4. After the approval, wait for the finish with the same rule and `--until-gh-run-state completed`.
+
+## Release issues from the C00 deploy
+
+A successful `CD deploy to C00` run on `main` opens one issue per deploy. No new App permission or event is needed: the signed `workflow_job` delivery that the App already sends carries the proof.
+
+- **Trigger.** The `release-receipt` job finishes `success` and its step named `release-receipt old=<sha> new=<sha> digest=sha256:<hex>` also finishes `success`. The workflow runs that job only after a real deploy, a passing readback and the passing 15-minute confirm, so a skipped, failed or superseded deploy opens no issue.
+- **Binding.** Set the workspace setting `release_deploy_repo` to `owner/name` of the deploy repository. Without it no release issue opens. The receipt's repository must be that repository, and the run must be the `.github/workflows/cd-deploy.yml` run that the signed `workflow_run` delivery mirrored for it. A job with the same name in any other repository or workflow opens nothing; the refusal is logged and is not retried. Declaring a repository in the workspace's repository list does not authorize it.
+- **Order and retry.** GitHub does not order deliveries and does not redeliver a failed one. Multica stores the verified delivery first, before it looks up the installation and the workspace, then checks the run. If the run is not mirrored with its workflow file yet, the receipt waits and opens the issue when the `workflow_run` delivery arrives. If that run is another workflow file, the receipt is discarded. A sweep that runs every minute fans out again any stored delivery whose installation or workspace lookup failed, and settles any stored receipt a failed run lookup or a concurrent delivery left behind, so no manual redelivery is needed. A delivery or receipt that is still unsettled after 7 days is dropped.
+- **Issue.** Title `release(<repo>): <old>..<new>`, status `todo`, label `release`, the deployed SHA and image digest, and the merged pull requests grouped as feat, fix, CLI, skill and other. The list covers pull requests merged since the previous release issue, or the last 7 days for the first one.
+- **Label.** The `release` label is added in a separate write after the issue is created, so the `issue.labels_changed` event fires for wakeup rules scoped to that label.
+- **No duplicates.** The issue id is derived from the workspace, repository, SHA and digest, so a redelivery, a rerun or a concurrent delivery of the same deploy creates nothing new. A different SHA or digest opens a new issue.
+- **Recovery.** If a delivery fails after the issue is created, the next delivery of the same deploy reuses that issue and finishes the missing link or label write. No claim waits for a timeout.
+- **Limit.** The same signature and installation checks as other deliveries apply. The issue's creator is the workspace owner.
 
 ## Self-hosting setup
 
@@ -145,8 +367,9 @@ Create the App under GitHub's **Developer settings → GitHub Apps** and fill in
 | Field | Value |
 |---|---|
 | Homepage URL | Your Multica frontend address, e.g. `https://multica.example.com` |
-| Callback URL | `https://<api-host>/api/github/setup` |
-| Request user authorization (OAuth) during installation | Enable |
+| Callback URL | `https://<api-host>/api/github/setup` — the same endpoint as the Setup URL |
+| Request user authorization (OAuth) during installation | Enabled |
+| Setup URL | `https://<api-host>/api/github/setup`, with **Redirect on update** enabled |
 | Webhook URL | `https://<api-host>/api/webhooks/github` |
 | Webhook secret | A random string you keep long-term |
 
@@ -155,17 +378,31 @@ Repository permissions:
 | Permission | Level |
 |---|---|
 | Metadata | Read-only |
-| Pull requests | Read-only |
+| Pull requests | Read and write; write is needed for [stack auto-linking](#stack-auto-linking) |
+| Actions | Read-only; needed by `--until-gh-run` wakeups |
 | Checks | Read-only; used to show CI status |
 | Commit statuses | Read-only; used to aggregate legacy-status CI |
+| Variables | Read-only; needed to read the `AGENT_MERGE_PAUSED` and `MAIN_RED_PAUSED` repository variables for merge pause checks |
 | Actions | Optional, read-only; lets CI status ignore a cancelled run that a newer run of the same workflow replaced on the same commit |
+
+Organization permissions:
+
+| Permission | Level |
+|---|---|
+| Members | Read-only; required to verify that the connecting user is an active organization admin |
 
 Subscribe to these events:
 
 - **Pull request**;
+- **Pull request review**, **Pull request review comment**, and **Issue comment**, if human review wakeups are configured;
+- **Workflow run** and **Workflow job**, needed by `--until-gh-run` wakeups;
 - **Check suite**, **Check run**, and **Status**, which trigger CI and mergeability refreshes.
 
 PR snapshots use the Pull requests, Checks, and Commit statuses REST APIs. Contents access is not required. With the optional Actions permission, Multica also reads the commit's workflow runs. Without it, a cancelled run still counts as failed even after a newer run of the same workflow passes.
+
+Importing or refreshing a skill from a private repository uses a short-lived installation token for the workspace's installation on the repository owner's account, falling back to the server's `GITHUB_TOKEN`. That token needs the optional **Contents: read** permission; without it, or without an installation for the owner, the fetch uses `GITHUB_TOKEN` or no credential. The token is sent only to GitHub hosts.
+
+Stack auto-linking calls GitHub's stacks API and needs the Pull requests **write** permission. An App that only has read keeps everything else working; stack outcomes show `no_permission` (see [report codes](#stack-report-codes)). If you raise the permission on an installed App, each installation owner must approve it on GitHub before it takes effect.
 
 <Callout type="warning">
 This is the **Webhook secret**, not the OAuth Client secret. If the two sides have different webhook secrets, GitHub deliveries return `401 invalid signature`.
@@ -181,42 +418,48 @@ Take the slug from the App's public URL. For example, the slug of `https://githu
 ```dotenv
 GITHUB_APP_SLUG=multica-acme
 GITHUB_WEBHOOK_SECRET=<the webhook secret you entered when creating the App>
-GITHUB_APP_CLIENT_ID=<Client ID>
-GITHUB_APP_CLIENT_SECRET=<Client secret>
+GITHUB_APP_CLIENT_ID=<the App's Client ID>
+GITHUB_APP_CLIENT_SECRET=<a client secret generated on the App's settings page>
 FRONTEND_ORIGIN=https://multica.example.com
 ```
 
-All six GitHub variables in this section are required for new connections, including `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY`. Missing any of them disables Connect; webhook acceptance requires only `GITHUB_WEBHOOK_SECRET`. Existing bindings continue working. Set the first Callback URL to this endpoint and enable installation OAuth before deploying. GitHub does not use a separate Setup URL when installation OAuth is enabled.
-
-For new connections, PR-card CI status and mergeability, also set the next two variables. Multica uses a metadata-only installation token to compare the complete installation repository list with the repositories the connecting user administers:
+The App credentials below let Multica authoritatively resolve the installation before binding it. They are also used for the repository picker and for CI and mergeability snapshots:
 
 ```dotenv
 GITHUB_APP_ID=<the GitHub App's numeric ID>
 GITHUB_APP_PRIVATE_KEY=<full PEM private key, keeping the BEGIN/END lines and newlines>
 ```
 
-Generate the private key under the GitHub App's **Private keys → Generate a private key**. Without these two variables, Connect is disabled. Existing bindings still mirror PRs and update issues from webhooks, but PR cards lack CI and mergeability status.
+Generate the private key under the GitHub App's **Private keys → Generate a private key**. Without these App credentials, existing installations can still receive signed webhooks, mirror PRs, auto-link issues, and update issue status on merge. Creating a binding, browsing repositories, and refreshing CI or mergeability require the credentials, so PR cards show no CI or merge state until they are configured.
+
+All six GitHub values are required for the connect button. During a new connection, Multica exchanges GitHub's user-authorization code, resolves the installation as the App, and then requires either an exact personal-account ID and login match or an active organization admin membership. Visibility in a user's installation list is not treated as proof of organization authority. Verification errors fail closed. The temporary user token is revoked after the check.
+
+When adding the Members or Actions permission to an App that is already installed, approve the permission change in every target organization before connecting it to a new workspace. Existing installations must accept the new permission; until they do, `--until-gh-run` wakeups receive no workflow events.
+
+Optionally set `GITHUB_ALLOWED_ACCOUNT_IDS` to a comma-separated list of numeric GitHub account IDs (the `id` of the user or organization, not its login). Left unset or empty, any account that passes the check above can connect. Once set, Multica refuses to bind an installation whose account ID is not listed. The setup callback redirects with `github_error=installation_not_allowed` and creates no binding. A code-less **Redirect on update** callback is judged against the account ID already stored for that binding. A binding with no stored account ID is refused, which fails closed. A malformed value, such as a login, stops the server at startup.
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+GitHub `deleted` and `suspend` events always remove the binding, whatever the list says.
 
 </Step>
 <Step>
 
-### Update the database and connect [#3-update-the-database-and-connect]
+### 3. Restart and connect
 
-When upgrading an existing deployment, run the regular database migrations first:
-
-```bash
-make migrate-up
-```
-
-Restart the API server, then complete the connection in **Settings → Code**.
+This change needs no database migration. Restart the API server with the new environment values, approve any requested permission update for existing installations, then complete the connection in **Settings → Code**. Use **Add account or organization** to connect more installations to the same workspace.
 
 </Step>
 </Steps>
 
 ## Troubleshooting
 
-- **Connect button disabled**: check all six GitHub variables above, the first Callback URL, and **Request user authorization (OAuth) during installation**.
+- **Connect button disabled**: check that `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_ID`, and `GITHUB_APP_PRIVATE_KEY` reached the API process.
+- **Connect fails right after installing**: enable **Request user authorization (OAuth) during installation**, set both callback and setup URLs to `/api/github/setup`, and grant Members read-only. The connecting user must own the personal account or be an active admin of the organization.
 - **Webhook returns 401**: confirm the GitHub App and the API use the same webhook secret, then redeliver from GitHub's **Recent Deliveries**.
+- **PR still open in Multica after it merged on GitHub**: the `closed` webhook was lost. With `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` configured, the next CI refresh reads the PR from GitHub and records the merge or close as if the webhook had arrived. Open the issue to start a refresh, or wait for the periodic background refresh. Without the credentials, redeliver the event from **Recent Deliveries**.
 - **PR not linked**: check that the repository is in the App's authorized scope, auto-linking is on, the identifier belongs to the current workspace, and nobody removed the PR from the issue.
 - **Identifier in the body but not linked**: put it right after a closing keyword (`Closes MUL-123`), or in the branch name or PR title, or link the PR by hand.
 - **No CI status**: confirm `GITHUB_APP_ID` and `GITHUB_APP_PRIVATE_KEY` are configured, and that the App has read-only Pull requests, Checks, and Commit statuses permissions with the matching events subscribed. Contents access is not required. If permissions were added to an installed App, each installation owner must approve them on GitHub before they take effect.

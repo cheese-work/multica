@@ -51,6 +51,8 @@
   ],
   "backend": [
     "server/**",
+    "scripts/migration-parity.sh",
+    "scripts/migration-parity.test.sh",
     "packages/core/runtimes/cli-version.ts",
     "packages/core/types/inbox.ts",
     ".multica/environments.toml",

@@ -84,7 +84,7 @@ L'en-tête du journal d'exécution indique ce que la tâche a déjà dépensé. 
 
 ## Échecs et relances automatiques
 
-Les défaillances transitoires — un runtime brièvement hors ligne, un redémarrage du daemon, un délai d'exécution dépassé ou une interruption réseau dans l'outil de codage IA — peuvent déclencher une relance automatique. Par défaut, une exécution ordinaire est tentée au plus deux fois ; les interruptions réseau de l'outil ont droit à trois tentatives au maximum.
+Les défaillances transitoires — un runtime brièvement hors ligne, un redémarrage du daemon, un délai d'exécution dépassé ou une interruption réseau dans l'outil de codage IA — peuvent déclencher une relance automatique. Par défaut, une exécution ordinaire est tentée au plus deux fois ; les interruptions réseau de l'outil ont droit à trois tentatives au maximum. Lorsque le compte du fournisseur refuse une exécution pour dépassement de sa limite de concurrence, les relances attendent 2 minutes puis 10 minutes, et chaque relance est consignée en commentaire système sur l'issue.
 
 Les erreurs renvoyées par l'agent lui-même ne sont généralement pas relancées automatiquement. Identifiants expirés, quota épuisé, mauvaise configuration ou modèle incapable de traiter la requête : il faut d'abord corriger la cause, puis relancer manuellement.
 
@@ -95,6 +95,8 @@ Lorsqu'une tâche n'a aucune autre exécution active et aucune nouvelle relance 
 ## Coupe-circuit de boucle
 
 Multica refuse l'exécution d'un agent sur une tâche lorsque cet agent a déjà démarré 5 exécutions sur cette tâche au cours des 30 dernières minutes. L'exécution refusée est la 6e. La tâche passe à `blocked` avec le motif `loop-breaker: <agent> started N runs in 30 min`, et un commentaire système nomme l'agent et les types de déclencheur de ses dernières exécutions. Multica publie au plus un commentaire de ce type par tâche et par agent et par heure. Les exécutions des autres agents sur la tâche et les tâches de chat sans tâche associée ne sont pas comptées.
+
+Une exécution de revue d'une pull request qui attend dans la file d'étape de son propriétaire n'est pas abandonnée : la tâche reste dans son statut de revue au lieu de passer à `blocked`, le commentaire système indique que l'exécution est en file, et elle démarre d'elle-même dès que moins d'exécutions que la limite tombent dans la fenêtre.
 
 Définissez `MULTICA_LOOP_BREAKER_MAX_RUNS` (par défaut `6` ; `0` désactive le coupe-circuit) et `MULTICA_LOOP_BREAKER_WINDOW` (par défaut `30m`) sur le serveur pour modifier ces limites.
 

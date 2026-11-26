@@ -9,7 +9,7 @@ import { PrLinkDemo } from "@/components/demos/pr-link-demo";
 
 GitHub를 연결하면 Multica가 태스크 번호를 기준으로 pull request를 자동 연결합니다. 태스크 상세 화면에서 PR 상태, 변경 규모, CI 결과, merge conflict를 바로 확인할 수 있습니다.
 
-GitHub 연동은 설치할 때 승인한 저장소만 읽으며 코드, 댓글, status check를 제출하지 않습니다.
+GitHub 연동은 설치할 때 승인한 저장소만 읽으며 코드, 댓글, status check를 제출하지 않습니다. 쓰기는 하나뿐이고 선택 사항입니다. [스택 자동 연결](#stack-auto-linking)을 `link`로 설정하면 서로 의존하는 PR을 GitHub 스택으로 묶습니다.
 
 자체 배포한 Multica에서는 자체 호스팅 Forgejo, Gitea, GitLab 인스턴스도 동시에 연결해 동일한 PR 자동 연결, merge 시 상태 변경, CI 표시 기능을 사용할 수 있습니다. **설정 → 코드**에서 연결하며 자세한 내용은 [자체 호스팅 Git 코드 호스팅](/vcs-integration)을 참고하세요. Multica Cloud에는 이 메뉴가 없습니다.
 
@@ -33,10 +33,6 @@ GitHub에서 계정 또는 조직을 선택하고 모든 저장소나 지정한 
 설치가 끝나면 Multica로 돌아옵니다.
 </Step>
 </Steps>
-
-GitHub 행 또는 **저장소 추가** 메뉴에서 **계정 또는 조직 추가**를 선택하면 기존 연결을 해제하지 않고 다른 설치를 연결할 수 있습니다. 각 연결에는 계정과 연결한 사람이 표시되며 저장소 선택기에서 계정을 전환할 수 있습니다. **GitHub 기능 일시 중지**는 워크스페이스의 모든 연결에 적용됩니다.
-
-GitHub에서 사용자 인증을 반환하지 않으면 App이 이미 설치되어 있거나 다른 워크스페이스에 연결되어 있어도 새 연결을 확인할 수 없습니다. 다시 연결하고 인증을 완료하세요. 반복되면 Multica 운영자에게 App의 사용자 인증 설정 확인을 요청하세요. 저장소 범위 변경만으로는 새 연결이 완료되지 않을 수 있습니다.
 
 연결 상태는 같은 페이지에 표시됩니다. 일반 멤버는 상태를 볼 수 있지만 연결, 연결 해제, 스위치 변경은 할 수 없습니다.
 
@@ -80,7 +76,9 @@ Resolves MUL-123
 
 본문에 `Related to MUL-123`처럼 단순히 언급만 하면 해당 태스크와 전혀 연결되지 않습니다. Commit message와 PR 댓글도 연결을 트리거하지 않습니다.
 
-직접 연결할 수도 있습니다. 태스크의 **Pull requests** 영역에서 **+** 버튼을 누르고 PR URL을 붙여넣습니다. PR이 없는 태스크에서는 이 영역이 숨겨지므로, 대신 사이드바 아래쪽의 **… 추가** 행(**Pull request 추가**, **깨우기 또는 Pull request 추가** 등)을 사용합니다. PR을 태스크에서 빼려면 해당 행의 **⋯** 메뉴에서 **태스크에서 제거**를 선택합니다. 이후 Multica는 제목이나 브랜치를 보고 다시 연결하지 않습니다.
+포크에서 온 PR은 포크의 소유자가 베이스 저장소와 같을 때만 자동으로 연결됩니다. 이런 PR을 머지해도 태스크 상태는 바뀌지 않습니다. 다른 소유자의 포크에서 온 PR은 직접 연결하세요.
+
+직접 연결할 수도 있습니다. 태스크의 **Pull requests** 영역에서 <strong>+</strong>를 누르고 PR URL을 붙여넣습니다. PR을 태스크에서 빼려면 해당 행의 **⋯** 메뉴에서 **태스크에서 제거**를 선택합니다. 이후 Multica는 제목이나 브랜치를 보고 다시 연결하지 않습니다.
 
 ## 태스크에서 PR 확인
 
@@ -88,13 +86,13 @@ Resolves MUL-123
 
 - 저장소, 번호, 제목, 작성자
 - `Open`, `Draft`, `Merged`, `Closed` 상태
-- 번호 바로 뒤의 추가 및 삭제한 줄 수(예: `#19 · +48 −12`). 변경한 파일 수는 행에 마우스를 올리면 표시
+- 추가 및 삭제한 줄 수와 변경한 파일 수
 - CI 상태: 모두 통과(개수 표시), 일부 실패(실패한 check 이름 표시), 일부 진행 중. 설정된 check가 없는 PR에는 이 항목을 표시하지 않으며 "check 없음"을 통과로 간주하지 않습니다.
 - merge 가능 여부: merge 가능(GitHub가 merge 상태를 clean으로 보고한 경우만), conflict 있음, blocked, behind
 
 CI 상태와 merge 가능 여부는 Multica가 GitHub API에서 가져온 snapshot이며 서로 독립적입니다. 이미 merge되거나 닫힌 PR에는 두 항목을 더 이상 표시하지 않습니다. GitHub를 일시적으로 사용할 수 없으면 카드는 마지막 snapshot을 유지하고 만료된 정보라고 표시합니다.
 
-목록 아래에는 다음에 일어날 일을 한 줄로 보여 줍니다. 예를 들어 "#19 병합 시 완료(으)로 변경"이나 병합되지 않고 닫힌 PR입니다. 병합을 기다리는 PR이 하나뿐이면 그 행에 바로 "병합 후 → 완료"로 표시됩니다. 워크스페이스가 "변경하지 않음"으로 설정되어 있거나 태스크가 이미 대상 상태이면 표시되지 않습니다.
+목록 아래에는 다음에 일어날 일을 한 줄로 보여 줍니다. 예를 들어 "#19 병합 시 완료(으)로 변경"이나 병합되지 않고 닫힌 PR입니다. 워크스페이스가 "변경하지 않음"으로 설정되어 있거나 태스크가 이미 대상 상태이면 표시되지 않습니다.
 
 항목을 클릭하면 GitHub의 PR이 열립니다. **PR 사이드바**를 꺼도 이 영역만 숨겨질 뿐 연결은 해제되지 않습니다.
 
@@ -105,7 +103,7 @@ PR이 merge되었다고 해서 태스크가 반드시 끝난 것은 아닙니다
 다음 조건을 모두 만족하면 태스크가 선택한 상태로 바뀝니다.
 
 1. 태스크에 연결된 PR이 모두 `Merged` 상태입니다. `Open`이나 `Draft` PR이 남아 있으면 태스크는 계속 기다립니다. merge되지 않고 닫힌 PR도 태스크에서 제거할 때까지 마찬가지입니다.
-2. 태스크가 `done` 또는 `cancelled`가 아니고, 이미 대상 상태가 아니고, 이 태스크만 상태 변경을 끄지 않았습니다(**Pull requests → ⋯ → PR 병합 후에도 상태 유지**).
+2. 태스크가 `done` 또는 `cancelled`가 아니고, Triage 중이 아니며, 이미 대상 상태가 아니고, 이 태스크만 상태 변경을 끄지 않았습니다(**Pull requests → ⋯ → PR 병합 후에도 상태 유지**).
 
 <PrLinkDemo />
 
@@ -113,7 +111,23 @@ PR을 어떻게 연결했는지는 결과에 영향을 주지 않습니다. 제�
 
 판단은 PR 이벤트가 태스크에 닿을 때만 이루어집니다. 연결된 PR의 merge, 연결 추가, 연결 제거입니다. 태스크를 다시 열어도 원래대로 돌아가지 않으며, 다음에 연결된 PR이 merge될 때 바뀝니다. 설정을 바꿔도 이전에 merge된 태스크에는 영향을 주지 않습니다.
 
-상태 변경은 관련 PR을 적은 시스템 작업으로 타임라인에 기록되고 상태 변경 알림을 켠 해당 태스크 구독자에게 알림이 전달됩니다. 이 설정은 [자체 호스팅 Git 코드 호스팅](/vcs-integration)을 포함한 모든 코드 호스트에 공통으로 적용됩니다.
+상태 변경은 관련 PR을 적은 시스템 작업으로 타임라인에 기록되고 해당 태스크 구독자에게 알림이 전달됩니다. 이 설정은 [자체 호스팅 Git 코드 호스팅](/vcs-integration)을 포함한 모든 코드 호스트에 공통으로 적용됩니다.
+
+### 워크플로 안에서
+
+태스크의 워크플로에 대상 상태가 있고 그 단계에 인계가 설정되어 있으면, 병합에 따른 이동은 인계입니다. 태스크는 그 단계의 담당자에게 넘어가고, 담당이 에이전트라면 해당 단계로 가는 다른 이동과 똑같이 실행이 시작됩니다. 담당자가 없는 단계는 상태만 바꾸고 실행을 시작하지 않습니다. 워크플로에 대상 상태가 없으면 태스크는 이동하지 않습니다. 같은 병합에 대한 "PR 병합" 깨우기는 이 실행에 합류하므로, 병합 한 번에 실행은 한 번만 시작됩니다. 그 실행이 시작되기 전에 끝나면 깨우기가 대신 실행을 한 번 시작합니다. [이슈 깨우기](/issue-wakeups#pr-merged)도 참고하세요.
+
+### 하위 PR 포함
+
+워크플로의 **하위 PR 포함** 스위치가 켜져 있으면(자세한 내용은 [워크플로](/workflows) 참고) 판단은 태스크 자신과 직속 하위 태스크의 PR을 읽습니다. 이 PR 중 하나 이상이 `Merged`이고 `Open`이나 `Draft`가 하나도 없으면 태스크가 이동합니다. 병합되지 않고 닫힌 PR은 막지 않으며, 하위 태스크의 상태도 확인하지 않습니다. 하위 태스크에서 PR 이벤트가 일어나면 상위 태스크의 판단도 다시 합니다.
+
+스위치가 꺼져 있으면 태스크 자신의 PR만 계산하며, 병합된 PR이 있는 상위 태스크는 모든 하위 태스크가 `done` 또는 `cancelled`가 될 때까지 기다립니다. 마지막 하위 태스크가 그 상태가 되면 판단을 다시 하므로, 새 PR 이벤트가 없어도 그때 상위 태스크가 이동합니다.
+
+### 판단이 끝나지 못할 때
+
+판단이 끝나지 못하면(예: 이동이 거부되었거나 PR 이벤트 직후 서버가 멈춘 경우) Multica는 그 태스크의 재시도를 보관합니다. 첫 시도는 이벤트 2분 뒤입니다. 시도가 실패하면 대기 시간은 30초에서 시작해 최대 1시간까지 두 배씩 늘어납니다. 웹훅을 다시 보내거나 PR을 다시 연결할 필요는 없습니다. 판단이 끝나면 재시도는 삭제됩니다. 자체 호스팅 Git 호스트의 PR 이벤트에도 똑같이 적용됩니다.
+
+워크플로에 저장된 `PR merged` 전환은 지원 중단 예정입니다. 위 설정이 이를 대신합니다. [워크플로](/workflows#pr-merged)를 참고하세요.
 
 ## 여러 워크스페이스
 
@@ -123,11 +137,168 @@ PR을 어떻게 연결했는지는 결과에 영향을 주지 않습니다. 제�
 
 같은 번호가 연결된 여러 워크스페이스에서 태스크와 일치하면(접두사가 같을 때 생길 수 있음) Multica는 어느 워크스페이스에서도 자동으로 연결하지 않습니다. merge로 관련 없는 태스크가 완료되지 않도록 하기 위해서입니다. 올바른 워크스페이스에서 직접 연결하세요.
 
+## 의존하는 PR을 GitHub 스택으로 묶기 [#stack-auto-linking]
+
+PR의 base 브랜치가 같은 저장소에 있는 다른 열린 PR의 head 브랜치이면 두 PR은 하나의 체인이 됩니다. Multica는 이 체인을 하나의 GitHub 스택으로 묶을 수 있어서, 아무도 `gh stack link`를 직접 실행하지 않아도 됩니다.
+
+### 하는 일과 절대 하지 않는 일
+
+Multica 태스크에 연결된 PR이 시작점입니다. 조상 PR에는 태스크가 필요 없습니다. Multica는 그 PR에서 base PR을 따라 내려가며 다음 중 하나를 합니다.
+
+| 탐색 결과 | 동작 |
+|---|---|
+| PR의 base가 기본 브랜치 | 아무것도 하지 않습니다. 이후 상위 계층이 생기면 스택의 맨 아래가 될 수 있습니다. |
+| PR이 이미 스택에 있고 base PR 바로 위에 있음 | 아무것도 하지 않습니다. |
+| 체인의 어떤 PR도 스택에 없음 | 스택 하나를 만듭니다. 맨 아래 계층부터 순서대로 넣습니다. |
+| 기존 스택의 **맨 위** PR까지 도달함 | 새 PR(사이에 있는 스택에 없는 PR 포함)을 아래부터 순서대로 그 스택에 추가합니다. |
+| 그 밖의 경우([리포트 코드](#stack-report-codes) 참고) | 아무것도 쓰지 않고 리포트합니다. |
+
+PR을 다른 스택으로 옮기거나, 스택을 해제하거나, 순서를 바꾸지 않으며, merge, rebase, push도 하지 않습니다. 조상에 문제가 있는 체인은 아예 연결하지 않으므로, 중간까지만 묶인 스택이 만들어지지 않습니다. GitHub 스택은 아래에서 위로 merge하며, 코드 merge는 여전히 사람이 합니다. 탐색은 조상 최대 10개까지이며, head가 같은 저장소에 있는 PR만 셉니다(포크의 head는 세지 않습니다).
+
+연결된 PR을 열거나, 다시 열거나, 리뷰 준비 상태로 바꾸거나, 동기화하거나, base 브랜치를 수정할 때, 또는 아래쪽 PR이 merge될 때 동작합니다. 10분마다 도는 재조정에도 base 브랜치 이름이 `main`도 `master`도 아닌 연결된 열린 PR을 확인하는 제한된 단계가 있어, 놓친 webhook을 보완합니다. 이 단계는 저장소의 실제 기본 브랜치를 조회하지 않습니다. 기본 브랜치 이름이 다르면 그 PR도 확인 대상이 되고, PR이 스택에 속하지 않으면 아무것도 바꾸지 않습니다. 저장소마다 한 번에 작업 하나만 실행됩니다. GitHub 쪽 오류가 PR 처리나 webhook을 실패시키지 않습니다.
+
+### 모드 선택
+
+워크스페이스 설정 `github_stack_autolink`에 모드와, 저장소별 선택 모드를 넣습니다.
+
+```json
+{ "mode": "report", "repos": { "owner/repo": "link" } }
+```
+
+| 모드 | 효과 |
+|---|---|
+| `off` | 아무것도 하지 않습니다. |
+| `report` | 읽고, 판단하고, 하려던 일을 기록합니다. 쓰지는 않습니다. 키가 없을 때의 기본값입니다. |
+| `link` | 스택을 GitHub에도 씁니다. |
+
+순서는 `off` < `report` < `link`입니다. 규칙:
+
+1. 워크스페이스 `mode`가 `off`이면 전체 중단입니다. 저장소 항목으로 올릴 수 없습니다.
+2. 그 외에는 저장소 항목이 워크스페이스 `mode`보다 우선합니다. 한 저장소만 `report`를 `link`로 올리거나, 무엇이든 `off`로 내릴 수 있습니다.
+3. 같은 GitHub App installation을 여러 워크스페이스에 연결할 수 있습니다([여러 워크스페이스](#여러-워크스페이스) 참고). 저장소의 **최종 모드**는 그 installation에 연결된 모든 워크스페이스의 유효 모드 중 가장 낮은 값입니다. 쓰려면 모두 `link`여야 합니다.
+4. 서버 환경 변수 `GITHUB_STACK_AUTOLINK=0`은 모든 저장소와 워크스페이스를 `off`로 만듭니다.
+5. 모드는 쓰기 직전마다 다시 읽습니다. 작업이 대기하는 동안 모드가 내려갔다면 쓰지 않습니다.
+
+읽을 수 없는 설정은 `off`로 취급합니다.
+
+### CLI
+
+```bash
+multica github stack-autolink status --repo owner/repo
+multica github stack-autolink set [--repo owner/repo] --mode off|report|link
+```
+
+`status`는 모든 멤버가 쓸 수 있습니다. 최종 모드, 환경 변수 중단 여부, 저장소 소유자의 installation에 연결된 내 워크스페이스별 유효 모드를 출력합니다. 다른 워크스페이스는 개수만 셉니다. `set`은 워크스페이스 owner 또는 admin만 쓸 수 있습니다. `--repo` 없이 쓰면 워크스페이스 모드를, `--repo`와 함께 쓰면 해당 저장소 항목을 설정합니다. 둘 다 `--output json`을 지원합니다.
+
+<Callout type="info">
+저장소가 `link`가 될 때까지는 쌓은 PR을 `gh stack link`로 직접 연결하세요. `link` 모드에서 쌓은 PR을 연 뒤에는 `GET repos/{owner}/{repo}/stacks?pull_request=<번호>`를 한 번 읽어 보세요. 스택이 없으면 직접 연결하세요.
+</Callout>
+
+### 리포트 코드 [#stack-report-codes]
+
+각 결과는 그 PR에 연결된 모든 태스크의 활동에 기록됩니다. 워크스페이스 자체 모드가 `report` 또는 `link`인 경우만 해당합니다. 같은 PR과 base 브랜치에 대해 태스크의 직전 결과와 같은 내용은 건너뜁니다. 결과는 메트릭과 서버 로그에도 남습니다.
+
+| 코드 | 의미 | 쓰기 |
+|---|---|---|
+| `created` | 새 스택을 만들고 다시 읽어 확인했습니다. | 예 |
+| `extended` | 기존 스택에 PR을 추가하고 다시 읽어 확인했습니다. | 예 |
+| `would_create` | `report` 모드: 스택을 만들었을 것입니다. | 아니요 |
+| `would_extend` | `report` 모드: 스택에 PR을 추가했을 것입니다. | 아니요 |
+| `in_other_stack` | PR이 스택에 있지만 base PR 바로 위가 아닙니다. | 아니요 |
+| `branching_chain` | 체인이 스택과 만나는 PR이 그 스택의 맨 위가 아닙니다. | 아니요 |
+| `ambiguous_base` | base 브랜치를 head로 쓰는 열린 PR이 저장소에 둘 이상 있습니다. | 아니요 |
+| `stale_base` | base 브랜치에 열린 PR이 없고 기본 브랜치도 아니거나, 그 PR이 이미 merge되었습니다. 사람이 base를 바꿔야 합니다. | 아니요 |
+| `closed_ancestor` | 조상 PR이 merge 없이 닫혔습니다. | 아니요 |
+| `cycle` | 체인이 이미 지나간 브랜치로 되돌아옵니다. | 아니요 |
+| `depth_limit` | 체인이 조상 10개보다 깊습니다. | 아니요 |
+| `conflict` | Multica가 모두 다시 읽은 뒤에도 GitHub가 `422`를 두 번 반환했습니다. | 아니요 |
+| `unsupported` | 저장소에 스택 API가 없습니다(`404`). | 아니요 |
+| `no_permission` | App에 권한이 없습니다(`403`). [자체 호스팅 설정](#자체-호스팅-설정)을 확인하세요. | 아니요 |
+| `schema` | GitHub 스택 API 응답이 Multica가 모르는 형태입니다. | 아니요 |
+| `readback_failed` | 쓰기는 성공했지만 다시 읽었을 때 순서대로 된 스택을 찾지 못했습니다. GitHub에서 PR을 확인하세요. | 예 |
+
+스택 API는 GitHub에서 아직 미리 보기 단계이므로, 형태가 바뀌면 `schema`로 표시되고 webhook 실패로 이어지지 않습니다.
+
+## 승인 카드로 저장소 만들기 [#repo-create]
+
+에이전트는 혼자서 GitHub 저장소를 만들 수 없습니다. 에이전트가 액션 파일을 준비하면 워크스페이스 소유자가 패스키로 승인합니다. 승인되면 서버가 에이전트에게 보이지 않는 조직 관리자 자격 증명으로 저장소를 만듭니다.
+
+```bash
+multica github repo-create --org tevo-studio --name we006 \
+  --template tevo-studio/code-android-template --private \
+  --description "WE-006 app" --out repo-create.json
+multica decision request <issue> --action-file repo-create.json
+```
+
+| 플래그 | 의미 |
+|---|---|
+| `--org` | 조직. `tevo-studio`와 `cheese-work`만 허용됩니다. |
+| `--name` | 저장소 이름. |
+| `--template` | 선택 사항인 `owner/repo` 템플릿. 소유자도 승인된 조직이어야 합니다. GitHub generate API는 ref를 받지 않으므로 템플릿의 기본 브랜치가 사용됩니다. |
+| `--private`, `--visibility` | `private`(기본값), `internal`, `public`. 공개 저장소는 공개 행위이므로 `--class publish`로 요청하세요. |
+| `--description` | 한 줄, 최대 290자. 서버가 저장소 설명에 `[multica-action:<id>]` 표시를 덧붙입니다. |
+| `--out`, `--dry-run`, `--expires-in` | 액션 파일을 쓰거나, 출력만 하거나, 카드가 열려 있는 시간을 정합니다. |
+
+승인되면 서버가 저장소를 만들고 다시 읽어 확인한 뒤 워크스페이스 저장소 등록부에 추가합니다. 조직에 이미 `guard_policy.repository_allowlist` 항목이 있으면 그곳에도 추가합니다. 항목이 없는 조직은 제한 없이 그대로 둡니다. 항목을 추가하면 조직의 나머지 저장소가 막히기 때문입니다. 거절되었거나 만료된 카드는 아무것도 만들지 않습니다. GitHub가 요청을 거부하면 액션은 실패로 끝나고 워크스페이스 행은 바뀌지 않습니다.
+
+### 셀프 호스팅
+
+자격 증명은 API 서버에만 설정합니다. 각 조직을 그곳에서 저장소를 만들 수 있는 토큰에 연결하는 JSON 객체입니다.
+
+```dotenv
+MULTICA_GITHUB_REPO_ADMIN_TOKENS={"tevo-studio":"<token>","cheese-work":"<token>"}
+```
+
+데몬은 이 변수를 모든 에이전트 환경에서 제거하며, 카드, 결과, 로그 어디에도 포함되지 않습니다. 설정하지 않으면 승인된 카드는 `credential_not_configured`로 실패합니다. GitHub App 자체에는 이를 위한 Administration 권한이 필요하지 않습니다.
+
 ## 연결 해제
 
-**설정 → 코드**에서 제거할 계정 옆의 **연결 해제**를 선택하세요. 해당 설치와 현재 워크스페이스의 연결만 제거되며 다른 연결은 이벤트를 계속 수신합니다. App은 GitHub에 설치된 상태로 유지되고 기존 PR 기록과 링크도 보존됩니다.
+**설정 → 코드**의 GitHub 행에서 **⋯** 메뉴의 **연결 해제**를 선택하면 현재 Multica 워크스페이스와 해당 installation의 관계만 제거됩니다. GitHub에서 App을 대신 제거하지는 않습니다. 기존 PR 기록은 유지되고 새 이벤트만 해당 워크스페이스에 들어오지 않습니다.
 
 GitHub 측의 저장소 승인을 취소하려면 개인 또는 조직의 GitHub App installations 페이지에서 App을 제거하거나 저장소 범위를 조정해야 합니다. App을 제거하면 해당 installation에 연결된 모든 Multica 워크스페이스가 이벤트 수신을 중지합니다.
+
+## 체크 성공 시 깨우기
+
+워크스페이스 설정에서 `github_wake_on_ci_success`를 `true`로 설정하면, 연결된 열린 PR 또는 초안 PR의 체크가 현재 헤드에서 통과할 때 실행이 시작됩니다. 기본값은 꺼짐입니다. 끝나지 않은 체크가 `security-gate` 판정 상태뿐인 PR은 통과한 것으로 봅니다. 새 헤드에서는 다시 깨웁니다. 실패한 실행을 같은 헤드에서 다시 실행해 통과하면 한 번 더 깨웁니다. 같은 성공이 다시 전달되어도 깨우지 않습니다.
+
+실행은 충돌 및 체크 실패 깨우기와 같은 방식으로 정해진 PR 작성자 에이전트에게 갑니다. 작성자를 알 수 없으면 이슈 담당자에게 갑니다. 담당자가 사람이고 작성자 에이전트를 알 수 없으면 그 사람에게 알림이 갑니다.
+
+## GitHub Actions 실행 기다리기
+
+wakeup은 환경 승인 게이트에서 멈추는 배포 같은 GitHub Actions 실행을 폴링 없이 기다릴 수 있습니다. 해당 실행에 연결된 PR은 필요하지 않습니다.
+
+```bash
+multica issue wakeup create ISSUE --until-gh-run OWNER/REPO:RUN_ID --until-gh-run-state completed --expires-in 3h --on-timeout wake --instruction-file ./instruction.md
+```
+
+`--until-gh-run`은 다음 세 가지 형식 중 하나를 받습니다.
+
+| 형식 | 선택되는 실행 |
+|---|---|
+| `owner/repo:RUN_ID` | 해당 ID의 실행 |
+| `owner/repo:WORKFLOW_FILE@SHA` | 해당 워크플로 파일의 실행 중 자체 `head_sha`가 40자 전체 SHA와 같은 것 |
+| `https://github.com/owner/repo/actions/runs/RUN_ID` | 해당 ID의 실행 |
+
+`--until-gh-run-state`는 `completed`(기본값) 또는 `waiting`입니다. `waiting`은 실행 안의 작업이 환경 게이트에서 대기를 시작할 때마다 발동합니다. 사람에게 게이트 승인을 요청하기 전에 facts의 `waiting_now`를 확인하세요. 게이트가 이미 닫혔다면 `false`입니다. `SHA` 형식은 실행 자체의 커밋과 일치합니다. 다른 커밋을 배포하는 실행(예: `cd-deploy.yml`)에는 실행 ID가 필요합니다.
+
+App은 이 워크스페이스의 저장소 소유자에 설치되어 있어야 합니다. 또한 **Workflow run**과 **Workflow job** 이벤트를 구독해야 하며, 두 이벤트에는 **Actions: read** 권한이 필요합니다. 레코드는 30일 동안 보관됩니다.
+
+### 제한: 관찰한 이벤트만
+
+규칙은 App이 구독한 이후 Multica가 받은 webhook 이벤트로 충족됩니다. 실행의 현재 상태를 조회하는 방식이 아닙니다.
+
+- GitHub는 실패한 전달을 자동으로 다시 전달하지 않습니다. `completed` 이벤트가 유실되면 저장된 실행은 `in_progress`로 남습니다.
+- App이 구독하기 전에 시작된 실행이나 게이트는 보이지 않습니다.
+- 복구하려면 App의 **Advanced → Recent Deliveries** 페이지에서 이벤트를 수동으로 다시 전달하세요.
+- 항상 `--expires-in`을 `--on-timeout wake`와 함께 설정하세요. 기한이 되었을 때의 기본값은 `end`이며, 실행을 시작하지 않습니다.
+
+### 예시: 병합 후 배포 기다리기
+
+1. 병합 커밋 `M`의 검증 실행을 기다립니다.
+   `--until-gh-run cheese-work/multica:cd-qualification.yml@M --until-gh-run-state completed --expires-in 3h --on-timeout wake`
+2. 깨어난 실행이 배포 실행 ID를 찾습니다: `gh run list -R cheese-work/multica --workflow cd-deploy.yml --json databaseId,displayTitle`. 제목에 `M`이 들어 있는 실행을 고릅니다.
+3. 승인 게이트를 기다립니다: `--until-gh-run cheese-work/multica:RUN_ID --until-gh-run-state waiting --expires-in 6h --on-timeout wake`
+4. 승인 후, 같은 규칙과 `--until-gh-run-state completed`로 완료를 기다립니다.
 
 ## 자체 호스팅 설정
 
@@ -143,8 +314,9 @@ GitHub의 **Developer settings → GitHub Apps**에서 App을 만들고 다음 �
 | 필드 | 값 |
 |---|---|
 | Homepage URL | Multica 프런트엔드 주소. 예: `https://multica.example.com` |
-| Callback URL | `https://<api-host>/api/github/setup` |
+| Callback URL | `https://<api-host>/api/github/setup` — Setup URL과 동일한 endpoint |
 | Request user authorization (OAuth) during installation | 활성화 |
+| Setup URL | `https://<api-host>/api/github/setup`, **Redirect on update** 활성화 |
 | Webhook URL | `https://<api-host>/api/webhooks/github` |
 | Webhook secret | 장기 보관할 임의 문자열 |
 
@@ -153,17 +325,31 @@ Repository permissions:
 | 권한 | 수준 |
 |---|---|
 | Metadata | Read-only |
-| Pull requests | Read-only |
+| Pull requests | 읽기 및 쓰기. 쓰기는 [스택 자동 연결](#stack-auto-linking)에 필요합니다 |
+| Actions | Read-only. `--until-gh-run` wakeup에 필요 |
 | Checks | Read-only. CI 상태 표시에 사용 |
 | Commit statuses | Read-only. legacy status 형식의 CI 집계에 사용 |
+| Variables | Read-only. 병합 일시 중지 확인을 위해 저장소 변수 `AGENT_MERGE_PAUSED`와 `MAIN_RED_PAUSED`를 읽는 데 필요 |
 | Actions | 선택 사항. Read-only. 같은 커밋에서 같은 워크플로의 새 실행으로 대체된, 취소된 실행을 CI 상태에서 제외하는 데 사용 |
+
+Organization permissions:
+
+| 권한 | 수준 |
+|---|---|
+| Members | Read-only. 연결 사용자가 organization의 active admin인지 확인하는 데 필요 |
 
 다음 이벤트를 구독합니다.
 
 - **Pull request**
+- human review wakeup을 설정한 경우 사용하는 **Pull request review**, **Pull request review comment**, **Issue comment**
+- `--until-gh-run` wakeup에 필요한 **Workflow run**, **Workflow job**
 - CI와 merge 가능 여부 새로 고침을 트리거할 **Check suite**, **Check run**, **Status**
 
 PR snapshot은 Pull requests, Checks 및 Commit statuses REST API로 가져옵니다. Contents 권한은 필요하지 않습니다. 선택 사항인 Actions 권한을 부여하면 해당 커밋의 워크플로 실행도 읽습니다. 부여하지 않으면 같은 워크플로의 새 실행이 통과해도 취소된 이전 실행은 실패로 계산됩니다.
+
+비공개 저장소에서 스킬을 가져오거나 새로고침할 때는 저장소 소유자 계정에 대한 워크스페이스 installation의 단기 token을 사용하고, 없으면 서버의 `GITHUB_TOKEN`으로 대체합니다. 이 token에는 선택 사항인 **Contents: read** 권한이 필요하며, 권한이나 해당 소유자의 installation이 없으면 `GITHUB_TOKEN` 또는 인증 없이 가져옵니다. token은 GitHub 호스트로만 전송됩니다.
+
+스택 자동 연결은 GitHub의 스택 API를 호출하므로 Pull requests **쓰기** 권한이 필요합니다. 읽기 권한만 있는 App도 나머지 기능은 그대로 동작하며, 스택 결과는 `no_permission`으로 표시됩니다([리포트 코드](#stack-report-codes) 참고). 이미 설치된 App의 권한을 올렸다면 각 installation owner가 GitHub에서 승인해야 적용됩니다.
 
 <Callout type="warning">
 여기에는 OAuth Client secret이 아니라 **Webhook secret**이 필요합니다. 양쪽에 입력한 Webhook secret이 다르면 GitHub delivery가 `401 invalid signature`를 반환합니다.
@@ -179,42 +365,48 @@ App의 공개 주소에서 slug를 확인합니다. 예를 들어 `https://githu
 ```dotenv
 GITHUB_APP_SLUG=multica-acme
 GITHUB_WEBHOOK_SECRET=<App을 만들 때 입력한 webhook secret>
-GITHUB_APP_CLIENT_ID=<Client ID>
-GITHUB_APP_CLIENT_SECRET=<Client secret>
+GITHUB_APP_CLIENT_ID=<App의 Client ID>
+GITHUB_APP_CLIENT_SECRET=<App 설정 페이지에서 생성한 client secret>
 FRONTEND_ORIGIN=https://multica.example.com
 ```
 
-새 연결에는 이 절의 GitHub 변수 여섯 개가 모두 필요하며 `GITHUB_APP_ID`와 `GITHUB_APP_PRIVATE_KEY`도 포함됩니다. 하나라도 없으면 연결 버튼이 비활성화됩니다. webhook 수신에는 `GITHUB_WEBHOOK_SECRET`만 필요하며 기존 연결은 계속 작동합니다. 배포 전에 첫 번째 Callback URL을 이 endpoint로 설정하고 설치 시 OAuth 승인을 활성화하세요. 이 옵션이 활성화되면 GitHub는 별도의 Setup URL을 사용하지 않습니다.
-
-새 연결과 PR 카드의 CI 상태 및 merge 가능 여부를 위해 다음 두 변수도 설정하세요. Multica는 metadata 읽기 전용 토큰으로 installation의 전체 저장소 목록을 가져와 연결 사용자가 관리하는 목록과 비교합니다.
+다음 App 자격 증명을 사용하면 Multica가 연결 전에 installation을 App 권한으로 확인할 수 있습니다. 저장소 선택과 CI 및 merge 가능 여부 snapshot에도 사용됩니다.
 
 ```dotenv
 GITHUB_APP_ID=<GitHub App 숫자 ID>
 GITHUB_APP_PRIVATE_KEY=<BEGIN/END 줄과 줄바꿈을 유지한 전체 PEM private key>
 ```
 
-GitHub App의 **Private keys → Generate a private key**에서 키를 생성하세요. 두 변수가 없으면 연결 버튼이 비활성화됩니다. 기존 연결은 webhook으로 PR을 미러링하고 태스크를 업데이트하지만 PR 카드에 CI나 merge 상태가 표시되지 않습니다.
+Private key는 GitHub App의 **Private keys → Generate a private key**에서 생성합니다. 이러한 App 자격 증명이 없어도 기존 설치는 서명된 webhook을 받을 수 있고 PR 미러링, 태스크 자동 연결, merge 시 상태 변경은 계속 작동합니다. 다만 새 연결 설정, 저장소 탐색, CI 및 merge 가능 상태 갱신에는 자격 증명이 필요하므로 이를 설정하기 전까지 PR 카드에 CI 또는 merge 상태가 표시되지 않습니다.
+
+연결 버튼에는 GitHub 값 6개가 모두 필요합니다. 새 연결에서 Multica는 GitHub의 사용자 인증 code를 교환하고 App 권한으로 installation을 조회한 뒤, 개인 계정의 정확한 ID 및 login 일치 또는 organization의 active admin membership을 요구합니다. 사용자의 installation 목록에 표시되는 것만으로는 organization 권한을 증명할 수 없습니다. 모든 검증 오류는 연결을 거부하며 임시 user token은 확인 후 폐기합니다.
+
+기존 App에 Members 또는 Actions 권한을 추가하는 경우 새 워크스페이스에 연결하기 전에 대상 organization마다 권한 변경을 승인해야 합니다. 기존 installation은 새 권한을 수락해야 하며, 수락하기 전에는 `--until-gh-run` wakeup이 workflow 이벤트를 받지 못합니다.
+
+필요하면 `GITHUB_ALLOWED_ACCOUNT_IDS`에 GitHub 계정의 숫자 ID(login이 아니라 사용자 또는 organization의 `id`)를 쉼표로 구분해 설정합니다. 설정하지 않거나 비워 두면 위 검증을 통과한 모든 계정이 연결할 수 있습니다. 설정하면 계정 ID가 목록에 없는 installation의 연결을 Multica가 거부합니다. setup callback은 `github_error=installation_not_allowed`로 리디렉션하고 binding을 만들지 않습니다. code가 없는 **Redirect on update** callback은 해당 binding에 이미 저장된 계정 ID로 판단합니다. 저장된 계정 ID가 없는 binding은 거부됩니다(fail closed). login처럼 잘못된 값은 시작 시 서버를 중지시킵니다.
+
+```dotenv
+GITHUB_ALLOWED_ACCOUNT_IDS=1234567,7654321
+```
+
+GitHub의 `deleted`와 `suspend` 이벤트는 목록과 관계없이 항상 binding을 삭제합니다.
 
 </Step>
 <Step>
 
-### 데이터베이스 업데이트 및 연결 [#3-데이터베이스-업데이트-및-연결]
+### 3. 재시작 및 연결
 
-기존 배포를 업그레이드할 때는 먼저 일반 데이터베이스 migration을 실행합니다.
-
-```bash
-make migrate-up
-```
-
-API 서비스를 다시 시작한 뒤 **설정 → 코드**에서 연결을 완료합니다.
+이 변경에는 데이터베이스 migration이 필요하지 않습니다. 새 환경 변수로 API 서비스를 재시작하고 기존 installation의 권한 업데이트 요청을 승인한 뒤 **설정 → 코드**에서 연결합니다. 같은 워크스페이스에 installation을 추가하려면 **Add account or organization**을 사용합니다.
 
 </Step>
 </Steps>
 
 ## 자주 묻는 문제
 
-- **연결 버튼을 사용할 수 없음**: 위의 GitHub 변수 여섯 개, 첫 번째 Callback URL, **Request user authorization (OAuth) during installation**을 확인합니다.
+- **연결 버튼을 사용할 수 없음**: `GITHUB_APP_SLUG`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_APP_CLIENT_ID`, `GITHUB_APP_CLIENT_SECRET`, `GITHUB_APP_ID`, `GITHUB_APP_PRIVATE_KEY`가 API 프로세스에 전달되었는지 확인합니다.
+- **설치 직후 연결이 실패함**: **Request user authorization (OAuth) during installation**을 활성화하고 callback URL과 setup URL을 모두 `/api/github/setup`으로 설정한 뒤 Members read-only를 부여합니다. 연결 사용자는 개인 계정 소유자이거나 organization의 active admin이어야 합니다.
 - **Webhook이 401을 반환함**: GitHub App과 API가 같은 Webhook secret을 사용하는지 확인하고 GitHub의 **Recent Deliveries**에서 다시 전달합니다.
+- **GitHub에서 merge됐는데 Multica에서 PR이 open으로 남음**: `closed` Webhook이 유실되었습니다. `GITHUB_APP_ID`와 `GITHUB_APP_PRIVATE_KEY`가 설정되어 있으면 다음 CI 새로 고침이 GitHub에서 PR을 읽고, Webhook이 도착한 것처럼 merge 또는 close를 기록합니다. 태스크를 열어 새로 고침을 시작하거나 주기적인 백그라운드 새로 고침을 기다리세요. 자격 증명이 없으면 **Recent Deliveries**에서 이벤트를 다시 전달합니다.
 - **PR이 연결되지 않음**: 저장소가 App 승인 범위에 있는지, 자동 연결이 켜져 있는지, 번호가 현재 워크스페이스에 속하는지, 누군가 태스크에서 PR을 제거하지 않았는지 확인합니다.
 - **본문에 번호를 썼는데 연결되지 않음**: `Closes MUL-123`을 사용하거나, 번호를 브랜치 이름이나 PR 제목에 넣거나, 직접 연결합니다.
 - **CI 상태가 없음**: `GITHUB_APP_ID`와 `GITHUB_APP_PRIVATE_KEY`가 설정되었는지, App에 Pull requests, Checks 및 Commit statuses 읽기 권한이 있고 관련 이벤트를 구독했는지 확인합니다. Contents 권한은 필요하지 않습니다. 설치된 App에 권한을 추가한 뒤에는 각 installation owner가 GitHub에서 승인해야 적용됩니다.

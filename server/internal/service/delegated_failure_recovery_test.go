@@ -1379,3 +1379,53 @@ func TestDelegatedFailureRecoveryKeepsSquadUsage(t *testing.T) {
 		t.Fatalf("recovery run squad usage = %q, want %s", usageSquad, squadID)
 	}
 }
+
+// CHE-9605: a queued step run (an assignment-level run) is never rewritten by a
+// delegated-failure merge; the recovery comment gets its own run.
+func TestDelegatedFailureRecoveryKeepsQueuedStepRun(t *testing.T) {
+	f, svc := seedDelegatedFailureFixture(t)
+	ctx := context.Background()
+	failedID := f.insertWorkerTask(t, "running", "comment", 1, 2)
+
+	var stepID pgtype.UUID
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, originator_user_id, accountable_user_id, originator_source, trigger_comment_id, trigger_kind)
+		VALUES ($1, $2, $3, 'queued', 0, $4, $4, 'direct_human', $5, 'status_handoff')
+		RETURNING id`, f.coordinator, f.runtimeID, f.issueID, f.userID, f.sourceTrigger).Scan(&stepID); err != nil {
+		t.Fatalf("seed step run: %v", err)
+	}
+
+	if _, err := svc.FailTask(ctx, failedID, "worker exited", "", "", "", "agent_error.process_failure", false, "", ""); err != nil {
+		t.Fatalf("FailTask: %v", err)
+	}
+
+	// The recovery signal registers on the step run as planned, undelivered
+	// input; the step run keeps its trigger and kind, and its completion replay
+	// answers the signal.
+	var triggerIsHandoff bool
+	var kind string
+	var planned, delivered []pgtype.UUID
+	if err := f.pool.QueryRow(ctx, `SELECT trigger_comment_id = $2::uuid, COALESCE(trigger_kind, ''), coalesced_comment_ids, delivered_comment_ids FROM agent_task_queue WHERE id = $1`, stepID, f.sourceTrigger).Scan(&triggerIsHandoff, &kind, &planned, &delivered); err != nil {
+		t.Fatalf("read step run: %v", err)
+	}
+	if !triggerIsHandoff || kind != "status_handoff" {
+		t.Fatalf("step run was rewritten: trigger kept=%v kind=%q", triggerIsHandoff, kind)
+	}
+	if len(planned) != 1 || len(delivered) != 0 {
+		t.Fatalf("recovery signal not registered as undelivered planned input: planned=%v delivered=%v", planned, delivered)
+	}
+	var parent string
+	if err := f.pool.QueryRow(ctx, `SELECT parent_id::text FROM comment WHERE id = $1`, planned[0]).Scan(&parent); err != nil || parent != f.sourceTrigger {
+		t.Fatalf("planned comment parent = %q, %v; want the recovery comment under %s", parent, err, f.sourceTrigger)
+	}
+	var recovery int
+	if err := f.pool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_task_queue
+		WHERE agent_id = $1 AND issue_id = $2 AND id <> $3 AND trigger_evidence_kind = 'delegated_failure'`,
+		f.coordinator, f.issueID, stepID).Scan(&recovery); err != nil {
+		t.Fatalf("count recovery runs: %v", err)
+	}
+	if recovery != 0 {
+		t.Fatalf("recovery runs = %d: the same-thread slot is held by the step run, so the recovery is registered on it for the replay", recovery)
+	}
+}
