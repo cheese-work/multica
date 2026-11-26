@@ -39,6 +39,7 @@ import { canForkSession } from "./lib/can-fork-session";
 import { EmptyState } from "./components/chat-empty-state";
 import { NewChatButton } from "./components/new-chat-button";
 import { useChatController } from "./components/use-chat-controller";
+import { useChatContextItems } from "./components/use-chat-context-items";
 import { OfflineBanner } from "./components/offline-banner";
 import { NoAgentBanner } from "./components/no-agent-banner";
 import { ArchivedAgentBanner } from "./components/archived-agent-banner";
@@ -71,9 +72,10 @@ import { useSearchStore } from "@multica/core/command-bar";
  *
  * Starting a chat is where the agent is chosen: the header ⊕ opens an agent
  * picker (see NewChatButton), so the compose box no longer needs its own
- * agent selector. Unlike the FAB, this page passes no `contextItems` to
- * `ChatInput`, so its `@` mentions fall back to manual search (issue-comment
- * style).
+ * agent selector. Like the floating window, this page passes `contextItems`
+ * to `ChatInput`, so `@` uses the same context-mode picker (issue + project
+ * search, Recent group). There is no Current row here: `/chat` is not an
+ * issue or project route.
  */
 export function ChatPage() {
   // The DM list chip lives for as long as Chat is open; leaving Chat resets it.
@@ -96,6 +98,7 @@ export function ChatPage() {
   const c = useChatController({
     isActive: isCurrentChatRoute && getCurrentSlug() === workspaceSlug,
   });
+  const contextItems = useChatContextItems(c.wsId);
   const { data: quickActionsPending = null } = useQuery(
     chatQuickActionsPendingOptions(c.activeSessionId ?? ""),
   );
@@ -599,6 +602,7 @@ export function ChatPage() {
         agentAccessRevoked={c.isAgentAccessRevoked}
         agentRuntimeRequired={!c.isAgentRuntimeBound}
         agentName={c.activeAgent?.name}
+        contextItems={contextItems}
         projects={c.projects}
         projectId={c.activeProjectId}
         projectContextUnsupported={c.projectContextUnsupported}

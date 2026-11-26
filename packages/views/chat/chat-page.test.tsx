@@ -56,9 +56,31 @@ vi.mock("./components/chat-message-list", async () => {
     ChatMessageSkeleton: () => <div>chat-message-skeleton</div>,
   };
 });
+const recentContextItems = vi.hoisted(() => [
+  { id: "proj-1", type: "project", label: "sa004-vpn", group: "recent" },
+]);
+const contextItemsWsId = vi.hoisted(() => ({ current: "" }));
+vi.mock("./components/use-chat-context-items", () => ({
+  useChatContextItems: (wsId: string) => {
+    contextItemsWsId.current = wsId;
+    return recentContextItems;
+  },
+}));
 vi.mock("./components/chat-input", () => ({
-  ChatInput: ({ disabled, compacting }: { disabled?: boolean; compacting?: boolean }) => (
-    <div data-disabled={String(!!disabled)} data-compacting={String(!!compacting)}>
+  ChatInput: ({
+    disabled,
+    compacting,
+    contextItems,
+  }: {
+    disabled?: boolean;
+    compacting?: boolean;
+    contextItems?: unknown[];
+  }) => (
+    <div
+      data-disabled={String(!!disabled)}
+      data-compacting={String(!!compacting)}
+      data-context-items={contextItems ? String(contextItems.length) : "none"}
+    >
       chat-input
     </div>
   ),
@@ -1314,5 +1336,16 @@ describe("ChatPage deep link vs workspace rehydration", () => {
     expect(useChatStore.getState().listView).toBe("unseen");
     unmount();
     expect(useChatStore.getState().listView).toBe("main");
+  });
+});
+
+describe("ChatPage composer mentions", () => {
+  // CHE-10092: the Chat screen must use the same `@` picker as the floating
+  // window (context mode: project search + Current/Recent groups).
+  it("passes the workspace context items to ChatInput so @ uses context mode", () => {
+    seedSession("session-9");
+    renderPage("session=session-9");
+    expect(screen.getByText("chat-input")).toHaveAttribute("data-context-items", "1");
+    expect(contextItemsWsId.current).toBe("ws-1");
   });
 });
