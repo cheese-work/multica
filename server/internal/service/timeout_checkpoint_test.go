@@ -104,3 +104,27 @@ func TestTimeoutCheckpointRetryPointerForms(t *testing.T) {
 		t.Fatalf("daemon-facts form:\n%s", other)
 	}
 }
+
+func TestParseAndRenderTimeoutCheckpoint_Probe(t *testing.T) {
+	const secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn"
+	parse := func(probe any) *TimeoutCheckpoint {
+		raw, _ := json.Marshal(map[string]any{"repos": []any{}, "last_actions": []any{}, "probe": probe})
+		return ParseTimeoutCheckpoint(raw)
+	}
+	cp := parse("failed timed out after 10s\n`x` " + secret + " " + strings.Repeat("z", 400))
+	if !strings.HasPrefix(cp.Probe, "failed timed out after 10s") || strings.Contains(cp.Probe, secret) ||
+		strings.ContainsAny(cp.Probe, "`\n") || len([]rune(cp.Probe)) > 160 {
+		t.Fatalf("probe = %q, want redacted, one line, at most 160 runes", cp.Probe)
+	}
+	if out := RenderTimeoutCheckpoint(*cp, 1); !strings.Contains(out, "Git probe: failed timed out after 10s") {
+		t.Fatalf("render lacks the probe line:\n%s", out)
+	}
+	for _, bad := range []any{"ok", "", 5, nil, "[x](mention://agent/1)"} {
+		if p := parse(bad); p == nil || p.Probe != "" {
+			t.Errorf("probe %v kept as %+v, want dropped", bad, p)
+		}
+	}
+	if out := RenderTimeoutCheckpoint(*parse(nil), 1); strings.Contains(out, "Git probe") {
+		t.Fatalf("a successful probe must render no probe line:\n%s", out)
+	}
+}

@@ -235,6 +235,8 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` retire les commentaires et garde tous les enregistrements d'activité ; `--action` ne renvoie que les actions indiquées, peut être répété et implique `--activity-only`. Le serveur limite l'historique qu'il lit ; si le résultat est tronqué, un avertissement s'affiche sur stderr, et il ne faut pas en déduire de durée.
 
+`multica issue close-check <issue>` montre pourquoi une tâche s'est ou ne s'est pas clôturée automatiquement, sans la modifier : chaque prédicat de clôture sur la tâche telle qu'elle est maintenant avec sa valeur, le premier qui échoue, et le mode `auto_close` effectif avec son origine (espace de travail ou étape). `--activity <row>` exécute les mêmes prédicats sur les entrées stockées dans une ligne `auto_close_skipped` et renvoie donc le premier échec enregistré alors, même si la tâche a changé. Trouvez les lignes avec `multica issue timeline <issue> --action auto_close_skipped`.
+
 ```bash
 multica issue description history MUL-123
 multica issue description diff MUL-123 --from 30 --to 35
@@ -763,7 +765,7 @@ Les tableaux ci-dessous couvrent toutes les commandes de premier niveau actuelle
 | `guard` | `log` | Lister les décisions récentes du garde dans l'espace de travail, la plus récente d'abord, filtrées avec `--plugin`, `--action` (`fixed`, `refused`, `plugin-error`, `shadow-hit`, `pass`), `--since` (un nombre de jours, une durée comme `24h` ou `7d`, ou une heure RFC 3339 ; défaut `7d`) et `--limit` (défaut 50, au plus 500). Le daemon envoie le journal de décisions de chaque exécution à la fin de celle-ci. La page de paramètres Guard affiche les mêmes lignes | Sortie : lignes JSON (`--output table` pour un tableau) |
 | `guard` | `stats` | Compter les décisions du garde par plugin (`fixed`, `refused`, `errors`) sur les `--days` derniers jours (défaut 7, au plus 90). La page de paramètres Guard affiche les mêmes nombres | Sortie : lignes JSON (`--output table` pour un tableau) |
 
-`repository_allowlist` associe chaque propriétaire limité aux noms exacts des dépôts autorisés, sans distinction de casse. Un propriétaire présent refuse par défaut ; un propriétaire absent reste libre. Avant les plugins et les couches, `gh pr create`, `gh pr comment`, `git push` et `repo checkout` authentifié refusent les dépôts non autorisés. Git vérifie les URL effectives, pushurl et réécritures comprises ; une destination indéterminée est refusée. Mettez le daemon à jour avant l’approbation. Source canonique Cheese Work : `config/tevo-prod1-guard.json`.
+`repository_allowlist` associe chaque propriétaire limité aux noms exacts des dépôts autorisés, sans distinction de casse. Un propriétaire présent refuse par défaut ; un propriétaire absent reste libre. Avant les plugins et les couches, `gh pr create`, `gh pr comment`, `git push` et `repo checkout` authentifié refusent les dépôts non autorisés. Git vérifie les URL effectives, pushurl et réécritures comprises ; une destination indéterminée est refusée. Mettez le daemon à jour avant l’approbation.
 
 
 ### Propositions de décision

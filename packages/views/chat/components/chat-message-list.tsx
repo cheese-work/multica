@@ -1990,6 +1990,9 @@ function FailureBubble({
     environment_prepare_failed: t(($) => $.message_list.failure.environment_prepare_failed),
     "agent_error.provider_network": t(($) => $.message_list.failure.provider_network),
     "agent_error.provider_auth_or_access": t(($) => $.message_list.failure.provider_auth_or_access),
+    "agent_error.model_not_found_or_unavailable": t(
+      ($) => $.message_list.failure.model_not_found_or_unavailable,
+    ),
     "agent_error.provider_quota_limit": t(($) => $.message_list.failure.provider_quota_limit),
     "agent_error.provider_capacity_or_rate_limit": t(
       ($) => $.message_list.failure.provider_capacity_or_rate_limit,
