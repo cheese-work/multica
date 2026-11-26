@@ -50,7 +50,7 @@ func TestRunBBrokerRefusesRunAToken(t *testing.T) {
 		t.Fatalf("B returned its own token: %v, with %d mints; want its own token and no new mint", again.Token == tokB.Token, len(f.mints))
 	}
 	if !f.isLive(tokA.Token) || !f.isLive(tokB.Token) || len(f.revoked) != 0 {
-		t.Fatalf("revoked %v: nothing may be revoked by a foreign ID", f.revoked)
+		t.Fatalf("revoked %d tokens: nothing may be revoked by a foreign ID", len(f.revoked))
 	}
 
 	// Run A ends: only A's token dies, B's keeps working.
