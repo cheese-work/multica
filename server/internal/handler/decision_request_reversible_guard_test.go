@@ -38,6 +38,28 @@ func TestDecisionRequestReversibleAskGuard(test *testing.T) {
 	}
 }
 
+// A Discovery brief card (Plan step 13) is class reversible by contract. The typed
+// subject discovery_brief is the only exemption; the same card with another subject
+// or none stays refused, and the class is not rewritten.
+func TestDecisionRequestReversibleGuardExemptsDiscoveryBrief(test *testing.T) {
+	for _, tc := range []struct {
+		name, subject string
+		want, created int
+	}{
+		{"discovery_brief passes in block mode", "discovery_brief", http.StatusCreated, 1},
+		{"no subject stays refused", "", http.StatusUnprocessableEntity, 0},
+	} {
+		test.Run(tc.name, func(test *testing.T) {
+			fixture := newRequestCoreFixture(test, false)
+			setReversibleAskGuard(test, "block")
+			ask := fixture.structuredAsk()
+			ask.Subject = tc.subject
+			testutil.Call(test, testHandler.RequestDecision, fixture.artifactRequest(ask)).Want(tc.want)
+			fixture.assertCounts(test, tc.created)
+		})
+	}
+}
+
 func setReversibleAskGuard(t *testing.T, mode string) {
 	t.Helper()
 	if _, err := testPool.Exec(context.Background(),
