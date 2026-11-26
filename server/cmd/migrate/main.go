@@ -982,6 +982,19 @@ var preMigrationHooks = func() map[string]preMigrationHook {
 		}
 		return refuseDuplicateActiveChatTasks(ctx, pool)
 	}
+	// CHE-7535 S1: copy fork data into an upstream-owned table, after the
+	// version's own invalid-index cleanup.
+	for version, copyHook := range forkDataCopyHooks {
+		cleanup := hooks[version]
+		hooks[version] = func(ctx context.Context, pool *pgxpool.Pool) error {
+			if cleanup != nil {
+				if err := cleanup(ctx, pool); err != nil {
+					return err
+				}
+			}
+			return copyHook(ctx, pool)
+		}
+	}
 	return hooks
 }()
 

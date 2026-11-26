@@ -134,6 +134,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"chat_session":                       workspaceDelete,
 	"chat_submission_receipt":            workspaceDelete,
 	"chat_task_supplement":               workspaceDelete,
+	"chat_task_supplement_fork_875":      workspaceDelete,
 	"chat_turn_outcome":                  workspaceDelete, // workspace_id; removed by workspace id, even after its root session was hard-deleted.
 	"chat_wakeup":                        workspaceDelete,
 	"client_usage_daily":                 workspaceDeleteDetach,

@@ -377,6 +377,11 @@ deleted_orphan_task_supplement_capabilities AS (
 deleted_chat_task_supplements AS (
     DELETE FROM chat_task_supplement WHERE workspace_id = $1
 ),
+-- CHE-7278 S1: migration 99zzz00 keeps the fork's table for restore. No FK, so
+-- only this delete removes a torn-down workspace's rows from it.
+deleted_chat_task_supplement_forks AS (
+    DELETE FROM chat_task_supplement_fork_875 WHERE workspace_id = $1
+),
 deleted_orphan_task_pr_event_deliveries AS (
     DELETE FROM task_pr_event_delivery WHERE workspace_id = $1
 ),

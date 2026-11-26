@@ -529,6 +529,9 @@ deleted_orphan_task_supplement_capabilities AS (
 deleted_chat_task_supplements AS (
     DELETE FROM chat_task_supplement WHERE workspace_id = $1
 ),
+deleted_chat_task_supplement_forks AS (
+    DELETE FROM chat_task_supplement_fork_875 WHERE workspace_id = $1
+),
 deleted_orphan_task_pr_event_deliveries AS (
     DELETE FROM task_pr_event_delivery WHERE workspace_id = $1
 ),
@@ -989,6 +992,8 @@ WHERE channel_media_pending_object.workspace_id = $1
 // here is still removed by this teardown rather than by the FK cascade. The
 // former single statement combined all three with OR, which cost a full scan of
 // task_token (MUL-5999); split, each path is an index scan.
+// CHE-7278 S1: migration 99zzz00 keeps the fork's table for restore. No FK, so
+// only this delete removes a torn-down workspace's rows from it.
 // Same no-FK chore as chat_draft_restore above. Matched on workspace_id rather
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
