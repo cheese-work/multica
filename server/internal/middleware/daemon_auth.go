@@ -296,6 +296,10 @@ func DaemonAuth(queries *db.Queries, patCache *auth.PATCache, daemonCache *auth.
 				fence := patCache.Begin() // before the read: a revoke in between must win
 				pat, err := queries.GetPersonalAccessTokenByHash(r.Context(), hash)
 				if err != nil {
+					if r.Context().Err() == context.Canceled && errors.Is(err, context.Canceled) {
+						w.WriteHeader(StatusClientClosedRequest)
+						return
+					}
 					slog.Warn("daemon_auth: invalid PAT", "path", r.URL.Path, "error", err)
 					writeError(w, http.StatusUnauthorized, "invalid token")
 					return

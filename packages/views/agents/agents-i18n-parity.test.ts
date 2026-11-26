@@ -135,7 +135,7 @@ describe("access-scope i18n parity across all 4 locales", () => {
   const bulkKeys = [
     "row_actions.set_access",
     "row_actions.set_access_dialog_title",
-    "row_actions.set_access_applies_to",
+    "row_actions.set_access_applies_to_other",
     "row_actions.set_access_skipped",
     "row_actions.set_access_dialog_confirm",
     "row_actions.set_access_bulk_partial",
@@ -162,7 +162,7 @@ describe("access-scope i18n parity across all 4 locales", () => {
 
   it("interpolation tokens use double-brace {{count}} everywhere", () => {
     for (const [name, loc] of Object.entries(LOCALES)) {
-      for (const key of ["row_actions.set_access_applies_to", "row_actions.set_access_skipped", "row_actions.set_access_bulk_partial"]) {
+      for (const key of ["row_actions.set_access_applies_to_other", "row_actions.set_access_skipped", "row_actions.set_access_bulk_partial"]) {
         const parts = key.split(".");
         let node: any = loc as any;
         for (const p of parts) {

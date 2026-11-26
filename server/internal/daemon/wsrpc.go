@@ -400,6 +400,9 @@ func (d *Daemon) claimTasksWSFirst(ctx context.Context, daemonID string, runtime
 	}
 	result, err := d.client.claimTasksWithLimit(ctx, daemonID, runtimeIDs, maxTasks, maxNonDMTasks, forceRecheckIDs...)
 	if err == nil {
+		if bypassWSOnce {
+			d.logger.Debug("http claim after uncertain ws outcome completed", "runtime_count", len(runtimeIDs), "task_count", len(result.Tasks))
+		}
 		return result, nil
 	}
 	// Server has no batch route (404): freeze the old API contract by falling

@@ -64,6 +64,9 @@ const (
 	OriginBudgetRecovery
 )
 
+// ErrIssueHasBlockers refuses derived runs until all prerequisites end.
+var ErrIssueHasBlockers = errors.New("the issue is waiting for unfinished blockers")
+
 // ErrIssueInTriage is returned by a derived enqueue path when the issue is
 // waiting in Triage. Handlers render it as 403 issue_in_triage; background
 // callers log it and drop the trigger.
@@ -89,6 +92,31 @@ var ErrRerunSourceIsTriage = errors.New("the source task is a triage run, which 
 // would start: its assignment, rerun, @mention or reply. The recovery reserve
 // buys one run; what that run causes buys nothing (CHE-2297 L3).
 var ErrRecoveryCaused = errors.New("a budget recovery run cannot start another run")
+
+// guardIssueNotInTriage refuses a DERIVED enqueue for an issue in Triage or one
+// that still waits on unfinished blockers. q is the caller's own query handle so
+// a transaction-scoped enqueue reads the status its own transaction wrote. A
+// named run skips the read: neither gate refuses it. A missing issue passes and
+// fails (or not) on its own terms; a read error refuses.
+func guardIssueNotInTriage(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin) error {
+	if origin == OriginNamed || !issueID.Valid {
+		return nil
+	}
+	admission, err := q.GetIssueRunAdmission(ctx, issueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("issue admission: %w", err)
+	}
+	if admission.TriageState.Valid {
+		return ErrIssueInTriage
+	}
+	if admission.Blocked {
+		return ErrIssueHasBlockers
+	}
+	return nil
+}
 
 // guardIssueRunAllowed refuses a DERIVED enqueue for an issue in Triage or one
 // whose workflow run budget is spent (guardRunBudget). q is
@@ -152,15 +180,9 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 		}
 		return ReviewGate{}, nil
 	}
-	state, err := q.GetIssueTriageState(ctx, issueID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ReviewGate{}, nil
-		}
-		return ReviewGate{}, fmt.Errorf("triage guard: load issue triage state: %w", err)
-	}
-	if state.Valid {
-		return ReviewGate{}, ErrIssueInTriage
+	// Triage and open blockers refuse a derived run before any other guard.
+	if err := guardIssueNotInTriage(ctx, q, issueID, origin); err != nil {
+		return ReviewGate{}, err
 	}
 	// Beside the Triage check: a held issue runs nothing that was derived from
 	// it. The row checks run first; the setting is read only when they pass.
