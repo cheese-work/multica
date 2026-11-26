@@ -2566,6 +2566,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Human-only: a machine credential carries its owner's user
 				// id and must not use the owner's way into private projects.
 				r.With(handler.RequireHumanActor).Get("/private", h.ListPrivateProjectsForOwner)
+				// CHE-10137: one owner card switches the workflow of many projects.
+				r.With(denyRunToken).Post("/workflow", h.SetProjectsWorkflow)
 				r.Get("/", h.ListProjects)
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {

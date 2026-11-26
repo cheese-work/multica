@@ -1413,6 +1413,12 @@ func (h *Handler) publishProjectWorkflowUpdate(ctx context.Context, workspaceID 
 // loadProjectForWorkflowWrite resolves the {id} project and checks that the
 // caller may change its workflow settings.
 func (h *Handler) loadProjectForWorkflowWrite(w http.ResponseWriter, r *http.Request) (db.Project, db.Member, string, bool) {
+	return h.loadProjectIDForWorkflowWrite(w, r, chi.URLParam(r, "id"))
+}
+
+// loadProjectIDForWorkflowWrite is loadProjectForWorkflowWrite for a project
+// id the request body names.
+func (h *Handler) loadProjectIDForWorkflowWrite(w http.ResponseWriter, r *http.Request, id string) (db.Project, db.Member, string, bool) {
 	workspaceID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
 	if !ok {
@@ -1422,7 +1428,7 @@ func (h *Handler) loadProjectForWorkflowWrite(w http.ResponseWriter, r *http.Req
 	if !ok {
 		return db.Project{}, db.Member{}, "", false
 	}
-	projectUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "project id")
+	projectUUID, ok := parseUUIDOrBadRequest(w, id, "project id")
 	if !ok {
 		return db.Project{}, db.Member{}, "", false
 	}
@@ -1508,24 +1514,26 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var host db.Issue
-	openCard := false
+	openCard, quickCard := false, false
 	if !isInteractiveRequest(r) {
 		verdict, err := projectSwitchWidensBudget(ctx, qtx, project, target)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to change workflow")
 			return
 		}
-		// A task token that names its run asks the owners for a switch into
-		// Quick (CHE-7734); a widening switch, and any other credential, is refused.
+		// A task token that names its run asks the owners for a switch that
+		// widens a run budget (CHE-10137) or lands in Quick (CHE-7734); any other
+		// credential is refused.
 		var hosted bool
-		if verdict.intoQuick && r.Header.Get("X-Actor-Source") == "task_token" {
+		if verdict.refused() && r.Header.Get("X-Actor-Source") == "task_token" {
 			host, hosted = h.runIssue(r)
 		}
 		switch {
 		case hosted:
 			openCard = true
+			quickCard = verdict.intoQuick
 		case verdict.refused():
-			writeBudgetRebindingRefused(w)
+			writeProjectSwitchRefused(w)
 			return
 		}
 	}
@@ -1553,7 +1561,12 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to change workflow")
 			return
 		}
-		opened, err := h.openProjectWorkflowQuickCard(ctx, host, project, params)
+		var opened RunBudgetActionResponse
+		if quickCard {
+			opened, err = h.openProjectWorkflowQuickCard(ctx, host, project, params)
+		} else {
+			opened, err = h.openProjectWorkflowSetCard(ctx, host, []projectSwitchSeal{{project: project, params: params}})
+		}
 		if err != nil {
 			writeDecisionError(w, err, "project workflow request")
 			return
