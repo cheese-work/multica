@@ -119,11 +119,11 @@ func TestRuntimeAccessGatesQueuedTaskClaims(t *testing.T) {
 			}
 			q := db.New(fixture.pool)
 
-			candidates, err := q.ListQueuedClaimCandidatesByRuntime(ctx, fixture.runtimeID)
+			candidates, err := q.ListQueuedClaimCandidatesByRuntime(ctx, db.ListQueuedClaimCandidatesByRuntimeParams{RuntimeID: fixture.runtimeID, AgingStepSecs: queueAgingStep.Seconds()})
 			if err != nil {
 				t.Fatalf("list singular candidates: %v", err)
 			}
-			batchCandidates, err := q.ListQueuedClaimCandidatesByRuntimes(ctx, []pgtype.UUID{fixture.runtimeID})
+			batchCandidates, err := q.ListQueuedClaimCandidatesByRuntimes(ctx, db.ListQueuedClaimCandidatesByRuntimesParams{RuntimeIds: []pgtype.UUID{fixture.runtimeID}, AgingStepSecs: queueAgingStep.Seconds()})
 			if err != nil {
 				t.Fatalf("list batch candidates: %v", err)
 			}

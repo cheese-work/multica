@@ -112,7 +112,7 @@ multica project member add <project-id> carol@example.com
 
 ## 일시 중지, 취소, 완료
 
-`paused`, `cancelled`, `completed` 상태의 프로젝트는 새 에이전트 실행을 시작하지 않으며, 에이전트는 그 안에 태스크를 만들거나 태스크를 옮길 수 없습니다.
+`paused`, `cancelled`, `completed` 상태의 프로젝트는 새 에이전트 실행을 시작하지 않습니다. 에이전트는 `paused` 프로젝트에 태스크를 계속 만들 수 있지만, 프로젝트를 재개할 때까지 그 태스크의 실행은 시작되지 않습니다. `cancelled` 또는 `completed` 프로젝트에는 태스크를 만들 수 없습니다. 세 상태 모두 태스크를 그 안으로 옮길 수 없습니다.
 
 | 상태 | 대기 중인 실행 | 진행 중인 실행 | 에이전트의 태스크 수정 및 댓글 |
 |---|---|---|---|

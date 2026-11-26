@@ -17,7 +17,7 @@ const (
 	decisionAskInstallation = "builtin"
 	decisionAskDescription  = "Ask the person who requested this issue one decision. The server picks the " +
 		"person and the DM lane and parks the issue until they answer. Arguments: ask (context_eli10, " +
-		"agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros, cons, cost_or_time}], " +
+		"agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros, cons, cost_or_time, design {frame_url, attestation_id} (optional; cites a doop design frame and its attestation run; never set frame_updated_at, the server stamps it and a non-zero value is refused with 400 design_version_server_owned)}], " +
 		"recommendation, recommended_option (exact label; required with two or more options), confidence (optional, 0-1), default_if_no_reply, source_issue_id, source_comment_id, state_claims[{claim, readback_command, observed_at (RFC 3339, at most 2 hours old)}]), escalation_class " +
 		"(reversible, spend, deploy, publish, irreversible or product_direction), optional footer."
 	decisionAskSchema = `{"type":"object","required":["ask","escalation_class"],"properties":{"ask":{"type":"object"},"escalation_class":{"type":"string"},"footer":{"type":"string"},"parent_id":{"type":"string"}},"additionalProperties":false}`

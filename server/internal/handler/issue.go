@@ -387,6 +387,9 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 	if err := wf.recordAuthor(ctx, q, issue); err != nil {
 		return issue, cancelledWakeups, err
 	}
+	if err := wf.recordSignerMissing(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
 	if err := wf.recordLeft(ctx, q, issue); err != nil {
 		return issue, cancelledWakeups, err
 	}
@@ -5265,6 +5268,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	}
 	if err := wf.recordAuthor(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record author: %w", err)
+	}
+	if err := wf.recordSignerMissing(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record missing signer: %w", err)
 	}
 	if err := wf.recordLeft(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record left assignee: %w", err)

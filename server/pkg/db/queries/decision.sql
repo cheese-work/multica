@@ -680,8 +680,9 @@ WHERE workspace_id = sqlc.arg('workspace_id') AND issue_id = sqlc.arg('issue_id'
 -- card), no attached action (the human must see the action preview on its own
 -- card), and no governed write (an "Approve write" option, the "Apply this
 -- change to <field>?" heading or a decision_bound_write row: the human must
--- see that exact change). A new kind of card is closed to batches until it is
--- added here.
+-- see that exact change), and no design option (an option that cites a doop
+-- frame: the human must see that frame's own card, CHE-7064 S10). A new kind of
+-- card is closed to batches until it is added here.
 SELECT * FROM decision_request request
 WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace_id') AND request.id = ANY(sqlc.arg('ids')::uuid[])
   AND request.human_user_id = sqlc.arg('human_user_id') AND request.status = 'open' AND request.origin = 'asked' AND request.kind = 'decision'
@@ -690,6 +691,7 @@ WHERE request.authority = 'human' AND request.workspace_id = sqlc.arg('workspace
   AND COALESCE(request.ask_json->'artifacts', '[]'::jsonb) = '[]'::jsonb
   AND NOT request.options @> '[{"label": "Approve write"}]'::jsonb
   AND COALESCE(request.ask_json->>'decision', '') NOT LIKE 'Apply this change to %'
+  AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(request.options) AS option WHERE option ? 'design')
   AND NOT EXISTS (SELECT 1 FROM decision_action action WHERE action.decision_request_id = request.id)
   AND NOT EXISTS (SELECT 1 FROM decision_bound_write bound WHERE bound.decision_id = request.id)
 ORDER BY request.id

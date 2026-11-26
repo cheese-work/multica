@@ -29,10 +29,9 @@ If a configuration already exists, you will be prompted before overwriting.
 
 Use 'multica setup self-host' to connect to a self-hosted server instead.
 
-If you run this command over SSH on a remote machine, keep the localhost
-callback and follow the SSH tunnel hint printed during browser login. If your
-browser can reach this CLI directly on a private network address, pass
---callback-host <host-or-ip>.
+The browser callback listens on loopback only. If you run this command over SSH
+on a remote machine, follow the SSH tunnel hint printed during browser login
+(ssh -L <port>:127.0.0.1:<port> <user>@<remote-host>).
 
 Use --profile to create an isolated configuration for a separate environment:
   multica setup self-host --profile staging --server-url https://api-staging.co`,
@@ -44,10 +43,9 @@ var setupCloudCmd = &cobra.Command{
 	Short: "Configure the CLI for Multica Cloud (multica.ai)",
 	Long: `Explicitly configures the CLI to connect to Multica Cloud (multica.ai).
 
-If you run this command over SSH on a remote machine, keep the localhost
-callback and follow the SSH tunnel hint printed during browser login. If your
-browser can reach this CLI directly on a private network address, pass
---callback-host <host-or-ip>.
+The browser callback listens on loopback only. If you run this command over SSH
+on a remote machine, follow the SSH tunnel hint printed during browser login
+(ssh -L <port>:127.0.0.1:<port> <user>@<remote-host>).
 
 This is equivalent to running 'multica setup' without a subcommand.`,
 	RunE: runSetupCloud,
@@ -61,9 +59,9 @@ var setupSelfHostCmd = &cobra.Command{
 By default, connects to http://localhost:8080 (backend) and http://localhost:3000 (frontend).
 Use --server-url and --app-url to specify a custom server (e.g. an on-premise deployment).
 
-If you run this command from a different machine than the server, also pass
---callback-host <host-or-ip-the-browser-can-reach-back-to-this-machine-on> so
-the OAuth login flow can return the token to the CLI.
+The browser callback listens on loopback only. If the browser runs on a different
+machine than this CLI, forward the callback port with the ssh -L hint printed
+during browser login, or sign in with --token.
 
 Examples:
   multica setup self-host

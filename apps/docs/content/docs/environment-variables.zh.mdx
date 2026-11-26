@@ -266,6 +266,7 @@ API key 与 base URL 都为空时，这一层关闭，不会发出任何上游�
 | `MULTICA_DAEMON_MAX_CONCURRENT_TASKS` | `20` | 单个守护进程的并发运行上限 |
 | `MULTICA_DAEMON_RESERVED_CHAT_SLOTS` | `0` | 仅供聊天（DM）运行使用的槽位数；议题运行最多使用 `max_concurrent_tasks - reserved_chat_slots` 个槽位 |
 | `MULTICA_AGENT_TIMEOUT` | `0` | 单次执行的绝对时限；`0` 表示不设置 |
+| `MULTICA_AGENT_NEAR_LIMIT_WARNING` | `10m` | 在运行超时前这段时间，向支持运行中接收消息的提供方的智能体发送一次提交并留检查点的提醒。仅当有效超时超过该值的 2 倍时发送；`0` 表示关闭 |
 | `MULTICA_AGENT_IDLE_WATCHDOG` | `2h` | 没有输出且没有工具执行时的静默上限；`0` 表示整套 watchdog 关闭 |
 | `MULTICA_AGENT_TOOL_WATCHDOG` | 同 `MULTICA_AGENT_IDLE_WATCHDOG` | 单个工具调用持续静默的上限；只有希望工具比模型有更多余量时才单独设置，`0` 表示工具执行期间永不强制停止。Cursor 的后台 shell 在它启动的进程退出前一直算作执行中；到达这个上限时，守护进程会停止这些进程，并给 Cursor 一段新的 watchdog 预算来产出终态结果。若进程归属或清理无法验证，则回到普通的运行取消策略 |
 | `MULTICA_OPENCODE_IDLE_WATCHDOG` | `10m` | OpenCode 专用静默阈值 |

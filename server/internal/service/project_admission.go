@@ -25,14 +25,58 @@ func IsProjectInactive(err error) bool {
 	return errors.Is(err, ErrProjectInactive) || errors.As(err, &databaseError) && databaseError.Code == "P0001" && databaseError.Message == ErrProjectInactive.Error()
 }
 
+// ProjectInactiveError is ErrProjectInactive plus what the caller needs to tell
+// the agent why: the project status and the action that was refused. It matches
+// ErrProjectInactive under errors.Is, so every existing check keeps working.
+type ProjectInactiveError struct {
+	Status string
+	Action string
+}
+
+func (e *ProjectInactiveError) Error() string { return ErrProjectInactive.Error() }
+
+func (e *ProjectInactiveError) Is(target error) bool { return target == ErrProjectInactive }
+
+// Message is the prose for the 403 body: it names the status and the refused action.
+func (e *ProjectInactiveError) Message() string {
+	if e.Status == "paused" {
+		return "Project is paused: agents cannot " + e.Action + " here. A paused project starts no new runs; resume it to continue."
+	}
+	return "Project is " + e.Status + ": agents cannot " + e.Action + " here. Reopen the project to continue."
+}
+
+const (
+	actionWrite  = "write to its issues"
+	actionCreate = "create issues"
+)
+
 func RequireActiveProject(ctx context.Context, queries *db.Queries, workspaceID, projectID pgtype.UUID) error {
 	return RequireProjectWrite(ctx, queries, workspaceID, projectID, pgtype.UUID{})
+}
+
+// RequireProjectIntake is RequireActiveProject for an agent creating an issue in
+// the project. A pause stops new runs only, so a paused project still takes new
+// issues; cancelled and completed projects do not. The issue it creates gets no
+// run: the DB fence and the trigger checks keep that block.
+func RequireProjectIntake(ctx context.Context, queries *db.Queries, workspaceID, projectID pgtype.UUID) error {
+	if err := requireProject(ctx, queries, workspaceID, projectID, pgtype.UUID{}, actionCreate); err != nil {
+		var inactive *ProjectInactiveError
+		if errors.As(err, &inactive) && inactive.Status == "paused" {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // RequireProjectWrite is RequireActiveProject for a write on an issue of the project made by the
 // run taskID. A pause drains: a run that is still running on an issue of the paused project may
 // keep writing. A zero taskID, any other project or any other status is refused as inactive.
 func RequireProjectWrite(ctx context.Context, queries *db.Queries, workspaceID, projectID, taskID pgtype.UUID) error {
+	return requireProject(ctx, queries, workspaceID, projectID, taskID, actionWrite)
+}
+
+func requireProject(ctx context.Context, queries *db.Queries, workspaceID, projectID, taskID pgtype.UUID, action string) error {
 	if !projectID.Valid {
 		return nil
 	}
@@ -61,7 +105,7 @@ func RequireProjectWrite(ctx context.Context, queries *db.Queries, workspaceID, 
 			}
 		}
 	}
-	return ErrProjectInactive
+	return &ProjectInactiveError{Status: status, Action: action}
 }
 
 func lockTaskProjectForStart(ctx context.Context, queries *db.Queries, task db.AgentTaskQueue) error {

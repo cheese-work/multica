@@ -31,6 +31,8 @@
   ],
   "backend": [
     "server/**",
+    "scripts/migration-parity.sh",
+    "scripts/migration-parity.test.sh",
     "packages/core/runtimes/cli-version.ts",
     "packages/core/issues/decision-action-preview.ts",
     "packages/core/issue-workflows/graph-edit.ts",

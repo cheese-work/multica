@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/multica-ai/multica/server/internal/cibroker"
+	"github.com/multica-ai/multica/server/internal/githubrepo"
 	"github.com/multica-ai/multica/server/internal/secrets/seal"
 	"log/slog"
 	"math"
@@ -29,6 +30,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/connectedapps"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/dbreader"
+	"github.com/multica-ai/multica/server/internal/doopread"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -245,6 +247,9 @@ type Handler struct {
 	// MergeReceiptBroker verifies the GitHub Actions OIDC token of the workflow
 	// that writes merge receipts (CHE-5594). Nil leaves the route off.
 	MergeReceiptBroker *cibroker.Broker
+	// DoopReader reads design attestations from doop (CHE-7064). Nil, or a reader
+	// with no usable config, answers 503 design_doop_unavailable.
+	DoopReader *doopread.Reader
 	// MergeReceiptWorkspaceID is the one workspace that route writes to.
 	MergeReceiptWorkspaceID string
 	// githubAllowlist is the GITHUB_ALLOWED_ACCOUNT_IDS policy (CHE-3418).
@@ -257,7 +262,10 @@ type Handler struct {
 	Queries *db.Queries
 	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
 	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
-	ActionRequestsEnabled  bool
+	ActionRequestsEnabled bool
+	// GitHubRepoCreator runs an approved github.repo.create (CHE-9525). Nil
+	// makes the approval end as a failed action.
+	GitHubRepoCreator      githubrepo.Creator
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
 	TxStarter              txStarter
@@ -608,6 +616,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	taskSvc.QuickActions = llmClient
 	h := &Handler{
 		ProposalGuard:                admitProposalOnce,
+		DoopReader:                   doopread.FromEnv(),
 		Queries:                      queries,
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),
 		DB:                           executor,

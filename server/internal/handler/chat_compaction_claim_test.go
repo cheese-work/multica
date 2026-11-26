@@ -129,7 +129,9 @@ func TestCompactionClaim_SeedHoldsSummaryAndPostBoundaryOnly(t *testing.T) {
 					t.Fatalf("seed lacks %q:\n%s", want, block)
 				}
 			}
-			if strings.Contains(block, "PRE-BOUNDARY") || strings.Contains(block, "CURRENT-INPUT") {
+			// The human's own pre-boundary text is carried in its own block (CHE-10002).
+			wantInClaim(t, humanBlock(t, block), "PRE-BOUNDARY-QUESTION")
+			if strings.Contains(withoutHumanBlock(block), "PRE-BOUNDARY") || strings.Contains(block, "CURRENT-INPUT") {
 				t.Fatalf("seed holds pre-boundary text or the current input:\n%s", block)
 			}
 			if strings.Index(block, "POST-ONE") > strings.Index(block, "POST-TWO") || strings.Index(block, compactionSummaryText) > strings.Index(block, "POST-ONE") {

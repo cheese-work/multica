@@ -482,7 +482,7 @@ func devinModelsOutput(ctx context.Context, runtimeCmd Command, env []string, cw
 	defer cancel()
 	cmd := runtimeCmd.exec(runCtx, "models", "list", "--format", "json")
 	if env == nil {
-		env = os.Environ()
+		env = withoutServerOnlyEnv(os.Environ())
 	}
 	cmd.Env, cmd.Dir = env, cwd
 	hideAgentWindow(cmd)

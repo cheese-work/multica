@@ -8,9 +8,12 @@ import {
   buildDaily,
   checkAgentFacing,
   daily,
+  cliDiff,
+  diffFromFiles,
   lastAdoption,
   main,
   newCliFlags,
+  parseAdoptionSpec,
   parseAgentFacing,
   touchesAgentSurface,
 } from "./agent-adoption.mjs";
@@ -305,4 +308,125 @@ test("check mode reads the PR event and the changed-file list, never the PR chec
   assert.equal(run("Agent-facing: yes"), 1);
   assert.equal(run("nothing", file("docs.txt", "README.md\n")), 0);
   assert.equal(run("Agent-facing: no", join(dir, "missing.txt")), 1, "an unreadable file list fails closed");
+});
+
+// CHE-10123 (CHE-9922 W5): per-deploy adoption issue lists features, signals, owners and result lines.
+const specPr = {
+  ...agentPr,
+  body: [
+    "Refs CHE-9561",
+    "Agent-facing: yes",
+    "Adoption item: pass --property on issue create",
+    "Adoption signal: `issue create --property` used",
+    "Adoption base: issues created by agents in 7 days, at least 20",
+    "Adoption target: 3 or more issues by 2 or more agents in 7 days",
+  ].join("\n"),
+};
+// The result-line parser of adoption-reconcile (private store, CHE-10121), reduced to its field rules.
+const parsesAsResult = (line) => {
+  const t = line.trim().replace(/^- /, "");
+  const kv = Object.fromEntries(t.split(" ").slice(1).map((p) => p.split("=")));
+  return t.startsWith("ADOPTION-RESULT ") && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(kv.feature ?? "") && /^[A-Z]+-\d+$/.test(kv.issue ?? "") &&
+    /^[0-9a-f]{40}$/.test(kv.deployed_sha ?? "") && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(kv.window_start ?? "") &&
+    /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(kv.window_end ?? "") && ["PASS", "FAIL", "unknown"].includes(kv.verdict);
+};
+const rowOf = (body, n) => new RegExp(`^- #${n} [^\\n]*(?:\\n  [^\\n]*)*`, "m").exec(body)[0];
+
+test("the template carries Adoption signal, base, target and old-path lines, all unfilled", () => {
+  for (const key of ["signal", "base", "target", "old-path"]) assert.match(template, new RegExp(`^Adoption ${key}:`, "m"), key);
+  assert.deepEqual(parseAdoptionSpec(template), { signal: null, base: null, target: null, oldPath: null });
+});
+
+test("parseAdoptionSpec reads the lines, ignoring placeholders, comments and fences", () => {
+  assert.deepEqual(parseAdoptionSpec(specPr.body), {
+    signal: "`issue create --property` used",
+    base: "issues created by agents in 7 days, at least 20",
+    target: "3 or more issues by 2 or more agents in 7 days",
+    oldPath: null,
+  });
+  assert.equal(parseAdoptionSpec("Adoption signal: <one positive-use signal>").signal, null);
+  assert.equal(parseAdoptionSpec("<!--\nAdoption target: x\n-->").target, null);
+  assert.equal(parseAdoptionSpec("```\nAdoption target: x\n```").target, null);
+  assert.equal(parseAdoptionSpec("Adoption old-path: 0 calls of `issue create --field`").oldPath, "0 calls of `issue create --field`");
+  assert.equal(parseAdoptionSpec(undefined).signal, null);
+});
+
+test("a PR with signal, base and target is listed with them, its owner and one pending result slot", () => {
+  const row = rowOf(buildDaily({ prev, next, prs: [specPr] }).body, 12);
+  assert.match(row, /^- #12 feat\(cli\): property flag — agents change: pass --property on issue create — owner: alice/);
+  assert.match(row, /\n  - signal: `issue create --property` used/);
+  assert.match(row, /\n  - base: issues created by agents in 7 days, at least 20/);
+  assert.match(row, /\n  - target: 3 or more issues by 2 or more agents in 7 days/);
+  assert.match(row, /\n  - result: pending/);
+  assert.doesNotMatch(row, /result: unknown/);
+  const slot = /\n  - result line: (ADOPTION-RESULT .*)/.exec(row)[1];
+  assert.match(slot, new RegExp(`^ADOPTION-RESULT feature=pr-12 issue=CHE-9561 deployed_sha=${next} `));
+  assert.match(slot, /verdict=<PASS\|FAIL\|unknown>$/);
+  assert.equal(parsesAsResult(slot), false, "a slot is never a result the reconciler reads");
+});
+
+test("a PR without a signal, base or target gets result unknown with each missing line named", () => {
+  for (const [drop, reason] of [["signal", "signal"], ["base", "base"], ["target", "target"]]) {
+    const body = specPr.body.split("\n").filter((l) => !l.startsWith(`Adoption ${drop}:`)).join("\n");
+    const row = rowOf(buildDaily({ prev, next, prs: [{ ...specPr, body }] }).body, 12);
+    assert.match(row, new RegExp(`\\n  - result: unknown — reason: no ${reason} line`), drop);
+    assert.doesNotMatch(row, /result: pending/, drop);
+  }
+  const none = rowOf(buildDaily({ prev, next, prs: [agentPr] }).body, 12);
+  assert.match(none, /result: unknown — reason: no signal line, no base line, no target line/);
+  assert.match(none, /issue=<KEY-N>/, "no Closes or Refs line: the issue key stays a placeholder");
+});
+
+test("an old-path count alone never gives PASS: it is shown as optional and the result stays unknown", () => {
+  const row = rowOf(buildDaily({ prev, next, prs: [{ ...agentPr, body: `${agentPr.body}\nAdoption old-path: 0 calls of the old flag` }] }).body, 12);
+  assert.match(row, /\n  - old path \(optional, never enough alone\): 0 calls of the old flag/);
+  assert.match(row, /result: unknown — reason: no signal line/);
+  assert.doesNotMatch(row, /result: pending/);
+});
+
+test("the issue body states evidence rules A1 to A4 and the 7-day window with one extension", () => {
+  const { body } = buildDaily({ prev, next, prs: [specPr] });
+  for (const rule of ["A1", "A2", "A3", "A4"]) assert.match(body, new RegExp(`^- ${rule}\\. `, "m"), rule);
+  assert.match(body, /all four hold/i);
+  assert.match(body, /7 days from the `deployed` write/);
+  assert.match(body, /extends once by 7 days/);
+  assert.match(body, /then report the gap/);
+  assert.match(body, /below its minimum/i);
+  assert.match(body, /one ADOPTION-RESULT line per feature/);
+  assert.match(body, /adoption-reconcile format doc/);
+});
+
+test("the result-line format in the body is one the reconciler's parser accepts once filled", () => {
+  const filled = `ADOPTION-RESULT feature=pr-12 issue=CHE-9561 deployed_sha=${next} window_start=2026-11-27T06:00:00Z window_end=2026-12-04T06:00:00Z verdict=PASS`;
+  assert.equal(parsesAsResult(filled), true);
+  const { body } = buildDaily({ prev, next, prs: [specPr, otherAgentPr] });
+  for (const line of body.split("\n")) assert.equal(parsesAsResult(line), false, `line must not parse as a result: ${line}`);
+});
+
+test("a new-format issue still gives lastAdoption its SHA and only the PR rows, not the sub-lines", () => {
+  const { body } = buildDaily({ prev, next, prs: [specPr, otherAgentPr] });
+  const found = lastAdoption(pages(pageOf([{ identifier: "CHE-1", title: "Agent adoption: C00 deploy bbbbbbbbbbbb", description: body }])));
+  assert.equal(found.sha, next);
+  assert.deepEqual([...found.prs].sort((a, b) => a - b), [12, 15]);
+});
+
+test("diffFromFiles rebuilds the CLI diff from the PR files API when the PR diff is too large (PR 1834, 2913 files)", () => {
+  const files = [
+    { filename: "server/cmd/multica/cmd_issue.go", patch: '@@ -1 +1,2 @@\n+\tissueListCmd.Flags().Bool("resolved", false, "x")' },
+    { filename: "apps/web/a.tsx", patch: "@@ -1 +1 @@\n+x" },
+    { filename: "server/cmd/multica/binary.png" },
+  ];
+  const diff = diffFromFiles(files);
+  assert.deepEqual(newCliFlags(diff), [{ command: "issue list", flag: "resolved" }]);
+  assert.doesNotMatch(diff, /apps\/web/);
+});
+
+test("diffFromFiles and cliDiff drop _test.go files: test fixtures are not CLI flags (CHE-10123 review P1)", () => {
+  const files = [
+    { filename: "server/cmd/multica/cmd_issue_test.go", patch: '@@ -1 +1,2 @@\n+\ttestCmd.Flags().Bool("help", false, "x")' },
+    { filename: "server/cmd/multica/cmd_issue.go", patch: '@@ -1 +1,2 @@\n+\tissueListCmd.Flags().Bool("resolved", false, "x")' },
+  ];
+  assert.deepEqual(newCliFlags(diffFromFiles(files)), [{ command: "issue list", flag: "resolved" }]);
+  const full = files.map((f) => `diff --git a/${f.filename} b/${f.filename}\n+++ b/${f.filename}\n${f.patch}\n`).join("");
+  assert.deepEqual(newCliFlags(cliDiff(full)), [{ command: "issue list", flag: "resolved" }]);
 });

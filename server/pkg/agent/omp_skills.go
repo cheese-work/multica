@@ -55,7 +55,7 @@ func DiscoverOmpSkills(ctx context.Context, runtimeCmd Command) ([]OmpSkill, err
 	cmd := runtimeCmd.exec(runCtx, "--mode", "rpc", "--no-session", "--no-title", "--no-ui",
 		"--config", config, "--extension", extension)
 	cmd.Dir = dir
-	cmd.Env = replaceEnvValue(os.Environ(), "MULTICA_OMP_SKILLS_OUTPUT", output)
+	cmd.Env = replaceEnvValue(withoutServerOnlyEnv(os.Environ()), "MULTICA_OMP_SKILLS_OUTPUT", output)
 	cmd.Stdin = strings.NewReader("")
 	cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
 	hideAgentWindow(cmd)

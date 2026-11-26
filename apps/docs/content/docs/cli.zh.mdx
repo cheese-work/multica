@@ -235,6 +235,8 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` 去掉评论，保留全部活动记录；`--action` 只返回指定的动作，可重复，并隐含 `--activity-only`。服务器读取的历史有上限，被截断时 stderr 会打印警告，这时不要据此推算停留时长。
 
+`multica issue close-check <issue>` 在不修改议题的前提下，说明议题为何自动关闭或未自动关闭：按议题当前状态列出每个关闭条件及其取值、第一个失败的条件，以及生效的 `auto_close` 模式及其来源（工作区或步骤）。`--activity <row>` 对某条 `auto_close_skipped` 行中保存的输入运行同一组条件，因此即使议题之后发生变化，也会返回当时记录的第一个失败。可用 `multica issue timeline <issue> --action auto_close_skipped` 查找这些行。
+
 ```bash
 multica issue description history MUL-123
 multica issue description diff MUL-123 --from 30 --to 35
@@ -487,6 +489,8 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 
 第四个值 `server_action` 让服务器以选择该选项的人的身份执行操作。给选项加上 `action {type, params}`：`issue.status.set` 带 `params.status`（如 `in_review` 这样的状态键），`issue.assign` 带 `params.assignee_type`（`member` 或 `agent`）和 `params.assignee_id`（UUID）。服务器会把这些值转为小写并去掉首尾空白后保存，并在 `what_happens` 中追加一行，例如 "On pick: the server moves CHE-123 to in_review as you."。`after_choice` 为 `human_steps` 的选项可以加上 `after_wait`，只指定智能体等待的一个事件：`until_pr {url, state}`（`checks`、`merged`、`conflicts` 或 `dequeued`）、`until_status {status}`，或 `until_issue {issue, state}`（`done`、`ended`、`in_review` 或 `blocked`）。工作区设置 `decision_server_actions`（`off` 或 `on`，默认 `off`）允许卡片携带 `server_action`。设置为 `off` 或其他值时，服务器返回 `400`、代码 `server_actions_off` 和字段路径。主题询问、`--action-file` 请求、`--kind action` 卡片、`--covers` 批量卡片和 CI 卡片都会拒绝带类型的选项，并指出其字段路径。设置 `standing_answers`（默认 `{"review_cap":"off"}`，`review_cap` 为 `off` 或 `split`）格式错误时按 `off` 读取。只有工作区所有者可以修改 `decision_server_actions` 和 `standing_answers`。
 
+选项可以带 `design {frame_url, attestation_id}`，引用一个 doop 设计画框以及检查过它的证明运行。服务器严格读取此字段：`design` 内的未知键会被 `400` 拒绝。切勿设置 `frame_updated_at`：画框版本由服务器自己写入，任何非零值都会被 `400` 和代码 `design_version_server_owned` 拒绝，并指出字段路径（`ask.options[0].design.frame_updated_at`）。零值或省略均可接受。设计守卫（`designguard.Validate`）会把所引用的画框与证明、issue 的 Design url、审阅者结论和独立性规则进行核对。选项带有 `design` 的卡片永远不会被 `--covers` 批量卡片覆盖。
+
 工作区设置 `decision_card_lint_mode`（`off`、`warn`、`block`；默认 `off`）检查选项卡片的措辞。`warn` 时创建卡片，并为每条发现在响应中附带一条提示。`block` 时服务器返回 `400`，附带原因代码和字段路径，且不创建卡片。代码如下：`weak_cons`，某个选项的每条缺点都只是你的时间（"takes 1 minute of your time"）或多一次检查或评审；`option_markdown`，`label`、`what_happens`、`pros` 或 `cons` 中含表格、标题、图片、HTML、代码块或 Mermaid 块（允许粗体、斜体、行内代码、列表和链接）；`option_leak`，选项文字暗示推荐项（"recommended"、"(rec)"，或只有一个标签加粗）；`default_leak`，在类别 `spend`、`deploy`、`publish`、`irreversible` 或 `product_direction` 下，`default_if_no_reply` 点名了某个选项（请写 "No action until you pick."）。英语和越南语措辞都会匹配。操作卡片和豁免主题卡片不受检查。 如果卡片的 issue 评论没有提及被询问的人，服务器会补上提及并记录 `mention_missing`，不会拒绝。
 
 工作区设置 `decision_card_thread`（`off`、`on`；默认 `off`）让每张新卡片拥有自己的线程。`on` 时，卡片的 issue 评论是新的根评论，无论 `decision_card_lint_mode` 为何值，服务器都会加上被询问者的提及。决定提醒仍是收件箱中唯一的条目；新增的提及不会产生条目。如果传入 `--parent`，该线程成为来源：新线程记录来源，来源线程得到一条带链接的系统回复，来源线程保持其已解决状态，CLI 输出 `Card placed in a new thread <id>; thread <source root> got a link.` 带父评论的决定意图评论以同样方式开启新线程，卡片放在该线程中。重新询问以及 DM 智能体在其 DM 中写的询问保持原位。`off` 时没有任何变化。
@@ -522,6 +526,8 @@ multica autopilot trigger-update <autopilot-id> <trigger-id> --clear-event-filte
 `--clear-event-filters` 与 `--event-filters-file` 不能同时使用。顶层为 `null` 或空数组、包含未知字段、无效 JSON 或空白事件/action 名称的文件会被拒绝。这些参数只适用于 Webhook 触发器；创建时不传过滤文件则接收所有事件。事件匹配方式见[自动化](/autopilots#事件过滤)。
 
 工作区设置 `design_card_guard` 是一个对象，含 `mode`、`doop_origin`、`design_url_property_id` 和 `design_workflow_id`。`mode` 为 `off`、`warn` 或 `block`；键不存在或缺少 `mode` 时为 `off`。`warn` 或 `block` 时，`doop_origin`（不带路径的 `https` 源）和 `design_url_property_id`（UUID）必填；`design_workflow_id`（UUID）可选。服务器对其他字段、`null` 值或类型错误返回 `400`。通过决策动作修改设置时可以指定该键。目前只读取并校验该设置，尚不会对任何卡片发出警告或拒绝。
+
+`multica issue design-verdict <issue> --attestation <id> --verdict PASS|CHANGES [--findings-file <path>]` 记录一条带类型的设计评审结论（`POST /api/issues/{id}/design-verdicts`）。只有智能体自己的运行才能写入：调用需要一个任务令牌，其任务在该 issue 上处于 `dispatched` 或 `running`，否则服务器返回 `403 design_verdict_run_required`。`--findings-file` 是 `{"severity": "P0|P1|P2|P3", "summary": "..."}` 的 JSON 数组；`CHANGES` 结论至少需要一条 P0 或 P1 发现。服务器会读取 doop 证明（attestation）：未知 ID 返回 `404 design_attestation_not_found`，doop 无法读取返回 `503 design_doop_unavailable`，`design_card_guard` 为 `off` 或无效返回 `503 design_guard_misconfigured`。`PASS` 还必须与该 issue 的 Design url 和证明（canvas、page、frame，完整且为最新）一致，并来自独立于设计作者的评审者，否则服务器返回带拒绝码的 `409`。`CHANGES` 结论跳过这些检查。请求体无效返回 `400`。成功时返回 `201` 并写入一行 `design_review_verdict` 活动记录；每个 issue 与证明下最新的一行即为生效结论，没有编辑或删除路由。
 
 ## 后台智能体
 
@@ -763,7 +769,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `guard` | `log` | 按从新到旧列出工作区最近的守卫决策，可用 `--plugin`、`--action`（`fixed`、`refused`、`plugin-error`、`shadow-hit`、`pass`）、`--since`（天数、`24h` 或 `7d` 这样的时长，或 RFC 3339 时间；默认 `7d`）和 `--limit`（默认 50，最多 500）过滤。守护进程在每次运行结束时上传该次运行的决策日志。Guard 设置页显示相同的行 | 输出：JSON 行（`--output table` 为表格） |
 | `guard` | `stats` | 按插件统计最近 `--days` 天（默认 7，最多 90）的守卫决策数（`fixed`、`refused`、`errors`）。Guard 设置页显示相同的数字 | 输出：JSON 行（`--output table` 为表格） |
 
-`repository_allowlist` 按所有者指定允许的完整仓库名，不区分大小写。已列出的所有者默认拒绝，未列出的所有者不受限制。该边界先于插件及下层规则执行，拒绝未批准的 `gh pr create`、`gh pr comment`、`git push` 和已认证的 `repo checkout`。Git 检查实际推送 URL，包括 pushurl 和 URL 重写；目标不明确时拒绝。批准此字段前须升级 daemon。Cheese Work 的唯一正式来源为 `config/tevo-prod1-guard.json`。
+`repository_allowlist` 按所有者指定允许的完整仓库名，不区分大小写。已列出的所有者默认拒绝，未列出的所有者不受限制。该边界先于插件及下层规则执行，拒绝未批准的 `gh pr create`、`gh pr comment`、`git push` 和已认证的 `repo checkout`。Git 检查实际推送 URL，包括 pushurl 和 URL 重写；目标不明确时拒绝。批准此字段前须升级 daemon。
 
 
 ### 决策提案

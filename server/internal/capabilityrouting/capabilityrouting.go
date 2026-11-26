@@ -24,8 +24,22 @@ type Entry struct {
 	Reviewers []string `json:"reviewers"`
 }
 
+// DefaultKey names the entry that routes an issue whose title has no type or
+// whose type the table does not list (CHE-9318).
+const DefaultKey = "default"
+
 // Config maps a lowercase issue type (as in workflow_by_type) to its routing.
 type Config map[string]Entry
+
+// For is the entry of an issue type, else the DefaultKey entry. An empty type
+// (an untyped title) takes the default.
+func (c Config) For(typ string) (Entry, bool) {
+	if entry, ok := c[typ]; ok && typ != "" {
+		return entry, true
+	}
+	entry, ok := c[DefaultKey]
+	return entry, ok
+}
 
 // Validate checks a stored value's shape. That every id is a workspace agent
 // needs the database and is checked by the caller with AgentIDs.

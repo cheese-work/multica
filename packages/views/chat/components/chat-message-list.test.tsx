@@ -1282,6 +1282,14 @@ describe("ChatMessageList failure copy (MUL-5370 regression)", () => {
     ).toBeInTheDocument();
   });
 
+  it("tells the member to pick another model, not to sign in, when the model is unavailable", async () => {
+    renderFailure("agent_error.model_not_found_or_unavailable");
+    const copy = enChat.message_list.failure.model_not_found_or_unavailable;
+    expect(await screen.findByText(copy)).toBeInTheDocument();
+    expect(copy).not.toMatch(/sign in/i);
+    expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
+  });
+
   it("degrades an unnamed refined reason to its agent_error family", async () => {
     renderFailure("agent_error.unknown");
     expect(
@@ -1433,6 +1441,22 @@ describe("ChatMessageList compact notice", () => {
     const divider = screen.getByRole("separator");
     expect(divider).toHaveTextContent(/^Compacted · \d{2}:\d{2} \S+ · 164k tokens$/);
     expect(divider).toHaveClass("w-full");
+  });
+
+  // CHE-9935: the server's mid-turn notice reads "Compacted mid-turn at Xk tokens (kept Yk)".
+  it.each([
+    ["with token counts", "Compacted mid-turn at 397k tokens (kept 31k). Earlier details may be lost.", /^Compacted · \d{2}:\d{2} \S+ · 397k tokens$/],
+    ["without token counts", "Compacted mid-turn. Earlier details may be lost.", /^Compacted · \d{2}:\d{2} \S+$/],
+  ])("draws the divider for a mid-turn compaction notice %s", (_name, content, label) => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={[{ ...notice, content }]} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    expect(screen.getByRole("separator")).toHaveTextContent(label);
+    expect(screen.getByRole("note")).toHaveTextContent(content);
   });
 
   it.each([

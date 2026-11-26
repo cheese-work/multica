@@ -60,6 +60,8 @@ Une fermeture exige tous les contrôles ci-dessous. Si l'un échoue ou ne peut p
 
 Une PR encore ouverte au head que nomme le PASS ne conserve pas l'exécution quand l'étape a une arête `pr.merged` vers `done` et l'observateur propre de la tâche : le serveur ne lance aucune exécution et enregistre une ligne d'activité `auto_close_pending_merge`. La fusion ferme ensuite la tâche, sans exécution. À l'arrivée de la fusion, le serveur relit tous les prédicats. Si l'un ne tient plus (nouveau head sans PASS, nouveau réveil actif), il lance l'exécution de l'étape au lieu de fermer et retire l'observateur.
 
+En `warn` et `block`, une clôture refusée enregistre une ligne d'activité `auto_close_skipped`. Elle nomme le premier prédicat qui n'a pas tenu (`first_failure`) et conserve les entrées lues par les prédicats : le mode et son origine (espace de travail ou étape), le `post_close_work` de la tâche, les arêtes done, la ligne PASS et le head qu'elle nomme, les PR liées, les sous-tâches et décisions ouvertes, le nombre de réveils, le `delivery_stop` du parent et l'heure du contrôle. `multica issue close-check <issue>` affiche chaque prédicat sur la tâche telle qu'elle est maintenant ; `multica issue close-check <issue> --activity <row>` exécute les mêmes prédicats sur les entrées stockées, donc la réponse est celle que le serveur a donnée à ce moment, même si la tâche a changé depuis. Les deux sont en lecture seule.
+
 Définissez le mode avec `multica workspace update --auto-close-mode off|warn|block`. Une valeur illisible compte comme `off`.
 
 ### Saut de l'exécution à l'entrée en blocage

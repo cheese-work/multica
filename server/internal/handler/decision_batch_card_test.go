@@ -216,6 +216,13 @@ func notPlainChoiceCards() map[string]func(test *testing.T, card askedRecordFixt
 			dbfx.Exec(test, `INSERT INTO decision_action (workspace_id, decision_request_id, action_type, action_version, params, payload_sha256, expires_at, requested_by_agent_id)
 				SELECT workspace_id, id, 'agent.env.patch', 1, '{}', repeat('a', 64), now() + interval '1 day', $2 FROM decision_request WHERE id = $1`, card.decision.ID, card.agentID)
 		},
+		// Only the first option cites a frame; the labels stay those of the batch, so
+		// the cards still look like the plain choice the batch answers.
+		"design option": func(test *testing.T, card askedRecordFixture) {
+			dbfx.Exec(test, `UPDATE decision_request SET options = (
+				SELECT jsonb_agg(CASE WHEN item.ordinality = 1 THEN item.value || '{"design":{"frame_url":"https://doop.example.com/c/cv1?frame=f1","attestation_id":"run-1","frame_updated_at":111}}'::jsonb ELSE item.value END ORDER BY item.ordinality)
+				FROM jsonb_array_elements(options) WITH ORDINALITY AS item(value, ordinality)) WHERE id = $1`, card.decision.ID)
+		},
 		"governed write record": func(test *testing.T, card askedRecordFixture) {
 			dbfx.Exec(test, `INSERT INTO decision_bound_write (decision_id, workspace_id, agent_id, field, before_sha256, after_sha256)
 				SELECT id, workspace_id, asking_agent_id, 'env', repeat('a', 64), repeat('b', 64) FROM decision_request WHERE id = $1`, card.decision.ID)

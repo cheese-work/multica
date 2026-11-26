@@ -3,8 +3,9 @@
 #   db "fresh":   all migrations of the tree, applied to an empty database.
 #   db "upgrade": migrations of BASE_REF (its own migrate binary), then the tree's.
 # Normalized `pg_dump --schema-only` of both must be identical; any difference fails.
-# When the renumber map exists, the mapped down files then run in reverse on "upgrade"
-# and the schema is compared with BASE_REF's; those differences are listed, not failed.
+# When the renumber map exists, the down files of the stems the tree adds over BASE_REF run in
+# reverse on "upgrade"; the same rollback runs on a third db holding BASE_REF, and the two
+# schemas are compared (CHE-10205); those differences are listed, not failed.
 # Needs: go, git, a Postgres reachable via PG* env. PG_RUN prefixes psql/pg_dump
 # (default: the pgvector image over host networking; PG_RUN="" uses native clients).
 # Usage: scripts/migration-parity.sh <BASE_REF>
@@ -20,7 +21,7 @@ sql() { $PG_RUN psql -v ON_ERROR_STOP=1 -d postgres -qc "$1"; }
 dump() { $PG_RUN pg_dump --schema-only --no-owner --no-privileges -d "$1" | grep -Ev '^(--|\\(un)?restrict )' | cat -s > "$2"; }
 cleanup() {
   git worktree remove --force "$work/base" 2>/dev/null || true
-  sql "DROP DATABASE IF EXISTS parity_fresh" || true; sql "DROP DATABASE IF EXISTS parity_upgrade" || true
+  for db in parity_fresh parity_upgrade parity_basedown; do sql "DROP DATABASE IF EXISTS $db" || true; done
   rm -rf "$work"
 }
 trap cleanup EXIT
@@ -44,16 +45,29 @@ else
 fi
 
 if [ -f "$MAP" ]; then
-  # Mapped stems all sort after the last unmapped one, so --to that one undoes exactly the mapped set.
-  mapped=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).map(m=>m.to+".up.sql").join("\n")' "$MAP")
-  last=$(cd server/migrations && ls -- *.up.sql | grep -vxF "$mapped" | LC_ALL=C sort | tail -1)
-  last=${last%.up.sql}
-  if (cd server && DATABASE_URL=$(url parity_upgrade) "$work/migrate" down --to "$last"); then
-    dump parity_upgrade "$work/down.sql"
-    diff -u "$work/base.sql" "$work/down.sql" > "$work/down.diff" && echo "down parity ok: mapped down files restore the $BASE_REF schema" \
-      || { echo "::warning::mapped down files leave schema differences from $BASE_REF (listed, not failing; data loss is a separate decision)"; cat "$work/down.diff"; }
+  # Compare like with like: the stems this tree adds over BASE_REF (the PR's own migrations, plus the
+  # mapped set when BASE_REF predates the map) are rolled back by their down files on "upgrade"; the same
+  # rollback runs on a copy of BASE_REF's schema, so mapped stems BASE_REF already holds cancel out.
+  stems() { (cd "$1" && ls -- *.up.sql | sed 's/\.up\.sql$//' | LC_ALL=C sort); }
+  stems "$work/base/server/migrations" > "$work/base.stems"
+  stems server/migrations > "$work/tree.stems"
+  first=$(LC_ALL=C comm -13 "$work/base.stems" "$work/tree.stems" | head -1)
+  if [ -z "$first" ]; then
+    echo "down parity skipped: the tree adds no migration over $BASE_REF"
   else
-    echo "::warning::down --to $last failed; schema differences after rollback are unknown"
+    # Newest tree stem before the first added one; everything after it is rolled back on both databases.
+    last=$(LC_ALL=C awk -v f="$first" '$0 < f' "$work/tree.stems" | tail -1)
+    sql "DROP DATABASE IF EXISTS parity_basedown"; sql "CREATE DATABASE parity_basedown"
+    (cd "$work/base/server" && DATABASE_URL=$(url parity_basedown) "$work/migrate-base" up >/dev/null)
+    if [ -n "$last" ] \
+      && (cd server && DATABASE_URL=$(url parity_basedown) "$work/migrate" down --to "$last" >/dev/null) \
+      && (cd server && DATABASE_URL=$(url parity_upgrade) "$work/migrate" down --to "$last"); then
+      dump parity_basedown "$work/base-down.sql"; dump parity_upgrade "$work/down.sql"
+      diff -u "$work/base-down.sql" "$work/down.sql" > "$work/down.diff" && echo "down parity ok: down files of the stems added over $BASE_REF restore its schema" \
+        || { echo "::warning::down files leave schema differences from $BASE_REF (listed, not failing; data loss is a separate decision)"; cat "$work/down.diff"; }
+    else
+      echo "::warning::down --to ${last:-<none>} failed; schema differences after rollback are unknown"
+    fi
   fi
 fi
 exit $status
