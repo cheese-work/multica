@@ -4628,6 +4628,11 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 		)
 		return false
 	}
+	if changed {
+		// Backstop for a notice whose ingestion-time write failed. It inserts
+		// nothing for events already noticed, so a replayed ack stays silent.
+		s.reconcileCompactNoticesBestEffort(ctx, taskID)
+	}
 	if !settled || payload.Outcome == "" {
 		return changed
 	}
@@ -6257,6 +6262,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			replyTask.ChatSessionID = chatAssistantMsg.ChatSessionID
 		}
 		suggest := s.chatQuickActionsEligible(ctx, replyTask, chatAssistantMsg)
+		// Backstop for a notice whose ingestion-time write failed; clients
+		// refetch on chat:done, so the notice is stored before it fires.
+		s.reconcileCompactNoticesBestEffort(ctx, task.ID)
 		s.broadcastChatDone(ctx, replyTask, chatAssistantMsg, suggest)
 		dmnotify.Publish(s.Bus, dmNotified)
 		if suggest {
