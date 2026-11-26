@@ -108,10 +108,10 @@ test("all PR and file pages are scanned, including drafts and other base branche
     "pulls/10/files?per_page=100&page=2": [fileEntry(691)],
     "git/trees/main?recursive=1": { truncated: false, tree: [{ type: "blob", path: pair(690, "main")[0] }] },
     "pulls?state=open&per_page=100&page=1": pulls,
-    "pulls?state=open&per_page=100&page=2": [{ number: 424, draft: true, base: { ref: "stack" } }],
+    "pulls?state=open&per_page=100&page=2": [{ number: 424, draft: true, base: { ref: "stack" }, head: { sha: "h424" } }],
     ...Object.fromEntries(pulls.slice(1).map((pull) => [`pulls/${pull.number}/files?per_page=100&page=1`, []])),
     "pulls/424/files?per_page=100&page=1": filler,
-    "pulls/424/files?per_page=100&page=2": [fileEntry(691, "reserved")],
+    "git/trees/h424?recursive=1": { truncated: false, tree: [{ type: "blob", path: pair(691, "reserved")[0] }] },
   };
   const result = checkMigrationPrefixes(await collectMigrations({ ...options, fetcher: mockAPI(routes) }));
   assert.match(result.collisions.join("\n"), /PR #424/);
@@ -141,7 +141,9 @@ function cappedRoutes({ headTree, headTruncated = false, headSha = "capsha" }) {
     "pulls?state=open&per_page=100&page=1": [{ number: 424, draft: true, head: { sha: headSha } }],
     [`git/trees/${headSha}?recursive=1`]: { truncated: headTruncated, tree: headTree.map((path) => ({ type: "blob", path })) },
   };
-  for (let page = 1; page <= 30; page++) routes[`pulls/424/files?per_page=100&page=${page}`] = filler;
+  // CHE-10381 round 1: a full first page is enough to switch to the head tree. Page 2 is not a route, so
+  // paging on (30 sequential requests per big PR, 38 s live) fails with "Unexpected request".
+  routes["pulls/424/files?per_page=100&page=1"] = filler;
   return routes;
 }
 
