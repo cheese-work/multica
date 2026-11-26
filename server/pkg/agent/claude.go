@@ -322,6 +322,19 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 		scanner := newAgentStreamScanner(stdout)
 		var fallbackWatch *claudeFallbackWatch
+		// A result frame without model evidence books its usage to a fallback
+		// model. Once the runtime announced a main-thread change, the requested
+		// model is no evidence of what served: use the model of the last
+		// main-thread response instead, or none (CHE-10140). A run served by two
+		// models books its whole total to the later one; that is the evidence
+		// the result frame leaves.
+		mainThreadChanged := false
+		usageFallbackModel := func() string {
+			if mainThreadChanged {
+				return contextModel
+			}
+			return opts.Model
+		}
 
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
@@ -366,6 +379,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				}
 				if change, next, ok := claudeModelChange(msg, fallbackWatch); ok {
 					fallbackWatch = next
+					if change.Input["scope"] == "session" {
+						mainThreadChanged = true
+					}
 					sendReliable(runCtx, msgCh, change)
 				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
@@ -400,7 +416,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				if usageSnapshot != nil {
 					baseline = usageSnapshot.baseline
 				}
-				if resultUsage, authoritative := claudeResultUsageSince(msg, opts.Model, baseline); authoritative {
+				if resultUsage, authoritative := claudeResultUsageSince(msg, usageFallbackModel(), baseline); authoritative {
 					usageMsg := msg
 					lastUsageResult = &usageMsg
 					if !unverifiableBaseline {
@@ -564,7 +580,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			// A rejected resume may emit usage for a newly-created session. Its
 			// totals do not share the requested session's baseline.
 			if lastUsageResult != nil {
-				if resultUsage, authoritative := claudeResultUsageSince(*lastUsageResult, opts.Model, nil); authoritative {
+				if resultUsage, authoritative := claudeResultUsageSince(*lastUsageResult, usageFallbackModel(), nil); authoritative {
 					usage = applyClaudeCacheSplit(resultUsage, cacheSplit, len(lastUsageResult.ModelUsage) > 0)
 				}
 			}

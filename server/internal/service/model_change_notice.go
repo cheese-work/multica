@@ -95,9 +95,12 @@ func modelChangeNoticeText(in map[string]any) string {
 	}
 	switch str("phase") {
 	case "sticky":
+		if str("scope") == "local" {
+			return fmt.Sprintf("%s keeps %s instead of %s. Reason: %s. Scope: %s.", subject, target, source, reason, scope)
+		}
 		return fmt.Sprintf("Runtime keeps %s instead of %s for this session. Reason: %s. Scope: %s.", target, source, reason, scope)
 	case "return":
-		return fmt.Sprintf("Runtime returned to %s from %s. Scope: %s.", target, source, scope)
+		return fmt.Sprintf("%s returned to %s from %s. Scope: %s.", subject, target, source, scope)
 	case "confirmed":
 		return fmt.Sprintf("Confirmed: %s served a response (requested %s). Scope: %s.", target, source, scope)
 	case "failed":

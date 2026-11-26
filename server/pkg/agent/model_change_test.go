@@ -1,8 +1,13 @@
 package agent
 
 import (
+	"context"
+	"log/slog"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 )
 
 // Frames are sanitized from Claude Code 2.1.318's stream-json schema for
@@ -174,5 +179,70 @@ func TestClaudeNoModelTelemetryEmitsNothing(t *testing.T) {
 `)
 	if len(got) != 0 {
 		t.Fatalf("got %#v", got)
+	}
+}
+
+// A result frame with no modelUsage and no model must not book the run's
+// tokens to the requested model once the runtime announced a main-thread
+// fallback: the requested model is not evidence of what served (CHE-10140).
+func TestClaudeUsageIsNotBookedToRequestedModelAfterMainThreadFallback(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	frames := incidentRefusalFrame + `
+{"type":"assistant","session_id":"s1","message":{"id":"m2","model":"claude-opus-4-8","content":[{"type":"text","text":"hi"}],"usage":{"input_tokens":10,"output_tokens":5}}}
+{"type":"result","subtype":"success","session_id":"s1","result":"ok","usage":{"input_tokens":10,"output_tokens":5}}
+`
+	usage := runClaudeFixtureWithModel(t, frames, "claude-opus-5-5").Usage
+	if _, booked := usage["claude-opus-5-5"]; booked {
+		t.Fatalf("tokens booked to the requested model after a fallback: %#v", usage)
+	}
+	if usage["claude-opus-4-8"].OutputTokens != 5 {
+		t.Fatalf("served model usage lost: %#v", usage)
+	}
+}
+
+func TestClaudeUsageFallsBackToRequestedModelWithoutAFallbackEvent(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	frames := `{"type":"result","subtype":"success","session_id":"s1","result":"ok","usage":{"input_tokens":10,"output_tokens":5}}
+`
+	usage := runClaudeFixtureWithModel(t, frames, "claude-opus-5-5").Usage
+	if usage["claude-opus-5-5"].OutputTokens != 5 {
+		t.Fatalf("existing behaviour changed: %#v", usage)
+	}
+}
+
+func runClaudeFixtureWithModel(t *testing.T, frames, model string) Result {
+	t.Helper()
+	fixturePath := filepath.Join(t.TempDir(), "frames.jsonl")
+	if err := os.WriteFile(fixturePath, []byte(frames), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakePath := filepath.Join(t.TempDir(), "claude")
+	writeTestExecutable(t, fakePath, []byte("#!/bin/sh\nIFS= read -r _\ncat "+fixturePath+"\n"))
+	backend, err := New("claude", Config{ExecutablePath: fakePath, Env: map[string]string{"IS_SANDBOX": "1"}, Logger: slog.Default()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt", ExecOptions{Model: model, Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+	select {
+	case r := <-session.Result:
+		return r
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+		return Result{}
 	}
 }
