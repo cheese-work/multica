@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -39,18 +40,21 @@ func TestDecisionRequestReversibleAskGuard(test *testing.T) {
 }
 
 // A Discovery brief card (Plan step 13) is class reversible by contract. The typed
-// subject discovery_brief exempts it only on an issue that follows the Plan (gstack)
-// workflow. The same label on an ordinary issue, or no label, stays refused, and the
-// class is not rewritten.
+// subject discovery_brief exempts it only when the issue follows the Plan (gstack)
+// workflow and the ask has the brief shape: two options, "Tiếp tục" and "Dừng", and no
+// artifacts. The same label on an ordinary issue, a relabelled ordinary approval, or no
+// label stays refused, and the class is not rewritten.
 func TestDecisionRequestReversibleGuardExemptsDiscoveryBrief(test *testing.T) {
 	for _, tc := range []struct {
 		name, subject, workflow string
+		brief                   bool
 		want, created           int
 	}{
-		{"discovery_brief on a Plan (gstack) issue passes in block mode", "discovery_brief", "Plan (gstack)", http.StatusCreated, 1},
-		{"discovery_brief on an ordinary issue stays refused", "discovery_brief", "", http.StatusUnprocessableEntity, 0},
-		{"discovery_brief on another workflow stays refused", "discovery_brief", "Default B", http.StatusUnprocessableEntity, 0},
-		{"no subject on a Plan (gstack) issue stays refused", "", "Plan (gstack)", http.StatusUnprocessableEntity, 0},
+		{"discovery_brief on a Plan (gstack) issue passes in block mode", "discovery_brief", "Plan (gstack)", true, http.StatusCreated, 1},
+		{"discovery_brief on an ordinary issue stays refused", "discovery_brief", "", true, http.StatusUnprocessableEntity, 0},
+		{"discovery_brief on another workflow stays refused", "discovery_brief", "Default B", true, http.StatusUnprocessableEntity, 0},
+		{"no subject on a Plan (gstack) issue stays refused", "", "Plan (gstack)", true, http.StatusUnprocessableEntity, 0},
+		{"relabelled ordinary approval on a Plan (gstack) issue stays refused", "discovery_brief", "Plan (gstack)", false, http.StatusUnprocessableEntity, 0},
 	} {
 		test.Run(tc.name, func(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
@@ -59,11 +63,21 @@ func TestDecisionRequestReversibleGuardExemptsDiscoveryBrief(test *testing.T) {
 				setIssueWorkflowByName(test, fixture.issueID, tc.workflow)
 			}
 			ask := fixture.structuredAsk()
+			if tc.brief {
+				ask = briefOptions(ask)
+			}
 			ask.Subject = tc.subject
 			testutil.Call(test, testHandler.RequestDecision, fixture.artifactRequest(ask)).Want(tc.want)
 			fixture.assertCounts(test, tc.created)
 		})
 	}
+}
+
+// briefOptions gives the ask the Discovery brief answer buttons (Plan step 13).
+func briefOptions(ask decisiontx.Ask) decisiontx.Ask {
+	ask.Options = []decisiontx.AskOption{testAskOption("Tiếp tục"), testAskOption("Dừng")}
+	ask.RecommendedOption, ask.Recommendation = "Tiếp tục", "Tiếp tục"
+	return ask
 }
 
 // setIssueWorkflowByName gives the issue its own workflow row of that name. The row
