@@ -13,6 +13,9 @@
 //     newest first until it is found (never a relevance search). It only moves when an issue opens. No such issue yet:
 //     `--initial-sha` is the explicit first boundary. Any unreadable, truncated or inconsistent input exits non-zero
 //     and opens nothing; the next run retries from the same checkpoint. PRs named in the previous issue are skipped.
+//     The issue body is the per-deploy adoption issue (CHE-9922 W5, CHE-10123): for each agent-facing PR its signal, base, target, owner and
+//     one result-line slot in the adoption-reconcile format (multica-dotfiles docs/cheese-work/adoption-reconcile.md), plus evidence rules A1 to A4
+//     and the 7-day window. A PR states `Adoption signal:`, `Adoption base:` and `Adoption target:` in its description (`Adoption old-path:` is optional).
 //   Applies no instruction; that stays in `multica-cheese-work-instruction-change`.
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -23,6 +26,11 @@ import { liveLines } from "./fork-changelog.mjs";
 
 const FIELD = /^Agent-facing:\s*(.*)$/i;
 const ITEM = /^Adoption item:\s*(.*)$/i;
+const SIGNAL = /^Adoption signal:\s*(.*)$/i;
+const BASE = /^Adoption base:\s*(.*)$/i;
+const TARGET = /^Adoption target:\s*(.*)$/i;
+const OLD_PATH = /^Adoption old-path:\s*(.*)$/i;
+const ISSUE_KEY = /^(?:Closes|Fixes|Resolves|Refs)\s+([A-Z][A-Z0-9]*-\d+)\b/im;
 const HOSTS = ["X99", "MBP", "C00"];
 const MARKER = /<!-- agent-adoption-daily: sha:([0-9a-f]{40}) -->/;
 const DEFAULT_C00_API_URL = "https://congvc-c00.taila6fa8a.ts.net:19444";
@@ -49,6 +57,19 @@ export function parseAgentFacing(body) {
     if (value && !/^<.*>$/.test(value)) adoptionItem = value;
   }
   return { agentFacing, adoptionItem };
+}
+
+// The positive-use signal, activity base and target an agent-facing PR states (CHE-9922 W5). A placeholder counts as missing.
+// An old-path count is optional and never enough alone (a count of 0 can mean no activity).
+export function parseAdoptionSpec(body) {
+  const spec = { signal: null, base: null, target: null, oldPath: null };
+  for (const line of liveLines(typeof body === "string" ? body : "")) {
+    for (const [key, re] of [["signal", SIGNAL], ["base", BASE], ["target", TARGET], ["oldPath", OLD_PATH]]) {
+      const value = re.exec(line)?.[1].trim();
+      if (value && !/^<.*>$/.test(value)) spec[key] = value;
+    }
+  }
+  return spec;
 }
 
 export const touchesAgentSurface = (paths) => paths.some((path) => AGENT_SURFACE.some((re) => re.test(path)));
@@ -85,7 +106,7 @@ export function newCliFlags(diff) {
 // Only an explicit `Agent-facing: yes` counts. A missing field on an agent surface is the PR check's job (pr-guards.yml).
 function classify(pr) {
   const { agentFacing, adoptionItem } = parseAgentFacing(pr.body);
-  return agentFacing === "yes" ? { pr, adoptionItem } : null;
+  return agentFacing === "yes" ? { pr, adoptionItem, spec: parseAdoptionSpec(pr.body) } : null;
 }
 
 // 0.5 h to read + 0.25 h per PR, rounded up to 0.5 h, capped at the 2 h issue limit.
@@ -98,7 +119,7 @@ export function buildDaily({ prev, next, prs, seen = new Set() }) {
   const agentPrs = prs.filter((pr) => !seen.has(pr.number) && !listed.has(pr.number) && listed.add(pr.number)).map(classify).filter(Boolean);
   if (agentPrs.length === 0) return { issue: false, log: `no agent-facing PR in ${range}; no adoption issue`, title: "", body: "", prs: [] };
 
-  const lines = agentPrs.map(({ pr, adoptionItem }) => `- #${pr.number} ${pr.title} — agents change: ${adoptionItem ?? "not stated"} — owner: ${pr.author}`);
+  const lines = agentPrs.flatMap(({ pr, adoptionItem, spec }) => prRow({ pr, adoptionItem, spec, next }));
   const flags = agentPrs.flatMap(({ pr }) => newCliFlags(pr.diff ?? ""));
   const readback = flags.length === 0
     ? ["No new CLI flags in this range. No host readback needed."]
@@ -124,14 +145,51 @@ export function buildDaily({ prev, next, prs, seen = new Set() }) {
     "## CLI readback per host",
     ...readback,
     "",
+    ...EVIDENCE,
     "## Acceptance criteria",
     "1. Each listed PR's owner states per line which agent instruction or skill changes, or `none` with a reason (`multica issue get` read-back).",
     "2. Each change is applied through `multica-cheese-work-instruction-change` (cross-lab review), or the line records why none is needed.",
     "3. Every host row above reads back its flag (or the section says no new flags) before any instruction is applied.",
+    "4. Each listed PR has one result line when its window ends (after the one 7-day extension at the latest), or this issue reports the gap.",
     "",
   ].join("\n");
   return { issue: true, log: `${agentPrs.length} agent-facing PR(s) in ${range}`, title: `Agent adoption: C00 deploy ${short(next)}`, body, prs: agentPrs.map(({ pr }) => pr.number) };
 }
+
+// One PR: the `- #N` line (lastAdoption reads PR numbers from it) and its indented signal, base, target and result lines.
+function prRow({ pr, adoptionItem, spec, next }) {
+  const missing = ["signal", "base", "target"].filter((key) => !spec[key]).map((key) => `no ${key} line`);
+  const key = ISSUE_KEY.exec(pr.body ?? "")?.[1] ?? "<KEY-N>";
+  return [
+    `- #${pr.number} ${pr.title} — agents change: ${adoptionItem ?? "not stated"} — owner: ${pr.author}`,
+    `  - signal: ${spec.signal ?? "not stated"}`,
+    `  - base: ${spec.base ?? "not stated"}`,
+    `  - target: ${spec.target ?? "not stated"}`,
+    ...(spec.oldPath ? [`  - old path (optional, never enough alone): ${spec.oldPath}`] : []),
+    missing.length > 0
+      ? `  - result: unknown — reason: ${missing.join(", ")}`
+      : "  - result: pending — the window opens at the `deployed` write of the issue",
+    `  - result line: ADOPTION-RESULT feature=pr-${pr.number} issue=${key} deployed_sha=${next} window_start=<UTC> window_end=<UTC> verdict=<PASS|FAIL|unknown>`,
+  ];
+}
+
+const EVIDENCE = [
+  "## Evidence and result lines",
+  "The read-only C00 lane runs the queries and writes one ADOPTION-RESULT line per feature, as a comment on this issue, when the window ends.",
+  "Format and field rules: `docs/cheese-work/adoption-reconcile.md` (multica-dotfiles). Replace the slot above: `deployed_sha` and `window_start` are the `deployed_sha` and `deployed_at` of the issue's `deployed` write (the slot shows the deploy SHA; use the issue's value if it differs), `window_end` is the measurement time, `verdict` is PASS, FAIL or unknown. A line that does not match the format is ignored.",
+  "",
+  "A PASS or a FAIL is valid only when all four hold. If one fails, the verdict is `unknown` and the reason goes on the line's comment:",
+  "- A1. Signal coverage. The query covers every entry point of the new path that the PR names: each CLI command, route, UI action and event.",
+  "- A2. Full observation window. The data source holds the whole window. Log rotation, a missing or restarted container, or shorter retention makes the evidence incomplete.",
+  "- A3. Positive control. The same data source shows events for a known-used feature in the same window.",
+  "- A4. Instrumented. Each entry point of the new path writes a row, an event or a log line at the deployed SHA.",
+  "",
+  "Window: 7 days from the `deployed` write for a SHA that contains the PR. Measure at the end of the window.",
+  "- A PR with no signal, base or target line has result `unknown` with that reason. An old-path count alone never gives PASS: `0 old-command calls` can mean no activity.",
+  "- If the activity base is below its minimum, or A1 to A4 do not all hold, the verdict is `unknown`, the issue stays `deployed` and the window extends once by 7 days, then report the gap here.",
+  "- Below target at the end of the window: the issue stays `deployed`. Record a product fix here (make the new path the default, or refuse the old path). Skill text alone is not adoption.",
+  "",
+];
 
 const TITLE = /^Agent adoption: C00 deploy /;
 const MAX_PAGES = 100;
@@ -179,6 +237,19 @@ const gh = (...args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 
 // Added hunks under server/cmd/multica only; the flag readback must not pick up flags from other Go code.
 const cliDiff = (diff) => diff.split(/^(?=diff --git )/m).filter((part) => /^diff --git a\/server\/cmd\/multica\//.test(part)).join("");
 
+// `gh pr diff` refuses a PR over 300 files (HTTP 406, an upstream merge has about 3000). The files API pages them, with a patch each.
+export const diffFromFiles = (files) =>
+  files.filter((f) => f.filename.startsWith("server/cmd/multica/") && f.patch).map((f) => `diff --git a/${f.filename} b/${f.filename}\n+++ b/${f.filename}\n${f.patch}\n`).join("");
+
+function prCliDiff(number, repo) {
+  try {
+    return cliDiff(gh("pr", "diff", String(number), "--repo", repo));
+  } catch (error) {
+    if (!/too_large|exceeded the maximum number of files/.test(`${error.stderr ?? ""}${error.message}`)) throw error;
+    return diffFromFiles(JSON.parse(gh("api", "--paginate", "--slurp", `repos/${repo}/pulls/${number}/files`)).flat());
+  }
+}
+
 // All reads go through the GitHub API: the checkout on an agent host is shallow and blobless, so local diffs fetch
 // one blob at a time (about 1.5 s each). One `gh pr list` read gives bodies and paths (first 100 files per PR); a
 // PR's diff is read only when it is agent-facing.
@@ -198,7 +269,7 @@ function collectPrs(prev, next, repo) {
   return [...numbers].filter((n) => listed.has(n)).sort((a, b) => a - b).map((n) => {
     const pr = listed.get(n);
     const out = { number: n, title: pr.title, author: pr.author, body: pr.body ?? "", paths: pr.paths, diff: "" };
-    if (classify(out)) out.diff = cliDiff(gh("pr", "diff", String(n), "--repo", repo));
+    if (classify(out)) out.diff = prCliDiff(n, repo);
     return out;
   });
 }

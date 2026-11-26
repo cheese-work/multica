@@ -90,10 +90,20 @@ Changelog: <one user-facing sentence, or none>
 <!-- Required when the PR touches CLI commands (`server/cmd/multica/`), the agent brief or the daemon
      (`server/internal/daemon/`); a CI check fails without it (CHE-5717). Replace the first line with
      `Agent-facing: yes` or `Agent-facing: no`. On yes, fill `Adoption item:` with what agents or skills must
-     change. The daily adoption issue lists every merged and deployed `yes` PR with its owner. -->
+     change. The daily adoption issue lists every merged and deployed `yes` PR with its owner.
+     On yes, also state how adoption is measured (CHE-9922 W5). One line each, in this section:
+     - `Adoption signal:` one positive-use signal, naming every entry point of the new path (each CLI command, route, UI action, event).
+     - `Adoption base:` the activity base and its minimum, for example `issues created by agents in 7 days, at least 20`.
+     - `Adoption target:` for example `3 or more issues by 2 or more agents in 7 days`.
+     - `Adoption old-path:` optional. An old-path count never gives PASS alone: 0 calls can mean no activity.
+     A yes PR without a signal, base or target line gets the result `unknown` in the adoption issue. -->
 
 Agent-facing: yes | no
 Adoption item:
+Adoption signal:
+Adoption base:
+Adoption target:
+Adoption old-path:
 
 ## Cost delta
 
