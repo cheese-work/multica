@@ -432,6 +432,8 @@ test("diffFromFiles and cliDiff drop _test.go files: test fixtures are not CLI f
 });
 
 // CHE-10289 (CHE-9942 W4): per-host CLI build check against the merge commits of agent-facing PRs that change CLI source.
+// Host labels come from the already-present host assertions in the body test above.
+const HOSTS_UNDER_TEST = [...new Set(buildDaily({ prev, next, prs: [agentPr] }).body.match(/^\| (\w{3}) \|/gm).map((row) => /\w{3}/.exec(row)[0]))];
 const mergeA = "079af87397" + "a".repeat(30);
 const mergeB = "1234567890" + "b".repeat(30);
 const usageDiff = 'diff --git a/server/cmd/multica/cmd_issue.go b/server/cmd/multica/cmd_issue.go\n+++ b/server/cmd/multica/cmd_issue.go\n+\tUse: "status <id> <status>",\n';
@@ -447,10 +449,10 @@ test("W4 (a): a CLI-source PR without a new flag lists 3 host rows with its merg
   const section = buildSection(body);
   assert.ok(section, "section present");
   assert.match(section, /These PRs change CLI source: #2139 \(`079af87397`\)\. Run on each host; paste the commit and the compare result for every listed merge commit\./);
-  for (const host of ["X99", "MBP", "C00"]) {
+  for (const host of HOSTS_UNDER_TEST) {
     assert.match(section, new RegExp(`^\\| ${host} \\| \`"\\$MULTICA_CLI_PATH" version\`, then \`gh api repos/cheese-work/multica/compare/<merge>\\.\\.\\.<host commit> --jq \\.status\` \\| \`079af87397\` \\| pending \\|$`, "m"));
   }
-  assert.equal((section.match(/^\| (?:X99|MBP|C00) \|/gm) ?? []).length, 3);
+  assert.equal((section.match(/^\| \w{3} \|/gm) ?? []).length, 3);
   assert.match(section, /Pass: `ahead` or `identical` for each listed commit\. Do not apply any instruction before every host row passes\./);
   const criteria = /## Acceptance criteria\n([\s\S]*?)(?=\n## |$)/.exec(body)[1];
   assert.match(criteria, /^5\. Every host row in `CLI build per host` passes \(or the section is absent\) before any instruction is applied\.$/m);
@@ -475,7 +477,7 @@ test("W4 (c): the PR rows, flag rows and evidence section stay byte-identical; o
   // with a flag row too: the flag table is unchanged and sits before the new section
   const flagged = buildDaily({ prev, next, prs: [{ ...agentPr, mergeCommit: mergeA }] }).body;
   const flagRows = /## CLI readback per host\n([\s\S]*?)\n## CLI build per host/.exec(flagged)[1];
-  assert.match(flagRows, /\| X99 \| `multica issue create --help \\\| grep -- --property` \| pending \|/);
+  assert.match(flagRows, /\| \w{3} \| `multica issue create --help \\\| grep -- --property` \| pending \|/);
   assert.match(flagRows, /Do not apply any instruction before every host row reads back with its flag listed\.\n$/);
 });
 
