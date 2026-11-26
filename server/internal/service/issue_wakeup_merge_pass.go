@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"regexp"
 	"strings"
 	"time"
@@ -53,79 +52,31 @@ func LabOf(model, provider string) string {
 	return ""
 }
 
-func agentLab(ctx context.Context, tx pgx.Tx, workspaceID, agentID pgtype.UUID) (string, error) {
-	var model, provider string
-	err := tx.QueryRow(ctx, `SELECT COALESCE(a.model,''), COALESCE(r.provider,'') FROM agent a LEFT JOIN agent_runtime r ON r.id=a.runtime_id
-		WHERE a.id=$1 AND a.workspace_id=$2 AND a.archived_at IS NULL`, agentID, workspaceID).Scan(&model, &provider)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return LabOf(model, provider), nil
-}
-
-// A verdict takes effect when it was written or last edited, whichever is
-// later (comment_content_edit), so editing an old comment cannot reorder it
-// behind a newer one or backdate the veto window.
-//
-// storedCrossLabPass derives the two PASS facts from Multica: the newest signed
-// PASS from an agent of another lab than the PR author, on the exact head, in a
-// comment on the wakeup's issue. The signer is the comment's author, so the
-// text cannot name someone else. A signer's newest verdict on the head decides
-// (a later non-PASS withdraws it). An unknown author or no qualifying signer
-// gives no PASS. It reads one transaction and calls no network.
+// storedCrossLabPass derives the two PASS facts from Multica: the newest
+// trusted PASS from an agent of another lab than the PR author, on the exact
+// head, in a comment on the wakeup's issue. VerifiedSigners decides which PASS
+// is trusted (an agent run wrote it, nobody edited it, a newer verdict has not
+// withdrawn it), so the dispatch and the signer read share one filter. An
+// unknown author or no qualifying signer gives no PASS. It reads one
+// transaction and calls no network.
 func storedCrossLabPass(ctx context.Context, tx pgx.Tx, c MergeCandidate, authorID pgtype.UUID) (*bool, *time.Time, error) {
 	if !authorID.Valid {
 		return nil, nil, nil
 	}
-	authorLab, err := agentLab(ctx, tx, c.WorkspaceID, authorID)
-	if err != nil || authorLab == "" {
-		return nil, nil, err
-	}
-	rows, err := tx.Query(ctx, `SELECT c.author_id, c.content, COALESCE(e.edited_at, c.created_at) AS effective_at FROM comment c
-		LEFT JOIN comment_content_edit e ON e.comment_id = c.id
-		WHERE c.workspace_id=$1 AND c.issue_id=$2 AND c.author_type='agent' AND c.type='comment' AND c.deleted_at IS NULL AND position($3 in c.content) > 0
-		ORDER BY effective_at, c.id`, c.WorkspaceID, c.IssueID, c.HeadSHA)
+	read, err := verifiedSigners(ctx, tx, c.WorkspaceID, c.IssueID, c.HeadSHA, authorID)
 	if err != nil {
 		return nil, nil, err
 	}
-	type latest struct {
-		pass bool
-		at   time.Time
-	}
-	bySigner := map[pgtype.UUID]latest{}
-	for rows.Next() {
-		var signer pgtype.UUID
-		var content string
-		var at time.Time
-		if err := rows.Scan(&signer, &content, &at); err != nil {
-			rows.Close()
-			return nil, nil, err
-		}
-		if word, head, ok := parseVerdict(content); ok && head == c.HeadSHA {
-			bySigner[signer] = latest{pass: word == "PASS", at: at}
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, nil, err
+	if read.PRAuthor == nil || read.PRAuthor.Lab == "" {
+		return nil, nil, nil
 	}
 	var newest *time.Time
-	for signer, v := range bySigner {
-		if !v.pass || signer == authorID {
+	for _, signer := range read.Signers {
+		if signer.Lab == "" || signer.Lab == read.PRAuthor.Lab {
 			continue
 		}
-		lab, err := agentLab(ctx, tx, c.WorkspaceID, signer)
-		if err != nil {
-			return nil, nil, err
-		}
-		if lab == "" || lab == authorLab {
-			continue
-		}
-		if newest == nil || v.at.After(*newest) {
-			at := v.at
+		if newest == nil || signer.VerdictAt.After(*newest) {
+			at := signer.VerdictAt
 			newest = &at
 		}
 	}
