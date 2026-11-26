@@ -91,21 +91,29 @@ func TestReviewLoop_RoundTwoRefusalCurrentCLIHasNoUpgradeLine(t *testing.T) {
 	}
 }
 
-func TestReviewLoop_RoundTwoRefusalUnknownCLIIsNeverOutdated(t *testing.T) {
-	for _, v := range []string{"dev", ""} {
-		body := round2Refusal(t, v)
-		msg, _ := body["error"].(string)
-		if !strings.Contains(msg, cliFormRound2) || strings.Contains(msg, "update the multica CLI") {
-			t.Errorf("%q: error = %q", v, msg)
+// Each case builds its own review loop, which creates workspace statuses once.
+func TestReviewLoop_RoundTwoRefusalDevCLIIsNeverOutdated(t *testing.T) {
+	assertUnknownCLIRefusal(t, "dev")
+}
+
+func TestReviewLoop_RoundTwoRefusalWithoutVersionIsNeverOutdated(t *testing.T) {
+	assertUnknownCLIRefusal(t, "")
+}
+
+func assertUnknownCLIRefusal(t *testing.T, version string) {
+	t.Helper()
+	body := round2Refusal(t, version)
+	msg, _ := body["error"].(string)
+	if !strings.Contains(msg, cliFormRound2) || strings.Contains(msg, "update the multica CLI") {
+		t.Errorf("%q: error = %q", version, msg)
+	}
+	for _, k := range []string{"client_outdated", "client_version", "min_client_version"} {
+		if _, ok := body[k]; ok {
+			t.Errorf("%q: json has %s: %v", version, k, body)
 		}
-		for _, k := range []string{"client_outdated", "client_version", "min_client_version"} {
-			if _, ok := body[k]; ok {
-				t.Errorf("%q: json has %s: %v", v, k, body)
-			}
-		}
-		if body["cli_form"] != cliFormRound2 {
-			t.Errorf("%q: cli_form = %v", v, body["cli_form"])
-		}
+	}
+	if body["cli_form"] != cliFormRound2 {
+		t.Errorf("%q: cli_form = %v", version, body["cli_form"])
 	}
 }
 
