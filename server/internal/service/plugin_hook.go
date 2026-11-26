@@ -278,7 +278,7 @@ func (s *PluginService) callHookEndpoint(ctx context.Context, invocation HookInv
 			client = s.HookClient
 		}
 	} else {
-		validated, err := remotemcp.ValidatePublicHTTPSEndpoint(ctx, invocation.Hook.Transport.URL, domains, nil)
+		validated, err := remotemcp.ValidatePublicHTTPSEndpoint(ctx, invocation.Hook.Transport.URL, domains, s.HookResolver)
 		if err != nil {
 			return nil, &PluginError{Kind: PluginErrorForbidden, Message: "hook endpoint is not allowed", Err: err}
 		}

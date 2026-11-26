@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -94,14 +95,11 @@ func answer(body string) func(http.ResponseWriter, []byte) {
 	}
 }
 
-func guardRow(t *testing.T, f guardFixture, id pgtype.UUID) (trigger, status string) {
+// guardRow waits for the row: a call that ran out of its deadline records it in
+// the background.
+func guardRow(t *testing.T, _ guardFixture, id pgtype.UUID) (trigger, status string) {
 	t.Helper()
-	err := sharedTestPool(t).QueryRow(context.Background(),
-		`SELECT trigger, status FROM plugin_invocation WHERE id = $1`, id).Scan(&trigger, &status)
-	if err != nil {
-		t.Fatalf("the guard call must leave an invocation row: %v", err)
-	}
-	return trigger, status
+	return waitForGuardRow(t, id)
 }
 
 func TestInvokeGuardAllow(t *testing.T) {
@@ -291,5 +289,121 @@ func TestInvokeGuardCallbackGrantCarriesTheGuardTrigger(t *testing.T) {
 	}
 	if seen.Trigger != plugincontract.TriggerGuard {
 		t.Fatalf("grant trigger = %q, want guard", seen.Trigger)
+	}
+}
+
+// stalledResolver never answers until its context ends, which is what a DNS
+// server that has stopped replying looks like to the caller.
+type stalledResolver struct{}
+
+func (stalledResolver) LookupNetIP(ctx context.Context, _, _ string) ([]netip.Addr, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+// guardDeadlineSlack is how far past the 100 ms guard bound a stalled
+// dependency may push the answer. It is generous so a loaded CI host does not
+// flake, and still far below the multi-second hang the deadline exists to stop.
+const guardDeadlineSlack = 1500 * time.Millisecond
+
+func waitForGuardRow(t *testing.T, id pgtype.UUID) (trigger, status string) {
+	t.Helper()
+	deadline := time.Now().Add(6 * time.Second)
+	for {
+		err := sharedTestPool(t).QueryRow(context.Background(),
+			`SELECT trigger, status FROM plugin_invocation WHERE id = $1`, id).Scan(&trigger, &status)
+		if err == nil {
+			return trigger, status
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("a timed-out guard call must still leave an invocation row: %v", err)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
+func TestInvokeGuardDeadlineCoversEndpointValidation(t *testing.T) {
+	for _, onError := range []string{"closed", "open"} {
+		t.Run(onError, func(t *testing.T) {
+			service := testSigningService(t)
+			service.Queries = db.New(sharedTestPool(t))
+			service.Callbacks = NewCallbackTokens()
+			service.CallbackBaseURL = "https://plugin-api.multica.test/v1"
+			service.HookResolver = stalledResolver{}
+			installation := guardTestInstallation(t, "https://guard.example.test/hooks/qa-proof", "guard.example.test", onError, 100)
+			hook, err := FindHook(installation, "qa-proof")
+			if err != nil {
+				t.Fatalf("find hook: %v", err)
+			}
+			invocation := HookInvocation{Installation: installation, Hook: hook, IssueID: pgtype.UUID{Bytes: uuid.New(), Valid: true}}
+
+			started := time.Now()
+			result, err := service.InvokeGuard(context.Background(), invocation)
+			elapsed := time.Since(started)
+			if err != nil {
+				t.Fatalf("InvokeGuard: %v", err)
+			}
+			if elapsed > guardDeadlineSlack {
+				t.Fatalf("a stalled DNS lookup held the guard for %s; the bound is 100ms", elapsed)
+			}
+			wantDecision := GuardDecisionDeny
+			if onError == "open" {
+				wantDecision = GuardDecisionAllow
+			}
+			if result.Source != GuardSourceOnError || result.Decision != wantDecision || result.Status != "timeout" {
+				t.Fatalf("result = %+v, want an on_error %s with status timeout", result, wantDecision)
+			}
+			trigger, status := waitForGuardRow(t, result.InvocationID)
+			if trigger != "guard" || status != "timeout" {
+				t.Fatalf("invocation row = (%s, %s), want (guard, timeout)", trigger, status)
+			}
+		})
+	}
+}
+
+func TestInvokeGuardDeadlineCoversDatabase(t *testing.T) {
+	for _, onError := range []string{"closed", "open"} {
+		t.Run(onError, func(t *testing.T) {
+			f := newGuardFixture(t, onError, 100, answer(`{"decision":"allow"}`))
+			pool := sharedTestPool(t)
+			tx, err := pool.Begin(context.Background())
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			released := false
+			release := func() {
+				if !released {
+					released = true
+					_ = tx.Rollback(context.Background())
+				}
+			}
+			t.Cleanup(release)
+			// Every read and write the guard makes on plugin_invocation now waits,
+			// which is what a stalled database looks like to the caller.
+			if _, err := tx.Exec(context.Background(), `LOCK TABLE plugin_invocation IN ACCESS EXCLUSIVE MODE`); err != nil {
+				t.Fatalf("lock plugin_invocation: %v", err)
+			}
+
+			started := time.Now()
+			result, err := f.service.InvokeGuard(context.Background(), f.invocation)
+			elapsed := time.Since(started)
+			release()
+			if err != nil {
+				t.Fatalf("InvokeGuard: %v", err)
+			}
+			if elapsed > guardDeadlineSlack {
+				t.Fatalf("a stalled database held the guard for %s; the bound is 100ms", elapsed)
+			}
+			wantDecision := GuardDecisionDeny
+			if onError == "open" {
+				wantDecision = GuardDecisionAllow
+			}
+			if result.Source != GuardSourceOnError || result.Decision != wantDecision {
+				t.Fatalf("result = %+v, want an on_error %s", result, wantDecision)
+			}
+			if _, status := waitForGuardRow(t, result.InvocationID); status != "timeout" {
+				t.Fatalf("invocation status = %s, want timeout", status)
+			}
+		})
 	}
 }

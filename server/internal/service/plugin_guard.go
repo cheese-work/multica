@@ -78,6 +78,13 @@ func (s *PluginService) InvokeGuard(ctx context.Context, invocation HookInvocati
 	hook.TimeoutMs = hook.Guard.TimeoutMs
 	invocation.Hook = hook
 
+	// One deadline covers the whole synchronous path: the breaker and rate
+	// reads, endpoint validation (DNS), the call and the answer. A stalled
+	// resolver or database therefore cannot hold the guarded action past the
+	// bound the manifest declared.
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(hook.Guard.TimeoutMs)*time.Millisecond)
+	defer cancel()
+
 	result := GuardResult{InvocationID: invocation.ID, HookKey: hook.Key}
 	onError := func(status, message string) GuardResult {
 		result.Status = status
@@ -112,21 +119,48 @@ func (s *PluginService) InvokeGuard(ctx context.Context, invocation HookInvocati
 
 	if callErr != nil {
 		status := hookFailureStatus(callErr)
+		// A lookup that ran out of time is wrapped as a refusal; the deadline is
+		// what actually happened.
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			status = "timeout"
+		}
 		message := redactHookError(callErr)
-		s.recordInvocation(ctx, invocation, status, 1, result.LatencyMs, message)
+		s.recordGuardInvocation(ctx, invocation, status, result.LatencyMs, message)
 		return onError(status, message), nil
 	}
 	answer, err := parseGuardAnswer(output)
 	if err != nil {
-		s.recordInvocation(ctx, invocation, "failed", 1, result.LatencyMs, err.Error())
+		s.recordGuardInvocation(ctx, invocation, "failed", result.LatencyMs, err.Error())
 		return onError("failed", err.Error()), nil
 	}
-	s.recordInvocation(ctx, invocation, "ok", 1, result.LatencyMs, "")
+	s.recordGuardInvocation(ctx, invocation, "ok", result.LatencyMs, "")
 	result.Status = "ok"
 	result.Source = GuardSourcePlugin
 	result.Decision = answer.Decision
 	result.Reason = answer.Reason
 	return result, nil
+}
+
+// guardRecordGrace bounds a telemetry write that has to outlive the guard
+// deadline.
+const guardRecordGrace = 3 * time.Second
+
+// recordGuardInvocation writes the invocation row inside the guard deadline
+// while there is time left. Once the deadline has passed the answer must not
+// wait for the write, so the row is written in the background on a context that
+// keeps the values but not the cancellation. A timed-out call still leaves its
+// row, which is what lets the breaker see a plugin that keeps timing out.
+func (s *PluginService) recordGuardInvocation(ctx context.Context, invocation HookInvocation, status string, latency int, message string) {
+	if ctx.Err() == nil {
+		s.recordInvocation(ctx, invocation, status, 1, latency, message)
+		return
+	}
+	detached := context.WithoutCancel(ctx)
+	go func() {
+		writeCtx, cancel := context.WithTimeout(detached, guardRecordGrace)
+		defer cancel()
+		s.recordInvocation(writeCtx, invocation, status, 1, latency, message)
+	}()
 }
 
 // parseGuardAnswer is strict about the two things a verdict must be: a known
