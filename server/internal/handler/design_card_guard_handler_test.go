@@ -388,3 +388,85 @@ func TestDesignCardGuard_ChecksTheLengthAgainAfterTheFrameLines(t *testing.T) {
 		t.Fatalf("%d cards, want none", n)
 	}
 }
+
+// D4 criterion 2, review r1 and r2 provenance cases, through both card
+// endpoints: the ledger rows decide, never timing, and a row Multica cannot
+// vouch for never becomes an author. Each case refuses with no card.
+func TestDesignCardGuard_ProvenanceCasesAreRefused(t *testing.T) {
+	type view = map[string]any
+	agentRow := func(agentID, taskID string) map[string]any {
+		return map[string]any{"kind": "agent", "agentId": agentID, "taskId": taskID, "sources": []string{"write"}}
+	}
+	cases := []struct {
+		name  string
+		code  string
+		setup func(t *testing.T, f *cardGuardFixture)
+	}{
+		// 1. Another lab made only the final metadata edits; both are in the ledger.
+		{"final metadata edits by another lab, the first author reviews", "design_verdict_self_review", func(t *testing.T, f *cardGuardFixture) {
+			editor := f.task(t, f.crossLabID, f.codexRuntime, "gpt-test")
+			f.serve(view{"authors": []map[string]any{agentRow(f.authorID, f.authorTk), agentRow(f.crossLabID, editor)}})
+			f.verdict(t, f.authorID, f.task(t, f.authorID, f.claudeRuntime, "claude-test"), "PASS", 1)
+		}},
+		{"final metadata edits by another lab, the editor reviews", "design_verdict_self_review", func(t *testing.T, f *cardGuardFixture) {
+			editor := f.task(t, f.crossLabID, f.codexRuntime, "gpt-test")
+			f.serve(view{"authors": []map[string]any{agentRow(f.authorID, f.authorTk), agentRow(f.crossLabID, editor)}})
+			f.verdict(t, f.crossLabID, editor, "PASS", 1)
+		}},
+		{"final metadata edits by another lab, a third agent of the author lab reviews", "design_verdict_same_lab", func(t *testing.T, f *cardGuardFixture) {
+			editor := f.task(t, f.crossLabID, f.codexRuntime, "gpt-test")
+			f.serve(view{"authors": []map[string]any{agentRow(f.authorID, f.authorTk), agentRow(f.crossLabID, editor)}})
+			f.verdict(t, f.sameLabID, f.task(t, f.sameLabID, f.claudeRuntime, "claude-test"), "PASS", 1)
+		}},
+		// 2. Copy or restore of the designer's page: the ledger keeps the designer's rows.
+		{"restored page keeps the designer's rows, the designer reviews", "design_verdict_self_review", func(t *testing.T, f *cardGuardFixture) {
+			f.verdict(t, f.authorID, f.task(t, f.authorID, f.claudeRuntime, "claude-test"), "PASS", 1)
+		}},
+		{"copied page keeps the designer's rows, another agent of the designer's lab reviews", "design_verdict_same_lab", func(t *testing.T, f *cardGuardFixture) {
+			f.verdict(t, f.sameLabID, f.task(t, f.sameLabID, f.claudeRuntime, "claude-test"), "PASS", 1)
+		}},
+		// 3. Borrowed task id.
+		{"author row names a task Multica does not know", "design_author_unknown", func(t *testing.T, f *cardGuardFixture) {
+			f.serve(view{"authors": []map[string]any{agentRow(f.authorID, "00000000-0000-4000-8000-0000000000bb")}})
+			f.passByCrossLab(t)
+		}},
+		{"author row names a task that belongs to another agent", "design_author_unknown", func(t *testing.T, f *cardGuardFixture) {
+			f.serve(view{"authors": []map[string]any{agentRow(f.sameLabID, f.authorTk)}})
+			f.passByCrossLab(t)
+		}},
+		{"author row has no task id", "design_author_unknown", func(t *testing.T, f *cardGuardFixture) {
+			f.serve(view{"authors": []map[string]any{agentRow(f.authorID, "")}})
+			f.passByCrossLab(t)
+		}},
+		// 4. A human or legacy write, even beside an unrelated live task, is no trusted author.
+		{"legacy write only", "design_author_unknown", func(t *testing.T, f *cardGuardFixture) {
+			f.serve(view{"authors": []map[string]any{{"kind": "unknown", "sources": []string{"legacy"}}}, "provenanceComplete": false})
+			f.passByCrossLab(t)
+		}},
+		{"legacy write beside the agent's row", "design_author_unknown", func(t *testing.T, f *cardGuardFixture) {
+			f.serve(view{"authors": []map[string]any{agentRow(f.authorID, f.authorTk), {"kind": "unknown", "sources": []string{"legacy"}}}, "provenanceComplete": false})
+			f.passByCrossLab(t)
+		}},
+		{"human write with provenance incomplete", "design_author_unknown", func(t *testing.T, f *cardGuardFixture) {
+			f.serve(view{"authors": []map[string]any{{"kind": "user", "userId": "u-1", "sources": []string{"write"}}}, "provenanceComplete": false})
+			f.passByCrossLab(t)
+		}},
+		{"no author rows at all", "design_author_unknown", func(t *testing.T, f *cardGuardFixture) {
+			f.serve(view{"authors": []map[string]any{}})
+			f.passByCrossLab(t)
+		}},
+		{"system row", "design_author_unknown", func(t *testing.T, f *cardGuardFixture) {
+			f.serve(view{"authors": []map[string]any{{"kind": "system", "sources": []string{"write"}}}})
+			f.passByCrossLab(t)
+		}},
+	}
+	for _, tc := range cases {
+		for _, entry := range cardEntries {
+			t.Run(tc.name+" "+entry, func(t *testing.T) {
+				f := newCardGuardFixture(t, "block")
+				tc.setup(t, f)
+				f.wantRefusal(t, f.send(t, entry, f.designAsk(), "reversible"), http.StatusConflict, tc.code)
+			})
+		}
+	}
+}
