@@ -11,462 +11,146 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const ackChatTaskSupplementDelivered = `-- name: AckChatTaskSupplementDelivered :one
-WITH task AS MATERIALIZED (
-    SELECT id FROM agent_task_queue WHERE id = $2 FOR UPDATE
-)
-UPDATE chat_task_supplement s
-SET status = 'delivered',
-    delivered_at = COALESCE(s.delivered_at, now()),
-    acked_after_resend_at = CASE WHEN s.resent_task_id IS NOT NULL
-                                 THEN COALESCE(s.acked_after_resend_at, now())
-                                 ELSE s.acked_after_resend_at END,
-    updated_at = now()
-FROM task t
-WHERE s.task_id = t.id
-  AND s.message_id = $1
-  AND s.status IN ('delivering', 'uncertain', 'delivered')
-RETURNING s.message_id, s.task_id, s.workspace_id, s.chat_session_id, s.author_id, s.status, s.failure_reason, s.attempt_count, s.resent_task_id, s.resent_uncertain, s.acked_after_resend_at, s.created_at, s.updated_at, s.delivered_at
+const ackChatTaskSupplement = `-- name: AckChatTaskSupplement :one
+UPDATE chat_task_supplement SET status = 'delivered'
+WHERE task_id = $1 AND message_id = $2 AND status IN ('delivering', 'delivered')
+RETURNING task_id, message_id, chat_session_id, workspace_id, author_id, status, created_at
 `
 
-type AckChatTaskSupplementDeliveredParams struct {
-	MessageID pgtype.UUID `json:"message_id"`
+type AckChatTaskSupplementParams struct {
 	TaskID    pgtype.UUID `json:"task_id"`
+	MessageID pgtype.UUID `json:"message_id"`
 }
 
-// A positive ack is the fact that the provider holds the text. It is recorded
-// even after settlement or a confirmed resend: refusing it could not undo the
-// delivery, only hide a duplicate from the user.
-func (q *Queries) AckChatTaskSupplementDelivered(ctx context.Context, arg AckChatTaskSupplementDeliveredParams) (ChatTaskSupplement, error) {
-	row := q.db.QueryRow(ctx, ackChatTaskSupplementDelivered, arg.MessageID, arg.TaskID)
+func (q *Queries) AckChatTaskSupplement(ctx context.Context, arg AckChatTaskSupplementParams) (ChatTaskSupplement, error) {
+	row := q.db.QueryRow(ctx, ackChatTaskSupplement, arg.TaskID, arg.MessageID)
 	var i ChatTaskSupplement
 	err := row.Scan(
-		&i.MessageID,
 		&i.TaskID,
-		&i.WorkspaceID,
+		&i.MessageID,
 		&i.ChatSessionID,
+		&i.WorkspaceID,
 		&i.AuthorID,
 		&i.Status,
-		&i.FailureReason,
-		&i.AttemptCount,
-		&i.ResentTaskID,
-		&i.ResentUncertain,
-		&i.AckedAfterResendAt,
 		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeliveredAt,
 	)
 	return i, err
-}
-
-const ackChatTaskSupplementNotDelivered = `-- name: AckChatTaskSupplementNotDelivered :one
-WITH task AS MATERIALIZED (
-    SELECT id FROM agent_task_queue WHERE id = $2 FOR UPDATE
-), target AS MATERIALIZED (
-    SELECT s.message_id, s.task_id,
-           (s.resent_task_id IS NULL AND s.status <> 'delivered') AS changes
-    FROM chat_task_supplement s
-    JOIN task ON task.id = s.task_id
-    WHERE s.message_id = $3
-      AND s.status IN ('delivering', 'uncertain', 'delivered')
-    FOR UPDATE OF s
-)
-UPDATE chat_task_supplement s
-SET status = CASE WHEN target.changes THEN 'uncertain' ELSE s.status END,
-    failure_reason = CASE WHEN target.changes THEN $1::text ELSE s.failure_reason END,
-    updated_at = CASE WHEN target.changes THEN now() ELSE s.updated_at END
-FROM target
-WHERE s.message_id = target.message_id
-  AND s.task_id = target.task_id
-RETURNING s.message_id, s.task_id, s.workspace_id, s.chat_session_id, s.author_id, s.status, s.failure_reason, s.attempt_count, s.resent_task_id, s.resent_uncertain, s.acked_after_resend_at, s.created_at, s.updated_at, s.delivered_at
-`
-
-type AckChatTaskSupplementNotDeliveredParams struct {
-	FailureReason string      `json:"failure_reason"`
-	TaskID        pgtype.UUID `json:"task_id"`
-	MessageID     pgtype.UUID `json:"message_id"`
-}
-
-// The daemon cannot prove a rejection happened before the provider accepted
-// the text (a timeout can fire after acceptance), so a negative ack never
-// produces failed. A recorded delivery or a committed resend is left as it is.
-func (q *Queries) AckChatTaskSupplementNotDelivered(ctx context.Context, arg AckChatTaskSupplementNotDeliveredParams) (ChatTaskSupplement, error) {
-	row := q.db.QueryRow(ctx, ackChatTaskSupplementNotDelivered, arg.FailureReason, arg.TaskID, arg.MessageID)
-	var i ChatTaskSupplement
-	err := row.Scan(
-		&i.MessageID,
-		&i.TaskID,
-		&i.WorkspaceID,
-		&i.ChatSessionID,
-		&i.AuthorID,
-		&i.Status,
-		&i.FailureReason,
-		&i.AttemptCount,
-		&i.ResentTaskID,
-		&i.ResentUncertain,
-		&i.AckedAfterResendAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeliveredAt,
-	)
-	return i, err
-}
-
-const chatTaskEndedSince = `-- name: ChatTaskEndedSince :one
-SELECT EXISTS (
-    SELECT 1 FROM agent_task_queue
-    WHERE chat_session_id = $1
-      AND id <> $2
-      AND started_at IS NOT NULL
-      AND status IN ('completed', 'failed', 'cancelled')
-      AND completed_at >= $3
-)::boolean
-`
-
-type ChatTaskEndedSinceParams struct {
-	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
-	ExcludeTaskID pgtype.UUID        `json:"exclude_task_id"`
-	Since         pgtype.Timestamptz `json:"since"`
-}
-
-// Tells a turn that just ended apart from a session that had no run at all.
-func (q *Queries) ChatTaskEndedSince(ctx context.Context, arg ChatTaskEndedSinceParams) (bool, error) {
-	row := q.db.QueryRow(ctx, chatTaskEndedSince, arg.ChatSessionID, arg.ExcludeTaskID, arg.Since)
-	var column_1 bool
-	err := row.Scan(&column_1)
-	return column_1, err
 }
 
 const claimNextChatTaskSupplement = `-- name: ClaimNextChatTaskSupplement :one
-WITH task AS MATERIALIZED (
-    SELECT t.id FROM agent_task_queue t
-    JOIN task_supplement_capability cap ON cap.task_id = t.id
-    WHERE t.id = $1
-      AND t.status = 'running'
-      AND cap.capability = 'task-supplement-chat-v1'
-    FOR UPDATE OF t
-), next AS MATERIALIZED (
-    SELECT s.message_id, s.task_id
-    FROM chat_task_supplement s
-    JOIN task ON task.id = s.task_id
-    WHERE s.status = 'pending'
+WITH next AS MATERIALIZED (
+    SELECT s.message_id FROM chat_task_supplement s
+    JOIN agent_task_queue t ON t.id = s.task_id
+    WHERE s.task_id = $1 AND s.status = 'pending' AND t.status = 'running'
     ORDER BY s.created_at, s.message_id
-    LIMIT 1
-    FOR UPDATE OF s
+    LIMIT 1 FOR UPDATE OF s SKIP LOCKED
 ), claimed AS (
-    UPDATE chat_task_supplement s
-    SET status = 'delivering',
-        attempt_count = attempt_count + 1,
-        updated_at = now()
-    FROM next
-    WHERE s.message_id = next.message_id
-      AND s.task_id = next.task_id
-    RETURNING s.message_id, s.task_id, s.workspace_id, s.chat_session_id, s.author_id, s.status, s.failure_reason, s.attempt_count, s.resent_task_id, s.resent_uncertain, s.acked_after_resend_at, s.created_at, s.updated_at, s.delivered_at
+    UPDATE chat_task_supplement s SET status = 'delivering'
+    FROM next WHERE s.message_id = next.message_id RETURNING s.task_id, s.message_id, s.chat_session_id, s.workspace_id, s.author_id, s.status, s.created_at
 )
-SELECT claimed.message_id, claimed.attempt_count, claimed.workspace_id,
-       claimed.chat_session_id, m.content,
-       COALESCE(NULLIF(btrim(u.name), ''), 'a user')::text AS author_name
-FROM claimed
-JOIN chat_message m ON m.id = claimed.message_id
+SELECT claimed.message_id, m.content, COALESCE(NULLIF(btrim(u.name), ''), 'a user')::text AS author_name
+FROM claimed JOIN chat_message m ON m.id = claimed.message_id
 LEFT JOIN "user" u ON u.id = claimed.author_id
 `
 
 type ClaimNextChatTaskSupplementRow struct {
-	MessageID     pgtype.UUID `json:"message_id"`
-	AttemptCount  int32       `json:"attempt_count"`
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-	ChatSessionID pgtype.UUID `json:"chat_session_id"`
-	Content       string      `json:"content"`
-	AuthorName    string      `json:"author_name"`
+	MessageID  pgtype.UUID `json:"message_id"`
+	Content    string      `json:"content"`
+	AuthorName string      `json:"author_name"`
 }
 
-// delivering is written under the task-row lock, so terminal settlement (which
-// updates that row first) can never label a claimed receipt as never claimed.
 func (q *Queries) ClaimNextChatTaskSupplement(ctx context.Context, taskID pgtype.UUID) (ClaimNextChatTaskSupplementRow, error) {
 	row := q.db.QueryRow(ctx, claimNextChatTaskSupplement, taskID)
 	var i ClaimNextChatTaskSupplementRow
-	err := row.Scan(
-		&i.MessageID,
-		&i.AttemptCount,
-		&i.WorkspaceID,
-		&i.ChatSessionID,
-		&i.Content,
-		&i.AuthorName,
-	)
+	err := row.Scan(&i.MessageID, &i.Content, &i.AuthorName)
 	return i, err
 }
 
-const createChatTaskSupplement = `-- name: CreateChatTaskSupplement :one
-INSERT INTO chat_task_supplement (
-    message_id, task_id, workspace_id, chat_session_id, author_id, status
-) VALUES (
-    $1, $2, $3, $4, $5, 'pending'
-)
-RETURNING message_id, task_id, workspace_id, chat_session_id, author_id, status, failure_reason, attempt_count, resent_task_id, resent_uncertain, acked_after_resend_at, created_at, updated_at, delivered_at
+const createChatTaskSupplement = `-- name: CreateChatTaskSupplement :exec
+INSERT INTO chat_task_supplement (task_id, message_id, chat_session_id, workspace_id, author_id, status)
+VALUES ($1, $2, $3, $4, $5, 'pending')
 `
 
 type CreateChatTaskSupplementParams struct {
-	MessageID     pgtype.UUID `json:"message_id"`
 	TaskID        pgtype.UUID `json:"task_id"`
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	MessageID     pgtype.UUID `json:"message_id"`
 	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
 	AuthorID      pgtype.UUID `json:"author_id"`
 }
 
-func (q *Queries) CreateChatTaskSupplement(ctx context.Context, arg CreateChatTaskSupplementParams) (ChatTaskSupplement, error) {
-	row := q.db.QueryRow(ctx, createChatTaskSupplement,
-		arg.MessageID,
+func (q *Queries) CreateChatTaskSupplement(ctx context.Context, arg CreateChatTaskSupplementParams) error {
+	_, err := q.db.Exec(ctx, createChatTaskSupplement,
 		arg.TaskID,
-		arg.WorkspaceID,
+		arg.MessageID,
 		arg.ChatSessionID,
+		arg.WorkspaceID,
 		arg.AuthorID,
 	)
-	var i ChatTaskSupplement
-	err := row.Scan(
-		&i.MessageID,
-		&i.TaskID,
-		&i.WorkspaceID,
-		&i.ChatSessionID,
-		&i.AuthorID,
-		&i.Status,
-		&i.FailureReason,
-		&i.AttemptCount,
-		&i.ResentTaskID,
-		&i.ResentUncertain,
-		&i.AckedAfterResendAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeliveredAt,
-	)
-	return i, err
-}
-
-const deleteChatTaskSupplementsBySession = `-- name: DeleteChatTaskSupplementsBySession :exec
-DELETE FROM chat_task_supplement
-WHERE chat_session_id = $1 AND workspace_id = $2
-`
-
-type DeleteChatTaskSupplementsBySessionParams struct {
-	ChatSessionID pgtype.UUID `json:"chat_session_id"`
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) DeleteChatTaskSupplementsBySession(ctx context.Context, arg DeleteChatTaskSupplementsBySessionParams) error {
-	_, err := q.db.Exec(ctx, deleteChatTaskSupplementsBySession, arg.ChatSessionID, arg.WorkspaceID)
 	return err
 }
 
-const getDeliveredChatTaskSupplement = `-- name: GetDeliveredChatTaskSupplement :one
-SELECT message_id, task_id, workspace_id, chat_session_id, author_id, status, failure_reason, attempt_count, resent_task_id, resent_uncertain, acked_after_resend_at, created_at, updated_at, delivered_at FROM chat_task_supplement
-WHERE chat_session_id = $1
-  AND message_id = $2
-  AND task_id = $3
-  AND status = 'delivered'
+const deleteChatSupplementCapabilitiesBySession = `-- name: DeleteChatSupplementCapabilitiesBySession :exec
+DELETE FROM task_supplement_capability
+WHERE task_id IN (SELECT q.id FROM agent_task_queue q WHERE q.chat_session_id = $1)
 `
 
-type GetDeliveredChatTaskSupplementParams struct {
-	ChatSessionID pgtype.UUID `json:"chat_session_id"`
-	MessageID     pgtype.UUID `json:"message_id"`
-	TaskID        pgtype.UUID `json:"task_id"`
+func (q *Queries) DeleteChatSupplementCapabilitiesBySession(ctx context.Context, chatSessionID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChatSupplementCapabilitiesBySession, chatSessionID)
+	return err
 }
 
-// A steered message the provider holds for this exact run. Pending, delivering,
-// uncertain and failed receipts do not match: the agent may not have seen them.
-func (q *Queries) GetDeliveredChatTaskSupplement(ctx context.Context, arg GetDeliveredChatTaskSupplementParams) (ChatTaskSupplement, error) {
-	row := q.db.QueryRow(ctx, getDeliveredChatTaskSupplement, arg.ChatSessionID, arg.MessageID, arg.TaskID)
-	var i ChatTaskSupplement
-	err := row.Scan(
-		&i.MessageID,
-		&i.TaskID,
-		&i.WorkspaceID,
-		&i.ChatSessionID,
-		&i.AuthorID,
-		&i.Status,
-		&i.FailureReason,
-		&i.AttemptCount,
-		&i.ResentTaskID,
-		&i.ResentUncertain,
-		&i.AckedAfterResendAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeliveredAt,
-	)
-	return i, err
-}
-
-const getLatestChatTaskSupplement = `-- name: GetLatestChatTaskSupplement :one
-SELECT message_id, task_id, workspace_id, chat_session_id, author_id, status, failure_reason, attempt_count, resent_task_id, resent_uncertain, acked_after_resend_at, created_at, updated_at, delivered_at FROM chat_task_supplement
-WHERE chat_session_id = $1 AND message_id = $2
-ORDER BY created_at DESC, task_id DESC
-LIMIT 1
+const deleteChatTaskSupplementsBySession = `-- name: DeleteChatTaskSupplementsBySession :exec
+DELETE FROM chat_task_supplement WHERE chat_session_id = $1
 `
 
-type GetLatestChatTaskSupplementParams struct {
-	ChatSessionID pgtype.UUID `json:"chat_session_id"`
-	MessageID     pgtype.UUID `json:"message_id"`
+func (q *Queries) DeleteChatTaskSupplementsBySession(ctx context.Context, chatSessionID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChatTaskSupplementsBySession, chatSessionID)
+	return err
 }
 
-func (q *Queries) GetLatestChatTaskSupplement(ctx context.Context, arg GetLatestChatTaskSupplementParams) (ChatTaskSupplement, error) {
-	row := q.db.QueryRow(ctx, getLatestChatTaskSupplement, arg.ChatSessionID, arg.MessageID)
-	var i ChatTaskSupplement
-	err := row.Scan(
-		&i.MessageID,
-		&i.TaskID,
-		&i.WorkspaceID,
-		&i.ChatSessionID,
-		&i.AuthorID,
-		&i.Status,
-		&i.FailureReason,
-		&i.AttemptCount,
-		&i.ResentTaskID,
-		&i.ResentUncertain,
-		&i.AckedAfterResendAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeliveredAt,
-	)
-	return i, err
-}
-
-const listChatTaskSupplementsByMessageIDs = `-- name: ListChatTaskSupplementsByMessageIDs :many
-SELECT DISTINCT ON (message_id) message_id, task_id, workspace_id, chat_session_id, author_id, status, failure_reason, attempt_count, resent_task_id, resent_uncertain, acked_after_resend_at, created_at, updated_at, delivered_at
-FROM chat_task_supplement
-WHERE workspace_id = $1
-  AND message_id = ANY($2::uuid[])
-ORDER BY message_id, created_at DESC, task_id DESC
+const deleteChatTaskSupplementsByWorkspace = `-- name: DeleteChatTaskSupplementsByWorkspace :exec
+DELETE FROM chat_task_supplement WHERE workspace_id = $1
 `
 
-type ListChatTaskSupplementsByMessageIDsParams struct {
+func (q *Queries) DeleteChatTaskSupplementsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChatTaskSupplementsByWorkspace, workspaceID)
+	return err
+}
+
+const hasChatTaskAssistantOutcome = `-- name: HasChatTaskAssistantOutcome :one
+SELECT EXISTS (SELECT 1 FROM chat_message WHERE task_id = $1 AND role = 'assistant')
+`
+
+func (q *Queries) HasChatTaskAssistantOutcome(ctx context.Context, taskID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasChatTaskAssistantOutcome, taskID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
+const listChatGuidanceInProviderSession = `-- name: ListChatGuidanceInProviderSession :many
+SELECT s.message_id FROM chat_task_supplement s
+JOIN agent_task_queue t ON t.id = s.task_id
+WHERE s.workspace_id = $1 AND s.message_id = ANY($2::uuid[])
+  AND s.status = 'delivered'
+  AND t.session_id = $3 AND t.runtime_id = $4
+`
+
+type ListChatGuidanceInProviderSessionParams struct {
 	WorkspaceID pgtype.UUID   `json:"workspace_id"`
 	MessageIds  []pgtype.UUID `json:"message_ids"`
+	SessionID   pgtype.Text   `json:"session_id"`
+	RuntimeID   pgtype.UUID   `json:"runtime_id"`
 }
 
-// A message is steered at most once per run; the latest receipt is its state.
-func (q *Queries) ListChatTaskSupplementsByMessageIDs(ctx context.Context, arg ListChatTaskSupplementsByMessageIDsParams) ([]ChatTaskSupplement, error) {
-	rows, err := q.db.Query(ctx, listChatTaskSupplementsByMessageIDs, arg.WorkspaceID, arg.MessageIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChatTaskSupplement{}
-	for rows.Next() {
-		var i ChatTaskSupplement
-		if err := rows.Scan(
-			&i.MessageID,
-			&i.TaskID,
-			&i.WorkspaceID,
-			&i.ChatSessionID,
-			&i.AuthorID,
-			&i.Status,
-			&i.FailureReason,
-			&i.AttemptCount,
-			&i.ResentTaskID,
-			&i.ResentUncertain,
-			&i.AckedAfterResendAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.DeliveredAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listDeliveredSteeredChatMessages = `-- name: ListDeliveredSteeredChatMessages :many
-SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id, m.reanchored_at, m.wakeup_id FROM chat_task_supplement s
-JOIN chat_message m ON m.id = s.message_id AND m.chat_session_id = s.chat_session_id
-WHERE s.chat_session_id = $1
-  AND s.workspace_id = $2
-  AND s.status = 'delivered'
-  AND m.created_at < $3
-  AND NOT EXISTS (
-      SELECT 1 FROM decision_answer a
-      WHERE m.id = ANY(a.chat_message_ids) AND a.disclaimed_at IS NULL
-  )
-ORDER BY m.created_at DESC, m.id DESC
-LIMIT $4
-`
-
-type ListDeliveredSteeredChatMessagesParams struct {
-	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	Before        pgtype.Timestamptz `json:"before"`
-	RowLimit      int32              `json:"row_limit"`
-}
-
-// Delivered steered messages of a DM that no live decision answer quotes yet.
-// A steered message keeps task_id of its cancelled follow-up, so no turn lists
-// it as input.
-func (q *Queries) ListDeliveredSteeredChatMessages(ctx context.Context, arg ListDeliveredSteeredChatMessagesParams) ([]ChatMessage, error) {
-	rows, err := q.db.Query(ctx, listDeliveredSteeredChatMessages,
-		arg.ChatSessionID,
+func (q *Queries) ListChatGuidanceInProviderSession(ctx context.Context, arg ListChatGuidanceInProviderSessionParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listChatGuidanceInProviderSession,
 		arg.WorkspaceID,
-		arg.Before,
-		arg.RowLimit,
+		arg.MessageIds,
+		arg.SessionID,
+		arg.RuntimeID,
 	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChatMessage{}
-	for rows.Next() {
-		var i ChatMessage
-		if err := rows.Scan(
-			&i.ID,
-			&i.ChatSessionID,
-			&i.Role,
-			&i.Content,
-			&i.TaskID,
-			&i.CreatedAt,
-			&i.FailureReason,
-			&i.ElapsedMs,
-			&i.MessageKind,
-			&i.ChannelMediaPendingUntil,
-			&i.ChannelIngested,
-			&i.QuickActions,
-			&i.ChannelContextRevision,
-			&i.ChannelOutboundType,
-			&i.ChannelOutboundInstallationID,
-			&i.ChannelOutboundChatID,
-			&i.ChannelOutboundMessageIds,
-			&i.ChannelTypingSettled,
-			&i.SentVia,
-			&i.DecisionAnswerID,
-			&i.LineageMessageIds,
-			&i.DecisionRequestIds,
-			&i.ClientMessageID,
-			&i.ReanchoredAt,
-			&i.WakeupID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listResentUncertainChatMessageIDs = `-- name: ListResentUncertainChatMessageIDs :many
-SELECT message_id FROM chat_task_supplement
-WHERE resent_task_id = $1
-  AND resent_uncertain
-  AND message_id = ANY($2::uuid[])
-`
-
-type ListResentUncertainChatMessageIDsParams struct {
-	TaskID     pgtype.UUID   `json:"task_id"`
-	MessageIds []pgtype.UUID `json:"message_ids"`
-}
-
-func (q *Queries) ListResentUncertainChatMessageIDs(ctx context.Context, arg ListResentUncertainChatMessageIDsParams) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listResentUncertainChatMessageIDs, arg.TaskID, arg.MessageIds)
 	if err != nil {
 		return nil, err
 	}
@@ -485,105 +169,215 @@ func (q *Queries) ListResentUncertainChatMessageIDs(ctx context.Context, arg Lis
 	return items, nil
 }
 
-const lockLatestChatTaskSupplement = `-- name: LockLatestChatTaskSupplement :one
-SELECT message_id, task_id, workspace_id, chat_session_id, author_id, status, failure_reason, attempt_count, resent_task_id, resent_uncertain, acked_after_resend_at, created_at, updated_at, delivered_at FROM chat_task_supplement
-WHERE chat_session_id = $1 AND message_id = $2
-ORDER BY created_at DESC, task_id DESC
+const lockRunningChatTaskForSupplement = `-- name: LockRunningChatTaskForSupplement :one
+SELECT t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.comment_thread_id, t.cancelled_by_type, t.cancelled_by_id, t.cancelled_by_name, t.issue_snapshot, t.context_tokens, t.context_window, t.task_kind, t.compact_reason, t.compact_trigger_tokens, t.workflow_step, t.claimed_model, t.chat_compaction_epoch, t.preset_name, t.preset_source, t.preset_skips, t.claimed_thinking_level, t.claimed_service_tier, t.claimed_context_args, t.cancel_acked_at, t.stop_unconfirmed_at, t.pull_request_id, t.replacement_released_at, t.stop_hold_issue_wide, t.taint_ids, t.applied_model, t.applied_thinking_level, t.applied_service_tier, t.applied_context_args, t.applied_reported_at, t.external_read, t.purpose, t.cancel_ack_reason, t.source_chat_session_id, t.trigger_kind, t.handoff_dispatch_id, t.first_dispatched_at, t.usage_squad_id, t.doc_id, t.doc_thread_id, t.doc_comment_id FROM agent_task_queue t
+JOIN task_supplement_capability cap ON cap.task_id = t.id
+WHERE t.chat_session_id = $1 AND t.status = 'running'
+  AND t.regenerate_quick_actions_for IS NULL
+  AND cap.capability = 'task-supplement-v1'
+  AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding b WHERE b.chat_session_id = t.chat_session_id)
+ORDER BY t.created_at, t.id
 LIMIT 1
-FOR UPDATE
+FOR UPDATE OF t
 `
 
-type LockLatestChatTaskSupplementParams struct {
-	ChatSessionID pgtype.UUID `json:"chat_session_id"`
-	MessageID     pgtype.UUID `json:"message_id"`
-}
-
-// Callers hold the receipt's task row first (task row -> receipt), the same
-// order as claim, acknowledgement and terminal settlement.
-func (q *Queries) LockLatestChatTaskSupplement(ctx context.Context, arg LockLatestChatTaskSupplementParams) (ChatTaskSupplement, error) {
-	row := q.db.QueryRow(ctx, lockLatestChatTaskSupplement, arg.ChatSessionID, arg.MessageID)
-	var i ChatTaskSupplement
+func (q *Queries) LockRunningChatTaskForSupplement(ctx context.Context, chatSessionID pgtype.UUID) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, lockRunningChatTaskForSupplement, chatSessionID)
+	var i AgentTaskQueue
 	err := row.Scan(
-		&i.MessageID,
-		&i.TaskID,
-		&i.WorkspaceID,
-		&i.ChatSessionID,
-		&i.AuthorID,
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
 		&i.Status,
-		&i.FailureReason,
-		&i.AttemptCount,
-		&i.ResentTaskID,
-		&i.ResentUncertain,
-		&i.AckedAfterResendAt,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
 		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeliveredAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
+		&i.ChannelContextRevision,
+		&i.CommentThreadID,
+		&i.CancelledByType,
+		&i.CancelledByID,
+		&i.CancelledByName,
+		&i.IssueSnapshot,
+		&i.ContextTokens,
+		&i.ContextWindow,
+		&i.TaskKind,
+		&i.CompactReason,
+		&i.CompactTriggerTokens,
+		&i.WorkflowStep,
+		&i.ClaimedModel,
+		&i.ChatCompactionEpoch,
+		&i.PresetName,
+		&i.PresetSource,
+		&i.PresetSkips,
+		&i.ClaimedThinkingLevel,
+		&i.ClaimedServiceTier,
+		&i.ClaimedContextArgs,
+		&i.CancelAckedAt,
+		&i.StopUnconfirmedAt,
+		&i.PullRequestID,
+		&i.ReplacementReleasedAt,
+		&i.StopHoldIssueWide,
+		&i.TaintIds,
+		&i.AppliedModel,
+		&i.AppliedThinkingLevel,
+		&i.AppliedServiceTier,
+		&i.AppliedContextArgs,
+		&i.AppliedReportedAt,
+		&i.ExternalRead,
+		&i.Purpose,
+		&i.CancelAckReason,
+		&i.SourceChatSessionID,
+		&i.TriggerKind,
+		&i.HandoffDispatchID,
+		&i.FirstDispatchedAt,
+		&i.UsageSquadID,
+		&i.DocID,
+		&i.DocThreadID,
+		&i.DocCommentID,
 	)
 	return i, err
 }
 
-const markChatTaskSupplementResent = `-- name: MarkChatTaskSupplementResent :one
-UPDATE chat_task_supplement
-SET resent_task_id = $1,
-    resent_uncertain = $2,
-    updated_at = now()
-WHERE message_id = $3
-  AND task_id = $4
-  AND resent_task_id IS NULL
-RETURNING message_id, task_id, workspace_id, chat_session_id, author_id, status, failure_reason, attempt_count, resent_task_id, resent_uncertain, acked_after_resend_at, created_at, updated_at, delivered_at
+const lockUndeliveredChatTaskSupplements = `-- name: LockUndeliveredChatTaskSupplements :many
+SELECT s.task_id, s.message_id, s.chat_session_id, s.workspace_id, s.author_id, s.status, s.created_at FROM chat_task_supplement s
+WHERE s.task_id = $1 AND s.status IN ('pending', 'delivering')
+ORDER BY s.created_at, s.message_id FOR UPDATE
 `
 
-type MarkChatTaskSupplementResentParams struct {
-	ResentTaskID    pgtype.UUID `json:"resent_task_id"`
-	ResentUncertain bool        `json:"resent_uncertain"`
-	MessageID       pgtype.UUID `json:"message_id"`
-	TaskID          pgtype.UUID `json:"task_id"`
-}
-
-func (q *Queries) MarkChatTaskSupplementResent(ctx context.Context, arg MarkChatTaskSupplementResentParams) (ChatTaskSupplement, error) {
-	row := q.db.QueryRow(ctx, markChatTaskSupplementResent,
-		arg.ResentTaskID,
-		arg.ResentUncertain,
-		arg.MessageID,
-		arg.TaskID,
-	)
-	var i ChatTaskSupplement
-	err := row.Scan(
-		&i.MessageID,
-		&i.TaskID,
-		&i.WorkspaceID,
-		&i.ChatSessionID,
-		&i.AuthorID,
-		&i.Status,
-		&i.FailureReason,
-		&i.AttemptCount,
-		&i.ResentTaskID,
-		&i.ResentUncertain,
-		&i.AckedAfterResendAt,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.DeliveredAt,
-	)
-	return i, err
-}
-
-const settleTerminalChatTaskSupplements = `-- name: SettleTerminalChatTaskSupplements :execrows
-UPDATE chat_task_supplement AS s
-SET status = CASE WHEN s.status = 'pending' THEN 'failed' ELSE 'uncertain' END,
-    failure_reason = CASE WHEN s.status = 'pending' THEN 'turn_ended' ELSE 'turn_ended_unconfirmed' END,
-    updated_at = now()
-FROM agent_task_queue AS task
-WHERE s.task_id = task.id
-  AND task.id = ANY($1::uuid[])
-  AND task.status IN ('completed', 'failed', 'cancelled')
-  AND s.status IN ('pending', 'delivering')
-`
-
-// Runs in the terminal transition's transaction, after the task-row update.
-func (q *Queries) SettleTerminalChatTaskSupplements(ctx context.Context, taskIds []pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, settleTerminalChatTaskSupplements, taskIds)
+func (q *Queries) LockUndeliveredChatTaskSupplements(ctx context.Context, taskID pgtype.UUID) ([]ChatTaskSupplement, error) {
+	rows, err := q.db.Query(ctx, lockUndeliveredChatTaskSupplements, taskID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return result.RowsAffected(), nil
+	defer rows.Close()
+	items := []ChatTaskSupplement{}
+	for rows.Next() {
+		var i ChatTaskSupplement
+		if err := rows.Scan(
+			&i.TaskID,
+			&i.MessageID,
+			&i.ChatSessionID,
+			&i.WorkspaceID,
+			&i.AuthorID,
+			&i.Status,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const requeueChatTaskSupplement = `-- name: RequeueChatTaskSupplement :exec
+WITH moved AS (
+    UPDATE chat_task_supplement SET status = 'requeued'
+    WHERE message_id = $2 AND status IN ('pending', 'delivering')
+    RETURNING message_id
+)
+UPDATE chat_message SET task_id = $1
+WHERE id IN (SELECT message_id FROM moved)
+`
+
+type RequeueChatTaskSupplementParams struct {
+	NextTaskID pgtype.UUID `json:"next_task_id"`
+	MessageID  pgtype.UUID `json:"message_id"`
+}
+
+func (q *Queries) RequeueChatTaskSupplement(ctx context.Context, arg RequeueChatTaskSupplementParams) error {
+	_, err := q.db.Exec(ctx, requeueChatTaskSupplement, arg.NextTaskID, arg.MessageID)
+	return err
+}
+
+const retainChatTaskSupplementsForRetry = `-- name: RetainChatTaskSupplementsForRetry :exec
+UPDATE chat_task_supplement SET status = 'withdrawn'
+WHERE task_id = $1 AND status IN ('pending', 'delivering')
+`
+
+// Retire delivery into the failed attempt. The message stays in the root
+// input batch and reaches the retry as ordinary input, not another steer.
+func (q *Queries) RetainChatTaskSupplementsForRetry(ctx context.Context, taskID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, retainChatTaskSupplementsForRetry, taskID)
+	return err
+}
+
+const withdrawChatTaskSupplementsByAgent = `-- name: WithdrawChatTaskSupplementsByAgent :exec
+UPDATE chat_task_supplement SET status = 'withdrawn'
+WHERE task_id IN (SELECT id FROM agent_task_queue WHERE agent_id = $1)
+  AND status IN ('pending', 'delivering')
+`
+
+func (q *Queries) WithdrawChatTaskSupplementsByAgent(ctx context.Context, agentID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, withdrawChatTaskSupplementsByAgent, agentID)
+	return err
+}
+
+const withdrawChatTaskSupplementsByRuntime = `-- name: WithdrawChatTaskSupplementsByRuntime :exec
+UPDATE chat_task_supplement SET status = 'withdrawn'
+WHERE task_id IN (SELECT id FROM agent_task_queue WHERE runtime_id = $1)
+  AND status IN ('pending', 'delivering')
+`
+
+func (q *Queries) WithdrawChatTaskSupplementsByRuntime(ctx context.Context, runtimeID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, withdrawChatTaskSupplementsByRuntime, runtimeID)
+	return err
+}
+
+const withdrawChatTaskSupplementsByTasks = `-- name: WithdrawChatTaskSupplementsByTasks :exec
+UPDATE chat_task_supplement SET status = 'withdrawn'
+WHERE task_id = ANY($1::uuid[]) AND status IN ('pending', 'delivering')
+`
+
+func (q *Queries) WithdrawChatTaskSupplementsByTasks(ctx context.Context, taskIds []pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, withdrawChatTaskSupplementsByTasks, taskIds)
+	return err
 }

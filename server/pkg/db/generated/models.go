@@ -930,6 +930,16 @@ type ChatSubmissionReceipt struct {
 }
 
 type ChatTaskSupplement struct {
+	TaskID        pgtype.UUID        `json:"task_id"`
+	MessageID     pgtype.UUID        `json:"message_id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	AuthorID      pgtype.UUID        `json:"author_id"`
+	Status        string             `json:"status"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+}
+
+type ChatTaskSupplementFork875 struct {
 	MessageID          pgtype.UUID        `json:"message_id"`
 	TaskID             pgtype.UUID        `json:"task_id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
