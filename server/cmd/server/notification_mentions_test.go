@@ -105,7 +105,7 @@ func TestNotifyMentionedMembersOnlyMalformedIDs(t *testing.T) {
 	// no valid recipients, neither the database nor the bus is needed.
 	notifyMentionedMembers(nil, nil, events.Event{},
 		parseMentions("[@Bad](mention://member/deadbeef) [@Bad all](mention://member/all)"),
-		"", "", "", "", nil, nil)
+		"", "", "", "", "", nil, nil)
 }
 
 func TestNotification_MentionRecordsItsSource(t *testing.T) {

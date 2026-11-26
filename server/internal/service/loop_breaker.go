@@ -2,13 +2,16 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -63,6 +66,10 @@ type LoopBreakerTripped struct {
 	Window   time.Duration
 	Triggers []string
 	Status   string
+	// Deferred means the refused run is a review run of a PR in its owner's
+	// stage queue: it waits there and the release job starts it once the window
+	// clears, so the handler does not block the issue (CHE-9722).
+	Deferred bool
 }
 
 var onLoopBreakerTripped atomic.Pointer[func(context.Context, LoopBreakerTripped)]
@@ -94,8 +101,19 @@ func guardLoopBreaker(ctx context.Context, q *db.Queries, issueID pgtype.UUID, t
 	if runs < int64(cfg.MaxRuns-1) {
 		return nil
 	}
+	// A review run of a queued PR is deferred, not dropped: the refusal is
+	// recorded as a stage wait and the release job retries it until the window
+	// clears, so the run rate stays at the breaker's limit.
+	deferred, err := deferLoopBreakerRefusal(ctx, q, issueID, target)
+	if err != nil {
+		return err
+	}
+	if stageReleaseFrom(ctx) {
+		// The release job re-tries every tick: refuse again, quietly.
+		return refusalOrDeferred(deferred)
+	}
 	if hook := onLoopBreakerTripped.Load(); hook != nil {
-		event := LoopBreakerTripped{IssueID: issueID, AgentID: target.AgentID, Runs: runs, Window: cfg.Window, Triggers: []string{target.Trigger}}
+		event := LoopBreakerTripped{IssueID: issueID, AgentID: target.AgentID, Runs: runs, Window: cfg.Window, Triggers: []string{target.Trigger}, Deferred: deferred != nil}
 		// Best effort: the alert loses its trigger list, never the refusal.
 		if kinds, err := q.ListAgentIssueRunTriggersSince(ctx, db.ListAgentIssueRunTriggersSinceParams{
 			IssueID: issueID, AgentID: target.AgentID, CreatedAt: since, Limit: int32(cfg.MaxRuns - 1),
@@ -109,5 +127,72 @@ func guardLoopBreaker(ctx context.Context, q *db.Queries, issueID pgtype.UUID, t
 		// issue on its own connection after the caller is done with it.
 		goRunBudgetHook(func() { (*hook)(context.WithoutCancel(ctx), event) })
 	}
-	return ErrLoopBreaker
+	return refusalOrDeferred(deferred)
+}
+
+func refusalOrDeferred(deferred *stageFullError) error {
+	if deferred == nil {
+		return ErrLoopBreaker
+	}
+	return &loopBreakerDeferredError{full: deferred}
+}
+
+// loopBreakerDeferredError is ErrLoopBreaker for a run that waits in the stage
+// queue. It is deliberately not ErrStageQueueFull: callers keep reporting the
+// loop breaker. errors.As(err, **stageFullError) finds the wait that
+// recordStageRefusal writes again after a rollback.
+type loopBreakerDeferredError struct{ full *stageFullError }
+
+func (*loopBreakerDeferredError) Error() string { return ErrLoopBreaker.Error() }
+func (*loopBreakerDeferredError) Unwrap() error { return ErrLoopBreaker }
+func (e *loopBreakerDeferredError) As(target any) bool {
+	if t, ok := target.(**stageFullError); ok {
+		*t = e.full
+		return true
+	}
+	return false
+}
+
+// deferLoopBreakerRefusal records a review run the breaker refused as a stage
+// wait, when the issue is a PR in its owner's stage queue. It returns nil, nil
+// for every other run: those keep the breaker's block.
+func deferLoopBreakerRefusal(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) (*stageFullError, error) {
+	if !target.ReviewRun || !target.AgentID.Valid || !issueID.Valid {
+		return nil, nil
+	}
+	issue, err := q.GetIssue(ctx, issueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("loop breaker: load issue: %w", err)
+	}
+	stage, ok := stageOf(issue, target.AgentID)
+	if !ok {
+		return nil, nil
+	}
+	entries, err := stageEntries(ctx, q, stage, target.AgentID, issueID)
+	if err != nil {
+		return nil, fmt.Errorf("loop breaker: list stage: %w", err)
+	}
+	ref := util.UUIDToString(issueID)
+	inStage := false
+	for _, e := range entries {
+		inStage = inStage || e.Ref == ref
+	}
+	if !inStage {
+		return nil, nil
+	}
+	taint, err := ActingTaskTaint(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("loop breaker: read requester taint: %w", err)
+	}
+	wait := &stageFullError{
+		issueID: issueID, agentID: target.AgentID, actor: target.ActorUserID, comment: target.TriggerCommentID,
+		taint: append(append([]string(nil), taint...), stageTaint(ctx)...),
+	}
+	if err := markStageWaiting(ctx, q, wait); err != nil {
+		return nil, err
+	}
+	return wait, nil
 }

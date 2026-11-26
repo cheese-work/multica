@@ -349,3 +349,131 @@ func TestFailTaskProviderNetworkBudget(t *testing.T) {
 		})
 	}
 }
+
+// TestFailTaskConcurrencyLimitBacksOffAndLogs (CHE-9849): an account
+// concurrency rejection is retried through a deferred child on the FIRST
+// failure (the plain network cut retries at once) and the retry is logged on
+// the issue. Two failures in a row still leave a third attempt.
+func TestFailTaskConcurrencyLimitBacksOffAndLogs(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	_, _, agentID, issueID := seedAttributionFixture(t, pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+
+	var runtimeID string
+	if err := pool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read agent runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM comment WHERE issue_id = $1`, issueID)
+	})
+
+	const raw = "Concurrency limit exceeded for account, please retry later"
+	for _, tc := range []struct {
+		attempt   int32
+		wantAfter time.Duration
+	}{{1, 2 * time.Minute}, {2, gatewayFailureCooldown}} {
+		var parentID pgtype.UUID
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts, session_id, work_dir)
+			VALUES ($1, $2, $3, 'running', 0, $4, 2, 'src-session', '/tmp/src-workdir')
+			RETURNING id
+		`, agentID, runtimeID, issueID, tc.attempt).Scan(&parentID); err != nil {
+			t.Fatalf("insert parent task: %v", err)
+		}
+		t.Cleanup(func() {
+			pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE parent_task_id = $1 OR id = $1`, parentID)
+		})
+		if _, err := svc.FailTask(ctx, parentID, raw, "src-session", "/tmp/src-workdir", "", "agent_error.provider_network", false, "", ""); err != nil {
+			t.Fatalf("FailTask attempt %d: %v", tc.attempt, err)
+		}
+		var (
+			status       string
+			attempt, max int32
+			waitSecs     float64
+		)
+		if err := pool.QueryRow(ctx, `SELECT status, attempt, max_attempts, extract(epoch FROM fire_at - now()) FROM agent_task_queue WHERE parent_task_id = $1`, parentID).Scan(&status, &attempt, &max, &waitSecs); err != nil {
+			t.Fatalf("read retry child after attempt %d: %v", tc.attempt, err)
+		}
+		if status != "deferred" || attempt != tc.attempt+1 || max < 3 {
+			t.Errorf("after attempt %d: child status=%s attempt=%d max=%d, want deferred, %d, >=3", tc.attempt, status, attempt, max, tc.attempt+1)
+		}
+		if got := time.Duration(waitSecs * float64(time.Second)); got < tc.wantAfter-30*time.Second || got > tc.wantAfter+time.Second {
+			t.Errorf("after attempt %d: fire_at in %s, want about %s", tc.attempt, got, tc.wantAfter)
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE issue_id = $1 AND content LIKE '%concurrency limit%'`, issueID).Scan(&n); err != nil {
+		t.Fatalf("read comments: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("issue retry comments = %d, want 2", n)
+	}
+}
+
+// TestMaybeRetryFailedTaskConcurrencyLimitBacksOffAndLogs (CHE-9849): the
+// sweeper and budget-resume retry through MaybeRetryFailedTask, not FailTask.
+// It must use the same 2 min / 10 min backoff and log one comment per retry.
+func TestMaybeRetryFailedTaskConcurrencyLimitBacksOffAndLogs(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	_, _, agentID, issueID := seedAttributionFixture(t, pool)
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New()}
+
+	var runtimeID string
+	if err := pool.QueryRow(ctx, `SELECT runtime_id::text FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read agent runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM comment WHERE issue_id = $1`, issueID)
+	})
+
+	const raw = "Concurrency limit exceeded for account, please retry later"
+	for _, tc := range []struct {
+		attempt   int32
+		wantAfter time.Duration
+	}{{1, 2 * time.Minute}, {2, gatewayFailureCooldown}} {
+		var parentID pgtype.UUID
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, attempt, max_attempts, failure_reason, error, session_id, work_dir)
+			VALUES ($1, $2, $3, 'failed', 0, $4, 2, 'agent_error.provider_network', $5, 'src-session', '/tmp/src-workdir')
+			RETURNING id
+		`, agentID, runtimeID, issueID, tc.attempt, raw).Scan(&parentID); err != nil {
+			t.Fatalf("insert parent task: %v", err)
+		}
+		t.Cleanup(func() {
+			pool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE parent_task_id = $1 OR id = $1`, parentID)
+		})
+		parent, err := q.GetAgentTask(ctx, parentID)
+		if err != nil {
+			t.Fatalf("read parent: %v", err)
+		}
+		child, err := svc.MaybeRetryFailedTask(ctx, parent)
+		if err != nil || child == nil {
+			t.Fatalf("MaybeRetryFailedTask attempt %d: child=%v err=%v", tc.attempt, child, err)
+		}
+		var waitSecs *float64
+		if err := pool.QueryRow(ctx, `SELECT extract(epoch FROM fire_at - now()) FROM agent_task_queue WHERE id = $1`, child.ID).Scan(&waitSecs); err != nil {
+			t.Fatalf("read retry child after attempt %d: %v", tc.attempt, err)
+		}
+		if child.Status != "deferred" || child.Attempt != tc.attempt+1 {
+			t.Errorf("after attempt %d: child status=%s attempt=%d, want deferred, %d", tc.attempt, child.Status, child.Attempt, tc.attempt+1)
+		}
+		var got time.Duration
+		if waitSecs != nil {
+			got = time.Duration(*waitSecs * float64(time.Second))
+		}
+		if got < tc.wantAfter-30*time.Second || got > tc.wantAfter+time.Second {
+			t.Errorf("after attempt %d: fire_at in %s, want about %s", tc.attempt, got, tc.wantAfter)
+		}
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM comment WHERE issue_id = $1 AND content LIKE '%concurrency limit%'`, issueID).Scan(&n); err != nil {
+		t.Fatalf("read comments: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("issue retry comments = %d, want 2", n)
+	}
+}

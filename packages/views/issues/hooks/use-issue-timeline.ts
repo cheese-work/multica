@@ -24,6 +24,7 @@ import type {
 } from "@multica/core/types";
 import {
   issueTimelineOptions,
+  issueCommentThreadOptions,
   issueKeys,
 } from "@multica/core/issues/queries";
 import {
@@ -34,8 +35,12 @@ import {
   useToggleCommentReaction,
   type ToggleCommentReactionVars,
 } from "@multica/core/issues/mutations";
+import {
+  commentToTimelineEntry,
+  mergeCommentThread,
+} from "@multica/core/issues/comment-thread";
 import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
-import { keepDecisionFields, pickDecisionFields } from "@multica/core/issues/decision-fields";
+import { keepDecisionFields } from "@multica/core/issues/decision-fields";
 import {
   unhandledCommentTriggerOutcomes,
   mentionLabelsByTarget,
@@ -48,36 +53,6 @@ import { useT } from "../../i18n";
 import { blockedShortReasonLabel } from "../blocked-trigger-copy";
 
 type TLCache = TimelineEntry[];
-
-function commentToTimelineEntry(c: Comment): TimelineEntry {
-  return {
-    type: "comment",
-    id: c.id,
-    actor_type: c.author_type,
-    actor_id: c.author_id,
-    content: c.content,
-    parent_id: c.parent_id,
-    created_at: c.created_at,
-    updated_at: c.updated_at,
-    revision: c.revision,
-    comment_type: c.type,
-    reactions: c.reactions ?? [],
-    attachments: c.attachments ?? [],
-    resolved_at: c.resolved_at,
-    resolved_by_type: c.resolved_by_type,
-    resolved_by_id: c.resolved_by_id,
-    source_task_id: c.source_task_id,
-    superseded_by_id: c.superseded_by_id,
-    supersedes: c.supersedes,
-    supplements: c.supplements,
-    supplement_task_id: c.supplement_task_id,
-    supplement_status: c.supplement_status,
-    supplement_failure_reason: c.supplement_failure_reason,
-    supplement_delivered_at: c.supplement_delivered_at,
-    deleted_at: c.deleted_at,
-    ...pickDecisionFields(c),
-  };
-}
 
 function acceptsCommentRevision(
   current: TimelineEntry,
@@ -119,14 +94,25 @@ export function applyCommentSnapshot(
   }
 }
 
-export function useIssueTimeline(issueId: string, userId?: string) {
+export function useIssueTimeline(issueId: string, userId?: string, focusCommentId?: string) {
   const { t } = useT("issues");
   const qc = useQueryClient();
 
   const query = useQuery(issueTimelineOptions(issueId));
-  const { data, isLoading: loading } = query;
+  const { data, isLoading: loading, dataUpdatedAt } = query;
 
-  const timeline = useMemo<TimelineEntry[]>(() => data ?? [], [data]);
+  const needsThread = !!focusCommentId && !loading && !data?.some((entry) => entry.id === focusCommentId);
+  const threadQuery = useQuery({
+    ...issueCommentThreadOptions(issueId, focusCommentId ?? ""),
+    enabled: needsThread,
+  });
+  useEffect(() => {
+    if (threadQuery.error && needsThread) toast.error(t(($) => $.detail.load_failed));
+  }, [threadQuery.error, needsThread, t]);
+  const timeline = useMemo<TimelineEntry[]>(
+    () => mergeCommentThread(data ?? [], threadQuery.data ?? []),
+    [data, threadQuery.data],
+  );
 
   // Stable mutation handles. TanStack v5 returns a fresh result wrapper from
   // useMutation per render, but the inner mutateAsync / mutate functions are
@@ -545,7 +531,13 @@ export function useIssueTimeline(issueId: string, userId?: string) {
 
   return {
     timeline: optimisticTimeline,
-    loading,
+    loading: loading || (needsThread && threadQuery.isPending),
+    /**
+     * When the cached timeline was last written (Query's `dataUpdatedAt`).
+     * Lets a caller tell whether `timeline` already reflects a read it
+     * started; `loading` cannot, as it is false while cached data refreshes.
+     */
+    dataUpdatedAt,
     submitComment,
     submitReply,
     editComment,

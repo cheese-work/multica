@@ -1,8 +1,18 @@
-## What does this PR do?
+## Problem
 
-<!-- Describe the change clearly. What problem does it solve? Why is this approach the right one? -->
+<!-- What is the concrete problem, who is affected, and why does it matter? -->
 
+## Goal
 
+<!-- What should be true after this change? State the intended outcome. -->
+
+## Proposal
+
+<!-- Explain the high-level design and why it achieves the goal. Make it understandable to a reader without much project background. Keep implementation details to a minimum. -->
+
+## Alternatives (optional)
+
+<!-- If useful, briefly describe other approaches and why you did not choose them. -->
 
 ## Related Issue
 

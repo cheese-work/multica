@@ -65,6 +65,15 @@ WHERE id = ANY(@ids::uuid[])
   AND workspace_id = @workspace_id
 ORDER BY created_at ASC, id ASC;
 
+-- name: ListCommentOriginsForIssue :many
+-- Author and time of the live comments in @ids, without their bodies: the
+-- issue attachment list labels each file with the comment that delivered it.
+SELECT id, author_type, author_id, created_at FROM comment
+WHERE id = ANY(@ids::uuid[])
+  AND issue_id = @issue_id
+  AND workspace_id = @workspace_id
+  AND deleted_at IS NULL;
+
 -- name: ListChildCommentsForParents :many
 -- Fetch one descendant level for a bounded set of parent comments. Each parent
 -- maps back to its thread root in the Go breadth-first walk, avoiding one query
@@ -1205,6 +1214,36 @@ SELECT superseded_comment_id, superseding_comment_id
 FROM comment_supersession
 WHERE issue_id = @issue_id AND workspace_id = @workspace_id;
 
+-- name: ListThreadMemberAuthors :many
+-- The members who wrote any other comment in the thread @comment_id belongs
+-- to: its root and every reply under that root, at any depth. Used by the
+-- bystander delivery tier, so a reply in a thread you took part in still
+-- reaches you on an issue you are only watching (MUL-9343).
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = @comment_id AND c.workspace_id = @workspace_id
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+thread AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1)
+    UNION ALL
+    SELECT c.id
+    FROM comment c
+    JOIN thread t ON c.parent_id = t.id
+)
+SELECT DISTINCT c.author_id
+FROM comment c
+JOIN thread t ON t.id = c.id
+WHERE c.id <> @comment_id
+  AND c.author_type = 'member'
+  AND c.deleted_at IS NULL;
+
 -- name: CountThreadLiveComments :one
 -- The live comments in @target_id's thread, root included (same walk as
 -- GetThreadLatestComment). The long-thread route (CHE-6432) compares it with
@@ -1260,3 +1299,22 @@ WHERE comment.id IN (SELECT id FROM descendants)
   AND comment.deleted_at IS NULL
 ORDER BY comment.created_at DESC, comment.id DESC
 LIMIT @row_limit;
+
+-- name: GetTimeoutCheckpointComment :one
+-- CHE-9761: the checkpoint comment the server posted for one timed-out task.
+-- The failure notice shares (author, type, source_task_id), so the checkpoint
+-- is told apart by its first line, which always starts with the word Coverage.
+SELECT * FROM comment
+WHERE issue_id = sqlc.arg('issue_id')
+  AND source_task_id = sqlc.arg('source_task_id')
+  AND author_type = 'agent'
+  AND type = 'system'
+  AND content LIKE 'Coverage:%'
+  AND deleted_at IS NULL
+ORDER BY created_at ASC
+LIMIT 1;
+
+-- name: LockTimeoutCheckpoint :exec
+-- CHE-9761: serializes concurrent duplicate FailTask posts for one task so
+-- the check-then-insert of the checkpoint comment cannot double-post.
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('source_task_id')::uuid::text || ':timeout_checkpoint', 0));

@@ -57,7 +57,7 @@ function AttachmentRevisionDiffDialog({
 
   return (
     <Dialog open onOpenChange={(next) => !next && onClose()}>
-      <DialogContent className="flex max-h-[80vh] w-[min(52rem,calc(100vw-2rem))] max-w-none flex-col gap-3 sm:max-w-none">
+      <DialogContent className="flex max-h-[80%] w-[min(52rem,calc(100%-2rem))] max-w-none flex-col gap-3 sm:max-w-none">
         <DialogHeader>
           <DialogTitle>
             {t(($) => $.attachment_revision.title, { name: filename, from, to: revision })}

@@ -1,0 +1,5 @@
+{"type": "user", "timestamp": "2026-11-01T00:00:00Z", "message": {"content": "start"}}
+{"type": "assistant", "timestamp": "2026-11-03T09:12:00Z", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}}]}}
+{"type": "assistant", "timestamp": "2026-11-03T09:13:00Z", "message": {"content": [{"type": "tool_use", "id": "toolu_2", "name": "Bash", "input": {"command": "echo \"abc  $SKILL_DIR/scripts/mwg.sh\" | sha256sum -c --status && sh \"$SKILL_DIR/scripts/mwg.sh\" search \"css grid overflow\" --skill-version 2026_11_10-47b4c80e"}}]}}
+{"type": "assistant", "timestamp": "2026-11-03T09:14:00Z", "message": {"content": [{"type": "tool_use", "id": "toolu_3", "name": "Bash", "input": {"command": "pnpm test"}}]}}
+{"type": "result", "sessionId": "sA1"}

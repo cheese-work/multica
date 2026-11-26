@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"net/http"
 	"strconv"
 	"strings"
@@ -335,7 +336,7 @@ func (handler *Handler) publishIssueProjectSet(ctx context.Context, action db.De
 		return err
 	}
 	resp := issueToResponse(issue, handler.getIssuePrefix(ctx, issue.WorkspaceID))
-	handler.fillStatusCategory(ctx, issue.WorkspaceID, &resp)
+	handler.fillStatusCategory(ctx, issue.WorkspaceID, projectaccess.Hidden{}, &resp)
 	actorID := uuidToString(action.ApprovedByUserID)
 	payload := map[string]any{
 		"issue":           resp,

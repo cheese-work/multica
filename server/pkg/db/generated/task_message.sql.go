@@ -225,6 +225,40 @@ func (q *Queries) DeleteTaskMessages(ctx context.Context, taskID pgtype.UUID) er
 	return err
 }
 
+const listTaskContextCompactedMessages = `-- name: ListTaskContextCompactedMessages :many
+SELECT id, created_at, input FROM task_message
+WHERE task_id = $1 AND type = 'context_compacted'
+ORDER BY seq ASC
+`
+
+type ListTaskContextCompactedMessagesRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Input     []byte             `json:"input"`
+}
+
+// The run messages a mid-turn compaction notice is projected from (CHE-9935).
+// Only the columns the notice needs; output is never read.
+func (q *Queries) ListTaskContextCompactedMessages(ctx context.Context, taskID pgtype.UUID) ([]ListTaskContextCompactedMessagesRow, error) {
+	rows, err := q.db.Query(ctx, listTaskContextCompactedMessages, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTaskContextCompactedMessagesRow{}
+	for rows.Next() {
+		var i ListTaskContextCompactedMessagesRow
+		if err := rows.Scan(&i.ID, &i.CreatedAt, &i.Input); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTaskMessages = `-- name: ListTaskMessages :many
 SELECT id, task_id, seq, type, tool, content, input, output, created_at, output_truncated, call_id FROM task_message
 WHERE task_id = $1
@@ -349,6 +383,41 @@ func (q *Queries) ListTaskProgressSince(ctx context.Context, arg ListTaskProgres
 			&i.Content,
 			&i.Input,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTaskReplyFragments = `-- name: ListTaskReplyFragments :many
+SELECT type, COALESCE(CASE WHEN type = 'text' THEN content END, '')::text AS content
+FROM task_message
+WHERE task_id = $1 AND type IN ('text', 'tool_use', 'error')
+ORDER BY seq ASC
+`
+
+type ListTaskReplyFragmentsRow struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// Rebuild a Telegram placeholder without its progress when another replica
+// handles cancellation. Only prose leaves this query; tool/error rows mark
+// paragraph boundaries without loading arguments, results, or reasoning.
+func (q *Queries) ListTaskReplyFragments(ctx context.Context, taskID pgtype.UUID) ([]ListTaskReplyFragmentsRow, error) {
+	rows, err := q.db.Query(ctx, listTaskReplyFragments, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTaskReplyFragmentsRow{}
+	for rows.Next() {
+		var i ListTaskReplyFragmentsRow
+		if err := rows.Scan(&i.Type, &i.Content); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

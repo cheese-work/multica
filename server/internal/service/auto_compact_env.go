@@ -11,11 +11,17 @@ const (
 )
 
 // ClaudeCompactEnv is the compaction env a Claude Code run gets at claim time
-// (CHE-4331 Part 2), from the same auto_compact setting that drives DM
-// compaction. It is never stored in agent env, and a key the agent's own env
-// already names (any case) is left alone. A run cannot be idle-detected, so a
-// 1M-window model without a saved token value compacts at the 400k cap.
-func ClaudeCompactEnv(provider, model string, workspaceSettings, agentConfig []byte, userEnv map[string]string) map[string]string {
+// (CHE-4331 Part 2; CHE-10000 decouples the run cap). It is never stored in
+// agent env, and a key the agent's own env already names (any case) is left
+// alone.
+//
+// The env is the run cap, a safety net inside one turn, not the DM compaction
+// threshold. A chat task (a DM run) gets max(dm_run_cap, DM threshold), so the
+// run never compacts below the point where Multica compacts the DM between
+// turns. Any other task gets the built-in cap: 400000 tokens on a 1M-window
+// model, 95% on a 200k one. A saved threshold_pct moves neither; only a saved
+// token threshold can raise a chat task's cap.
+func ClaudeCompactEnv(provider, model string, chat bool, workspaceSettings, agentConfig []byte, userEnv map[string]string) map[string]string {
 	if provider != "claude" {
 		return nil
 	}
@@ -23,21 +29,21 @@ func ClaudeCompactEnv(provider, model string, workspaceSettings, agentConfig []b
 	if !rule.Enabled {
 		return nil
 	}
-	key, value := claudeCompactPctEnv, int64(0)
-	if strings.HasSuffix(strings.TrimSpace(model), "[1m]") {
-		key = claudeCompactWindowEnv
-		switch {
-		case rule.ThresholdPct > 0:
-			value = min(rule.ThresholdTokens(1_000_000), AutoCompactMaxTokens1M)
-		case rule.Tokens1MSet:
-			value = rule.Tokens1M
-		default:
-			value = AutoCompactMaxTokens1M
-		}
-	} else if rule.ThresholdPct > 0 {
-		value = int64(rule.ThresholdPct)
-	} else {
-		value = rule.Tokens200k * 100 / AutoCompactSmallWindow
+	large := strings.HasSuffix(strings.TrimSpace(model), "[1m]")
+	var tokens int64
+	switch {
+	case large && chat:
+		tokens = max(rule.DMRunCap1M, tokenThreshold(rule, rule.Tokens1M))
+	case large:
+		tokens = AutoCompactDefaultRunCap1M
+	case chat:
+		tokens = max(rule.DMRunCap200k, tokenThreshold(rule, rule.Tokens200k))
+	default:
+		tokens = AutoCompactDefaultRunCap200k
+	}
+	key, value := claudeCompactPctEnv, tokens*100/AutoCompactSmallWindow
+	if large {
+		key, value = claudeCompactWindowEnv, tokens
 	}
 	for k := range userEnv {
 		if strings.EqualFold(k, key) {
@@ -45,4 +51,13 @@ func ClaudeCompactEnv(provider, model string, workspaceSettings, agentConfig []b
 		}
 	}
 	return map[string]string{key: strconv.FormatInt(value, 10)}
+}
+
+// tokenThreshold is a saved token threshold, or 0 when a percent drives the
+// DM threshold (a percent never moves the run cap).
+func tokenThreshold(rule AutoCompact, tokens int64) int64 {
+	if rule.ThresholdPct > 0 {
+		return 0
+	}
+	return tokens
 }

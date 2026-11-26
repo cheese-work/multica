@@ -8,6 +8,7 @@ import { renderWithI18n } from "../test/i18n";
 import { NavigationProvider } from "../navigation/context";
 
 vi.mock("../issues/components/issue-chip", () => ({
+  useChipIssue: () => undefined,
   IssueChip: ({ issueId }: { issueId: string }) => (
     <span data-testid="issue-chip">{issueId}</span>
   ),

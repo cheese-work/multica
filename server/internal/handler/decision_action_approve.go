@@ -812,6 +812,10 @@ func executeEnvPatchAction(ctx context.Context, execution decisionActionExecutio
 		set[key] = value
 	}
 	updated, _, err := applyAgentEnvPatch(ctx, execution.Queries, execution.Agent, PatchAgentEnvRequest{Set: set, Unset: params.Unset}, execution.Approver)
+	var rejected qoderEnvRejection
+	if errors.As(err, &rejected) {
+		return nil, actionFailure{Code: "qoder_env_rejected", Message: rejected.Error()}
+	}
 	if err != nil {
 		return nil, err
 	}

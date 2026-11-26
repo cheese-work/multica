@@ -18,7 +18,7 @@ export function WorkflowHandoffModal({
   data: Record<string, unknown> | null;
 }) {
   const { t } = useT("issues");
-  const updateIssue = useUpdateIssue();
+  const { mutateAsync: updateIssue } = useUpdateIssue();
   const issueId = typeof data?.issueId === "string" ? data.issueId : "";
   const identifier = typeof data?.identifier === "string" ? data.identifier : "";
   const status = typeof data?.status === "string" ? data.status : "";
@@ -30,17 +30,14 @@ export function WorkflowHandoffModal({
       onCancel={onClose}
       onConfirm={({ stopPreviousRuns, preview }) => {
         onClose();
-        updateIssue.mutate(
-          {
-            id: issueId,
-            status,
-            ...(stopPreviousRuns ? { stop_previous_assignee_runs: true } : {}),
-            ...(preview ? { handoff_preview: preview } : {}),
-          },
-          {
-            onError: (err) =>
-              toast.error(err instanceof Error && err.message ? err.message : t(($) => $.detail.update_failed)),
-          },
+        // Closing unmounts this modal, so the failure follows the promise.
+        updateIssue({
+          id: issueId,
+          status,
+          ...(stopPreviousRuns ? { stop_previous_assignee_runs: true } : {}),
+          ...(preview ? { handoff_preview: preview } : {}),
+        }).catch(
+          (err) => toast.error(err instanceof Error && err.message ? err.message : t(($) => $.detail.update_failed)),
         );
       }}
     />

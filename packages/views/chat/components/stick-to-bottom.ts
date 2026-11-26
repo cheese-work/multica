@@ -136,6 +136,8 @@ export interface StickToBottom {
   isFollowing(): boolean;
   /** Wire to Virtuoso's `totalListHeightChanged`: the content resized. */
   onContentHeightChanged(): void;
+  /** Release the follow before scrolling to an older row on the reader's behalf. */
+  disengage(): void;
   /**
    * Stop following the live end, for a navigation that lands elsewhere (a jump
    * to an older message). The follow comes back when the reader scrolls to the

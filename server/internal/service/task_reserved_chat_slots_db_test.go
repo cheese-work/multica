@@ -64,7 +64,7 @@ func TestClaimTasksForRuntimesNonDMLimitKeepsSlotsForChat(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			f := newClaimDecisionFixture(t, 5)
 			f.queueReservedSlotsWork(t, 3)
-			claimed, err := f.svc.ClaimTasksForRuntimesWithNonDMLimit(context.Background(), []pgtype.UUID{f.runtimeID}, c.maxTasks, c.limit)
+			claimed, _, err := f.svc.ClaimTasksForRuntimesWithNonDMLimit(context.Background(), []pgtype.UUID{f.runtimeID}, c.maxTasks, c.limit)
 			if err != nil {
 				t.Fatalf("claim: %v", err)
 			}
@@ -128,7 +128,7 @@ func TestClaimTasksForRuntimesGroupChannelTaskIsNotDM(t *testing.T) {
 
 	t.Run("budget spent skips the group task and claims the DM", func(t *testing.T) {
 		f, groupID, dmID := setup(t)
-		claimed, err := f.svc.ClaimTasksForRuntimesWithNonDMLimit(context.Background(), []pgtype.UUID{f.runtimeID}, 4, intPtr(2))
+		claimed, _, err := f.svc.ClaimTasksForRuntimesWithNonDMLimit(context.Background(), []pgtype.UUID{f.runtimeID}, 4, intPtr(2))
 		if err != nil {
 			t.Fatalf("claim: %v", err)
 		}
@@ -140,7 +140,7 @@ func TestClaimTasksForRuntimesGroupChannelTaskIsNotDM(t *testing.T) {
 
 	t.Run("a claimed group task spends the budget", func(t *testing.T) {
 		f, groupID, dmID := setup(t)
-		claimed, err := f.svc.ClaimTasksForRuntimesWithNonDMLimit(context.Background(), []pgtype.UUID{f.runtimeID}, 4, intPtr(3))
+		claimed, _, err := f.svc.ClaimTasksForRuntimesWithNonDMLimit(context.Background(), []pgtype.UUID{f.runtimeID}, 4, intPtr(3))
 		if err != nil {
 			t.Fatalf("claim: %v", err)
 		}
@@ -152,7 +152,7 @@ func TestClaimTasksForRuntimesGroupChannelTaskIsNotDM(t *testing.T) {
 
 	t.Run("no limit equals base", func(t *testing.T) {
 		f, groupID, dmID := setup(t)
-		claimed, err := f.svc.ClaimTasksForRuntimesWithNonDMLimit(context.Background(), []pgtype.UUID{f.runtimeID}, 4, nil)
+		claimed, _, err := f.svc.ClaimTasksForRuntimesWithNonDMLimit(context.Background(), []pgtype.UUID{f.runtimeID}, 4, nil)
 		if err != nil {
 			t.Fatalf("claim: %v", err)
 		}
