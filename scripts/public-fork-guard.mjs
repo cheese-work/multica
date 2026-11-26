@@ -53,19 +53,24 @@ export function checkAddedLines(diff, rules) {
   const hits = [];
   let file = null;
   let line = 0;
+  let inHunk = false; // inside a hunk every `+` row is content, even one that reads `+++`
   for (const row of diff.split("\n")) {
-    if (row.startsWith("+++ ")) {
+    if (row.startsWith("diff --git ")) {
+      inHunk = false;
+      file = null;
+    } else if (!inHunk && row.startsWith("+++ ")) {
       const target = row.slice(4).split("\t")[0];
       file = target === "/dev/null" ? null : target.replace(/^b\//, "");
     } else if (row.startsWith("@@")) {
+      inHunk = true;
       const m = /\+(\d+)/.exec(row);
       line = m ? Number(m[1]) : 0;
-    } else if (file && row.startsWith("+") && !row.startsWith("+++")) {
+    } else if (inHunk && file && row.startsWith("+")) {
       if (!exempt(file, rules)) {
         for (const rule of rules.names) if (matcher(rule).test(row.slice(1))) hits.push({ file, line, id: rule.id });
       }
       line += 1;
-    } else if (file && row.startsWith(" ")) {
+    } else if (inHunk && file && row.startsWith(" ")) {
       line += 1;
     }
   }

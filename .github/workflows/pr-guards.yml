@@ -169,42 +169,6 @@ jobs:
       - name: Refuse new identity literals
         run: node scripts/identity-literals.mjs
 
-  # CHE-9778: keeps workspace data out of this public fork. Fails on a workspace artifact path in the PR head and on an
-  # agent, product-org or person name in an added line, a commit message or the PR title or body. The report names rule,
-  # file and line, never the matched text. Data only: the PR head is fetched, never checked out; the script and rules
-  # come from the trusted workflow commit. Advisory until it is made a required check in branch protection.
-  public-fork-guard:
-    name: Public fork guard
-    if: github.event.pull_request.state != 'closed'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.workflow_sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          package-manager-cache: false
-      - name: Fetch PR head as data without checking it out
-        env:
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          EXPECTED_HEAD: ${{ github.event.pull_request.head.sha }}
-        run: |
-          git fetch --no-tags origin "refs/pull/$PR_NUMBER/head"
-          test "$(git rev-parse FETCH_HEAD)" = "$EXPECTED_HEAD"
-      - name: Refuse workspace data in the PR
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: node scripts/public-fork-guard.mjs --base "$BASE_SHA" --head "$HEAD_SHA"
-
   # CHE-5208 (CHE-5194 T5b): the blocking backstop for the merge-method tag and the review policy; see pr-guard-rules.yml.
   # An edit that invalidates a green result re-runs it from pr-guard-rules-edit.yml. Making this check required is a
   # branch-protection change, Cheese's call.

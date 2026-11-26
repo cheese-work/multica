@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -12,6 +12,7 @@ import { checkAddedLines, checkPaths, checkText, loadRules } from "./public-fork
 const AGENT = ["x99", "claude", "opus"].join("-");
 const PRODUCT_ORG = ["tevo", "studio"].join("-");
 const PERSON = ["Che", "ese"].join("");
+const LANES = [["mbp", "codex", "sol"], ["c00", "hermes", "devops"], ["x99", "codex", "terra"]].map((p) => p.join("-"));
 const rules = loadRules(join(dirname(fileURLToPath(import.meta.url)), "public-fork-guard", "rules.json"));
 const SCRIPT = fileURLToPath(new URL("./public-fork-guard.mjs", import.meta.url));
 const RULES = fileURLToPath(new URL("./public-fork-guard/rules.json", import.meta.url));
@@ -27,8 +28,19 @@ test("path rule: refuses workspace artifact paths", () => {
   assert.equal(hits.length, 10);
 });
 
+test("path rule: refuses every removed UX file form, not only the capture folders", () => {
+  const forms = ["docs/ux/CHE-1726.yml", "docs/ux/CHE-2123.md", "docs/ux/CHE-2123.yml", "config/README.md"];
+  assert.equal(checkPaths(forms, rules).length, forms.length);
+});
+
+test("path rule: the removed-path list is covered (every path removed by CHE-9778 stays refused)", () => {
+  const removed = JSON.parse(readFileSync(new URL("./public-fork-guard/removed-paths.sample.json", import.meta.url), "utf8"));
+  assert.ok(removed.length >= 40);
+  assert.deepEqual(checkPaths(removed, rules).length, removed.length);
+});
+
 test("path rule: accepts ordinary fork paths and admit-sheet files", () => {
-  const ok = ["server/main.go", "docs/ux/CHE-7.yml", "docs/fork/PROCESS.md", "packages/views/a.tsx", "scripts/public-fork-guard.mjs", "config.example.json"];
+  const ok = ["server/main.go", "docs/fork/PROCESS.md", "packages/views/a.tsx", "scripts/public-fork-guard.mjs", "config.example.json"];
   assert.deepEqual(checkPaths(ok, rules), []);
 });
 
@@ -37,6 +49,22 @@ test("text rule: refuses agent, org and person names; accepts the fork's own rep
   assert.deepEqual(ids(checkText("t", `touches ${PRODUCT_ORG}/app`, rules)), ["product-org"]);
   assert.deepEqual(ids(checkText("t", `${PERSON} decided this`, rules)), ["workspace-person"]);
   assert.deepEqual(checkText("t", "see cheese-work/multica#12 and CHE-123", rules), []);
+});
+
+test("text rule: refuses agent names from every host lane", () => {
+  for (const lane of LANES) assert.equal(checkText("t", `by ${lane} today`, rules).length, 1, lane);
+  assert.deepEqual(checkText("t", "mbp is short for a laptop; c00 is a label", rules), []);
+});
+
+test("diff rule: an added line that starts with two plus signs is scanned", () => {
+  const diff = ["diff --git a/src/a.txt b/src/a.txt", "--- a/src/a.txt", "+++ b/src/a.txt", "@@ -0,0 +1,2 @@", "+ok", `++${AGENT}`].join("\n");
+  const hits = checkAddedLines(diff, rules);
+  assert.deepEqual(hits.map((h) => [h.file, h.line, h.id]), [["src/a.txt", 2, "agent-name"]]);
+});
+
+test("diff rule: a second file after a hunk is not mistaken for added content", () => {
+  const diff = ["diff --git a/a.txt b/a.txt", "--- a/a.txt", "+++ b/a.txt", "@@ -0,0 +1 @@", "+ok", "diff --git a/b.txt b/b.txt", "--- /dev/null", "+++ b/b.txt", "@@ -0,0 +1 @@", `+${AGENT}`].join("\n");
+  assert.deepEqual(checkAddedLines(diff, rules).map((h) => [h.file, h.line]), [["b.txt", 1]]);
 });
 
 test("diff rule: only added lines count, and the report never carries the matched text", () => {
@@ -137,4 +165,61 @@ test("cli: an existing violation outside the change does not fail a clean change
   git(dir, "add", "-A");
   git(dir, "commit", "-qm", "head");
   assert.equal(cli({ dir, base, head: git(dir, "rev-parse", "HEAD") }).status, 0);
+});
+
+test("cli: red on an added line that starts with two plus signs", () => {
+  const r = cli(repo({ "src/a.txt": `++${AGENT}\n` }));
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /agent-name/);
+});
+
+// --- The CI step: one trusted script inside the required `PR guard rules` check --------------------
+
+const STEP = fileURLToPath(new URL("./public-fork-guard-pr.sh", import.meta.url));
+const workflow = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8").replace(/^\s*#.*$/gm, "");
+
+test("workflow: the scanner runs as a step of the required PR guard rules job, on PR runs and edit reruns", () => {
+  const rulesWf = workflow("pr-guard-rules.yml");
+  assert.match(rulesWf, /run: bash scripts\/public-fork-guard-pr\.sh/);
+  assert.match(rulesWf, /fetch-depth: 0/);
+  assert.match(rulesWf, /if: \$\{\{ !cancelled\(\) && github\.event_name != 'merge_group' \}\}/);
+  assert.match(workflow("pr-guard-rules-edit.yml"), /types: \[edited, review_request_removed\]/);
+  // No second, advisory job that no merge gate reads.
+  assert.doesNotMatch(workflow("pr-guards.yml"), /public-fork-guard:/);
+});
+
+function stepFixture({ title = "t", body = "b", headSha, tamper = false } = {}) {
+  const origin = mkdtempSync(join(tmpdir(), "pfg-origin-"));
+  git(origin, "init", "-q", "-b", "main");
+  git(origin, "config", "user.email", "t@example.invalid");
+  git(origin, "config", "user.name", "t");
+  writeFileSync(join(origin, "README.md"), "base\n");
+  git(origin, "add", "-A");
+  git(origin, "commit", "-qm", "base");
+  const base = git(origin, "rev-parse", "HEAD");
+  writeFileSync(join(origin, "a.txt"), "clean\n");
+  git(origin, "add", "-A");
+  git(origin, "commit", "-qm", "head");
+  const head = git(origin, "rev-parse", "HEAD");
+  git(origin, "update-ref", "refs/pull/7/head", head);
+  const work = mkdtempSync(join(tmpdir(), "pfg-work-"));
+  git(work, "clone", "-q", origin, ".");
+  const bin = mkdtempSync(join(tmpdir(), "pfg-bin-"));
+  const json = JSON.stringify({ title, body, base: { sha: base }, head: { sha: tamper ? base : (headSha ?? head) } });
+  writeFileSync(join(bin, "gh"), `#!/usr/bin/env bash\ncat <<'EOF'\n${json}\nEOF\n`);
+  chmodSync(join(bin, "gh"), 0o755);
+  return spawnSync("bash", [STEP], { cwd: work, encoding: "utf8", env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, PR_URL: "https://github.com/o/r/pull/7", REPO: "o/r" } });
+}
+
+test("step: green on a clean PR; reads title and body live, so an edit that adds a name is red", () => {
+  assert.equal(stepFixture().status, 0);
+  const named = stepFixture({ title: `fix ${AGENT}` });
+  assert.equal(named.status, 1);
+  assert.match(named.stdout, /PR title/);
+  assert.equal(stepFixture({ body: `${PERSON} asked` }).status, 1);
+});
+
+test("step: red when the fetched PR head differs from the head the API reports", () => {
+  const r = stepFixture({ tamper: true });
+  assert.equal(r.status, 2, r.stdout + r.stderr);
 });
