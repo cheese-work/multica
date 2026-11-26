@@ -8,6 +8,18 @@ import enCommon from "../../locales/en/common.json";
 import enIssues from "../../locales/en/issues.json";
 
 vi.mock("../../common/actor-avatar", () => ({ ActorAvatar: () => null }));
+// Upstream virtualizes the history list (react-virtuoso); jsdom has no layout, so render every row.
+const { revealed } = vi.hoisted(() => ({ revealed: [] as (string | null | undefined)[] }));
+vi.mock("./session-history-list", () => ({
+  SessionHistoryList: ({ sessions, renderRow, revealSessionId }: {
+    sessions: unknown[];
+    renderRow: (s: never) => React.ReactNode;
+    revealSessionId?: string | null;
+  }) => {
+    revealed.push(revealSessionId);
+    return <>{sessions.map((s) => renderRow(s as never))}</>;
+  },
+}));
 vi.mock("@multica/core/hooks", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/hooks")>()),
   useWorkspaceId: () => "ws-1",
@@ -76,6 +88,7 @@ function openRowMenu(index: number) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  revealed.length = 0;
 });
 
 describe("floating window session menu", () => {
@@ -90,6 +103,14 @@ describe("floating window session menu", () => {
       enChat.session_history.row_rename_aria,
       enChat.list.archive,
     ]);
+  });
+
+  it("asks the history list to reveal the row being renamed", async () => {
+    setup([one, pinned]);
+    expect(revealed.at(-1) ?? null).toBeNull();
+    openRowMenu(1);
+    fireEvent.click(await screen.findByRole("menuitem", { name: enChat.session_history.row_rename_aria }));
+    expect(revealed.at(-1)).toBe("two");
   });
 
   it("opens statistics for the row it belongs to", async () => {

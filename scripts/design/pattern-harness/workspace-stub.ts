@@ -16,6 +16,7 @@ export const useWorkspacePaths = () => ({}) as Record<string, never>;
 export const memberListOptions = (wsId?: string) => empty("members", wsId);
 export const agentListOptions = (_wsId?: string) => empty("agents");
 export const squadListOptions = (_wsId?: string) => empty("squads");
+export const assigneeFrequencyOptions = (wsId?: string) => empty("assignee-frequency", wsId);
 export const isAgentRuntimeBound = () => true;
 // Initials circle from the real ui avatar, so avatar-only views (quick-agent-bar) show their real shape (CHE-5536).
 export const ActorAvatar = ({ actorId = "", actorType, size, className }: { actorId?: string; actorType?: string; size?: AvatarSize; className?: string }) =>
@@ -39,8 +40,3 @@ export const workspaceKeys = {
   agents: (wsId: string) => ["harness", "agents", wsId],
 };
 export const paths = new Proxy({}, { get: () => () => "/harness" }) as Record<string, (...a: string[]) => string>;
-// SS5 (CHE-5538): agent create dialog and inspector pickers read these from the aliased barrels. Leaf re-exports keep the real values.
-export const skillListOptions = (wsId?: string) => empty("skills", wsId);
-export { VISIBILITY_DESCRIPTION, VISIBILITY_LABEL, VISIBILITY_TOOLTIP } from "../../../packages/core/agents/visibility-label";
-export { AGENT_DESCRIPTION_MAX_LENGTH } from "../../../packages/core/agents/constants";
-export const assigneeFrequencyOptions = (_wsId?: string) => empty("assignee-frequency", _wsId); // assignee-picker import (CHE-5538)

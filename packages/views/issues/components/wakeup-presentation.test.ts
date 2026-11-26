@@ -3,9 +3,11 @@ import { expect, it, vi } from "vitest";
 import { renderHook } from "@testing-library/react";
 import type { WakeupCondition } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { SupportedLocale } from "@multica/core/i18n";
-import { RESOURCES } from "../../test/i18n";
+import { SUPPORTED_LOCALES, type SupportedLocale } from "@multica/core/i18n";
+import { getTestResources } from "../../test/i18n";
 import { formatWakeupTime, useWakeupText } from "./wakeup-presentation";
+
+const RESOURCES = Object.assign({}, ...SUPPORTED_LOCALES.map((locale) => getTestResources(locale)));
 
 vi.mock("./wakeup-condition-names", () => ({
   useConditionNames: () => ({ status: (key: string) => key, label: () => undefined, property: () => undefined, actor: (_type: string, id: string) => id }),

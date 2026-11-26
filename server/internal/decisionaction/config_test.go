@@ -106,3 +106,31 @@ func TestCheckConfigChangeDeniesByDefault(t *testing.T) {
 		})
 	}
 }
+
+// CHE-9340: run_guard may carry the stop-loss mode next to its own mode, so the
+// switch-on of the stop-loss goes through the governed settings path.
+func TestValidateModeSettingRunGuardStopLoss(t *testing.T) {
+	for name, tc := range map[string]struct {
+		key, value string
+		ok         bool
+	}{
+		"run_guard with stop_loss block": {"run_guard", `{"mode":"warn","stop_loss":{"mode":"block"}}`, true},
+		"run_guard with stop_loss off":   {"run_guard", `{"mode":"block","stop_loss":{"mode":"off"}}`, true},
+		"stop_loss alone":                {"run_guard", `{"stop_loss":{"mode":"block"}}`, false},
+		"stop_loss bogus mode":           {"run_guard", `{"mode":"warn","stop_loss":{"mode":"bogus"}}`, false},
+		"stop_loss not an object":        {"run_guard", `{"mode":"warn","stop_loss":"block"}`, false},
+		"stop_loss extra field":          {"run_guard", `{"mode":"warn","stop_loss":{"mode":"block","x":1}}`, false},
+		"unknown sibling":                {"run_guard", `{"mode":"warn","other":{"mode":"block"}}`, false},
+		"other key rejects stop_loss":    {"run_budget", `{"mode":"warn","stop_loss":{"mode":"block"}}`, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := ValidateModeSetting(tc.key, json.RawMessage(tc.value))
+			if tc.ok && err != nil {
+				t.Fatalf("refused %s: %v", tc.value, err)
+			}
+			if !tc.ok && err == nil {
+				t.Fatalf("accepted %s", tc.value)
+			}
+		})
+	}
+}

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -82,6 +83,9 @@ func TestInactiveProjectAgentWrites(test *testing.T) {
 				{"assign", testHandler.UpdateIssue, http.MethodPut, map[string]any{"assignee_type": "agent", "assignee_id": fixture.leaderID}},
 			}
 			for _, testCase := range cases {
+				if testCase.name == "create" && status == "paused" {
+					continue // intake stays open on a paused project; see TestPausedProjectAgentCreate
+				}
 				test.Run(testCase.name, func(test *testing.T) {
 					request := withURLParam(newRequest(testCase.method, "/api/issues/"+issueID, testCase.body), "id", issueID)
 					request = asAgentActor(request, fixture.agentID, actorTask)
@@ -402,9 +406,9 @@ func TestPausedProjectLetsRunningRunWrite(test *testing.T) {
 			test.Errorf("%s: missing project_inactive: %s", name, response.Text())
 		}
 	}
-	// New issues in the paused project stay refused.
+	// A paused project still takes new issues from an agent (CHE-10021).
 	create := newRequest(http.MethodPost, "/api/issues", map[string]any{"title": "New issue in paused project", "project_id": projectID, "status": "backlog"})
-	testutil.Call(test, testHandler.CreateIssue, asAgentActor(create, fixture.agentID, runningTask)).Want(http.StatusForbidden)
+	testutil.Call(test, testHandler.CreateIssue, asAgentActor(create, fixture.agentID, runningTask)).Want(http.StatusCreated)
 	if commentsOn(test, issueID) != 2 {
 		test.Errorf("want the queued trigger comment and the drain comment, got %d", commentsOn(test, issueID))
 	}
@@ -430,5 +434,67 @@ func TestCancelledProjectRefusesRunningRunWrite(test *testing.T) {
 				test.Errorf("missing project_inactive: %s", response.Text())
 			}
 		})
+	}
+}
+
+// A paused project stops new runs only: an agent can still create issues in it,
+// and the assigned agent's run is blocked, not started. (CHE-10021)
+func TestPausedProjectAgentCreate(test *testing.T) {
+	fixture := newTriageRunFixture(test)
+	actorTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "status": "running"})
+	projectID := inactiveProject(test, "paused")
+	create := newRequest(http.MethodPost, "/api/issues", map[string]any{
+		"title": "Assigned issue in paused project", "project_id": projectID, "status": "todo",
+		"assignee_type": "agent", "assignee_id": fixture.agentID,
+	})
+	response := testutil.Call(test, testHandler.CreateIssue, asAgentActor(create, fixture.agentID, actorTask))
+	response.Want(http.StatusCreated)
+	var body struct {
+		ID              string                  `json:"id"`
+		TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes"`
+	}
+	response.JSON(&body)
+	if tasksOn(test, body.ID) != 0 {
+		test.Error("agent create started a run in a paused project")
+	}
+	if len(body.TriggerOutcomes) != 1 || body.TriggerOutcomes[0].ReasonCode != ReasonProjectInactive || body.TriggerOutcomes[0].Status != DispatchBlocked {
+		test.Errorf("want one blocked/project_inactive outcome: %s", response.Text())
+	}
+}
+
+// A refused agent write names the project status and the refused action in
+// `message`; `error` and `reason_code` keep their value. Cancelled and
+// completed projects still refuse intake. (CHE-10021)
+func TestInactiveProjectRefusalNamesAction(test *testing.T) {
+	fixture := newTriageRunFixture(test)
+	actorTask := dbfx.Task(test, fixture.agentID, testutil.Cols{"runtime_id": fixture.runtimeID, "status": "running"})
+	for _, status := range []string{"cancelled", "completed"} {
+		test.Run(status, func(test *testing.T) {
+			projectID := inactiveProject(test, status)
+			create := newRequest(http.MethodPost, "/api/issues", map[string]any{"title": "Refused create", "project_id": projectID, "status": "backlog"})
+			response := testutil.Call(test, testHandler.CreateIssue, asAgentActor(create, fixture.agentID, actorTask))
+			response.Want(http.StatusForbidden)
+			fields := response.Map()
+			if fields["error"] != "project_inactive" || fields["reason_code"] != "project_inactive" {
+				test.Errorf("error/reason_code changed: %s", response.Text())
+			}
+			message, _ := fields["message"].(string)
+			if !strings.Contains(message, status) || !strings.Contains(message, "create issues") {
+				test.Errorf("message must name the status %q and the refused action: %s", status, response.Text())
+			}
+			if dbfx.Count(test, "SELECT count(*) FROM issue WHERE project_id=$1", projectID) != 0 {
+				test.Error("refused create left an issue")
+			}
+		})
+	}
+	// A comment on an issue of a paused project by a run that is not running is refused with its own action.
+	projectID := inactiveProject(test, "paused")
+	issueID := fixture.issueFor(test, "", "refused comment")
+	dbfx.Exec(test, "UPDATE issue SET project_id=$2 WHERE id=$1", issueID, projectID)
+	request := withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": "Refused"}), "id", issueID)
+	response := testutil.Call(test, testHandler.CreateComment, asAgentActor(request, fixture.agentID, actorTask))
+	response.Want(http.StatusForbidden)
+	if message, _ := response.Map()["message"].(string); !strings.Contains(message, "paused") || !strings.Contains(message, "write") {
+		test.Errorf("write refusal message missing status or action: %s", response.Text())
 	}
 }

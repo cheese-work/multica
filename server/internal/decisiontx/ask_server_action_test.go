@@ -2,6 +2,7 @@ package decisiontx
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -162,5 +163,62 @@ func TestServerActionSettingsValidateWrites(test *testing.T) {
 		if err := ValidateServerActionSettings(value); err == nil {
 			test.Errorf("%s accepted", name)
 		}
+	}
+}
+
+func designOption(design map[string]any) map[string]any { return map[string]any{"design": design} }
+
+func TestDesignOptionIsDecodedStrictly(test *testing.T) {
+	good := map[string]any{"frame_url": "https://doop.example.com/c/canvas?frame=f1", "attestation_id": "run-1"}
+	ask, err := serverActionAsk(test, designOption(good))
+	if err != nil {
+		test.Fatalf("decode: %v", err)
+	}
+	got := ask.Options[0].Design
+	if got == nil || got.FrameURL != good["frame_url"] || got.AttestationID != "run-1" || got.FrameUpdatedAt != 0 {
+		test.Fatalf("design = %+v, want the cited frame with no version", got)
+	}
+	if ask.Options[1].Design != nil {
+		test.Fatalf("second option design = %+v, want none", ask.Options[1].Design)
+	}
+	zero := map[string]any{"frame_url": good["frame_url"], "attestation_id": "run-1", "frame_updated_at": 0}
+	if _, err := serverActionAsk(test, designOption(zero)); err != nil {
+		test.Fatalf("a zero frame_updated_at is accepted: %v", err)
+	}
+	for name, design := range map[string]map[string]any{
+		"unknown field":      {"frame_url": "u", "attestation_id": "a", "extra": 1},
+		"frame_url type":     {"frame_url": 5, "attestation_id": "a"},
+		"attestation type":   {"frame_url": "u", "attestation_id": []string{"a"}},
+		"updated_at type":    {"frame_url": "u", "attestation_id": "a", "frame_updated_at": "7"},
+		"updated_at decimal": {"frame_url": "u", "attestation_id": "a", "frame_updated_at": 0.5},
+	} {
+		if _, err := serverActionAsk(test, designOption(design)); err == nil {
+			test.Errorf("%s: decoded, want a refusal", name)
+		}
+	}
+	if _, err := serverActionAsk(test, map[string]any{"design": "https://doop.example.com/c/x?frame=f"}); err == nil {
+		test.Error("design as a string decoded, want a refusal")
+	}
+}
+
+func TestDesignFrameUpdatedAtIsServerOwned(test *testing.T) {
+	for _, value := range []any{1, 1731800000000, -3} {
+		_, err := serverActionAsk(test, designOption(map[string]any{"frame_url": "u", "attestation_id": "a", "frame_updated_at": value}))
+		var coded *CodedAskError
+		if !errors.As(err, &coded) || coded.Code != DesignVersionServerOwnedCode {
+			test.Fatalf("frame_updated_at %v: err = %v, want code %s", value, err, DesignVersionServerOwnedCode)
+		}
+		if !strings.Contains(err.Error(), "ask.options[0].design.frame_updated_at") {
+			test.Fatalf("message %q does not name the field path", err.Error())
+		}
+	}
+}
+
+func TestDesignOptionIsStoredWithTheOption(test *testing.T) {
+	ask, _ := serverActionAsk(test, designOption(map[string]any{"frame_url": "u", "attestation_id": "a"}))
+	ask.Options[0].Design.FrameUpdatedAt = 42 // stamped by the server after the guard passes
+	raw, _ := json.Marshal(ask.Options)
+	if !strings.Contains(string(raw), `"design":{"frame_url":"u","attestation_id":"a","frame_updated_at":42}`) {
+		test.Fatalf("stored options = %s, want the design object", raw)
 	}
 }

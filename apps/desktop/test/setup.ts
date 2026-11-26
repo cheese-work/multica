@@ -21,4 +21,21 @@ if (typeof window !== "undefined") {
         dispatchEvent: () => false,
       }) as MediaQueryList;
   }
+
+  // jsdom doesn't provide ResizeObserver; a focusable TruncatedTooltip
+  // observes its trigger. Mirrors packages/views/test/setup.ts.
+  if (typeof globalThis.ResizeObserver === "undefined") {
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver;
+  }
+
+  // jsdom has no Range geometry; description measurement reads it. Empty layout
+  // by default, tests that need geometry override it. Mirrors packages/views/test/setup.ts.
+  if (typeof Range.prototype.getClientRects !== "function") {
+    Range.prototype.getClientRects = () =>
+      ({ length: 0, item: () => null, [Symbol.iterator]: function* () {} }) as unknown as DOMRectList;
+  }
 }

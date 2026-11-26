@@ -1124,6 +1124,63 @@ func (q *Queries) GetThreadRoot(ctx context.Context, arg GetThreadRootParams) (C
 	return i, err
 }
 
+const getTimeoutCheckpointComment = `-- name: GetTimeoutCheckpointComment :one
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id, source_task_id, quick_action_id, via_plugin_id, revision, recovery_settled_at, deleted_at, suppressed_agent_ids, decision_request_id, decision_answer_id, decision_intent_id, decision_comment_kind, github_notify_only, taint_ids, external_read, notify_only, ask_source_root_id FROM comment
+WHERE issue_id = $1
+  AND source_task_id = $2
+  AND author_type = 'agent'
+  AND type = 'system'
+  AND content LIKE 'Coverage:%'
+  AND deleted_at IS NULL
+ORDER BY created_at ASC
+LIMIT 1
+`
+
+type GetTimeoutCheckpointCommentParams struct {
+	IssueID      pgtype.UUID `json:"issue_id"`
+	SourceTaskID pgtype.UUID `json:"source_task_id"`
+}
+
+// CHE-9761: the checkpoint comment the server posted for one timed-out task.
+// The failure notice shares (author, type, source_task_id), so the checkpoint
+// is told apart by its first line, which always starts with the word Coverage.
+func (q *Queries) GetTimeoutCheckpointComment(ctx context.Context, arg GetTimeoutCheckpointCommentParams) (Comment, error) {
+	row := q.db.QueryRow(ctx, getTimeoutCheckpointComment, arg.IssueID, arg.SourceTaskID)
+	var i Comment
+	err := row.Scan(
+		&i.ID,
+		&i.IssueID,
+		&i.AuthorType,
+		&i.AuthorID,
+		&i.Content,
+		&i.Type,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.ParentID,
+		&i.WorkspaceID,
+		&i.ResolvedAt,
+		&i.ResolvedByType,
+		&i.ResolvedByID,
+		&i.SourceTaskID,
+		&i.QuickActionID,
+		&i.ViaPluginID,
+		&i.Revision,
+		&i.RecoverySettledAt,
+		&i.DeletedAt,
+		&i.SuppressedAgentIds,
+		&i.DecisionRequestID,
+		&i.DecisionAnswerID,
+		&i.DecisionIntentID,
+		&i.DecisionCommentKind,
+		&i.GithubNotifyOnly,
+		&i.TaintIds,
+		&i.ExternalRead,
+		&i.NotifyOnly,
+		&i.AskSourceRootID,
+	)
+	return i, err
+}
+
 const hasAgentCommentedSince = `-- name: HasAgentCommentedSince :one
 SELECT EXISTS (
     SELECT 1 FROM comment
@@ -1362,6 +1419,54 @@ func (q *Queries) ListCommentAncestorPath(ctx context.Context, arg ListCommentAn
 			&i.DeletedAt,
 			&i.Depth,
 			&i.Cycle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listCommentOriginsForIssue = `-- name: ListCommentOriginsForIssue :many
+SELECT id, author_type, author_id, created_at FROM comment
+WHERE id = ANY($1::uuid[])
+  AND issue_id = $2
+  AND workspace_id = $3
+  AND deleted_at IS NULL
+`
+
+type ListCommentOriginsForIssueParams struct {
+	Ids         []pgtype.UUID `json:"ids"`
+	IssueID     pgtype.UUID   `json:"issue_id"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+}
+
+type ListCommentOriginsForIssueRow struct {
+	ID         pgtype.UUID        `json:"id"`
+	AuthorType string             `json:"author_type"`
+	AuthorID   pgtype.UUID        `json:"author_id"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+}
+
+// Author and time of the live comments in @ids, without their bodies: the
+// issue attachment list labels each file with the comment that delivered it.
+func (q *Queries) ListCommentOriginsForIssue(ctx context.Context, arg ListCommentOriginsForIssueParams) ([]ListCommentOriginsForIssueRow, error) {
+	rows, err := q.db.Query(ctx, listCommentOriginsForIssue, arg.Ids, arg.IssueID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListCommentOriginsForIssueRow{}
+	for rows.Next() {
+		var i ListCommentOriginsForIssueRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.CreatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -2894,6 +2999,62 @@ func (q *Queries) ListThreadLastAuthors(ctx context.Context, arg ListThreadLastA
 	return items, nil
 }
 
+const listThreadMemberAuthors = `-- name: ListThreadMemberAuthors :many
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = $1 AND c.workspace_id = $2
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+),
+thread AS (
+    SELECT c.id
+    FROM comment c
+    WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1)
+    UNION ALL
+    SELECT c.id
+    FROM comment c
+    JOIN thread t ON c.parent_id = t.id
+)
+SELECT DISTINCT c.author_id
+FROM comment c
+JOIN thread t ON t.id = c.id
+WHERE c.id <> $1
+  AND c.author_type = 'member'
+  AND c.deleted_at IS NULL
+`
+
+type ListThreadMemberAuthorsParams struct {
+	CommentID   pgtype.UUID `json:"comment_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// The members who wrote any other comment in the thread @comment_id belongs
+// to: its root and every reply under that root, at any depth. Used by the
+// bystander delivery tier, so a reply in a thread you took part in still
+// reaches you on an issue you are only watching (MUL-9343).
+func (q *Queries) ListThreadMemberAuthors(ctx context.Context, arg ListThreadMemberAuthorsParams) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listThreadMemberAuthors, arg.CommentID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var author_id pgtype.UUID
+		if err := rows.Scan(&author_id); err != nil {
+			return nil, err
+		}
+		items = append(items, author_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockCommentAncestorPath = `-- name: LockCommentAncestorPath :many
 WITH RECURSIVE ancestor_ids AS (
   SELECT c.id, c.parent_id, 1::integer AS depth, ARRAY[c.id]::uuid[] AS visited_ids
@@ -3111,6 +3272,17 @@ func (q *Queries) LockLiveComment(ctx context.Context, arg LockLiveCommentParams
 		&i.AskSourceRootID,
 	)
 	return i, err
+}
+
+const lockTimeoutCheckpoint = `-- name: LockTimeoutCheckpoint :exec
+SELECT pg_advisory_xact_lock(hashtextextended($1::uuid::text || ':timeout_checkpoint', 0))
+`
+
+// CHE-9761: serializes concurrent duplicate FailTask posts for one task so
+// the check-then-insert of the checkpoint comment cannot double-post.
+func (q *Queries) LockTimeoutCheckpoint(ctx context.Context, sourceTaskID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, lockTimeoutCheckpoint, sourceTaskID)
+	return err
 }
 
 const resolveComment = `-- name: ResolveComment :one

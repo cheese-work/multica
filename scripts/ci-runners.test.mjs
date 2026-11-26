@@ -47,20 +47,14 @@ test("release.yml leaves the Go cache to the disk on a self-hosted runner", () =
 // for this public repository. CHE-3128 had moved it to a dedicated X99 lane. The trust boundary
 // is unchanged: the job runs the default-branch definition.
 test("security-gate.yml runs on a GitHub-hosted runner", () => {
-  // Two hosted jobs: the gate and the secret-free queue-handoff (CHE-4251). mechanical-tier (CHE-4385) is a reusable-workflow call with no runner of its own.
+  // One hosted job: the gate. mechanical-tier (CHE-4385) is a reusable-workflow call with no runner of its own.
+  // The queue-handoff job and security-gate-queue.yml were removed in CHE-9846 (27 of 27 runs skipped).
   const lines = runsOn(read("security-gate.yml"));
-  assert.equal(lines.length, 2);
+  assert.equal(lines.length, 1);
   for (const line of lines) {
     assert.match(line, /runs-on: ubuntu-latest\s*(#.*)?$/);
     assert.doesNotMatch(line, /cheese-x99|self-hosted/);
   }
-});
-
-// CHE-4251: the queue evaluation that holds the App key is hosted too.
-test("security-gate-queue.yml runs on a GitHub-hosted runner", () => {
-  const lines = runsOn(read("security-gate-queue.yml"));
-  assert.equal(lines.length, 1);
-  assert.match(lines[0], /runs-on: ubuntu-latest\s*(#.*)?$/);
 });
 
 // CHE-7067: dispatch CI runs (agents chain them) shared the 60-job hosted pool; 8 parallel

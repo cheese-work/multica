@@ -11,6 +11,43 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const getNewestDesignVerdict = `-- name: GetNewestDesignVerdict :one
+SELECT id, actor_id, created_at, details
+FROM activity_log
+WHERE issue_id = $1
+  AND action = 'design_review_verdict'
+  AND details->>'attestation_id' = $2::text
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetNewestDesignVerdictParams struct {
+	IssueID       pgtype.UUID `json:"issue_id"`
+	AttestationID string      `json:"attestation_id"`
+}
+
+type GetNewestDesignVerdictRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	ActorID   pgtype.UUID        `json:"actor_id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Details   []byte             `json:"details"`
+}
+
+// Design guard (CHE-7064 D1.4, C6): the newest design_review_verdict of one
+// issue for one doop attestation. Reads idx_activity_log_issue_keyset (issue_id,
+// created_at DESC, id DESC); no row means no verdict.
+func (q *Queries) GetNewestDesignVerdict(ctx context.Context, arg GetNewestDesignVerdictParams) (GetNewestDesignVerdictRow, error) {
+	row := q.db.QueryRow(ctx, getNewestDesignVerdict, arg.IssueID, arg.AttestationID)
+	var i GetNewestDesignVerdictRow
+	err := row.Scan(
+		&i.ID,
+		&i.ActorID,
+		&i.CreatedAt,
+		&i.Details,
+	)
+	return i, err
+}
+
 const listDesignAuthorTasks = `-- name: ListDesignAuthorTasks :many
 SELECT t.id, t.agent_id, t.issue_id, COALESCE(r.provider, '')::text AS provider, COALESCE(t.claimed_model, '')::text AS claimed_model
 FROM agent_task_queue t

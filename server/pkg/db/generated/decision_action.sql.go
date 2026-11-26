@@ -581,7 +581,7 @@ func (q *Queries) LockAgentRuntimeNowait(ctx context.Context, arg LockAgentRunti
 }
 
 const lockDecisionActionMemberNowait = `-- name: LockDecisionActionMemberNowait :one
-SELECT id, workspace_id, user_id, role, created_at FROM member
+SELECT id, workspace_id, user_id, role, created_at, pinned_at FROM member
 WHERE workspace_id = $1 AND user_id = $2
 FOR SHARE NOWAIT
 `
@@ -600,6 +600,7 @@ func (q *Queries) LockDecisionActionMemberNowait(ctx context.Context, arg LockDe
 		&i.UserID,
 		&i.Role,
 		&i.CreatedAt,
+		&i.PinnedAt,
 	)
 	return i, err
 }
@@ -1247,7 +1248,7 @@ UPDATE issue SET project_id = $1::uuid, status = $2::text,
   revision = revision + 1, updated_at = now()
 WHERE id = $3::uuid AND workspace_id = $4::uuid
   AND project_id IS NOT DISTINCT FROM $5::uuid
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via, requester_user_id
 `
 
 type SetIssueProjectFromDecisionParams struct {
@@ -1306,6 +1307,7 @@ func (q *Queries) SetIssueProjectFromDecision(ctx context.Context, arg SetIssueP
 		&i.MaxRunsOverride,
 		&i.DescriptionExternalRead,
 		&i.CreatedVia,
+		&i.RequesterUserID,
 	)
 	return i, err
 }

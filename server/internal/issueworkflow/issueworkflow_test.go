@@ -2,6 +2,7 @@ package issueworkflow
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -78,7 +79,7 @@ func TestValidateRejectsBrokenWorkflows(t *testing.T) {
 		"duplicate status": {name: "x", middle: []string{"implement", "implement"}, want: "more than once"},
 	}
 	broken := stepsFor([]string{"implement"})
-	broken[0].Handler = Handler{Type: HandlerSquad, ID: testAgentID}
+	broken[0].Handler = Handler{Type: HandlerCreator}
 	name, desc, steps := Normalize("x", "", broken)
 	if err := Validate(name, desc, steps, false, testCatalog()); err == nil || !strings.Contains(err.Error(), "hand off to an agent") {
 		t.Fatalf("Validate must check handoffs, got %v", err)
@@ -110,6 +111,7 @@ func TestValidateHandoff(t *testing.T) {
 	}{
 		"not a column":      {step: Step{StatusKey: "nope", Handler: Handler{Type: HandlerProjectLead}}, want: "not part"},
 		"needs an id":       {step: Step{StatusKey: "implement", Handler: Handler{Type: HandlerAgent}}, want: "choose a agent"},
+		"squad needs an id": {step: Step{StatusKey: "implement", Handler: Handler{Type: HandlerSquad}}, want: "choose a squad"},
 		"unknown handler":   {step: Step{StatusKey: "implement", Handler: Handler{Type: "robot"}}, want: "unknown handler"},
 		"backlog parks":     {step: Step{StatusKey: "backlog", Handler: Handler{Type: HandlerProjectLead}}, want: "cannot be handed off"},
 		"done finishes":     {step: Step{StatusKey: "done", Handler: Handler{Type: HandlerProjectLead}}, want: "cannot be handed off"},
@@ -126,6 +128,9 @@ func TestValidateHandoff(t *testing.T) {
 	}
 	if err := ValidateHandoff(NormalizeHandoff(Step{StatusKey: "todo", Handler: Handler{Type: HandlerProjectLead}}), def); err != nil {
 		t.Fatalf("todo may hand off: %v", err)
+	}
+	if err := ValidateHandoff(Step{StatusKey: "implement", Handler: Handler{Type: HandlerSquad, ID: testAgentID}}, def); err != nil {
+		t.Fatalf("squad may receive a handoff: %v", err)
 	}
 }
 
@@ -384,6 +389,54 @@ func TestBriefForARoutingStepUsesRouteCommands(t *testing.T) {
 	in.Routing, in.Observer = true, true
 	if observer := Brief(in); strings.Contains(observer, "multica issue route") {
 		t.Fatalf("an observer gets no commands:\n%s", observer)
+	}
+}
+
+func TestBriefForMovedStep(t *testing.T) {
+	for _, current := range []string{"implement", "todo"} {
+		for _, observer := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/observer=%v", current, observer), func(t *testing.T) {
+				in := BriefInput{
+					Workflow: devDefinition(), StatusKey: current, BoundStep: "waiting_for_merge",
+					IssueIdentifier: "MUL-7", Observer: observer,
+					MovedBy: "Lin\n\tLee\x01", StatusName: func(key string) string { return testCatalog()[key].Name },
+				}
+				brief := Brief(in)
+				for _, want := range []string{
+					`bound to "waiting_for_merge"`, statusLabel(testCatalog()[current].Name, current),
+					"last moved by Lin Lee", "Do not change", "overrides the status rules", "member",
+					"Statuses in this workflow:", "   ← current",
+				} {
+					if !strings.Contains(brief, want) {
+						t.Errorf("brief missing %q:\n%s", want, brief)
+					}
+				}
+				for _, leak := range []string{
+					"Implement it.", "Step instructions:", "You are handling", "Your moves:", "multica issue status",
+					"Needs changes", "Can't proceed", "unless you are explicitly asked", "Before your run ends, either run",
+					"Lin\n", "\x01",
+				} {
+					if strings.Contains(brief, leak) {
+						t.Errorf("stale run received %q:\n%s", leak, brief)
+					}
+				}
+				in.MovedBy = ""
+				if unknown := Brief(in); !strings.Contains(unknown, "last moved by someone else") {
+					t.Fatalf("missing mover must not prevent a mismatch brief:\n%s", unknown)
+				}
+			})
+		}
+	}
+}
+
+func TestBriefMatchingBindingKeepsNormalInstructions(t *testing.T) {
+	for _, observer := range []bool{false, true} {
+		in := BriefInput{Workflow: devDefinition(), StatusKey: "implement", IssueIdentifier: "MUL-7", Observer: observer}
+		unbound := Brief(in)
+		in.BoundStep, in.MovedBy = in.StatusKey, "Lin"
+		if got := Brief(in); got != unbound {
+			t.Errorf("observer=%v: matching binding changed the normal brief:\n%s", observer, got)
+		}
 	}
 }
 

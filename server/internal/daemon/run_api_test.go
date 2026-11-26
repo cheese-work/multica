@@ -92,3 +92,18 @@ func TestStartRunAPIServesOnPrivateUnixSocketAndStopRemovesIt(t *testing.T) {
 		t.Errorf("socket still present after stop: %v", err)
 	}
 }
+
+// CHE-9684 (A5e P2 3): /environments/* runs a repo-supplied shell command in
+// the daemon's own process tree, outside the run's sandbox. A sandboxed run
+// reaches the daemon only through this mux, so none of those routes may be
+// served here.
+func TestRunAPIMuxDoesNotServeEnvironmentRoutes(t *testing.T) {
+	mux := runAPIDaemon(t).runAPIMux(time.Now())
+	for _, path := range []string{"/environments/start", "/environments/stop", "/environments/list", "/environments/focus", "/browser/lease"} {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader("{}")))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("POST %s = %d, want 404", path, rec.Code)
+		}
+	}
+}

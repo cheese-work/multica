@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -69,4 +72,51 @@ func TestDecisionAskWithoutAPersonRefusesInsteadOfGuessing(test *testing.T) {
 	if requests := dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, fixture.issueID); requests != 0 {
 		test.Fatalf("refused call wrote %d requests", requests)
 	}
+}
+
+// withCallerDesignVersion is the ask with a caller-set design.frame_updated_at on its first option.
+func withCallerDesignVersion(test *testing.T, ask decisiontx.Ask) map[string]any {
+	test.Helper()
+	out := map[string]any{}
+	raw, err := json.Marshal(ask)
+	if err != nil {
+		test.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		test.Fatal(err)
+	}
+	out["options"].([]any)[0].(map[string]any)["design"] = map[string]any{"frame_url": "https://doop.example.com/c/cv1?frame=f1", "attestation_id": "run-1", "frame_updated_at": 5}
+	return out
+}
+
+func wantServerOwnedRefusal(test *testing.T, call *testutil.Response) {
+	test.Helper()
+	var refusal map[string]string
+	call.Want(http.StatusBadRequest).JSON(&refusal)
+	if refusal["code"] != decisiontx.DesignVersionServerOwnedCode || !strings.Contains(refusal["error"], "ask.options[0].design.frame_updated_at") {
+		test.Fatalf("refusal = %v, want code %s naming the field", refusal, decisiontx.DesignVersionServerOwnedCode)
+	}
+}
+
+// frame_updated_at is server-owned: a caller value that is not zero is a 400 with
+// the stable code, through both entry points, and no card is written (CHE-7064 S10).
+func TestDecisionAskRefusesACallerSetDesignVersion(test *testing.T) {
+	fixture := newAskFixture(test)
+	body := fixture.askBody()
+	body["ask"] = withCallerDesignVersion(test, fixture.details)
+	wantServerOwnedRefusal(test, testutil.Call(test, testHandler.AskDecision, fixture.askCall(body)))
+	if requests := dbfx.Count(test, `SELECT count(*) FROM decision_request WHERE issue_id = $1`, fixture.issueID); requests != 0 {
+		test.Fatalf("refused call wrote %d requests", requests)
+	}
+}
+
+func TestDecisionRequestRefusesACallerSetDesignVersion(test *testing.T) {
+	fixture := newRequestCoreFixture(test, false)
+	body := map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "ask": withCallerDesignVersion(test, fixture.structuredAsk()), "escalation_class": "reversible"}
+	request := newRequest(http.MethodPost, "/api/decisions", body)
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Agent-ID", fixture.agentID)
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	wantServerOwnedRefusal(test, testutil.Call(test, testHandler.RequestDecision, request))
+	fixture.assertCounts(test, 0)
 }

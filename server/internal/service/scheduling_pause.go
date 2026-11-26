@@ -153,8 +153,10 @@ func (s *TaskService) setWorkspaceScheduling(ctx context.Context, workspaceID pg
 	return updated, changed, nil
 }
 
-// NotifyRuntimeMayHaveWork is ResumeAgentScheduling's wake-up for a caller that
-// resumed the agent inside its own transaction (an approved decision action).
+// NotifyRuntimeMayHaveWork wakes a runtime's daemon after queued work was moved
+// onto it outside an enqueue: an agent runtime switch, or ResumeAgentScheduling's
+// wake-up for a caller that resumed the agent inside its own transaction (an
+// approved decision action). Fork signature; upstream's one-argument form is not used.
 func (s *TaskService) NotifyRuntimeMayHaveWork(runtimeID pgtype.UUID, taskID string) {
 	s.notifyRuntimeMayHaveWork(runtimeID, taskID)
 }

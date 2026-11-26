@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { parse } from "yaml";
 
-import { checkUiMap, fsTree, globToRegExp, gitTree, lockPin, readChanges } from "./check-ui-map.mjs";
+import { UPSTREAM_ALLOWLIST, checkUiMap, fsTree, globToRegExp, gitTree, lockPin, readChanges } from "./check-ui-map.mjs";
 import { isUiPath } from "./check-ui-pattern-ref.mjs";
 
 // Each test builds a throwaway git repo: `seed` is the commit the map's legacy entry records, `base` the PR base, `head` the PR head.
@@ -274,5 +275,159 @@ test("a missing map or an unreachable seed_sha reports a named failure", (t) => 
 // ---- the committed map ----
 test("the committed design/ui-map.yml passes rules 3 and 4 on the working tree", () => {
   const r = checkUiMap({ head: fsTree(process.cwd()), changes: null });
+  assert.deepEqual(r.errors, []);
+});
+
+// ---- upstream-owned screens (no design lock) ----
+// An `upstream` entry may own only the explicit allowlist (UPSTREAM_ALLOWLIST: 55 files and 1 route, Cheese decision on CHE-9575).
+const UP_PAGE = "apps/web/app/(landing)/blog/page.tsx";
+const UP_FILE = "packages/views/voice/voice-ui.tsx";
+const UP_ROUTE = "issues/:id/deliverables/:name";
+const upstream = (over = {}) => ({ screen: "up-voice", paths: [UP_FILE], state: "upstream", ...over });
+
+test("upstream: an entry with no lock owns an allowlisted new page, a file in a new directory and a new route", (t) => {
+  const r = run(t, {
+    entries: [entry(), upstream({ paths: [UP_FILE, UP_PAGE], routes: [UP_ROUTE] })],
+    head: {
+      [UP_FILE]: "export const P = 1;\n",
+      [UP_PAGE]: "export default function P() { return null; }\n",
+      [ROUTES]: routes("issues", UP_ROUTE),
+    },
+  });
+  assert.deepEqual(r.errors, []);
+});
+
+test("upstream: without the entry the same changes fail unowned-ui and unowned-screen", (t) => {
+  const r = run(t, {
+    entries: [entry()],
+    head: {
+      [UP_FILE]: "export const P = 1;\n",
+      [UP_PAGE]: "export default function P() { return null; }\n",
+      [ROUTES]: routes("issues", UP_ROUTE),
+    },
+  });
+  assert.deepEqual(reasons(r), ["unowned-screen", "unowned-screen", "unowned-ui"]);
+});
+
+test("upstream: an entry still takes part in rule 1, and needs paths or routes and no lock", (t) => {
+  const r = run(t, {
+    entries: [entry(), upstream(), upstream({ screen: "up-two" })],
+    head: { [UP_FILE]: "export const P = 1;\n" },
+  });
+  assert.deepEqual(reasons(r), ["ambiguous-owner"]);
+  assert.ok(reasons(run(t, { entries: [entry(), upstream({ paths: [] })] })).includes("bad-map"));
+  assert.ok(reasons(run(t, { entries: [entry(), upstream({ lock: "alpha", lock_export_sha256: PIN_A })] })).includes("bad-map"));
+});
+
+test("upstream: two upstream entries do not trip rule 3 or 4 (no lock folder to own)", (t) => {
+  const r = run(t, { entries: [entry(), upstream(), upstream({ screen: "up-two", paths: [UP_PAGE] })] }, { withBase: false });
+  assert.deepEqual(r.errors, []);
+});
+
+// ---- the upstream state is limited to the approved allowlist (CHE-9575, Cheese: "Allow upstream state" for the listed files only) ----
+test("upstream scope: an upstream entry for a path outside the allowlist is rejected", (t) => {
+  const r = run(t, { entries: [entry(), upstream({ paths: ["packages/views/billing/invoice.tsx"] })] }, { withBase: false });
+  assert.deepEqual(reasons(r), ["upstream-out-of-scope"]);
+  assert.match(r.errors[0].message, /packages\/views\/billing\/invoice\.tsx/);
+});
+
+test("upstream scope: a glob is rejected even when it covers allowlisted files", (t) => {
+  for (const glob of ["packages/views/voice/**", "packages/views/voice/*.tsx", "apps/web/features/landing/**", "packages/views/voice/voice-?i.tsx"]) {
+    const r = run(t, { entries: [entry(), upstream({ paths: [glob] })] }, { withBase: false });
+    assert.deepEqual(reasons(r), ["upstream-out-of-scope"], glob);
+  }
+});
+
+test("upstream scope: a route outside the allowlist is rejected", (t) => {
+  const r = run(t, { entries: [entry(), upstream({ paths: [UP_FILE], routes: ["billing"] })] }, { withBase: false });
+  assert.deepEqual(reasons(r), ["upstream-out-of-scope"]);
+});
+
+test("upstream scope: a new file next to an allowlisted one is not owned (no directory-wide ownership)", (t) => {
+  const r = run(t, {
+    entries: [entry(), upstream({ paths: [UP_PAGE] })],
+    head: { [UP_PAGE]: "export default function P() { return null; }\n", "apps/web/app/(landing)/extra/page.tsx": "export default function P() { return null; }\n" },
+  });
+  assert.deepEqual(reasons(r), ["unowned-screen"]);
+});
+
+// ---- the v0.10.0 merge (CHE-9575): the 56 files and routes the merge brought in need a named owner ----
+const REPORTED_FILES = [
+  "apps/web/app/(landing)/blog/page.tsx",
+  "apps/web/app/(landing)/careers/page.tsx",
+  "apps/web/app/(landing)/customers/page.tsx",
+  "apps/web/app/(landing)/press/page.tsx",
+  "apps/web/app/(landing)/pricing/page.tsx",
+  "apps/web/app/(landing)/product/[slug]/page.tsx",
+  "apps/web/app/(landing)/product/page.tsx",
+  "apps/web/app/(landing)/security/page.tsx",
+  "apps/web/app/(landing)/solutions/[slug]/page.tsx",
+  "apps/web/app/(landing)/solutions/page.tsx",
+  "apps/web/app/[workspaceSlug]/(dashboard)/issues/[id]/deliverables/[name]/page.tsx",
+  "apps/web/components/i18n/bundles/en.tsx",
+  "apps/web/components/i18n/bundles/es.tsx",
+  "apps/web/components/i18n/bundles/fr.tsx",
+  "apps/web/components/i18n/bundles/ja.tsx",
+  "apps/web/components/i18n/bundles/ko.tsx",
+  "apps/web/components/i18n/bundles/ru.tsx",
+  "apps/web/components/i18n/bundles/zh-Hans.tsx",
+  "apps/web/components/i18n/bundles/zh-Hant.tsx",
+  "apps/web/components/i18n/locale-bundle.tsx",
+  "apps/web/features/landing/site/auto-advance.tsx",
+  "apps/web/features/landing/site/chat-page.tsx",
+  "apps/web/features/landing/site/cli-page.tsx",
+  "apps/web/features/landing/site/cloud-page.tsx",
+  "apps/web/features/landing/site/cta-band.tsx",
+  "apps/web/features/landing/site/demo/chat-visuals.tsx",
+  "apps/web/features/landing/site/demo/cli-visuals.tsx",
+  "apps/web/features/landing/site/demo/cloud-visuals.tsx",
+  "apps/web/features/landing/site/demo/desktop-visuals.tsx",
+  "apps/web/features/landing/site/demo/feature-visuals.tsx",
+  "apps/web/features/landing/site/demo/hero-blocks.tsx",
+  "apps/web/features/landing/site/demo/hero-board.tsx",
+  "apps/web/features/landing/site/demo/hero-demo.tsx",
+  "apps/web/features/landing/site/demo/mobile-visuals.tsx",
+  "apps/web/features/landing/site/demo/mock-kit.tsx",
+  "apps/web/features/landing/site/desktop-page.tsx",
+  "apps/web/features/landing/site/footer-wordmark.tsx",
+  "apps/web/features/landing/site/home-page.tsx",
+  "apps/web/features/landing/site/locale-suggestion.tsx",
+  "apps/web/features/landing/site/mobile-page.tsx",
+  "apps/web/features/landing/site/pricing-page.tsx",
+  "apps/web/features/landing/site/primitives.tsx",
+  "apps/web/features/landing/site/site-footer.tsx",
+  "apps/web/features/landing/site/site-header.tsx",
+  "apps/web/features/landing/site/site-page.tsx",
+  "apps/web/features/landing/site/surface-kit.tsx",
+  "packages/views/dev-toolbar/actions-panel.tsx",
+  "packages/views/dev-toolbar/dev-toolbar.tsx",
+  "packages/views/dev-toolbar/panels.tsx",
+  "packages/views/dev-toolbar/realtime-panels.tsx",
+  "packages/views/star-prompt/star-prompt.tsx",
+  "packages/views/voice/dialog-footer.tsx",
+  "packages/views/voice/voice-models.tsx",
+  "packages/views/voice/voice-ui.tsx",
+  "packages/views/voice/workspace-words.tsx",
+];
+const REPORTED_ROUTES = ["issues/:id/deliverables/:name"];
+
+test("the upstream allowlist is exactly the files and routes the v0.10.0 merge reported", () => {
+  assert.deepEqual([...UPSTREAM_ALLOWLIST.paths].sort(), [...REPORTED_FILES].sort());
+  assert.deepEqual([...UPSTREAM_ALLOWLIST.routes].sort(), [...REPORTED_ROUTES].sort());
+  assert.equal(UPSTREAM_ALLOWLIST.paths.length + UPSTREAM_ALLOWLIST.routes.length, 56);
+});
+
+test("the committed map has no glob in an upstream entry and owns each allowlisted file exactly", () => {
+  const doc = parse(readFileSync("design/ui-map.yml", "utf8"));
+  const owned = doc.entries.filter((e) => e.state === "upstream").flatMap((e) => e.paths);
+  assert.deepEqual([...owned].sort(), [...REPORTED_FILES].sort());
+});
+
+test("the committed map owns every UI file and desktop route the v0.10.0 merge brought in", () => {
+  const changes = {
+    files: REPORTED_FILES.map((path) => ({ status: "A", oldPath: path, path })),
+    routes: REPORTED_ROUTES,
+  };
+  const r = checkUiMap({ head: fsTree(process.cwd()), changes });
   assert.deepEqual(r.errors, []);
 });

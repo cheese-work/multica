@@ -104,7 +104,7 @@ func TestDecisionRecordMentionControls(test *testing.T) {
 	test.Run("duplicate pending run is reused", func(test *testing.T) {
 		fixture := newAskedRecordFixture(test)
 		nextOwner := createHandlerTestAgent(test, "Duplicate Owner", nil)
-		dbfx.Task(test, nextOwner, testutil.Cols{"issue_id": fixture.issueID, "status": "queued", "runtime_id": handlerTestRuntimeID(test)})
+		dbfx.Task(test, nextOwner, testutil.Cols{"issue_id": fixture.issueID, "status": "queued", "runtime_id": handlerTestRuntimeID(test), "trigger_comment_id": dbfx.Comment(test, fixture.issueID, "earlier mention")})
 		comment, status := fixture.recordWithMention(test, "", mentionOf(nextOwner))
 		if status != http.StatusCreated {
 			test.Fatalf("record status=%d", status)

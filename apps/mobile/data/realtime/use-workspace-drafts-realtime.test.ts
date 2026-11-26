@@ -23,7 +23,7 @@ vi.mock("@/lib/use-ws-subscriptions", () => ({
   },
 }));
 
-function connect() {
+function useConnect() {
   useWorkspaceDraftsRealtime();
   const handlers = new Map<string, EventHandler>();
   const ws: MockWS = {
@@ -43,7 +43,7 @@ describe("useWorkspaceDraftsRealtime", () => {
   });
 
   it("clears the drafts of the deleted workspace for the signed-in user", () => {
-    connect().get("workspace:deleted")?.({ workspace_id: "ws-9" });
+    useConnect().get("workspace:deleted")?.({ workspace_id: "ws-9" });
     expect(clearScopeDrafts).toHaveBeenCalledExactlyOnceWith("u1:ws-9");
   });
 });
