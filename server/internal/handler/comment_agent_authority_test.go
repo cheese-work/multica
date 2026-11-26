@@ -12,12 +12,12 @@ import (
 // comments its own agent wrote (CHE-10266). Humans keep the override.
 
 type commentAuthorityFixture struct {
-	issueID                string
-	agentA, taskA          string
-	agentB, taskB          string
-	verdictByB, replyByB   string
-	tombstoneParent        string
-	ownCommentA, memberTxt string
+	issueID              string
+	agentA, taskA        string
+	agentB, taskB        string
+	verdictByB, replyByB string
+	tombstoneParent      string
+	ownCommentA          string
 }
 
 func newCommentAuthorityFixture(t *testing.T) commentAuthorityFixture {
