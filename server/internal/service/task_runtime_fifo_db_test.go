@@ -269,12 +269,14 @@ func TestRuntimeFIFOAtRuntimeCapMakesOneAttemptPerRuntime(t *testing.T) {
 // FP-01 (REQUIRED_TEST, plan hash
 // a61eb51aef60fd143be0208500afdfc888d0c7e4bdfda46748d58c3d38de32fb): 64
 // blocked rows alternate between agents A and B, then agent C has an eligible
-// row 65. With free capacity one poll must reach row 65 on both loops, and
+// row 65, and agent A has a newer claimable row 66 behind it. With one free
+// slot one poll must start row 65, not A's newer row 66, on both loops, and
 // repeated polls must keep reaching the head of the queue, never stalling on
 // the same blocked prefix. There is no attempt ceiling.
 func TestRuntimeFIFOBlockedPrefixNeverStarvesLaterAgent(t *testing.T) {
 	forEachFIFOPath(t, func(t *testing.T, p fifoPath) {
 		f := newClaimDecisionFixture(t, 5)
+		f.setRuntimeCap(t, int32Ptr(1))
 		agentA := util.UUIDToString(f.agentID)
 		agentB := f.fifoAgent(t, "fifo-fp01-b")
 		agentC := f.fifoAgent(t, "fifo-fp01-c")
@@ -291,15 +293,20 @@ func TestRuntimeFIFOBlockedPrefixNeverStarvesLaterAgent(t *testing.T) {
 		}
 		row65 := f.fifoRow(t, agentC, fifoAt(64), testutil.Cols{"issue_id": f.fx.Issue(t, "fifo-fp01 eligible 65")})
 
+		row66 := f.fifoRow(t, agentA, fifoAt(65), testutil.Cols{"issue_id": f.fx.Issue(t, "fifo-fp01 newer A row 66")})
+
 		first := p.claim(t, f)
 		wantOnly(t, first, row65)
 
-		// Repeated polls: each new eligible row behind the same 64 blocked rows
-		// is reached on its own poll.
-		prev := first[0].ID
+		// Repeated polls: A's row 66 is next, then each new eligible row behind
+		// the same 64 blocked rows is reached on its own poll.
+		f.fifoComplete(t, first[0].ID)
+		second := p.claim(t, f)
+		wantOnly(t, second, row66)
+		prev := second[0].ID
 		for round := 0; round < 3; round++ {
 			f.fifoComplete(t, prev)
-			next := f.fifoRow(t, agentC, fifoAt(65+round), testutil.Cols{"issue_id": f.fx.Issue(t, fmt.Sprintf("fifo-fp01 eligible %d", 66+round))})
+			next := f.fifoRow(t, agentC, fifoAt(66+round), testutil.Cols{"issue_id": f.fx.Issue(t, fmt.Sprintf("fifo-fp01 eligible %d", 67+round))})
 			got := p.claim(t, f)
 			wantOnly(t, got, next)
 			prev = got[0].ID
