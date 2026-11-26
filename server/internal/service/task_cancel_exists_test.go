@@ -21,7 +21,10 @@ type cancelTranscriptTrace struct {
 type cancelTranscriptTraceKey struct{}
 
 func (tr *cancelTranscriptTrace) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
-	return context.WithValue(ctx, cancelTranscriptTraceKey{}, strings.Contains(data.SQL, "FROM task_message"))
+	// The compact-notice backstop reads only the task's `context_compacted`
+	// rows (a few, never the transcript); it is not the read this test bounds.
+	return context.WithValue(ctx, cancelTranscriptTraceKey{},
+		strings.Contains(data.SQL, "FROM task_message") && !strings.Contains(data.SQL, "context_compacted"))
 }
 func (tr *cancelTranscriptTrace) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryEndData) {
 	if tracked, _ := ctx.Value(cancelTranscriptTraceKey{}).(bool); tracked {
