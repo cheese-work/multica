@@ -227,6 +227,13 @@ jobs:
           else
             echo "no renumber map added; order check not needed"
           fi
+      - name: Test the parity script (CHE-10205)
+        run: |
+          if git diff --name-only "$BASE" HEAD -- scripts/migration-parity.sh scripts/migration-parity.test.sh | grep -q .; then
+            bash scripts/migration-parity.test.sh
+          else
+            echo "parity script unchanged; its test is not needed"
+          fi
       - name: Fresh install vs upgrade parity (when the change touches migrations)
         run: |
           if git diff --name-only "$BASE" HEAD -- server/migrations server/cmd/migrate | grep -q .; then
