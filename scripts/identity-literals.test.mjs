@@ -21,7 +21,11 @@ const denylist = {
     { id: "person-name", pattern: "Cheese|Jev|Hermes", wholeWord: true },
   ],
 };
-denylist.patterns.find((p) => p.id === "person-name").as = { Hermes: "runtime-name" }; // CHE-10231
+
+// CHE-10231: the protected names are read from the pattern, so the tests below never spell them out.
+const personPattern = denylist.patterns.find((p) => p.id === "person-name");
+personPattern.exemptMatches = ["Hermes"];
+const protectedNames = personPattern.pattern.split("|").filter((name) => !personPattern.exemptMatches.includes(name));
 
 const scratch = mkdtempSync(join(tmpdir(), "identity-literals-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -45,15 +49,16 @@ function repo(files) {
   git(root, "commit", "-q", "-m", "fixture");
   return root;
 }
-function trusted(baseline, deny = denylist) {
+function trusted(baseline, deny = denylist, exempt = {}) {
   const root = dir("trusted");
   writeFileSync(join(root, "denylist.json"), JSON.stringify(deny));
   writeFileSync(join(root, "baseline.json"), JSON.stringify(baseline));
-  return { denylist: join(root, "denylist.json"), baseline: join(root, "baseline.json") };
+  writeFileSync(join(root, "exempt.json"), JSON.stringify(exempt));
+  return { denylist: join(root, "denylist.json"), baseline: join(root, "baseline.json"), exempt: join(root, "exempt.json") };
 }
-function run(root, baseline = {}, extra = [], deny = denylist) {
-  const paths = trusted(baseline, deny);
-  const result = spawnSync(process.execPath, [script, "--tree", "HEAD", "--denylist", paths.denylist, "--baseline", paths.baseline, ...extra], { cwd: root, encoding: "utf8" });
+function run(root, baseline = {}, extra = [], deny = denylist, exempt = {}) {
+  const paths = trusted(baseline, deny, exempt);
+  const result = spawnSync(process.execPath, [script, "--tree", "HEAD", "--denylist", paths.denylist, "--baseline", paths.baseline, "--exempt", paths.exempt, ...extra], { cwd: root, encoding: "utf8" });
   return { status: result.status, out: `${result.stdout}${result.stderr}`, stdout: result.stdout, stderr: result.stderr };
 }
 
@@ -103,24 +108,51 @@ test("a new pattern id in a baselined file fails", () => {
   const root = repo({ "server/internal/a/a.go": 'var a = "c00"\nvar b = "Hermes"\n' });
   const result = run(root, { "server/internal/a/a.go": { "host-token": 1 } });
   assert.equal(result.status, 1, result.out);
-  assert.match(result.stderr, /runtime-name/);
-});
-
-// CHE-10231: a raised runtime-name allowance (upstream "Hermes" mentions) never lends allowance to a person name.
-test("a raised runtime-name allowance does not hide a new person name in the same file", () => {
-  const file = "apps/web/features/landing/i18n/en.ts";
-  const baseline = { [file]: { "runtime-name": 3 } };
-  assert.equal(run(repo({ [file]: 'export const a = ["Hermes", "Hermes", "Hermes"];\n' }), baseline).status, 0);
-  const result = run(repo({ [file]: 'export const a = ["Hermes", "Hermes", "Hermes", "Jev"];\n' }), baseline);
-  assert.equal(result.status, 1, result.out);
   assert.match(result.stderr, /person-name/);
 });
 
-test("a runtime-name mention above its allowance still fails", () => {
-  const file = "apps/web/features/landing/i18n/en.ts";
-  const result = run(repo({ [file]: 'export const a = ["Hermes", "Hermes"];\n' }), { [file]: { "runtime-name": 1 } });
+// CHE-10231: upstream text that names the runtime product is exempt by exact literal, never by count, so
+// no allowance is left over for a new protected name.
+const LANDING = "apps/web/features/landing/i18n/en.ts";
+const UPSTREAM = "Hermes keeps its locally installed dependencies between runs.";
+const exemptList = { [LANDING]: [UPSTREAM] };
+const landing = (...lines) => repo({ [LANDING]: `export const a = [${lines.map((line) => JSON.stringify(line)).join(", ")}];\n` });
+
+test("an exempt upstream literal passes with no baseline", () => {
+  const result = run(landing(UPSTREAM, UPSTREAM), {}, [], denylist, exemptList);
+  assert.equal(result.status, 0, result.out);
+});
+
+test("a new bare Hermes person literal fails next to exempt upstream literals", () => {
+  const root = repo({ [LANDING]: `export const a = [${JSON.stringify(UPSTREAM)}];\nconst maintainer = "Hermes";\n` });
+  const result = run(root, {}, [], denylist, exemptList);
   assert.equal(result.status, 1, result.out);
-  assert.match(result.stderr, /runtime-name/);
+  assert.match(result.stderr, /en\.ts:2.*person-name/);
+  assert.doesNotMatch(result.stderr, /en\.ts:1 /);
+});
+
+test("a new Hermes sentence that is not on the exempt list fails", () => {
+  const result = run(landing(UPSTREAM, "Hermes approved the release."), {}, [], denylist, exemptList);
+  assert.equal(result.status, 1, result.out);
+  assert.match(result.stderr, /en\.ts:1.*person-name/);
+});
+
+test("an exempt literal does not hide another protected name in the same literal", () => {
+  for (const name of protectedNames) {
+    const text = `${UPSTREAM} ${name}`;
+    const result = run(landing(text), {}, [], denylist, { [LANDING]: [text] });
+    assert.equal(result.status, 1, `${name}: ${result.out}`);
+  }
+});
+
+test("an exempt literal applies only to its own file", () => {
+  const root = repo({ "apps/web/other.ts": `export const a = ${JSON.stringify(UPSTREAM)};\n` });
+  assert.equal(run(root, {}, [], denylist, exemptList).status, 1);
+});
+
+test("a malformed exempt list makes the check unable to run", () => {
+  const result = run(landing(UPSTREAM), {}, [], denylist, { [LANDING]: "not-a-list" });
+  assert.equal(result.status, 2, result.out);
 });
 
 test("a lower count passes and prints the baseline line to remove", () => {
@@ -235,7 +267,7 @@ test("--print-baseline prints counts that then pass", () => {
   const printed = run(root, {}, ["--print-baseline"]);
   assert.equal(printed.status, 0, printed.out);
   const baseline = JSON.parse(printed.stdout);
-  assert.deepEqual(baseline, { "packages/b.ts": { "runtime-name": 1 }, "server/a.go": { "host-token": 2, "person-name": 1 } });
+  assert.deepEqual(baseline, { "packages/b.ts": { "person-name": 1 }, "server/a.go": { "host-token": 2, "person-name": 1 } });
   assert.equal(run(root, baseline).status, 0);
 });
 
@@ -256,7 +288,6 @@ test("the committed denylist and baseline parse and have unique pattern ids", ()
   const list = JSON.parse(readFileSync(new URL("denylist.json", base), "utf8"));
   const ids = list.patterns.map((p) => p.id);
   assert.equal(new Set(ids).size, ids.length);
-  ids.push(...list.patterns.flatMap((p) => Object.values(p.as ?? {})));
   assert.ok(ids.includes("workspace-uuid") && ids.includes("host-token") && ids.includes("person-name"));
   assert.ok(list.fix.includes("workspace setting"));
   const baseline = JSON.parse(readFileSync(new URL("baseline.json", base), "utf8"));
@@ -264,6 +295,17 @@ test("the committed denylist and baseline parse and have unique pattern ids", ()
     for (const [id, count] of Object.entries(counts)) {
       assert.ok(ids.includes(id), `${file}: unknown pattern id ${id}`);
       assert.ok(Number.isInteger(count) && count > 0, `${file} ${id}`);
+    }
+  }
+});
+
+test("the committed exempt list parses and exempts only plain Hermes mentions", () => {
+  const exempt = JSON.parse(readFileSync(new URL("./identity-literals/exempt-literals.json", import.meta.url), "utf8"));
+  for (const [file, texts] of Object.entries(exempt)) {
+    assert.ok(texts.length > 0, file);
+    for (const text of texts) {
+      assert.match(text, /\bHermes\b/, `${file}: ${text}`);
+      assert.doesNotMatch(text, new RegExp(protectedNames.join("|")), `${file}: ${text}`);
     }
   }
 });

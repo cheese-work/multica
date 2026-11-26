@@ -14,8 +14,8 @@
     },
     {
       "id": "person-name",
-      "as": { "Hermes": "runtime-name" },
       "pattern": "Cheese|Jev|Hermes",
+      "exemptMatches": ["Hermes"],
       "wholeWord": true
     }
   ]

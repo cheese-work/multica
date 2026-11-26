@@ -1,24 +1,12 @@
 {
   "apps/web/features/landing/components/provider-marks.tsx": {
-    "runtime-name": 1
-  },
-  "apps/web/features/landing/i18n/en.ts": {
-    "runtime-name": 38
-  },
-  "apps/web/features/landing/i18n/ja.ts": {
-    "runtime-name": 33
-  },
-  "apps/web/features/landing/i18n/ko.ts": {
-    "runtime-name": 33
-  },
-  "apps/web/features/landing/i18n/zh.ts": {
-    "runtime-name": 38
+    "person-name": 1
   },
   "apps/web/features/landing/site/demo/mock-kit.tsx": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "apps/web/features/landing/site/home-page.tsx": {
-    "runtime-name": 2
+    "person-name": 2
   },
   "packages/views/agents/components/agents-intro.tsx": {
     "host-token": 1
@@ -27,31 +15,31 @@
     "host-token": 1
   },
   "packages/views/locales/en/agents.json": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "packages/views/locales/es/agents.json": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "packages/views/locales/fr/agents.json": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "packages/views/locales/ja/agents.json": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "packages/views/locales/ko/agents.json": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "packages/views/locales/ru/agents.json": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "packages/views/locales/zh-Hans/agents.json": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "packages/views/locales/zh-Hant/agents.json": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "packages/views/runtimes/components/provider-logo.tsx": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "packages/views/runtimes/components/runtimes-intro.tsx": {
     "host-token": 1
@@ -72,16 +60,16 @@
     "host-token": 2
   },
   "server/internal/daemon/daemon.go": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "server/internal/daemon/execenv/hermes_gateway.go": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "server/internal/daemon/execenv/hermes_home.go": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "server/internal/daemon/execenv/hermes_sessions.go": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "server/internal/decisiontx/ask_cannot_do.go": {
     "workspace-uuid": 1,
@@ -110,7 +98,7 @@
     "host-token": 1
   },
   "server/internal/service/builtin_skills/multica-platform/references/agents.md": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "server/internal/service/release_issue.go": {
     "host-token": 1
@@ -120,13 +108,13 @@
     "person-name": 1
   },
   "server/pkg/agent/hermes_depsync.go": {
-    "runtime-name": 3
+    "person-name": 3
   },
   "server/pkg/agent/hermes_gateway.go": {
-    "runtime-name": 4
+    "person-name": 4
   },
   "server/pkg/agent/hermes_gateway_windows.go": {
-    "runtime-name": 1
+    "person-name": 1
   },
   "server/pkg/db/generated/step_watchdog.sql.go": {
     "person-name": 1
