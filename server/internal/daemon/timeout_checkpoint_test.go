@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
@@ -192,14 +193,22 @@ func TestNearLimitWarningRefusedSteerIsRecordedWithTheReason(t *testing.T) {
 
 func TestNearLimitWarningRetriesUntilTheSessionIsReady(t *testing.T) {
 	t.Parallel()
-	var ready atomic.Bool
-	time.AfterFunc(900*time.Millisecond, func() { ready.Store(true) })
-	b := &capBackend{ready: ready.Load, supplement: func(context.Context, string) error { return nil }}
+	// Not ready on the first two checks after the warning fires, ready on the
+	// third: delivery must come from a retry, not the first attempt.
+	var checks atomic.Int32
+	ready := func() bool { return checks.Add(1) >= 3 }
+	b := &capBackend{ready: ready, supplement: func(context.Context, string) error { return nil }}
 	d := checkpointTestDaemon(t, time.Second)
 	d.nearLimitRetryInterval = 50 * time.Millisecond
-	rc := runCapped(t, d, b, 3*time.Second) // fires at 2 s; ready from 0.9 s
+	rc := runCapped(t, d, b, 3*time.Second) // fires at 2 s
 	if _, _, w := rc.snapshot(); w.State != warningStateDelivered {
 		t.Fatalf("warning = %+v, want delivered", w)
+	}
+	if n := checks.Load(); n < 3 {
+		t.Fatalf("SupplementReady checked %d times, want at least 3 (retries)", n)
+	}
+	if n := b.callCount(); n != 1 {
+		t.Fatalf("Supplement called %d times, want 1", n)
 	}
 
 	// Never ready: gives up before the cap and records why.
@@ -258,7 +267,7 @@ func TestRunCheckpointKeepsTheLastEightToolCallsRedactedAndCut(t *testing.T) {
 		t.Errorf("first kept action unexpected: %s", actions[0].Input)
 	}
 	for i := 1; i < len(actions); i++ {
-		if actions[i].At.Before(actions[i-1].At) {
+		if actions[i].Time.Before(actions[i-1].Time) {
 			t.Fatalf("actions out of order at %d", i)
 		}
 	}
@@ -461,7 +470,7 @@ func TestFailTaskOmitsTheCheckpointWhenAbsent(t *testing.T) {
 	if got == nil || got["warning"].(map[string]any)["state"] != warningStateNotDelivered {
 		t.Fatalf("timeout_checkpoint = %v", bodies[1]["timeout_checkpoint"])
 	}
-	for _, k := range []string{"repos", "last_actions", "tool_calls", "warning"} {
+	for _, k := range []string{"repos", "last_actions", "total_tool_calls", "warning"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("timeout_checkpoint missing %q: %v", k, got)
 		}
@@ -471,7 +480,7 @@ func TestFailTaskOmitsTheCheckpointWhenAbsent(t *testing.T) {
 func TestTerminalReportPersistsTheTimeoutCheckpoint(t *testing.T) {
 	cp := &timeoutCheckpoint{
 		Repos:     []timeoutCheckpointRepo{{Path: ".", Branch: "b", Head: strings.Repeat("a", 40), Ahead: 2, Dirty: 1}},
-		Actions:   []timeoutCheckpointAction{{Tool: "t", Input: "{}", At: time.Unix(1, 0).UTC()}},
+		Actions:   []timeoutCheckpointAction{{Tool: "t", Input: "{}", Time: time.Unix(1, 0).UTC()}},
 		ToolCalls: 3, Warning: timeoutCheckpointWarning{State: warningStateDelivered, At: time.Unix(2, 0).UTC()},
 	}
 	rec, err := persistedTerminalReport(terminalTaskReport{kind: terminalTaskReportFail, taskID: "t1", timeoutCheckpoint: cp}, time.Now())
@@ -489,5 +498,53 @@ func TestTerminalReportPersistsTheTimeoutCheckpoint(t *testing.T) {
 	}
 	if report.timeoutCheckpoint == nil || report.timeoutCheckpoint.Repos[0].Ahead != 2 || report.timeoutCheckpoint.Warning.State != warningStateDelivered {
 		t.Fatalf("replayed report lost the checkpoint: %+v", report.timeoutCheckpoint)
+	}
+}
+
+// The daemon's checkpoint must survive the server parser and renderer
+// (CHE-9762 review round 1): action times, the total count and the probe line.
+func TestTimeoutCheckpointWireSurvivesTheServerParser(t *testing.T) {
+	t.Parallel()
+	const secret = "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmn"
+	var tools []agent.Message
+	for i := 0; i < 10; i++ {
+		tools = append(tools, agent.Message{
+			Type: agent.MessageToolUse, Tool: "exec_command", CallID: "c" + string(rune('a'+i)),
+			Input: map[string]any{"cmd": "echo " + secret, "n": i},
+		})
+	}
+	rc := runCapped(t, checkpointTestDaemon(t, 0), &capBackend{tools: tools}, 300*time.Millisecond)
+	d := checkpointTestDaemon(t, 0)
+	d.gitProbe = func(context.Context, string) ([]timeoutCheckpointRepo, error) {
+		return nil, errors.New("git exploded with " + secret)
+	}
+	cp := d.buildTimeoutCheckpoint(t.Context(), rc, t.TempDir())
+	raw, err := json.Marshal(cp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := service.ParseTimeoutCheckpoint(raw)
+	if got == nil {
+		t.Fatalf("server rejected the daemon checkpoint: %s", raw)
+	}
+	if got.TotalToolCalls != 10 || len(got.LastActions) != 8 {
+		t.Fatalf("total=%d kept=%d, want 10 and 8", got.TotalToolCalls, len(got.LastActions))
+	}
+	for i, a := range got.LastActions {
+		if a.Time.IsZero() || !a.Time.Equal(cp.Actions[i].Time) {
+			t.Errorf("action %d time = %v, want %v", i, a.Time, cp.Actions[i].Time)
+		}
+	}
+	if !strings.HasPrefix(got.Probe, "failed git exploded") || strings.Contains(got.Probe, secret) {
+		t.Fatalf("probe = %q, want a redacted failed line", got.Probe)
+	}
+	out := service.RenderTimeoutCheckpoint(*got, 1)
+	for _, want := range []string{"last 8 of 10 tool calls", "probe: failed git exploded"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered comment lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, secret) {
+		t.Errorf("rendered comment leaks the secret:\n%s", out)
 	}
 }

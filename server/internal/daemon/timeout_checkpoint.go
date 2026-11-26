@@ -65,7 +65,7 @@ Do this now, then CONTINUE the task:
 type timeoutCheckpointAction struct {
 	Tool  string    `json:"tool"`
 	Input string    `json:"input,omitempty"`
-	At    time.Time `json:"at"`
+	Time  time.Time `json:"time"`
 }
 
 // timeoutCheckpointRepo is the git state of one checkout. Remote URLs are
@@ -93,7 +93,7 @@ type timeoutCheckpoint struct {
 	Actions []timeoutCheckpointAction `json:"last_actions"`
 	// ToolCalls is the total number of tool calls the run made, so the reader
 	// can say "last 8 of N".
-	ToolCalls int                      `json:"tool_calls"`
+	ToolCalls int                      `json:"total_tool_calls"`
 	Warning   timeoutCheckpointWarning `json:"warning"`
 	// Probe is empty on success, else "failed <reason>".
 	Probe string `json:"probe,omitempty"`
@@ -142,7 +142,7 @@ func (rc *runCheckpoint) recordToolCall(tool string, input map[string]any, at ti
 	rc.mu.Lock()
 	defer rc.mu.Unlock()
 	rc.total++
-	rc.actions = append(rc.actions, timeoutCheckpointAction{Tool: tool, Input: cutRunes(text, timeoutCheckpointActionChars), At: at})
+	rc.actions = append(rc.actions, timeoutCheckpointAction{Tool: tool, Input: cutRunes(text, timeoutCheckpointActionChars), Time: at})
 	if over := len(rc.actions) - timeoutCheckpointActions; over > 0 {
 		rc.actions = append([]timeoutCheckpointAction(nil), rc.actions[over:]...)
 	}
