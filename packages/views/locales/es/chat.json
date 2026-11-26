@@ -104,6 +104,7 @@
       "environment_prepare_failed": "La máquina que ejecuta el agente no pudo preparar esta ejecución, así que nunca arrancó. El error de abajo indica qué falló allí: a menudo espacio en disco, un permiso, una carpeta aún en uso, o una configuración local ilegible. No es el agente ni el proveedor del modelo.",
       "provider_network": "La conexión con el proveedor del modelo se perdió antes de que terminara la respuesta. Comprueba tu red e inténtalo de nuevo.",
       "provider_auth_or_access": "La cuenta de modelo del agente ya no tiene la sesión iniciada. Inicia sesión de nuevo y reintenta.",
+      "model_not_found_or_unavailable": "El modelo que usa este agente no está disponible: puede que no exista o que esta cuenta no tenga acceso. Elige otro modelo o pide a tu administrador que lo habilite, y reintenta.",
       "provider_quota_limit": "La cuenta de modelo del agente se ha quedado sin crédito. Recárgala o cambia de cuenta, y reintenta.",
       "provider_capacity_or_rate_limit": "El proveedor del modelo está ocupado o limitando la cuenta. Inténtalo de nuevo en un momento.",
       "context_overflow": "Esta conversación se hizo demasiado larga para el modelo. Empieza una sesión nueva, o divide tu petición en pasos más pequeños.",

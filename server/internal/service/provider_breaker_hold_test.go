@@ -166,7 +166,7 @@ func TestProviderHoldBlocksPromotionAndClaims(t *testing.T) {
 					}
 					promoted = row.ID.Valid
 				case "candidate":
-					rows, err := q.ListQueuedClaimCandidatesByRuntime(ctx, r.runtimeID)
+					rows, err := q.ListQueuedClaimCandidatesByRuntime(ctx, db.ListQueuedClaimCandidatesByRuntimeParams{RuntimeID: r.runtimeID, AgingStepSecs: queueAgingStep.Seconds()})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -174,7 +174,7 @@ func TestProviderHoldBlocksPromotionAndClaims(t *testing.T) {
 						promoted = promoted || row.ID == id
 					}
 				case "candidates":
-					rows, err := q.ListQueuedClaimCandidatesByRuntimes(ctx, []pgtype.UUID{r.runtimeID})
+					rows, err := q.ListQueuedClaimCandidatesByRuntimes(ctx, db.ListQueuedClaimCandidatesByRuntimesParams{RuntimeIds: []pgtype.UUID{r.runtimeID}, AgingStepSecs: queueAgingStep.Seconds()})
 					if err != nil {
 						t.Fatal(err)
 					}

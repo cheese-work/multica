@@ -171,6 +171,7 @@
       "environment_prepare_failed": "執行 AI 代理的那臺機器沒能把這次執行準備好，任務沒有啟動。下方的原始錯誤會說明是哪一步失敗——常見的是磁碟空間、權限、目錄仍被佔用，或本地配置讀不出來。與 AI 代理和模型廠商無關。",
       "provider_network": "與模型服務的連線中斷，回覆沒能完成。檢查網路後重試。",
       "provider_auth_or_access": "AI 代理的模型帳號登入已失效。重新登入後再試。",
+      "model_not_found_or_unavailable": "此 AI 代理使用的模型無法使用——它可能不存在，或此帳號沒有存取權限。請改選其他模型，或請管理員啟用該模型，然後再試。",
       "provider_quota_limit": "AI 代理的模型帳號額度已用盡。充值或更換帳號後再試。",
       "provider_capacity_or_rate_limit": "模型服務繁忙或觸發了限流。稍後再試。",
       "context_overflow": "這次對話超出了模型的上下文長度。開一個新會話，或把需求拆得更小一些。",

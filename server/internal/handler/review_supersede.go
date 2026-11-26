@@ -169,6 +169,12 @@ func staleVerdictRun(ctx context.Context, q *db.Queries, run *db.AgentTaskQueue)
 // recordReviewActivity leaves a review-supersession event where people read the
 // issue.
 func (h *Handler) recordReviewActivity(ctx context.Context, issueID pgtype.UUID, actorType, actorID, action string, fields map[string]string) {
+	h.recordActivityJSON(ctx, issueID, actorType, actorID, action, fields)
+}
+
+// recordActivityJSON writes one activity row whose details are the JSON of
+// fields, and publishes it.
+func (h *Handler) recordActivityJSON(ctx context.Context, issueID pgtype.UUID, actorType, actorID, action string, fields any) {
 	issue, err := h.Queries.GetIssue(ctx, issueID)
 	if err != nil {
 		return
@@ -185,6 +191,11 @@ func (h *Handler) recordReviewActivity(ctx context.Context, issueID pgtype.UUID,
 	})
 	if err != nil {
 		slog.Warn("record review activity failed", "action", action, "err", err, "issue_id", uuidToString(issueID))
+		return
+	}
+	// A handler bound to an open transaction has no bus: the row commits with the
+	// move and is read from the timeline.
+	if h.Bus == nil {
 		return
 	}
 	h.publish(protocol.EventActivityCreated, uuidToString(issue.WorkspaceID), actorType, actorID, map[string]any{
