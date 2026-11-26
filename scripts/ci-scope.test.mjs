@@ -40,6 +40,8 @@ for (const [name, files, selected] of [
   ["selfhost compose", ["docker-compose.selfhost.yml"], ["backend", "scripts", "installer"]],
   ["local environment config", [".multica/environments.toml"], ["backend", "scripts"]],
   ["plugin example", ["examples/plugins/hello-panel/multica.plugin.json"], ["backend"]],
+  ["migration parity script", ["scripts/migration-parity.sh"], ["backend"]],
+  ["migration parity script test", ["scripts/migration-parity.test.sh"], ["backend"]],
   ["shell installer", ["scripts/install.sh"], ["scripts", "installer"]],
   ["PowerShell installer", ["scripts/install.ps1.test.ps1"], ["installer"]],
   ["cleanup script", ["scripts/drop-database.sh"], ["scripts"]],

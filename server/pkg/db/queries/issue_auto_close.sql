@@ -1,7 +1,7 @@
 -- name: GetLatestIssueVerdict :one
 -- CHE-6969: the verdict of record is the newest verdict row; its details carry
 -- the findings, the reviewed pull request and the head it names.
-SELECT action, details, created_at, actor_id FROM activity_log
+SELECT id, action, details, created_at, actor_id FROM activity_log
 WHERE issue_id = $1 AND action IN ('review_passed', 'review_changes_requested')
 ORDER BY created_at DESC, id DESC
 LIMIT 1;

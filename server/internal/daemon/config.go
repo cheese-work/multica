@@ -63,7 +63,10 @@ const (
 	// real work short, so this is 2h.
 	//
 	// Set MULTICA_AGENT_IDLE_WATCHDOG=0 to disable the whole watchdog suite.
-	DefaultAgentIdleWatchdog              = 2 * time.Hour
+	DefaultAgentIdleWatchdog = 2 * time.Hour
+	// DefaultAgentNearLimitWarning is how long before the run cap the agent is
+	// told to commit, push and post a checkpoint.
+	DefaultAgentNearLimitWarning          = 10 * time.Minute
 	DefaultAgentSilenceWarnAfter          = 15 * time.Minute
 	DefaultAgentSilenceAlertAfter         = time.Hour
 	DefaultRuntimeName                    = "Local Agent"
@@ -148,6 +151,7 @@ type Config struct {
 	AgentTimeout                   time.Duration
 	ScriptTimeout                  time.Duration // hard cap for one script-mode task (0 = agent.ScriptDefaultTimeout)
 	CodexAgentTimeout              time.Duration // MULTICA_CODEX_AGENT_TIMEOUT: wall-clock cap for Codex runs only (default 0 = off); 0 falls back to AgentTimeout
+	AgentNearLimitWarning          time.Duration // MULTICA_AGENT_NEAR_LIMIT_WARNING: how long before the run cap the agent is told to checkpoint (default 10m; 0 = off; only fires when the cap is more than 2x this value)
 	CodexSemanticInactivityTimeout time.Duration
 	// CodexFirstTurnNoProgressTimeout is an explicit override for the Codex
 	// first-turn no-progress ceiling (MULTICA_CODEX_FIRST_TURN_TIMEOUT). 0 means
@@ -370,6 +374,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	}
 
 	codexAgentTimeout, err := durationFromEnv("MULTICA_CODEX_AGENT_TIMEOUT", 0)
+	if err != nil {
+		return Config{}, err
+	}
+
+	agentNearLimitWarning, err := durationFromEnv("MULTICA_AGENT_NEAR_LIMIT_WARNING", DefaultAgentNearLimitWarning)
 	if err != nil {
 		return Config{}, err
 	}
@@ -757,6 +766,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		HeartbeatInterval:               heartbeatInterval,
 		AgentTimeout:                    agentTimeout,
 		CodexAgentTimeout:               codexAgentTimeout,
+		AgentNearLimitWarning:           agentNearLimitWarning,
 		CodexSemanticInactivityTimeout:  codexSemanticInactivityTimeout,
 		CodexFirstTurnNoProgressTimeout: codexFirstTurnNoProgressTimeout,
 		CodexHandshakeTimeout:           codexHandshakeTimeout,
