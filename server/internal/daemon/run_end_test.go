@@ -3,9 +3,13 @@ package daemon
 import (
 	"context"
 	"net/http"
+	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,6 +39,33 @@ type blockedRun struct {
 	done   chan struct{}
 	result TaskResult
 	err    error
+
+	launcher *recordingLauncher
+	mu       sync.Mutex
+	revokes  []bool // per revoke GitHub received: was the run launch's API dir already removed
+	apiDir   string // the run launch's API socket dir, removed by runLaunch.Close
+}
+
+// watchRevokes puts a proxy between the broker and GitHub that notes, at each
+// token revoke, whether the run launch has already been closed.
+func (b *blockedRun) watchRevokes(t *testing.T, cfg *BrokerConfig) {
+	t.Helper()
+	target, err := url.Parse(cfg.APIBase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := httputil.NewSingleHostReverseProxy(target)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete && r.URL.Path == "/installation/token" {
+			b.mu.Lock()
+			_, statErr := os.Stat(b.apiDir)
+			b.revokes = append(b.revokes, b.apiDir != "" && os.IsNotExist(statErr))
+			b.mu.Unlock()
+		}
+		rp.ServeHTTP(w, r)
+	}))
+	t.Cleanup(srv.Close)
+	cfg.APIBase = srv.URL
 }
 
 // probe answers the status GitHub gives the held token on a read.
@@ -64,7 +95,13 @@ func (b *blockedRun) waitDone(t *testing.T) {
 // and takes a read token through the run's own socket.
 func startBlockedRun(t *testing.T, ctx context.Context, agentTimeout time.Duration) *blockedRun {
 	t.Helper()
-	d, task, _ := launchDaemon(t, sandbox.ModeOn, &recordingLauncher{})
+	return startBlockedRunWatching(t, ctx, agentTimeout, false)
+}
+
+func startBlockedRunWatching(t *testing.T, ctx context.Context, agentTimeout time.Duration, watch bool) *blockedRun {
+	t.Helper()
+	launcher := &recordingLauncher{}
+	d, task, _ := launchDaemon(t, sandbox.ModeOn, launcher)
 	gh := gatesuite.NewGitHub(t, gatesuite.GitHubOptions{Repos: map[string]int64{"o/r": 42}})
 	d.cfg.Broker = brokerTestConfig(t, gh)
 	d.cfg.AgentTimeout = agentTimeout
@@ -72,7 +109,10 @@ func startBlockedRun(t *testing.T, ctx context.Context, agentTimeout time.Durati
 	task.Agent.CustomEnv["READY_FILE"] = ready
 	writeTestExecutable(t, d.cfg.Agents["claude"].Path, []byte(fakeBlockedClaude))
 
-	b := &blockedRun{gh: gh, done: make(chan struct{})}
+	b := &blockedRun{gh: gh, done: make(chan struct{}), launcher: launcher}
+	if watch {
+		b.watchRevokes(t, d.cfg.Broker)
+	}
 	go func() {
 		defer close(b.done)
 		b.result, b.err = d.runTask(ctx, task, "claude", 0, quietLog())
@@ -86,6 +126,14 @@ func startBlockedRun(t *testing.T, ctx context.Context, agentTimeout time.Durati
 	if _, err := os.Stat(ready); err != nil {
 		t.Fatal("fake backend never became ready")
 	}
+
+	launcher.mu.Lock()
+	if len(launcher.specs) > 0 {
+		b.mu.Lock()
+		b.apiDir = filepath.Dir(launcher.specs[0].DaemonSocket)
+		b.mu.Unlock()
+	}
+	launcher.mu.Unlock()
 
 	d.repoCheckoutTasksMu.RLock()
 	var rb *runBroker
@@ -137,5 +185,36 @@ func TestTokenRejectedAfterTimeout(t *testing.T) {
 	}
 	if u := b.gh.Unrevoked(); len(u) != 0 {
 		t.Fatalf("mints still live after timeout: %v", u)
+	}
+}
+
+// E3 (CHE-10369, plan RSC-1 R2): runTask closes the run launch (which kills the
+// run's processes) before the broker revokes the token, so no process of the
+// run outlives its token. runLaunch.Close removes the launch's API dir last, so
+// that dir is already gone when the revoke reaches GitHub.
+func TestLaunchClosesBeforeBrokerRevoke(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	b := startBlockedRunWatching(t, ctx, time.Minute, true)
+	b.mu.Lock()
+	dir := b.apiDir
+	b.mu.Unlock()
+	if dir == "" {
+		t.Fatal("the run's launch recorded no daemon socket")
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("the run launch's API dir is gone during the run: %v", err)
+	}
+	cancel()
+	b.waitDone(t)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.revokes) == 0 {
+		t.Fatal("GitHub saw no token revoke")
+	}
+	for i, closed := range b.revokes {
+		if !closed {
+			t.Fatalf("revoke %d reached GitHub while the run launch was still open: a run process could outlive its token", i+1)
+		}
 	}
 }
