@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/service"
-	publicapiv1 "github.com/multica-ai/multica/server/pkg/publicapi/v1"
 	"github.com/multica-ai/multica/server/pkg/plugincontract"
+	publicapiv1 "github.com/multica-ai/multica/server/pkg/publicapi/v1"
 )
 
 // A guard hook decides whether a write may happen. If its own callback token
