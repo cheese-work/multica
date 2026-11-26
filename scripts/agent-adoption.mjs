@@ -14,7 +14,7 @@
 //     `--initial-sha` is the explicit first boundary. Any unreadable, truncated or inconsistent input exits non-zero
 //     and opens nothing; the next run retries from the same checkpoint. PRs named in the previous issue are skipped.
 //     The issue body is the per-deploy adoption issue (CHE-9922 W5, CHE-10123): for each agent-facing PR its signal, base, target, owner and
-//     one result-line slot in the adoption-reconcile format (multica-dotfiles docs/cheese-work/adoption-reconcile.md), plus evidence rules A1 to A4
+//     one result-line slot in the adoption-reconcile format (the adoption-reconcile format doc in the private store), plus evidence rules A1 to A4
 //     and the 7-day window. A PR states `Adoption signal:`, `Adoption base:` and `Adoption target:` in its description (`Adoption old-path:` is optional).
 //   Applies no instruction; that stays in `multica-cheese-work-instruction-change`.
 import { execFileSync } from "node:child_process";
@@ -176,7 +176,7 @@ function prRow({ pr, adoptionItem, spec, next }) {
 const EVIDENCE = [
   "## Evidence and result lines",
   "The read-only C00 lane runs the queries and writes one ADOPTION-RESULT line per feature, as a comment on this issue, when the window ends.",
-  "Format and field rules: `docs/cheese-work/adoption-reconcile.md` (multica-dotfiles). Replace the slot above: `deployed_sha` and `window_start` are the `deployed_sha` and `deployed_at` of the issue's `deployed` write (the slot shows the deploy SHA; use the issue's value if it differs), `window_end` is the measurement time, `verdict` is PASS, FAIL or unknown. A line that does not match the format is ignored.",
+  "Format and field rules: the adoption-reconcile format doc in the private store. Replace the slot above: `deployed_sha` and `window_start` are the `deployed_sha` and `deployed_at` of the issue's `deployed` write (the slot shows the deploy SHA; use the issue's value if it differs), `window_end` is the measurement time, `verdict` is PASS, FAIL or unknown. A line that does not match the format is ignored.",
   "",
   "A PASS or a FAIL is valid only when all four hold. If one fails, the verdict is `unknown` and the reason goes on the line's comment:",
   "- A1. Signal coverage. The query covers every entry point of the new path that the PR names: each CLI command, route, UI action and event.",

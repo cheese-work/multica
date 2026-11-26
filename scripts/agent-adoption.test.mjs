@@ -322,7 +322,7 @@ const specPr = {
     "Adoption target: 3 or more issues by 2 or more agents in 7 days",
   ].join("\n"),
 };
-// The result-line parser of adoption-reconcile (multica-dotfiles, CHE-10121), reduced to its field rules.
+// The result-line parser of adoption-reconcile (private store, CHE-10121), reduced to its field rules.
 const parsesAsResult = (line) => {
   const t = line.trim().replace(/^- /, "");
   const kv = Object.fromEntries(t.split(" ").slice(1).map((p) => p.split("=")));
@@ -393,7 +393,7 @@ test("the issue body states evidence rules A1 to A4 and the 7-day window with on
   assert.match(body, /then report the gap/);
   assert.match(body, /below its minimum/i);
   assert.match(body, /one ADOPTION-RESULT line per feature/);
-  assert.match(body, /adoption-reconcile\.md/);
+  assert.match(body, /adoption-reconcile format doc/);
 });
 
 test("the result-line format in the body is one the reconciler's parser accepts once filled", () => {

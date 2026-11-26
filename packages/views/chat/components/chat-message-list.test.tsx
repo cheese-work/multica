@@ -1282,6 +1282,14 @@ describe("ChatMessageList failure copy (MUL-5370 regression)", () => {
     ).toBeInTheDocument();
   });
 
+  it("tells the member to pick another model, not to sign in, when the model is unavailable", async () => {
+    renderFailure("agent_error.model_not_found_or_unavailable");
+    const copy = enChat.message_list.failure.model_not_found_or_unavailable;
+    expect(await screen.findByText(copy)).toBeInTheDocument();
+    expect(copy).not.toMatch(/sign in/i);
+    expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
+  });
+
   it("degrades an unnamed refined reason to its agent_error family", async () => {
     renderFailure("agent_error.unknown");
     expect(

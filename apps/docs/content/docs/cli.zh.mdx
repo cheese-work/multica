@@ -769,7 +769,7 @@ CLI 配置文件包含可代表你访问 Multica 的令牌。不要提交到仓�
 | `guard` | `log` | 按从新到旧列出工作区最近的守卫决策，可用 `--plugin`、`--action`（`fixed`、`refused`、`plugin-error`、`shadow-hit`、`pass`）、`--since`（天数、`24h` 或 `7d` 这样的时长，或 RFC 3339 时间；默认 `7d`）和 `--limit`（默认 50，最多 500）过滤。守护进程在每次运行结束时上传该次运行的决策日志。Guard 设置页显示相同的行 | 输出：JSON 行（`--output table` 为表格） |
 | `guard` | `stats` | 按插件统计最近 `--days` 天（默认 7，最多 90）的守卫决策数（`fixed`、`refused`、`errors`）。Guard 设置页显示相同的数字 | 输出：JSON 行（`--output table` 为表格） |
 
-`repository_allowlist` 按所有者指定允许的完整仓库名，不区分大小写。已列出的所有者默认拒绝，未列出的所有者不受限制。该边界先于插件及下层规则执行，拒绝未批准的 `gh pr create`、`gh pr comment`、`git push` 和已认证的 `repo checkout`。Git 检查实际推送 URL，包括 pushurl 和 URL 重写；目标不明确时拒绝。批准此字段前须升级 daemon。Cheese Work 的唯一正式来源为 `config/tevo-prod1-guard.json`。
+`repository_allowlist` 按所有者指定允许的完整仓库名，不区分大小写。已列出的所有者默认拒绝，未列出的所有者不受限制。该边界先于插件及下层规则执行，拒绝未批准的 `gh pr create`、`gh pr comment`、`git push` 和已认证的 `repo checkout`。Git 检查实际推送 URL，包括 pushurl 和 URL 重写；目标不明确时拒绝。批准此字段前须升级 daemon。
 
 
 ### 决策提案

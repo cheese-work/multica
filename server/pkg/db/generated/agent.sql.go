@@ -2778,9 +2778,25 @@ WHERE id = (
               WHERE ctd.task_id = atq.id AND ctd.chat_type = 'group'
           )
       ))
+      -- CHE-10088: optional upper bound in claim order (aged priority DESC,
+      -- created_at ASC, id ASC). A runtime poll that walks candidates across
+      -- agents passes the last candidate key of this agent's consecutive group,
+      -- so the claim cannot take a row that is newer than another agent's
+      -- candidate. upto_priority is the bound row's stored priority; its aged
+      -- priority is recomputed here with the same now() as the row's own, so the
+      -- bound row compares equal to itself. All three params NULL means no bound.
+      AND (
+          $7::int IS NULL
+          OR GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($8::double precision, 0))::int, 0), 3)) > GREATEST($7::int, LEAST($7::int + COALESCE(floor(extract(epoch FROM now() - $9::timestamptz) / NULLIF($8::double precision, 0))::int, 0), 3))
+          OR (GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($8::double precision, 0))::int, 0), 3)) = GREATEST($7::int, LEAST($7::int + COALESCE(floor(extract(epoch FROM now() - $9::timestamptz) / NULLIF($8::double precision, 0))::int, 0), 3)) AND (
+              atq.created_at < $9::timestamptz
+              OR (atq.created_at = $9::timestamptz
+                  AND atq.id <= $10::uuid)
+          ))
+      )
     -- capped at 3 (high) so it never outranks an urgent row; 0 turns aging off. Keep the three
     -- claim orderings (ClaimAgentTask and both candidate lists) identical.
-    ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($7::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC
+    ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($8::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
@@ -2788,13 +2804,16 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 `
 
 type ClaimAgentTaskParams struct {
-	PrepareLeaseSecs float64     `json:"prepare_lease_secs"`
-	AgentID          pgtype.UUID `json:"agent_id"`
-	RuntimeID        pgtype.UUID `json:"runtime_id"`
-	MinPriority      int32       `json:"min_priority"`
-	RuntimeStaleSecs float64     `json:"runtime_stale_secs"`
-	ChatOnly         bool        `json:"chat_only"`
-	AgingStepSecs    float64     `json:"aging_step_secs"`
+	PrepareLeaseSecs float64            `json:"prepare_lease_secs"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	RuntimeID        pgtype.UUID        `json:"runtime_id"`
+	MinPriority      int32              `json:"min_priority"`
+	RuntimeStaleSecs float64            `json:"runtime_stale_secs"`
+	ChatOnly         bool               `json:"chat_only"`
+	UptoPriority     pgtype.Int4        `json:"upto_priority"`
+	AgingStepSecs    float64            `json:"aging_step_secs"`
+	UptoCreatedAt    pgtype.Timestamptz `json:"upto_created_at"`
+	UptoID           pgtype.UUID        `json:"upto_id"`
 }
 
 // Claims the next queued task for an agent on one healthy runtime, enforcing
@@ -2817,7 +2836,10 @@ func (q *Queries) ClaimAgentTask(ctx context.Context, arg ClaimAgentTaskParams) 
 		arg.MinPriority,
 		arg.RuntimeStaleSecs,
 		arg.ChatOnly,
+		arg.UptoPriority,
 		arg.AgingStepSecs,
+		arg.UptoCreatedAt,
+		arg.UptoID,
 	)
 	var i AgentTaskQueue
 	err := row.Scan(
@@ -9104,7 +9126,7 @@ WHERE atq.runtime_id = $1
             OR r.visibility = 'private'
         )
   )
-ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($2::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC
+ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($2::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC
 `
 
 type ListQueuedClaimCandidatesByRuntimeParams struct {
@@ -9256,7 +9278,7 @@ WHERE atq.runtime_id = ANY($1::uuid[])
             OR r.visibility = 'private'
         )
   )
-ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($2::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC
+ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($2::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC
 `
 
 type ListQueuedClaimCandidatesByRuntimesParams struct {

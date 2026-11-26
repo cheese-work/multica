@@ -757,7 +757,7 @@ CLI 설정 파일에는 사용자를 대신해 Multica에 접근할 수 있는 t
 | `guard` | `log` | 워크스페이스의 최근 가드 판정을 최신순으로 나열한다. `--plugin`, `--action`(`fixed`, `refused`, `plugin-error`, `shadow-hit`, `pass`), `--since`(일수, `24h`나 `7d` 같은 기간, 또는 RFC 3339 시각. 기본값 `7d`), `--limit`(기본 50, 최대 500)으로 거를 수 있다. 데몬은 각 실행이 끝날 때 그 판정 로그를 업로드한다. Guard 설정 페이지도 같은 행을 보여 준다 | 출력: JSON 행(`--output table`은 표) |
 | `guard` | `stats` | 플러그인별 가드 판정 수(`fixed`, `refused`, `errors`)를 최근 `--days`일(기본 7, 최대 90) 동안 센다. Guard 설정 페이지도 같은 수치를 보여 준다 | 출력: JSON 행(`--output table`은 표) |
 
-`repository_allowlist`는 소유자별 허용 저장소 이름을 지정하며 대소문자를 구분하지 않습니다. 지정한 소유자는 기본 거부하고 생략한 소유자는 제한하지 않습니다. 플러그인과 하위 계층보다 먼저 `gh pr create`, `gh pr comment`, `git push`, 인증된 `repo checkout`의 미승인 작업을 거부합니다. Git은 pushurl과 URL 재작성을 포함한 실제 대상을 확인하며 불명확하면 거부합니다. 승인 전에 daemon을 업데이트하세요. Cheese Work의 기준 파일은 `config/tevo-prod1-guard.json`입니다.
+`repository_allowlist`는 소유자별 허용 저장소 이름을 지정하며 대소문자를 구분하지 않습니다. 지정한 소유자는 기본 거부하고 생략한 소유자는 제한하지 않습니다. 플러그인과 하위 계층보다 먼저 `gh pr create`, `gh pr comment`, `git push`, 인증된 `repo checkout`의 미승인 작업을 거부합니다. Git은 pushurl과 URL 재작성을 포함한 실제 대상을 확인하며 불명확하면 거부합니다. 승인 전에 daemon을 업데이트하세요.
 
 
 ### 결정 제안
