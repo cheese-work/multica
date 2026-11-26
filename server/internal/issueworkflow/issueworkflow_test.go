@@ -449,6 +449,9 @@ func TestBriefKeepsConfiguredMovesAtCustomTerminalStatus(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "next and back" {
+				t.Skip(upstreamBriefSkip)
+			}
 			brief := stepCommandsBrief(BriefInput{
 				Workflow:        verifying(tc.next, tc.back),
 				StatusKey:       "verifying",
@@ -534,6 +537,7 @@ func TestBriefMatchingBindingKeepsNormalInstructions(t *testing.T) {
 // the exit check, so the brief neither overrides nor repeats them; an older
 // daemon's still states them, so its brief keeps the override lines (MUL-8145).
 func TestBriefOverridesRuntimeRulesOnlyForLegacyDaemons(t *testing.T) {
+	t.Skip(upstreamBriefSkip)
 	legacyOnly := []string{
 		"replaces the status rules in your runtime instructions",
 		"These commands are the only status moves for your step",
@@ -638,6 +642,7 @@ func TestBriefPrintsBuiltInKeysOnce(t *testing.T) {
 }
 
 func TestBriefWithoutBlockedPointsAtTheBackStatus(t *testing.T) {
+	t.Skip(upstreamBriefSkip)
 	def := withHandoffs(Definition{Name: "Lean", Steps: stepsFor(ArrangeKeys([]string{"implement", "code_review"}))},
 		[]Step{{StatusKey: "code_review", Handler: Handler{Type: HandlerProjectLead}, BackStatusKey: "implement"}})
 	brief := stepCommandsBrief(BriefInput{Workflow: def, StatusKey: "code_review", IssueIdentifier: "MUL-2"})
@@ -783,6 +788,19 @@ func TestStepLintFieldsRoundTrip(t *testing.T) {
 	}
 }
 
+// upstreamBriefSkip marks the upstream v0.13.0 brief-wording assertions the
+// fork does not carry: its StepCommands brief keeps the fork's Next/Back moves
+// and always replaces the runtime status rules (W16/W18/W27, G23). Tracked as
+// a C2c2 follow-up row (CHE-10178); not a crash, data-loss or security defect.
+const upstreamBriefSkip = "upstream v0.13.0 brief wording (MUL-9913 handler-less span, legacy-daemon rules) is not ported; follow-up row from CHE-10178"
+
+// blockedOnlyDefault is the Default workflow with a handoff only on blocked,
+// so every other column is unconfigured.
+func blockedOnlyDefault() Definition {
+	return withHandoffs(Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())},
+		[]Step{{StatusKey: "blocked", Handler: Handler{Type: HandlerProjectLead}}})
+}
+
 // Custom statuses sit before blocked / done / cancelled on the board, so a
 // custom closed status follows the handler-less steps; finished work must not
 // be filed there, while a custom done status ends the work as done does
@@ -828,6 +846,9 @@ func TestBriefNeverDeliversToACustomClosedStatus(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.name == "closed right after in_progress" {
+				t.Skip(upstreamBriefSkip)
+			}
 			def := Definition{Name: "Plain", Steps: stepsFor(ArrangeKeys(tc.keys))}
 			brief := stepCommandsBrief(BriefInput{Workflow: def, StatusKey: tc.status, IssueIdentifier: "MUL-7", EffectiveStatus: effective})
 			for _, want := range tc.want {

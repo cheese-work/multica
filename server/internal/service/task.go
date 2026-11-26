@@ -24,7 +24,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/chattitle"
 	"github.com/multica-ai/multica/server/internal/commentguard"
 	"github.com/multica-ai/multica/server/internal/dmnotify"
-	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/inbox"
@@ -92,9 +91,6 @@ type TaskService struct {
 	// caller's transaction (CHE-5244): the sub-issue claim owes its parent's
 	// completion decision, and the intent commits with the claim. Nil skips it.
 	PRMergeOwe func(ctx context.Context, q *db.Queries, workspaceID, issueID pgtype.UUID) error
-	// Entitlements supplies Cloud's workspace-scoped issue-count instruction.
-	// Nil keeps self-hosted and isolated test services unlimited.
-	Entitlements entitlement.Provider
 	// SourceContextStorage is used only by the bounded 30-day cleanup pass for
 	// terminal quick-create captures. Nil disables it where storage is absent.
 	SourceContextStorage SourceContextObjectStore
@@ -2418,9 +2414,6 @@ func (s *TaskService) enqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	if err := RequireActiveProject(ctx, s.Queries, workspaceID, projectID); err != nil {
 		return db.AgentTaskQueue{}, err
 	}
-	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
-		return db.AgentTaskQueue{}, fmt.Errorf("preflight quick-create issue capacity: %w", err)
-	}
 	agent, err := s.Queries.GetAgent(ctx, agentID)
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
@@ -2609,9 +2602,6 @@ func (s *TaskService) RetrySourceContextQuickCreate(ctx context.Context, workspa
 		return nil, fmt.Errorf("check provider hold for manual retry: %w", herr)
 	} else if held {
 		return nil, ErrSourceContextRetryProviderHeld
-	}
-	if err := CheckIssueCreateCapacity(ctx, s.Queries, s.Entitlements, workspaceID); err != nil {
-		return nil, fmt.Errorf("preflight quick-create issue capacity: %w", err)
 	}
 	overlay := s.buildRuntimeMCPOverlay(ctx, requesterID, agent)
 
@@ -8837,8 +8827,7 @@ func (s *TaskService) terminateTasksWithHook(ctx context.Context, fail func(*db.
 			}
 		}
 	}
-	var settleErr error
-	queuedChat, settleErr = settleTerminalTaskState(ctx, qtx, failed...)
+	queuedChat, settleErr := settleTerminalTaskState(ctx, qtx, failed...)
 	if settleErr != nil {
 		_ = tx.Rollback(ctx)
 		return nil, s.recordStageRefusal(ctx, settleErr)
@@ -9013,11 +9002,11 @@ func settleTerminalTaskState(ctx context.Context, q *db.Queries, tasks ...db.Age
 	for _, task := range tasks {
 		taskIDs = append(taskIDs, task.ID)
 		if err := settleCompactionTask(ctx, q, task); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := settleChatTurns(ctx, q, tasks); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := q.SettleTerminalTaskSupplements(ctx, taskIDs); err != nil {
 		return nil, fmt.Errorf("settle terminal task supplements: %w", err)

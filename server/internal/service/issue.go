@@ -44,9 +44,6 @@ type IssueService struct {
 	// Metrics as "PostHog only", so leaving it unset is safe.
 	Metrics     *obsmetrics.BusinessMetrics
 	TaskService *TaskService
-	// Entitlements supplies Cloud's effective issue-count instruction. Nil is
-	// the self-hosted unlimited path.
-	Entitlements entitlement.Provider
 	// SquadDispatcher overrides default squad leader enqueue on issue create,
 	// allowing handler-level access gating.
 	SquadDispatcher func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool
@@ -483,7 +480,7 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 	// entry gate) runs on the selected workflow. The number is drawn first
 	// because a root's parity decides: project lock, then counter. A refused
 	// create rolls the number back with the transaction. (CHE-5264)
-	issueNumber, err := AllocateIssueNumber(ctx, qtx, p.WorkspaceID, issueCountPolicy)
+	issueNumber, err := qtx.IncrementIssueCounter(ctx, p.WorkspaceID)
 	if err != nil {
 		return IssueCreateResult{}, fmt.Errorf("allocate issue number: %w", err)
 	}
