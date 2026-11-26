@@ -21,7 +21,7 @@ WITH candidate AS (
     AND (i.assignee_type IS DISTINCT FROM 'agent' OR s.leader_id = i.assignee_id OR EXISTS (
       SELECT 1 FROM squad_member sm WHERE sm.squad_id = s.id AND sm.member_type = 'agent' AND sm.member_id = i.assignee_id))
 )
-SELECT s.id, s.workspace_id, s.name, s.description, s.leader_id, s.creator_id, s.created_at, s.updated_at, s.archived_at, s.archived_by, s.avatar_url, s.instructions FROM squad s WHERE s.id IN (SELECT id FROM candidate) AND (SELECT count(*) FROM candidate) = 1
+SELECT s.id, s.workspace_id, s.name, s.description, s.leader_id, s.creator_id, s.created_at, s.updated_at, s.archived_at, s.archived_by, s.avatar_url, s.instructions, s.handoff_mode FROM squad s WHERE s.id IN (SELECT id FROM candidate) AND (SELECT count(*) FROM candidate) = 1
 `
 
 type GetDecisionWaitGuardProjectSquadParams struct {
@@ -49,12 +49,13 @@ func (q *Queries) GetDecisionWaitGuardProjectSquad(ctx context.Context, arg GetD
 		&i.ArchivedBy,
 		&i.AvatarUrl,
 		&i.Instructions,
+		&i.HandoffMode,
 	)
 	return i, err
 }
 
 const getDecisionWaitGuardSquad = `-- name: GetDecisionWaitGuardSquad :one
-SELECT s.id, s.workspace_id, s.name, s.description, s.leader_id, s.creator_id, s.created_at, s.updated_at, s.archived_at, s.archived_by, s.avatar_url, s.instructions FROM squad s
+SELECT s.id, s.workspace_id, s.name, s.description, s.leader_id, s.creator_id, s.created_at, s.updated_at, s.archived_at, s.archived_by, s.avatar_url, s.instructions, s.handoff_mode FROM squad s
 WHERE s.workspace_id = $1 AND s.archived_at IS NULL
   AND s.id = COALESCE(
     (SELECT i.assignee_id FROM issue i WHERE i.id = $2
@@ -96,6 +97,7 @@ func (q *Queries) GetDecisionWaitGuardSquad(ctx context.Context, arg GetDecision
 		&i.ArchivedBy,
 		&i.AvatarUrl,
 		&i.Instructions,
+		&i.HandoffMode,
 	)
 	return i, err
 }
@@ -132,7 +134,7 @@ func (q *Queries) HasOpenDecisionRequestCoveringIssue(ctx context.Context, arg H
 }
 
 const listDecisionWaitGuardIssues = `-- name: ListDecisionWaitGuardIssues :many
-SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read, i.created_via, i.requester_user_id FROM issue i
+SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read, i.created_via, i.requester_user_id, i.description_revision FROM issue i
 WHERE i.metadata ?| ARRAY['decision_wait_started_at', 'decision_wait_alert_id',
                           'decision_wait_missing_request', 'decision_wait_route_error']
    OR EXISTS (SELECT 1 FROM issue_decision_park dp WHERE dp.issue_id = i.id)
@@ -201,6 +203,7 @@ func (q *Queries) ListDecisionWaitGuardIssues(ctx context.Context) ([]Issue, err
 			&i.DescriptionExternalRead,
 			&i.CreatedVia,
 			&i.RequesterUserID,
+			&i.DescriptionRevision,
 		); err != nil {
 			return nil, err
 		}

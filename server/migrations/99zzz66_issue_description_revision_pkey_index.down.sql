@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS issue_description_collab_revision_pkey_idx;
