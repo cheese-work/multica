@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -80,10 +81,7 @@ func TestAskedDecisionRecordRoundTrip(test *testing.T) {
 	if err != nil {
 		test.Fatal(err)
 	}
-	wantIssueLink := "/" + workspace.Slug + "/issues/" + uuidToString(fixture.issue.ID)
-	if !strings.Contains(result.Message.Content, "Open issue: "+wantIssueLink) {
-		test.Fatalf("decision note has wrong issue link: %s", result.Message.Content)
-	}
+	requireOpenIssueFooter(test, result.Message.Content, fmt.Sprintf("%s-%d", workspace.IssuePrefix, fixture.issue.Number), uuidToString(fixture.issue.ID))
 	replay, err := testHandler.createAskedDecisionRecord(fixture.recordRequest(), fixture.issue, fixture.recordInput())
 	if err != nil || !replay.Replayed || replay.Answer.ID != result.Answer.ID || replay.Comment.ID != result.Comment.ID {
 		test.Fatalf("identical retry did not return the original answer: %+v %v", replay, err)

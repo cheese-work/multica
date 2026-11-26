@@ -49,6 +49,10 @@ func TestDecisionEpisodeReminderIsSentOnceWhenDue(t *testing.T) {
 	if dbfx.Count(t, `SELECT count(*) FROM decision_wait WHERE issue_id = $1 AND reminder_delivered_at IS NOT NULL`, f.issueID) != 1 {
 		t.Fatal("reminder_delivered_at is not stamped")
 	}
+	var issueKey, content string
+	dbfx.QueryRow(t, `SELECT workspace.issue_prefix || '-' || issue.number::text FROM issue JOIN workspace ON workspace.id = issue.workspace_id WHERE issue.id = $1`, f.issueID).Scan(&issueKey)
+	dbfx.QueryRow(t, `SELECT m.content FROM chat_message m JOIN decision_request r ON r.chat_session_id = m.chat_session_id WHERE r.id = $1 AND m.message_kind = 'decision_reminder'`, f.requestID).Scan(&content)
+	requireOpenIssueFooter(t, content, issueKey, f.issueID)
 	// The card stays answerable and nothing else was created.
 	if dbfx.Count(t, `SELECT count(*) FROM decision_request WHERE id = $1 AND status = 'open'`, f.requestID) != 1 {
 		t.Fatal("reminder changed the request")

@@ -98,8 +98,8 @@ func (handler *Handler) deliverDecisionReminder(ctx context.Context, workspaceID
 	if err != nil {
 		return err
 	}
-	content := fmt.Sprintf("Reminder: [%s-%d](mention://issue/%s) is still waiting for your decision: %s\nOpen issue: %s",
-		workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decisionAskPreview(request.Ask), util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)))
+	content := fmt.Sprintf("Reminder: [%s-%d](mention://issue/%s) is still waiting for your decision: %s\n%s",
+		workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decisionAskPreview(request.Ask), util.OpenIssueFooter(fmt.Sprintf("%s-%d", workspace.IssuePrefix, issue.Number), uuidToString(issue.ID)))
 	var message db.ChatMessage
 	if session.ID.Valid && session.Status == "active" {
 		message, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: content, MessageKind: pgtype.Text{String: "decision_reminder", Valid: true}, SentVia: pgtype.Text{String: "system", Valid: true}})
