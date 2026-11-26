@@ -87,6 +87,7 @@ var decisionActionExecutors = map[string]decisionActionExecutor{
 	issueProjectSetType:                    executeIssueProjectSetAction,
 	decisionaction.IssueProjectQuickSet:    executeIssueProjectQuickSetAction,
 	decisionaction.ProjectWorkflowQuickSet: executeProjectWorkflowQuickSetAction,
+	decisionaction.ProjectWorkflowSet:      executeProjectWorkflowSetAction,
 	doopDeployLiftAction:                   executeDoopDeployLiftAction,
 	decisionaction.ProjectStatusSet:        executeProjectStatusSetAction,
 	decisionaction.GitHubRepoCreate:        executeGitHubRepoCreateAction,
@@ -170,6 +171,9 @@ type approvePlan struct {
 	// targetProject is the project a Quick issue move lands in; projectSwitch
 	// the project a Quick switch changes, locked exclusively like a workflow edit.
 	targetProject, projectSwitch pgtype.UUID
+	// projectSwitches are the projects a project.workflow.set approval changes,
+	// locked in the sorted order the params carry.
+	projectSwitches []pgtype.UUID
 	// projectStatus is the project a project.status.set approval changes; its
 	// row is locked like UpdateProject locks it.
 	projectStatus pgtype.UUID
@@ -242,6 +246,18 @@ func (handler *Handler) planApprove(ctx context.Context, caller decisionActionCa
 		var err error
 		if plan.projectSwitch, err = parseUUIDString(params.ProjectID); err != nil {
 			return approvePlan{}, errPreconditionDrift
+		}
+	case decisionaction.ProjectWorkflowSet:
+		var params decisionaction.ProjectWorkflowSetParams
+		if err := json.Unmarshal(preview.Params, &params); err != nil {
+			return approvePlan{}, errPreconditionDrift
+		}
+		for _, entry := range params.Projects {
+			id, err := parseUUIDString(entry.ProjectID)
+			if err != nil {
+				return approvePlan{}, errPreconditionDrift
+			}
+			plan.projectSwitches = append(plan.projectSwitches, id)
 		}
 	case decisionaction.ProjectStatusSet:
 		var params decisionaction.ProjectStatusSetParams
@@ -376,12 +392,17 @@ func (handler *Handler) lockApproveRows(ctx context.Context, transaction pgx.Tx,
 	}
 	// A project switch takes the order a workflow save takes: catalog (shared),
 	// then the project exclusively, so no issue enters or leaves it meanwhile.
-	if plan.projectSwitch.Valid {
+	if plan.projectSwitch.Valid || len(plan.projectSwitches) > 0 {
 		if err := queries.LockIssueStatusCatalogShared(ctx, caller.workspaceID); err != nil {
 			return locked, err
 		}
-		if _, err := queries.LockProjectForWorkflowChange(ctx, db.LockProjectForWorkflowChangeParams{ID: plan.projectSwitch, WorkspaceID: caller.workspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return locked, atStep("project", err)
+		for _, project := range append([]pgtype.UUID{plan.projectSwitch}, plan.projectSwitches...) {
+			if !project.Valid {
+				continue
+			}
+			if _, err := queries.LockProjectForWorkflowChange(ctx, db.LockProjectForWorkflowChangeParams{ID: project, WorkspaceID: caller.workspaceID}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return locked, atStep("project", err)
+			}
 		}
 	}
 	if _, err := queries.LockWorkspaceKeyShareNowait(ctx, caller.workspaceID); err != nil {
@@ -890,8 +911,8 @@ func (handler *Handler) publishDecisionActionExecuted(ctx context.Context, actio
 	if action.ActionType == issueProjectSetType || action.ActionType == decisionaction.IssueProjectQuickSet {
 		return handler.publishIssueProjectSet(ctx, action)
 	}
-	if action.ActionType == decisionaction.ProjectWorkflowQuickSet {
-		return handler.publishProjectWorkflowQuickSet(ctx, action)
+	if action.ActionType == decisionaction.ProjectWorkflowQuickSet || action.ActionType == decisionaction.ProjectWorkflowSet {
+		return handler.publishProjectSwitches(ctx, action)
 	}
 	if action.ActionType == decisionaction.ProjectStatusSet {
 		return handler.publishProjectStatusSet(ctx, action)

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strconv"
 	"time"
 
@@ -251,9 +250,7 @@ func executeProjectWorkflowQuickSetAction(ctx context.Context, execution decisio
 	if err != nil {
 		return nil, err
 	}
-	if !sameOptionalID(current.WorkflowID, params.WorkflowID) || current.TotalIssues != params.TotalIssues ||
-		current.Before != params.Before || current.After != params.After || !sameStatusCounts(current.Required, params.Required) ||
-		!slices.Equal(current.Overrides, params.Overrides) {
+	if !sameProjectSwitch(current, params) {
 		return nil, staleBase("the project, its issues or the run budget changed since the request; ask again")
 	}
 	if msg := checkMapping(sw.plan, params.StatusMapping, sw.accepts); msg != "" {
@@ -292,24 +289,33 @@ func sameStatusCounts(a, b []decisionaction.StatusCount) bool {
 	return true
 }
 
-// publishProjectWorkflowQuickSet sends what an approved switch changed: the
-// project, the issues it moved and the wakeups it ended.
-func (h *Handler) publishProjectWorkflowQuickSet(ctx context.Context, action db.DecisionAction) error {
+// publishProjectSwitches sends what an approved switch changed: the projects,
+// the issues it moved and the wakeups it ended. It serves a project.workflow.quick_set
+// (project_id) or project.workflow.set (project_ids) approval.
+func (h *Handler) publishProjectSwitches(ctx context.Context, action db.DecisionAction) error {
 	var result struct {
 		ProjectID        string   `json:"project_id"`
+		ProjectIDs       []string `json:"project_ids"`
 		IssueIDs         []string `json:"issue_ids"`
 		CancelledTaskIDs []string `json:"cancelled_task_ids"`
 	}
 	if err := json.Unmarshal(action.Result, &result); err != nil {
 		return err
 	}
-	projectID, err := parseUUIDString(result.ProjectID)
-	if err != nil {
-		return err
+	if result.ProjectID != "" {
+		result.ProjectIDs = append(result.ProjectIDs, result.ProjectID)
 	}
-	project, err := h.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: action.WorkspaceID})
-	if err != nil {
-		return err
+	var projects []db.Project
+	for _, raw := range result.ProjectIDs {
+		projectID, err := parseUUIDString(raw)
+		if err != nil {
+			return err
+		}
+		project, err := h.Queries.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: action.WorkspaceID})
+		if err != nil {
+			return err
+		}
+		projects = append(projects, project)
 	}
 	approver := uuidToString(action.ApprovedByUserID)
 	var issues []db.Issue
@@ -338,10 +344,12 @@ func (h *Handler) publishProjectWorkflowQuickSet(ctx context.Context, action db.
 	}
 	h.publishIssueSnapshots(ctx, issues, "member", approver)
 	h.broadcastCancelledWakeups(ctx, action.WorkspaceID, cancelled)
-	resp := projectToResponse(project)
-	resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(ctx, project.WorkspaceID, project.ID)
-	resp.ResourceCount = h.loadProjectResourceCount(ctx, project.ID)
-	h.publish(protocol.EventProjectUpdated, uuidToString(action.WorkspaceID), "member", approver, map[string]any{"project": resp})
+	for _, project := range projects {
+		resp := projectToResponse(project)
+		resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(ctx, project.WorkspaceID, project.ID)
+		resp.ResourceCount = h.loadProjectResourceCount(ctx, project.ID)
+		h.publish(protocol.EventProjectUpdated, uuidToString(action.WorkspaceID), "member", approver, map[string]any{"project": resp})
+	}
 	return nil
 }
 
