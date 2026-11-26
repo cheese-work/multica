@@ -241,6 +241,14 @@ func (j *Journal) loadKeyLocked() error {
 	return nil
 }
 
+// loadKeyBestEffortLocked loads the key for a read-only caller. A read error
+// leaves the key nil, so entries fail authentication and are kept.
+func (j *Journal) loadKeyBestEffortLocked() {
+	if err := j.loadKeyLocked(); err != nil {
+		j.log.Error("journal: cannot read journal.key", "error", err)
+	}
+}
+
 func (j *Journal) hasEntries() bool {
 	des, err := os.ReadDir(j.root)
 	if err != nil {
@@ -514,7 +522,7 @@ func (j *Journal) currentKey() ([]byte, string) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if j.key == nil {
-		j.loadKeyLocked()
+		j.loadKeyBestEffortLocked()
 	}
 	return j.key, j.keyID
 }
@@ -611,7 +619,7 @@ func (j *Journal) sweepOne(ctx context.Context, name string, res *SweepResult) {
 		f, perr := parseEntry(b)
 		if perr == nil {
 			if j.key == nil {
-				j.loadKeyLocked()
+				j.loadKeyBestEffortLocked()
 			}
 			_, perr = unseal(j.key, j.keyID, f)
 		}
@@ -710,7 +718,7 @@ func (j *Journal) revoke(ctx context.Context, base, token string) error {
 	if err != nil {
 		return errors.New("revoke request failed")
 	}
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent && resp.StatusCode != http.StatusUnauthorized {
 		return fmt.Errorf("revoke token: status %d", resp.StatusCode)
