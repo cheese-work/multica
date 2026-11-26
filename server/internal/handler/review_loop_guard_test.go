@@ -374,7 +374,7 @@ func revisionFinding(t *testing.T) map[string]any {
 // author agent and that run.
 func (l reviewLoop) round2(t *testing.T) (author, run string) {
 	t.Helper()
-	author = dbfx.Agent(t, "Review loop author "+workflowTestSuffix(), l.runtimeID)
+	author = eligibleAgent(t, "Review loop author "+workflowTestSuffix())
 	setColumnHandoff(t, l.projectID, "in_progress", handToAgent(author, "Fix the findings.")).Want(http.StatusOK)
 	l.verdict(t, "in_progress", map[string]any{"severity": "P1", "summary": "A", "category": "missing_test_first"}).Want(http.StatusOK)
 	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "in_progress" {
