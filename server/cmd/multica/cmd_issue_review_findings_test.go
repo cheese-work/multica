@@ -3,7 +3,9 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -54,7 +56,9 @@ func TestFindingFlagsMatchHandlerFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile("../../internal/handler/testdata/finding_revision.json")
+	// TestMain moves the working directory, so resolve from this file.
+	_, self, _, _ := runtime.Caller(0)
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(self), "..", "..", "internal", "handler", "testdata", "finding_revision.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
