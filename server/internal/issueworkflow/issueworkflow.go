@@ -20,20 +20,16 @@
 package issueworkflow
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/agentpreset"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
-	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -45,38 +41,7 @@ const (
 	HandlerMember      = "member"
 	HandlerProjectLead = "project_lead"
 	HandlerCreator     = "creator"
-	// HandlerHumanByRole hands the issue to a person, by role: the issue's
-	// requester, then the project lead, then the workspace owner.
-	HandlerHumanByRole = "human_by_role"
-	// HandlerHumanInCharge marks a status that waits on the person in charge
-	// of a decision request (CHE-2591 L5). Entering it never hands off by
-	// itself: the entry check assigns the issue explicitly.
-	HandlerHumanInCharge = "human_in_charge"
-	// HandlerAuthor hands the issue to its author (CHE-7677): the sticky row
-	// under AuthorStepKey, else capability_routing[type].author. The step
-	// stores no id.
-	HandlerAuthor = "author"
-	// HandlerReviewer hands the issue to a reviewer picked from the workspace's
-	// capability_routing entry for the issue type, independent of every author
-	// (CHE-7678). It carries no id: the pick needs the issue's author history,
-	// so the server resolves it, not ResolveHandler.
-	HandlerReviewer = "reviewer"
-	// HandlerSameAs hands the issue to the agent that last handled another step
-	// of the workflow on this issue (CHE-9114). Handler.Step names that step.
-	// Handler.ID, when set, is the agent to use when none is found; without it
-	// the named step's own handler is. The server resolves it, since it needs
-	// the issue's history.
-	HandlerSameAs = "same_as"
 )
-
-// LeftStepKey is the reserved issue_step_assignee key that holds who an issue
-// had when it last left a status, for a same_as step to read. It is not a
-// status key, so no status can collide with it.
-func LeftStepKey(status string) string { return "$left:" + status }
-
-// AuthorStepKey is the reserved issue_step_assignee key that holds an issue's
-// author. It is not a status key, so no status can collide with it.
-const AuthorStepKey = "$author"
 
 const (
 	MaxSteps             = 50
@@ -184,11 +149,6 @@ func BuiltInDefaultKeys() []string {
 type Handler struct {
 	Type string `json:"type"`
 	ID   string `json:"id,omitempty"`
-	// Step is the status a same_as handler takes its agent from (CHE-9114).
-	Step string `json:"step,omitempty"`
-	// Preset names the agent preset a run on this step uses (CHE-2249); "base"
-	// forces the agent row. Only an agent or squad handler carries one.
-	Preset string `json:"preset,omitempty"`
 }
 
 // Step is one status of a workflow with its handoff.
@@ -198,145 +158,20 @@ type Step struct {
 	Instructions  string  `json:"instructions"`
 	NextStatusKey string  `json:"next_status_key,omitempty"`
 	BackStatusKey string  `json:"back_status_key,omitempty"`
-	// AdvanceOnCIGreen moves an issue sitting on this step to its next status
-	// when the checks of a linked PR pass on the current head.
-	AdvanceOnCIGreen bool `json:"advance_on_ci_green,omitempty"`
-	// Edges are the step's exits, each taken when its guard holds. Without
-	// them the exits derive from the fields above (see EdgesOf).
-	Edges []Edge `json:"edges,omitempty"`
-	// SubWorkflow makes the step a sub-workflow node (CHE-2031): entering it
-	// creates a child issue that follows another workflow, and a children_done
-	// edge joins when every child of the stage is done.
-	SubWorkflow *SubWorkflow `json:"sub_workflow,omitempty"`
-	// Entry are the conditions a status write must meet to put an issue into
-	// this step (CHE-2295); none means no gate.
-	Entry []EntryGate `json:"entry,omitempty"`
-	// DynamicAssignment says the step's assignee is chosen at run time, so it
-	// has no handler. Lint-only: the dispatcher ignores it.
-	DynamicAssignment bool `json:"dynamic_assignment,omitempty"`
-	// WaitsOnOpenDecision declares the step a no-op while a human decision
-	// request is open on the issue (CHE-4976): the answer wakes the issue, so
-	// entering the step starts no run. Only a step whose author set it is
-	// skipped; entry work in the instructions is never inferred away.
-	WaitsOnOpenDecision bool `json:"waits_on_open_decision,omitempty"`
-	// LintWaive silences lint rules on this step, each with its reason. A
-	// waived finding is still reported, marked waived.
-	LintWaive []LintWaiver `json:"lint_waive,omitempty"`
-	// KeepOtherAssignee makes entering the step leave an assignee in place
-	// when that assignee is neither this step's handler nor the handler of the
-	// step the issue leaves (CHE-5013).
-	//
-	// TEMPORARY: CHE-5024 (per-issue workflows) replaces it; an issue's own
-	// workflow will then say who owns each step. Remove this flag with it.
-	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
-	// ChainSameOwner lets an agent's run carry on into this step without a new
-	// run when it hands the issue to itself under the same handler type as the
-	// step the run is in. The status response then carries the step brief.
-	// Default off.
-	ChainSameOwner bool `json:"chain_same_owner,omitempty"`
-	// AutoClose scopes auto close (CHE-6969) to this step: its mode replaces the
-	// workspace mode unless the workspace is off, and TopLevel lets a root issue
-	// close. Nil follows the workspace setting. Default nil.
-	AutoClose *AutoClose `json:"auto_close,omitempty"`
-}
-
-// AutoClose is a step's own auto-close setting. Mode is off, warn or block.
-// TopLevel skips the has_parent predicate, and skips parent_not_stopped when
-// the issue has no parent.
-type AutoClose struct {
-	Mode     string `json:"mode"`
-	TopLevel bool   `json:"top_level,omitempty"`
-}
-
-// UnmarshalJSON refuses a value that is not an object of mode and top_level.
-func (a *AutoClose) UnmarshalJSON(raw []byte) error {
-	type plain AutoClose
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.DisallowUnknownFields()
-	var p plain
-	if err := dec.Decode(&p); err != nil {
-		return fmt.Errorf(`auto_close must be an object {"mode": "off"|"warn"|"block", "top_level": bool}`)
-	}
-	*a = AutoClose(p)
-	return nil
-}
-
-func validateAutoClose(s Step) error {
-	if s.AutoClose == nil {
-		return nil
-	}
-	switch s.AutoClose.Mode {
-	case "off", "warn", "block":
-		return nil
-	}
-	return invalid("auto_close of %q needs a mode of off, warn or block", s.StatusKey)
-}
-
-// LintWaiver waives one lint rule on a step.
-type LintWaiver struct {
-	Rule   string `json:"rule"`
-	Reason string `json:"reason"`
-}
-
-// SubWorkflow names the workflow a sub-workflow step starts and the stage its
-// child issues join on.
-type SubWorkflow struct {
-	WorkflowID string `json:"workflow_id"`
-	Stage      int    `json:"stage,omitempty"`
 }
 
 // Definition is a decoded workflow.
 type Definition struct {
-	ID   pgtype.UUID
-	Name string
-	// Version is the stored row's last update: the workflow as a role record
-	// names it. Zero for a workflow that is not stored (CHE-7676).
-	Version   time.Time
+	ID        pgtype.UUID
+	Name      string
 	IsDefault bool
 	Steps     []Step
-	// MaxRunsPerIssue is the workflow's run budget per issue; 0 means unset
-	// (see EffectiveMaxRuns).
-	MaxRunsPerIssue int
-	// IncludeChildPRs makes the PRs of an issue's direct children count as
-	// its own for edge guards.
-	IncludeChildPRs bool
-	// RunBudgetSince is when the budget starts counting: runs before it are
-	// free, so issues in flight when the budget shipped start fresh.
-	RunBudgetSince time.Time
-	// StartStatusKey is the status where new issues of the workflow start
-	// (CHE-3113); empty means StartStatus.
-	StartStatusKey string
-}
-
-// Start is the status a new issue lands on when its creator picks none. A key
-// the workflow no longer lists falls back to StartStatus.
-func (d Definition) Start() string {
-	if d.StartStatusKey != "" && d.Has(d.StartStatusKey) {
-		return d.StartStatusKey
-	}
-	return StartStatus
-}
-
-// ValidateStartStatus checks a workflow's start status: empty keeps todo;
-// otherwise the key must be one of the steps, in an unstarted or started
-// category, so a new issue never begins finished or cancelled.
-func ValidateStartStatus(key string, steps []Step, catalog map[string]CatalogEntry) error {
-	if key == "" {
-		return nil
-	}
-	if !(Definition{Steps: steps}).Has(key) {
-		return invalid("start status %q is not a status of this workflow", key)
-	}
-	if category := catalog[key].Category; category != issuestatus.CategoryUnstarted && category != issuestatus.CategoryStarted {
-		return invalid("start status %q must be an unstarted or started status", key)
-	}
-	return nil
 }
 
 // HandsOff reports whether entering the step reassigns the issue.
 func (s Step) HandsOff() bool {
 	switch s.Handler.Type {
-	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator, HandlerHumanByRole, HandlerAuthor, HandlerReviewer, HandlerSameAs:
+	case HandlerAgent, HandlerSquad, HandlerMember, HandlerProjectLead, HandlerCreator:
 		return true
 	}
 	return false
@@ -345,25 +180,11 @@ func (s Step) HandsOff() bool {
 // storedStep is a step as the workflow row stores it; a step without a
 // handoff is just its status key.
 type storedStep struct {
-	StatusKey     string       `json:"status_key"`
-	Handler       *Handler     `json:"handler,omitempty"`
-	Instructions  string       `json:"instructions,omitempty"`
-	NextStatusKey string       `json:"next_status_key,omitempty"`
-	BackStatusKey string       `json:"back_status_key,omitempty"`
-	AdvanceOnCI   bool         `json:"advance_on_ci_green,omitempty"`
-	Edges         []Edge       `json:"edges,omitempty"`
-	SubWorkflow   *SubWorkflow `json:"sub_workflow,omitempty"`
-	Entry         []EntryGate  `json:"entry,omitempty"`
-
-	DynamicAssignment   bool         `json:"dynamic_assignment,omitempty"`
-	WaitsOnOpenDecision bool         `json:"waits_on_open_decision,omitempty"`
-	LintWaive           []LintWaiver `json:"lint_waive,omitempty"`
-
-	// KeepOtherAssignee: see Step. TEMPORARY, CHE-5024.
-	KeepOtherAssignee bool `json:"keep_other_assignee,omitempty"`
-	ChainSameOwner    bool `json:"chain_same_owner,omitempty"`
-
-	AutoClose *AutoClose `json:"auto_close,omitempty"`
+	StatusKey     string   `json:"status_key"`
+	Handler       *Handler `json:"handler,omitempty"`
+	Instructions  string   `json:"instructions,omitempty"`
+	NextStatusKey string   `json:"next_status_key,omitempty"`
+	BackStatusKey string   `json:"back_status_key,omitempty"`
 }
 
 // Decode parses a stored workflow row.
@@ -372,18 +193,7 @@ func Decode(row db.IssueWorkflow) (Definition, error) {
 	if err != nil {
 		return Definition{}, err
 	}
-	def := Definition{
-		ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps,
-		MaxRunsPerIssue: int(row.MaxRunsPerIssue.Int32), IncludeChildPRs: row.IncludeChildPrs,
-		StartStatusKey: row.StartStatusKey.String,
-	}
-	if row.UpdatedAt.Valid {
-		def.Version = row.UpdatedAt.Time
-	}
-	if row.RunBudgetSince.Valid {
-		def.RunBudgetSince = row.RunBudgetSince.Time
-	}
-	return def, nil
+	return Definition{ID: row.ID, Name: row.Name, IsDefault: row.IsDefault, Steps: steps}, nil
 }
 
 // DecodeSteps parses a stored steps array, normalizing a missing handler to
@@ -404,18 +214,6 @@ func DecodeSteps(raw []byte) ([]Step, error) {
 			Instructions:  s.Instructions,
 			NextStatusKey: s.NextStatusKey,
 			BackStatusKey: s.BackStatusKey,
-
-			AdvanceOnCIGreen: s.AdvanceOnCI,
-			Edges:            s.Edges,
-			SubWorkflow:      s.SubWorkflow,
-			Entry:            s.Entry,
-
-			DynamicAssignment:   s.DynamicAssignment,
-			WaitsOnOpenDecision: s.WaitsOnOpenDecision,
-			LintWaive:           s.LintWaive,
-			KeepOtherAssignee:   s.KeepOtherAssignee,
-			ChainSameOwner:      s.ChainSameOwner,
-			AutoClose:           s.AutoClose,
 		}
 		if s.Handler != nil && s.Handler.Type != "" {
 			steps[i].Handler = *s.Handler
@@ -437,10 +235,8 @@ func DecodeKeys(raw []byte) ([]string, error) {
 func EncodeSteps(steps []Step) ([]byte, error) {
 	stored := make([]storedStep, len(steps))
 	for i, s := range steps {
-		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey, AdvanceOnCI: s.AdvanceOnCIGreen, Edges: s.Edges, SubWorkflow: s.SubWorkflow, Entry: s.Entry, DynamicAssignment: s.DynamicAssignment, WaitsOnOpenDecision: s.WaitsOnOpenDecision, LintWaive: s.LintWaive, KeepOtherAssignee: s.KeepOtherAssignee, ChainSameOwner: s.ChainSameOwner, AutoClose: s.AutoClose}
-		// A human_in_charge step hands nothing off, but its handler is the entry
-		// rule of a decision episode and must survive storage.
-		if s.HandsOff() || s.Handler.Type == HandlerHumanInCharge {
+		stored[i] = storedStep{StatusKey: s.StatusKey, NextStatusKey: s.NextStatusKey, BackStatusKey: s.BackStatusKey}
+		if s.HandsOff() {
 			h := s.Handler
 			stored[i].Handler = &h
 			stored[i].Instructions = s.Instructions
@@ -501,18 +297,21 @@ func (d Definition) HandsOffAnywhere() bool {
 	return false
 }
 
-// NextStatus is where a step's handler moves the issue when done: the target
-// of the step's first agent_done exit, else the step's own choice, else the
-// next status on the board that is not blocked.
+// NextStatus is where a step's handler moves the issue when done: the step's
+// own choice, or else the next status on the board that is not blocked.
 func (d Definition) NextStatus(key string) string {
+	return d.nextStatus(key, nil)
+}
+
+// nextStatus is NextStatus that also passes over closed statuses on the
+// board: custom statuses sit before blocked / done / cancelled, so a custom
+// closed one such as wont_fix would otherwise be where finished work goes
+// (MUL-9913). effective resolves a key to its canonical behavior; nil leaves
+// every key as itself. A step's own choice is kept as configured.
+func (d Definition) nextStatus(key string, effective func(string) string) string {
 	step, ok := d.Step(key)
 	if !ok {
 		return ""
-	}
-	for _, e := range step.Edges {
-		if g, err := ParseGuard(e.Guard); err == nil && g.Kind == GuardAgentDone {
-			return e.To
-		}
 	}
 	if step.NextStatusKey != "" {
 		return step.NextStatusKey
@@ -522,12 +321,97 @@ func (d Definition) NextStatus(key string) string {
 			continue
 		}
 		for _, next := range d.Steps[i+1:] {
-			if next.StatusKey != issuestatus.Blocked {
+			if next.StatusKey != issuestatus.Blocked && effectiveOf(effective, next.StatusKey) != issuestatus.Cancelled {
 				return next.StatusKey
 			}
 		}
 	}
 	return ""
+}
+
+func effectiveOf(effective func(string) string, key string) string {
+	if effective == nil {
+		return key
+	}
+	return effective(key)
+}
+
+// handlerlessSpan is the stretch of work an assignee owns from a step that
+// has no handler: entering such steps reassigns nothing and starts no run, so
+// the same assignee carries the issue until it reaches a step that hands off
+// (or the end of the board).
+type handlerlessSpan struct {
+	// ok is set when the current step has no handler and the span applies.
+	ok bool
+	// start is the status that marks the work as started — in_progress when
+	// the span passes through it — or empty.
+	start string
+	// deliver is the status to set once all of the work is done.
+	deliver string
+	// until is where the span ends: the next step that hands off, done or
+	// cancelled, or empty when the board ends first.
+	until string
+}
+
+// handlerlessSpan walks from key along NextStatus over the steps without a
+// handler. When the walk reaches a step that hands off, delivering moves the
+// issue there. Otherwise it reaches the end of the board, and delivering sets
+// the last status before done other than in_progress, leaving done to a
+// human as without a workflow; only when no such status exists does it set
+// what follows (done). A custom done or closed status ends the walk the way
+// done does; effective resolves it as nextStatus does.
+func (d Definition) handlerlessSpan(key string, effective func(string) string) handlerlessSpan {
+	current, ok := d.Step(key)
+	if !ok || current.HandsOff() {
+		return handlerlessSpan{}
+	}
+	switch key {
+	case issuestatus.Blocked, issuestatus.Done, issuestatus.Cancelled:
+		return handlerlessSpan{}
+	}
+	var span handlerlessSpan
+	span.ok = true
+	var passed []string
+	seen := map[string]bool{key: true}
+	for at := key; ; {
+		next := d.nextStatus(at, effective)
+		if next == "" || seen[next] {
+			break
+		}
+		seen[next] = true
+		step, _ := d.Step(next)
+		if behavior := effectiveOf(effective, next); step.HandsOff() || behavior == issuestatus.Done || behavior == issuestatus.Cancelled {
+			span.until = next
+			break
+		}
+		passed = append(passed, next)
+		at = next
+	}
+	for _, k := range passed {
+		if k == issuestatus.InProgress {
+			span.start = k
+		}
+	}
+	if target, ok := d.Step(span.until); ok && target.HandsOff() {
+		span.deliver = span.until
+		return span
+	}
+	for i := len(passed) - 1; i >= 0; i-- {
+		if passed[i] != issuestatus.InProgress {
+			span.deliver = passed[i]
+			return span
+		}
+	}
+	// Nothing but done lies ahead. From a step where work starts, done is the
+	// only way out; from a delivery status such as in_review the work is
+	// already handed in, and done stays a human's call as without a workflow.
+	switch key {
+	case issuestatus.Backlog, issuestatus.Todo, issuestatus.InProgress:
+	default:
+		return span
+	}
+	span.deliver = span.until
+	return span
 }
 
 // CatalogEntry is the slice of an issue_status row validation needs.
@@ -607,19 +491,11 @@ func NormalizeHandoff(s Step) Step {
 		s.Handler.Type = HandlerNone
 	}
 	switch s.Handler.Type {
-	case HandlerAgent, HandlerSquad, HandlerMember, HandlerSameAs:
+	case HandlerAgent, HandlerSquad, HandlerMember:
 	default:
 		// Only the concrete handler types carry an id; a stale one left
 		// by a type switch in the form would otherwise be stored.
 		s.Handler.ID = ""
-	}
-	s.Handler.Step = strings.TrimSpace(s.Handler.Step)
-	if s.Handler.Type != HandlerSameAs {
-		s.Handler.Step = ""
-	}
-	s.Handler.Preset = strings.TrimSpace(s.Handler.Preset)
-	if s.Handler.Type != HandlerAgent && s.Handler.Type != HandlerSquad {
-		s.Handler.Preset = ""
 	}
 	s.Instructions = strings.TrimSpace(s.Instructions)
 	if s.Handler.Type == HandlerNone {
@@ -627,18 +503,7 @@ func NormalizeHandoff(s Step) Step {
 	}
 	s.NextStatusKey = strings.TrimSpace(s.NextStatusKey)
 	s.BackStatusKey = strings.TrimSpace(s.BackStatusKey)
-	s.Edges = normalizeEdges(s.Edges)
-	s.Entry = normalizeEntry(s.Entry)
-	if s.SubWorkflow != nil {
-		s.SubWorkflow = &SubWorkflow{WorkflowID: strings.TrimSpace(s.SubWorkflow.WorkflowID), Stage: s.SubWorkflow.Stage}
-	}
 	return s
-}
-
-// CanAdvanceOnCIGreen reports whether CI green may move an issue out of a
-// status: never out of a closed, parked or blocked one.
-func CanAdvanceOnCIGreen(key string) bool {
-	return AcceptsHandoff(key) && key != issuestatus.Blocked
 }
 
 // ValidateHandoff checks one normalized handoff against its workflow.
@@ -647,18 +512,11 @@ func ValidateHandoff(s Step, def Definition) error {
 	if !def.Has(s.StatusKey) {
 		return invalid("status %q is not part of this workflow", s.StatusKey)
 	}
-	if err := validateAutoClose(s); err != nil {
-		return err
-	}
 	switch s.Handler.Type {
-	case HandlerNone, HandlerProjectLead, HandlerHumanByRole, HandlerHumanInCharge, HandlerAuthor, HandlerReviewer:
+	case HandlerNone, HandlerProjectLead:
 	case HandlerAgent, HandlerSquad, HandlerMember:
 		if s.Handler.ID == "" {
 			return invalid("choose a %s to hand off to", s.Handler.Type)
-		}
-	case HandlerSameAs:
-		if err := validateSameAs(s, def); err != nil {
-			return err
 		}
 	case HandlerCreator:
 		return invalid("hand off to an agent, a squad, a member or the project lead")
@@ -668,11 +526,6 @@ func ValidateHandoff(s Step, def Definition) error {
 	if s.HandsOff() && !AcceptsHandoff(s.StatusKey) {
 		return invalid("issues entering %q cannot be handed off", s.StatusKey)
 	}
-	if p := s.Handler.Preset; p != "" && p != agentpreset.BaseName {
-		if err := agentpreset.ValidateName(p); err != nil {
-			return invalid("%s", err.Error())
-		}
-	}
 	if utf8.RuneCountInString(s.Instructions) > MaxInstructionsRunes {
 		return invalid("instructions must be at most %d characters", MaxInstructionsRunes)
 	}
@@ -681,16 +534,7 @@ func ValidateHandoff(s Step, def Definition) error {
 			return invalid("%q is not another status of this workflow", ref)
 		}
 	}
-	if s.AdvanceOnCIGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
-		return invalid("issues in %q cannot advance on CI green", s.StatusKey)
-	}
-	if err := validateSubWorkflow(s); err != nil {
-		return err
-	}
-	if err := validateEntry(s); err != nil {
-		return err
-	}
-	return validateEdges(s, def)
+	return nil
 }
 
 // Querier is the read surface workflow resolution needs.
@@ -706,50 +550,25 @@ func DefaultFor(ctx context.Context, q Querier, workspaceID pgtype.UUID) (Defini
 	row, err := q.GetDefaultIssueWorkflow(ctx, workspaceID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys()), IncludeChildPRs: true}, nil
+			return Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}, nil
 		}
 		return Definition{}, err
 	}
 	return Decode(row)
 }
 
-// ErrOverrideMissing means an issue's workflow override names a workflow that
-// no longer exists. Deletion is blocked while an issue references a workflow,
-// so this is a data fault; the issue never falls back to a looser workflow.
-var ErrOverrideMissing = errors.New("the issue's workflow override no longer exists")
-
 // ForProject loads the workflow a project uses. def is nil only for an issue
 // outside any project.
 func ForProject(ctx context.Context, q Querier, workspaceID, projectID pgtype.UUID) (*Definition, db.Project, error) {
-	return ForIssue(ctx, q, workspaceID, pgtype.UUID{}, projectID)
-}
-
-// ForIssue loads the workflow an issue follows: its own override when set,
-// otherwise its project's. def is nil only for an issue with neither. project
-// is the zero value outside a project, so handlers relative to the project
-// resolve to nobody. Every consumer resolves through here.
-func ForIssue(ctx context.Context, q Querier, workspaceID, workflowID, projectID pgtype.UUID) (*Definition, db.Project, error) {
-	var project db.Project
-	if projectID.Valid {
-		var err error
-		project, err = q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return nil, db.Project{}, err
-		}
-	}
-	if workflowID.Valid {
-		row, err := q.GetIssueWorkflow(ctx, db.GetIssueWorkflowParams{ID: workflowID, WorkspaceID: workspaceID})
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, project, ErrOverrideMissing
-		}
-		if err != nil {
-			return nil, project, err
-		}
-		def, err := Decode(row)
-		return &def, project, err
-	}
-	if !project.ID.Valid {
+	if !projectID.Valid {
 		return nil, db.Project{}, nil
+	}
+	project, err := q.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: workspaceID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, db.Project{}, nil
+		}
+		return nil, db.Project{}, err
 	}
 	def, err := ForProjectRow(ctx, q, project)
 	return def, project, err
@@ -797,53 +616,17 @@ func ForProjectRow(ctx context.Context, q Querier, project db.Project) (*Definit
 	return &def, nil
 }
 
-// Humans are the people a human-by-role handler can fall back to, looked up by
-// the caller: the member an agent created the issue for, and the workspace
-// owner. An invalid id means nobody holds that role. The caller sets Requester
-// only for a current member, and LeadNotMember when the project's member lead
-// has left the workspace.
-type Humans struct {
-	Requester      pgtype.UUID
-	LeadNotMember  bool
-	WorkspaceOwner pgtype.UUID
-	// RoutingAgent, when valid, replaces an agent handler (CHE-3627).
-	RoutingAgent pgtype.UUID
-	// SameAsType and SameAsID are the agent a same_as handler resolved to,
-	// fallbacks applied, by the caller (CHE-9114). An invalid id means none.
-	SameAsType string
-	SameAsID   pgtype.UUID
-	// AuthorType and AuthorID are the issue's author, resolved by the caller
-	// for an author handler (CHE-7677). An invalid id means none.
-	AuthorType string
-	AuthorID   pgtype.UUID
-}
-
 // ResolveHandler turns a step's handler into a concrete assignee for one
 // issue. ok is false when the step does not hand off, or when a relative
-// handler (project lead, creator, human by role) has nobody to resolve to.
-func ResolveHandler(step Step, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID, humans Humans) (assigneeType string, assigneeID pgtype.UUID, ok bool) {
+// handler (project lead, creator) has nobody to resolve to.
+func ResolveHandler(step Step, project db.Project, issueCreatorType string, issueCreatorID pgtype.UUID) (assigneeType string, assigneeID pgtype.UUID, ok bool) {
 	switch step.Handler.Type {
 	case HandlerAgent, HandlerSquad, HandlerMember:
-		if step.Handler.Type == HandlerAgent && humans.RoutingAgent.Valid {
-			return HandlerAgent, humans.RoutingAgent, true
-		}
 		var id pgtype.UUID
 		if err := id.Scan(step.Handler.ID); err != nil || !id.Valid {
 			return "", pgtype.UUID{}, false
 		}
 		return step.Handler.Type, id, true
-	case HandlerSameAs:
-		if humans.SameAsID.Valid && humans.SameAsType != "" {
-			return humans.SameAsType, humans.SameAsID, true
-		}
-		var id pgtype.UUID
-		if err := id.Scan(step.Handler.ID); err == nil && id.Valid {
-			return HandlerAgent, id, true
-		}
-	case HandlerAuthor:
-		if humans.AuthorID.Valid && humans.AuthorType != "" {
-			return humans.AuthorType, humans.AuthorID, true
-		}
 	case HandlerProjectLead:
 		if !project.LeadType.Valid || !project.LeadID.Valid {
 			return "", pgtype.UUID{}, false
@@ -854,17 +637,6 @@ func ResolveHandler(step Step, project db.Project, issueCreatorType string, issu
 			return "", pgtype.UUID{}, false
 		}
 		return issueCreatorType, issueCreatorID, true
-	case HandlerHumanByRole:
-		// Always a member: an agent project lead is not a human, so the chain
-		// moves on to the workspace owner.
-		switch {
-		case humans.Requester.Valid:
-			return "member", humans.Requester, true
-		case project.LeadType.String == "member" && project.LeadID.Valid && !humans.LeadNotMember:
-			return "member", project.LeadID, true
-		case humans.WorkspaceOwner.Valid:
-			return "member", humans.WorkspaceOwner, true
-		}
 	}
 	return "", pgtype.UUID{}, false
 }
@@ -928,21 +700,6 @@ func (e *StepMovedError) Error() string {
 		e.IssueIdentifier, statusLabel(e.StepName, e.Step), mover, statusLabel(e.CurrentName, e.Current))
 }
 
-// StaleVerdictError refuses a status change from a review run that was
-// superseded by a newer head: its verdict is for a commit that is no longer the
-// head of the pull request.
-type StaleVerdictError struct {
-	IssueIdentifier string
-	// ReviewedSHA is the head the superseded run reviewed.
-	ReviewedSHA string
-}
-
-func (e *StaleVerdictError) Error() string {
-	return fmt.Sprintf("%s: verdict for %s is stale: a newer head superseded this review, so this status change was not applied. "+
-		"Do not change the status again in this run; the replacement review covers the new head.",
-		e.IssueIdentifier, e.ReviewedSHA)
-}
-
 // statusLabel names a status for an agent: its display name with the key the
 // CLI takes, or the bare key when the two are the same.
 func statusLabel(name, key string) string {
@@ -987,6 +744,14 @@ type BriefInput struct {
 	MovedBy string
 	// StatusName resolves a catalog key to its display name.
 	StatusName func(key string) string
+	// EffectiveStatus resolves a catalog key to its canonical behavior. With
+	// no resolver, the key itself determines the behavior.
+	EffectiveStatus func(key string) string
+	// StatusCategory resolves a catalog key to its lifecycle category, and
+	// StatusDescription to the catalog's description of a custom status. The
+	// status map names both; without a resolver a custom status shows neither.
+	StatusCategory    func(key string) string
+	StatusDescription func(key string) string
 	// HandlerName describes who a step hands off to, e.g. "Sentinel" or
 	// "Lin (project lead)". Empty means the step does not hand off.
 	HandlerName func(step Step) string
@@ -998,41 +763,62 @@ type BriefInput struct {
 	// AssigneeName names the issue's assignee in an observer's brief; empty
 	// means unassigned.
 	AssigneeName string
-	// Routing marks a step the workspace's routing agent handles (CHE-4439 S5):
-	// its commands are `multica issue route` lines, which record why, instead
-	// of `multica issue status` lines.
-	Routing bool
+	// LegacyRuntimeRules renders for a daemon whose runtime brief still
+	// states the built-in in_progress / in_review rules (one without
+	// protocol.DaemonCapabilityWorkflowStatusRulesV1): the brief then says it
+	// replaces them, rules out the built-in moves, and carries the exit check.
+	// A current daemon drops those rules and states the exit check itself, so
+	// the zero value — also what the editor and timeline show — leaves these
+	// lines out rather than forbid what nothing asks for (MUL-8145).
+	LegacyRuntimeRules bool
+	// StepCommands renders the per-step command list — Step done, Needs
+	// changes — for a daemon whose runtime brief still points at those
+	// commands (one without protocol.DaemonCapabilityWorkflowStatusMapV1).
+	// The zero value renders the status map, whose rules the runtime brief
+	// states (MUL-9913). LegacyRuntimeRules implies the command list.
+	StepCommands bool
 }
 
 // Brief renders what an agent reads about the issue's project workflow: the
 // workflow's statuses, who each step hands off to, and — for the assignee —
-// the current step's instructions and the commands for the next move. The
-// runtime brief's built-in status rules (for example in_review on delivery)
-// name statuses this project may not use, so this text replaces them.
+// the current step's instructions. A current daemon gets the status map
+// (statusMapBrief) and states the rules for choosing from it; StepCommands
+// renders the per-step commands an older daemon's runtime brief points at
+// instead, and LegacyRuntimeRules adds the lines that override the built-in
+// rules a still older one states.
 //
 // It is the one rendering of a workflow for agents: the claim carries it into
 // every run's prompt, and the editor and timeline show the same text. Names
 // and instructions are user-authored, so control characters are dropped and
 // names are kept to one line.
 func Brief(in BriefInput) string {
+	if !in.StepCommands && !in.LegacyRuntimeRules {
+		return statusMapBrief(in)
+	}
 	step, _ := in.Workflow.Step(in.StatusKey)
 	stepMoved := in.BoundStep != "" && in.BoundStep != in.StatusKey
-	name := func(key string) string {
-		if in.StatusName == nil {
-			return key
-		}
-		if n := briefLine(in.StatusName(key)); n != "" {
-			return n
-		}
-		return key
-	}
+	terminal := in.atTerminal()
+	// Nothing on the board follows a terminal status, so its only moves are
+	// the ones its author configured (MUL-9746).
+	terminalMoves := terminal && (step.NextStatusKey != "" || step.BackStatusKey != "")
+	name := in.statusName
 	var b strings.Builder
-	title := briefLine(in.Workflow.Name)
-	if project := briefLine(in.ProjectName); project != "" {
-		title = fmt.Sprintf("%s (%s)", title, project)
+	writeBriefTitle(&b, in)
+	// Each move names who the target step hands off to, so the list needs no
+	// preamble about handoffs.
+	handsOffTo := func(key string) string {
+		if who := in.handlerOf(key); who != "" {
+			return " — hands off to " + who
+		}
+		return ""
 	}
-	fmt.Fprintf(&b, "This project's workflow — %s\n", title)
-	if !stepMoved {
+	// An older daemon still states the built-in rules itself, so its brief
+	// keeps the per-step wording rather than add a second in_progress rule.
+	var span handlerlessSpan
+	if !stepMoved && !in.Observer && !in.LegacyRuntimeRules && !terminal {
+		span = in.Workflow.handlerlessSpan(in.StatusKey, in.EffectiveStatus)
+	}
+	if in.LegacyRuntimeRules && !stepMoved {
 		b.WriteString("This workflow replaces the status rules in your runtime instructions: use only the status keys below")
 		if !in.Workflow.Has(issuestatus.InReview) {
 			fmt.Fprintf(&b, ", never `%s`", issuestatus.InReview)
@@ -1040,30 +826,26 @@ func Brief(in BriefInput) string {
 		b.WriteString(".\n")
 	}
 	if stepMoved {
-		mover := briefLine(in.MovedBy)
-		if mover == "" {
-			mover = "someone else"
-		}
-		fmt.Fprintf(&b, "This run remains bound to %s, but %s is now at %s (last moved by %s).\n",
-			statusLabel(name(in.BoundStep), in.BoundStep), in.IssueIdentifier, statusLabel(name(in.StatusKey), in.StatusKey), mover)
-		b.WriteString("Do not change the issue's status in this run, including when starting or finishing work; this overrides the status rules in your runtime instructions. Do not retry a refused status change. Leave a comment if something needs attention. A member can review the current state and explicitly rerun the work.\n")
+		writeStepMovedIntro(&b, in)
 	} else if in.Observer {
-		assignee := "is unassigned"
-		if who := briefLine(in.AssigneeName); who != "" {
-			assignee = "is assigned to " + who
+		writeObserverIntro(&b, in)
+	} else if span.ok {
+		// A step without a handler is a progress marker, not a stage: naming
+		// it "the step you handle" made agents split one task across columns
+		// and stop after the first half (MUL-8231).
+		fmt.Fprintf(&b, "You are handling %s. Its %q step has no handler, so the work the issue asks for is yours ", in.IssueIdentifier, name(in.StatusKey))
+		if target, ok := in.Workflow.Step(span.until); ok && target.HandsOff() {
+			fmt.Fprintf(&b, "until it reaches the %q step%s.\n", name(span.until), handsOffTo(span.until))
+		} else {
+			b.WriteString("to finish.\n")
 		}
-		fmt.Fprintf(&b, "%s is at the %q step and %s. You are not its assignee: leave the status to them unless you are explicitly asked to change it.\n",
-			in.IssueIdentifier, name(in.StatusKey), assignee)
 	} else {
-		fmt.Fprintf(&b, "You are handling the %q step of %s.\n", name(in.StatusKey), in.IssueIdentifier)
-		if instructions := briefText(step.Instructions); instructions != "" {
-			b.WriteString("\nStep instructions:\n")
-			for _, line := range strings.Split(instructions, "\n") {
-				b.WriteString("> ")
-				b.WriteString(line)
-				b.WriteString("\n")
-			}
+		if terminal && !terminalMoves {
+			writeTerminalIntro(&b, in)
+		} else {
+			fmt.Fprintf(&b, "You are handling the %q step of %s.\n", name(in.StatusKey), in.IssueIdentifier)
 		}
+		writeStepInstructions(&b, step)
 	}
 	b.WriteString("\nStatuses in this workflow:\n")
 	for _, s := range in.Workflow.Steps {
@@ -1089,31 +871,127 @@ func Brief(in BriefInput) string {
 		b.WriteString("\nMoving the issue into a step that hands off reassigns it to that step's handler and starts their run.\n")
 		return b.String()
 	}
-	b.WriteString("\nHand off by changing the status — moving the issue into a step that hands off reassigns it to that step's handler and starts their run:\n")
-	// move renders one command: a routing step records why through `issue route`.
-	move := func(status string) string {
-		if in.Routing {
-			return fmt.Sprintf("multica issue route %s --status %s --reason \"<why>\" --confidence <0-1>", in.IssueIdentifier, status)
-		}
-		return fmt.Sprintf("multica issue status %s %s", in.IssueIdentifier, status)
+	if terminal && !terminalMoves {
+		return b.String()
 	}
-	if next := in.Workflow.NextStatus(in.StatusKey); next != "" {
-		fmt.Fprintf(&b, "Step done      → %s\n", move(next))
+	b.WriteString("\nYour moves:\n")
+	switch {
+	case span.ok:
+		if span.start != "" {
+			fmt.Fprintf(&b, "Starting work  → multica issue status %s %s\n", in.IssueIdentifier, span.start)
+		}
+		if span.deliver != "" {
+			fmt.Fprintf(&b, "Step done      → multica issue status %s %s%s\n", in.IssueIdentifier, span.deliver, handsOffTo(span.deliver))
+		} else {
+			fmt.Fprintf(&b, "Step done      → leave the issue at `%s`; `done` is set by a human\n", in.StatusKey)
+		}
+	default:
+		next := step.NextStatusKey
+		if !terminal {
+			next = in.Workflow.nextStatus(in.StatusKey, in.EffectiveStatus)
+		}
+		if next != "" {
+			fmt.Fprintf(&b, "Step done      → multica issue status %s %s%s\n", in.IssueIdentifier, next, handsOffTo(next))
+		}
 	}
 	if step.BackStatusKey != "" {
-		fmt.Fprintf(&b, "Needs changes  → %s\n", move(step.BackStatusKey))
+		fmt.Fprintf(&b, "Needs changes  → multica issue status %s %s%s\n", in.IssueIdentifier, step.BackStatusKey, handsOffTo(step.BackStatusKey))
 	}
 	switch {
-	case in.Workflow.Has(issuestatus.Blocked):
-		fmt.Fprintf(&b, "Can't proceed  → %s, then comment why\n", move(issuestatus.Blocked))
+	case in.Workflow.Has(issuestatus.Blocked) && !terminal:
+		fmt.Fprintf(&b, "Can't proceed  → multica issue status %s blocked, then comment why\n", in.IssueIdentifier)
 	case step.BackStatusKey != "":
-		b.WriteString("Can't proceed  → this workflow has no blocked status: comment why, then use the \"Needs changes\" command above\n")
+		b.WriteString("Can't proceed  → comment why, then run Needs changes\n")
 	default:
-		b.WriteString("Can't proceed  → this workflow has no blocked status: comment why and leave the status as it is\n")
+		b.WriteString("Can't proceed  → comment why and leave the status as it is\n")
 	}
-	b.WriteString("The system does not advance the status when your run ends.\n")
+	if span.ok {
+		b.WriteString("Steps without a handler hand nothing off and start no run: finish all of the issue's work in this run before Step done.\n")
+	}
+	if in.LegacyRuntimeRules {
+		// An older daemon's brief still says to set in_progress first and
+		// in_review on delivery, and checks the status on exit in those terms.
+		b.WriteString("These commands are the only status moves for your step: set no status to mark that you started, and none to mark delivery — no separate `in_progress` or `in_review`.\n")
+		b.WriteString("Before your run ends, either run one of them or leave the issue at this step on purpose because its work continues. The system does not advance the status when your run ends.\n")
+	}
 	b.WriteString("When the issue enters a step you handle, you get a run automatically — do not add a wakeup for that. Wakeups for anything else (a time, a PR, another issue, a step someone else handles) are fine.\n")
 	return b.String()
+}
+
+func writeBriefTitle(b *strings.Builder, in BriefInput) {
+	title := briefLine(in.Workflow.Name)
+	if project := briefLine(in.ProjectName); project != "" {
+		title = fmt.Sprintf("%s (%s)", title, project)
+	}
+	fmt.Fprintf(b, "This project's workflow — %s\n", title)
+}
+
+func writeStepMovedIntro(b *strings.Builder, in BriefInput) {
+	mover := briefLine(in.MovedBy)
+	if mover == "" {
+		mover = "someone else"
+	}
+	fmt.Fprintf(b, "This run remains bound to %s, but %s is now at %s (last moved by %s).\n",
+		statusLabel(in.statusName(in.BoundStep), in.BoundStep), in.IssueIdentifier, statusLabel(in.statusName(in.StatusKey), in.StatusKey), mover)
+	b.WriteString("Do not change the issue's status in this run, including when starting or finishing work; this overrides the status rules in your runtime instructions. Do not retry a refused status change. Leave a comment if something needs attention. A member can review the current state and explicitly rerun the work.\n")
+}
+
+func writeObserverIntro(b *strings.Builder, in BriefInput) {
+	assignee := "is unassigned"
+	if who := briefLine(in.AssigneeName); who != "" {
+		assignee = "is assigned to " + who
+	}
+	fmt.Fprintf(b, "%s is at the %q step and %s. You are not its assignee: leave the status to them unless you are explicitly asked to change it.\n",
+		in.IssueIdentifier, in.statusName(in.StatusKey), assignee)
+}
+
+func writeTerminalIntro(b *strings.Builder, in BriefInput) {
+	fmt.Fprintf(b, "%s has reached the terminal status %s. Leave the issue at this status unless a member explicitly asks you to reopen it.\n",
+		in.IssueIdentifier, statusLabel(in.statusName(in.StatusKey), in.StatusKey))
+}
+
+func writeStepInstructions(b *strings.Builder, step Step) {
+	instructions := briefText(step.Instructions)
+	if instructions == "" {
+		return
+	}
+	b.WriteString("\nStep instructions:\n")
+	for _, line := range strings.Split(instructions, "\n") {
+		b.WriteString("> ")
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+}
+
+// statusName is a status's display name, or its key when it has none —
+// built-in statuses have no stored name, and their key reads on its own.
+func (in BriefInput) statusName(key string) string {
+	if in.StatusName == nil {
+		return key
+	}
+	if n := briefLine(in.StatusName(key)); n != "" {
+		return n
+	}
+	return key
+}
+
+// handlerOf names who entering key hands off to, or "" when it hands off to
+// no one.
+func (in BriefInput) handlerOf(key string) string {
+	target, ok := in.Workflow.Step(key)
+	if !ok || in.HandlerName == nil {
+		return ""
+	}
+	return briefLine(in.HandlerName(target))
+}
+
+func (in BriefInput) effective(key string) string {
+	return effectiveOf(in.EffectiveStatus, key)
+}
+
+func (in BriefInput) atTerminal() bool {
+	behavior := in.effective(in.StatusKey)
+	return behavior == issuestatus.Done || behavior == issuestatus.Cancelled
 }
 
 // briefLine keeps a user-authored name on one line of a brief: line breaks
@@ -1136,27 +1014,4 @@ func briefText(s string) string {
 		return r
 	}, s)
 	return strings.TrimSpace(s)
-}
-
-// MaxSubWorkflowStage bounds the stage a sub-workflow step joins on.
-const MaxSubWorkflowStage = 100
-
-// validateSubWorkflow checks a sub-workflow step. The join is the step's
-// children_done edge: without one the parent would wait for ever. That the
-// target workflow exists in the workspace is the caller's check.
-func validateSubWorkflow(s Step) error {
-	sub := s.SubWorkflow
-	if sub == nil {
-		return nil
-	}
-	if _, err := util.ParseUUID(sub.WorkflowID); err != nil {
-		return invalid("sub-workflow needs a valid workflow id")
-	}
-	if sub.Stage < 0 || sub.Stage > MaxSubWorkflowStage {
-		return invalid("sub-workflow stage must be between 0 and %d", MaxSubWorkflowStage)
-	}
-	if !hasGuard(s.Edges, GuardChildrenDone) {
-		return invalid("a sub-workflow step needs a children_done edge to join on")
-	}
-	return nil
 }

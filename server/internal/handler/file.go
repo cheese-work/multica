@@ -21,10 +21,11 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/imagemetadata"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
+	"github.com/multica-ai/multica/server/internal/thumbnail"
 	"github.com/multica-ai/multica/server/internal/util"
-	"github.com/multica-ai/multica/server/internal/weblink"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -65,7 +66,6 @@ type AttachmentResponse struct {
 	Filename      string  `json:"filename"`
 	URL           string  `json:"url"`
 	DownloadURL   string  `json:"download_url"`
-	WebURL        string  `json:"web_url,omitempty"`
 	// AttachmentDownloadURL is a credential-free URL that forces a
 	// Content-Disposition: attachment across every storage mode, for the
 	// download BUTTON — unlike DownloadURL, which is load-intent and keeps
@@ -107,16 +107,16 @@ type AttachmentResponse struct {
 	CommentAuthorID   *string `json:"comment_author_id,omitempty"`
 	CommentCreatedAt  *string `json:"comment_created_at,omitempty"`
 	ContentType       string  `json:"content_type"`
-	// Revision is 1 for a first upload; RevisionOf is the previous revision's
-	// id (CHE-5295).
-	Revision   int     `json:"revision"`
-	RevisionOf *string `json:"revision_of"`
-	SHA256     string  `json:"sha256,omitempty"`
-	SizeBytes  int64   `json:"size_bytes"`
-	CreatedAt  string  `json:"created_at"`
+	SizeBytes         int64   `json:"size_bytes"`
+	CreatedAt         string  `json:"created_at"`
 	// Displayed image dimensions, absent for non-images and older uploads.
 	Width  *int32 `json:"width,omitempty"`
 	Height *int32 `json:"height,omitempty"`
+	// ThumbnailURL is the stable, auth-gated path of a downscaled copy for
+	// grid tiles, set only for large raster images. Durable like the stable
+	// download path; never a substitute for the original in viewers or
+	// downloads.
+	ThumbnailURL string `json:"thumbnail_url,omitempty"`
 }
 
 // attachmentURLMode selects how DownloadURL is rendered on a response.
@@ -179,15 +179,10 @@ func (h *Handler) attachmentToResponse(a db.Attachment, mode attachmentURLMode) 
 		URL:          a.Url,
 		DownloadURL:  util.AttachmentDownloadPath(id),
 		MarkdownURL:  h.buildMarkdownURL(a, id),
+		ThumbnailURL: h.attachmentThumbnailURL(a, id),
 		ContentType:  a.ContentType,
 		SizeBytes:    a.SizeBytes,
 		CreatedAt:    a.CreatedAt.Time.Format("2006-01-02T15:04:05Z07:00"),
-		Revision:     int(a.Revision),
-		SHA256:       a.Sha256,
-	}
-	if a.RevisionOf.Valid {
-		s := uuidToString(a.RevisionOf)
-		resp.RevisionOf = &s
 	}
 	// Installed clients recognize this API shape and fetch private image bytes
 	// with credentials. Keep unbound upload URLs intact for avatar setters.
@@ -366,7 +361,7 @@ func (h *Handler) groupAttachments(r *http.Request, commentIDs []pgtype.UUID) ma
 	}
 	mode := attachmentURLModeFromRequest(r)
 	grouped := make(map[string][]AttachmentResponse, len(commentIDs))
-	for _, a := range h.readableAttachments(r, attachments) {
+	for _, a := range attachments {
 		cid := uuidToString(a.CommentID)
 		grouped[cid] = append(grouped[cid], h.attachmentToResponse(a, mode))
 	}
@@ -415,7 +410,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	err := parseUploadForm(w, r)
 	if r.MultipartForm != nil {
-		defer func() { _ = r.MultipartForm.RemoveAll() }()
+		defer r.MultipartForm.RemoveAll()
 	}
 	if err != nil {
 		var sizeErr *http.MaxBytesError
@@ -475,7 +470,8 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 
 	// If workspace context is available, validate membership before uploading.
 	if workspaceID != "" {
-		if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
+		member, err := h.getWorkspaceMember(r.Context(), userID, workspaceID)
+		if err != nil {
 			writeError(w, http.StatusForbidden, "not a member of this workspace")
 			return
 		}
@@ -490,17 +486,6 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			Filename:     header.Filename,
 			ContentType:  contentType,
 			SizeBytes:    int64(len(data)),
-		}
-		// A marked task's upload stores the mark (CHE-2216 plan 3.7). If the
-		// requesting task cannot be read, the upload does not happen.
-		actor, acting, actErr := service.ActingTask(h.actingTaskContext(r), h.Queries)
-		if actErr != nil {
-			slog.Error("could not read requesting task", "error", actErr)
-			writeError(w, http.StatusInternalServerError, "upload failed")
-			return
-		}
-		if acting && (actor.ExternalRead || len(actor.TaintIds) > 0) {
-			params.ExternalRead = pgtype.Bool{Bool: true, Valid: true}
 		}
 
 		if issueID := r.FormValue("issue_id"); issueID != "" {
@@ -519,7 +504,14 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			if !h.requireProjectVisible(w, r, workspaceID, issue.ProjectID, http.StatusForbidden, "invalid issue_id") {
 				return
 			}
-			params.IssueID = issue.ID
+			// A guest's upload (MUL-9420) is a draft for its next comment, not
+			// a change to the issue: it stays unbound, visible only to the
+			// guest, until CreateComment links it with the comment
+			// (LinkAttachmentsToComment accepts unbound rows). A member's
+			// upload still attaches to the issue at once.
+			if uploaderType != "member" || !h.isGuest(r, workspaceID, userID) {
+				params.IssueID = issue.ID
+			}
 		}
 		if commentID := r.FormValue("comment_id"); commentID != "" {
 			commentUUID, ok := parseUUIDOrBadRequest(w, commentID, "comment_id")
@@ -533,6 +525,13 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if !h.requireIssueIDVisible(w, r, workspaceID, comment.IssueID, http.StatusForbidden, "invalid comment_id") {
+				return
+			}
+			// A guest attaches files only to its own comments (MUL-9420);
+			// seeing a comment is not enough to add to it.
+			if uploaderType == "member" && h.isGuest(r, workspaceID, userID) &&
+				(comment.AuthorType != "member" || uuidToString(comment.AuthorID) != userID) {
+				writeError(w, http.StatusForbidden, "invalid comment_id")
 				return
 			}
 			params.CommentID = comment.ID
@@ -603,17 +602,14 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			params.ChatSessionID = task.ChatSessionID
 		}
 
-		// A retried upload of the same bytes (CHE-9490) returns the file already
-		// there instead of adding a copy.
-		if existing, found := h.identicalIssueUpload(r.Context(), params, r.FormValue("replaces"), data); found {
-			resp := h.attachmentToResponse(existing, attachmentURLModeFromRequest(r))
-			resp.WebURL = h.workspaceWebURL(r.Context(), existing.WorkspaceID, func(ws db.Workspace) string { return weblink.Attachment(ws.Slug, resp.ID) })
-			writeJSON(w, http.StatusOK, resp)
-			return
-		}
-
-		if status, msg := h.chainAttachmentRevision(r.Context(), &params, r.FormValue("replaces"), data); status != 0 {
-			writeError(w, status, msg)
+		// Every field is validated; check the storage limit before writing
+		// the object, so a refused upload stores nothing.
+		if err := h.storageQuota().Admit(r.Context(), params.WorkspaceID, params.SizeBytes, service.StorageSourceUpload); err != nil {
+			// The role read with membership above decides, so a failed
+			// second lookup cannot show a guest the workspace's usage.
+			if !writeStorageLimitReached(w, err, !projectaccess.IsGuestRole(member.Role)) {
+				writeError(w, http.StatusInternalServerError, "upload failed")
+			}
 			return
 		}
 
@@ -652,12 +648,6 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 				return q.CreateAttachment(r.Context(), params)
 			})
 		}
-		if err != nil && params.Revision.Valid && isUniqueViolation(err) {
-			// Another upload took this revision number first.
-			h.deleteS3Objects(r.Context(), []string{link})
-			writeError(w, http.StatusConflict, "another revision was uploaded at the same time, retry")
-			return
-		}
 		if err != nil {
 			if writeRequestCancellation(w, r, err) {
 				// The record write may have committed. Deleting uploaded bytes
@@ -668,6 +658,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 			// S3 upload succeeded but DB record failed — still return the link
 			// so the file is usable. Log the error for investigation.
 		} else {
+			h.prewarmAttachmentThumbnail(att.Attachment())
 			if att.IssueRevision > 0 && att.IssueID.Valid {
 				h.publish(protocol.EventIssueAttachmentsChanged, workspaceID, uploaderType, uploaderID, map[string]any{
 					"issue_id":       uuidToString(att.IssueID),
@@ -687,9 +678,7 @@ func (h *Handler) UploadFile(w http.ResponseWriter, r *http.Request) {
 					})
 				}
 			}
-			resp := h.attachmentToResponse(att.Attachment(), attachmentURLModeFromRequest(r))
-			resp.WebURL = h.workspaceWebURL(r.Context(), att.Attachment().WorkspaceID, func(ws db.Workspace) string { return weblink.Attachment(ws.Slug, resp.ID) })
-			writeJSON(w, http.StatusOK, resp)
+			writeJSON(w, http.StatusOK, h.attachmentToResponse(att.Attachment(), attachmentURLModeFromRequest(r)))
 			return
 		}
 
@@ -745,7 +734,6 @@ func (h *Handler) ListAttachments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mode := attachmentURLModeFromRequest(r)
-	attachments = h.readableAttachments(r, attachments)
 	resp := make([]AttachmentResponse, len(attachments))
 	for i, a := range attachments {
 		resp[i] = h.attachmentToResponse(a, mode)
@@ -909,9 +897,6 @@ func (h *Handler) loadAttachmentForRequest(w http.ResponseWriter, r *http.Reques
 	if !h.requireAttachmentVisible(w, r, workspaceID, att) {
 		return db.Attachment{}, false
 	}
-	if h.denyWithheldAttachment(w, r, att) {
-		return db.Attachment{}, false
-	}
 
 	return att, true
 }
@@ -955,16 +940,25 @@ func (h *Handler) loadAttachmentForDownload(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusNotFound, "attachment not found")
 		return db.Attachment{}, false
 	}
-	if !h.MembershipCache.Get(r.Context(), userID, workspaceID) {
-		if _, err := h.getWorkspaceMember(r.Context(), userID, workspaceID); err != nil {
-			writeError(w, http.StatusNotFound, "attachment not found")
-			return db.Attachment{}, false
-		}
-		h.MembershipCache.Set(r.Context(), userID, workspaceID)
-	}
-	if h.denyWithheldAttachment(w, r, att) {
+	// A task token acts only in the workspace it is bound to; Auth stamps
+	// that workspace into X-Workspace-ID. Membership alone is not enough:
+	// the task's user may belong to the attachment's other workspace too.
+	if r.Header.Get("X-Actor-Source") == "task_token" && r.Header.Get("X-Workspace-ID") != workspaceID {
+		writeError(w, http.StatusNotFound, "attachment not found")
 		return db.Attachment{}, false
 	}
+	if h.MembershipCache.Get(r.Context(), userID, workspaceID) {
+		if !h.requireAttachmentVisible(w, r, workspaceID, att) {
+			return db.Attachment{}, false
+		}
+		return att, true
+	}
+	member, err := h.getWorkspaceMember(r.Context(), userID, workspaceID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "attachment not found")
+		return db.Attachment{}, false
+	}
+	h.cacheMembership(r.Context(), member)
 	if !h.requireAttachmentVisible(w, r, workspaceID, att) {
 		return db.Attachment{}, false
 	}
@@ -1553,8 +1547,8 @@ func (h *Handler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Only the uploader (or workspace admin) can delete
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	isUploader := att.UploaderType == actorType && uuidToString(att.UploaderID) == actorID
+	uploaderID := uuidToString(att.UploaderID)
+	isUploader := att.UploaderType == "member" && uploaderID == userID
 	member, hasMember := ctxMember(r.Context())
 	isAdmin := hasMember && (member.Role == "admin" || member.Role == "owner")
 
@@ -1562,27 +1556,12 @@ func (h *Handler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "not authorized to delete this attachment")
 		return
 	}
-	// An agent removes only its own file that nothing references: a comment's
-	// attachment is what a reviewer pinned by SHA-256, and an agent cannot
-	// take it back.
-	if actorType == "agent" && !isAdmin && (att.CommentID.Valid || att.ChatMessageID.Valid) {
-		writeError(w, http.StatusConflict, "attachment is referenced by a comment or message; only an orphan can be deleted by its agent")
-		return
-	}
 
 	var deleted db.DeleteAttachmentRow
-	// A chat fork copies attachment rows that share one stored file. The file
-	// stays while another row in the workspace still refers to it; checking in
-	// the delete transaction orders it against a fork's share lock.
-	fileInUse := false
 	deleteParams := db.DeleteAttachmentParams{ID: att.ID, WorkspaceID: att.WorkspaceID}
 	err = h.withAttachmentOwnerLock(r.Context(), att, func(qtx *db.Queries) error {
 		var deleteErr error
 		deleted, deleteErr = qtx.DeleteAttachment(r.Context(), deleteParams)
-		if deleteErr != nil {
-			return deleteErr
-		}
-		fileInUse, deleteErr = qtx.AttachmentURLInUse(r.Context(), db.AttachmentURLInUseParams{WorkspaceID: att.WorkspaceID, Url: att.Url})
 		return deleteErr
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1597,7 +1576,7 @@ func (h *Handler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if deleted.Changed && att.IssueID.Valid {
-		h.publish(protocol.EventIssueAttachmentsChanged, workspaceID, actorType, actorID, map[string]any{
+		h.publish(protocol.EventIssueAttachmentsChanged, workspaceID, "member", userID, map[string]any{
 			"issue_id":       uuidToString(att.IssueID),
 			"issue_revision": deleted.IssueRevision,
 		})
@@ -1610,15 +1589,13 @@ func (h *Handler) DeleteAttachment(w http.ResponseWriter, r *http.Request) {
 			commentID := uuidToString(comment.ID)
 			reactions := h.groupReactions(r, []pgtype.UUID{comment.ID})
 			attachments := h.groupAttachments(r, []pgtype.UUID{comment.ID})
-			h.publish(protocol.EventCommentUpdated, workspaceID, actorType, actorID, map[string]any{
+			h.publish(protocol.EventCommentUpdated, workspaceID, "member", userID, map[string]any{
 				"comment": commentToResponse(comment, reactions[commentID], attachments[commentID]),
 			})
 		}
 	}
 
-	if !fileInUse {
-		h.deleteS3Object(r.Context(), att.Url)
-	}
+	h.deleteS3Object(r.Context(), att.Url)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1670,7 +1647,7 @@ func (h *Handler) attachmentOwnerLockAttempt(ctx context.Context, att db.Attachm
 	if att.IssueID.Valid {
 		// A missing issue is not an error here: its cascade took the attachment
 		// with it, which the re-read below reports as pgx.ErrNoRows.
-		if _, err := qtx.LockIssueForAttachmentWrite(ctx, db.LockIssueForAttachmentWriteParams{
+		if _, err := qtx.LockIssueForWrite(ctx, db.LockIssueForWriteParams{
 			ID:          att.IssueID,
 			WorkspaceID: att.WorkspaceID,
 		}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
@@ -1705,22 +1682,27 @@ func (h *Handler) attachmentOwnerLockAttempt(ctx context.Context, att db.Attachm
 	return fresh, tx.Commit(ctx)
 }
 
-// deleteS3Object removes a single file from S3 by its CDN URL.
+// deleteS3Object removes a single file, and its thumbnail, from S3 by its CDN URL.
 func (h *Handler) deleteS3Object(ctx context.Context, url string) {
 	if h.Storage == nil || url == "" {
 		return
 	}
-	h.Storage.Delete(ctx, h.Storage.KeyFromURL(url))
+	h.deleteS3Objects(ctx, []string{url})
 }
 
-// deleteS3Objects removes multiple files from S3 by their CDN URLs.
+// deleteS3Objects removes multiple files, and their thumbnails, from S3 by
+// their CDN URLs.
 func (h *Handler) deleteS3Objects(ctx context.Context, urls []string) {
 	if h.Storage == nil || len(urls) == 0 {
 		return
 	}
-	keys := make([]string, len(urls))
-	for i, u := range urls {
-		keys[i] = h.Storage.KeyFromURL(u)
+	keys := make([]string, 0, len(urls))
+	for _, u := range urls {
+		key := h.Storage.KeyFromURL(u)
+		keys = append(keys, key)
+		if thumbKey, ok := thumbnail.StorageKey(key); ok {
+			keys = append(keys, thumbKey)
+		}
 	}
 	h.Storage.DeleteKeys(ctx, keys)
 }

@@ -184,6 +184,8 @@ func TestTaskSupplementNegotiationFailsClosed(t *testing.T) {
 		{name: "cursor negotiated", provider: "cursor", daemonAdvertises: true, wantCapabilityRow: true},
 		{name: "kiro negotiated", provider: "kiro", daemonAdvertises: true, wantCapabilityRow: true},
 		{name: "pi negotiated", provider: "pi", daemonAdvertises: true, wantCapabilityRow: true},
+		{name: "antigravity negotiated", provider: "antigravity", daemonAdvertises: true, wantCapabilityRow: true},
+		{name: "hermes negotiated", provider: "hermes", daemonAdvertises: true, wantCapabilityRow: true},
 		{name: "pi old daemon", provider: "pi", daemonAdvertises: false, wantCapabilityRow: false},
 		{name: "claude old daemon", provider: "claude", daemonAdvertises: false, wantCapabilityRow: false},
 		{name: "old daemon", provider: "codex", daemonAdvertises: false, wantCapabilityRow: false},
@@ -218,7 +220,7 @@ func TestTaskSupplementCapabilityDoesNotBreakNonIssueStarts(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	for _, provider := range []string{"codex", "claude", "grok", "cursor", "kiro", "pi"} {
+	for _, provider := range []string{"codex", "claude", "grok", "cursor", "kiro", "pi", "antigravity", "hermes"} {
 		t.Run(provider, func(t *testing.T) {
 			runtimeID := dbfx.Runtime(t, "supplement-no-issue", testutil.Cols{"provider": provider})
 			agentID := dbfx.Agent(t, "Supplement no issue", runtimeID)
@@ -296,8 +298,8 @@ func TestPiTaskSupplementLifecycle(t *testing.T) {
 	}
 }
 
-func TestTaskSupplementCompletionReplaysOnlyUnreadSteers(t *testing.T) {
-	for _, provider := range []string{"codex", "claude", "grok", "cursor", "kiro", "pi"} {
+func TestTaskSupplementCompletionDoesNotReplayBoundComments(t *testing.T) {
+	for _, provider := range []string{"codex", "claude", "grok", "cursor", "kiro", "pi", "antigravity", "hermes"} {
 		for _, status := range []string{"pending", "delivering", "delivered", "failed"} {
 			for _, ordinary := range []string{"none", "unhandled", "queued"} {
 				t.Run(provider+"/"+status+"/"+ordinary, func(t *testing.T) {
@@ -333,41 +335,35 @@ func TestTaskSupplementCompletionReplaysOnlyUnreadSteers(t *testing.T) {
 					req := newOwnerDaemonRequest(http.MethodPost, "/api/daemon/tasks/"+fixture.taskID+"/complete",
 						map[string]any{"output": "done"})
 					testutil.Call(t, testHandler.CompleteTask, withURLParam(req, "taskId", fixture.taskID)).Want(http.StatusOK)
-					// CHE-5542: a steer the turn never read (anything but delivered) is
-					// replayed once; a delivered one never is.
-					replayed := status != "delivered"
-					if replayed {
+					if status == "pending" || status == "delivering" {
 						receipt, err := testHandler.Queries.GetTaskSupplementForRun(t.Context(), db.GetTaskSupplementForRunParams{
 							CommentID: parseUUID(supplement.ID), TaskID: parseUUID(fixture.taskID), WorkspaceID: parseUUID(testWorkspaceID),
 						})
-						if err != nil || receipt.Status != "failed" || receipt.FailureReason.String != ReplayQueuedReason {
-							t.Fatalf("completion did not mark the replayed steer as queued: %#v: %v", receipt, err)
+						if err != nil || receipt.Status != "failed" || receipt.FailureReason.String != protocol.TaskSupplementFailureTurnEnded {
+							t.Fatalf("completion did not settle pending delivery: %#v: %v", receipt, err)
 						}
 					}
 
 					wantTasks := 1
-					if replayed || ordinary != "none" {
+					if ordinary != "none" {
 						wantTasks++
 					}
 					if n := dbfx.Count(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1`, fixture.issueID); n != wantTasks {
-						t.Fatalf("completion left %d runs, want %d", n, wantTasks)
+						t.Fatalf("completion left %d runs, want %d; supplement must never create a follow-up", n, wantTasks)
 					}
-					if wantTasks == 1 {
-						return
-					}
-					var followupID, triggerID string
-					var coalesced []string
-					dbfx.QueryRow(t, `SELECT id, trigger_comment_id, coalesced_comment_ids::text[]
+					if ordinary != "none" {
+						var followupID, triggerID string
+						var coalesced []string
+						dbfx.QueryRow(t, `SELECT id, trigger_comment_id, coalesced_comment_ids::text[]
 						FROM agent_task_queue WHERE issue_id = $1 AND id <> $2 AND status = 'queued'`,
-						fixture.issueID, fixture.taskID).Scan(&followupID, &triggerID, &coalesced)
-					if queuedID != "" && followupID != queuedID {
-						t.Fatalf("replaced existing queued run %s with %s", queuedID, followupID)
-					}
-					if ordinary != "none" && triggerID != ordinaryID && !slices.Contains(coalesced, ordinaryID) {
-						t.Fatalf("follow-up input = trigger %s, coalesced %v; lost ordinary comment %s", triggerID, coalesced, ordinaryID)
-					}
-					if replayed && triggerID != supplement.ID && !slices.Contains(coalesced, supplement.ID) {
-						t.Fatalf("follow-up input = trigger %s, coalesced %v; lost the unread steer %s", triggerID, coalesced, supplement.ID)
+							fixture.issueID, fixture.taskID).Scan(&followupID, &triggerID, &coalesced)
+						if queuedID != "" && followupID != queuedID {
+							t.Fatalf("replaced existing queued run %s with %s", queuedID, followupID)
+						}
+						if triggerID != ordinaryID || slices.Contains(coalesced, supplement.ID) {
+							t.Fatalf("follow-up input = trigger %s, coalesced %v; want ordinary comment %s without supplement %s",
+								triggerID, coalesced, ordinaryID, supplement.ID)
+						}
 					}
 				})
 			}

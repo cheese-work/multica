@@ -47,45 +47,54 @@ unresolved reachable vulnerability.
 Every Go binary retains its compiler version in the standard Go build metadata;
 use `go version -m <binary>` when auditing a downloaded release artifact.
 
-## Release build stamps
+## Stable release promotion
 
-`UPSTREAM_VERSION` at the repository root tracks the latest synced plain upstream
-semver (without a `v` prefix, for example `0.6.3`). Every upstream sync PR updates
-`UPSTREAM_VERSION` to the synced upstream tag.
+GoReleaser publishes a public release with `make_latest: false`. Installed stable
+clients and CLI entry points that read Latest keep using the previous complete
+version while Desktop artifacts are uploading. Homebrew continues to publish
+normally because CLI archives are already public; container tags are independent.
+The release page and GitHub notifications can show the new release before promotion.
 
-`scripts/release-stamp.sh` formats a timestamp in ICT (`Asia/Ho_Chi_Minh`, UTC+7)
-as `YYYYMMDD-hhmm`. When given a commit ISO timestamp (`git show -s --format=%cI`),
-it derives the stamp deterministically from that commit time; with no timestamp
-argument it falls back to the current ICT time.
+`.github/workflows/promote-release.yml` is the only entry point for changing
+Latest. The Linux/Windows Desktop matrix calls it after both builds succeed.
+After the manual macOS release has signed, notarized, verified, and uploaded both
+architectures, the release-desktop skill dispatches the same workflow:
 
-The verification job and CD qualification build compute the ICT commit-time stamp
-from `scripts/release-stamp.sh` and read the plain upstream semver from
-`UPSTREAM_VERSION`:
-- Backend Docker builds pass `VERSION=<upstream>`, `BUILD=<stamp>`, and
-  `COMMIT=<sha>`.
-- Web Docker builds pass `NEXT_PUBLIC_APP_VERSION=<upstream>`,
-  `NEXT_PUBLIC_APP_BUILD=<stamp>`, `NEXT_PUBLIC_APP_COMMIT=<sha>`, and
-  `NEXT_PUBLIC_BUILD_DATE=<commit-iso>`.
-- Daemon/CLI artifacts and GoReleaser stamp `<upstream>-<stamp>` into
-  `main.version` so `buildinfo.Split` separates `version` and `build`, while
-  keeping the commit SHA in `main.commit` / `main.buildCommit`.
-- Existing semantic-version, `sha-<GITHUB_SHA>`, and stable `latest` image tags
-  stay unchanged.
+```bash
+gh workflow run promote-release.yml --repo multica-ai/multica --ref main -f tag=vX.Y.Z
+```
 
-The joined `<upstream>-<stamp>` string is display-only:
-- `multica version --output json` returns plain `version`, separate `build`, and
-  `display_version`.
-- Self-hosted `/api/config` returns separate `server_version` (plain upstream
-  semver), `server_build` (`YYYYMMDD-hhmm`, omitted when unstamped), and
-  `server_commit` (7-char short SHA, omitted when unknown). The Help popover joins
-  `server_version` and `server_build` for display (`0.6.3-20261021-0856`, or plain
-  `0.6.3` when `server_build` is absent) and hides the row when `server_version`
-  is empty. Official cloud config omits all three server build fields.
+The workflow uses the reviewed validator from `main`, not executable code from the
+requested tag. It serializes promotion globally and only promotes a stable
+semantic version newer than the current Latest. Repeating a completed promotion
+or finishing an older release after a hotfix leaves Latest unchanged.
 
-Runtime update comparisons accept release stamps and `+` metadata, but do not
-treat git-describe, dirty, or prerelease versions as stable releases. CLI
-minimum-version gates retain their existing parsing and dev-build policy.
-Local builds, PR artifacts, release tags, and archive names are unchanged.
-For an unpublished GoReleaser snapshot, leave `RELEASE_BUILD_STAMP` unset; for
-a release outside the workflow, set `UPSTREAM_VERSION` and `RELEASE_BUILD_STAMP`
-before running GoReleaser.
+The gate checks all six update metadata files (`latest-mac.yml`,
+`latest-x64-mac.yml`, `latest.yml`, `latest-arm64.yml`, `latest-linux.yml`, and
+`latest-linux-arm64.yml`), their version against the tag, and each referenced
+artifact's architecture, upload status, and byte size. It also requires all six
+CLI targets in both legacy and versioned archive names plus `checksums.txt`.
+macOS update metadata must reference the ZIP; Windows requires EXE and Linux
+AppImage. Missing blockmaps do not block promotion. The macOS `afterSign` hook
+runs `spctl` and `stapler validate` after notarization and before packaging/upload
+for explicit publishing builds. The release skill requires code signing so an
+unsigned build cannot skip that hook. These host checks do not run for unsigned
+local builds or other platforms. The gate does not download large binaries to
+recalculate SHA-512.
+
+Missing or inconsistent assets produce a `waiting` result with a list of blockers
+and leave Latest unchanged. This is normal when macOS and CI finish in either
+order. The next completed upload path tries again. API/authentication failures
+fail the job. Inspect the promotion run result; a successful dispatch only means
+the run was queued. If needed, correct the failed upload and dispatch the workflow
+again. Do not bypass the gate with a direct `gh release edit --latest`.
+
+Land this workflow on `main` before the first release using `make_latest: false`.
+Until promotion succeeds, stable clients stay on the previous version. Existing
+clients need no changes to benefit from the release ordering fix; friendly failure
+messages and download recovery require the newly shipped Desktop client.
+
+For a faulty release, publish a higher patch version through the same gate.
+Do not move Latest backwards: already installed Windows arm64 clients predating
+the downgrade guard may install the older binary. Removing `make_latest: false`
+reintroduces the incomplete-release window and is not a version rollback.

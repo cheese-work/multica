@@ -148,28 +148,6 @@ func TestNormalizeHandoffDropsStaleHandlerData(t *testing.T) {
 	}
 }
 
-func TestHandoffPreset(t *testing.T) {
-	def := devDefinition()
-	step := func(h Handler) Step { return NormalizeHandoff(Step{StatusKey: "implement", Handler: h}) }
-
-	if got := step(Handler{Type: HandlerAgent, ID: testAgentID, Preset: " deep "}).Handler.Preset; got != "deep" {
-		t.Fatalf("agent preset = %q, want it trimmed", got)
-	}
-	if got := step(Handler{Type: HandlerProjectLead, Preset: "deep"}).Handler.Preset; got != "" {
-		t.Fatalf("project-lead preset = %q, want it dropped", got)
-	}
-	for _, name := range []string{"deep", "base", ""} {
-		if err := ValidateHandoff(step(Handler{Type: HandlerAgent, ID: testAgentID, Preset: name}), def); err != nil {
-			t.Fatalf("preset %q: %v", name, err)
-		}
-	}
-	for _, name := range []string{"reset", "Bad Name", "-x"} {
-		if err := ValidateHandoff(step(Handler{Type: HandlerAgent, ID: testAgentID, Preset: name}), def); err == nil {
-			t.Fatalf("preset %q should be refused", name)
-		}
-	}
-}
-
 func TestEncodeStepsRoundTripsHandoffs(t *testing.T) {
 	def := devDefinition()
 	raw, err := EncodeSteps(def.Steps)
@@ -182,21 +160,6 @@ func TestEncodeStepsRoundTripsHandoffs(t *testing.T) {
 	got, err := DecodeSteps(raw)
 	if err != nil || !reflect.DeepEqual(got, def.Steps) {
 		t.Fatalf("DecodeSteps = %+v, %v; want %+v", got, err, def.Steps)
-	}
-}
-
-func TestEncodeStepsKeepsTheHumanInChargeHandler(t *testing.T) {
-	steps := []Step{{StatusKey: "need_decision", Handler: Handler{Type: HandlerHumanInCharge}}}
-	if steps[0].HandsOff() {
-		t.Fatal("human_in_charge must not hand the issue off by itself")
-	}
-	raw, err := EncodeSteps(steps)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := DecodeSteps(raw)
-	if err != nil || !reflect.DeepEqual(got, steps) {
-		t.Fatalf("DecodeSteps = %+v, %v; want %+v", got, err, steps)
 	}
 }
 
@@ -225,59 +188,20 @@ func TestResolveHandler(t *testing.T) {
 	implement, _ := def.Step("implement")
 	review, _ := def.Step("code_review")
 	todo, _ := def.Step("todo")
-	if typ, id, ok := ResolveHandler(implement, project, "member", creator, Humans{}); !ok || typ != "agent" || id != lead {
+	if typ, id, ok := ResolveHandler(implement, project, "member", creator); !ok || typ != "agent" || id != lead {
 		t.Fatalf("agent handler = %s %v %v", typ, id, ok)
 	}
-	if typ, _, ok := ResolveHandler(review, project, "member", creator, Humans{}); !ok || typ != "member" {
+	if typ, _, ok := ResolveHandler(review, project, "member", creator); !ok || typ != "member" {
 		t.Fatalf("project lead handler = %s %v, want member", typ, ok)
 	}
-	if _, _, ok := ResolveHandler(review, db.Project{}, "member", creator, Humans{}); ok {
+	if _, _, ok := ResolveHandler(review, db.Project{}, "member", creator); ok {
 		t.Fatal("a project without a lead must not resolve a handoff")
 	}
-	if _, _, ok := ResolveHandler(Step{StatusKey: "x", Handler: Handler{Type: HandlerCreator}}, project, "agent", creator, Humans{}); !ok {
+	if _, _, ok := ResolveHandler(Step{StatusKey: "x", Handler: Handler{Type: HandlerCreator}}, project, "agent", creator); !ok {
 		t.Fatal("creator handler should resolve to the issue creator")
 	}
-	if _, _, ok := ResolveHandler(todo, project, "member", creator, Humans{}); ok {
+	if _, _, ok := ResolveHandler(todo, project, "member", creator); ok {
 		t.Fatal("a column without a handoff must not resolve one")
-	}
-}
-
-func TestResolveHumanByRole(t *testing.T) {
-	var requester, lead, owner, agentLead pgtype.UUID
-	_ = requester.Scan("11111111-1111-4111-8111-111111111111")
-	_ = lead.Scan("22222222-2222-4222-8222-222222222222")
-	_ = owner.Scan("33333333-3333-4333-8333-333333333333")
-	_ = agentLead.Scan(testAgentID)
-	step := Step{StatusKey: "blocked", Handler: Handler{Type: HandlerHumanByRole}}
-	memberLead := db.Project{LeadType: pgtype.Text{String: "member", Valid: true}, LeadID: lead}
-	cases := []struct {
-		name    string
-		project db.Project
-		humans  Humans
-		want    pgtype.UUID
-		wantOK  bool
-	}{
-		{"requester wins", memberLead, Humans{Requester: requester, WorkspaceOwner: owner}, requester, true},
-		{"no requester: project lead", memberLead, Humans{WorkspaceOwner: owner}, lead, true},
-		{"no lead: workspace owner", db.Project{}, Humans{WorkspaceOwner: owner}, owner, true},
-		{"lead no longer a member: workspace owner", memberLead, Humans{LeadNotMember: true, WorkspaceOwner: owner}, owner, true},
-		{"agent lead is not human: workspace owner", db.Project{LeadType: pgtype.Text{String: "agent", Valid: true}, LeadID: agentLead}, Humans{WorkspaceOwner: owner}, owner, true},
-		{"nobody to resolve", db.Project{}, Humans{}, pgtype.UUID{}, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			typ, id, ok := ResolveHandler(step, tc.project, "agent", agentLead, tc.humans)
-			if ok != tc.wantOK || (ok && (typ != "member" || id != tc.want)) {
-				t.Fatalf("ResolveHandler = %s %v %v, want member %v %v", typ, id, ok, tc.want, tc.wantOK)
-			}
-		})
-	}
-	if !step.HandsOff() {
-		t.Fatal("human_by_role must hand off")
-	}
-	def := Definition{Steps: stepsFor(ArrangeKeys([]string{"in_progress", "blocked"}))}
-	if err := ValidateHandoff(NormalizeHandoff(step), def); err != nil {
-		t.Fatalf("human_by_role on blocked should validate: %v", err)
 	}
 }
 
@@ -334,7 +258,7 @@ func TestCheckStatusListsAllowedKeys(t *testing.T) {
 }
 
 func TestBriefNamesStepCommandsAndHandlers(t *testing.T) {
-	brief := Brief(BriefInput{
+	brief := stepCommandsBrief(BriefInput{
 		Workflow:        devDefinition(),
 		ProjectName:     "Payments",
 		StatusKey:       "code_review",
@@ -357,7 +281,9 @@ func TestBriefNamesStepCommandsAndHandlers(t *testing.T) {
 		"- `code_review` Code review — hands off to Lin (project lead)   ← current\n",
 		"- `done` Done\n",
 		"Step done      → multica issue status MUL-7 done\n",
-		"Needs changes  → multica issue status MUL-7 implement\n",
+		// Each move names who the target step hands off to.
+		"Needs changes  → multica issue status MUL-7 implement — hands off to Forge\n",
+		"\nYour moves:\n",
 		"Can't proceed  → multica issue status MUL-7 blocked",
 	} {
 		if !strings.Contains(brief, want) {
@@ -366,82 +292,177 @@ func TestBriefNamesStepCommandsAndHandlers(t *testing.T) {
 	}
 }
 
-func TestBriefForARoutingStepUsesRouteCommands(t *testing.T) {
-	in := BriefInput{Workflow: devDefinition(), StatusKey: "code_review", IssueIdentifier: "MUL-7", Routing: true}
-	brief := Brief(in)
-	for _, want := range []string{
-		"Step done      → multica issue route MUL-7 --status done --reason ",
-		"Needs changes  → multica issue route MUL-7 --status implement --reason ",
-		"Can't proceed  → multica issue route MUL-7 --status blocked --reason ",
-		"--confidence ",
-	} {
-		if !strings.Contains(brief, want) {
-			t.Fatalf("routing brief is missing %q:\n%s", want, brief)
-		}
-	}
-	if strings.Contains(brief, "multica issue status") {
-		t.Fatalf("routing brief must not name `multica issue status`:\n%s", brief)
-	}
-	in.Routing = false
-	if plain := Brief(in); strings.Contains(plain, "multica issue route") {
-		t.Fatalf("a step without a routing agent keeps the status commands:\n%s", plain)
-	}
-	in.Routing, in.Observer = true, true
-	if observer := Brief(in); strings.Contains(observer, "multica issue route") {
-		t.Fatalf("an observer gets no commands:\n%s", observer)
-	}
-}
-
-func TestBriefForMovedStep(t *testing.T) {
-	for _, current := range []string{"implement", "todo"} {
-		for _, observer := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/observer=%v", current, observer), func(t *testing.T) {
-				in := BriefInput{
-					Workflow: devDefinition(), StatusKey: current, BoundStep: "waiting_for_merge",
-					IssueIdentifier: "MUL-7", Observer: observer,
-					MovedBy: "Lin\n\tLee\x01", StatusName: func(key string) string { return testCatalog()[key].Name },
+func TestBriefOmitsMovesAtTerminalStatuses(t *testing.T) {
+	for _, status := range []string{"done", "cancelled"} {
+		for _, legacy := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/legacy=%v", status, legacy), func(t *testing.T) {
+				brief := stepCommandsBrief(BriefInput{
+					Workflow:           blockedOnlyDefault(),
+					StatusKey:          status,
+					IssueIdentifier:    "MUL-7",
+					LegacyRuntimeRules: legacy,
+				})
+				for _, unwanted := range []string{"Your moves:", "multica issue status", "Before your run ends, either run one of them"} {
+					if strings.Contains(brief, unwanted) {
+						t.Fatalf("terminal brief carries %q:\n%s", unwanted, brief)
+					}
 				}
-				brief := Brief(in)
 				for _, want := range []string{
-					`bound to "waiting_for_merge"`, statusLabel(testCatalog()[current].Name, current),
-					"last moved by Lin Lee", "Do not change", "overrides the status rules", "member",
-					"Statuses in this workflow:", "   ← current",
+					"- `" + status + "`   ← current",
+					"Leave the issue at this status unless a member explicitly asks you to reopen it.",
 				} {
 					if !strings.Contains(brief, want) {
-						t.Errorf("brief missing %q:\n%s", want, brief)
+						t.Errorf("terminal brief is missing %q:\n%s", want, brief)
 					}
-				}
-				for _, leak := range []string{
-					"Implement it.", "Step instructions:", "You are handling", "Your moves:", "multica issue status",
-					"Needs changes", "Can't proceed", "unless you are explicitly asked", "Before your run ends, either run",
-					"Lin\n", "\x01",
-				} {
-					if strings.Contains(brief, leak) {
-						t.Errorf("stale run received %q:\n%s", leak, brief)
-					}
-				}
-				in.MovedBy = ""
-				if unknown := Brief(in); !strings.Contains(unknown, "last moved by someone else") {
-					t.Fatalf("missing mover must not prevent a mismatch brief:\n%s", unknown)
 				}
 			})
 		}
 	}
 }
 
+func TestBriefKeepsConfiguredMovesAtCustomTerminalStatus(t *testing.T) {
+	verifying := func(next, back string) Definition {
+		def := Definition{Name: "Release", Steps: stepsFor(ArrangeKeys([]string{"in_progress", "verifying", "blocked"}))}
+		return withHandoffs(def, []Step{{
+			StatusKey: "verifying", Handler: Handler{Type: HandlerAgent, ID: testAgentID},
+			Instructions: "Check the deploy.", NextStatusKey: next, BackStatusKey: back,
+		}})
+	}
+	for _, tc := range []struct {
+		name, next, back string
+		want, unwanted   []string
+	}{
+		{
+			name: "next and back", next: "done", back: "in_progress",
+			want: []string{
+				"Step done      → multica issue status DEP-42 done\n",
+				"Needs changes  → multica issue status DEP-42 in_progress\n",
+				"Can't proceed  → comment why, then run Needs changes\n",
+			},
+		},
+		{
+			// Without a configured Next, the status after verifying on the
+			// board (done) is not offered.
+			name: "back only", back: "in_progress",
+			want:     []string{"Needs changes  → multica issue status DEP-42 in_progress\n"},
+			unwanted: []string{"Step done"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			brief := stepCommandsBrief(BriefInput{
+				Workflow:        verifying(tc.next, tc.back),
+				StatusKey:       "verifying",
+				IssueIdentifier: "DEP-42",
+				EffectiveStatus: func(key string) string {
+					if key == "verifying" {
+						return "done"
+					}
+					return key
+				},
+			})
+			for _, want := range append([]string{`You are handling the "verifying" step of DEP-42.`, "> Check the deploy.\n"}, tc.want...) {
+				if !strings.Contains(brief, want) {
+					t.Errorf("brief is missing %q:\n%s", want, brief)
+				}
+			}
+			for _, unwanted := range append([]string{"blocked, then comment why", "has reached the terminal status"}, tc.unwanted...) {
+				if strings.Contains(brief, unwanted) {
+					t.Errorf("brief carries %q:\n%s", unwanted, brief)
+				}
+			}
+		})
+	}
+}
+
+func TestBriefForMovedStep(t *testing.T) {
+	for _, current := range []string{"implement", "todo"} {
+		for _, observer := range []bool{false, true} {
+			for _, mode := range []string{"map", "commands", "legacy"} {
+				t.Run(fmt.Sprintf("%s/observer=%v/%s", current, observer, mode), func(t *testing.T) {
+					in := BriefInput{
+						Workflow: devDefinition(), StatusKey: current, BoundStep: "waiting_for_merge",
+						IssueIdentifier: "MUL-7", Observer: observer, StepCommands: mode == "commands", LegacyRuntimeRules: mode == "legacy",
+						MovedBy: "Lin\n\tLee\x01", StatusName: func(key string) string { return testCatalog()[key].Name },
+					}
+					brief := Brief(in)
+					heading, leaks := "Status map for MUL-7:", []string{}
+					if mode != "map" {
+						heading, leaks = "Statuses in this workflow:", []string{"Needs changes", "Can't proceed"}
+					}
+					for _, want := range []string{
+						`bound to "waiting_for_merge"`, statusLabel(testCatalog()[current].Name, current),
+						"last moved by Lin Lee", "Do not change", "overrides the status rules", "member",
+						heading, "   ← current",
+					} {
+						if !strings.Contains(brief, want) {
+							t.Errorf("brief missing %q:\n%s", want, brief)
+						}
+					}
+					for _, leak := range append(leaks,
+						"Implement it.", "Step instructions:", "You are handling", "Your moves:", "multica issue status",
+						"Set one with", "unless you are explicitly asked", "Before your run ends, either run",
+						"Lin\n", "\x01",
+					) {
+						if strings.Contains(brief, leak) {
+							t.Errorf("stale run received %q:\n%s", leak, brief)
+						}
+					}
+					in.MovedBy = ""
+					if unknown := Brief(in); !strings.Contains(unknown, "last moved by someone else") {
+						t.Fatalf("missing mover must not prevent a mismatch brief:\n%s", unknown)
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestBriefMatchingBindingKeepsNormalInstructions(t *testing.T) {
 	for _, observer := range []bool{false, true} {
-		in := BriefInput{Workflow: devDefinition(), StatusKey: "implement", IssueIdentifier: "MUL-7", Observer: observer}
-		unbound := Brief(in)
-		in.BoundStep, in.MovedBy = in.StatusKey, "Lin"
-		if got := Brief(in); got != unbound {
-			t.Errorf("observer=%v: matching binding changed the normal brief:\n%s", observer, got)
+		for _, legacy := range []bool{false, true} {
+			in := BriefInput{Workflow: devDefinition(), StatusKey: "implement", IssueIdentifier: "MUL-7", Observer: observer, LegacyRuntimeRules: legacy}
+			unbound := Brief(in)
+			in.BoundStep, in.MovedBy = in.StatusKey, "Lin"
+			if got := Brief(in); got != unbound {
+				t.Errorf("observer=%v/legacy=%v: matching binding changed the normal brief:\n%s", observer, legacy, got)
+			}
+		}
+	}
+}
+
+// A current daemon's runtime brief states no built-in status rules and owns
+// the exit check, so the brief neither overrides nor repeats them; an older
+// daemon's still states them, so its brief keeps the override lines (MUL-8145).
+func TestBriefOverridesRuntimeRulesOnlyForLegacyDaemons(t *testing.T) {
+	legacyOnly := []string{
+		"replaces the status rules in your runtime instructions",
+		"These commands are the only status moves for your step",
+		"Before your run ends, either run one of them",
+		"The system does not advance the status when your run ends.",
+	}
+	for _, observer := range []bool{false, true} {
+		current := stepCommandsBrief(BriefInput{Workflow: devDefinition(), StatusKey: "code_review", IssueIdentifier: "MUL-7", Observer: observer})
+		for _, line := range legacyOnly {
+			if strings.Contains(current, line) {
+				t.Errorf("observer=%v: current-daemon brief carries %q:\n%s", observer, line, current)
+			}
+		}
+		for _, word := range []string{"`in_progress`", "`in_review`"} {
+			if strings.Contains(current, word) {
+				t.Errorf("observer=%v: current-daemon brief names %s outside the workflow", observer, word)
+			}
+		}
+	}
+	legacy := stepCommandsBrief(BriefInput{Workflow: devDefinition(), StatusKey: "code_review", IssueIdentifier: "MUL-7", LegacyRuntimeRules: true})
+	for _, line := range legacyOnly {
+		if !strings.Contains(legacy, line) {
+			t.Errorf("legacy-daemon brief is missing %q:\n%s", line, legacy)
 		}
 	}
 }
 
 func TestBriefForObserverLeavesTheStepToItsAssignee(t *testing.T) {
-	brief := Brief(BriefInput{
+	brief := stepCommandsBrief(BriefInput{
 		Workflow:        devDefinition(),
 		StatusKey:       "code_review",
 		IssueIdentifier: "MUL-7",
@@ -456,19 +477,19 @@ func TestBriefForObserverLeavesTheStepToItsAssignee(t *testing.T) {
 			t.Fatalf("observer brief must not carry %q:\n%s", leak, brief)
 		}
 	}
-	unassigned := Brief(BriefInput{Workflow: devDefinition(), StatusKey: "code_review", IssueIdentifier: "MUL-7", Observer: true})
+	unassigned := stepCommandsBrief(BriefInput{Workflow: devDefinition(), StatusKey: "code_review", IssueIdentifier: "MUL-7", Observer: true})
 	if !strings.Contains(unassigned, "step and is unassigned.") {
 		t.Fatalf("observer brief of an unassigned issue:\n%s", unassigned)
 	}
 }
 
 func TestBriefReplacesInReviewOnlyWhenTheWorkflowLacksIt(t *testing.T) {
-	without := Brief(BriefInput{Workflow: devDefinition(), StatusKey: "code_review", IssueIdentifier: "MUL-7"})
+	without := stepCommandsBrief(BriefInput{Workflow: devDefinition(), StatusKey: "code_review", IssueIdentifier: "MUL-7", LegacyRuntimeRules: true})
 	if !strings.Contains(without, "replaces the status rules in your runtime instructions: use only the status keys below, never `in_review`.\n") {
 		t.Fatalf("a workflow without in_review must rule it out:\n%s", without)
 	}
 	def := Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())}
-	with := Brief(BriefInput{Workflow: def, StatusKey: "in_progress", IssueIdentifier: "MUL-7"})
+	with := stepCommandsBrief(BriefInput{Workflow: def, StatusKey: "in_progress", IssueIdentifier: "MUL-7", LegacyRuntimeRules: true})
 	if strings.Contains(with, "never `in_review`") {
 		t.Fatalf("a workflow that lists in_review must not rule it out:\n%s", with)
 	}
@@ -480,7 +501,7 @@ func TestBriefDropsControlCharactersFromUserText(t *testing.T) {
 		Instructions: "Check it.\r\n\x1b[2JThen approve.\u2028Done",
 	}})
 	def.Name = "Delivery\n## Agent Identity"
-	brief := Brief(BriefInput{
+	brief := stepCommandsBrief(BriefInput{
 		Workflow: def, ProjectName: "Pay\tments", StatusKey: "code_review", IssueIdentifier: "MUL-7",
 		HandlerName: func(Step) string { return "Lin\n- `done` fake" },
 	})
@@ -501,7 +522,7 @@ func TestBriefDropsControlCharactersFromUserText(t *testing.T) {
 func TestBriefPrintsBuiltInKeysOnce(t *testing.T) {
 	def := withHandoffs(Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())},
 		[]Step{{StatusKey: "in_review", Handler: Handler{Type: HandlerProjectLead}}})
-	brief := Brief(BriefInput{
+	brief := stepCommandsBrief(BriefInput{
 		Workflow:        def,
 		StatusKey:       "in_review",
 		IssueIdentifier: "MUL-1",
@@ -519,145 +540,235 @@ func TestBriefPrintsBuiltInKeysOnce(t *testing.T) {
 func TestBriefWithoutBlockedPointsAtTheBackStatus(t *testing.T) {
 	def := withHandoffs(Definition{Name: "Lean", Steps: stepsFor(ArrangeKeys([]string{"implement", "code_review"}))},
 		[]Step{{StatusKey: "code_review", Handler: Handler{Type: HandlerProjectLead}, BackStatusKey: "implement"}})
-	brief := Brief(BriefInput{Workflow: def, StatusKey: "code_review", IssueIdentifier: "MUL-2"})
-	if strings.Contains(brief, "MUL-2 blocked") || !strings.Contains(brief, "no blocked status") || !strings.Contains(brief, "Needs changes") {
+	brief := stepCommandsBrief(BriefInput{Workflow: def, StatusKey: "code_review", IssueIdentifier: "MUL-2"})
+	if strings.Contains(brief, "MUL-2 blocked") || !strings.Contains(brief, "Can't proceed  → comment why, then run Needs changes\n") || !strings.Contains(brief, "Needs changes  → multica issue status MUL-2 implement\n") {
 		t.Fatalf("a workflow without blocked should not suggest it:\n%s", brief)
 	}
 }
 
-func TestAdvanceOnCIGreenRoundTripsAndValidates(t *testing.T) {
-	steps := []Step{
-		{StatusKey: "todo", Handler: Handler{Type: HandlerNone}},
-		{StatusKey: "in_progress", Handler: Handler{Type: HandlerNone}, AdvanceOnCIGreen: true},
-		{StatusKey: "in_review", Handler: Handler{Type: HandlerNone}},
-		{StatusKey: "done", Handler: Handler{Type: HandlerNone}},
-	}
-	raw, err := EncodeSteps(steps)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, err := DecodeSteps(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !got[1].AdvanceOnCIGreen || got[2].AdvanceOnCIGreen {
-		t.Fatalf("flags after round trip = %v, %v; want true, false", got[1].AdvanceOnCIGreen, got[2].AdvanceOnCIGreen)
-	}
-	def := Definition{Steps: steps}
-	if err := ValidateHandoff(steps[1], def); err != nil {
-		t.Fatalf("in_progress cannot advance on CI green: %v", err)
-	}
-	for _, key := range []string{"done", "backlog", "blocked", "cancelled"} {
-		def := Definition{Steps: append(append([]Step{}, steps...), Step{StatusKey: key, Handler: Handler{Type: HandlerNone}})}
-		if err := ValidateHandoff(Step{StatusKey: key, Handler: Handler{Type: HandlerNone}, AdvanceOnCIGreen: true}, def); err == nil {
-			t.Fatalf("%q accepted advance_on_ci_green", key)
+// A step without a handler is a progress marker: the assignee owns the issue's
+// whole job until it reaches a step that hands off, so the brief must not
+// frame the column as a stage of its own (MUL-8231).
+func TestBriefTreatsHandlerlessStepsAsOneSpan(t *testing.T) {
+	leadName := func(step Step) string {
+		if step.Handler.Type == HandlerProjectLead {
+			return "Lin (project lead)"
 		}
+		return ""
+	}
+	reviewedDefault := withHandoffs(Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())},
+		[]Step{{StatusKey: "in_review", Handler: Handler{Type: HandlerProjectLead}}})
+	plain := Definition{Name: "Plain", Steps: stepsFor(ArrangeKeys([]string{"in_progress", "in_review"}))}
+	short := Definition{Name: "Short", Steps: stepsFor(ArrangeKeys([]string{"in_progress"}))}
+
+	cases := []struct {
+		name    string
+		def     Definition
+		status  string
+		want    []string
+		wantNot []string
+	}{
+		{
+			name:   "todo before a reviewed in_review",
+			def:    reviewedDefault,
+			status: "todo",
+			want: []string{
+				`You are handling MUL-7. Its "todo" step has no handler, so the work the issue asks for is yours until it reaches the "in_review" step — hands off to Lin (project lead).`,
+				"Starting work  → multica issue status MUL-7 in_progress\n",
+				"Step done      → multica issue status MUL-7 in_review — hands off to Lin (project lead)\n",
+				"finish all of the issue's work in this run before Step done",
+			},
+			wantNot: []string{"You are handling the", "MUL-7 done"},
+		},
+		{
+			name:   "already in_progress",
+			def:    reviewedDefault,
+			status: "in_progress",
+			want: []string{
+				"Step done      → multica issue status MUL-7 in_review — hands off to Lin (project lead)\n",
+			},
+			wantNot: []string{"Starting work", "You are handling the"},
+		},
+		{
+			name:   "no handoff ahead leaves done to a human",
+			def:    plain,
+			status: "todo",
+			want: []string{
+				`Its "todo" step has no handler, so the work the issue asks for is yours to finish.`,
+				"Starting work  → multica issue status MUL-7 in_progress\n",
+				"Step done      → multica issue status MUL-7 in_review\n",
+			},
+			wantNot: []string{"MUL-7 done"},
+		},
+		{
+			name:   "only in_progress before done",
+			def:    short,
+			status: "todo",
+			want: []string{
+				"Starting work  → multica issue status MUL-7 in_progress\n",
+				"Step done      → multica issue status MUL-7 done\n",
+			},
+		},
+		{
+			name:   "no in_progress in the workflow",
+			def:    devDefinition(),
+			status: "todo",
+			want: []string{
+				`until it reaches the "implement" step.`,
+				"Step done      → multica issue status MUL-7 implement\n",
+			},
+			wantNot: []string{"Starting work", "in_progress"},
+		},
+		{
+			// Default with a handoff elsewhere: the unconfigured columns keep
+			// the built-in arc — start in_progress, deliver in_review, and a
+			// re-run at in_review leaves done to a human.
+			name:   "Default handoff elsewhere, from todo",
+			def:    blockedOnlyDefault(),
+			status: "todo",
+			want: []string{
+				"Starting work  → multica issue status MUL-7 in_progress\n",
+				"Step done      → multica issue status MUL-7 in_review\n",
+			},
+			wantNot: []string{"MUL-7 done"},
+		},
+		{
+			name:   "Default handoff elsewhere, at in_review",
+			def:    blockedOnlyDefault(),
+			status: "in_review",
+			want: []string{
+				"Step done      → leave the issue at `in_review`; `done` is set by a human\n",
+			},
+			wantNot: []string{"MUL-7 done", "Starting work"},
+		},
+		{
+			name:   "a step that hands off keeps its stage wording",
+			def:    reviewedDefault,
+			status: "in_review",
+			want: []string{
+				`You are handling the "in_review" step of MUL-7.`,
+				"Step done      → multica issue status MUL-7 done\n",
+			},
+			wantNot: []string{"Starting work", "Steps without a handler"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			brief := stepCommandsBrief(BriefInput{Workflow: tc.def, StatusKey: tc.status, IssueIdentifier: "MUL-7", HandlerName: leadName})
+			for _, want := range tc.want {
+				if !strings.Contains(brief, want) {
+					t.Errorf("brief is missing %q:\n%s", want, brief)
+				}
+			}
+			for _, not := range tc.wantNot {
+				if strings.Contains(brief, not) {
+					t.Errorf("brief carries %q:\n%s", not, brief)
+				}
+			}
+		})
 	}
 }
 
-// deliveryExits is the Default workflow's v5 shape for the three steps whose
-// board-order hint was wrong (CHE-2320).
-func deliveryExits() Definition {
-	keys := []string{"backlog", "todo", "in_progress", "agent_review", "need_decision", "in_review", "merged", "approved", "agent_accepted", "blocked"}
-	def := Definition{Name: "Default", Steps: stepsFor(ArrangeKeys(keys))}
-	return withHandoffs(def, []Step{
-		{StatusKey: "agent_review", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, Edges: []Edge{
-			{To: "in_review", Guard: "agent_verdict(PASS)"}, {To: "in_progress", Guard: "agent_verdict(CHANGES)"},
-			{To: "need_decision", Guard: "agent_done"}, {To: "blocked", Guard: "agent_done"},
-		}},
-		{StatusKey: "merged", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, Edges: []Edge{
-			{To: "done", Guard: "agent_done"}, {To: "blocked", Guard: "agent_done"},
-		}},
-		{StatusKey: "approved", Handler: Handler{Type: HandlerAgent, ID: testAgentID}, Edges: []Edge{
-			{To: "done", Guard: "agent_done"}, {To: "in_progress", Guard: "agent_done"}, {To: "blocked", Guard: "agent_done"},
-		}},
-	})
+// An older daemon's runtime brief states its own in_progress rule, and an
+// observer leaves the status alone: neither gets the span wording.
+func TestBriefKeepsStepWordingForLegacyDaemonsAndObservers(t *testing.T) {
+	def := Definition{Name: "Plain", Steps: stepsFor(ArrangeKeys([]string{"in_progress", "in_review"}))}
+	legacy := stepCommandsBrief(BriefInput{Workflow: def, StatusKey: "todo", IssueIdentifier: "MUL-7", LegacyRuntimeRules: true})
+	if !strings.Contains(legacy, `You are handling the "todo" step of MUL-7.`) || strings.Contains(legacy, "Starting work") ||
+		!strings.Contains(legacy, "Step done      → multica issue status MUL-7 in_progress\n") {
+		t.Fatalf("legacy brief must keep the per-step wording:\n%s", legacy)
+	}
+	observer := stepCommandsBrief(BriefInput{Workflow: def, StatusKey: "todo", IssueIdentifier: "MUL-7", Observer: true})
+	if strings.Contains(observer, "Starting work") || strings.Contains(observer, "has no handler") {
+		t.Fatalf("observer brief must not carry the span wording:\n%s", observer)
+	}
 }
 
-func TestStepDoneHintIsTheFirstAgentDoneMove(t *testing.T) {
-	def := deliveryExits()
-	for step, want := range map[string]string{"approved": "done", "merged": "done", "agent_review": "need_decision"} {
-		if got := def.NextStatus(step); got != want {
-			t.Errorf("%s next = %q, want %q", step, got, want)
+// blockedOnlyDefault is the Default workflow with a handoff only on blocked,
+// so every other column is unconfigured.
+func blockedOnlyDefault() Definition {
+	return withHandoffs(Definition{Name: DefaultName, IsDefault: true, Steps: stepsFor(BuiltInDefaultKeys())},
+		[]Step{{StatusKey: "blocked", Handler: Handler{Type: HandlerProjectLead}}})
+}
+
+// Custom statuses sit before blocked / done / cancelled on the board, so a
+// custom closed status follows the handler-less steps; finished work must not
+// be filed there, while a custom done status ends the work as done does
+// (MUL-9913).
+func TestBriefNeverDeliversToACustomClosedStatus(t *testing.T) {
+	effective := func(key string) string {
+		switch key {
+		case "wont_fix":
+			return "cancelled"
+		case "shipped":
+			return "done"
 		}
-		brief := Brief(BriefInput{Workflow: def, StatusKey: step, IssueIdentifier: "CHE-9"})
-		if line := "Step done      → multica issue status CHE-9 " + want + "\n"; !strings.Contains(brief, line) {
-			t.Errorf("%s brief lacks %q:\n%s", step, line, brief)
-		}
+		return key
+	}
+	cases := []struct {
+		name    string
+		keys    []string
+		status  string
+		want    []string
+		wantNot []string
+	}{
+		{
+			name:    "closed after in_review",
+			keys:    []string{"in_progress", "in_review", "wont_fix", "blocked"},
+			status:  "in_progress",
+			want:    []string{"Step done      → multica issue status MUL-7 in_review\n"},
+			wantNot: []string{"MUL-7 wont_fix"},
+		},
+		{
+			name:    "closed right after in_progress",
+			keys:    []string{"in_progress", "wont_fix"},
+			status:  "todo",
+			want:    []string{"Starting work  → multica issue status MUL-7 in_progress\n", "Step done      → multica issue status MUL-7 done\n"},
+			wantNot: []string{"MUL-7 wont_fix"},
+		},
+		{
+			name:    "done-category custom ends the work like done",
+			keys:    []string{"in_progress", "shipped"},
+			status:  "in_progress",
+			want:    []string{"Step done      → multica issue status MUL-7 shipped\n"},
+			wantNot: []string{"MUL-7 done"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			def := Definition{Name: "Plain", Steps: stepsFor(ArrangeKeys(tc.keys))}
+			brief := stepCommandsBrief(BriefInput{Workflow: def, StatusKey: tc.status, IssueIdentifier: "MUL-7", EffectiveStatus: effective})
+			for _, want := range tc.want {
+				if !strings.Contains(brief, want) {
+					t.Errorf("brief is missing %q:\n%s", want, brief)
+				}
+			}
+			for _, not := range tc.wantNot {
+				if strings.Contains(brief, not) {
+					t.Errorf("brief carries %q:\n%s", not, brief)
+				}
+			}
+		})
+	}
+
+	// A step that hands off falls back to the board too, and skips the
+	// closed status the same way; its author's own choice is kept.
+	reviewed := Definition{Name: "Reviewed", Steps: stepsFor(ArrangeKeys([]string{"in_progress", "code_review", "wont_fix"}))}
+	reviewed = withHandoffs(reviewed, []Step{{StatusKey: "code_review", Handler: Handler{Type: HandlerProjectLead}}})
+	brief := stepCommandsBrief(BriefInput{Workflow: reviewed, StatusKey: "code_review", IssueIdentifier: "MUL-7", EffectiveStatus: effective})
+	if !strings.Contains(brief, "Step done      → multica issue status MUL-7 done\n") || strings.Contains(brief, "MUL-7 wont_fix") {
+		t.Fatalf("a step that hands off must skip the closed status on the board:\n%s", brief)
+	}
+	reviewed = withHandoffs(reviewed, []Step{{StatusKey: "code_review", Handler: Handler{Type: HandlerProjectLead}, NextStatusKey: "wont_fix"}})
+	brief = stepCommandsBrief(BriefInput{Workflow: reviewed, StatusKey: "code_review", IssueIdentifier: "MUL-7", EffectiveStatus: effective})
+	if !strings.Contains(brief, "Step done      → multica issue status MUL-7 wont_fix\n") {
+		t.Fatalf("a configured Next must be kept:\n%s", brief)
 	}
 }
 
-func TestCheckAgentMoveRefusesAMoveTheStepDoesNotAllow(t *testing.T) {
-	def := deliveryExits()
-	for _, to := range []string{"done", "in_progress", "blocked"} {
-		if err := CheckAgentMove(def, "approved", to); err != nil {
-			t.Errorf("approved → %s refused: %v", to, err)
-		}
-	}
-	err := CheckAgentMove(def, "approved", "agent_accepted")
-	if err == nil || !strings.Contains(err.Error(), "done, in_progress, blocked") {
-		t.Fatalf("approved → agent_accepted = %v, want a refusal listing the allowed moves", err)
-	}
-	// A verdict edge is an allowed move too.
-	if err := CheckAgentMove(def, "agent_review", "in_review"); err != nil {
-		t.Errorf("agent_review → in_review refused: %v", err)
-	}
-	// Closing as a duplicate or cancelling stays open to an agent, and a step
-	// without agent exits restricts nothing.
-	if err := CheckAgentMove(def, "approved", "cancelled"); err != nil {
-		t.Errorf("approved → cancelled refused: %v", err)
-	}
-	if err := CheckAgentMove(def, "todo", "in_progress"); err != nil {
-		t.Errorf("todo → in_progress refused: %v", err)
-	}
-}
-
-// A step that waits on a PR fact still has exits: an agent cannot skip past
-// the gate (CHE-2320 review, P1).
-func TestCheckAgentMoveRefusesEveryMoveOffAFactOnlyStep(t *testing.T) {
-	def := withHandoffs(deliveryExits(), []Step{
-		{StatusKey: "in_review", Edges: []Edge{{To: "merged", Guard: "pr.merged", Timeout: "72h"}}},
-	})
-	for _, to := range []string{"done", "merged", "approved"} {
-		if err := CheckAgentMove(def, "in_review", to); err == nil {
-			t.Errorf("in_review → %s allowed for an agent", to)
-		}
-	}
-	if err := CheckAgentMove(def, "in_review", "cancelled"); err != nil {
-		t.Errorf("in_review → cancelled refused: %v", err)
-	}
-}
-
-func TestResolveHandlerRoutingAgentReplacesAgentHandlerOnly(t *testing.T) {
-	var routed pgtype.UUID
-	if err := routed.Scan("11111111-1111-4111-8111-111111111111"); err != nil {
-		t.Fatal(err)
-	}
-	humans := Humans{RoutingAgent: routed}
-	agent := Step{StatusKey: "todo", Handler: Handler{Type: HandlerAgent, ID: testAgentID}}
-	if typ, id, ok := ResolveHandler(agent, db.Project{}, "", pgtype.UUID{}, humans); !ok || typ != HandlerAgent || id != routed {
-		t.Fatalf("agent handler = %s %v %v, want the routing agent", typ, id, ok)
-	}
-	member := Step{StatusKey: "todo", Handler: Handler{Type: HandlerMember, ID: testAgentID}}
-	if _, id, _ := ResolveHandler(member, db.Project{}, "", pgtype.UUID{}, humans); id == routed {
-		t.Fatal("routing agent replaced a member handler")
-	}
-}
-
-func TestStepLintFieldsRoundTrip(t *testing.T) {
-	in := []Step{{
-		StatusKey: "in_progress", Handler: Handler{Type: HandlerNone}, DynamicAssignment: true,
-		LintWaive: []LintWaiver{{Rule: "WF002", Reason: "assigned at run time"}},
-	}}
-	raw, err := EncodeSteps(in)
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := DecodeSteps(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(in, out) {
-		t.Fatalf("round trip lost lint fields: want %+v, got %+v", in, out)
-	}
+// stepCommandsBrief renders the per-step command brief that daemons without
+// the status map still read.
+func stepCommandsBrief(in BriefInput) string {
+	in.StepCommands = true
+	return Brief(in)
 }

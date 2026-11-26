@@ -25,7 +25,7 @@
  *             settled-but-malformed fence still renders as source.
  */
 
-import { createContext, isValidElement, memo, useContext, useMemo, useRef, useSyncExternalStore } from "react";
+import { createContext, isValidElement, memo, useContext, useMemo, useRef, type ReactElement } from "react";
 import ReactMarkdown, {
   type Components,
   type ExtraProps,
@@ -42,41 +42,35 @@ import rehypeSanitize from "rehype-sanitize";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceSlug } from "@multica/core/paths";
 import { useConfigStore } from "@multica/core/config";
-import { useAuthStore } from "@multica/core/auth";
-import { api } from "@multica/core/api";
 import type { Attachment } from "@multica/core/types";
-import { attachmentIdFromDownloadURL } from "@multica/core/types";
+// Subpath imports, not the @multica/ui/markdown barrel: the barrel also
+// exports the shiki-based CodeBlock, which would pull shiki into the chunk.
+import { isAllowedFileCardHref } from "@multica/ui/markdown/file-cards";
+import { isIssueIdentifier } from "@multica/ui/markdown/issue-identifiers";
 import {
-  isAllowedFileCardHref,
-  isIssueIdentifier,
   markdownSanitizeSchema,
   markdownUrlTransform,
-} from "@multica/ui/markdown";
+} from "@multica/ui/markdown/sanitize";
 import {
   resolveClickIntent,
   useAppOrigin,
   useOptionalNavigation,
 } from "../navigation";
-import { ChatSessionMentionCard } from "../chat/components/chat-session-mention-card";
-import { CommentMentionCard } from "../issues/components/comment-mention-card";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
-import { IssueChipLoading } from "../issues/components/issue-chip-loading";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
+import { DocMentionCard } from "../docs/components/doc-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
 import {
   openLink,
   isMentionHref,
   parseWorkspaceEntityLink,
-  parseWorkspaceCommentLink,
-  parseWorkspaceChatLink,
-  rewriteToCurrentOrigin,
   type WorkspaceEntityRef,
 } from "../editor/utils/link-handler";
 import { preprocessMarkdown } from "../editor/utils/preprocess";
 import { highlightToHtml } from "../editor/utils/highlight-markdown";
 import { AttachmentDownloadProvider } from "../editor/attachment-download-context";
-import { useDownloadAttachment } from "../editor/use-download-attachment";
+import { useOpenAttachmentLink } from "../editor/use-open-attachment-link";
 import { Attachment as AttachmentRenderer } from "../editor/attachment";
 import { computeClosedFences, type ClosedFence } from "./streaming-fence";
 import { remarkRepairCjkStrongTrailingWhitespace } from "./cjk-emphasis";
@@ -91,7 +85,6 @@ import { RichTable, RichTableSourceContext } from "./rich-table";
 import { getTextContent } from "./rich-table-model";
 import "katex/dist/katex.min.css";
 import "../editor/styles/index.css";
-import { copyChipKeys } from "./chip-copy";
 import "./rich-content.css";
 
 export type RichContentDensity = "compact" | "document";
@@ -125,18 +118,10 @@ function useClosedFence(offset: number | undefined): ClosedFence | undefined {
  * IssueMentionCard; the wrapper only shields surrounding click handlers
  * (e.g. collapsed-comment expanders) from mention clicks.
  */
-function IssueMentionLink({
-  issueId,
-  label,
-  stableWidth,
-}: {
-  issueId: string;
-  label?: string;
-  stableWidth?: boolean;
-}) {
+function IssueMentionLink({ issueId, label }: { issueId: string; label?: string }) {
   return (
     <span className="inline align-middle" onClick={(e) => e.stopPropagation()}>
-      <IssueMentionCard issueId={issueId} fallbackLabel={label} stableWidth={stableWidth} />
+      <IssueMentionCard issueId={issueId} fallbackLabel={label} />
     </span>
   );
 }
@@ -155,27 +140,18 @@ function IssueMentionLink({
  *     author wrote a link; degrading it to text would strip a working link off
  *     an issue this workspace simply cannot see.
  *
- * A miss covers not-found, failed, and cross-workspace alike. While loading,
- * the autolink entry shows a chip-shaped box instead of the fallback.
+ * A miss covers not-found, still-loading, and cross-workspace alike.
  */
 function IdentifierIssueMentionLink({
   identifier,
   fallback,
-  stableBox = false,
 }: {
   identifier: string;
   fallback: ReactNode;
-  /** Show a chip-sized loading box while the lookup is in flight, and a chip of
-   *  the same width once it resolves. Only the autolink entry sets it; an
-   *  authored URL keeps its anchor and the chip's content width throughout. */
-  stableBox?: boolean;
 }) {
   const issue = useResolveIssueIdentifier(identifier);
-  if (issue === undefined && stableBox) {
-    return <IssueChipLoading identifier={identifier} />;
-  }
   if (!issue) return <>{fallback}</>;
-  return <IssueMentionLink issueId={issue.id} label={identifier} stableWidth={stableBox} />;
+  return <IssueMentionLink issueId={issue.id} label={identifier} />;
 }
 
 /**
@@ -188,6 +164,15 @@ function ProjectMentionLink({ projectId, label }: { projectId: string; label?: s
   return (
     <span className="inline align-middle" onClick={(e) => e.stopPropagation()}>
       <ProjectMentionCard projectId={projectId} fallbackLabel={label} />
+    </span>
+  );
+}
+
+/** Doc mention chip; same click shielding as the issue and project chips. */
+function DocMentionLink({ docId, label }: { docId: string; label?: string }) {
+  return (
+    <span className="inline align-middle" onClick={(e) => e.stopPropagation()}>
+      <DocMentionCard docId={docId} fallbackLabel={label} />
     </span>
   );
 }
@@ -210,9 +195,8 @@ function childrenToLabel(children: ReactNode): string | undefined {
  *
  * Three conditions, each load-bearing:
  *   - BARE: the visible text is the URL itself, which is what the linkify
- *     preprocessor emits for a pasted URL, or (issues only) the issue's own
- *     identifier. `[路线图](…/projects/<id>)` carries a label the author chose,
- *     and replacing it with a chip would discard it.
+ *     preprocessor emits for a pasted URL. `[路线图](…/projects/<id>)` carries a
+ *     label the author chose, and replacing it with a chip would discard it.
  *   - SAME WORKSPACE: a chip resolves its title against the CURRENT workspace,
  *     so unfurling a link into another workspace would turn a working link into
  *     a permanently empty chip. A slug-less path is current-workspace already.
@@ -225,79 +209,18 @@ function unfurlableEntityLink(
   children: ReactNode,
   currentSlug: string | null,
   appOrigin: string | null,
-  rawHref: string = href,
 ): WorkspaceEntityRef | null {
-  const label = childrenToLabel(children);
+  if (childrenToLabel(children) !== href) return null;
   const entity = parseWorkspaceEntityLink(href, appOrigin);
   if (!entity) return null;
-  // A link labelled with its own issue identifier (`[CHE-1](…/issues/CHE-1)`,
-  // what agents write) says nothing the chip does not, so it unfurls too.
-  const labelIsOwnIdentifier = entity.kind === "issue" && label === entity.id;
-  if (label !== href && label !== rawHref && !labelIsOwnIdentifier) return null;
   if (entity.slug !== null && entity.slug !== currentSlug) return null;
   return entity;
 }
 
-function ownAttachmentDownloadId(
-  href: string,
-  appOrigin: string | null,
-  attachmentPublicUrl: string,
-): string | undefined {
-  const id = attachmentIdFromDownloadURL(href);
-  if (!id) return undefined;
-  if (href.startsWith("/") && !href.startsWith("//")) return id;
-
-  // The path and UUID alone do not establish which deployment owns a link.
-  // PublicURL can differ from both the web app origin and the browser's
-  // same-origin API proxy, so the server supplies that origin via /api/config.
-  try {
-    const target = new URL(href);
-    if (target.username || target.password) return undefined;
-    const ownOrigins = [appOrigin, api.getBaseUrl?.(), attachmentPublicUrl];
-    return ownOrigins.some((base) => {
-      if (!base) return false;
-      try {
-        return new URL(base).origin === target.origin;
-      } catch {
-        return false;
-      }
-    }) ? id : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function subscribeToAuth(onChange: () => void) {
-  return useAuthStore.subscribe?.(onChange) ?? (() => {});
-}
-
-// `memberId` omitted = `@all`, which counts as a mention of every signed-in viewer.
-function SelfAwareMention({ memberId, children }: { memberId?: string; children?: ReactNode }) {
-  const isSelf = useSyncExternalStore(
-    subscribeToAuth,
-    () => {
-      const viewerId = useAuthStore.getState?.().user?.id;
-      return memberId === undefined ? Boolean(viewerId) : viewerId === memberId;
-    },
-    () => false,
-  );
-  return (
-    <span data-testid="member-mention" className={cn("mention", isSelf && "mention-self")}>
-      {children}
-    </span>
-  );
-}
-
-function RichLink({ href: rawHref, children: rawChildren }: { href?: string; children?: ReactNode }) {
+function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   const slug = useWorkspaceSlug();
   const appOrigin = useAppOrigin();
-  // A Multica route on a known host (e.g. the Tailscale host) is the same
-  // destination on the current origin; everything below sees the rewritten link.
-  const rewritten = rawHref ? rewriteToCurrentOrigin(rawHref, appOrigin) : null;
-  const href = rewritten ?? rawHref;
-  const children = rewritten && childrenToLabel(rawChildren) === rawHref ? rewritten : rawChildren;
-  const attachmentPublicUrl = useConfigStore((s) => s.attachmentPublicUrl);
-  const downloadAttachment = useDownloadAttachment("markdown-link");
+  const attachmentLink = useOpenAttachmentLink();
   // Platform probe only: `openInNewTab` present means desktop, where native
   // anchor behavior is a dead end and every click must be intercepted. Absent
   // (web), modified clicks are left to the browser — the only way to get a
@@ -308,28 +231,18 @@ function RichLink({ href: rawHref, children: rawChildren }: { href?: string; chi
     return <span className="slash-command">{children}</span>;
   }
 
-  // An attachment download URL written as a plain link — the shape the
-  // server persists into bodies via `buildMarkdownURL`, which in private-
-  // storage deployments is ABSOLUTE and pinned to the API host
-  // (`MULTICA_PUBLIC_URL`). A bare navigation there cannot authenticate:
-  // web's session cookie is host-locked to the API origin and
-  // SameSite=Strict (and Desktop/mobile carry a bearer token no <a> can
-  // send), so the browser gets `401 missing authorization`. Route through
-  // the download hook instead, which refreshes the authenticated metadata
-  // and navigates to the credential-bearing URL the server mints for this
-  // click (capability / presign / CloudFront, per deployment mode). Same
-  // click-time re-sign the file-card renderer already does (MUL-3130).
-  // Also require this deployment's origin; another Multica instance may use
-  // the same path shape with unrelated attachment IDs.
-  const attachmentId = href
-    ? ownAttachmentDownloadId(href, appOrigin, attachmentPublicUrl)
-    : undefined;
+  // A link to one of this deployment's attachments — the stable download URL
+  // `buildMarkdownURL` persists, or a raw storage URL on the CDN. A bare
+  // navigation there either cannot authenticate (the API host's session
+  // cookie is host-locked and SameSite=Strict; Desktop/mobile carry a bearer
+  // token no <a> can send) or lands on the CDN's native media page in a tab
+  // with no way back into the app. The file opens in the app's viewer
+  // instead, and one the viewer cannot show downloads through the
+  // credentialed download hook.
+  const isAttachmentLink = href ? !!attachmentLink.resolve(href) : false;
 
   if (isMentionHref(href)) {
-    const match = href.match(/^mention:\/\/(member|agent|issue|project|comment|all)\/(.+)$/);
-    if (match?.[1] === "comment" && match[2]) {
-      return <CommentMentionCard commentId={match[2]} fallback={children} />;
-    }
+    const match = href.match(/^mention:\/\/(member|agent|issue|project|doc|all)\/(.+)$/);
     if (match?.[1] === "issue" && match[2]) {
       // A bare identifier (from the autolink preprocessor) is carried as the id
       // segment; a real mention carries a UUID. Dispatch on the id shape.
@@ -338,7 +251,6 @@ function RichLink({ href: rawHref, children: rawChildren }: { href?: string; chi
           <IdentifierIssueMentionLink
             identifier={match[2]}
             fallback={match[2]}
-            stableBox
           />
         );
       }
@@ -347,12 +259,10 @@ function RichLink({ href: rawHref, children: rawChildren }: { href?: string; chi
     if (match?.[1] === "project" && match[2]) {
       return <ProjectMentionLink projectId={match[2]} label={childrenToLabel(children)} />;
     }
-    if (match?.[1] === "member" && match[2]) {
-      return <SelfAwareMention memberId={match[2]}>{children}</SelfAwareMention>;
+    if (match?.[1] === "doc" && match[2]) {
+      return <DocMentionLink docId={match[2]} label={childrenToLabel(children)} />;
     }
-    if (match?.[1] === "all") {
-      return <SelfAwareMention>{children}</SelfAwareMention>;
-    }
+    // Member / agent / all mentions
     return <span className="mention">{children}</span>;
   }
 
@@ -368,21 +278,16 @@ function RichLink({ href: rawHref, children: rawChildren }: { href?: string; chi
           e.preventDefault();
           return;
         }
-        // An attachment link downloads through the re-sign path instead of a
-        // credential-less navigation (see attachmentId note above). This holds
-        // on every platform: web's session cookie is host-locked to the API
-        // origin and SameSite=Strict, and Desktop/mobile carry a bearer token
-        // no <a> can send, so a bare navigation 401s either way. The download
-        // hook owns the per-platform mechanism (capability anchor on web,
-        // native bridge on Desktop). Modified clicks stay native — the browser
-        // owns "open in background tab" and the raw URL remains the durable
-        // reference.
-        if (attachmentId && !e.metaKey && !e.ctrlKey && !e.shiftKey) {
+        // Modified clicks on web stay native — the browser owns "open in
+        // background tab" and the raw URL remains the durable reference.
+        // Desktop has no such tab to give, so every click opens in the app.
+        const modified = e.metaKey || e.ctrlKey || e.shiftKey;
+        if (isAttachmentLink && (desktopTabs || !modified)) {
           e.preventDefault();
-          void downloadAttachment(attachmentId);
+          attachmentLink.open(href);
           return;
         }
-        if (!desktopTabs && (e.metaKey || e.ctrlKey || e.shiftKey)) return;
+        if (!desktopTabs && modified) return;
         e.preventDefault();
         openLink(href, slug, appOrigin, resolveClickIntent(e));
       }}
@@ -393,6 +298,7 @@ function RichLink({ href: rawHref, children: rawChildren }: { href?: string; chi
         // (denied, then dropped by the http/https allowlist), so route it.
         if (!desktopTabs) return;
         e.preventDefault();
+        if (attachmentLink.open(href)) return;
         openLink(href, slug, appOrigin, "background-tab");
       }}
     >
@@ -400,30 +306,20 @@ function RichLink({ href: rawHref, children: rawChildren }: { href?: string; chi
     </a>
   );
 
-  // An in-app issue URL with `#comment-<uuid>` renders as the comment chip,
-  // bare or labeled; a miss keeps the author's link and label.
-  const commentRef = href ? parseWorkspaceCommentLink(href, appOrigin) : null;
-  if (commentRef && (commentRef.slug === null || commentRef.slug === slug)) {
-    return <CommentMentionCard commentId={commentRef.commentId} fallback={plainLink} />;
-  }
-
-  // A bare in-app DM URL renders as a DM chip; a miss keeps the link.
-  const chatRef = href && childrenToLabel(rawChildren) === rawHref
-    ? parseWorkspaceChatLink(href, appOrigin)
-    : null;
-  if (chatRef && (chatRef.slug === null || chatRef.slug === slug)) {
+  // The viewer renders beside the anchor, not in it: React events bubble
+  // through portals, so clicks inside the viewer would reach the anchor.
+  if (isAttachmentLink) {
     return (
-      <ChatSessionMentionCard
-        sessionId={chatRef.sessionId}
-        messageId={chatRef.messageId}
-        fallback={plainLink}
-      />
+      <>
+        {plainLink}
+        {attachmentLink.modal}
+      </>
     );
   }
 
   // A bare in-app entity URL renders as the chip its mention form would.
   const entity = href
-    ? unfurlableEntityLink(href, children, slug, appOrigin, rawHref)
+    ? unfurlableEntityLink(href, children, slug, appOrigin)
     : null;
   if (entity?.kind === "issue") {
     // `MUL-123` is the shape "Copy link" produces, so it is the shape most
@@ -436,6 +332,9 @@ function RichLink({ href: rawHref, children: rawChildren }: { href?: string; chi
   }
   if (entity?.kind === "project") {
     return <ProjectMentionLink projectId={entity.id} />;
+  }
+  if (entity?.kind === "doc") {
+    return <DocMentionLink docId={entity.id} />;
   }
 
   return plainLink;
@@ -620,6 +519,62 @@ const REHYPE_PLUGINS = [
   rehypeKatex,
 ] satisfies NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
+/**
+ * Rendered Markdown by source text. A comment mounts again whenever it scrolls
+ * back into a virtualized timeline or its issue is reopened, and parsing it
+ * (remark, rehype, sanitize, KaTeX) and building its element tree is most of
+ * that mount. Plugins, components and the URL transform are module constants,
+ * so the tree is a pure function of the processed source and React can reuse
+ * the elements across mounts. Settled content only: streaming text changes on
+ * every token and would only churn the cache (MUL-9538).
+ */
+interface RenderedMarkdown {
+  processed: string;
+  closedFences: ReturnType<typeof computeClosedFences>;
+  element: ReactElement;
+}
+
+const RENDERED_MARKDOWN_LIMIT = 150;
+const renderedMarkdown = new Map<string, RenderedMarkdown>();
+
+function renderMarkdown(content: string, cdnDomain: string): RenderedMarkdown {
+  const processed = highlightToHtml(
+    preprocessMarkdown(content, { cdnDomain, autolinkIssueIdentifiers: true }),
+  );
+  return {
+    processed,
+    // Derived from the SAME string handed to ReactMarkdown, so offsets line up
+    // with the hast node positions the `code`/`pre` renderers observe. Computing
+    // it from the raw pre-preprocess text would mis-match every rewritten node.
+    closedFences: computeClosedFences(processed),
+    // react-markdown's synchronous renderer is a plain function of its options.
+    element: ReactMarkdown({
+      children: processed,
+      remarkPlugins: REMARK_PLUGINS,
+      rehypePlugins: REHYPE_PLUGINS,
+      urlTransform: markdownUrlTransform,
+      components: COMPONENTS,
+    }),
+  };
+}
+
+function cachedRenderMarkdown(content: string, cdnDomain: string): RenderedMarkdown {
+  const key = `${cdnDomain}\u0000${content}`;
+  const hit = renderedMarkdown.get(key);
+  if (hit) {
+    // Least recently used goes first.
+    renderedMarkdown.delete(key);
+    renderedMarkdown.set(key, hit);
+    return hit;
+  }
+  const rendered = renderMarkdown(content, cdnDomain);
+  renderedMarkdown.set(key, rendered);
+  if (renderedMarkdown.size > RENDERED_MARKDOWN_LIMIT) {
+    renderedMarkdown.delete(renderedMarkdown.keys().next().value!);
+  }
+  return rendered;
+}
+
 // Component
 
 export interface RichContentProps {
@@ -659,22 +614,11 @@ export const RichContent = memo(function RichContent({
   // late config arrival reprocesses exactly once.
   const cdnDomain = useConfigStore((s) => s.cdnDomain);
 
-  const processed = useMemo(
-    () =>
-      highlightToHtml(
-        preprocessMarkdown(content, {
-          cdnDomain,
-          autolinkIssueIdentifiers: true,
-          deferTrailingIssueIdentifier: phase === "streaming",
-        }),
-      ),
-    [content, cdnDomain, phase],
+  const settled = phase === "settled";
+  const { processed, closedFences, element } = useMemo(
+    () => (settled ? cachedRenderMarkdown : renderMarkdown)(content, cdnDomain),
+    [content, cdnDomain, settled],
   );
-
-  // Derived from the SAME string handed to ReactMarkdown, so offsets line up
-  // with the hast node positions the `code`/`pre` renderers observe. Computing
-  // it from the raw pre-preprocess text would mis-match every rewritten node.
-  const closedFences = useMemo(() => computeClosedFences(processed), [processed]);
   const tableSource = useMemo(() => ({ source: content, rendered: processed }), [content, processed]);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
@@ -691,18 +635,11 @@ export const RichContent = memo(function RichContent({
     () => (
       <ClosedFenceContext.Provider value={closedFences}>
         <RichTableSourceContext.Provider value={tableSource}>
-          <ReactMarkdown
-            remarkPlugins={REMARK_PLUGINS}
-            rehypePlugins={REHYPE_PLUGINS}
-            urlTransform={markdownUrlTransform}
-            components={COMPONENTS}
-          >
-            {processed}
-          </ReactMarkdown>
+          {element}
         </RichTableSourceContext.Provider>
       </ClosedFenceContext.Provider>
     ),
-    [processed, closedFences, tableSource],
+    [element, closedFences, tableSource],
   );
 
   return (
@@ -713,7 +650,6 @@ export const RichContent = memo(function RichContent({
         data-mc="content"
         data-density={density}
         data-phase={phase}
-        onCopy={(e) => copyChipKeys(e.nativeEvent)}
         className={cn(
           "rich-text-editor readonly text-body",
           density === "compact" && "rich-content-compact",

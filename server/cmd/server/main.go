@@ -16,15 +16,13 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
-	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/database"
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/dbstartup"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
-	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
-	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
+	"github.com/multica-ai/multica/server/internal/inbox"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/maintenance"
@@ -32,7 +30,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/profiling"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/scheduler"
-	"github.com/multica-ai/multica/server/internal/secrets"
 	"github.com/multica-ai/multica/server/internal/selfhosttelemetry"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -43,7 +40,6 @@ import (
 
 var (
 	version = "dev"
-	build   = ""
 	commit  = "unknown"
 )
 
@@ -312,30 +308,6 @@ func jwtSecretBootError(jwtSecret, appEnv string) error {
 	return auth.ValidateJWTSecret(jwtSecret)
 }
 
-// secretsKeyBootError refuses a production boot without a usable scoped-secrets
-// key (MULTICA_SECRETS_KEY). Outside production a missing or malformed key only
-// disables the feature; the router logs that. The text never carries key material.
-func secretsKeyBootError(status secrets.KeyStatus, appEnv string) error {
-	if !strings.EqualFold(strings.TrimSpace(appEnv), "production") || status == secrets.KeyOK {
-		return nil
-	}
-	msg := "MULTICA_SECRETS_KEY is required: generate one with `openssl rand -base64 32`, set it in the server environment and keep a backup copy"
-	if status == secrets.KeyMalformed {
-		msg += " (value is not base64 of 32 bytes)"
-	}
-	return fmt.Errorf("%s", msg)
-}
-
-// exitOnSecretsKeyBootError stops the process when secretsKeyBootError rejects
-// the environment. main and the subprocess boot test share it.
-func exitOnSecretsKeyBootError() {
-	_, status, _ := secrets.LoadKeyring(os.Getenv)
-	if err := secretsKeyBootError(status, os.Getenv("APP_ENV")); err != nil {
-		slog.Error("refusing to start: "+err.Error(), "app_env", os.Getenv("APP_ENV"))
-		os.Exit(1)
-	}
-}
-
 // newMainHTTPServer builds the public HTTP server with the production timeout
 // defaults. These values are load-bearing safety settings, not cosmetic tuning,
 // so they live in one helper that main() and the config regression test share.
@@ -368,7 +340,6 @@ func main() {
 		)
 		os.Exit(1)
 	}
-	exitOnSecretsKeyBootError()
 	if os.Getenv("JWT_SECRET") == "" {
 		slog.Warn("JWT_SECRET is not set — using insecure dev default (allowed only because APP_ENV is not production).")
 	}
@@ -644,13 +615,15 @@ func main() {
 	// so subscribers must be written first within the same synchronous event dispatch.
 	registerSubscriberListeners(bus, pool)
 	registerActivityListeners(bus, queries)
-	registerMachinePauseListeners(bus, queries)
 	registerNotificationListeners(bus, queries)
 	registerChatReplyNotifications(bus, broadcaster, &membershipChecker{queries: queries})
 	registerIssueUnreadListeners(bus, queries)
+	inboxTrimmer := inbox.NewTrimmer(queries, bus)
+	inboxTrimmer.Subscribe(bus)
 
 	metricsConfig := obsmetrics.ConfigFromEnv()
 	var metricsServer *http.Server
+	var inboxReadMetrics *obsmetrics.InboxReadMetrics
 	var httpMetrics *obsmetrics.HTTPMetrics
 	var businessMetrics *obsmetrics.BusinessMetrics
 	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
@@ -666,6 +639,7 @@ func main() {
 			Version:     version,
 			Commit:      commit,
 		})
+		inboxReadMetrics = metricsRegistry.InboxRead
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
 		channelMediaMetrics = metricsRegistry.ChannelMedia
@@ -713,6 +687,7 @@ func main() {
 	}
 
 	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
+		InboxReadMetrics:    inboxReadMetrics,
 		HTTPMetrics:         httpMetrics,
 		BusinessMetrics:     businessMetrics,
 		ChannelLeaseMetrics: channelLeaseMetrics,
@@ -730,12 +705,7 @@ func main() {
 	// member_delegation_day exists only for self-host telemetry; DO_NOT_TRACK
 	// stops writing it as well as sending the snapshot.
 	h.TaskService.RecordMemberActivity = telemetryConfig.Enabled
-	// One server_deploy row per new commit (CHE-5709, D14). Display data only:
-	// a failed write is logged and never stops the boot.
-	deployVersion, _, deployCommit := normalizeServerBuildInfo(version, build, commit)
-	if _, err := h.RecordServerDeploy(context.Background(), deployCommit, deployVersion); err != nil {
-		slog.Warn("record server deploy failed", "error", err)
-	}
+	h.InboxTrimmer = inboxTrimmer
 	var replicaQueries *db.Queries
 	if replicaPool != nil {
 		replicaQueries = db.New(replicaPool)
@@ -756,11 +726,6 @@ func main() {
 	if maintenanceErr != nil {
 		slog.Error("maintenance listener disabled", "error", maintenanceErr)
 	}
-	// CHE-4746: gateway-facing control-plane routes live on this second listener only.
-	internalServer, internalErr := newInternalServer(port, internalMounts(h)...)
-	if internalErr != nil {
-		slog.Error("internal listener disabled", "error", internalErr)
-	}
 
 	// Start background workers.
 	sweepCtx, sweepCancel := context.WithCancel(context.Background())
@@ -773,12 +738,6 @@ func main() {
 	// claim until the cache TTL expires.
 	taskSvc, autopilotSvc := backgroundServices(h)
 	registerAutopilotListeners(bus, autopilotSvc)
-	// A pending workflow switch applies when its issue's last live task ends (CHE-7669).
-	h.RegisterDeferredWorkflowSwitch(bus)
-	// A chained run that failed gets one retry, then blocks the issue (CHE-7675). After the switch: a pending switch wins.
-	h.RegisterChainedRunRetry(bus)
-	// A task's Steel browser leases end with the task (CHE-4734).
-	(&browserlease.Revoker{Queries: queries, Bus: bus, Pool: pool, Audit: handler.BrowserLeaseAudit}).Register()
 
 	// Construct a LivenessStore that mirrors the one wired into the HTTP
 	// handler. Both the heartbeat write path (handler) and the sweeper read
@@ -807,17 +766,6 @@ func main() {
 		go telemetryWorker.Run(sweepCtx)
 	}
 	go runDelegatedFailureRecoverySweeper(sweepCtx, taskSvc)
-	// Claim poll histogram -> claim_poll_stats once a minute (CHE-8749 S7a).
-	go service.RunClaimPollStatsFlusher(sweepCtx, taskSvc.PollStats, queries)
-	go runBackgroundDeadlineSweeper(sweepCtx, taskSvc)
-	go runProviderReleaseController(sweepCtx, taskSvc)
-	// Heartbeat + silence alert for the read-only provider probe (CHE-4576);
-	// off when MULTICA_PROVIDER_RECOVERY_BASE_URL is unset. Webhook alerts, the
-	// external heartbeat and the probe credential are opt-in via MULTICA_PROVIDER_*
-	// env (CHE-4580).
-	if taskSvc.ProviderFailureProbe != nil {
-		service.StartProviderProbeMonitor(sweepCtx, os.Getenv, taskSvc.ProviderFailureProbe)
-	}
 	// Seven-day runtime retention does not share the 30-second liveness tick:
 	// its bounded transactions run independently once per hour, so a slow GC
 	// round cannot delay offline detection or task recovery.
@@ -825,15 +773,12 @@ func main() {
 	// Source-context cleanup is object-store work, so it gets its own goroutine
 	// instead of a slot in the runtime sweep tick.
 	go runSourceContextSweeper(sweepCtx, taskSvc)
-	go runWebhookNonceSweeper(sweepCtx, queries)
-	go h.RunElevationFenceSweeper(sweepCtx)
-	go h.RunRunBudgetHookSweeper(sweepCtx)
-	go h.RunSteerReplaySweeper(sweepCtx)
+	go inboxTrimmer.Run(sweepCtx)
 	go runEnvironmentLogSweeper(sweepCtx, queries)
+	go runCommentIdempotencySweeper(sweepCtx, queries)
 	if h.ConnectedApps != nil {
 		go h.ConnectedApps.RunSweeper(sweepCtx)
 	}
-	go h.RunHandoffIntentSweeper(sweepCtx)
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -846,57 +791,21 @@ func main() {
 	if h.WebhookDeliveryWorker != nil {
 		go h.WebhookDeliveryWorker.Run(sweepCtx)
 	}
-	if h.DecisionWorker != nil {
-		go h.DecisionWorker.Run(sweepCtx)
-	}
-	pushWorker := startPushWorker(sweepCtx, pool, queries)
 	if h.SeatCapacityWorker != nil {
 		go h.SeatCapacityWorker.Run(sweepCtx)
 	}
 	if h.TelegramOutbound != nil {
 		h.TelegramOutbound.Start(sweepCtx)
 	}
-	// CHE-3418: a malformed GITHUB_ALLOWED_ACCOUNT_IDS must stop startup. It also
-	// installs the refresh pipeline's workspace filter, so it runs before the
-	// workers start.
-	if err := h.ConfigureGitHubAllowlistFromEnv(); err != nil {
-		slog.Error("invalid GitHub allowlist", "error", err)
-		os.Exit(1)
+	if h.WeixinOutbound != nil {
+		h.WeixinOutbound.Start(sweepCtx)
 	}
-	// CHE-4116: move settings.routing_agent into background_agents.routing. Idempotent;
-	// a failed copy keeps the old key, so startup stops instead of routing from nothing.
-	if n, err := h.MigrateRoutingAgentSetting(sweepCtx); err != nil {
-		slog.Error("routing agent setting copy failed", "error", err)
-		os.Exit(1)
-	} else if n > 0 {
-		slog.Info("routing agent setting moved to background_agents.routing", "workspaces", n)
+	if h.WeixinInstall != nil {
+		go h.WeixinInstall.RunCleanup(sweepCtx)
 	}
 	// GitHub PR-card API snapshot pipeline (MUL-5265): worker pool + TTL sweeper.
 	// No-op when unconfigured (no App private key).
-	// CHE-4143 step 7: stack-link triggers (pull_request webhooks via the
-	// handler, and a bounded pass in the 10 min sweep). The mode gate and the
-	// GITHUB_STACK_AUTOLINK=0 kill live in the executor; the default mode is report.
-	if h.PRRefresh.Enabled() {
-		stackStore := ghstack.NewStore(pool)
-		stackLinker := &ghstack.Dispatcher{
-			Runner:  &ghstack.Executor{API: h.PRRefresh.Client(), Modes: stackStore, Reporter: stackStore},
-			Links:   stackStore,
-			Backoff: h.PRRefresh,
-		}
-		stackLinker.Start(sweepCtx)
-		h.StackAutolink = stackLinker
-		h.PRRefresh.AddSweep(stackLinker.Sweep) // before Start: the sweep loop reads the list
-	}
 	h.PRRefresh.Start(sweepCtx)
-	go h.BackfillGitHubAccountIDs(sweepCtx)
-	go h.RunGitHubIntakeWorker(sweepCtx)
-	// CHE-2301: relink same-repository PRs the old fork-flag check rejected.
-	go func() {
-		if _, err := h.RepairUnverifiedHeadPullRequests(sweepCtx); err != nil {
-			slog.Warn("github repair: unverified head sweep incomplete", "error", err)
-		}
-	}()
-	go h.RunGitHubIntakeReconciler(sweepCtx)
 
 	// Channel inbound supervisor (MUL-3620): holds the §4.4 WS lease per
 	// installation and drives each channel.Channel. It is channel-agnostic,
@@ -943,10 +852,7 @@ func main() {
 	// missing because of an unusual partial-migration state — by
 	// logging them on the tick that fails and retrying on the next
 	// cycle, so a temporary outage does not crash the server.
-	// TickInterval 10 s: the ops snapshot sampler runs a 30 s plan, and a tick
-	// every 30 s lets jitter skip a plan (CHE-2586 L1). Other jobs only pay a
-	// cheap due-plan check per tick.
-	schedulerMgr := scheduler.NewManager(pool, scheduler.Options{TickInterval: 10 * time.Second})
+	schedulerMgr := scheduler.NewManager(pool, scheduler.Options{})
 	if err := schedulerMgr.Register(scheduler.TaskUsageHourlyJob(pool)); err != nil {
 		slog.Warn("scheduler: failed to register task_usage_hourly rollup job", "error", err)
 	}
@@ -962,54 +868,11 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.IssueWakeupJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register issue wakeups", "error", err)
 	}
-	// CHE-5121: shared, bounded refresh of the merge pause variables. Without
-	// the GitHub App the reader stays nil, the job is a no-op and the pause
-	// state stays unknown, which holds every merge_eligibility dispatch.
-	pauseVars := &service.IssueWakeupService{Tasks: taskSvc}
-	if ghClient, err := ghsnapshot.NewClientFromEnv(); err != nil {
-		slog.Warn("github: merge pause refresh disabled (invalid App private key)", "err", err)
-	} else if ghClient != nil {
-		pauseVars.PauseVars = ghClient // ponytail: own token cache, share the handler's client if App-JWT budget matters
-	}
-	if err := schedulerMgr.Register(scheduler.MergePauseRefreshJob(pauseVars)); err != nil {
-		slog.Error("scheduler: register merge pause refresh", "error", err)
-	}
-	// CHE-1082: the legacy backfill that opens scoped wakeup definition writes.
-	// It runs from the deploy that ships it, so activation needs no manual step.
-	if err := schedulerMgr.Register(scheduler.WakeupDefinitionActivationJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
-		slog.Error("scheduler: register wakeup definition activation", "error", err)
-	}
-	if err := schedulerMgr.Register(scheduler.ChatWakeupJob(&service.ChatWakeupService{Tasks: taskSvc})); err != nil {
-		slog.Error("scheduler: register chat wakeups", "error", err)
-	}
-	if err := schedulerMgr.Register(scheduler.StageQueueReleaseJob(taskSvc)); err != nil {
-		slog.Error("scheduler: register stage queue release", "error", err)
-	}
-	if err := schedulerMgr.Register(scheduler.AdmissionDeferralReleaseJob(taskSvc)); err != nil {
-		slog.Error("scheduler: register admission deferral release", "error", err)
-	}
 	if err := schedulerMgr.Register(scheduler.ChildEventSweepJob(&service.IssueWakeupService{Tasks: taskSvc})); err != nil {
 		slog.Error("scheduler: register child-done sweep", "error", err)
 	}
-	if err := schedulerMgr.Register(scheduler.DMProgressDispatchJob(&service.DMProgressDispatcher{Pool: pool, Queries: queries, Bus: bus, DeliverCards: dmProgressDeliveryEnabled()})); err != nil {
-		slog.Error("scheduler: register dm progress dispatch", "error", err)
-	}
-	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
-		slog.Error("scheduler: register idle started guard", "error", err)
-	}
-	if err := schedulerMgr.Register(scheduler.BlockedEntryLinkSweepJob(h)); err != nil {
-		slog.Error("scheduler: register blocked entry link sweep", "error", err)
-	}
-	if err := schedulerMgr.Register(scheduler.MemberOwnedSweepJob(h)); err != nil {
-		slog.Error("scheduler: register member-owned issue sweep", "error", err)
-	}
-	// CHE-5708: scheduled daemon update cycles fire per machine and drain on a
-	// 30 s driver. The ready_to_update hook (UpdateCycleReady) lands with child 9.
-	if err := schedulerMgr.Register(scheduler.DaemonUpdateFireJob(pool, queries, h)); err != nil {
-		slog.Error("scheduler: register daemon update fire", "error", err)
-	}
-	if err := schedulerMgr.Register(scheduler.DaemonUpdateCyclesJob(h)); err != nil {
-		slog.Error("scheduler: register daemon update cycles", "error", err)
+	if err := schedulerMgr.Register(scheduler.ChatWakeupJob(&service.ChatWakeupService{Tasks: taskSvc})); err != nil {
+		slog.Error("scheduler: register chat wakeups", "error", err)
 	}
 	if err := schedulerMgr.Register(scheduler.AutopilotScheduleDispatchJob(pool, queries, autopilotSvc)); err != nil {
 		slog.Warn("scheduler: failed to register autopilot_schedule_dispatch job", "error", err)
@@ -1018,32 +881,6 @@ func main() {
 	// machinery. The job is inert while plugins_v1 is disabled.
 	if err := schedulerMgr.Register(scheduler.PluginHookScheduleDispatchJob(queries, h.PluginService)); err != nil {
 		slog.Warn("scheduler: failed to register plugin_hook_schedule_dispatch job", "error", err)
-	}
-	// CHE-766: scheduled deletion of provenance_export_log rows once they pass
-	// each workspace's own export_manifest_retention_days (default 90), read
-	// live at deletion time with a workspace-scoped receipt per sweep.
-	if err := schedulerMgr.Register(scheduler.ProvenanceExportRetentionJob(queries, pool)); err != nil {
-		slog.Warn("scheduler: failed to register provenance_export_retention job", "error", err)
-	}
-	// CHE-2147: the workflow run/job mirror behind the github_run wakeup
-	// condition is a 30-day cache; drop rows with no event for that long.
-	if err := schedulerMgr.Register(scheduler.GitHubWorkflowRetentionJob(queries)); err != nil {
-		slog.Warn("scheduler: failed to register github_workflow_retention job", "error", err)
-	}
-	// CHE-4937: settle stored release receipts GitHub will not redeliver.
-	if err := schedulerMgr.Register(scheduler.ReleaseReceiptSweepJob(h)); err != nil {
-		slog.Warn("scheduler: failed to register github_release_receipt_sweep job", "error", err)
-	}
-	// CHE-2586 L1: ops page snapshots (30 s sampler, 5 min rollup, retention).
-	for _, job := range []scheduler.JobSpec{
-		scheduler.OpsSnapshotSamplerJob(queries),
-		scheduler.OpsSnapshotRollupJob(queries),
-		scheduler.OpsRetentionJob(queries),
-		scheduler.HostSampleRollupJob(queries),
-	} {
-		if err := schedulerMgr.Register(job); err != nil {
-			slog.Warn("scheduler: failed to register ops job", "job", job.Name, "error", err)
-		}
 	}
 	go func() {
 		_ = schedulerMgr.Run(sweepCtx)
@@ -1063,15 +900,6 @@ func main() {
 			slog.Info("maintenance server starting", "addr", maintenanceServer.Addr)
 			if err := maintenanceServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				slog.Error("maintenance listener disabled", "error", err)
-			}
-		}()
-	}
-
-	if internalServer != nil {
-		go func() {
-			slog.Info("internal listener starting", "addr", internalServer.Addr)
-			if err := internalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				slog.Error("internal listener disabled", "error", err)
 			}
 		}()
 	}
@@ -1120,17 +948,6 @@ func main() {
 				_ = maintenanceServer.Close()
 			}
 		},
-		DrainInternal: func() {
-			if internalServer == nil {
-				return
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := internalServer.Shutdown(ctx); err != nil {
-				slog.Error("internal listener shutdown interrupted", "error", err)
-				_ = internalServer.Close()
-			}
-		},
 		DrainHTTP: func() {
 			apiShutdownCtx, apiShutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			if err := srv.Shutdown(apiShutdownCtx); err != nil {
@@ -1148,17 +965,10 @@ func main() {
 				slog.Warn("webhook delivery worker did not exit within shutdown timeout")
 			}
 		},
-		JoinDecisionWorker: func() {
-			if h.DecisionWorker != nil && !h.DecisionWorker.WaitWithTimeout(5*time.Second) {
-				slog.Warn("decision worker did not exit within shutdown timeout")
-			}
-		},
-		JoinPushWorker: func() {
-			if pushWorker != nil && !pushWorker.WaitWithTimeout(5*time.Second) {
-				slog.Warn("push worker did not exit within shutdown timeout")
-			}
-		},
 		JoinTelegram: func() {
+			if h.WeixinOutbound != nil && !h.WeixinOutbound.WaitWithTimeout(5*time.Second) {
+				slog.Warn("weixin outbound workers did not exit within shutdown timeout")
+			}
 			if h.TelegramOutbound != nil && !h.TelegramOutbound.WaitWithTimeout(5*time.Second) {
 				slog.Warn("telegram outbound workers did not exit within shutdown timeout")
 			}
@@ -1206,16 +1016,4 @@ func main() {
 		},
 	}.run()
 	slog.Info("server stopped")
-}
-
-// dmProgressDeliveryEnabled is the server switch for posting progress cards to
-// DMs (CHE-7568). It is off unless MULTICA_DM_PROGRESS_DELIVERY is "true" or
-// "1"; turn it on in the release that ships the web card and its mute controls
-// (CHE-3408).
-func dmProgressDeliveryEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("MULTICA_DM_PROGRESS_DELIVERY"))) {
-	case "true", "1":
-		return true
-	}
-	return false
 }

@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -561,12 +562,217 @@ func newIssueCommentAddTestCmd() *cobra.Command {
 	cmd.Flags().Bool("allow-external-file", false, "")
 	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().String("parent", "", "")
-	cmd.Flags().Bool("resolve-thread", false, "")
 	cmd.Flags().StringSlice("steer", nil, "")
 	cmd.Flags().Bool("steer-active", false, "")
-	cmd.Flags().StringSlice("supersedes", nil, "")
+	cmd.Flags().String("idempotency-key", "", "")
 	cmd.Flags().String("output", "json", "")
 	return cmd
+}
+
+// GH #8221: an agent that reruns `comment add` after a lost response must send
+// the same Idempotency-Key, so the server returns the saved comment instead of
+// posting a duplicate.
+func TestRunIssueCommentAddIdempotencyKey(t *testing.T) {
+	const (
+		issueID = "11111111-1111-4111-8111-111111111111"
+		taskID  = "22222222-2222-4222-8222-222222222222"
+	)
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("shot.png", []byte("png-v1"), 0o644); err != nil {
+		t.Fatalf("write attachment: %v", err)
+	}
+
+	var keys []string
+	replay := false
+	uploads, lookups := 0, 0
+	var lookupKey, lookupParent string
+	last := func() string {
+		if len(keys) == 0 {
+			return ""
+		}
+		return keys[len(keys)-1]
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/upload-file":
+			uploads++
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": fmt.Sprintf("attachment-%d", uploads), "url": fmt.Sprintf("https://files.test/%d.png", uploads)})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID+"/comments/idempotent":
+			lookups++
+			lookupKey, lookupParent = r.Header.Get("Idempotency-Key"), r.URL.Query().Get("parent_id")
+			if !replay {
+				http.Error(w, `{"error":"no comment"}`, http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Idempotent-Replayed", "true")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "comment-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/comments":
+			keys = append(keys, r.Header.Get("Idempotency-Key"))
+			if replay {
+				w.Header().Set("Idempotent-Replayed", "true")
+				w.WriteHeader(http.StatusOK)
+			} else {
+				w.WriteHeader(http.StatusCreated)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "comment-1"})
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	run := func(flags map[string]string, attachments ...string) string {
+		t.Helper()
+		cmd := newIssueCommentAddTestCmd()
+		_ = cmd.Flags().Set("output", "table")
+		for name, value := range flags {
+			_ = cmd.Flags().Set(name, value)
+		}
+		for _, path := range attachments {
+			_ = cmd.Flags().Set("attachment", path)
+		}
+		stderr := captureStderr(t)
+		defer stderr.restore()
+		if err := runIssueCommentAdd(cmd, []string{issueID}); err != nil {
+			t.Fatalf("runIssueCommentAdd: %v", err)
+		}
+		return stderr.read()
+	}
+
+	// Outside an agent run, no key unless one is passed.
+	run(map[string]string{"content": "verdict"})
+	if last() != "" {
+		t.Fatalf("key outside an agent run = %q, want none", last())
+	}
+	run(map[string]string{"content": "verdict", "idempotency-key": "my-key"})
+	if last() != "my-key" {
+		t.Fatalf("explicit key = %q, want my-key", last())
+	}
+
+	t.Setenv("MULTICA_TASK_ID", taskID)
+	body := map[string]string{"content": "verdict ![shot](shot.png)", "parent": "33333333-3333-4333-8333-333333333333"}
+	run(body, "shot.png")
+	first := last()
+	if !strings.HasPrefix(first, "cli-task-v1:") {
+		t.Fatalf("derived key = %q", first)
+	}
+	if lookups != 1 || uploads != 1 {
+		t.Fatalf("first attempt lookups = %d, uploads = %d, want 1 and 1", lookups, uploads)
+	}
+	// The rerun finds the saved comment before uploading anything, so it
+	// neither re-uploads the file nor posts again.
+	replay = true
+	posts := len(keys)
+	report := run(body, "shot.png")
+	if lookups != 2 || uploads != 1 || len(keys) != posts {
+		t.Fatalf("rerun lookups = %d, uploads = %d, posts = %d, want 2, 1, %d", lookups, uploads, len(keys), posts)
+	}
+	if lookupKey != first || lookupParent != body["parent"] {
+		t.Fatalf("lookup key %q parent %q, want %q %q", lookupKey, lookupParent, first, body["parent"])
+	}
+	if !strings.Contains(report, "already posted") || strings.Contains(report, "Comment added") {
+		t.Fatalf("replay stderr = %q, want the already-posted notice", report)
+	}
+	// Without attachments there is nothing to save by asking first: the POST
+	// itself replays.
+	run(map[string]string{"content": "no files", "parent": body["parent"]})
+	run(map[string]string{"content": "no files", "parent": body["parent"]})
+	if lookups != 2 || keys[len(keys)-1] != keys[len(keys)-2] {
+		t.Fatalf("attachment-free rerun lookups = %d, keys %q / %q", lookups, keys[len(keys)-2], keys[len(keys)-1])
+	}
+	replay = false
+
+	for name, change := range map[string]func(){
+		"content":    func() { run(map[string]string{"content": "other", "parent": body["parent"]}, "shot.png") },
+		"parent":     func() { run(map[string]string{"content": body["content"]}, "shot.png") },
+		"attachment": func() { _ = os.WriteFile("shot.png", []byte("png-v2"), 0o644); run(body, "shot.png") },
+	} {
+		change()
+		if last() == first {
+			t.Fatalf("changing %s kept the key %q", name, first)
+		}
+	}
+	t.Setenv("MULTICA_TASK_ID", "44444444-4444-4444-8444-444444444444")
+	_ = os.WriteFile("shot.png", []byte("png-v1"), 0o644)
+	run(body, "shot.png")
+	if last() == first {
+		t.Fatalf("another run reused the key %q", first)
+	}
+}
+
+// When a keyed POST ends without a response, stderr must say that rerunning
+// is safe; otherwise an agent falls back to checking the thread and drops the
+// comment when that check also times out (GH #8221).
+func TestRunIssueCommentAddTimeoutSaysRerunIsSafe(t *testing.T) {
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	const hint = "is safe: the server returns the comment already posted"
+	var responseStatus atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/comments":
+			status := int(responseStatus.Load())
+			_, _ = io.ReadAll(r.Body)
+			if status != 0 {
+				http.Error(w, `{"error":"rejected"}`, status)
+				return
+			}
+			// The server got the comment; the response never arrives.
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	defer close(release)
+	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+	t.Setenv("MULTICA_HTTP_TIMEOUT", "300ms")
+
+	run := func(flags map[string]string) string {
+		t.Helper()
+		cmd := newIssueCommentAddTestCmd()
+		_ = cmd.Flags().Set("content", "verdict")
+		for name, value := range flags {
+			_ = cmd.Flags().Set(name, value)
+		}
+		stderr := captureStderr(t)
+		defer stderr.restore()
+		if err := runIssueCommentAdd(cmd, []string{issueID}); err == nil {
+			t.Fatalf("runIssueCommentAdd succeeded, want an error")
+		}
+		return stderr.read()
+	}
+
+	if report := run(nil); strings.Contains(report, hint) {
+		t.Fatalf("unkeyed timeout stderr = %q, want no rerun hint", report)
+	}
+	if report := run(map[string]string{"idempotency-key": "k1"}); !strings.Contains(report, "Rerunning with the same --idempotency-key "+hint) {
+		t.Fatalf("explicit-key timeout stderr = %q", report)
+	}
+	t.Setenv("MULTICA_TASK_ID", "22222222-2222-4222-8222-222222222222")
+	if report := run(nil); !strings.Contains(report, "Rerunning this exact command "+hint) {
+		t.Fatalf("agent timeout stderr = %q", report)
+	}
+	responseStatus.Store(http.StatusBadGateway)
+	if report := run(nil); !strings.Contains(report, hint) {
+		t.Fatalf("5xx stderr = %q, want the rerun hint", report)
+	}
+	responseStatus.Store(http.StatusUnprocessableEntity)
+	if report := run(nil); strings.Contains(report, hint) {
+		t.Fatalf("422 stderr = %q, want no rerun hint", report)
+	}
 }
 
 func TestRunIssueCommentAddUploadsAttachmentWithoutIssueID(t *testing.T) {
@@ -974,10 +1180,6 @@ func newIssueCreateTestCmd() *cobra.Command {
 	cmd.Flags().Bool("assignee-picker", false, "")
 	cmd.Flags().String("parent", "", "")
 	cmd.Flags().String("project", "", "")
-	cmd.Flags().String("workflow", "", "")
-	cmd.Flags().String("decision-id", "", "")
-	cmd.Flags().Bool("print-hash", false, "")
-	cmd.Flags().String("on-behalf-of", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().Bool("allow-duplicate", false, "")
 	cmd.Flags().String("output", "json", "")
@@ -1126,34 +1328,6 @@ func TestRunIssueCreateRejectsDuplicateAndFilterPropertySyntaxBeforePost(t *test
 	}
 }
 
-func TestRunIssueCreateSendsOnBehalfOfAsRequestedByID(t *testing.T) {
-	t.Chdir(t.TempDir())
-	var body map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode body: %v", err)
-		}
-		json.NewEncoder(w).Encode(map[string]any{
-			"id": "issue-1", "identifier": "MUL-1", "title": "For a member", "status": "todo", "priority": "none",
-		})
-	}))
-	defer srv.Close()
-
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "test-token")
-
-	cmd := newIssueCreateTestCmd()
-	_ = cmd.Flags().Set("title", "For a member")
-	_ = cmd.Flags().Set("on-behalf-of", "user-42")
-	if err := runIssueCreate(cmd, nil); err != nil {
-		t.Fatalf("runIssueCreate: %v", err)
-	}
-	if got := body["requested_by_id"]; got != "user-42" {
-		t.Fatalf("requested_by_id = %#v, want user-42 in request body", got)
-	}
-}
-
 func TestRunIssueCreateSendsAllowDuplicate(t *testing.T) {
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1237,89 +1411,6 @@ func TestRunIssueCreateSendsExistingAttachmentIDs(t *testing.T) {
 		if got[i] != w {
 			t.Fatalf("attachment_ids[%d] = %#v, want %q (all=%#v)", i, got[i], w, got)
 		}
-	}
-}
-
-// newIssueRerunTestCmd builds a throwaway cobra.Command carrying the flags
-// issueRerunCmd registers, so runIssueRerun can be exercised directly without
-// going through the full command tree (mirrors newIssueCreateTestCmd).
-func newIssueRerunTestCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "rerun"}
-	cmd.Flags().String("output", "json", "")
-	cmd.Flags().String("reason", "", "")
-	return cmd
-}
-
-// TestRunIssueRerunSendsReason is the CHE-525 CLI acceptance test: --reason
-// must reach the server as the "reason" field on the rerun POST body, so an
-// authorized force triggered from the CLI carries the audit trail
-// RerunIssueRequest.Reason exists to receive. Before this test the flag did
-// not exist on issueRerunCmd, so --reason was silently rejected by cobra and
-// the body only ever carried {}.
-func TestRunIssueRerunSendsReason(t *testing.T) {
-	var body map[string]any
-	issueID := "11111111-1111-1111-1111-111111111111"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/issues/"+issueID+"/rerun" {
-			http.NotFound(w, r)
-			return
-		}
-		if r.Method != http.MethodPost {
-			t.Errorf("method = %s, want POST", r.Method)
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode body: %v", err)
-		}
-		json.NewEncoder(w).Encode(map[string]any{
-			"id":       "task-1",
-			"agent_id": "agent-1",
-		})
-	}))
-	defer srv.Close()
-
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	// mat_ prefix clears the daemon-managed execution-context guard both in CI
-	// and when the suite runs inside an agent task (leftover daemon marker).
-	t.Setenv("MULTICA_TOKEN", "mat_test-token")
-
-	cmd := newIssueRerunTestCmd()
-	_ = cmd.Flags().Set("reason", "authorized force: prior run misclassified")
-	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
-		t.Fatalf("runIssueRerun: %v", err)
-	}
-	if got := body["reason"]; got != "authorized force: prior run misclassified" {
-		t.Fatalf("reason = %#v, want %q in request body", got, "authorized force: prior run misclassified")
-	}
-}
-
-// TestRunIssueRerunOmitsReasonWhenUnset preserves the legacy zero-arg CLI
-// contract (task_lifecycle.go RerunIssueRequest doc: "an empty body keeps the
-// legacy ... behaviour used by the CLI") when --reason is not passed.
-func TestRunIssueRerunOmitsReasonWhenUnset(t *testing.T) {
-	var body map[string]any
-	issueID := "22222222-2222-2222-2222-222222222222"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode body: %v", err)
-		}
-		json.NewEncoder(w).Encode(map[string]any{
-			"id":       "task-1",
-			"agent_id": "agent-1",
-		})
-	}))
-	defer srv.Close()
-
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "mat_test-token")
-
-	cmd := newIssueRerunTestCmd()
-	if err := runIssueRerun(cmd, []string{issueID}); err != nil {
-		t.Fatalf("runIssueRerun: %v", err)
-	}
-	if _, present := body["reason"]; present {
-		t.Fatalf("body = %#v, want no \"reason\" key when --reason is unset", body)
 	}
 }
 
@@ -1615,201 +1706,6 @@ func TestRunIssuePullRequestsListsLinkedPRsAsJSON(t *testing.T) {
 	pr, _ := prs[0].(map[string]any)
 	if pr["url"] != "https://github.com/multica-ai/multica/pull/42" || pr["number"] != float64(42) || pr["state"] != "open" || pr["title"] != "MUL-2818 add issue PR CLI" {
 		t.Fatalf("unexpected PR payload: %#v", pr)
-	}
-}
-
-func TestIssuePullRequestsCommandRoutingAndUnlink(t *testing.T) {
-	const (
-		issueID  = "01a15d58-4fa3-7216-b8c4-a8494ede9612"
-		prUUID42 = "11111111-2222-3333-4444-555555555542"
-		prUUID99 = "11111111-2222-3333-4444-555555555599"
-	)
-
-	t.Run("rootCmd routes list and unlink subcommands", func(t *testing.T) {
-		listCmd, listArgs, err := rootCmd.Find([]string{"issue", "pull-requests", "CHE-1933"})
-		if err != nil {
-			t.Fatalf("rootCmd.Find list: %v", err)
-		}
-		if listCmd != issuePullRequestsCmd || fmt.Sprint(listArgs) != "[CHE-1933]" {
-			t.Fatalf("listCmd = %v args = %v", listCmd.CommandPath(), listArgs)
-		}
-
-		unlinkCmd, unlinkArgs, err := rootCmd.Find([]string{"issue", "pull-requests", "unlink", "CHE-1933", "42"})
-		if err != nil {
-			t.Fatalf("rootCmd.Find unlink: %v", err)
-		}
-		if unlinkCmd.Name() != "unlink" || fmt.Sprint(unlinkArgs) != "[CHE-1933 42]" {
-			t.Fatalf("unlinkCmd = %v args = %v, want unlink [CHE-1933 42]", unlinkCmd.CommandPath(), unlinkArgs)
-		}
-	})
-
-	for _, tc := range []struct {
-		name      string
-		prRef     string
-		linkedPRs []map[string]any
-		wantCalls []string
-		wantErr   string
-	}{
-		{
-			name:      "by PR UUID skips list lookup and deletes directly",
-			prRef:     prUUID42,
-			wantCalls: []string{"GET /api/issues/CHE-1933", "DELETE /api/issues/" + issueID + "/pull-requests/" + prUUID42},
-		},
-		{
-			name:  "by PR number resolves linked PR UUID and deletes",
-			prRef: "42",
-			linkedPRs: []map[string]any{
-				{
-					"id":         prUUID42,
-					"number":     float64(42),
-					"repo_owner": "cheese-work",
-					"repo_name":  "multica",
-					"html_url":   "https://github.com/cheese-work/multica/pull/42",
-					"state":      "open",
-					"title":      "fix: wrong parent link",
-				},
-			},
-			wantCalls: []string{
-				"GET /api/issues/CHE-1933",
-				"GET /api/issues/" + issueID + "/pull-requests",
-				"DELETE /api/issues/" + issueID + "/pull-requests/" + prUUID42,
-			},
-		},
-		{
-			name:  "by owner/repo#number disambiguates same PR number across repos",
-			prRef: "cheese-work/multica#42",
-			linkedPRs: []map[string]any{
-				{
-					"id":         prUUID99,
-					"number":     float64(42),
-					"repo_owner": "cheese-work",
-					"repo_name":  "multica-dotfiles",
-					"html_url":   "https://github.com/cheese-work/multica-dotfiles/pull/42",
-				},
-				{
-					"id":         prUUID42,
-					"number":     float64(42),
-					"repo_owner": "cheese-work",
-					"repo_name":  "multica",
-					"html_url":   "https://github.com/cheese-work/multica/pull/42",
-				},
-			},
-			wantCalls: []string{
-				"GET /api/issues/CHE-1933",
-				"GET /api/issues/" + issueID + "/pull-requests",
-				"DELETE /api/issues/" + issueID + "/pull-requests/" + prUUID42,
-			},
-		},
-		{
-			name:  "by PR URL strips trailing path and query",
-			prRef: "https://github.com/Cheese-Work/multica/pull/42/files?w=1",
-			linkedPRs: []map[string]any{
-				{
-					"id":         prUUID42,
-					"number":     float64(42),
-					"repo_owner": "cheese-work",
-					"repo_name":  "multica",
-					"html_url":   "https://github.com/cheese-work/multica/pull/42",
-				},
-			},
-			wantCalls: []string{
-				"GET /api/issues/CHE-1933",
-				"GET /api/issues/" + issueID + "/pull-requests",
-				"DELETE /api/issues/" + issueID + "/pull-requests/" + prUUID42,
-			},
-		},
-		{
-			name:  "ambiguous bare number fails closed without deleting",
-			prRef: "#42",
-			linkedPRs: []map[string]any{
-				{
-					"id":         prUUID99,
-					"number":     float64(42),
-					"repo_owner": "cheese-work",
-					"repo_name":  "multica-dotfiles",
-					"html_url":   "https://github.com/cheese-work/multica-dotfiles/pull/42",
-				},
-				{
-					"id":         prUUID42,
-					"number":     float64(42),
-					"repo_owner": "cheese-work",
-					"repo_name":  "multica",
-					"html_url":   "https://github.com/cheese-work/multica/pull/42",
-				},
-			},
-			wantCalls: []string{
-				"GET /api/issues/CHE-1933",
-				"GET /api/issues/" + issueID + "/pull-requests",
-			},
-			wantErr: "ambiguous pull request",
-		},
-		{
-			name:      "missing PR fails closed without deleting",
-			prRef:     "999",
-			linkedPRs: nil,
-			wantCalls: []string{
-				"GET /api/issues/CHE-1933",
-				"GET /api/issues/" + issueID + "/pull-requests",
-			},
-			wantErr: "no linked pull request matching",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var gotCalls []string
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotCalls = append(gotCalls, r.Method+" "+r.URL.Path)
-				switch {
-				case r.Method == http.MethodGet && r.URL.Path == "/api/issues/CHE-1933":
-					_ = json.NewEncoder(w).Encode(map[string]any{
-						"id":         issueID,
-						"identifier": "CHE-1933",
-						"title":      "Repair wrong merge-close links",
-					})
-				case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID+"/pull-requests":
-					_ = json.NewEncoder(w).Encode(map[string]any{
-						"pull_requests": tc.linkedPRs,
-					})
-				case r.Method == http.MethodDelete && r.URL.Path == "/api/issues/"+issueID+"/pull-requests/"+prUUID42:
-					_ = json.NewEncoder(w).Encode(map[string]any{
-						"pull_requests": []map[string]any{},
-						"auto_complete": map[string]any{"state": "no_prs"},
-					})
-				default:
-					http.NotFound(w, r)
-				}
-			}))
-			defer srv.Close()
-
-			t.Setenv("MULTICA_SERVER_URL", srv.URL)
-			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-			t.Setenv("MULTICA_TOKEN", "mat_test-token")
-
-			cmd := &cobra.Command{Use: "unlink"}
-			cmd.Flags().String("output", "json", "")
-			out, err := captureStdout(t, func() error {
-				return runIssuePullRequestsUnlink(cmd, []string{"CHE-1933", tc.prRef})
-			})
-			if tc.wantErr != "" {
-				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-					t.Fatalf("err = %v, want substring %q", err, tc.wantErr)
-				}
-			} else if err != nil {
-				t.Fatalf("runIssuePullRequestsUnlink: %v", err)
-			}
-			if fmt.Sprint(gotCalls) != fmt.Sprint(tc.wantCalls) {
-				t.Fatalf("calls = %v, want %v", gotCalls, tc.wantCalls)
-			}
-			if tc.wantErr == "" {
-				var payload map[string]any
-				if err := json.Unmarshal([]byte(out), &payload); err != nil {
-					t.Fatalf("decode JSON output: %v\n%s", err, out)
-				}
-				prs, _ := payload["pull_requests"].([]any)
-				if len(prs) != 0 {
-					t.Fatalf("pull_requests after unlink = %v, want empty", prs)
-				}
-			}
-		})
 	}
 }
 
@@ -3499,17 +3395,12 @@ func newIssueCommentListTestCmd() *cobra.Command {
 	cmd.Flags().Int("tail", 0, "")
 	cmd.Flags().String("before", "", "")
 	cmd.Flags().String("before-id", "", "")
-	cmd.Flags().Bool("with-me", false, "")
-	cmd.Flags().Bool("without-me", false, "")
-	cmd.Flags().String("waiting-on", "", "")
-	cmd.Flags().String("for", "", "")
 	return cmd
 }
 
 func newIssueCommentResolutionTestCmd(use string) *cobra.Command {
 	cmd := &cobra.Command{Use: use}
 	cmd.Flags().String("output", "json", "")
-	cmd.Flags().String("known-as-of", "", "")
 	return cmd
 }
 
@@ -3581,141 +3472,6 @@ func TestRunIssueCommentResolution(t *testing.T) {
 				t.Fatalf("stdout id = %v, want %s", got["id"], commentID)
 			}
 		})
-	}
-}
-
-// TestRunIssueCommentResolveForwardsKnownAsOf locks the exact request-body
-// contract: --known-as-of must be forwarded verbatim as RFC3339Nano
-// known_as_of so ResolveComment's guard (internal/handler/comment.go) can
-// compare it against reply created_at timestamps. Omitting the flag must
-// send no body at all, not an empty/null known_as_of — that is what keeps
-// existing unguarded callers on the pre-guard code path server-side.
-func TestRunIssueCommentResolveForwardsKnownAsOf(t *testing.T) {
-	commentID := "comment-456"
-	tests := []struct {
-		name          string
-		knownAsOf     string
-		wantBodyEmpty bool
-	}{
-		{
-			name:      "known-as-of forwarded verbatim",
-			knownAsOf: "2026-06-22T08:00:00.123456789Z",
-		},
-		{
-			name:      "known-as-of with trailing fractional zeros forwarded verbatim",
-			knownAsOf: "2026-06-22T08:00:00.120000000Z",
-		},
-		{
-			name:          "omitted known-as-of sends no body",
-			wantBodyEmpty: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var gotBody []byte
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				gotBody, _ = io.ReadAll(r.Body)
-				json.NewEncoder(w).Encode(map[string]any{"id": commentID})
-			}))
-			defer srv.Close()
-
-			t.Setenv("MULTICA_SERVER_URL", srv.URL)
-			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-			t.Setenv("MULTICA_TOKEN", "test-token")
-
-			cmd := newIssueCommentResolutionTestCmd("resolve")
-			if tt.knownAsOf != "" {
-				if err := cmd.Flags().Set("known-as-of", tt.knownAsOf); err != nil {
-					t.Fatalf("set known-as-of: %v", err)
-				}
-			}
-
-			if _, err := captureStdout(t, func() error {
-				return runIssueCommentResolve(cmd, []string{commentID})
-			}); err != nil {
-				t.Fatalf("run command: %v", err)
-			}
-
-			gotBodyStr := strings.TrimSpace(string(gotBody))
-			if tt.wantBodyEmpty {
-				if gotBodyStr != "null" && gotBodyStr != "" {
-					t.Fatalf("body = %q, want empty/null (no known_as_of)", gotBodyStr)
-				}
-				return
-			}
-
-			var payload struct {
-				KnownAsOf string `json:"known_as_of"`
-			}
-			if err := json.Unmarshal(gotBody, &payload); err != nil {
-				t.Fatalf("decode request body: %v\nbody: %s", err, gotBody)
-			}
-			if payload.KnownAsOf != tt.knownAsOf {
-				t.Fatalf("known_as_of = %q, want %q", payload.KnownAsOf, tt.knownAsOf)
-			}
-		})
-	}
-}
-
-// TestRunIssueCommentResolveRejectsInvalidKnownAsOf verifies strict
-// client-side timestamp validation: a malformed --known-as-of must fail
-// before any HTTP round-trip, not be forwarded as a garbage string the
-// server then rejects with a less actionable 400.
-func TestRunIssueCommentResolveRejectsInvalidKnownAsOf(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("server should not be contacted when --known-as-of fails to parse")
-	}))
-	defer srv.Close()
-
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "test-token")
-
-	cmd := newIssueCommentResolutionTestCmd("resolve")
-	if err := cmd.Flags().Set("known-as-of", "not-a-timestamp"); err != nil {
-		t.Fatalf("set known-as-of: %v", err)
-	}
-
-	err := runIssueCommentResolve(cmd, []string{"comment-789"})
-	if err == nil {
-		t.Fatal("expected an error for an invalid --known-as-of value")
-	}
-	if !strings.Contains(err.Error(), "--known-as-of") {
-		t.Fatalf("error = %q, want it to name --known-as-of", err.Error())
-	}
-}
-
-// TestRunIssueCommentResolveThreadChangedConflict verifies a 409
-// thread_changed response (ResolveComment's concurrent-feedback race guard)
-// surfaces as an actionable CLI error via threadChangedMessage, mirroring how
-// revisionConflictMessage translates the issue API's revision_conflict 409.
-func TestRunIssueCommentResolveThreadChangedConflict(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "thread has new replies since it was loaded; reload the thread before resolving",
-			"code":  "thread_changed",
-		})
-	}))
-	defer srv.Close()
-
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "test-token")
-
-	cmd := newIssueCommentResolutionTestCmd("resolve")
-	if err := cmd.Flags().Set("known-as-of", "2026-06-22T08:00:00Z"); err != nil {
-		t.Fatalf("set known-as-of: %v", err)
-	}
-
-	err := runIssueCommentResolve(cmd, []string{"comment-conflict"})
-	if err == nil {
-		t.Fatal("expected a thread_changed conflict error")
-	}
-	if !strings.Contains(err.Error(), "resolve rejected") || !strings.Contains(err.Error(), "--known-as-of") {
-		t.Fatalf("error = %q, want an actionable thread_changed message naming --known-as-of", err.Error())
 	}
 }
 
@@ -4315,6 +4071,7 @@ func newIssueUpdateTestCmd() *cobra.Command {
 	cmd.Flags().String("description", "", "")
 	cmd.Flags().Bool("description-stdin", false, "")
 	cmd.Flags().String("description-file", "", "")
+	cmd.Flags().Int64("description-base-revision", 0, "")
 	cmd.Flags().Bool("allow-external-file", false, "")
 	cmd.Flags().StringArray("attachment", nil, "")
 	cmd.Flags().String("status", "", "")
@@ -4322,9 +4079,6 @@ func newIssueUpdateTestCmd() *cobra.Command {
 	cmd.Flags().String("assignee", "", "")
 	cmd.Flags().String("assignee-id", "", "")
 	cmd.Flags().String("project", "", "")
-	cmd.Flags().String("workflow", "", "")
-	cmd.Flags().String("decision-id", "", "")
-	cmd.Flags().Bool("print-hash", false, "")
 	cmd.Flags().String("start-date", "", "")
 	cmd.Flags().String("due-date", "", "")
 	cmd.Flags().String("parent", "", "")
@@ -4333,7 +4087,6 @@ func newIssueUpdateTestCmd() *cobra.Command {
 	cmd.Flags().Bool("no-start", false, "")
 	cmd.Flags().String("duplicate-of", "", "")
 	cmd.Flags().String("output", "json", "")
-	cmd.Flags().Int64("expected-revision", 0, "")
 	return cmd
 }
 
@@ -4388,6 +4141,63 @@ func TestRunIssueUpdateAppendsLocalAttachmentToDescription(t *testing.T) {
 	}
 	if want := []string{"GET /api/issues/" + issueID, "POST /api/upload-file", "PUT /api/issues/" + issueID}; !slices.Equal(calls, want) {
 		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+}
+
+// Someone edits the description while the file uploads: the update must add the
+// file to their text, not write the text read before the upload over it.
+func TestRunIssueUpdateAttachmentKeepsDescriptionEditedDuringUpload(t *testing.T) {
+	t.Chdir(t.TempDir())
+	const issueID = "11111111-1111-4111-8111-111111111111"
+	const uploadedID = "33333333-3333-4333-8333-333333333333"
+	path := writeIssueCreateAttachment(t, "revised.png")
+	description, revision := "Existing body", int64(4)
+	uploads := 0
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/upload-file":
+			uploads++
+			description, revision = "Existing body, edited", 5
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": uploadedID, "filename": "revised.png", "content_type": "image/png",
+				"markdown_url": "https://api.example/api/attachments/" + uploadedID + "/download",
+			})
+		case "/api/issues/" + issueID:
+			if r.Method == http.MethodGet {
+				_ = json.NewEncoder(w).Encode(map[string]any{"description": description, "description_revision": revision})
+				return
+			}
+			body = nil
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode update: %v", err)
+			}
+			if base, ok := body["description_base_revision"]; ok && base != float64(revision) {
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]any{"code": "revision_conflict", "resource_type": "issue_description"})
+				return
+			}
+			description = body["description"].(string)
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "title": "Updated"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+	cmd := newIssueUpdateTestCmd()
+	_ = cmd.Flags().Set("attachment", path)
+	if err := runIssueUpdate(cmd, []string{issueID}); err != nil {
+		t.Fatalf("runIssueUpdate: %v", err)
+	}
+	if want := "Existing body, edited\n\n![revised.png](https://api.example/api/attachments/" + uploadedID + "/download)"; description != want {
+		t.Fatalf("description = %q, want %q", description, want)
+	}
+	if ids, ok := body["attachment_ids"].([]any); !ok || !reflect.DeepEqual(ids, []any{uploadedID}) {
+		t.Fatalf("attachment_ids = %#v", body["attachment_ids"])
+	}
+	if uploads != 1 {
+		t.Fatalf("uploads = %d, want 1", uploads)
 	}
 }
 
@@ -4448,9 +4258,6 @@ func newIssueStatusTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "status"}
 	cmd.Flags().Bool("no-start", false, "")
 	cmd.Flags().String("duplicate-of", "", "")
-	cmd.Flags().String("override-reason", "", "")
-	cmd.Flags().StringArray("finding", nil, "")
-	cmd.Flags().String("blocked-on", "", "")
 	cmd.Flags().String("output", "table", "")
 	return cmd
 }
@@ -4518,229 +4325,122 @@ func TestRunIssueUpdateSendsPosition(t *testing.T) {
 	}
 }
 
-// --workflow has its own endpoint: an id sets the override, "none" sends null.
-func TestRunIssueUpdateSetsAndClearsTheWorkflowOverride(t *testing.T) {
-	clearAmbientDaemonTaskEnv(t)
-	var got []map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
-			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
-		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1/workflow":
-			var body map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Errorf("decode body: %v", err)
-			}
-			got = append(got, body)
-			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "test-token")
-
-	for _, value := range []string{"wf-1", "none"} {
-		cmd := newIssueUpdateTestCmd()
-		_ = cmd.Flags().Set("workflow", value)
-		if err := runIssueUpdate(cmd, []string{"MUL-1"}); err != nil {
-			t.Fatalf("runIssueUpdate --workflow %s: %v", value, err)
-		}
-	}
-	if len(got) != 2 || got[0]["workflow_id"] != "wf-1" || got[1]["workflow_id"] != nil {
-		t.Fatalf("bodies = %#v, want workflow_id wf-1 then null", got)
-	}
-}
-
-// issue create --workflow takes an id, and "none" means no override, so the
-// body carries no workflow_id for it.
-func TestRunIssueCreateSendsTheWorkflowOverrideAndTreatsNoneAsInheritance(t *testing.T) {
-	clearAmbientDaemonTaskEnv(t)
-	var bodies []map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/issues" {
-			http.NotFound(w, r)
-			return
-		}
-		var body map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("decode body: %v", err)
-		}
-		bodies = append(bodies, body)
-		json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "title": "t", "status": "todo", "priority": "none"})
-	}))
-	defer srv.Close()
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "test-token")
-
-	for _, value := range []string{"wf-1", "none"} {
-		cmd := newIssueCreateTestCmd()
-		_ = cmd.Flags().Set("title", "t")
-		_ = cmd.Flags().Set("workflow", value)
-		if err := runIssueCreate(cmd, nil); err != nil {
-			t.Fatalf("runIssueCreate --workflow %s: %v", value, err)
-		}
-	}
-	if len(bodies) != 2 || bodies[0]["workflow_id"] != "wf-1" {
-		t.Fatalf("bodies = %#v, want workflow_id wf-1 first", bodies)
-	}
-	if _, sent := bodies[1]["workflow_id"]; sent {
-		t.Fatalf("--workflow none sent workflow_id %#v, want it omitted", bodies[1]["workflow_id"])
-	}
-}
-
-// A combined --workflow and --expected-revision call sends the caller's
-// revision with the switch, then chains the update on the revision the switch
-// produced instead of the one it replaced.
-func TestRunIssueUpdateChainsExpectedRevisionAcrossTheWorkflowSwitch(t *testing.T) {
-	clearAmbientDaemonTaskEnv(t)
-	var switchBody, updateBody map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
-			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
-		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1/workflow":
-			_ = json.NewDecoder(r.Body).Decode(&switchBody)
-			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo", "revision": 6})
-		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1":
-			_ = json.NewDecoder(r.Body).Decode(&updateBody)
-			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "in_progress", "revision": 7})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "test-token")
-
-	cmd := newIssueUpdateTestCmd()
-	_ = cmd.Flags().Set("workflow", "wf-1")
-	_ = cmd.Flags().Set("status", "in_progress")
-	_ = cmd.Flags().Set("expected-revision", "5")
-	if err := runIssueUpdate(cmd, []string{"MUL-1"}); err != nil {
-		t.Fatalf("runIssueUpdate: %v", err)
-	}
-	if switchBody["expected_revision"] != float64(5) {
-		t.Fatalf("switch body = %#v, want expected_revision 5", switchBody)
-	}
-	if updateBody["expected_revision"] != float64(6) {
-		t.Fatalf("update body = %#v, want expected_revision 6 (the revision after the switch)", updateBody)
-	}
-}
-
-// clearAmbientDaemonTaskEnv blanks the daemon-task identity signals
-// (inAgentExecutionContext / inDaemonManagedExecutionContext in cmd_agent.go)
-// so a test asserting on a plain member token is not accidentally routed
-// through the "agent execution context requires a mat_ token" gate because
-// the process this test binary runs in happens to itself be a daemon-managed
-// agent task (as it is for an agent CLI running this suite inside its own
-// task workdir). CI runners have none of these set; this only matters when
-// the test binary's own ambient environment carries them.
-func clearAmbientDaemonTaskEnv(t *testing.T) {
-	t.Helper()
-	t.Setenv("MULTICA_AGENT_ID", "")
-	t.Setenv("MULTICA_TASK_ID", "")
-	t.Setenv("MULTICA_DAEMON_PORT", "")
-	t.Setenv("MULTICA_TASK_CONFIG_ROOT", t.TempDir())
-	// hasDaemonTaskContextMarker walks up from the CWD looking for a
-	// daemon_task_context.json marker file, independent of env vars — so a
-	// leftover marker anywhere above the real repo checkout (as in an agent
-	// runtime's own workdir tree) still trips the gate unless the test also
-	// moves off that tree.
-	t.Chdir(t.TempDir())
-}
-
-// TestRunIssueUpdateSendsExpectedRevision proves the CLI wires
-// --expected-revision through to the request body as expected_revision, the
-// field the handler's optimistic-concurrency check reads
-// (internal/handler/issue.go UpdateIssueRequest.ExpectedRevision).
-func TestRunIssueUpdateSendsExpectedRevision(t *testing.T) {
+func TestRunIssueUpdateSendsDescriptionBaseRevision(t *testing.T) {
 	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
-			json.NewEncoder(w).Encode(map[string]any{
-				"id": "issue-1", "identifier": "MUL-1", "status": "todo",
-			})
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
 		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1":
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode body: %v", err)
 			}
-			json.NewEncoder(w).Encode(map[string]any{
-				"id": "issue-1", "identifier": "MUL-1", "status": "todo", "revision": float64(6),
-			})
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{"code": "issue_description_merge_conflict", "conflicts": []any{}})
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
-
-	setCLITestServerEnv(t, srv.URL)
-	clearAmbientDaemonTaskEnv(t)
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
 
 	cmd := newIssueUpdateTestCmd()
-	_ = cmd.Flags().Set("title", "revised title")
-	_ = cmd.Flags().Set("expected-revision", "5")
-	if err := runIssueUpdate(cmd, []string{"MUL-1"}); err != nil {
-		t.Fatalf("runIssueUpdate: %v", err)
+	_ = cmd.Flags().Set("description", "new text")
+	_ = cmd.Flags().Set("description-base-revision", "4")
+	err := runIssueUpdate(cmd, []string{"MUL-1"})
+	if got := body["description_base_revision"]; got != float64(4) {
+		t.Fatalf("description_base_revision = %#v, want 4", got)
 	}
-	if got := body["expected_revision"]; got != float64(5) {
-		t.Fatalf("expected_revision = %#v, want 5 in request body", got)
+	if err == nil || !strings.Contains(err.Error(), "issue edit-description") {
+		t.Fatalf("err = %v, want a merge conflict pointing at issue edit-description", err)
 	}
 }
 
-// TestRunIssueUpdateStaleRevisionReturnsActionableConflictMessage proves the
-// CLI path specifically catches a stale write raced against a concurrent
-// writer: the server's 409 revision_conflict body (writeRevisionConflict in
-// internal/handler/handler.go, the same shape
-// TestRevisionConflictsPreserveLatestIssueAndComment proves the handler
-// returns for a real stale PUT) is decoded into a clear CLI error rather than
-// surfaced as a raw JSON dump, and tells the caller the actual revision to
-// retry with.
-func TestRunIssueUpdateStaleRevisionReturnsActionableConflictMessage(t *testing.T) {
+func TestRunIssueUpdateRejectsDescriptionBaseRevisionWithoutDescription(t *testing.T) {
+	cmd := newIssueUpdateTestCmd()
+	_ = cmd.Flags().Set("description-base-revision", "4")
+	_ = cmd.Flags().Set("title", "x")
+	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:1")
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	if err := runIssueUpdate(cmd, []string{"MUL-1"}); err == nil || !strings.Contains(err.Error(), "needs a new description") {
+		t.Fatalf("err = %v, want a refusal before any request", err)
+	}
+}
+
+func newIssueEditDescriptionTestCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "edit-description"}
+	cmd.Flags().String("old", "", "")
+	cmd.Flags().String("old-file", "", "")
+	cmd.Flags().String("new", "", "")
+	cmd.Flags().String("new-file", "", "")
+	cmd.Flags().Bool("replace-all", false, "")
+	cmd.Flags().String("output", "json", "")
+	return cmd
+}
+
+func TestRunIssueEditDescriptionPostsEdit(t *testing.T) {
+	var body map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
-			json.NewEncoder(w).Encode(map[string]any{
-				"id": "issue-1", "identifier": "MUL-1", "status": "todo",
-			})
-		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1":
-			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error":             "resource changed since it was loaded",
-				"code":              "revision_conflict",
-				"resource_type":     "issue",
-				"resource_id":       "issue-1",
-				"expected_revision": 5,
-				"actual_revision":   7,
-			})
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/issue-1/description/edits":
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode body: %v", err)
+			}
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "description_revision": 3})
 		default:
 			http.NotFound(w, r)
 		}
 	}))
 	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
 
-	setCLITestServerEnv(t, srv.URL)
-	clearAmbientDaemonTaskEnv(t)
+	cmd := newIssueEditDescriptionTestCmd()
+	_ = cmd.Flags().Set("old", "Status: draft")
+	_ = cmd.Flags().Set("new", "Status: ready")
+	_ = cmd.Flags().Set("replace-all", "true")
+	if err := runIssueEditDescription(cmd, []string{"MUL-1"}); err != nil {
+		t.Fatalf("runIssueEditDescription: %v", err)
+	}
+	edits, _ := body["edits"].([]any)
+	if len(edits) != 1 {
+		t.Fatalf("edits = %#v, want one edit", body["edits"])
+	}
+	edit := edits[0].(map[string]any)
+	if edit["old_text"] != "Status: draft" || edit["new_text"] != "Status: ready" || edit["replace_all"] != true {
+		t.Fatalf("edit = %#v", edit)
+	}
+}
 
-	cmd := newIssueUpdateTestCmd()
-	_ = cmd.Flags().Set("title", "stale overwrite")
-	_ = cmd.Flags().Set("expected-revision", "5")
-	err := runIssueUpdate(cmd, []string{"MUL-1"})
-	if err == nil {
-		t.Fatal("runIssueUpdate: expected a revision conflict error")
-	}
-	if strings.Contains(err.Error(), "{") {
-		t.Fatalf("error should be a human message, not a raw JSON dump: %v", err)
-	}
-	for _, want := range []string{"issue", "expected revision 5", "server is at 7", "--expected-revision 7"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("error = %q, want it to mention %q", err.Error(), want)
+func TestRunIssueEditDescriptionExplainsAMissingQuote(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
+		case r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]any{"code": "issue_description_edit_failed", "failure": map[string]any{"reason": "not_found"}})
+		default:
+			http.NotFound(w, r)
 		}
+	}))
+	defer srv.Close()
+	t.Setenv("MULTICA_SERVER_URL", srv.URL)
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+
+	cmd := newIssueEditDescriptionTestCmd()
+	_ = cmd.Flags().Set("old", "gone")
+	_ = cmd.Flags().Set("new", "x")
+	err := runIssueEditDescription(cmd, []string{"MUL-1"})
+	if err == nil || !strings.Contains(err.Error(), "does not match the description exactly once") {
+		t.Fatalf("err = %v", err)
 	}
 }
 
@@ -4852,68 +4552,6 @@ func TestRunIssueStatusDuplicateOfSendsMark(t *testing.T) {
 	want := map[string]any{"status": "cancelled", "duplicate_of_issue_id": "issue-1"}
 	if !reflect.DeepEqual(body, want) {
 		t.Fatalf("body = %#v, want %#v", body, want)
-	}
-}
-
-func TestRunIssueStatusSendsOverrideReason(t *testing.T) {
-	var body map[string]any
-	newDuplicateMarkTestServer(t, true, &body)
-
-	cmd := newIssueStatusTestCmd()
-	_ = cmd.Flags().Set("override-reason", "  reviewed by hand ")
-	if err := runIssueStatus(cmd, []string{"MUL-2", "in_review"}); err != nil {
-		t.Fatalf("runIssueStatus: %v", err)
-	}
-	want := map[string]any{"status": "in_review", "entry_gate_override_reason": "reviewed by hand"}
-	if !reflect.DeepEqual(body, want) {
-		t.Fatalf("body = %#v, want %#v", body, want)
-	}
-}
-
-func TestRunIssueStatusSendsReviewFindings(t *testing.T) {
-	var body map[string]any
-	newDuplicateMarkTestServer(t, true, &body)
-
-	cmd := newIssueStatusTestCmd()
-	_ = cmd.Flags().Set("finding", "P1: leaks the token")
-	_ = cmd.Flags().Set("finding", "P3:naming")
-	if err := runIssueStatus(cmd, []string{"MUL-2", "in_progress"}); err != nil {
-		t.Fatalf("runIssueStatus: %v", err)
-	}
-	want := map[string]any{"status": "in_progress", "review_findings": []any{
-		map[string]any{"severity": "P1", "summary": "leaks the token"},
-		map[string]any{"severity": "P3", "summary": "naming"},
-	}}
-	if !reflect.DeepEqual(body, want) {
-		t.Fatalf("body = %#v, want %#v", body, want)
-	}
-}
-
-func TestRunIssueStatusRejectsFindingWithoutSeverity(t *testing.T) {
-	cmd := newIssueStatusTestCmd()
-	_ = cmd.Flags().Set("finding", "no severity here")
-	if err := runIssueStatus(cmd, []string{"MUL-2", "in_progress"}); err == nil {
-		t.Fatal("want an error for a finding without <P0-P3>:<summary>")
-	}
-}
-
-func TestRunIssueStatusRefusedByEntryGateShowsFactAndFix(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet {
-			json.NewEncoder(w).Encode(map[string]any{"id": "issue-2", "identifier": "MUL-2", "status": "todo"})
-			return
-		}
-		w.WriteHeader(http.StatusConflict)
-		json.NewEncoder(w).Encode(map[string]any{"code": "entry_gate_failed", "error": "status in_review is not open to this write: pr.ready (a PR is draft; fix: mark the PR ready for review, or open one)"})
-	}))
-	t.Cleanup(srv.Close)
-	setCLITestServerEnv(t, srv.URL)
-	t.Setenv("MULTICA_TASK_CONFIG_ROOT", t.TempDir())
-	t.Setenv("MULTICA_TOKEN", "mat_test-token")
-
-	err := runIssueStatus(newIssueStatusTestCmd(), []string{"MUL-2", "in_review"})
-	if err == nil || !strings.Contains(err.Error(), "a PR is draft") || !strings.Contains(err.Error(), "fix: mark the PR ready") {
-		t.Fatalf("error = %v, want the failed gate's fact and fix", err)
 	}
 }
 
@@ -5172,29 +4810,6 @@ func TestRunIssueListSendsSortAndDirection(t *testing.T) {
 	}
 }
 
-func TestRunIssueListSendsEffectiveDueSort(t *testing.T) {
-	var gotQuery url.Values
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotQuery = r.URL.Query()
-		json.NewEncoder(w).Encode(map[string]any{"issues": []any{}, "total": 0})
-	}))
-	defer srv.Close()
-
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "test-token")
-
-	cmd := newIssueListTestCmd()
-	_ = cmd.Flags().Set("output", "json")
-	_ = cmd.Flags().Set("sort", "effective_due")
-	if err := runIssueList(cmd, nil); err != nil {
-		t.Fatalf("runIssueList: %v", err)
-	}
-	if got := gotQuery.Get("sort"); got != "effective_due" {
-		t.Fatalf("sort query = %q, want effective_due", got)
-	}
-}
-
 func TestRunIssueListRejectsInvalidSortAndDirection(t *testing.T) {
 	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:0")
 	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
@@ -5232,7 +4847,6 @@ func TestRunIssueListRejectsDirectionWithoutDirectionalSort(t *testing.T) {
 	}{
 		{"direction without sort", ""},
 		{"direction with explicit position sort", "position"},
-		{"direction with effective_due sort", "effective_due"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -5277,7 +4891,6 @@ func sampleIssueResponse() handler.IssueResponse {
 	lastActivity := "2024-01-01T00:00:00Z"
 	labels := []handler.LabelResponse{}
 
-	effectiveDue := "2024-02-01"
 	return handler.IssueResponse{
 		ID:             "iss-1",
 		WorkspaceID:    "ws-1",
@@ -5306,10 +4919,6 @@ func sampleIssueResponse() handler.IssueResponse {
 		Metadata:       map[string]any{},
 		Properties:     map[string]any{},
 		Labels:         &labels,
-		// Present on `--sort effective_due` rows (CHE-3463).
-		EffectiveDue: &effectiveDue,
-		DueSource:    "parent:CHE-1",
-		Diagnostics:  []handler.DueDiagnostic{{Type: "depth_limit"}},
 	}
 }
 
@@ -6918,636 +6527,6 @@ func TestRunIssueCommentDeleteKeepsReplies(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// CHE-487 D2 — `multica issue get` surfaces status/ETA with observation time
-// ---------------------------------------------------------------------------
-
-// TestRunIssueGetETAIsUnknownAcrossStatusesAndDueDates covers the five-type ×
-// state matrix required for D2: whatever status the issue is in, and whether
-// or not due_date is set, ETA always renders "unknown" — there is no
-// structured ETA field on an issue anywhere in the codebase, and due_date
-// must never be surfaced as if it were one.
-func TestRunIssueGetETAIsUnknownAcrossStatusesAndDueDates(t *testing.T) {
-	issueID := "1881a167-4bb6-4602-944b-f40ce4192fe6"
-
-	for _, tc := range []struct {
-		name    string
-		status  string
-		dueDate string
-	}{
-		{"backlog without due date", "backlog", ""},
-		{"todo with due date", "todo", "2026-12-31T00:00:00Z"},
-		{"in_progress with due date", "in_progress", "2026-10-01T00:00:00Z"},
-		{"in_review without due date", "in_review", ""},
-		{"done with due date", "done", "2026-09-01T00:00:00Z"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/api/issues/" + issueID:
-					_ = json.NewEncoder(w).Encode(map[string]any{
-						"id":         issueID,
-						"identifier": "MUL-1",
-						"title":      "ETA matrix",
-						"status":     tc.status,
-						"priority":   "none",
-						"due_date":   tc.dueDate,
-					})
-				default:
-					http.NotFound(w, r)
-				}
-			}))
-			defer srv.Close()
-
-			t.Setenv("MULTICA_SERVER_URL", srv.URL)
-			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-			t.Setenv("MULTICA_TOKEN", "mat_test-token")
-
-			// JSON output: assert the status_read projection, not a mutated
-			// top-level "eta" pretending to come from the server.
-			jsonCmd := &cobra.Command{Use: "get"}
-			jsonCmd.Flags().String("output", "json", "")
-			jsonCmd.Flags().Bool("resolve-properties", false, "")
-			out, err := captureStdout(t, func() error { return runIssueGet(jsonCmd, []string{issueID}) })
-			if err != nil {
-				t.Fatalf("runIssueGet json: %v", err)
-			}
-			var payload map[string]any
-			if err := json.Unmarshal([]byte(out), &payload); err != nil {
-				t.Fatalf("decode JSON output: %v\n%s", err, out)
-			}
-			statusRead, ok := payload["status_read"].(map[string]any)
-			if !ok {
-				t.Fatalf("payload missing status_read object: %#v", payload)
-			}
-			if got := statusRead["eta"]; got != "unknown" {
-				t.Fatalf("status_read.eta = %#v, want \"unknown\"", got)
-			}
-			if statusRead["observed_at"] == nil || statusRead["observed_at"] == "" {
-				t.Fatalf("status_read.observed_at missing: %#v", statusRead)
-			}
-			if _, err := time.Parse(time.RFC3339, fmt.Sprint(statusRead["observed_at"])); err != nil {
-				t.Fatalf("status_read.observed_at not RFC3339: %v", statusRead["observed_at"])
-			}
-			// due_date must remain untouched and separate from eta.
-			if tc.dueDate != "" && payload["due_date"] != tc.dueDate {
-				t.Fatalf("due_date = %#v, want %q preserved", payload["due_date"], tc.dueDate)
-			}
-			if fmt.Sprint(statusRead["eta"]) == tc.dueDate {
-				t.Fatalf("eta must never equal due_date, both were %q", tc.dueDate)
-			}
-
-			// Table output: assert the ETA column renders "unknown", never the
-			// due date string, and an observation-time note goes to stderr.
-			tableCmd := &cobra.Command{Use: "get"}
-			tableCmd.Flags().String("output", "table", "")
-			tableCmd.Flags().Bool("resolve-properties", false, "")
-			stderr := captureStderr(t)
-			tableOut, err := captureStdout(t, func() error { return runIssueGet(tableCmd, []string{issueID}) })
-			stderrText := stderr.read()
-			if err != nil {
-				t.Fatalf("runIssueGet table: %v", err)
-			}
-			if !strings.Contains(tableOut, "ETA") {
-				t.Fatalf("table missing ETA column header:\n%s", tableOut)
-			}
-			if !strings.Contains(tableOut, "unknown") {
-				t.Fatalf("table missing unknown ETA value:\n%s", tableOut)
-			}
-			if tc.dueDate != "" {
-				dateOnly := tc.dueDate[:10]
-				// The due date value legitimately appears once (DUE DATE
-				// column); it must not appear a second time as if it were ETA.
-				if strings.Count(tableOut, dateOnly) > 1 {
-					t.Fatalf("due date %q appears more than once, suggesting it leaked into ETA:\n%s", dateOnly, tableOut)
-				}
-			}
-			if !strings.Contains(stderrText, "Observed at") {
-				t.Fatalf("stderr missing observation timestamp note: %q", stderrText)
-			}
-		})
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CHE-487 D3 — `multica issue runs --active` stays read-only, with observation time
-// ---------------------------------------------------------------------------
-
-// TestRunIssueRunsActiveIsReadOnlyGet asserts the --active path never
-// enqueues a run: only a GET reaches the server, and no POST is issued.
-func TestRunIssueRunsActiveIsReadOnlyGet(t *testing.T) {
-	issueID := "1881a167-4bb6-4602-944b-f40ce4192fe6"
-	var methods []string
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		methods = append(methods, r.Method)
-		switch r.URL.Path {
-		case "/api/issues/" + issueID + "/task-runs":
-			if r.Method != http.MethodGet {
-				t.Errorf("method = %s, want GET (must never enqueue a run)", r.Method)
-			}
-			if got := r.URL.Query().Get("active"); got != "true" {
-				t.Errorf("active query param = %q, want \"true\"", got)
-			}
-			_ = json.NewEncoder(w).Encode([]map[string]any{
-				{"id": "run-1", "agent_id": "agent-1", "status": "running", "started_at": "2026-09-16T10:00:00Z"},
-			})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "mat_test-token")
-
-	cmd := newIssueRunsTestCmd(t, "json")
-	if err := cmd.Flags().Set("active", "true"); err != nil {
-		t.Fatalf("set --active: %v", err)
-	}
-
-	stderr := captureStderr(t)
-	_, err := captureStdout(t, func() error { return runIssueRuns(cmd, []string{issueID}) })
-	stderrText := stderr.read()
-	if err != nil {
-		t.Fatalf("runIssueRuns: %v", err)
-	}
-
-	if len(methods) != 1 || methods[0] != http.MethodGet {
-		t.Fatalf("methods = %v, want exactly one GET and no POST", methods)
-	}
-	if !strings.Contains(stderrText, "Observed at") {
-		t.Fatalf("stderr missing observation timestamp note: %q", stderrText)
-	}
-}
-
-// TestRunIssueRunsTruncationWarningSurvivesObservationTimeAddition pins the
-// D3 requirement that the pre-existing truncation warning still fires
-// alongside the new observation-time note, and that a truncated read is
-// never rendered indistinguishably from "no active runs".
-func TestRunIssueRunsTruncationWarningSurvivesObservationTimeAddition(t *testing.T) {
-	issueID := "1881a167-4bb6-4602-944b-f40ce4192fe6"
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/issues/" + issueID + "/task-runs":
-			w.Header().Set(headerActiveRunsTruncated, "true")
-			// Truncated to zero rows on the wire — the exact case that must
-			// never be read as "no active runs" once truncated.
-			_ = json.NewEncoder(w).Encode([]map[string]any{})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "mat_test-token")
-
-	cmd := newIssueRunsTestCmd(t, "json")
-	if err := cmd.Flags().Set("active", "true"); err != nil {
-		t.Fatalf("set --active: %v", err)
-	}
-
-	stderr := captureStderr(t)
-	out, err := captureStdout(t, func() error { return runIssueRuns(cmd, []string{issueID}) })
-	stderrText := stderr.read()
-	if err != nil {
-		t.Fatalf("runIssueRuns: %v", err)
-	}
-
-	if strings.TrimSpace(out) != "[]" {
-		t.Fatalf("stdout = %q, want empty JSON array", out)
-	}
-	if !strings.Contains(stderrText, "truncated") || !strings.Contains(stderrText, "cannot be concluded") {
-		t.Fatalf("stderr missing truncation warning: %q", stderrText)
-	}
-	if !strings.Contains(stderrText, "Observed at") {
-		t.Fatalf("stderr missing observation timestamp note: %q", stderrText)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// CHE-487 D4 — `multica issue pull-requests` surfaces HEAD/CI/snapshot age
-// ---------------------------------------------------------------------------
-
-// TestPullRequestCIRendering pins the required rendering matrix: no
-// snapshot -> unavailable; a null checks_rollup on a current snapshot ->
-// "no checks" and NEVER "passed"; a real rollup value passes through.
-func TestPullRequestCIRendering(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		pr   map[string]any
-		want string
-	}{
-		{
-			name: "no snapshot at all",
-			pr:   map[string]any{"number": float64(1)},
-			want: "unavailable",
-		},
-		{
-			name: "snapshot_available false",
-			pr:   map[string]any{"snapshot_available": false, "checks_rollup": "success"},
-			want: "unavailable",
-		},
-		{
-			name: "snapshot available, checks_rollup null (no checks yet)",
-			pr:   map[string]any{"snapshot_available": true, "checks_rollup": nil},
-			want: "no checks",
-		},
-		{
-			name: "snapshot available, checks_rollup success",
-			pr:   map[string]any{"snapshot_available": true, "checks_rollup": "success"},
-			want: "success",
-		},
-		{
-			name: "snapshot available, checks_rollup failure",
-			pr:   map[string]any{"snapshot_available": true, "checks_rollup": "failure"},
-			want: "failure",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := pullRequestCI(tc.pr)
-			if got != tc.want {
-				t.Fatalf("pullRequestCI = %q, want %q", got, tc.want)
-			}
-			if tc.name == "snapshot available, checks_rollup null (no checks yet)" && got == "passed" {
-				t.Fatalf("null checks_rollup must never render as passed")
-			}
-		})
-	}
-}
-
-// TestPullRequestSnapshotAgeRendering pins the snapshot-age/staleness
-// rendering matrix: no snapshot -> unavailable; snapshot_stale true ->
-// "stale" (with age when computable); a fresh snapshot renders its age from
-// snapshot_fetched_at.
-func TestPullRequestSnapshotAgeRendering(t *testing.T) {
-	now := time.Now().UTC()
-	for _, tc := range []struct {
-		name       string
-		pr         map[string]any
-		wantPrefix string
-	}{
-		{
-			name:       "no snapshot",
-			pr:         map[string]any{},
-			wantPrefix: "unavailable",
-		},
-		{
-			name: "stale snapshot with fetched_at",
-			pr: map[string]any{
-				"snapshot_available":  true,
-				"snapshot_stale":      true,
-				"snapshot_fetched_at": now.Add(-2 * time.Hour).Format(time.RFC3339),
-			},
-			wantPrefix: "stale",
-		},
-		{
-			name: "fresh snapshot renders age",
-			pr: map[string]any{
-				"snapshot_available":  true,
-				"snapshot_stale":      false,
-				"snapshot_fetched_at": now.Add(-5 * time.Minute).Format(time.RFC3339),
-			},
-			wantPrefix: "5m",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got := pullRequestSnapshotAge(tc.pr)
-			if !strings.HasPrefix(got, tc.wantPrefix) && !strings.Contains(got, tc.wantPrefix) {
-				t.Fatalf("pullRequestSnapshotAge = %q, want prefix/contains %q", got, tc.wantPrefix)
-			}
-		})
-	}
-}
-
-// TestRunIssuePullRequestsTableRendersHeadCISnapshot exercises the full
-// runIssuePullRequests -> printIssuePullRequestsTable path against the
-// five-type × state matrix: current snapshot with head+CI, stale snapshot,
-// missing snapshot, and a null checks_rollup that must render as no-checks.
-func TestRunIssuePullRequestsTableRendersHeadCISnapshot(t *testing.T) {
-	issueID := "1881a167-4bb6-4602-944b-f40ce4192fe6"
-	now := time.Now().UTC()
-
-	prs := []map[string]any{
-		{
-			// current snapshot: head + CI visible
-			"number":              float64(1),
-			"state":               "open",
-			"title":               "current snapshot",
-			"url":                 "https://example.invalid/pull/1",
-			"branch":              "feature/current",
-			"snapshot_available":  true,
-			"snapshot_stale":      false,
-			"checks_rollup":       "success",
-			"snapshot_fetched_at": now.Add(-1 * time.Minute).Format(time.RFC3339),
-		},
-		{
-			// stale snapshot
-			"number":              float64(2),
-			"state":               "open",
-			"title":               "stale snapshot",
-			"url":                 "https://example.invalid/pull/2",
-			"branch":              "feature/stale",
-			"snapshot_available":  true,
-			"snapshot_stale":      true,
-			"checks_rollup":       "failure",
-			"snapshot_fetched_at": now.Add(-2 * time.Hour).Format(time.RFC3339),
-		},
-		{
-			// missing snapshot entirely
-			"number": float64(3),
-			"state":  "draft",
-			"title":  "no snapshot",
-			"url":    "https://example.invalid/pull/3",
-		},
-		{
-			// snapshot available but checks_rollup null: no checks yet
-			"number":              float64(4),
-			"state":               "open",
-			"title":               "null rollup",
-			"url":                 "https://example.invalid/pull/4",
-			"branch":              "feature/null-rollup",
-			"snapshot_available":  true,
-			"snapshot_stale":      false,
-			"checks_rollup":       nil,
-			"snapshot_fetched_at": now.Add(-30 * time.Second).Format(time.RFC3339),
-		},
-		{
-			// merged PR, snapshot no longer current
-			"number": float64(5),
-			"state":  "merged",
-			"title":  "merged, no snapshot",
-			"url":    "https://example.invalid/pull/5",
-			"branch": "feature/merged",
-		},
-	}
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/issues/" + issueID + "/pull-requests":
-			_ = json.NewEncoder(w).Encode(map[string]any{"pull_requests": prs})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "mat_test-token")
-
-	cmd := newIssuePullRequestsTestCmd()
-	out, err := captureStdout(t, func() error { return runIssuePullRequests(cmd, []string{issueID}) })
-	if err != nil {
-		t.Fatalf("runIssuePullRequests: %v", err)
-	}
-
-	for _, want := range []string{"HEAD", "CI", "SNAPSHOT", "feature/current", "success", "feature/stale", "stale", "unavailable", "no checks"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("table output missing %q:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "null rollup") {
-		lines := strings.Split(out, "\n")
-		for _, line := range lines {
-			if strings.Contains(line, "null rollup") && strings.Contains(line, "passed") {
-				t.Fatalf("null checks_rollup row must never render \"passed\":\n%s", line)
-			}
-		}
-	}
-}
-
-func TestRunIssueCommentAddSendsSupersedes(t *testing.T) {
-	const issueID = "11111111-1111-4111-8111-111111111111"
-	var body map[string]any
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/"+issueID:
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": issueID, "identifier": "TST-1"})
-		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/"+issueID+"/comments":
-			_ = json.NewDecoder(r.Body).Decode(&body)
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": "comment-2", "supersedes": []map[string]any{
-				{"comment_id": "old-1", "resolved": true},
-				{"comment_id": "old-2", "skipped_reason": "human_reply"},
-			}})
-		default:
-			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-	setCLITestServerEnv(t, srv.URL)
-	t.Setenv("MULTICA_TOKEN", "mat_test-token")
-	t.Chdir(t.TempDir())
-
-	cmd := newIssueCommentAddTestCmd()
-	_ = cmd.Flags().Set("content", "plan rev-2")
-	_ = cmd.Flags().Set("supersedes", "old-1")
-	_ = cmd.Flags().Set("supersedes", "old-2")
-	stderr := captureStderr(t)
-	if err := runIssueCommentAdd(cmd, []string{issueID}); err != nil {
-		t.Fatalf("runIssueCommentAdd: %v", err)
-	}
-	got, _ := body["supersedes"].([]any)
-	if len(got) != 2 || got[0] != "old-1" || got[1] != "old-2" {
-		t.Fatalf("supersedes = %#v, want [old-1 old-2]", body["supersedes"])
-	}
-	out := stderr.read()
-	if !strings.Contains(out, "old-1 superseded and resolved") || !strings.Contains(out, "old-2 superseded, left open (human_reply)") {
-		t.Fatalf("stderr should report each superseded thread, got %q", out)
-	}
-}
-
-// --no-start starts no run, including a workflow step handler's run (CHE-4964).
-// The help must not promise an exception.
-func TestNoStartHelpHasNoHandoffException(t *testing.T) {
-	for name, cmd := range map[string]*cobra.Command{"status": issueStatusCmd, "update": issueUpdateCmd} {
-		usage := cmd.Flags().Lookup("no-start").Usage
-		if strings.Contains(usage, "Exception") {
-			t.Errorf("issue %s --no-start help = %q, want no handoff exception", name, usage)
-		}
-	}
-}
-
-// A workflow move that widens the run budget answers 202 with the approval card
-// it opened. The command prints the card and sends nothing else: no issue was
-// changed, so a status in the same call would be judged against the old workflow.
-func TestRunIssueUpdateWorkflowPrintsTheApprovalCardItOpened(t *testing.T) {
-	clearAmbientDaemonTaskEnv(t)
-	var puts, patches int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
-			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "todo"})
-		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1/workflow":
-			puts++
-			w.WriteHeader(http.StatusAccepted)
-			json.NewEncoder(w).Encode(map[string]any{"request_id": "req-1", "action_id": "act-1", "approve_url": "/acme/issues/issue-1?approve=act-1"})
-		default:
-			patches++
-			http.NotFound(w, r)
-		}
-	}))
-	defer srv.Close()
-	t.Setenv("MULTICA_SERVER_URL", srv.URL)
-	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
-	t.Setenv("MULTICA_TOKEN", "test-token")
-
-	cmd := newIssueUpdateTestCmd()
-	_ = cmd.Flags().Set("workflow", "wf-1")
-	_ = cmd.Flags().Set("status", "in_progress")
-	_ = cmd.Flags().Set("output", "table")
-	out, err := captureStdout(t, func() error { return runIssueUpdate(cmd, []string{"MUL-1"}) })
-	if err != nil {
-		t.Fatalf("runIssueUpdate: %v", err)
-	}
-	for _, want := range []string{"act-1", "/acme/issues/issue-1?approve=act-1"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output %q lacks %q", out, want)
-		}
-	}
-	if puts != 1 || patches != 0 {
-		t.Errorf("workflow PUTs = %d, other writes = %d; want 1 and 0", puts, patches)
-	}
-}
-
-// CHE-4552 (S4 of CHE-4439): multica issue route.
-
-func newIssueRouteTestCmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "route"}
-	cmd.Flags().String("status", "", "")
-	cmd.Flags().String("owner", "", "")
-	cmd.Flags().String("owner-id", "", "")
-	cmd.Flags().String("reason", "", "")
-	cmd.Flags().Float64("confidence", 0, "")
-	cmd.Flags().Bool("no-start", false, "")
-	cmd.Flags().Int64("expected-revision", 0, "")
-	cmd.Flags().String("output", "json", "")
-	return cmd
-}
-
-func routeTestServer(t *testing.T, body *map[string]any) {
-	t.Helper()
-	const agentID = "5fb87ac7-23b5-4a7a-81fa-ed295a54545d"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
-			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "in_progress"})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/workspaces/ws-1/members":
-			json.NewEncoder(w).Encode([]map[string]any{})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/agents":
-			json.NewEncoder(w).Encode([]map[string]any{{"id": agentID, "name": "CodeBot"}})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/squads":
-			json.NewEncoder(w).Encode([]map[string]any{})
-		case r.Method == http.MethodPost && r.URL.Path == "/api/issues/issue-1/route":
-			if err := json.NewDecoder(r.Body).Decode(body); err != nil {
-				t.Errorf("decode body: %v", err)
-			}
-			json.NewEncoder(w).Encode(map[string]any{"issue": map[string]any{"id": "issue-1", "identifier": "MUL-1"}, "run": map[string]any{"started": true}})
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	setCLITestServerEnv(t, srv.URL)
-	t.Setenv("MULTICA_TASK_CONFIG_ROOT", t.TempDir())
-	t.Setenv("MULTICA_TOKEN", "mat_test-token")
-}
-
-func TestRunIssueRouteSendsStatusReasonAndConfidence(t *testing.T) {
-	var body map[string]any
-	routeTestServer(t, &body)
-
-	cmd := newIssueRouteTestCmd()
-	_ = cmd.Flags().Set("status", "in_review")
-	_ = cmd.Flags().Set("reason", "ready for review")
-	_ = cmd.Flags().Set("confidence", "0.8")
-	if err := runIssueRoute(cmd, []string{"MUL-1"}); err != nil {
-		t.Fatalf("runIssueRoute: %v", err)
-	}
-	if body["status"] != "in_review" || body["reason"] != "ready for review" || body["confidence"] != 0.8 {
-		t.Fatalf("body = %#v", body)
-	}
-	for _, k := range []string{"owner_type", "owner_id", "suppress_run", "expected_revision"} {
-		if _, ok := body[k]; ok {
-			t.Fatalf("body has %s without its flag: %#v", k, body)
-		}
-	}
-}
-
-func TestRunIssueRouteSendsOwnerNoStartAndRevision(t *testing.T) {
-	const agentID = "5fb87ac7-23b5-4a7a-81fa-ed295a54545d"
-	var body map[string]any
-	routeTestServer(t, &body)
-
-	cmd := newIssueRouteTestCmd()
-	_ = cmd.Flags().Set("status", "in_review")
-	_ = cmd.Flags().Set("reason", "needs a reviewer")
-	_ = cmd.Flags().Set("confidence", "0")
-	_ = cmd.Flags().Set("owner-id", agentID)
-	_ = cmd.Flags().Set("no-start", "true")
-	_ = cmd.Flags().Set("expected-revision", "3")
-	if err := runIssueRoute(cmd, []string{"MUL-1"}); err != nil {
-		t.Fatalf("runIssueRoute: %v", err)
-	}
-	if body["owner_type"] != "agent" || body["owner_id"] != agentID || body["suppress_run"] != true || body["expected_revision"] != float64(3) || body["confidence"] != float64(0) {
-		t.Fatalf("body = %#v", body)
-	}
-}
-
-func TestRunIssueRouteResolvesAnOwnerByName(t *testing.T) {
-	var body map[string]any
-	routeTestServer(t, &body)
-
-	cmd := newIssueRouteTestCmd()
-	_ = cmd.Flags().Set("status", "in_progress")
-	_ = cmd.Flags().Set("reason", "owner only")
-	_ = cmd.Flags().Set("confidence", "0.5")
-	_ = cmd.Flags().Set("owner", "CodeBot")
-	if err := runIssueRoute(cmd, []string{"MUL-1"}); err != nil {
-		t.Fatalf("runIssueRoute: %v", err)
-	}
-	if body["owner_type"] != "agent" || body["owner_id"] != "5fb87ac7-23b5-4a7a-81fa-ed295a54545d" {
-		t.Fatalf("body = %#v", body)
-	}
-}
-
-func TestRunIssueRouteRequiresStatusReasonAndConfidence(t *testing.T) {
-	cases := map[string]map[string]string{
-		"status":     {"reason": "r", "confidence": "0.5"},
-		"reason":     {"status": "done", "confidence": "0.5"},
-		"confidence": {"status": "done", "reason": "r"},
-	}
-	for missing, flags := range cases {
-		t.Run(missing, func(t *testing.T) {
-			cmd := newIssueRouteTestCmd()
-			for k, v := range flags {
-				_ = cmd.Flags().Set(k, v)
-			}
-			err := runIssueRoute(cmd, []string{"MUL-1"})
-			if err == nil || !strings.Contains(err.Error(), "--"+missing) {
-				t.Fatalf("err = %v, want a --%s error", err, missing)
-			}
-		})
-	}
-}
-
-func TestRunIssueRouteRejectsAConfidenceOutsideZeroToOne(t *testing.T) {
-	for _, v := range []string{"-0.1", "1.5"} {
-		cmd := newIssueRouteTestCmd()
-		_ = cmd.Flags().Set("status", "done")
-		_ = cmd.Flags().Set("reason", "r")
-		_ = cmd.Flags().Set("confidence", v)
-		if err := runIssueRoute(cmd, []string{"MUL-1"}); err == nil || !strings.Contains(err.Error(), "--confidence") {
-			t.Fatalf("confidence %s: err = %v, want a --confidence error", v, err)
-		}
-	}
-}
-
 func newIssueSearchTestCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "search"}
 	cmd.Flags().Int("limit", 20, "")
@@ -7758,6 +6737,56 @@ func TestRunIssuePullRequestsLinkByIDRestoresUnlinkedPR(t *testing.T) {
 	}
 	if s.linkBody["pull_request_id"] != "22222222-2222-2222-2222-222222222222" || s.linkBody["url"] != nil {
 		t.Fatalf("link body = %#v", s.linkBody)
+	}
+}
+
+func TestRunIssuePullRequestsUnlinkResolvesPR(t *testing.T) {
+	cases := []struct {
+		name, ref, wantID string
+	}{
+		{"by URL with a trailing page", "https://github.com/acme/app/pull/42/files?w=1", "11111111-1111-1111-1111-111111111111"},
+		{"by URL without a scheme, any case", "GitHub.com/acme/web/pull/7", "33333333-3333-3333-3333-333333333333"},
+		{"by unique number", "#42", "11111111-1111-1111-1111-111111111111"},
+		{"by id", "22222222-2222-2222-2222-222222222222", "22222222-2222-2222-2222-222222222222"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &issuePullRequestServer{}
+			s.start(t)
+			if _, err := runQuiet(t, func() error {
+				return runIssuePullRequestsUnlink(newIssuePullRequestsTestCmd(), []string{"MUL-9", tc.ref})
+			}); err != nil {
+				t.Fatalf("unlink: %v", err)
+			}
+			if want := "/api/issues/issue-uuid/pull-requests/" + tc.wantID; s.unlinkPath != want {
+				t.Fatalf("DELETE %s, want %s", s.unlinkPath, want)
+			}
+		})
+	}
+}
+
+func TestRunIssuePullRequestsUnlinkRefusesAmbiguousOrUnknownPR(t *testing.T) {
+	cases := []struct {
+		name, ref, wantErr string
+	}{
+		{"number shared by two repos", "7", "matches 2 linked PRs"},
+		{"number not linked", "99", "no linked pull request has number 99"},
+		{"URL not linked", "https://github.com/acme/app/pull/43", "is not linked to this issue"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &issuePullRequestServer{}
+			s.start(t)
+			_, err := runQuiet(t, func() error {
+				return runIssuePullRequestsUnlink(newIssuePullRequestsTestCmd(), []string{"MUL-9", tc.ref})
+			})
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("err = %v, want it to mention %q", err, tc.wantErr)
+			}
+			if s.unlinkPath != "" {
+				t.Fatalf("expected no DELETE, got %s", s.unlinkPath)
+			}
+		})
 	}
 }
 

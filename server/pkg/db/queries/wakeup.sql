@@ -1,9 +1,6 @@
 -- name: CreateIssueWakeup :one
--- workflow_step: see migration 801. A run registering a wakeup decides from the
--- issue's status now, so its wakeup works on that status (CHE-2298).
-INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,parent_comment_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,filter_actor_type,filter_actor_id,interval_seconds,cron_expression,timezone,next_fire_at,expires_at,expiry_seconds,on_timeout,condition,max_fires,purpose,decision_request_id,watch_inputs,workflow_step)
-VALUES(@id,@workspace_id,@issue_id,@agent_id,@created_by,sqlc.narg(source_task_id),sqlc.narg(parent_comment_id),@instruction,@kind,@mode,@event_types,sqlc.narg(filter_agent_id),sqlc.narg(filter_task_id),sqlc.narg(filter_actor_type),sqlc.narg(filter_actor_id),sqlc.narg(interval_seconds),sqlc.narg(cron_expression),@timezone,sqlc.narg(next_fire_at),sqlc.narg(expires_at),sqlc.narg(expiry_seconds),sqlc.narg(on_timeout),sqlc.narg(condition),sqlc.narg(max_fires),sqlc.narg(purpose),sqlc.narg(decision_request_id),COALESCE(@watch_inputs::text[],'{}'),
- CASE WHEN sqlc.narg(source_task_id)::uuid IS NOT NULL THEN (SELECT i.status FROM issue i WHERE i.id=sqlc.arg(issue_id)::uuid) END) RETURNING *;
+INSERT INTO issue_wakeup(id,workspace_id,issue_id,agent_id,created_by,source_task_id,parent_comment_id,instruction,kind,mode,event_types,filter_agent_id,filter_task_id,filter_actor_type,filter_actor_id,interval_seconds,cron_expression,timezone,next_fire_at,expires_at,expiry_seconds,on_timeout,condition,max_fires)
+VALUES(@id,@workspace_id,@issue_id,@agent_id,@created_by,sqlc.narg(source_task_id),sqlc.narg(parent_comment_id),@instruction,@kind,@mode,@event_types,sqlc.narg(filter_agent_id),sqlc.narg(filter_task_id),sqlc.narg(filter_actor_type),sqlc.narg(filter_actor_id),sqlc.narg(interval_seconds),sqlc.narg(cron_expression),@timezone,sqlc.narg(next_fire_at),sqlc.narg(expires_at),sqlc.narg(expiry_seconds),sqlc.narg(on_timeout),sqlc.narg(condition),sqlc.narg(max_fires)) RETURNING *;
 -- name: ListIssueWakeups :many
 SELECT w.id,w.workspace_id,w.issue_id,w.agent_id,w.created_by,w.source_task_id,w.parent_comment_id,w.instruction,
  w.kind,w.mode,w.event_types,w.filter_actor_type,
@@ -15,7 +12,7 @@ SELECT w.id,w.workspace_id,w.issue_id,w.agent_id,w.created_by,w.source_task_id,w
  w.interval_seconds,w.cron_expression,w.timezone,w.next_fire_at,w.enabled,w.disabled_at,w.revision,
  w.last_task_id,w.last_error,w.created_at,w.updated_at,a.name AS agent_name,source.name AS filter_agent_name,t.status AS last_task_status,
  w.expires_at,w.expiry_seconds,w.on_timeout,w.timed_out_at,
- w.condition,w.max_fires,w.fire_count,w.paused_reason,w.default_rule_key,w.watch_inputs,w.purpose,w.decision_request_id,
+ w.condition,w.max_fires,w.fire_count,w.paused_reason,
  (w.source_task_id IS NOT NULL)::bool AS created_by_agent,creator.name AS created_by_name,
  (CASE WHEN creator_agent.id IS NOT NULL THEN creator_agent.id END)::uuid AS source_agent_id,creator_agent.name AS source_agent_name
 FROM issue_wakeup w JOIN agent a ON a.id=w.agent_id AND a.workspace_id=w.workspace_id
@@ -50,7 +47,7 @@ LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
 LEFT JOIN agent source ON source.id=w.filter_agent_id AND source.workspace_id=w.workspace_id AND source.id=ANY(@agent_ids::uuid[])
  WHERE w.workspace_id= @workspace_id AND w.enabled
   -- MUL-8472: private projects the caller cannot see.
-  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR i.project_id IS NULL OR NOT (i.project_id = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
+  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR NOT (COALESCE(i.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
   AND i.status NOT IN ('done','cancelled')
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category IN ('done','closed'))
 )
@@ -70,13 +67,11 @@ WHERE context->>'wakeup_id'= @wakeup_id::text AND status IN ('queued','deferred'
 -- name: DisableIssueWakeups :exec
 -- Closing wins over every subscription on the issue; reopening does not rearm.
 -- A system rule only rests while its issue is closed and resumes on reopen.
--- A waiver follow-up check is meant to run after release, so it outlives the close.
 UPDATE issue_wakeup SET enabled=false,disabled_at=clock_timestamp(),updated_at=clock_timestamp()
-WHERE issue_id= @issue_id AND disabled_at IS NULL AND system_rule IS NULL AND followup_instance_id IS NULL;
+WHERE issue_id= @issue_id AND disabled_at IS NULL AND system_rule IS NULL;
 -- name: CancelUnstartedIssueWakeupTasks :many
 UPDATE agent_task_queue SET status='cancelled',completed_at=now(),error='Issue closed; wakeup disabled'
-WHERE agent_task_queue.issue_id= @issue_id AND context->>'wakeup_id' IS NOT NULL AND status IN ('queued','deferred') AND started_at IS NULL
- AND NOT EXISTS(SELECT 1 FROM issue_wakeup w WHERE w.id::text=agent_task_queue.context->>'wakeup_id' AND w.followup_instance_id IS NOT NULL) RETURNING *;
+WHERE issue_id= @issue_id AND context->>'wakeup_id' IS NOT NULL AND status IN ('queued','deferred') AND started_at IS NULL RETURNING *;
 -- name: ListInputWakeups :many
 -- Scheduler lane 1: rules with unprocessed inputs (subscribed events,
 -- condition hints, "wake now"). Deliberately not filtered by enabled: a once
@@ -87,8 +82,6 @@ SELECT w.* FROM issue_wakeup w
 WHERE w.id IN (SELECT r.wakeup_id FROM issue_wakeup_receipt r WHERE r.processed_at IS NULL)
   AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
   AND NOT (w.id = ANY(@skip_ids::uuid[]))
-  -- An instance a full aggregate counter delayed waits for its retry time.
-  AND (w.aggregate_retry_at IS NULL OR w.aggregate_retry_at<=now())
 ORDER BY w.updated_at,w.id LIMIT @row_limit;
 -- name: ListDueWakeups :many
 -- Scheduler lane 2: schedules, deadlines and condition checks that are due.
@@ -99,31 +92,11 @@ WITH candidates AS (
  SELECT id FROM issue_wakeup WHERE enabled AND expires_at<=now()
  UNION
  SELECT id FROM issue_wakeup WHERE enabled AND condition IS NOT NULL AND next_fire_at<=now()
- UNION
- -- Rate-paused PR rules recover by the clock, on any issue PR dispatch accepts
- -- (everything but the closed category; see systemWakeupIssueActive).
- SELECT w.id FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
- WHERE NOT w.enabled AND w.paused_reason='rate' AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention','pr_checks_passed','pr_dequeued')
-  AND i.status<>'cancelled'
-  AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category='closed')
 )
 SELECT w.* FROM candidates c JOIN issue_wakeup w ON w.id=c.id
 WHERE (sqlc.narg('workspace_ids')::uuid[] IS NULL OR w.workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
   AND NOT (w.id = ANY(@skip_ids::uuid[]))
-  -- An instance a full aggregate counter delayed waits for its retry time.
-  AND (w.aggregate_retry_at IS NULL OR w.aggregate_retry_at<=now())
- -- A paused workspace (CHE-1727) is only scanned for what the pause settles:
- -- inputs to drop and recurring slots to skip. Overdue one-shots and conditions
- -- wait for the resume without crowding the bounded batch.
- AND (NOT EXISTS(SELECT 1 FROM workspace ws WHERE ws.id=w.workspace_id AND ws.settings->>'wakeups_paused'='true')
-  -- Sub-issue and other condition hints stay pending through a pause: they only
-  -- prompt an evaluation of what still holds on resume.
-  OR EXISTS(SELECT 1 FROM issue_wakeup_receipt r WHERE r.wakeup_id=w.id AND r.processed_at IS NULL AND NOT (w.kind='at' AND r.event_type='time.due') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual')))
-  OR (w.enabled AND w.kind IN ('every','cron') AND w.next_fire_at<=now()))
--- CHE-5252: a due one-shot (kind 'at') goes first. Every dispatch re-stamps
--- updated_at, so a fresh one-shot sorted behind all older recurring rules and
--- waited out whole passes of them.
-ORDER BY (w.kind<>'at'),w.updated_at,w.id LIMIT @row_limit;
+ORDER BY w.updated_at,w.id LIMIT @row_limit;
 -- name: ListPendingWakeupInputGroups :many
 -- Scheduler observability over unprocessed inputs, grouped per rule and by
 -- whether a run still reserves them. Dispatch deliberately keeps some inputs
@@ -158,13 +131,6 @@ WHERE sqlc.narg('after_oldest')::timestamptz IS NULL
 ORDER BY g.oldest, g.wakeup_id, g.reserved LIMIT @page_size;
 -- name: ListPendingWakeupReceipts :many
 SELECT * FROM issue_wakeup_receipt WHERE wakeup_id= @wakeup_id AND revision= @revision AND processed_at IS NULL ORDER BY created_at,id LIMIT 100 FOR UPDATE;
--- name: ListWakeupReservingTasks :many
--- Every run that holds a pending input of this rule, once each. Not paged: the
--- fire cap counts all of them, however many inputs are pending.
-SELECT t.* FROM agent_task_queue t WHERE t.id IN (
-  SELECT DISTINCT r.task_id FROM issue_wakeup_receipt r
-  WHERE r.wakeup_id= @wakeup_id AND r.revision= @revision AND r.processed_at IS NULL AND r.task_id IS NOT NULL
-);
 
 -- name: DeleteExpiredWakeupReceipts :execrows
 -- Pending inputs are never expired. Bound work and avoid waiting on dispatch.
@@ -181,39 +147,11 @@ INSERT INTO issue_wakeup_receipt(id,wakeup_id,revision,event_key,event_type,payl
 VALUES(@id,@wakeup_id,@revision,@event_key,@event_type,@payload)
 ON CONFLICT(wakeup_id,revision,event_key) DO UPDATE SET event_key=EXCLUDED.event_key RETURNING *;
 -- name: ConsumeWakeupReceipts :exec
--- Tying receipts to a task hands that task their taint (CHE-2216 plan 3.7; the
--- receipt keeps every comment it has held, migration 831). A new wakeup task and
--- a merge into a queued one both end here; the task trigger keeps what it had.
-WITH receipt_taint AS (
- SELECT COALESCE(array_agg(DISTINCT x ORDER BY x),'{}')::text[] AS ids
- FROM issue_wakeup_receipt r,unnest(r.taint_ids) AS x WHERE r.id=ANY(@ids::uuid[])
-), tainted AS (
- UPDATE agent_task_queue SET taint_ids=(SELECT ids FROM receipt_taint)
- WHERE id=sqlc.narg(task_id)::uuid AND cardinality((SELECT ids FROM receipt_taint))>0
-)
 UPDATE issue_wakeup_receipt SET task_id=sqlc.narg(task_id),processed_at=now() WHERE id=ANY(@ids::uuid[]);
--- name: MarkWakeupReceiptsDeferred :many
--- Active-run defer: stamps the facts a running target held back and returns
--- only those not stamped before, so the reason is recorded once per fact.
-UPDATE issue_wakeup_receipt SET deferred_at=now() WHERE id=ANY(@ids::uuid[]) AND processed_at IS NULL AND deferred_at IS NULL RETURNING *;
--- name: ConsumeHandoffWakeupReceipts :exec
--- A write that handed the issue to an agent starts that agent's run after it
--- commits. Once the run exists, the agent's issue-event and comment receipts
--- from the same write are handled. A receipt that merged with earlier pending events keeps
--- its place, and a receipt already reserved by a run is left to that run.
-UPDATE issue_wakeup_receipt r SET processed_at=now()
-FROM issue_wakeup w
-WHERE w.id=r.wakeup_id AND w.issue_id= @issue_id AND w.agent_id= @agent_id
-  AND r.processed_at IS NULL AND r.task_id IS NULL
-  AND (r.event_type LIKE 'issue.%' OR r.event_type = 'comment.created')
-  AND r.payload->>'handoff_write'= @write::text
-  AND COALESCE((r.payload->>'coalesced_count')::bigint,1)=1;
 -- name: DiscardWakeupReceipts :exec
 UPDATE issue_wakeup_receipt SET processed_at=now() WHERE wakeup_id= @id AND processed_at IS NULL;
 -- name: AdvanceIssueWakeup :exec
--- Progress bookkeeping never lifts a pause: a paused or disabled row stays
--- off, so enabled, paused_reason and disabled_at cannot drift apart.
-UPDATE issue_wakeup SET enabled= @enabled::bool AND paused_reason IS NULL AND disabled_at IS NULL,next_fire_at=sqlc.narg(next_fire_at),last_task_id=COALESCE(sqlc.narg(last_task_id),last_task_id),last_error=sqlc.narg(last_error),updated_at=clock_timestamp() WHERE id= @id;
+UPDATE issue_wakeup SET enabled= @enabled,next_fire_at=sqlc.narg(next_fire_at),last_task_id=COALESCE(sqlc.narg(last_task_id),last_task_id),last_error=sqlc.narg(last_error),updated_at=clock_timestamp() WHERE id= @id;
 -- name: FindPendingWakeupTask :one
 SELECT * FROM agent_task_queue WHERE context->>'wakeup_id'= @wakeup_id::text AND status IN ('queued','dispatched') ORDER BY created_at LIMIT 1 FOR UPDATE;
 
@@ -236,21 +174,29 @@ SELECT * FROM agent_task_queue WHERE context->>'wakeup_id'= @wakeup_id::text AND
 -- COALESCE keeps the column's gen_random_uuid() default reachable, so a caller
 -- that passes no id still inserts — it just gets a random v4, exactly as before.
 -- The same pattern is used by every INSERT listed in pkg/dbid's write table.
+WITH enqueue_agent AS MATERIALIZED (
+    SELECT a.id, COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid) AS runtime_id
+    FROM agent a
+    WHERE a.id = sqlc.arg(agent_id)
+      AND lock_task_owner_rows(a.id, sqlc.narg(issue_id), COALESCE(a.runtime_id, sqlc.narg(runtime_id)::uuid))
+    FOR KEY SHARE OF a
+)
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
-    squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
+    squad_id, usage_squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
     originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id, trigger_evidence_kind, trigger_evidence_ref_id,
     workflow_step, id
 )
 SELECT
-    $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
+    sqlc.arg(agent_id), enqueue_agent.runtime_id, sqlc.narg(issue_id), 'queued', sqlc.arg(priority), sqlc.narg(trigger_comment_id),
     COALESCE(sqlc.narg(coalesced_comment_ids)::uuid[], '{}'),
     sqlc.narg(trigger_summary),
     COALESCE(sqlc.narg('force_fresh_session')::boolean, FALSE),
     COALESCE(sqlc.narg('is_leader_task')::boolean, FALSE),
     sqlc.narg(handoff_note),
     sqlc.narg(squad_id),
+    sqlc.narg(usage_squad_id),
     CASE
         WHEN COALESCE(sqlc.narg('head_sha')::text, '') <> ''
         THEN jsonb_build_object('head_sha', sqlc.narg('head_sha')::text)
@@ -266,22 +212,16 @@ SELECT
     sqlc.narg(rerun_of_task_id),
     sqlc.narg(trigger_evidence_kind),
     sqlc.narg(trigger_evidence_ref_id),
-    -- The workflow step this run works on (MUL-7420). A wakeup an agent run
-    -- registered works on the issue's status at registration (wakeup_step,
-    -- migration 801): a status change it makes after someone else moved the
-    -- issue is refused like the registering run's would be. It is not the
-    -- registering run's own step, because a run that was already stale when it
-    -- registered would pass that stale step down every wakeup chain and every
-    -- status change would be refused (CHE-2298). Rows from before migration 801
-    -- keep copying the registering run's step. A wakeup a member registered
-    -- starts from the issue's status.
+    -- The workflow step this run works on (MUL-7420). A wakeup continues the
+    -- run that registered it, so it keeps that run's step: a status change it
+    -- makes after someone else moved the issue is refused like the run's own
+    -- would be. A wakeup a member registered starts from the issue's status.
     COALESCE(
-        sqlc.narg(wakeup_step)::text,
-        (SELECT s.workflow_step FROM agent_task_queue s WHERE s.id = sqlc.narg(delegated_from_task_id) AND s.issue_id = $3),
-        (SELECT i.status FROM issue i WHERE i.id = $3)
+        (SELECT s.workflow_step FROM agent_task_queue s WHERE s.id = sqlc.narg(delegated_from_task_id) AND s.issue_id = sqlc.narg(issue_id)),
+        (SELECT i.status FROM issue i WHERE i.id = sqlc.narg(issue_id))
     ),
     COALESCE(sqlc.narg('id')::uuid, gen_random_uuid())
-WHERE lock_task_owner_rows($1, $3, $2)
+FROM enqueue_agent
 RETURNING *;
 
 -- name: LocklessWakeup :one
@@ -296,10 +236,6 @@ UPDATE issue_wakeup SET last_error=sqlc.narg(last_error),updated_at=clock_timest
 -- cannot monopolize the bounded batch.
 UPDATE issue_wakeup SET updated_at=clock_timestamp() WHERE id= @id;
 
--- name: SetWakeupMutationSource :exec
-SELECT set_config('multica.actor_type', @actor_type::text, true),
-       set_config('multica.actor_id', @actor_id::text, true),
-       set_config('multica.source_task_id', @source_task_id::text, true);
 -- name: MarkWakeupTimedOut :exec
 -- The deadline ended the rule. disabled_at stays NULL: a timeout run created in
 -- the same transaction must remain claimable, and the rule reads as timed out,
@@ -317,41 +253,6 @@ UPDATE issue_wakeup SET enabled=false,next_fire_at=NULL,paused_reason= @paused_r
  disabled_at=CASE WHEN @block_runs::bool THEN COALESCE(disabled_at,clock_timestamp()) ELSE disabled_at END,
  updated_at=clock_timestamp() WHERE id= @id;
 
--- name: DisableGuardBlockedWakeup :one
--- CHE-6193: a run guard refused the rule's run. Disable it once; a rule that is
--- already off or paused returns no row, so only one timeline line is written.
--- next_fire_at stays, so a re-enabled schedule rule fires at once, not never.
-UPDATE issue_wakeup SET enabled=false,paused_reason= @paused_reason,last_error=NULL,updated_at=clock_timestamp()
-WHERE id= @id AND enabled AND paused_reason IS NULL
-RETURNING *;
-
--- name: ResumeGuardPausedWakeups :execrows
--- Re-enable the issue's rules a guard paused for this reason (a budget raise).
-UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,updated_at=clock_timestamp()
-WHERE issue_id= @issue_id AND NOT enabled AND paused_reason= @paused_reason;
-
--- name: ResumeGuardPausedWakeup :execrows
--- Re-enable one rule while it still carries the pause the caller judged.
-UPDATE issue_wakeup SET enabled=true,paused_reason=NULL,updated_at=clock_timestamp()
-WHERE id= @id AND NOT enabled AND paused_reason= @paused_reason;
-
--- name: ListWeeklyGuardPausedWakeups :many
--- Rules the weekly run guard paused, oldest pause first, for the resume sweep.
--- One page per call: the caller walks the set across passes (CHE-6193).
-SELECT * FROM issue_wakeup
-WHERE NOT enabled AND paused_reason='weekly_run_guard'
- AND (sqlc.narg('workspace_ids')::uuid[] IS NULL OR workspace_id = ANY(sqlc.narg('workspace_ids')::uuid[]))
- AND (sqlc.narg('after_updated_at')::timestamptz IS NULL OR (updated_at,id) > (sqlc.narg('after_updated_at')::timestamptz, sqlc.narg('after_id')::uuid))
-ORDER BY updated_at,id LIMIT @page_size::int;
-
--- name: ResumeRateLimitedSystemWakeup :execrows
--- The only way out of a rate pause: one statement clears the pause and its
--- run block together, and only while the rolling limit has room. Manual,
--- loop and max_fires pauses never match.
-UPDATE issue_wakeup w SET enabled=true,paused_reason=NULL,disabled_at=NULL,updated_at=clock_timestamp()
-WHERE w.id= @id AND w.system_rule IN ('pr_merged','pr_checks_failed','pr_needs_attention','pr_checks_passed','pr_dequeued') AND w.paused_reason='rate'
- AND (SELECT count(*) FROM agent_task_queue t WHERE t.context->>'wakeup_id'=w.id::text AND t.issue_id=w.issue_id AND t.created_at> @since) < @max_runs::bigint;
-
 -- name: CountWakeupFires :exec
 UPDATE issue_wakeup SET fire_count=fire_count+1 WHERE id= @id;
 
@@ -365,27 +266,17 @@ SELECT id,COALESCE(context->>'wakeup_id','')::text AS wakeup_id,COALESCE(context
 FROM agent_task_queue WHERE id=ANY(@ids::uuid[]);
 
 -- name: ListWakeupRuns :many
--- The rule's latest fires with what triggered each one, a check-in note when
--- the run ended silently, and whether it left a comment. A fire the platform
--- skipped (CHE-4984) has no run: it shows as status 'skipped' with its reason.
-SELECT id,status,created_at,started_at,completed_at,checkin_note,triggers,commented FROM (
- SELECT t.id,t.status,t.created_at,t.started_at,t.completed_at,
-  COALESCE(t.context->'wakeup_checkin'->>'note','')::text AS checkin_note,
-  COALESCE((SELECT array_agg(DISTINCT f->>'event_type') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.context->'wakeup_evidence'->'facts')='array' THEN t.context->'wakeup_evidence'->'facts' ELSE '[]'::jsonb END) f),'{}')::text[] AS triggers,
-  EXISTS(SELECT 1 FROM comment c WHERE c.issue_id=t.issue_id AND c.source_task_id=t.id)::bool AS commented
- FROM agent_task_queue t WHERE t.context->>'wakeup_id'= @wakeup_id::text AND t.issue_id= @issue_id
- UNION ALL
- SELECT a.id,'skipped'::text,a.created_at,NULL::timestamptz,NULL::timestamptz,
-  COALESCE(a.details->>'reason','')::text,'{}'::text[],false::bool
- FROM activity_log a WHERE a.action='wakeup_skipped' AND a.issue_id= @issue_id AND a.details->'wakeup'->>'id'= @wakeup_id::text
-) runs
-ORDER BY created_at DESC,id DESC LIMIT 10;
+-- The rule's latest runs with what triggered each one, a check-in note when
+-- the run ended silently, and whether it left a comment.
+SELECT t.id,t.status,t.created_at,t.started_at,t.completed_at,
+ COALESCE(t.context->'wakeup_checkin'->>'note','')::text AS checkin_note,
+ COALESCE((SELECT array_agg(DISTINCT f->>'event_type') FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.context->'wakeup_evidence'->'facts')='array' THEN t.context->'wakeup_evidence'->'facts' ELSE '[]'::jsonb END) f),'{}')::text[] AS triggers,
+ EXISTS(SELECT 1 FROM comment c WHERE c.issue_id=t.issue_id AND c.source_task_id=t.id)::bool AS commented
+FROM agent_task_queue t WHERE t.context->>'wakeup_id'= @wakeup_id::text AND t.issue_id= @issue_id
+ORDER BY t.created_at DESC,t.id DESC LIMIT 10;
 
 -- name: DeleteIssueWakeupReceipts :exec
 DELETE FROM issue_wakeup_receipt WHERE wakeup_id= @id;
-
--- name: DeleteIssueWakeupPRLedger :exec
-DELETE FROM issue_wakeup_pr_event WHERE wakeup_id= @id;
 
 -- name: DeleteIssueWakeup :exec
 DELETE FROM issue_wakeup WHERE id= @id AND issue_id= @issue_id;
@@ -397,7 +288,7 @@ SELECT w.issue_id,w.id,w.agent_id,w.paused_reason
 FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
 WHERE w.workspace_id= @workspace_id AND NOT w.enabled AND w.paused_reason IN ('loop','rate','max_fires')
  -- MUL-8472: private projects the caller cannot see.
- AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR i.project_id IS NULL OR NOT (i.project_id = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
+ AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR NOT (COALESCE(i.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
  AND i.status NOT IN ('done','cancelled')
  AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category IN ('done','closed'))
 ORDER BY w.updated_at DESC LIMIT 200;
@@ -441,58 +332,3 @@ WHERE id= @id AND status='dispatched' AND dispatched_at= @dispatched_at RETURNIN
 -- not finished: the run that made a change still knows about it.
 SELECT count(*) FROM agent_task_queue WHERE id=ANY(@ids::uuid[]) AND agent_id= @agent_id AND issue_id= @issue_id
  AND status IN ('dispatched','running','waiting_local_directory');
--- name: WorkspaceWakeupsPaused :one
-SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool FROM workspace WHERE id= @id;
--- name: DropPausedWakeupReceipts :execrows
--- A pause consumes what arrives meanwhile and records why. A person's manual
--- trigger, a one-shot's due time and the hints of a condition rule are not
--- dropped: a hint only prompts an evaluation of what still holds.
-UPDATE issue_wakeup_receipt r SET processed_at=now(),payload=r.payload||'{"outcome":"paused"}'::jsonb
-FROM issue_wakeup w
-WHERE r.wakeup_id=w.id AND w.id= @id AND r.processed_at IS NULL AND r.event_type<>'wakeup.manual'
- AND NOT (r.event_type='time.due' AND w.kind='at') AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual'));
--- name: CountPendingManualWakeupReceipts :one
-SELECT count(*) FROM issue_wakeup_receipt WHERE wakeup_id= @id AND processed_at IS NULL AND event_type='wakeup.manual';
--- name: DropPausedWorkspaceReceipts :execrows
--- Resume settles what the pause dropped before any dispatch tick can replay it
--- (CHE-1727). Same rule as DropPausedWakeupReceipts, for every rule of the workspace.
-UPDATE issue_wakeup_receipt r SET processed_at=now(),payload=r.payload||'{"outcome":"paused"}'::jsonb
-FROM issue_wakeup w
-WHERE r.wakeup_id=w.id AND w.workspace_id= @workspace_id AND r.processed_at IS NULL
- AND r.event_type<>'wakeup.manual' AND NOT (r.event_type='time.due' AND w.kind='at')
- AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual'));
--- name: ListOverdueRecurringWakeups :many
-SELECT * FROM issue_wakeup WHERE workspace_id= @workspace_id AND enabled AND kind IN ('every','cron') AND next_fire_at<=now();
--- name: WorkspaceWakeupsPausedShared :one
--- Reads the pause and the last resume time under a KEY SHARE lock on the
--- workspace row, held to the end of the dispatch transaction: a pause or resume
--- writer takes FOR UPDATE, so the answer cannot go stale before the enqueue
--- (CHE-1727).
-SELECT COALESCE(settings->>'wakeups_paused'='true',false)::bool AS paused,
- (CASE WHEN settings->>'wakeups_resumed_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T' THEN (settings->>'wakeups_resumed_at')::timestamptz END)::timestamptz AS resumed_at
-FROM workspace WHERE id= @id FOR KEY SHARE;
--- name: DropLatePausedReceipts :execrows
--- A producer that takes no workspace lock (an issue or task update) can commit
--- a receipt after the resume swept. Its event time says it arrived while the
--- workspace was paused, so it is dropped like the others. The event time is the
--- later of the insert and the payload's occurred_at, which a merged receipt
--- carries for its latest event, so a real event after the resume that merged
--- into a late paused receipt is kept (CHE-1727).
-UPDATE issue_wakeup_receipt r SET processed_at=now(),payload=r.payload||'{"outcome":"paused"}'::jsonb
-FROM issue_wakeup w
-WHERE r.wakeup_id=w.id AND w.id= @id AND r.processed_at IS NULL AND r.event_type<>'wakeup.manual'
- AND NOT (r.event_type='time.due' AND w.kind='at')
- AND NOT (w.condition IS NOT NULL AND r.event_type NOT IN ('condition.met','wakeup.timeout','wakeup.manual'))
- AND GREATEST(r.created_at, CASE WHEN r.payload->>'occurred_at' ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ]' THEN (r.payload->>'occurred_at')::timestamptz END) < @resumed_at::timestamptz;
--- name: StampWakeupsResumed :exec
--- The resume time, from the database clock, that DropLatePausedReceipts compares
--- against. The settings blob may not be an object in a legacy workspace.
-UPDATE workspace SET settings=jsonb_set(settings,'{wakeups_resumed_at}',to_jsonb(to_char(clock_timestamp() AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"')))
-WHERE id= @id AND jsonb_typeof(settings)='object';
-
--- name: GetWakeupDecisionRequest :one
--- A request a wakeup may bind to (CHE-3345 S1): on this issue, in the asked or
--- answered state. The caller compares the member and the workspace.
-SELECT id, workspace_id, issue_id, human_user_id, status, origin FROM decision_request
-WHERE id = @id AND issue_id = @issue_id AND workspace_id = @workspace_id
-  AND ((status = 'open' AND origin = 'asked') OR status = 'answered');

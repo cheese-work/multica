@@ -3,19 +3,28 @@ import { api } from "../api";
 
 export const propertyKeys = {
   all: (wsId: string) => ["properties", wsId] as const,
-  list: (wsId: string) => [...propertyKeys.all(wsId), "list"] as const,
+  list: (wsId: string, includeArchived = false) =>
+    [...propertyKeys.all(wsId), "list", includeArchived] as const,
+  /** The settings catalog with per-definition usage counts. Value writes only
+   *  move counts, so they invalidate this key and leave `list` alone. */
+  withUsage: (wsId: string) => [...propertyKeys.all(wsId), "with-usage"] as const,
 };
 
-/**
- * One cached catalog serves every reader: the request always includes archived
- * definitions, and readers that want live ones only filter on read, so a page
- * mixing both costs one request.
- */
+/** The definition catalog. `usage_count` is always 0 here; use
+ *  `propertyUsageListOptions` where counts are shown. */
 export function propertyListOptions(wsId: string, includeArchived = false) {
   return queryOptions({
-    queryKey: propertyKeys.list(wsId),
-    queryFn: () => api.listProperties(true),
-    select: (data) =>
-      includeArchived ? data.properties : data.properties.filter((p) => p.archived !== true),
+    queryKey: propertyKeys.list(wsId, includeArchived),
+    queryFn: () => api.listProperties(includeArchived),
+    select: (data) => data.properties,
+  });
+}
+
+/** Every definition, archived included, with real usage counts. */
+export function propertyUsageListOptions(wsId: string) {
+  return queryOptions({
+    queryKey: propertyKeys.withUsage(wsId),
+    queryFn: () => api.listProperties(true, { includeUsage: true }),
+    select: (data) => data.properties,
   });
 }

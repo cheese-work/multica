@@ -6,14 +6,9 @@ import { ChatQueue } from "./chat-queue";
 
 const TEST_RESOURCES = { en: { chat: enChat } };
 
-function renderQueue(
-  headStatus = "running",
-  sendNowDisabled = false,
-  headSupplement: "capable" | "starting" | "unsupported" | "absent" = "capable",
-) {
+function renderQueue(headStatus = "running", sendNowDisabled = false) {
   const callbacks = {
-    onSteer: vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(),
-    onStopAndSend: vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(),
+    onSendNow: vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(),
     onEdit: vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(),
     onRemove: vi.fn<(taskId: string) => Promise<void>>().mockResolvedValue(),
     onClear: vi.fn<() => Promise<void>>().mockResolvedValue(),
@@ -22,7 +17,6 @@ function renderQueue(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <ChatQueue
         headStatus={headStatus}
-        headSupplement={headSupplement === "absent" ? undefined : headSupplement}
         sendNowDisabled={sendNowDisabled}
         tasks={[
           {
@@ -53,7 +47,7 @@ describe("ChatQueue", () => {
     expect(screen.queryByText("2 queued messages")).not.toBeInTheDocument();
     expect(screen.getByText("First follow-up")).toBeInTheDocument();
     expect(screen.getByText("Queued message")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Steer" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Send now (stops current reply)" })).toHaveLength(2);
     expect(screen.getAllByLabelText("Remove queued message")).toHaveLength(2);
     expect(screen.getAllByLabelText("More queue actions")).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Clear all" })).not.toBeInTheDocument();
@@ -76,9 +70,8 @@ describe("ChatQueue", () => {
   it("runs steer, remove, and overflow actions against the selected queue state", async () => {
     const actions = renderQueue();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Steer" })[1]!);
-    await waitFor(() => expect(actions.onSteer).toHaveBeenCalledWith("task-3"));
-    expect(actions.onStopAndSend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getAllByRole("button", { name: "Send now (stops current reply)" })[1]!);
+    await waitFor(() => expect(actions.onSendNow).toHaveBeenCalledWith("task-3"));
 
     fireEvent.click(screen.getAllByLabelText("More queue actions")[0]!);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Edit queued message" }));
@@ -96,11 +89,11 @@ describe("ChatQueue", () => {
     const actions = renderQueue("queued");
 
     const buttons = screen.getAllByRole("button", {
-      name: "Steer is available after the current reply starts",
+      name: "Available after the current reply starts",
     });
     expect(buttons).toHaveLength(2);
     for (const button of buttons) expect(button).toBeDisabled();
-    expect(actions.onSteer).not.toHaveBeenCalled();
+    expect(actions.onSendNow).not.toHaveBeenCalled();
   });
 
   it("keeps long queues bounded and blocks duplicate actions while one is pending", async () => {
@@ -139,7 +132,7 @@ describe("ChatQueue", () => {
 // the agent, a live-looking Steer button just walks them into a 403.
 describe("ChatQueue send-now gating", () => {
   it("blocks Steer when the caller may no longer invoke the agent", async () => {
-    const { onSteer, onStopAndSend } = renderQueue("running", true);
+    const { onSendNow } = renderQueue("running", true);
 
     // The label must state the real reason: "wait for the reply to start" would
     // send the user waiting for something waiting cannot fix.
@@ -148,76 +141,12 @@ describe("ChatQueue send-now gating", () => {
     })[0]!;
     expect(steer).toBeDisabled();
     fireEvent.click(steer);
-    await waitFor(() => expect(onSteer).not.toHaveBeenCalled());
-    expect(onStopAndSend).not.toHaveBeenCalled();
+    await waitFor(() => expect(onSendNow).not.toHaveBeenCalled());
   });
 
   it("leaves Steer available when the head task is dispatchable and permitted", () => {
     renderQueue("running", false);
 
-    expect(screen.getAllByRole("button", { name: "Steer" })[0]!).not.toBeDisabled();
-  });
-});
-
-// CHE-2820: Steer adds the message to the running reply; stopping the run is a
-// separate, explicit action.
-describe("ChatQueue Steer and Stop & send", () => {
-  it("keeps Stop & send as a separate action that stops the run", async () => {
-    const actions = renderQueue("running", false, "capable");
-
-    fireEvent.click(screen.getAllByLabelText("More queue actions")[1]!);
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Stop & send" }));
-    await waitFor(() => expect(actions.onStopAndSend).toHaveBeenCalledWith("task-3"));
-    expect(actions.onSteer).not.toHaveBeenCalled();
-  });
-
-  it("disables Steer with the reason while the run is starting, never as unsupported", () => {
-    renderQueue("running", false, "starting");
-
-    const steer = screen.getAllByRole("button", { name: "Run is starting" })[0]!;
-    expect(steer).toBeDisabled();
-    expect(screen.queryByRole("button", { name: /can't take new messages/ })).not.toBeInTheDocument();
-  });
-
-  it.each(["unsupported", "absent"] as const)(
-    "disables Steer with the queue reason when head support is %s",
-    (support) => {
-      renderQueue("running", false, support);
-
-      const steer = screen.getAllByRole("button", {
-        name: "This run can't take new messages. The message stays queued.",
-      })[0]!;
-      expect(steer).toBeDisabled();
-    },
-  );
-
-  it("still offers Stop & send when the run cannot be steered", async () => {
-    const actions = renderQueue("running", false, "unsupported");
-
-    fireEvent.click(screen.getAllByLabelText("More queue actions")[0]!);
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Stop & send" }));
-    await waitFor(() => expect(actions.onStopAndSend).toHaveBeenCalledWith("task-2"));
-  });
-
-  it.each([
-    ["running", "starting", "Run is starting"],
-    ["running", "unsupported", "This run can't take new messages. The message stays queued."],
-    ["running", "absent", "This run can't take new messages. The message stays queued."],
-    ["queued", "capable", "Steer is available after the current reply starts"],
-  ] as const)(
-    "shows the fallback reason as visible text (head %s, support %s)",
-    (headStatus, support, reason) => {
-      renderQueue(headStatus, false, support);
-
-      const visible = screen.getByText(reason);
-      expect(visible).toBeVisible();
-      expect(visible).toHaveAttribute("data-slot", "chat-queue-reason");
-    },
-  );
-
-  it("shows no reason text while Steer is available", () => {
-    const { container } = renderQueue("running", false, "capable");
-
-    expect(container.querySelector('[data-slot="chat-queue-reason"]')).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Send now (stops current reply)" })[0]!).not.toBeDisabled();
   });
 });

@@ -32,7 +32,7 @@ const (
 // stored facts (a field value, sub-issue status, a linked pull request's
 // state); it does not interpret business meaning.
 type WakeupCondition struct {
-	// issue_field | children_done | pull_request | other_issue | github_run | merge_eligibility
+	// issue_field | children_done | pull_request | other_issue
 	Type string `json:"type"`
 	// issue_field: status | assignee | label | property
 	Field        string          `json:"field,omitempty"`
@@ -47,20 +47,13 @@ type WakeupCondition struct {
 	// every stage closing while a later one waits, then every sub-issue
 	// closing. Only the platform sets it.
 	EachStage bool `json:"each_stage,omitempty"`
-	// pull_request: checks_finished | merged | conflicts | dequeued
+	// pull_request: checks_finished | merged | conflicts
 	Event string `json:"event,omitempty"`
 	// other_issue: the watched issue and done | ended | in_review | blocked. The
 	// identifier is recorded for display; clients never set it.
 	IssueID    string `json:"issue_id,omitempty"`
 	State      string `json:"state,omitempty"`
 	Identifier string `json:"identifier,omitempty"`
-	// github_run: a lowercased owner/name and one selector, either RunID or
-	// Workflow (a file name under .github/workflows) plus the run's own
-	// HeadSHA. State is completed | waiting.
-	Repo     string `json:"repo,omitempty"`
-	RunID    int64  `json:"run_id,omitempty"`
-	Workflow string `json:"workflow,omitempty"`
-	HeadSHA  string `json:"head_sha,omitempty"`
 }
 
 var errBadCondition = errors.New("invalid condition")
@@ -69,42 +62,17 @@ var errBadCondition = errors.New("invalid condition")
 // Keep polling so delayed webhooks, snapshots or restored configuration heal.
 var (
 	errPRSnapshotsUnavailable = errors.New("PR checks cannot be evaluated: GitHub snapshot refresh is unavailable on this server; ask the server administrator to configure the GitHub App snapshot client")
-	errPRNotLinked            = errors.New("no pull request is linked to this issue; link the PR to this issue (a parent issue's PR is not included), or wait for the linking webhook")
+	errPRNotLinked            = errors.New("No pull request is linked to this issue; link the PR to this issue (a parent issue's PR is not included), or wait for the linking webhook")
 	errPRSnapshotPending      = errors.New("PR check snapshot is not available yet; inspect this issue's pull-requests snapshot_available field and ask the server administrator to check snapshot refresh if it persists")
 	errPRConflictsUnsupported = errors.New("Merge conflicts can only be detected on GitHub pull requests; this issue links only self-hosted (Forgejo/Gitea/GitLab) pull requests")
-	errGHRunNoEvents          = errors.New("no GitHub workflow events have been received for this repository; ask the server administrator to check that the GitHub App is subscribed to Workflow run and Workflow job events")
-	errGHRunNoMatch           = errors.New("no matching workflow run has been observed yet; the run may not have started, or its event was not delivered")
-	errGHRunAgedOut           = errors.New("the run is no longer in the 30-day event cache; the rule keeps its memory but cannot fire again")
-	errGHRunStale             = errors.New("the run has shown no event for over 6 hours and is not waiting; its completed delivery may be lost, so redeliver it from the GitHub App's Recent Deliveries or rely on the rule's deadline")
 )
 
 func conditionDiagnostic(err error) bool {
-	return errors.Is(err, errPRSnapshotsUnavailable) || errors.Is(err, errPRNotLinked) || errors.Is(err, errPRSnapshotPending) || errors.Is(err, errPRConflictsUnsupported) ||
-		errors.Is(err, errGHRunNoEvents) || errors.Is(err, errGHRunNoMatch) || errors.Is(err, errGHRunAgedOut) || errors.Is(err, errGHRunStale) ||
-		errors.Is(err, errMergeFactsUnavailable) || errors.Is(err, errMergePolicyMissing) || errors.Is(err, errMergePauseUnknown)
+	return errors.Is(err, errPRSnapshotsUnavailable) || errors.Is(err, errPRNotLinked) || errors.Is(err, errPRSnapshotPending) || errors.Is(err, errPRConflictsUnsupported)
 }
 
 func badCondition(msg string) error {
 	return fmt.Errorf("%w: %w: %s", ErrWakeupInput, errBadCondition, msg)
-}
-
-// conditionHints are the same-issue events that should trigger an early
-// evaluation of a normalized condition; the rest is polled.
-func conditionHints(c WakeupCondition) []string {
-	if c.Type != "issue_field" {
-		return nil
-	}
-	switch c.Field {
-	case "status":
-		return []string{"issue.status_changed"}
-	case "assignee":
-		return []string{"issue.assignee_changed"}
-	case "label":
-		return []string{"issue.labels_changed"}
-	case "property":
-		return []string{"issue.properties_changed"}
-	}
-	return nil
 }
 
 // validateCondition normalizes a condition against the issue's workspace and
@@ -129,6 +97,7 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 		}
 		return id, nil
 	}
+	var events []string
 	var out WakeupCondition
 	switch c.Type {
 	case "issue_field":
@@ -149,6 +118,7 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				}
 			}
 			out.Value, _ = json.Marshal(status)
+			events = []string{"issue.status_changed"}
 		case "assignee":
 			id, err := uuidArg(c.AssigneeID, "assignee_id")
 			if err != nil {
@@ -172,6 +142,7 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				return nil, nil, badCondition("unknown assignee")
 			}
 			out.AssigneeType, out.AssigneeID = c.AssigneeType, util.UUIDToString(id)
+			events = []string{"issue.assignee_changed"}
 		case "label":
 			id, err := uuidArg(c.LabelID, "label_id")
 			if err != nil {
@@ -185,6 +156,7 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				return nil, nil, badCondition("unknown label")
 			}
 			out.LabelID = util.UUIDToString(id)
+			events = []string{"issue.labels_changed"}
 		case "property":
 			id, err := uuidArg(c.PropertyID, "property_id")
 			if err != nil {
@@ -202,6 +174,7 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 				return nil, nil, badCondition("property value must be a JSON value within 1 KB")
 			}
 			out.PropertyID, out.Value = util.UUIDToString(id), value
+			events = []string{"issue.properties_changed"}
 		default:
 			return nil, nil, badCondition("field must be status, assignee, label or property")
 		}
@@ -214,8 +187,8 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 		}
 		out = WakeupCondition{Type: c.Type, Stage: c.Stage}
 	case "pull_request":
-		if c.Event != "checks_finished" && c.Event != "merged" && c.Event != "conflicts" && c.Event != "dequeued" {
-			return nil, nil, badCondition("event must be checks_finished, merged, conflicts or dequeued")
+		if c.Event != "checks_finished" && c.Event != "merged" && c.Event != "conflicts" {
+			return nil, nil, badCondition("event must be checks_finished, merged or conflicts")
 		}
 		out = WakeupCondition{Type: c.Type, Event: c.Event}
 	case "other_issue":
@@ -238,51 +211,11 @@ func validateCondition(ctx context.Context, tx pgx.Tx, issue db.Issue, raw json.
 			return nil, nil, err
 		}
 		out = WakeupCondition{Type: c.Type, IssueID: util.UUIDToString(id), State: c.State, Identifier: identifier}
-	case "github_run":
-		// Polled only: ingest writes no issue event a rule could subscribe to.
-		var err error
-		if out, err = validateGitHubRun(c, func(owner string) (bool, error) {
-			return exists("SELECT 1 FROM github_installation WHERE workspace_id=$1 AND lower(account_login)=$2", ws, owner)
-		}); err != nil {
-			return nil, nil, err
-		}
-	case "merge_eligibility":
-		out = WakeupCondition{Type: c.Type}
 	default:
-		return nil, nil, badCondition("type must be issue_field, children_done, pull_request, other_issue, github_run or merge_eligibility")
+		return nil, nil, badCondition("type must be issue_field, children_done, pull_request or other_issue")
 	}
 	normalized, _ := json.Marshal(out)
-	return normalized, conditionHints(out), nil
-}
-
-// checksRollupIgnoringVerdict is the PR rollup a checks_finished rule reads.
-// The security-gate status stays PENDING until a cross-lab verdict exists, and
-// flows wait for finished checks before asking for it, so a PENDING rollup
-// whose only unfinished contexts are verdict statuses reads as SUCCESS. A
-// failing check already makes the rollup FAILURE, so only PENDING needs this.
-const checksRollupIgnoringVerdict = `CASE WHEN pr.checks_rollup_state='PENDING'
-	AND EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND NOT (cr.is_status_context AND cr.name='security-gate'))
-	AND NOT EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.status<>'completed' AND NOT (cr.is_status_context AND cr.name='security-gate'))
-	THEN 'SUCCESS' ELSE COALESCE(pr.checks_rollup_state,'') END`
-
-// checksFailureHeld is true when a FAILURE rollup should wait because another
-// non-verdict check on the snapshot head is still unfinished (CHE-5422 S2).
-// Only checks_finished reads it; the green wake and the other pull_request
-// events keep the rollup as it is. A waiting check (environment approval) counts
-// as done. The hold applies only when the issue has exactly one linked PR,
-// GitHub and self-hosted together; $1 is the issue id.
-const checksFailureHeld = `COALESCE(pr.checks_rollup_state='FAILURE'
-	AND EXISTS (SELECT 1 FROM github_pull_request_check_run cr WHERE cr.pr_id=pr.id AND cr.head_sha=pr.snapshot_head_sha AND cr.status IN ('queued','in_progress','requested','pending') AND NOT (cr.is_status_context AND cr.name='security-gate'))
-	AND (SELECT count(*) FROM issue_pull_request l WHERE l.issue_id=$1) + (SELECT count(*) FROM issue_vcs_pull_request v WHERE v.issue_id=$1) = 1, false)`
-
-// PRChecksRollupIgnoringVerdict is the PR's rollup with checksRollupIgnoringVerdict
-// applied, so the green wake and the checks_finished rule read one definition.
-func PRChecksRollupIgnoringVerdict(ctx context.Context, db interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}, prID pgtype.UUID) (string, error) {
-	var rollup string
-	err := db.QueryRow(ctx, `SELECT `+checksRollupIgnoringVerdict+` FROM github_pull_request pr WHERE pr.id=$1`, prID).Scan(&rollup)
-	return rollup, err
+	return normalized, events, nil
 }
 
 // evaluateCondition reports whether the predicate holds, a fingerprint of the
@@ -294,6 +227,8 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		return false, "", nil, err
 	}
 	switch c.Type {
+	case "blockers_done":
+		return evaluateIssueBlockers(ctx, tx, q, w)
 	case "issue_field":
 		var status, assigneeType string
 		var assigneeID pgtype.UUID
@@ -327,9 +262,6 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		met, fingerprint, observed := childrenDone(c, children)
 		return met, fingerprint, observed, nil
 	case "pull_request":
-		if c.Event == "dequeued" {
-			return evaluatePRDequeued(ctx, tx, q, w)
-		}
 		// Without the snapshot client GitHub rows are never refreshed, so their
 		// checks and mergeability neither satisfy nor stall the rule. Self-hosted VCS rows carry
 		// their own commit statuses and are evaluated regardless (#9034).
@@ -337,8 +269,8 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		// GitHub reports UNKNOWN while it recomputes mergeability (after any
 		// base-branch move). On the same head that keeps the previous verdict,
 		// so a recompute does not read as resolved-then-conflicting again.
-		previous := conditionKeys(w.ConditionState)
-		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),`+checksRollupIgnoringVerdict+`,pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text,pr.repo_owner,pr.repo_name,`+checksFailureHeld+`
+		previous := prConditionKeys(w.ConditionState)
+		rows, err := tx.Query(ctx, `SELECT pr.pr_number,pr.state,COALESCE(pr.snapshot_head_sha,''),COALESCE(pr.checks_rollup_state,''),pr.head_sha,COALESCE(pr.api_mergeable,''),pr.id::text
 			FROM github_pull_request pr JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id WHERE ipr.issue_id=$1`, w.IssueID)
 		if err != nil {
 			return false, "", nil, err
@@ -346,34 +278,28 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 		linked, missingSnapshot := 0, false
 		var keys []string
 		var prs []map[string]any
-		var prRepos [][2]string
-		var linkedPRs []linkedPR
 		for rows.Next() {
 			var number int32
-			var state, head, checks, currentHead, mergeable, id, repoOwner, repoName string
-			var held bool
-			if err = rows.Scan(&number, &state, &head, &checks, &currentHead, &mergeable, &id, &repoOwner, &repoName, &held); err != nil {
+			var state, head, checks, currentHead, mergeable, id string
+			if err = rows.Scan(&number, &state, &head, &checks, &currentHead, &mergeable, &id); err != nil {
 				rows.Close()
 				return false, "", nil, err
 			}
 			linked++
-			linkedPRs = append(linkedPRs, linkedPR{number: fmt.Sprintf("%d", number), id: id, repo: [2]string{repoOwner, repoName}})
 			switch c.Event {
 			case "merged":
 				if state == "merged" {
 					keys = append(keys, fmt.Sprintf("%d", number))
 					prs = append(prs, map[string]any{"number": number, "state": state})
-					prRepos = append(prRepos, [2]string{repoOwner, repoName})
 				}
 			case "checks_finished":
-				if !githubChecks || held {
+				if !githubChecks {
 					continue
 				}
 				missingSnapshot = missingSnapshot || head == ""
 				if head != "" && slices.Contains([]string{"SUCCESS", "FAILURE", "ERROR"}, checks) {
-					keys = append(keys, prChecksKey(number, head, checks))
-					prs = append(prs, map[string]any{"number": number, "head_sha": head, "checks": strings.ToLower(checks), "head_current": head == currentHead})
-					prRepos = append(prRepos, [2]string{repoOwner, repoName})
+					keys = append(keys, fmt.Sprintf("%d@%s:%s", number, head, checks))
+					prs = append(prs, map[string]any{"number": number, "head_sha": head, "checks": strings.ToLower(checks)})
 				}
 			case "conflicts":
 				if !githubChecks || (state != "open" && state != "draft") {
@@ -389,19 +315,11 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				if mergeable == "CONFLICTING" || ((mergeable == "UNKNOWN" || mergeable == "") && previous[key] > 0) {
 					keys = append(keys, key)
 					prs = append(prs, map[string]any{"number": number, "head_sha": head, "mergeable": "conflicting"})
-					prRepos = append(prRepos, [2]string{repoOwner, repoName})
 				}
 			}
 		}
 		rows.Close()
-		if err := rows.Err(); err != nil {
-			return false, "", nil, err
-		}
-		// The kill switch (CHE-2220) drops a halted repository's PRs from what
-		// the rule reports. Their keys stay in the fingerprint, so a resume does
-		// not replay them; conditionDropped keeps them from starting a run.
-		var haltedPRs []string
-		if prs, haltedPRs, err = splitHaltedPRs(ctx, q, w.WorkspaceID, prs, prRepos, linkedPRs); err != nil {
+		if err = rows.Err(); err != nil {
 			return false, "", nil, err
 		}
 		// Self-hosted VCS pull requests (Forgejo/Gitea/GitLab) live in their own
@@ -449,23 +367,38 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				}
 				if head != "" && checks != "" {
 					keys = append(keys, fmt.Sprintf("vcs:%s@%s:%s", util.UUIDToString(id), head, checks))
-					prs = append(prs, map[string]any{"number": number, "provider": provider, "head_sha": head, "checks": strings.ToLower(checks), "head_current": true})
+					prs = append(prs, map[string]any{"number": number, "provider": provider, "head_sha": head, "checks": strings.ToLower(checks)})
 				}
 			}
 		}
 		vcsRows.Close()
-		if err := vcsRows.Err(); err != nil {
+		if err = vcsRows.Err(); err != nil {
 			return false, "", nil, err
 		}
 		// Any matching PR satisfies the rule; diagnostics only explain a wait.
 		if len(keys) == 0 {
-			// GitHub-only (or unlinked) checks rules cannot progress without the
-			// snapshot client; a rule with VCS PRs waits for their statuses.
-			if !githubChecks && (linked > 0 || vcsLinked == 0) {
-				return false, "", nil, errPRSnapshotsUnavailable
-			}
 			if linked == 0 && vcsLinked == 0 {
+				// Without the snapshot client a GitHub PR cannot finish a checks
+				// rule but a self-hosted VCS PR can, so blame the missing client
+				// only when the workspace has no VCS connection to link one from.
+				// Conflicts need snapshots whichever PR is linked.
+				if !githubChecks {
+					var hasVCS bool
+					if c.Event == "checks_finished" {
+						if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM vcs_connection WHERE workspace_id=$1)", w.WorkspaceID).Scan(&hasVCS); err != nil {
+							return false, "", nil, err
+						}
+					}
+					if !hasVCS {
+						return false, "", nil, errPRSnapshotsUnavailable
+					}
+				}
 				return false, "", nil, errPRNotLinked
+			}
+			// GitHub PRs cannot progress without the snapshot client; a rule
+			// that also has VCS PRs waits for their statuses.
+			if !githubChecks && linked > 0 {
+				return false, "", nil, errPRSnapshotsUnavailable
 			}
 			if c.Event == "conflicts" && linked == 0 {
 				return false, "", nil, errPRConflictsUnsupported
@@ -475,15 +408,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 			}
 		}
 		sort.Strings(keys)
-		observed := map[string]any{"pull_requests": prs}
-		if len(haltedPRs) > 0 {
-			observed[haltedPRsField] = haltedPRs
-		}
-		return len(keys) > 0, "pr:" + strings.Join(keys, ","), observed, nil
-	case "github_run":
-		return evaluateGitHubRun(ctx, tx, q, w, c)
-	case "merge_eligibility":
-		return s.evaluateMergeEligibility(ctx, tx, q, w)
+		return len(keys) > 0, "pr:" + strings.Join(keys, ","), map[string]any{"pull_requests": prs}, nil
 	case "other_issue":
 		var status string
 		var number int32
@@ -521,25 +446,29 @@ const conditionHintSQL = "wakeup_id=$1 AND processed_at IS NULL AND event_type N
 // consumeConditionHints marks the pending hints processed. It also returns the
 // agent runs that caused them, or nil when any hint came from elsewhere (a
 // person, the platform, or several merged events), so a satisfied condition
-// can tell whether the target agent brought it about itself.
-func consumeConditionHints(ctx context.Context, tx pgx.Tx, id pgtype.UUID) (bool, []string, error) {
-	rows, err := tx.Query(ctx, "UPDATE issue_wakeup_receipt SET processed_at=now() WHERE "+conditionHintSQL+" RETURNING payload", id)
+// can tell whether the target agent brought it about itself. onlyAdded reports
+// that every hint was sub-issues being added or reopened, changes that close
+// nothing (false when there was no hint).
+func consumeConditionHints(ctx context.Context, tx pgx.Tx, id pgtype.UUID) (hinted bool, causes []string, onlyAdded bool, err error) {
+	rows, err := tx.Query(ctx, "UPDATE issue_wakeup_receipt SET processed_at=now() WHERE "+conditionHintSQL+" RETURNING event_type,payload", id)
 	if err != nil {
-		return false, nil, err
+		return false, nil, false, err
 	}
 	defer rows.Close()
-	hinted, complete := false, true
-	var causes []string
+	complete := true
+	onlyAdded = true
 	for rows.Next() {
+		var eventType string
 		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			return false, nil, err
+		if err = rows.Scan(&eventType, &raw); err != nil {
+			return false, nil, false, err
 		}
 		hinted = true
 		var p struct {
 			SourceTaskID  string   `json:"source_task_id"`
 			SourceTaskIDs []string `json:"source_task_ids"`
 			Count         int64    `json:"coalesced_count"`
+			Changes       []string `json:"changes"`
 		}
 		_ = json.Unmarshal(raw, &p)
 		switch {
@@ -550,106 +479,82 @@ func consumeConditionHints(ctx context.Context, tx pgx.Tx, id pgtype.UUID) (bool
 		default:
 			complete = false
 		}
+		if eventType != childChangeHint || len(p.Changes) == 0 {
+			onlyAdded = false
+		}
+		for _, change := range p.Changes {
+			if change != "attached" && change != "reopened" {
+				onlyAdded = false
+			}
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return false, nil, err
+	if err = rows.Err(); err != nil {
+		return false, nil, false, err
 	}
 	if !complete {
 		causes = nil
 	}
-	return hinted, causes, nil
+	return hinted, causes, hinted && onlyAdded, nil
 }
 
 // pollCondition evaluates a condition rule when it is due or a related event
 // arrived, and returns the next scheduled evaluation. A newly satisfied
 // predicate becomes one condition.met input for the ordinary dispatch below.
-func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, now time.Time) (pgtype.Timestamptz, []db.AgentTaskQueue, error) {
-	hinted, causes, err := consumeConditionHints(ctx, tx, w.ID)
+func (s *IssueWakeupService) pollCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, now time.Time) (pgtype.Timestamptz, error) {
+	hinted, causes, _, err := consumeConditionHints(ctx, tx, w.ID)
 	if err != nil {
-		return w.NextFireAt, nil, err
+		return w.NextFireAt, err
 	}
 	if !hinted && w.NextFireAt.Valid && w.NextFireAt.Time.After(now) {
-		return w.NextFireAt, nil, nil
+		return w.NextFireAt, nil
 	}
-	fail := func(err error) (pgtype.Timestamptz, []db.AgentTaskQueue, error) { return w.NextFireAt, nil, err }
 	met, fingerprint, observed, err := s.evaluateCondition(ctx, tx, q, w)
 	if err != nil && !conditionDiagnostic(err) {
-		return fail(err)
+		return w.NextFireAt, err
 	}
-	if err := saveConditionDiagnostic(ctx, q, w, err); err != nil {
-		return fail(err)
+	if err = saveConditionDiagnostic(ctx, q, w, err); err != nil {
+		return w.NextFireAt, err
 	}
 	// condition_state dedups a satisfied predicate; each new satisfaction
 	// gets its own receipt key.
 	state := w.ConditionState
-	var condition WakeupCondition
-	if err := json.Unmarshal(w.Condition, &condition); err != nil {
-		return fail(err)
-	}
-	isRun := condition.Type == "github_run"
-	var withdrawn []db.AgentTaskQueue
-	if condition.Type == "merge_eligibility" {
-		// Queued work for a candidate that is no longer eligible, or whose state
-		// is unknown, goes before anything new is queued (CHE-5122).
-		if withdrawn, err = withdrawStaleMergeRuns(ctx, tx, q, w, observedMergeCandidates(observed["pull_requests"])); err != nil {
-			return fail(err)
-		}
-	}
 	if met {
-		newlyMet := fingerprint != state
-		if isRun || condition.Type == "merge_eligibility" || (condition.Type == "pull_request" && condition.Event == "conflicts") {
-			newlyMet = conditionNewlyMet(state, fingerprint)
-		}
-		if newlyMet && !conditionDropped(observed, state, fingerprint, condition.Event == "conflicts") {
-			if condition.Type == "merge_eligibility" {
-				if observed, err = dedupeMergeCandidates(ctx, tx, w, observed); err != nil {
-					return fail(err)
-				}
-			}
-			if observed != nil {
-				if err := recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
-					return fail(err)
-				}
+		if conditionNewlyMet(state, fingerprint) {
+			if err = recordConditionMet(ctx, q, w, observed, causes, now); err != nil {
+				return w.NextFireAt, err
 			}
 		}
 		state = fingerprint
-		if isRun {
-			state = mergeGitHubRunKeys(w.ConditionState, fingerprint)
-		}
-	} else if !isRun {
+	} else {
 		state = ""
 	}
 	next := pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}
-	return next, withdrawn, q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: state, NextFireAt: next})
+	return next, q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: state, NextFireAt: next})
 }
 
-// conditionKeys counts the keys of a keyed fingerprint ("pr:" linked PRs,
-// "gh:" workflow runs). Checks and merged keys carry only the PR number, so two
-// satisfying PRs from different repositories can share a key; the count keeps
-// both.
-func conditionKeys(fingerprint string) map[string]int {
+// prConditionKeys counts the per-PR keys of a linked-PR fingerprint. Checks
+// and merged keys carry only the PR number, so two satisfying PRs from
+// different repositories can share a key; the count keeps both.
+func prConditionKeys(fingerprint string) map[string]int {
 	keys := map[string]int{}
-	for _, prefix := range []string{"pr:", "gh:"} {
-		if rest, ok := strings.CutPrefix(fingerprint, prefix); ok && rest != "" {
-			for _, key := range strings.Split(rest, ",") {
-				keys[key]++
-			}
+	if rest, ok := strings.CutPrefix(fingerprint, "pr:"); ok && rest != "" {
+		for _, key := range strings.Split(rest, ",") {
+			keys[key]++
 		}
 	}
 	return keys
 }
 
 // conditionNewlyMet reports whether a satisfied predicate is news to the rule.
-// A keyed fingerprint holds one key per satisfying PR or run episode, and only
-// a key that occurs more often than the rule has seen is news: one PR leaving
-// the set (resolved, closed, unlinked) must not wake the agent again for the
-// others.
+// A linked-PR fingerprint holds one key per satisfying PR, and only a key that
+// occurs more often than the rule has seen is news: one PR leaving the set
+// (resolved, closed, unlinked) must not wake the agent again for the others.
 func conditionNewlyMet(previous, current string) bool {
-	if !strings.HasPrefix(current, "pr:") && !strings.HasPrefix(current, "gh:") {
+	if !strings.HasPrefix(current, "pr:") {
 		return current != previous
 	}
-	seen := conditionKeys(previous)
-	for key, n := range conditionKeys(current) {
+	seen := prConditionKeys(previous)
+	for key, n := range prConditionKeys(current) {
 		if n > seen[key] {
 			return true
 		}
@@ -658,10 +563,9 @@ func conditionNewlyMet(previous, current string) bool {
 }
 
 // conditionFiresOnChange reports whether facts already true at registration
-// can be ignored. Finished checks may belong to the head the agent just
-// replaced, so baselineCondition ignores those, but not checks finished on the
-// PR's current head; states such as a status value, finished sub-issues or a
-// merged PR fire as soon as they hold.
+// are ignored. Finished checks usually belong to the head the agent just
+// replaced, so a checks condition waits for a newer result; states such as a
+// status value, finished sub-issues or a merged PR fire as soon as they hold.
 func conditionFiresOnChange(raw []byte) bool {
 	var c WakeupCondition
 	_ = json.Unmarshal(raw, &c)
@@ -671,65 +575,17 @@ func conditionFiresOnChange(raw []byte) bool {
 // baselineCondition records which facts already satisfy a new or re-enabled
 // rule, so it wakes the agent when they change rather than immediately.
 func (s *IssueWakeupService) baselineCondition(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup, now time.Time) error {
-	fingerprint, diagnostic, err := s.baselineFingerprint(ctx, tx, q, w)
-	if err != nil {
+	met, fingerprint, _, err := s.evaluateCondition(ctx, tx, q, w)
+	if err != nil && !conditionDiagnostic(err) {
 		return err
 	}
-	return writeConditionBaseline(ctx, q, w, fingerprint, diagnostic, now)
-}
-
-// baselineFingerprint reads the facts that already satisfy the rule through tx
-// and returns the fingerprint to record, plus the condition's diagnostic.
-func (s *IssueWakeupService) baselineFingerprint(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) (string, error, error) {
-	met, fingerprint, observed, err := s.evaluateCondition(ctx, tx, q, w)
-	if err != nil && !conditionDiagnostic(err) {
-		return "", nil, err
+	if err = saveConditionDiagnostic(ctx, q, w, err); err != nil {
+		return err
 	}
 	if !met {
 		fingerprint = ""
-	} else if staleOnly, ok := replacedHeadChecks(w.Condition, observed); ok {
-		fingerprint = staleOnly
-	}
-	return fingerprint, err, nil
-}
-
-func writeConditionBaseline(ctx context.Context, q *db.Queries, w db.IssueWakeup, fingerprint string, diagnostic error, now time.Time) error {
-	if err := saveConditionDiagnostic(ctx, q, w, diagnostic); err != nil {
-		return err
 	}
 	return q.SetWakeupConditionState(ctx, db.SetWakeupConditionStateParams{ID: w.ID, ConditionState: fingerprint, NextFireAt: pgtype.Timestamptz{Time: now.Add(conditionPollInterval), Valid: true}})
-}
-
-// prChecksKey is the fingerprint key of one finished checks result.
-func prChecksKey(number any, head, checks string) string {
-	return fmt.Sprintf("%v@%s:%s", number, head, strings.ToUpper(checks))
-}
-
-// replacedHeadChecks returns the fingerprint a new checks_finished rule
-// baselines: only the results on a replaced head, since those are not news.
-// A result on a PR's current head stays out of it, so the next poll fires,
-// whatever the other linked PRs show. ok is false for any other rule.
-func replacedHeadChecks(raw []byte, observed map[string]any) (fingerprint string, ok bool) {
-	var c WakeupCondition
-	_ = json.Unmarshal(raw, &c)
-	if c.Type != "pull_request" || c.Event != "checks_finished" {
-		return "", false
-	}
-	var keys []string
-	prs, _ := observed["pull_requests"].([]map[string]any)
-	for _, pr := range prs {
-		if current, _ := pr["head_current"].(bool); current {
-			continue
-		}
-		head, _ := pr["head_sha"].(string)
-		checks, _ := pr["checks"].(string)
-		keys = append(keys, prChecksKey(pr["number"], head, checks))
-	}
-	if len(keys) == 0 {
-		return "", true
-	}
-	sort.Strings(keys)
-	return "pr:" + strings.Join(keys, ","), true
 }
 
 // A completed evaluation replaces the previous pass's error with its current
@@ -754,6 +610,7 @@ type subIssue struct {
 	Stage     pgtype.Int4
 	Closed    bool
 	Cancelled bool
+	Backlog   bool
 }
 
 func loadSubIssues(ctx context.Context, tx pgx.Tx, q *db.Queries, parent, workspace pgtype.UUID) ([]subIssue, error) {
@@ -774,7 +631,7 @@ func loadSubIssues(ctx context.Context, tx pgx.Tx, q *db.Queries, parent, worksp
 		statuses = append(statuses, status)
 	}
 	rows.Close()
-	if err := rows.Err(); err != nil {
+	if err = rows.Err(); err != nil {
 		return nil, err
 	}
 	categories := map[string]string{}
@@ -786,6 +643,7 @@ func loadSubIssues(ctx context.Context, tx pgx.Tx, q *db.Queries, parent, worksp
 			}
 			categories[status] = category
 		}
+		children[i].Backlog = statuses[i] == "backlog"
 		children[i].Closed = category == "done" || category == "closed"
 		children[i].Cancelled = category == "closed"
 	}
@@ -876,7 +734,7 @@ func stageProgress(children []subIssue) (bool, string, map[string]any) {
 	case len(children) > 0 && closed == len(children):
 		observed["all"] = true
 		return true, "all", observed
-	case frontier && waiting:
+	case frontier && waiting && stageNeedsPromotion(children, nextStage):
 		observed["stage"], observed["next_stage"] = closedStage, nextStage
 		return true, fmt.Sprintf("stage:%d", closedStage), observed
 	}
@@ -886,13 +744,7 @@ func stageProgress(children []subIssue) (bool, string, map[string]any) {
 // recordConditionMet turns a newly satisfied condition into one run input. It
 // names the agent runs whose changes satisfied it, when all of them are known.
 func recordConditionMet(ctx context.Context, q *db.Queries, w db.IssueWakeup, observed map[string]any, causes []string, now time.Time) error {
-	visible := make(map[string]any, len(observed))
-	for k, v := range observed {
-		if k != haltedPRsField {
-			visible[k] = v
-		}
-	}
-	facts := map[string]any{"condition": json.RawMessage(w.Condition), "observed": visible, "observed_at": now.UTC().Format(time.RFC3339)}
+	facts := map[string]any{"condition": PublicWakeupCondition(w), "observed": observed, "observed_at": now.UTC().Format(time.RFC3339)}
 	if len(causes) > 0 {
 		facts["source_task_ids"] = causes
 	}
@@ -901,140 +753,11 @@ func recordConditionMet(ctx context.Context, q *db.Queries, w db.IssueWakeup, ob
 	return err
 }
 
-// haltedPRsField carries, in a pull_request condition's observed facts, the
-// identities (PR number and row id) of every linked PR in a repository the
-// GitHub dispatch kill switch covers, whether or not it matches the condition.
-const haltedPRsField = "halted_prs"
-
-// linkedPR is one PR linked to the rule's issue. A fingerprint key starts with
-// its number, or with its row id for a conflicts condition.
-type linkedPR struct {
-	number, id string
-	repo       [2]string
-}
-
-// splitHaltedPRs returns the matching PRs outside halted repositories, and the
-// identities of all linked PRs inside them. repos[i] is the repository of prs[i].
-func splitHaltedPRs(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, prs []map[string]any, repos [][2]string, linked []linkedPR) (live []map[string]any, haltedPRs []string, err error) {
-	// Held to the end of the evaluation's transaction: a switch change waits for it, or is seen by it (CHE-2223).
-	if err := q.LockGitHubDispatchHaltShared(ctx, workspaceID); err != nil {
-		return nil, nil, err
-	}
-	halted := map[[2]string]bool{}
-	isHalted := func(repo [2]string) (bool, error) {
-		if h, ok := halted[repo]; ok {
-			return h, nil
-		}
-		h, err := q.GitHubDispatchHalted(ctx, db.GitHubDispatchHaltedParams{WorkspaceID: workspaceID, RepoOwner: repo[0], RepoName: repo[1]})
-		halted[repo] = h
-		return h, err
-	}
-	live = prs[:0:0]
-	for i, pr := range prs {
-		h, err := isHalted(repos[i])
-		if err != nil {
-			return nil, nil, err
-		}
-		if !h {
-			live = append(live, pr)
+func stageNeedsPromotion(children []subIssue, stage int32) bool {
+	for _, ch := range children {
+		if ch.Stage.Valid && ch.Stage.Int32 == stage && ch.Backlog && !ch.Closed {
+			return true
 		}
 	}
-	for _, pr := range linked {
-		h, err := isHalted(pr.repo)
-		if err != nil {
-			return nil, nil, err
-		}
-		if h {
-			haltedPRs = append(haltedPRs, pr.number, pr.id)
-		}
-	}
-	return live, haltedPRs, nil
-}
-
-// conditionDropped reports a satisfied pull_request condition whose change is
-// confined to halted repositories: with their PRs' keys removed from both
-// fingerprints, nothing is new to the rule. A halted fact is consumed, never
-// queued, whether its PR started matching or stopped (a new pending head).
-// additionsOnly follows the conflicts condition, where a key leaving is no news.
-// ponytail: keys carry only the PR number, so a number shared by a halted and
-// an unhalted repo can hide the unhalted one; widen the key if that bites.
-func conditionDropped(observed map[string]any, previous, current string, additionsOnly bool) bool {
-	halted, _ := observed[haltedPRsField].([]string)
-	if len(halted) == 0 {
-		return false
-	}
-	prev, cur := withoutPRs(previous, halted), withoutPRs(current, halted)
-	if additionsOnly {
-		return !conditionNewlyMet(prev, cur)
-	}
-	return prev == cur
-}
-
-// withoutPRs removes the keys of the given PR identities from a "pr:" fingerprint.
-func withoutPRs(fingerprint string, identities []string) string {
-	rest, ok := strings.CutPrefix(fingerprint, "pr:")
-	if !ok {
-		return fingerprint
-	}
-	var kept []string
-	for _, key := range strings.Split(rest, ",") {
-		id, _, _ := strings.Cut(key, "@")
-		if key != "" && !slices.Contains(identities, id) {
-			kept = append(kept, key)
-		}
-	}
-	if len(kept) == 0 {
-		return ""
-	}
-	return "pr:" + strings.Join(kept, ",")
-}
-
-// evaluatePRDequeued reads the dequeue facts the webhook recorded as receipts
-// of the issue's pr_dequeued rule (CHE-4231), for the PRs linked now and
-// received since this rule was created. A dequeue is an event, not a state the
-// snapshot holds, and the updated_at in each receipt key makes every
-// dequeue a new fingerprint.
-func evaluatePRDequeued(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) (bool, string, map[string]any, error) {
-	rows, err := tx.Query(ctx, `SELECT r.event_key, pr.pr_number, pr.id::text, pr.repo_owner, pr.repo_name, r.payload->>'head_sha', r.payload->>'reason'
-		FROM issue_wakeup dw JOIN issue_wakeup_receipt r ON r.wakeup_id=dw.id
-		JOIN github_pull_request pr ON lower(pr.repo_owner)=lower(r.payload->>'repo_owner') AND lower(pr.repo_name)=lower(r.payload->>'repo_name') AND pr.pr_number=(r.payload->>'pr_number')::int
-		JOIN issue_pull_request ipr ON ipr.pull_request_id=pr.id AND ipr.issue_id=dw.issue_id
-		WHERE dw.issue_id=$1 AND dw.system_rule='pr_dequeued' AND r.created_at>=$2
-		ORDER BY r.event_key`, w.IssueID, w.CreatedAt)
-	if err != nil {
-		return false, "", nil, err
-	}
-	defer rows.Close()
-	var keys []string
-	var prs []map[string]any
-	var repos [][2]string
-	var linked []linkedPR
-	for rows.Next() {
-		var key, id, repoOwner, repoName string
-		var number int32
-		var head, reason pgtype.Text
-		if err := rows.Scan(&key, &number, &id, &repoOwner, &repoName, &head, &reason); err != nil {
-			return false, "", nil, err
-		}
-		// The key starts with the PR number, like the other pull_request keys,
-		// so a halted repository's dequeues are consumed by conditionDropped.
-		keys = append(keys, fmt.Sprintf("%d@%s", number, key))
-		prs = append(prs, map[string]any{"number": number, "head_sha": head.String, "reason": reason.String})
-		repos = append(repos, [2]string{repoOwner, repoName})
-		linked = append(linked, linkedPR{number: fmt.Sprintf("%d", number), id: id, repo: [2]string{repoOwner, repoName}})
-	}
-	if err := rows.Err(); err != nil {
-		return false, "", nil, err
-	}
-	// The kill switch (CHE-2220) consumes a halted repository's dequeues: they
-	// stay in the fingerprint, so lifting the halt does not replay them.
-	prs, haltedPRs, err := splitHaltedPRs(ctx, q, w.WorkspaceID, prs, repos, linked)
-	if err != nil {
-		return false, "", nil, err
-	}
-	observed := map[string]any{"pull_requests": prs}
-	if len(haltedPRs) > 0 {
-		observed[haltedPRsField] = haltedPRs
-	}
-	return len(keys) > 0, "pr:" + strings.Join(keys, ","), observed, nil
+	return false
 }

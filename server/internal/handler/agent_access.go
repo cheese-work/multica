@@ -8,7 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -50,7 +50,7 @@ import (
 // agent/system principals, but member/team targets fail closed without a
 // matching human.
 func (h *Handler) canInvokeAgent(ctx context.Context, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) bool {
-	allowed, _ := h.invokeAgentDecision(ctx, agent, actorType, actorID, originatorUserID, workspaceID)
+	allowed := h.invokeAgentDecision(ctx, agent, actorType, actorID, originatorUserID, workspaceID)
 	if !allowed && actorType != "member" && originatorUserID == "" {
 		// MUL-6490: the wire reason stays the deliberately generic
 		// invocation_not_allowed (dispatch/reason.go — it must not reveal whether a
@@ -72,19 +72,8 @@ func (h *Handler) canInvokeAgent(ctx context.Context, agent db.Agent, actorType,
 }
 
 // invokeAgentDecision is canInvokeAgent's pure verdict, split out so the gate has
-// exactly one place to observe a denial from. A non-nil error means a lookup
-// failed: the bool is what canInvokeAgent has always returned (a failed lookup
-// counts as not-a-member), but callers that must tell "decided" from "could not
-// decide" (GitHub routing, can_route) must treat any error as undecided, even
-// when the bool is true.
-func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) (bool, error) {
-	return h.invokeAgentDecisionVia(ctx, h.Queries, agent, actorType, actorID, originatorUserID, workspaceID)
-}
-
-// invokeAgentDecisionVia reads through `queries`, so a caller inside a
-// transaction keeps every lookup on its own connection instead of waiting for a
-// second pool connection while holding locks.
-func (h *Handler) invokeAgentDecisionVia(ctx context.Context, queries *db.Queries, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) (bool, error) {
+// exactly one place to observe a denial from.
+func (h *Handler) invokeAgentDecision(ctx context.Context, agent db.Agent, actorType, actorID, originatorUserID, workspaceID string) bool {
 	effectiveUser := actorID
 	if actorType != "member" {
 		// agent / system: never trust the immediate principal, only the
@@ -92,20 +81,32 @@ func (h *Handler) invokeAgentDecisionVia(ctx context.Context, queries *db.Querie
 		effectiveUser = originatorUserID
 	}
 
+	isWorkspaceMember := false
+	if effectiveUser != "" {
+		if m, err := h.getWorkspaceMember(ctx, effectiveUser, workspaceID); err == nil {
+			// Guests never run agents (MUL-9420), not even one they owned
+			// before becoming a guest.
+			if projectaccess.IsGuestRole(m.Role) {
+				return false
+			}
+			isWorkspaceMember = true
+		}
+	}
+
 	// The agent owner may always invoke their own agent.
 	if effectiveUser != "" && uuidToString(agent.OwnerID) == effectiveUser {
-		return true, nil
+		return true
 	}
 
 	if agent.PermissionMode != "public_to" {
 		// private (or any unknown mode) is deny-by-default: no admin bypass,
 		// no A2A bypass. Only the owner branch above passes.
-		return false, nil
+		return false
 	}
 
-	targets, err := queries.ListAgentInvocationTargets(ctx, agent.ID)
+	targets, err := h.Queries.ListAgentInvocationTargets(ctx, agent.ID)
 	if err != nil {
-		return false, err
+		return false
 	}
 
 	// Agents and system triggers are workspace-internal principals: a
@@ -119,36 +120,25 @@ func (h *Handler) invokeAgentDecisionVia(ctx context.Context, queries *db.Querie
 	// member-/team-scoped private-ish allow-list and can never smuggle itself
 	// onto someone's specific-people grant.
 	workspaceBroad := actorType == "agent" || actorType == "system"
-	isWorkspaceMember := false
-	var lookupErr error
-	if effectiveUser != "" {
-		_, err := workspaceMemberVia(ctx, queries, effectiveUser, workspaceID)
-		switch {
-		case err == nil:
-			isWorkspaceMember = true
-		case !errors.Is(err, pgx.ErrNoRows):
-			lookupErr = err
-		}
-	}
 
 	for _, t := range targets {
 		switch t.TargetType {
 		case "workspace":
 			if isWorkspaceMember || workspaceBroad {
-				return true, lookupErr
+				return true
 			}
 		case "member":
 			// Requires a resolved human. agent/system triggers with no
 			// originator (effectiveUser == "") never match here — fail closed.
 			if effectiveUser != "" && uuidToString(t.TargetID) == effectiveUser {
-				return true, lookupErr
+				return true
 			}
 		case "team":
 			// Reserved: team membership does not exist yet in V1, so team
 			// targets never admit anyone (also fail-closed for system/agent).
 		}
 	}
-	return false, lookupErr
+	return false
 }
 
 // canAccessPrivateAgent gates the VIEW surfaces (list/detail navigation, chat
@@ -257,6 +247,51 @@ func (h *Handler) invokeOriginatorFromRequest(r *http.Request, actorType, actorI
 	return ""
 }
 
+// requestRepresentsUser reports whether a request may reach data private to
+// userID. Human credentials (JWT, mul_ PAT) carry no X-Actor-Source and always
+// do. A task token carries its runtime owner's user id whoever triggered the
+// run, so it qualifies only for a live task that this same user started, on a
+// runtime they still own. A cloud-node PAT has no task binding or human trigger
+// and never qualifies.
+//
+// A missing task or runtime is a plain (false, nil); any other lookup error is
+// returned so the caller can tell an outage from a denial.
+func (h *Handler) requestRepresentsUser(r *http.Request, userID string, workspaceID pgtype.UUID) (bool, error) {
+	switch r.Header.Get("X-Actor-Source") {
+	case "":
+		return true, nil
+	case "task_token":
+	default:
+		return false, nil
+	}
+	notFound := func(err error) (bool, error) {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	taskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
+	if err != nil {
+		return false, nil
+	}
+	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
+	if err != nil {
+		return notFound(err)
+	}
+	if isTerminalTaskStatus(task.Status) ||
+		!task.OriginatorUserID.Valid || uuidToString(task.OriginatorUserID) != userID ||
+		uuidToString(task.AgentID) != r.Header.Get("X-Agent-ID") {
+		return false, nil
+	}
+	runtime, err := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
+		ID: task.RuntimeID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return notFound(err)
+	}
+	return runtime.OwnerID.Valid && uuidToString(runtime.OwnerID) == userID, nil
+}
+
 // isTerminalTaskStatus reports whether a task has finished, in any of the three
 // ways it can. Mirrors the agent_task_queue status CHECK constraint; a status the
 // constraint does not know is treated as NOT terminal so an added in-flight state
@@ -287,22 +322,6 @@ func (h *Handler) commentSourceTaskID(r *http.Request) pgtype.UUID {
 		return pgtype.UUID{}
 	}
 	return task.ID
-}
-
-// actingTaskContext marks ctx with the agent task making this request, so tasks
-// the request enqueues inherit its taint. A member's request marks nothing. A
-// header that names a task we cannot read still marks ctx, with an id no task
-// has, so the enqueue fails closed instead of dispatching untainted work.
-func (h *Handler) actingTaskContext(r *http.Request) context.Context {
-	header := r.Header.Get("X-Task-ID")
-	if header == "" {
-		return r.Context()
-	}
-	id, err := util.ParseUUID(header)
-	if err != nil {
-		id = pgtype.UUID{Valid: true}
-	}
-	return service.WithActingTask(r.Context(), id)
 }
 
 // taskFromRequestHeader resolves the agent's currently-executing task from the

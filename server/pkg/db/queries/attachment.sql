@@ -2,14 +2,12 @@
 WITH inserted AS (
   INSERT INTO attachment (
     id, workspace_id, issue_id, comment_id, chat_session_id, task_id, source_context_id,
-    uploader_type, uploader_id, filename, url, content_type, size_bytes, external_read,
-    revision, revision_of, revision_root, sha256,
+    uploader_type, uploader_id, filename, url, content_type, size_bytes,
     width, height
   )
   VALUES (
     $1, $2, sqlc.narg(issue_id), sqlc.narg(comment_id), sqlc.narg(chat_session_id), sqlc.narg(task_id), sqlc.narg(source_context_id),
-    $3, $4, $5, $6, $7, $8, COALESCE(sqlc.narg(external_read)::boolean, false),
-    COALESCE(sqlc.narg(revision)::int, 1), sqlc.narg(revision_of), sqlc.narg(revision_root), COALESCE(sqlc.narg(sha256)::text, ''),
+    $3, $4, $5, $6, $7, $8,
     sqlc.narg(width), sqlc.narg(height)
   )
   RETURNING *
@@ -96,6 +94,9 @@ WHERE comment_id = @comment_id AND workspace_id = @workspace_id
 RETURNING url;
 
 -- name: LinkAttachmentsToComment :exec
+-- An unbound upload is a draft and joins only its own uploader's comment
+-- (MUL-9420): a guest's file taken off its comment must not be adoptable by
+-- anyone else who learns its id.
 UPDATE attachment
 SET comment_id = sqlc.arg(comment_id),
     issue_id = sqlc.arg(issue_id)
@@ -105,16 +106,31 @@ WHERE workspace_id = sqlc.arg(workspace_id)
     AND chat_session_id IS NULL
     AND chat_message_id IS NULL
     AND task_id IS NULL
+    AND uploader_type = sqlc.arg(uploader_type)
+    AND uploader_id = sqlc.arg(uploader_id)
   ))
   AND comment_id IS NULL
   AND source_context_id IS NULL
   AND id = ANY(sqlc.arg(attachment_ids)::uuid[]);
 
 -- name: ReplaceCommentAttachments :execrows
+-- A file removed from the comment stays an issue attachment, except a guest's
+-- (MUL-9420): a guest attaches files only through its comments, so its file
+-- goes back to being its unbound draft rather than staying on the issue.
 UPDATE attachment
 SET comment_id = CASE
   WHEN id = ANY(sqlc.arg(attachment_ids)::uuid[]) THEN $1
   ELSE NULL
+END,
+issue_id = CASE
+  WHEN id = ANY(sqlc.arg(attachment_ids)::uuid[]) THEN issue_id
+  WHEN uploader_type = 'member' AND EXISTS (
+    SELECT 1 FROM member m
+    WHERE m.workspace_id = attachment.workspace_id
+      AND m.user_id = attachment.uploader_id
+      AND m.role = 'guest'
+  ) THEN NULL
+  ELSE issue_id
 END
 WHERE issue_id = $2
   AND source_context_id IS NULL
@@ -122,6 +138,24 @@ WHERE issue_id = $2
     (comment_id = $1 AND NOT id = ANY(sqlc.arg(attachment_ids)::uuid[]))
     OR (comment_id IS NULL AND id = ANY(sqlc.arg(attachment_ids)::uuid[]))
   );
+
+-- name: BindUploaderDraftAttachmentsToIssue :execrows
+-- A comment edit's own drafts: attachments the editor uploaded that are not
+-- bound to anything yet (a guest's uploads stay unbound until a comment takes
+-- them, MUL-9420) join the comment's issue, so ReplaceCommentAttachments can
+-- link them in the same transaction.
+UPDATE attachment
+SET issue_id = sqlc.arg(issue_id)
+WHERE workspace_id = sqlc.arg(workspace_id)
+  AND id = ANY(sqlc.arg(attachment_ids)::uuid[])
+  AND issue_id IS NULL
+  AND comment_id IS NULL
+  AND chat_session_id IS NULL
+  AND chat_message_id IS NULL
+  AND task_id IS NULL
+  AND source_context_id IS NULL
+  AND uploader_type = sqlc.arg(uploader_type)
+  AND uploader_id = sqlc.arg(uploader_id);
 
 -- name: LinkAttachmentsToChatMessage :many
 UPDATE attachment
@@ -137,23 +171,6 @@ WHERE workspace_id = sqlc.arg(workspace_id)
     OR chat_session_id = sqlc.arg(chat_session_id)
   )
   AND uploader_type = sqlc.arg(uploader_type)
-  AND uploader_id = sqlc.arg(uploader_id)
-  AND id = ANY(sqlc.arg(attachment_ids)::uuid[])
-RETURNING id;
-
--- name: MoveDraftAttachmentsToForkChild :many
--- A draft upload carries the source DM's chat_session_id, which
--- LinkAttachmentsToChatMessage refuses for any other session. Only the
--- caller's own unbound source-DM drafts move to the fork child.
-UPDATE attachment
-SET chat_session_id = sqlc.arg(child_session_id)
-WHERE workspace_id = sqlc.arg(workspace_id)
-  AND chat_session_id = sqlc.arg(source_session_id)
-  AND chat_message_id IS NULL
-  AND issue_id IS NULL
-  AND comment_id IS NULL
-  AND source_context_id IS NULL
-  AND uploader_type = 'member'
   AND uploader_id = sqlc.arg(uploader_id)
   AND id = ANY(sqlc.arg(attachment_ids)::uuid[])
 RETURNING id;
@@ -227,6 +244,7 @@ FOR UPDATE;
 -- Like issue updates, comment creation locks ownerless uploads before the
 -- issue row. Once it takes the issue, it locks existing issue children below.
 -- This keeps both upload adoption and owner-first deletion in the same order.
+-- Only the comment author's own uploads qualify (see LinkAttachmentsToComment).
 SELECT id FROM attachment
 WHERE workspace_id = sqlc.arg(workspace_id)
   AND issue_id IS NULL
@@ -235,9 +253,19 @@ WHERE workspace_id = sqlc.arg(workspace_id)
   AND chat_message_id IS NULL
   AND task_id IS NULL
   AND source_context_id IS NULL
+  AND uploader_type = sqlc.arg(uploader_type)
+  AND uploader_id = sqlc.arg(uploader_id)
   AND id = ANY(sqlc.arg(attachment_ids)::uuid[])
 ORDER BY id
 FOR UPDATE;
+
+-- name: ListCommentAttachmentIDsAmong :many
+-- Which of attachment_ids are attached to the comment: an edit checks that
+-- it got every file it asked for before committing.
+SELECT id FROM attachment
+WHERE comment_id = sqlc.arg(comment_id)
+  AND workspace_id = sqlc.arg(workspace_id)
+  AND id = ANY(sqlc.arg(attachment_ids)::uuid[]);
 
 -- name: LockAttachmentsForCommentLink :many
 -- CreateComment binds attachments in the transaction that created the comment,
@@ -347,51 +375,10 @@ DELETE FROM attachment
 WHERE workspace_id = sqlc.arg(workspace_id)
   AND source_context_id IS NOT NULL;
 
--- name: LockChatAttachmentsForFork :many
--- A share lock: a concurrent DeleteAttachment waits for the fork, then sees
--- the copy and keeps the stored file (AttachmentURLInUse).
-SELECT * FROM attachment
-WHERE workspace_id = sqlc.arg(workspace_id)
-  AND chat_message_id = ANY(sqlc.arg(chat_message_ids)::uuid[])
-ORDER BY created_at ASC, id ASC
-FOR SHARE;
-
--- name: InsertForkChatAttachments :exec
--- Copies attachment rows for a fork: same stored file, child session and
--- message, no task.
-INSERT INTO attachment (
-    id, workspace_id, chat_session_id, chat_message_id, uploader_type, uploader_id,
-    filename, url, content_type, size_bytes, created_at
-)
-SELECT (sqlc.arg(ids)::uuid[])[i], source.workspace_id, sqlc.arg(chat_session_id)::uuid,
-       (sqlc.arg(chat_message_ids)::uuid[])[i], source.uploader_type, source.uploader_id,
-       source.filename, source.url, source.content_type, source.size_bytes, source.created_at
-FROM generate_subscripts(sqlc.arg(ids)::uuid[], 1) AS i
-JOIN attachment AS source ON source.id = (sqlc.arg(source_ids)::uuid[])[i];
-
--- name: AttachmentURLInUse :one
--- ponytail: scans the workspace's attachments by idx_attachment_workspace; add
--- a url index if deletes in very large workspaces get slow.
-SELECT EXISTS (
-  SELECT 1 FROM attachment WHERE workspace_id = $1 AND url = $2
-);
-
--- name: ListAttachmentChain :many
--- Every revision of one document, oldest first. The chain id is revision 1's id.
-SELECT * FROM attachment
-WHERE workspace_id = $1
-  AND (id = sqlc.arg(chain_id) OR revision_root = sqlc.arg(chain_id))
-ORDER BY revision ASC;
-
--- name: GetLatestIssueAttachmentByName :one
--- Same-name re-upload target: the newest issue-level file with this name.
-SELECT * FROM attachment
-WHERE workspace_id = $1
-  AND issue_id = $2
-  AND comment_id IS NULL
-  AND chat_session_id IS NULL
-  AND task_id IS NULL
-  AND source_context_id IS NULL
-  AND filename = $3
-ORDER BY created_at DESC, id DESC
-LIMIT 1;
+-- name: SumWorkspaceAttachmentBytes :one
+-- Attachment bytes a workspace holds, for its storage limit (MUL-9489). Every
+-- row counts, whatever owns it; thumbnails are not attachment rows. An
+-- index-only scan on idx_attachment_workspace_size.
+SELECT COALESCE(SUM(size_bytes), 0)::bigint AS used_bytes
+FROM attachment
+WHERE workspace_id = sqlc.arg(workspace_id);

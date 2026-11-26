@@ -797,6 +797,7 @@ func TestDaemonRegister_RecordsRuntimeProfileRegistrationFailure(t *testing.T) {
 	}
 	ctx := context.Background()
 	profileID := insertRuntimeProfileFixture(t, ctx, "Missing Custom Codex", "codex", "missing-codex")
+	dbfx.Exec(t, `UPDATE runtime_profile SET daemon_id = $1 WHERE id = $2`, "test-daemon-profile-failure", profileID)
 
 	req := newOwnerDaemonRequest("POST", "/api/daemon/register", map[string]any{
 		"workspace_id": testWorkspaceID,
@@ -874,34 +875,6 @@ func TestDaemonRegister_WithDaemonToken_WorkspaceMismatch(t *testing.T) {
 	}
 }
 
-// The ops page uses __cloud__, __unbound__ and __unknown__ as synthetic machine
-// keys. A daemon_id of the form __x__ must never register, or a real machine
-// would merge into a synthetic group.
-func TestDaemonRegister_RejectsReservedDaemonID(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE workspace_id = $1 AND daemon_id LIKE '\_\_%\_\_'`, testWorkspaceID)
-	})
-	for _, id := range []string{"__cloud__", "__unbound__", "__unknown__", "__anything__", "  __cloud__  "} {
-		req := newRequest("POST", "/api/daemon/register", map[string]any{
-			"workspace_id": testWorkspaceID,
-			"daemon_id":    id,
-			"device_name":  "test-device",
-			"runtimes": []map[string]any{
-				{"name": "reserved-id-runtime", "type": "claude", "version": "1.0.0", "status": "online"},
-			},
-		})
-		testutil.Call(t, testHandler.DaemonRegister, req).Want(http.StatusBadRequest)
-	}
-	var n int
-	if err := testPool.QueryRow(context.Background(),
-		`SELECT count(*) FROM agent_runtime WHERE workspace_id = $1 AND daemon_id LIKE '\_\_%\_\_'`, testWorkspaceID).Scan(&n); err != nil || n != 0 {
-		t.Fatalf("runtimes with reserved daemon_id = %d err %v, want 0", n, err)
-	}
-}
-
 func TestDaemonHeartbeat_WithDaemonToken_CrossWorkspace(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -948,7 +921,7 @@ func TestHandleDaemonWSHeartbeat_RuntimeGoneReturnsAckNotError(t *testing.T) {
 				missingRuntime: daemonws.NewRuntimeLease(testWorkspaceID, "online", time.Now().Add(-2*runtimeHeartbeatDBFlushInterval), true),
 			},
 		},
-		protocol.DaemonHeartbeatRequestPayload{RuntimeID: missingRuntime})
+		missingRuntime, protocol.DaemonHeartbeatRequestPayload{})
 	if err != nil {
 		t.Fatalf("HandleDaemonWSHeartbeat: unexpected error %v", err)
 	}
@@ -992,7 +965,7 @@ func TestHandleDaemonWSHeartbeat_AllowsAnyAuthorizedWorkspace(t *testing.T) {
 				runtimeID: daemonws.NewRuntimeLease(workspaceID, "online", time.Now(), true),
 			},
 		},
-		protocol.DaemonHeartbeatRequestPayload{RuntimeID: runtimeID})
+		runtimeID, protocol.DaemonHeartbeatRequestPayload{})
 	if err != nil {
 		t.Fatalf("HandleDaemonWSHeartbeat: unexpected error %v", err)
 	}
@@ -2067,7 +2040,10 @@ func TestStartTask_AutopilotRunOnlyTask_ResolvesWorkspace(t *testing.T) {
 
 	ctx := context.Background()
 
-	agentID, runtimeID := sharedClaimAgent(t)
+	var agentID, runtimeID string
+	dbfx.QueryRow(t, `
+		SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1
+	`, testWorkspaceID).Scan(&agentID, &runtimeID)
 
 	autopilotID := dbfx.Insert(t, "autopilot", testutil.Cols{
 		"workspace_id":    testWorkspaceID,
@@ -2160,7 +2136,11 @@ func TestClaimTask_ProjectGithubReposOverrideWorkspaceRepos(t *testing.T) {
 	`, projectID, testWorkspaceID, `{"url":"`+projectRepoURL+`","ref":"`+projectRepoRef+`"}`)
 
 	// Agent + runtime + queued task in this project.
-	agentID, runtimeID := sharedClaimAgent(t)
+	var agentID, runtimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&agentID, &runtimeID)
 
 	issueID := dbfx.Issue(t, "project repo override", testutil.Cols{
 		"project_id": projectID,
@@ -2222,7 +2202,11 @@ func TestClaimTask_ProjectDescriptionInjected(t *testing.T) {
 		"description": projectDescription,
 	})
 
-	agentID, runtimeID := sharedClaimAgent(t)
+	var agentID, runtimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&agentID, &runtimeID)
 
 	issueID := dbfx.Issue(t, "project description", testutil.Cols{
 		"project_id": projectID,
@@ -2307,7 +2291,11 @@ func TestClaimTask_ProjectWithoutRepos_FallsBackToWorkspaceRepos(t *testing.T) {
 
 	projectID := dbfx.Project(t, "Claim project without repos")
 
-	agentID, runtimeID := sharedClaimAgent(t)
+	var agentID, runtimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&agentID, &runtimeID)
 
 	issueID := dbfx.Issue(t, "no project repos", testutil.Cols{
 		"project_id": projectID,
@@ -2349,7 +2337,10 @@ func TestClaimTask_AutopilotRunOnly_PopulatesWorkspaceAndProjectContext(t *testi
 
 	ctx := context.Background()
 
-	agentID, runtimeID := sharedClaimAgent(t)
+	var agentID, runtimeID string
+	dbfx.QueryRow(t, `
+		SELECT a.id, a.runtime_id FROM agent a WHERE a.workspace_id = $1 LIMIT 1
+	`, testWorkspaceID).Scan(&agentID, &runtimeID)
 
 	const projectDescription = "Use only the bound project resources."
 	projectID := dbfx.Project(t, "Run-only autopilot project", testutil.Cols{
@@ -2486,7 +2477,11 @@ func TestClaimTaskByRuntime_TaskWorkspaceMismatch_CancelsAndRejects(t *testing.T
 	}
 
 	// Local agent/runtime (belongs to testWorkspace).
-	localAgentID, localRuntimeID := sharedClaimAgent(t)
+	var localAgentID, localRuntimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&localAgentID, &localRuntimeID)
 
 	// Foreign workspace with its own issue — what the misrouted task will
 	// resolve to.
@@ -3419,6 +3414,43 @@ func TestClaimTask_ChatAutoRetryFreshSessionReusesParentWorkdir(t *testing.T) {
 	}
 }
 
+// TestClaimTask_AutoRetryAfterRuntimeMoveStartsNewSession: the agent moved to
+// another runtime while the parent ran there, so the retry is created on the
+// agent's new runtime (#10717). Its claim there must not resume the session the
+// old runtime recorded; the workdir is still offered best-effort, as for any
+// cross-runtime prior (TestClaimTask_IssuePriorSessionRuntimeGuard).
+func TestClaimTask_AutoRetryAfterRuntimeMoveStartsNewSession(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	agentID, runtimeID, daemonID := createRuntimeGuardAgent(t, ctx)
+	oldRuntimeID := createRuntimeGuardRuntime(t, ctx, "opencode")
+	issueID := dbfx.Issue(t, "auto-retry after runtime move fixture", testutil.Cols{"status": "in_progress"})
+	parentID := dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id":     oldRuntimeID,
+		"issue_id":       issueID,
+		"status":         "failed",
+		"failure_reason": "timeout",
+		"started_at":     testutil.Raw("now() - interval '20 minutes'"),
+		"completed_at":   testutil.Raw("now() - interval '1 minute'"),
+		"session_id":     "old-runtime-session",
+		"work_dir":       "/tmp/old-runtime-workdir",
+		"attempt":        1,
+		"max_attempts":   2,
+	})
+	createAutoRetryForTest(t, ctx, parentID)
+
+	task := claimTaskForRuntimeGuard(t, runtimeID, daemonID)
+	if task.PriorSessionID != "" {
+		t.Fatalf("PriorSessionID = %q, want empty (the old runtime's session cannot resume here)", task.PriorSessionID)
+	}
+	if task.PriorWorkDir != "/tmp/old-runtime-workdir" {
+		t.Fatalf("PriorWorkDir = %q, want the parent's /tmp/old-runtime-workdir offered best-effort", task.PriorWorkDir)
+	}
+}
+
 func TestClaimTask_ChatPriorSessionRuntimeGuard(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -4277,7 +4309,6 @@ type claimCommentTaskResp struct {
 	Task *struct {
 		ID               string `json:"id"`
 		PriorSessionID   string `json:"prior_session_id"`
-		PriorWorkDir     string `json:"prior_work_dir"`
 		TriggerCommentID string `json:"trigger_comment_id"`
 		NewCommentCount  int    `json:"new_comment_count"`
 		NewCommentsSince string `json:"new_comments_since"`
@@ -4966,7 +4997,7 @@ func TestDaemonRegister_ProfileUsesStoredRuntimeIdentity(t *testing.T) {
 	}
 	ctx := context.Background()
 	profileID := insertRuntimeProfileFixture(t, ctx, "Custom OMP", "pi", "wrapper")
-	if _, err := testPool.Exec(ctx, `UPDATE runtime_profile SET runtime_type = 'omp' WHERE id = $1`, profileID); err != nil {
+	if _, err := testPool.Exec(ctx, `UPDATE runtime_profile SET runtime_type = 'omp', daemon_id = 'test-omp-profile' WHERE id = $1`, profileID); err != nil {
 		t.Fatal(err)
 	}
 	req := newOwnerDaemonRequest("POST", "/api/daemon/register", map[string]any{
@@ -4979,90 +5010,5 @@ func TestDaemonRegister_ProfileUsesStoredRuntimeIdentity(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT provider FROM agent_runtime WHERE profile_id = $1`, profileID).Scan(&provider)
 	if provider != "omp" {
 		t.Fatalf("provider = %q, want stored omp identity", provider)
-	}
-}
-
-// CHE-2070: the claim carries the triggering thread (root + earlier replies,
-// excluding the trigger) so a mention-started run need not scroll the issue.
-func TestClaimTaskByRuntime_EmbedsTriggerThreadContext(t *testing.T) {
-	if testHandler == nil || testPool == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-	runtimeID := createClaimReclaimRuntime(t, ctx, "Thread context runtime")
-	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Thread context agent")
-	rootID := dbfx.Comment(t, issueID, "root question text")
-	replyID := dbfx.Comment(t, issueID, "earlier reply text", testutil.Cols{"parent_id": rootID})
-	unrelated := dbfx.Comment(t, issueID, "other thread text")
-	triggerID := dbfx.Comment(t, issueID, "mention trigger text", testutil.Cols{"parent_id": replyID})
-	taskID := dbfx.Task(t, agentID, testutil.Cols{
-		"runtime_id":         runtimeID,
-		"issue_id":           issueID,
-		"trigger_comment_id": triggerID,
-	})
-	_ = unrelated
-
-	req := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
-	req = withURLParam(req, "runtimeId", runtimeID)
-	var resp struct {
-		Task *AgentTaskResponse `json:"task"`
-	}
-	testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK).JSON(&resp)
-	if resp.Task == nil || resp.Task.ID != taskID {
-		t.Fatalf("expected claimed task %s, got %+v", taskID, resp.Task)
-	}
-	got := resp.Task.TriggerThreadContext
-	for _, want := range []string{"root question text", "earlier reply text"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("thread context missing %q: %q", want, got)
-		}
-	}
-	for _, bad := range []string{"mention trigger text", "other thread text"} {
-		if strings.Contains(got, bad) {
-			t.Fatalf("thread context must not contain %q: %q", bad, got)
-		}
-	}
-}
-
-// CHE-2070: a thread longer than the history query's row cap must still show
-// its root and the newest earlier replies, not the oldest slice.
-func TestClaimTaskByRuntime_TriggerThreadContextKeepsNewestRepliesOnLongThread(t *testing.T) {
-	if testHandler == nil || testPool == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-	runtimeID := createClaimReclaimRuntime(t, ctx, "Long thread runtime")
-	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Long thread agent")
-	rootID := dbfx.Comment(t, issueID, "long root question", testutil.Cols{"created_at": testutil.Raw("now() - interval '2 days'")})
-	dbfx.Exec(t, `
-		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id, created_at)
-		SELECT $1, $2, 'member', $3, 'filler reply ' || n, 'comment', $4,
-		       now() - interval '1 day' + n * interval '1 second'
-		FROM generate_series(1, 1100) AS n`,
-		issueID, testWorkspaceID, testUserID, rootID)
-	triggerID := dbfx.Comment(t, issueID, "mention trigger text", testutil.Cols{"parent_id": rootID})
-	taskID := dbfx.Task(t, agentID, testutil.Cols{
-		"runtime_id":         runtimeID,
-		"issue_id":           issueID,
-		"trigger_comment_id": triggerID,
-	})
-
-	req := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil)
-	req = withURLParam(req, "runtimeId", runtimeID)
-	var resp struct {
-		Task *AgentTaskResponse `json:"task"`
-	}
-	testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK).JSON(&resp)
-	if resp.Task == nil || resp.Task.ID != taskID {
-		t.Fatalf("expected claimed task %s, got %+v", taskID, resp.Task)
-	}
-	got := resp.Task.TriggerThreadContext
-	for _, want := range []string{"long root question", "filler reply 1100", "filler reply 1096"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("thread context missing %q: %q", want, got)
-		}
-	}
-	if strings.Contains(got, "filler reply 2:") || strings.Contains(got, "filler reply 1095") {
-		t.Fatalf("thread context holds replies outside the newest five: %q", got)
 	}
 }

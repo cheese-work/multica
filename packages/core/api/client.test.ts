@@ -3,9 +3,7 @@ import { createAuthStore } from "../auth";
 import { setCurrentWorkspace } from "../platform/workspace-storage";
 import { configStore } from "../config";
 import type { StorageAdapter, User } from "../types";
-import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage } from "./client";
-import { isSchemaValidationError, setSchemaLogger, type SchemaValidationError } from "./schema";
-import { noopLogger } from "../logger";
+import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, WORKSPACE_GUESTS_CAPABILITY, clientErrorMessage } from "./client";
 import { setApiRequestObserver } from "./request-observer";
 import { EMPTY_PLUGIN_PACKAGE_LIST, EMPTY_PLUGIN_PREVIEW, EMPTY_PLUGIN_SURFACE_LAUNCH } from "./schemas";
 
@@ -26,139 +24,6 @@ describe("ApiClient status reorder", () => {
       category: "started", ids: ["review", "qa", "progress"], include_system: true,
     });
     expect(result.statuses).toEqual([]);
-  });
-});
-
-describe("ApiClient getIssue", () => {
-  // CHE-3472: shape of the real GET /api/issues/<uuid> body for CHE-3357, an
-  // issue a decision card parked (metadata.decision_park is an object).
-  const parkedIssue = {
-    id: "01a1a0eb-718d-778e-9948-770bc5e04ad7", workspace_id: "f2b734e0-b6de-4414-8a27-a2f69b0ef843",
-    number: 3357, identifier: "CHE-3357", title: "Parked issue", description: "d",
-    status: "need_decision", status_category: "in_progress", status_name: "Need Decision",
-    priority: "medium", assignee_type: "agent", assignee_id: "a", creator_type: "agent", creator_id: "c",
-    requested_by_id: "r", parent_issue_id: "p", duplicate_of: null, project_id: "proj", workflow_id: null,
-    position: -87, stage: 1, start_date: null, due_date: null,
-    metadata: {
-      decision_park: { readiness: "r1", readiness_id: "r2", set: "s", status: "blocked", to: "need_decision" },
-      status_summary: "Blocked",
-    },
-    properties: { prop: "opt" }, labels: [], attachments: [],
-    created_at: "2026-11-03T10:19:07Z", updated_at: "2026-11-03T12:33:32Z", revision: 57,
-    last_activity_at: "2026-11-03T12:33:32.18713Z",
-  };
-
-  it("opens an issue whose metadata carries the decision-park object", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify(parkedIssue), {
-      status: 200, headers: { "Content-Type": "application/json" },
-    })));
-    const issue = await new ApiClient("https://api.example.test").getIssue(parkedIssue.id);
-    expect(issue.identifier).toBe("CHE-3357");
-    expect(issue.metadata).toEqual({ status_summary: "Blocked" });
-  });
-});
-
-describe("ApiClient decision cards", () => {
-  const json = (body: unknown, status = 200) =>
-    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-
-  it("lists open decisions without a caller-supplied human ID or message-page cursor", async () => {
-    const row = {
-      id: "ask", issue_id: "issue", issue_identifier: "CHE-2405", asking_agent_id: "agent",
-      asking_agent_name: "Alpha", ask: "Approve?", escalation_class: "future-class",
-      created_at: "2026-10-29T04:00:00Z", chat_session_id: "dm", message_id: "ping",
-    };
-    const fetchMock = vi.fn().mockResolvedValue(json([row]));
-    vi.stubGlobal("fetch", fetchMock);
-    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([
-      { ...row, options: [], source_comment_id: null },
-    ]);
-    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decisions/open");
-  });
-
-  it("safely degrades malformed open-decision responses", async () => {
-    for (const body of [null, {}, [{ id: 7 }]]) {
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json(body)));
-      expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toEqual([]);
-    }
-  });
-
-  it("keeps options and the source comment, and drops malformed options", async () => {
-    const row = {
-      id: "ask", issue_id: "issue", issue_identifier: "CHE-1", asking_agent_id: "agent", ask: "Approve?",
-      escalation_class: "spend", created_at: "2026-10-29T04:00:00Z", chat_session_id: "dm", source_comment_id: "c1",
-    };
-    const options = [{ label: "Ship it", what_happens: "Merges" }, { label: "Hold" }];
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([{ ...row, options }])));
-    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toMatchObject([
-      { source_comment_id: "c1", options },
-    ]);
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([{ ...row, options: "nope" }])));
-    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toMatchObject([{ options: [] }]);
-  });
-
-  it("keeps asks with missing optional jump metadata", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json([{
-      id: "ask", issue_id: "issue", issue_identifier: "CHE-2405", asking_agent_id: "agent",
-      ask: "Approve?", escalation_class: "spend", created_at: "2026-10-29T04:00:00Z", chat_session_id: "dm",
-    }])));
-    expect(await new ApiClient("https://api.example.test").listOpenDecisionRequests()).toMatchObject([
-      { id: "ask", asking_agent_name: "", message_id: null },
-    ]);
-  });
-
-  it("disclaims a decision answer with a POST to its disclaim route", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json({}));
-    vi.stubGlobal("fetch", fetchMock);
-    await new ApiClient("https://api.example.test").disclaimDecisionAnswer("answer-1");
-    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decision-answers/answer-1/disclaim");
-    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
-  });
-
-  it("answers a decision request with a POST of the option and text", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json({}));
-    vi.stubGlobal("fetch", fetchMock);
-    await new ApiClient("https://api.example.test").answerDecisionRequest("req-1", { option: "B", text: "now" });
-    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/decision-requests/req-1/answer");
-    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
-    expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ option: "B", text: "now" });
-  });
-
-  it("asks for an anchored window with ?around= and no cursor", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json({ messages: [], limit: 50, has_more: false, has_newer: true }));
-    vi.stubGlobal("fetch", fetchMock);
-    const page = await new ApiClient("https://api.example.test").listChatMessagesPage("session-1", { around: "msg-9" });
-    expect(fetchMock.mock.calls[0]![0]).toBe(
-      "https://api.example.test/api/chat/sessions/session-1/messages/page?limit=50&around=msg-9",
-    );
-    expect(page.has_newer).toBe(true);
-  });
-});
-
-describe("ApiClient chat search", () => {
-  const json = (body: unknown, status = 200) =>
-    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-
-  it("sends q, limit and cursor and parses hits with the next cursor", async () => {
-    const hit = {
-      session_id: "s1", title: "Plan", agent_id: "a1", message_id: "m1",
-      snippet: "the launch plan", updated_at: "2026-10-28T10:00:00Z", archived: false,
-    };
-    const fetchMock = vi.fn().mockResolvedValue(json({ results: [hit], next_cursor: "c2" }));
-    vi.stubGlobal("fetch", fetchMock);
-    const page = await new ApiClient("https://api.example.test").searchChats({ q: "launch plan", limit: 20, cursor: "c1" });
-    expect(fetchMock.mock.calls[0]![0]).toBe(
-      "https://api.example.test/api/chat/search?q=launch+plan&limit=20&cursor=c1",
-    );
-    expect(page.results).toEqual([hit]);
-    expect(page.next_cursor).toBe("c2");
-  });
-
-  it("tolerates a malformed response as an empty page", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ results: "nope" })));
-    const page = await new ApiClient("https://api.example.test").searchChats({ q: "x" });
-    expect(page.results).toEqual([]);
-    expect(page.next_cursor).toBeNull();
   });
 });
 
@@ -315,25 +180,6 @@ describe("ApiClient edit guards", () => {
   });
 });
 
-describe("ApiClient requested_by_id list param", () => {
-  it("sends requested_by_id on both list calls", async () => {
-    const fetchMock = vi.fn().mockImplementation(async () =>
-      new Response(JSON.stringify({ issues: [], total: 0, groups: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    const client = new ApiClient("https://api.example.test");
-
-    await client.listIssues({ requested_by_id: "u1" });
-    await client.listGroupedIssues({ group_by: "assignee", requested_by_id: "u1" });
-
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("requested_by_id=u1");
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("requested_by_id=u1");
-  });
-});
-
 describe("ApiClient pull-request response schema", () => {
   const validPR = {
     id: "pr-1",
@@ -376,32 +222,6 @@ describe("ApiClient pull-request response schema", () => {
     });
   });
 
-  it("keeps snapshot_paused_until and tolerates its absence (CHE-8795)", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            pull_requests: [
-              { ...validPR, snapshot_paused_until: "2026-11-20T12:05:00Z" },
-              { ...validPR, id: "pr-2", snapshot_paused_until: null },
-              { ...validPR, id: "pr-3" },
-              { ...validPR, id: "pr-4", snapshot_paused_until: 12345 },
-            ],
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      ),
-    );
-
-    const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
-    expect(result.pull_requests[0]?.snapshot_paused_until).toBe("2026-11-20T12:05:00Z");
-    expect(result.pull_requests[1]?.snapshot_paused_until).toBeNull();
-    expect(result.pull_requests[2]?.snapshot_paused_until).toBeUndefined();
-    // A malformed value degrades to absent instead of reaching the card.
-    expect(result.pull_requests[3]?.snapshot_paused_until).toBeUndefined();
-  });
-
   it("falls back safely when failed_check_names is malformed", async () => {
     vi.stubGlobal(
       "fetch",
@@ -435,13 +255,13 @@ describe("ApiClient pull-request response schema", () => {
     );
   }
 
-  it.each(["title", "reference"])("parses the auto-complete decision and %s link source", async (linkSource) => {
+  it("parses the auto-complete decision and link source", async () => {
     stubPullRequests({
-      pull_requests: [{ ...validPR, link_source: linkSource }],
+      pull_requests: [{ ...validPR, link_source: "title" }],
       auto_complete: { state: "waiting", pull_request_ids: ["pr-1"], issue_disabled: false, workspace_enabled: true, target_status: "in_review" },
     });
     const result = await new ApiClient("https://api.example.test").listIssuePullRequests("issue-1");
-    expect(result.pull_requests[0]?.link_source).toBe(linkSource);
+    expect(result.pull_requests[0]?.link_source).toBe("title");
     expect(result.auto_complete).toEqual({
       state: "waiting",
       pull_request_ids: ["pr-1"],
@@ -617,72 +437,6 @@ describe("ApiClient Plugin preview response schema", () => {
 
     await expect(new ApiClient("https://api.example.test").listPluginPackages("workspace-1"))
       .resolves.toEqual(EMPTY_PLUGIN_PACKAGE_LIST);
-  });
-});
-
-describe("ApiClient workspace export privacy response schema", () => {
-  // CHE-771 review finding F1: unlike the plugin/preview endpoints above,
-  // this endpoint must NOT fall back to a plausible-looking default on a
-  // malformed 2xx body. Retention days and redaction mode are confirmed
-  // server state an admin acts on directly ("saved: 90 days") — a fallback
-  // number here would misrepresent how long the audit trail actually
-  // survives, which is worse than surfacing a load failure.
-  it("throws instead of returning a fabricated policy when the GET response is malformed", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ manifest_retention_days: "ninety" }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      ),
-    );
-
-    await expect(
-      new ApiClient("https://api.example.test").getWorkspaceExportPrivacy(
-        "workspace-1",
-      ),
-    ).rejects.toThrow();
-  });
-
-  it("throws instead of returning a fabricated policy when the PATCH response is malformed", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ redaction_mode: 42 }), {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        }),
-      ),
-    );
-
-    await expect(
-      new ApiClient("https://api.example.test").updateWorkspaceExportPrivacy(
-        "workspace-1",
-        { manifest_retention_days: 1 },
-      ),
-    ).rejects.toThrow();
-  });
-
-  it("parses a well-formed response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({
-            redaction_mode: "small",
-            manifest_retention_days: 30,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      ),
-    );
-
-    await expect(
-      new ApiClient("https://api.example.test").getWorkspaceExportPrivacy(
-        "workspace-1",
-      ),
-    ).resolves.toEqual({ redaction_mode: "small", manifest_retention_days: 30 });
   });
 });
 
@@ -1866,7 +1620,6 @@ describe("ApiClient", () => {
           parent_id: "parent-1",
           attachment_ids: ["attachment-1"],
           suppress_agent_ids: ["agent-1"],
-          steer: false,
         }),
       },
       {
@@ -2084,6 +1837,24 @@ describe("ApiClient", () => {
       const att = await new ApiClient("https://api.example.test").getAttachment("att-1");
       expect(att.id).toBe("att-1");
       expect([att.width, att.height]).toEqual(expected);
+    });
+
+    it.each([
+      [{ thumbnail_url: "/api/attachments/att-1/thumbnail" }, "/api/attachments/att-1/thumbnail"],
+      [{ thumbnail_url: 42 }, undefined],
+      [{ thumbnail_url: "" }, undefined],
+      [{}, undefined],
+    ])("keeps the attachment and drops an unusable thumbnail %j", async (metadata, expected) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+        JSON.stringify({
+          id: "att-1", filename: "shot.png", url: "/uploads/shot.png",
+          download_url: "/uploads/shot.png", ...metadata,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )));
+      const att = await new ApiClient("https://api.example.test").getAttachment("att-1");
+      expect(att.id).toBe("att-1");
+      expect(att.thumbnail_url).toBe(expected);
     });
   });
 
@@ -2518,35 +2289,30 @@ describe("ApiClient", () => {
       ).rejects.toMatchObject({ name: "AbortError" });
     });
 
-    it("sendChatMessage binds a reply to an explicit decision request", async () => {
-      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-10-27T02:50:00Z" }), { status: 201 }));
+    it("rejects a refused upload with an ApiError carrying the body's code (MUL-9489)", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            code: "storage_limit_reached",
+            error: "This workspace has reached its attachment storage limit.",
+            used_bytes: 900,
+            limit_bytes: 1000,
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        ),
+      );
       vi.stubGlobal("fetch", fetchMock);
-      await new ApiClient("https://api.example.test").sendChatMessage("session-1", "> C. CHE-2162\n\n1", [], "request-2");
-      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "> C. CHE-2162\n\n1", decision_request_id: "request-2" });
-    });
 
-    it("CHE-4153 sendChatMessage sends client_message_id and ask_ids when given", async () => {
-      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-11-12T02:50:00Z" }), { status: 201 }));
-      vi.stubGlobal("fetch", fetchMock);
-      await new ApiClient("https://api.example.test").sendChatMessage("session-1", "hi", [], undefined, { clientMessageId: "c-1", askIds: ["a-1"] });
-      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "hi", client_message_id: "c-1", ask_ids: ["a-1"] });
-    });
-
-    it("CHE-4153 attention actions post the exact displayed keys", async () => {
-      const ok = () => Promise.resolve(new Response(JSON.stringify({ attention: [], batch_id: "b1" }), { status: 200 }));
-      const fetchMock = vi.fn().mockImplementation(ok);
-      vi.stubGlobal("fetch", fetchMock);
       const client = new ApiClient("https://api.example.test");
-      await client.chatAttentionXong("s1", ["item:1"]);
-      await client.chatAttentionLater("s1", ["item:1"], { durationSeconds: 7200, requestId: "r1" });
-      await client.chatAttentionXongAll(["item:1", "turn:2"]);
-      await client.chatAttentionUndoXongAll("b1");
-      const calls = fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method, init?.body ? JSON.parse(init.body as string) : undefined]);
-      expect(calls[0]).toEqual(["https://api.example.test/api/chat/sessions/s1/attention/xong", "POST", { subject_keys: ["item:1"] }]);
-      expect(calls[1]).toEqual(["https://api.example.test/api/chat/sessions/s1/attention/later", "POST", { subject_keys: ["item:1"], duration_seconds: 7200, request_id: "r1" }]);
-      expect(calls[2]).toEqual(["https://api.example.test/api/chat/attention/xong-all", "POST", { subject_keys: ["item:1", "turn:2"] }]);
-      expect(calls[3]![0]).toBe("https://api.example.test/api/chat/attention/xong-all/b1/undo");
-      expect(calls[3]![1]).toBe("POST");
+      const file = new File(["hi"], "hi.png", { type: "image/png" });
+      const err = await client.uploadFile(file).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err).toMatchObject({
+        status: 403,
+        message: "This workspace has reached its attachment storage limit.",
+        body: { code: "storage_limit_reached", used_bytes: 900, limit_bytes: 1000 },
+      });
     });
 
     it("sendChatMessage serialises attachment_ids onto the JSON body when present", async () => {
@@ -2564,6 +2330,7 @@ describe("ApiClient", () => {
       const [, init] = fetchMock.mock.calls[0]!;
       expect(JSON.parse(init?.body as string)).toEqual({
         content: "hello",
+        steer: true,
         attachment_ids: ["att-1", "att-2"],
       });
     });
@@ -2583,8 +2350,17 @@ describe("ApiClient", () => {
       await client.sendChatMessage("session-1", "hello");
       await client.sendChatMessage("session-1", "again", []);
 
-      expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "hello" });
-      expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string)).toEqual({ content: "again" });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "hello", steer: true });
+      expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string)).toEqual({ content: "again", steer: true });
+    });
+
+    it("sendChatMessage explicitly opts out of steering for Queue message", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z",
+      }), { status: 201 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await new ApiClient("https://api.example.test").sendChatMessage("session-1", "next turn", undefined, { queue: true });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "next turn", steer: false });
     });
 
     it("sendChatMessage accepts the server's null attachment_ids for text-only sends", async () => {
@@ -3743,119 +3519,6 @@ describe("ApiClient shared credential across windows", () => {
   });
 });
 
-describe("ApiClient machine pause", () => {
-  const pause = {
-    reason: "incident",
-    paused_by: null,
-    paused_at: "2026-10-30T07:20:00Z",
-    expires_at: "2026-10-30T07:50:00Z",
-  };
-
-  it("PUTs the reason and parses the pause", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(pause), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    const result = await new ApiClient("https://api.example.test").pauseRuntimeMachine("rt-1", "incident");
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/runtimes/rt-1/pause");
-    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PUT");
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({ reason: "incident" });
-    expect(result).toEqual(pause);
-  });
-
-  it("tolerates a malformed pause body from the server", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify("nope"), { status: 200, headers: { "Content-Type": "application/json" } }),
-      ),
-    );
-    const result = await new ApiClient("https://api.example.test").pauseRuntimeMachine("rt-1", "maintenance");
-    expect(result.reason).toBe("maintenance");
-  });
-
-  it("DELETEs the pause and accepts 204", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    vi.stubGlobal("fetch", fetchMock);
-    await new ApiClient("https://api.example.test").resumeRuntimeMachine("rt-1");
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/runtimes/rt-1/pause");
-    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("DELETE");
-  });
-});
-
-describe("ApiClient chat supplements", () => {
-  const json = (body: unknown, status = 200) =>
-    new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-  const receipt = {
-    message_id: "m1", chat_session_id: "s1", task_id: "t1", status: "pending",
-    failure_reason: null, delivered_at: null, acked_after_resend_at: null, resent_task_id: null,
-  };
-
-  it("steers a queued follow-up with a POST to the steer route", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json(receipt));
-    vi.stubGlobal("fetch", fetchMock);
-    const out = await new ApiClient("https://api.example.test").steerChatTask("s1", "t2");
-    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/chat/sessions/s1/tasks/t2/steer");
-    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
-    expect(out.status).toBe("pending");
-  });
-
-  it("resends without confirmation by default", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json({ task_id: "t3", supplement: receipt }));
-    vi.stubGlobal("fetch", fetchMock);
-    const out = await new ApiClient("https://api.example.test").resendChatSupplement("s1", "m1");
-    expect(fetchMock.mock.calls[0]![0]).toBe("https://api.example.test/api/chat/sessions/s1/messages/m1/supplement/resend");
-    expect(fetchMock.mock.calls[0]![1]?.method).toBe("POST");
-    expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ confirm_possible_duplicate: false });
-    expect(out.task_id).toBe("t3");
-  });
-
-  it("sends the duplicate confirmation only when the caller passes it", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json({ task_id: "t3", supplement: receipt }));
-    vi.stubGlobal("fetch", fetchMock);
-    await new ApiClient("https://api.example.test").resendChatSupplement("s1", "m1", { confirmPossibleDuplicate: true });
-    expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ confirm_possible_duplicate: true });
-  });
-});
-
-describe("ApiClient getIssue schema failure", () => {
-  it("throws a typed error that names the failing path and logs it as text", async () => {
-    const warn = vi.fn();
-    setSchemaLogger({ debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() });
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ id: "i1", number: "not-a-number" }), {
-          status: 200, headers: { "Content-Type": "application/json" },
-        }),
-      ),
-    );
-    const err = await new ApiClient("https://api.example.test").getIssue("i1").catch((e: unknown) => e);
-    expect(isSchemaValidationError(err)).toBe(true);
-    expect((err as SchemaValidationError).endpoint).toBe("GET /api/issues/:id");
-    expect((err as SchemaValidationError).paths).toContain("number");
-    expect(String(warn.mock.calls[0]?.[0])).toContain("number");
-    setSchemaLogger(noopLogger);
-  });
-});
-
-describe("workspace scheduling pause", () => {
-  it.each([
-    ["pauseWorkspace", "pause"],
-    ["resumeWorkspace", "resume"],
-  ] as const)("%s POSTs /api/workspaces/:id/%s", async (method, verb) => {
-    const body = { id: "ws-1", scheduling_paused_at: verb === "pause" ? "2026-11-13T00:00:00Z" : null };
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    const result = await new ApiClient("https://api.example.test")[method]("ws-1");
-    expect(fetchMock.mock.calls[0]?.[0]).toBe(`https://api.example.test/api/workspaces/ws-1/${verb}`);
-    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("POST");
-    expect(result.scheduling_paused_at).toBe(body.scheduling_paused_at);
-  });
-});
-
 describe("ApiClient complete issue deliverables", () => {
   it("loads a posting comment's thread and validates the comment response", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ invalid: true }), { status: 200 }));
@@ -3938,16 +3601,6 @@ describe("created-by filter compatibility", () => {
 });
 
 
-describe("grouped created-by compatibility", () => {
-  it("retries a legacy server with literal creator_id", async () => {
-    const fetchMock = vi.fn(async (_url: string) => Response.json({ groups: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    await new ApiClient("https://api.example.test").listGroupedIssues({ group_by: "assignee", created_by_user_id: "me" });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(new URL(fetchMock.mock.calls[1]![0]).searchParams.get("creator_id")).toBe("me");
-  });
-});
-
 describe("ApiClient request observer", () => {
   afterEach(() => setApiRequestObserver(null));
 
@@ -3992,25 +3645,24 @@ describe("ApiClient request observer", () => {
   });
 });
 
-describe("personal background agents", () => {
-  const json = (body: unknown) =>
-    new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+// The server hides guest rows from member and invitation lists unless the
+// caller declares it can render the guest role; drop the header and the
+// members page silently loses every guest.
+describe("workspace guest lists", () => {
+  afterEach(() => vi.unstubAllGlobals());
 
-  it("reads the caller's picks and treats an unset slot as empty", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json({ dm_title: { agent_id: "a1", fallback_agent_id: null } }));
+  it.each([
+    ["listMembers", (c: ApiClient) => c.listMembers("ws-1")],
+    ["listWorkspaceInvitations", (c: ApiClient) => c.listWorkspaceInvitations("ws-1")],
+  ])("%s advertises the guest capability", async (_name, call) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("[]", {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
     vi.stubGlobal("fetch", fetchMock);
-    const result = await new ApiClient("https://api.example.test").getMyBackgroundAgents("ws-1");
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("https://api.example.test/api/workspaces/ws-1/me/background-agents");
-    expect(result).toEqual({ dm_title: { agent_id: "a1", fallback_agent_id: "" } });
-  });
 
-  it("PUTs the patch as is and resolves null on a malformed response", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(json("nope"));
-    vi.stubGlobal("fetch", fetchMock);
-    const patch = { quick_actions: { agent_id: null, fallback_agent_id: null } };
-    const result = await new ApiClient("https://api.example.test").updateMyBackgroundAgents("ws-1", patch);
-    expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PUT");
-    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(patch);
-    expect(result).toBeNull();
+    await call(new ApiClient("https://api.example.test"));
+
+    const init = fetchMock.mock.calls[0]?.[1] as { headers: Record<string, string> };
+    expect(init.headers["X-Client-Capabilities"]).toBe(WORKSPACE_GUESTS_CAPABILITY);
   });
 });

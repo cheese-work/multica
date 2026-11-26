@@ -4,7 +4,6 @@ import type {
   BatchIssueOutcome,
   BatchIssueResult,
   BatchUpdateIssuesResponse,
-  EntryGateFailure,
   AppCatalogResponse,
   AppsOverview,
   TeamAppImpact,
@@ -12,6 +11,7 @@ import type {
   IssueWorkflow,
   IssueWorkflowDryRunResponse,
   IssueWorkflowHandlerType,
+  ListIssueWorkflowsResponse,
   AgentBuilderRuntimeSwitch,
   AgentBuilderSession,
   AgentBuilderSessionSummary,
@@ -28,29 +28,34 @@ import type {
   ChatDraftRestoresResponse,
   ChatPendingTask,
   ChatSession,
-  ChatAttentionView,
-  ChatAttentionBatch,
-  ChatSessionUsage,
   ChatWakeup,
   PrioritizeQueuedChatTaskResponse,
-  ChatSupplement,
-  ResendChatSupplementResponse,
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
   Comment,
   CreateBillingCheckoutSessionResponse,
   CreateBillingPortalSessionResponse,
   WorkspaceSubscriptionEntitlements,
+  WorkspaceFeatureState,
+  WorkspaceFeatures,
+  MemberLimit,
+  StorageUsage,
+  AppCallUsage,
   WorkspaceSubscriptionSummary,
-  IssueLimitUsage,
   WorkspaceSubscriptionPrice,
+  WorkspaceSubscriptionPlanPrices,
   WorkspaceSubscriptionPrices,
+  WorkspacePlanLimits,
+  CreateWorkspaceAutopilotAddonCheckoutResponse,
+  WorkspaceAutopilotAddonCheckout,
+  WorkspaceAutopilotAddonPrice,
   CreateWorkspaceSubscriptionCheckoutResponse,
+  WorkspacePlanChangePreview,
+  ChangeWorkspacePlanResponse,
   WorkspaceSubscriptionSeatReconcileResult,
   WorkspaceSeatPurchasePreview,
   PurchaseWorkspaceSeatsResponse,
   CreateWorkspaceSubscriptionPortalResponse,
-  WorkspaceExportPrivacy,
   CronPreviewResponse,
   DingTalkInstallation,
   ListDingTalkInstallationsResponse,
@@ -65,7 +70,6 @@ import type {
   TelegramInstallation,
   ListTelegramInstallationsResponse,
   RedeemTelegramBindingTokenResponse,
-  GroupedIssuesResponse,
   GitHubConnectResponse,
   IssuePullRequestsResponse,
   IssueEnvironmentsResponse,
@@ -76,6 +80,8 @@ import type {
   IssueUnread,
   Label,
   Project,
+  ProjectProgressDetail,
+  ProjectActivityPage,
   ListProjectsResponse,
   MemberWithUser,
   IssueProperty,
@@ -94,7 +100,6 @@ import type {
   ListWebhookDeliveriesResponse,
   IssueStatusEntry,
   ListIssueStatusesResponse,
-  NotificationChannelsResponse,
   NotificationPreferenceResponse,
   PluginInstallation,
   PluginInstallationListResponse,
@@ -104,7 +109,6 @@ import type {
   PluginSurfaceLaunch,
   ResourceLabelsResponse,
   RuntimeModelListRequest,
-  RuntimeUpdate,
   SearchIssuesResponse,
   SearchProjectsResponse,
   ShareLink,
@@ -122,10 +126,8 @@ import type {
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
-import { SHA256_HEX, isPreviewedActionType } from "../issues/decision-action-preview";
-import { BudgetReceiptSchema } from "./passkey-schema";
 
-export const PluginConfigFieldSchema = z.lazy(() => z.object({
+export const PluginConfigFieldSchema = z.object({
   key: z.string(),
   type: z.string().default("string"),
   label: z.string().default(""),
@@ -134,17 +136,17 @@ export const PluginConfigFieldSchema = z.lazy(() => z.object({
   options: z.array(z.string()).default([]),
   placeholder: z.string().optional(),
   multiline: z.boolean().default(false),
-}).loose());
+}).loose();
 
-export const PluginSurfaceSchema = z.lazy(() => z.object({
+export const PluginSurfaceSchema = z.object({
   key: z.string(),
   type: z.string().default(""),
   name: z.string().default(""),
   entry: z.string().default(""),
   platforms: z.array(z.string()).default([]),
-}).loose());
+}).loose();
 
-export const PluginHookSchema = z.lazy(() => z.object({
+export const PluginHookSchema = z.object({
   key: z.string(),
   name: z.string().default(""),
   description: z.string().default(""),
@@ -156,15 +158,15 @@ export const PluginHookSchema = z.lazy(() => z.object({
     next_run_at: z.string().optional(),
   }).loose().optional(),
   transport: z.string().default(""),
-}).loose());
+}).loose();
 
-export const PluginResourceSchema = z.lazy(() => z.object({
+export const PluginResourceSchema = z.object({
   type: z.string().default(""),
   key: z.string(),
   entry: z.string().default(""),
-}).loose());
+}).loose();
 
-export const PluginInstallationSchema = z.lazy(() => z.object({
+export const PluginInstallationSchema = z.object({
   id: z.string(),
   plugin_key: z.string().default(""),
   name: z.string().default(""),
@@ -181,7 +183,7 @@ export const PluginInstallationSchema = z.lazy(() => z.object({
   resources: z.array(PluginResourceSchema).default([]),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
-}).loose());
+}).loose();
 
 export const EMPTY_PLUGIN_INSTALLATION: PluginInstallation = {
   id: "",
@@ -201,9 +203,9 @@ export const EMPTY_PLUGIN_INSTALLATION: PluginInstallation = {
   updated_at: "",
 };
 
-export const PluginInstallationListResponseSchema = z.lazy(() => z.object({
+export const PluginInstallationListResponseSchema = z.object({
   plugins: z.array(PluginInstallationSchema).default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_PLUGIN_INSTALLATION_LIST: PluginInstallationListResponse = {
   plugins: [],
@@ -214,7 +216,7 @@ export const EMPTY_PLUGIN_INSTALLATION_LIST: PluginInstallationListResponse = {
  * endpoint's: "refused" means we declined to make the call at all, which is a
  * different problem for the reader than an endpoint that answered badly.
  */
-export const PluginHookResultSchema = z.lazy(() => z.object({
+export const PluginHookResultSchema = z.object({
   status: z.string().default("ok"),
   output: z.unknown().optional(),
   error: z.string().optional(),
@@ -222,9 +224,9 @@ export const PluginHookResultSchema = z.lazy(() => z.object({
   hook_key: z.string().default(""),
   trigger: z.string().default(""),
   attempts: z.number().default(1),
-}).loose());
+}).loose();
 
-export const PluginInvocationSchema = z.lazy(() => z.object({
+export const PluginInvocationSchema = z.object({
   id: z.string().default(""),
   hook_key: z.string().default(""),
   trigger: z.string().default(""),
@@ -236,20 +238,20 @@ export const PluginInvocationSchema = z.lazy(() => z.object({
   delivery_id: z.string().optional(),
   planned_at: z.string().optional(),
   created_at: z.string().default(""),
-}).loose());
+}).loose();
 
-export const PluginInvocationListSchema = z.lazy(() => z.object({
+export const PluginInvocationListSchema = z.object({
   invocations: z.array(PluginInvocationSchema).default([]),
-}).loose());
+}).loose();
 
 /**
  * Returned once, by the request that minted it. There is no read endpoint for
  * either value, so a client that discards this cannot recover it.
  */
-export const PluginTokenIssueSchema = z.lazy(() => z.object({
+export const PluginTokenIssueSchema = z.object({
   token: z.string().default(""),
   signing_secret: z.string().default(""),
-}).loose());
+}).loose();
 
 /**
  * Discovered tools for one `mcp`-transport hook.
@@ -258,19 +260,19 @@ export const PluginTokenIssueSchema = z.lazy(() => z.object({
  * an EMPTY list and nothing approved, so a drifted backend cannot make the UI
  * render a tool as already-approved.
  */
-export const PluginMCPToolSchema = z.lazy(() => z.object({
+export const PluginMCPToolSchema = z.object({
   name: z.string().default(""),
   description: z.string().default(""),
   schema_digest: z.string().default(""),
   approved: z.boolean().default(false),
   drifted: z.boolean().default(false),
-}).loose());
+}).loose();
 
-export const PluginMCPToolListSchema = z.lazy(() => z.object({
+export const PluginMCPToolListSchema = z.object({
   tools: z.array(PluginMCPToolSchema).default([]),
-}).loose());
+}).loose();
 
-export const PluginManifestSummarySchema = z.lazy(() => z.object({
+export const PluginManifestSummarySchema = z.object({
   key: z.string().default(""),
   name: z.string().default(""),
   description: z.string().optional(),
@@ -290,9 +292,9 @@ export const PluginManifestSummarySchema = z.lazy(() => z.object({
       }).loose().optional(),
     }).loose()).default([]),
   }).loose().optional(),
-}).loose());
+}).loose();
 
-export const PluginPreviewSchema = z.lazy(() => z.object({
+export const PluginPreviewSchema = z.object({
   manifest: PluginManifestSummarySchema,
   scopes: z.array(z.string()).default([]),
   config_schema: z.array(PluginConfigFieldSchema).default([]),
@@ -302,7 +304,7 @@ export const PluginPreviewSchema = z.lazy(() => z.object({
   installed: z.boolean().default(false),
   installed_version: z.string().optional(),
   added_scopes: z.array(z.string()).default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_PLUGIN_PREVIEW: PluginPreview = {
   manifest: { key: "", name: "", version: "", author: { name: "" } },
@@ -320,26 +322,26 @@ export const EMPTY_PLUGIN_PREVIEW: PluginPreview = {
  * answer "which one am I on"; it defaults to false so a malformed response can
  * never claim a version is running that is not.
  */
-export const PluginPackageVersionSchema = z.lazy(() => z.object({
+export const PluginPackageVersionSchema = z.object({
   id: z.string().default(""),
   version: z.string().default(""),
   digest: z.string().default(""),
   size_bytes: z.number().default(0),
   published_at: z.string().default(""),
   installed: z.boolean().default(false),
-}).loose());
+}).loose();
 
-export const PluginPackageSchema = z.lazy(() => z.object({
+export const PluginPackageSchema = z.object({
   id: z.string().default(""),
   plugin_key: z.string().default(""),
   name: z.string().default(""),
   versions: z.array(PluginPackageVersionSchema).default([]),
   created_at: z.string().default(""),
-}).loose());
+}).loose();
 
-export const PluginPackageListResponseSchema = z.lazy(() => z.object({
+export const PluginPackageListResponseSchema = z.object({
   packages: z.array(PluginPackageSchema).default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_PLUGIN_PACKAGE_LIST: PluginPackageListResponse = {
   packages: [],
@@ -354,12 +356,12 @@ export const EMPTY_PLUGIN_PACKAGE: PluginPackage = {
 };
 
 /** A malformed launch becomes unavailable, never a partly trusted frame. */
-export const PluginSurfaceLaunchSchema = z.lazy(() => z.object({
+export const PluginSurfaceLaunchSchema = z.object({
   url: z.string().default(""),
   bridge_token: z.string().default(""),
   version: z.string().default(""),
   digest: z.string().default(""),
-}).loose());
+}).loose();
 
 export const EMPTY_PLUGIN_SURFACE_LAUNCH: PluginSurfaceLaunch = {
   url: "",
@@ -368,7 +370,7 @@ export const EMPTY_PLUGIN_SURFACE_LAUNCH: PluginSurfaceLaunch = {
   digest: "",
 };
 
-export const GitHubInstallationSchema = z.lazy(() => z.object({
+export const GitHubInstallationSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   installation_id: z.number().optional(),
@@ -377,14 +379,14 @@ export const GitHubInstallationSchema = z.lazy(() => z.object({
   account_avatar_url: z.string().nullable(),
   created_at: z.string(),
   connected_by: z.string().optional(),
-}).loose());
+}).loose();
 
-export const ListGitHubInstallationsResponseSchema = z.lazy(() => z.object({
+export const ListGitHubInstallationsResponseSchema = z.object({
   installations: z.array(GitHubInstallationSchema).default([]),
   configured: z.boolean().optional().default(false),
   repository_browse_configured: z.boolean().optional().default(false),
   can_manage: z.boolean().optional().default(false),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE: ListGitHubInstallationsResponse = {
   installations: [],
@@ -393,17 +395,17 @@ export const EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE: ListGitHubInstallationsRe
   can_manage: false,
 };
 
-export const GitHubConnectResponseSchema = z.lazy(() => z.object({
+export const GitHubConnectResponseSchema = z.object({
   connection_id: z.string().optional().catch(undefined),
   url: z.string().optional(),
   configured: z.boolean().optional().default(false),
-}).loose());
+}).loose();
 
 export const EMPTY_GITHUB_CONNECT_RESPONSE: GitHubConnectResponse = {
   configured: false,
 };
 
-export const GitHubRepositorySchema = z.lazy(() => z.object({
+export const GitHubRepositorySchema = z.object({
   id: z.number(),
   full_name: z.string(),
   html_url: z.string(),
@@ -412,14 +414,14 @@ export const GitHubRepositorySchema = z.lazy(() => z.object({
   private: z.boolean(),
   archived: z.boolean(),
   default_branch: z.string(),
-}).loose());
+}).loose();
 
-export const ListGitHubRepositoriesResponseSchema = z.lazy(() => z.object({
+export const ListGitHubRepositoriesResponseSchema = z.object({
   repository_selection: z.enum(["all", "selected", "unknown"]).catch("unknown").optional(),
   repositories: z.array(GitHubRepositorySchema).default([]),
   total_count: z.number().optional().default(0),
   next_page: z.number().nullable().optional().default(null),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE: ListGitHubRepositoriesResponse = {
   repositories: [],
@@ -427,7 +429,7 @@ export const EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE: ListGitHubRepositoriesResp
   next_page: null,
 };
 
-export const GitHubPullRequestSchema = z.lazy(() => z.object({
+export const GitHubPullRequestSchema = z.object({
   id: z.string(),
   provider: z.string().optional().default("github"),
   workspace_id: z.string(),
@@ -444,7 +446,7 @@ export const GitHubPullRequestSchema = z.lazy(() => z.object({
   closed_at: z.string().nullable(),
   pr_created_at: z.string(),
   pr_updated_at: z.string(),
-  link_source: z.enum(["manual", "title", "branch", "reference", "auto"]).optional().catch(undefined),
+  link_source: z.enum(["manual", "title", "branch", "auto"]).optional().catch(undefined),
   mergeable: z.string().nullable().optional(),
   merge_state_status: z.string().nullable().optional(),
   snapshot_available: z.boolean().optional(),
@@ -458,27 +460,26 @@ export const GitHubPullRequestSchema = z.lazy(() => z.object({
   failed_check_names: z.array(z.string()).optional().default([]),
   snapshot_stale: z.boolean().optional().default(false),
   snapshot_fetched_at: z.string().nullable().optional(),
-  snapshot_paused_until: z.string().nullable().optional().catch(undefined),
   mergeable_state: z.string().nullable().optional(),
   additions: z.number().optional().default(0),
   deletions: z.number().optional().default(0),
   changed_files: z.number().optional().default(0),
-}).loose());
+}).loose();
 
 // A malformed auto_complete block degrades to null (the issue page shows no
 // automation line) instead of discarding the PR list with it.
-export const PRAutoCompleteSchema = z.lazy(() => z.object({
+export const PRAutoCompleteSchema = z.object({
   state: z.string(),
   pull_request_ids: z.array(z.string()).default([]),
   issue_disabled: z.boolean().default(false),
   workspace_enabled: z.boolean().default(true),
   target_status: z.string().optional().catch(undefined),
-}).loose());
+}).loose();
 
-export const IssuePullRequestsResponseSchema = z.lazy(() => z.object({
+export const IssuePullRequestsResponseSchema = z.object({
   pull_requests: z.array(GitHubPullRequestSchema).default([]),
   auto_complete: PRAutoCompleteSchema.nullable().optional().default(null).catch(null),
-}).loose());
+}).loose();
 
 export const EMPTY_ISSUE_PULL_REQUESTS_RESPONSE: IssuePullRequestsResponse = {
   pull_requests: [],
@@ -487,7 +488,7 @@ export const EMPTY_ISSUE_PULL_REQUESTS_RESPONSE: IssuePullRequestsResponse = {
 
 // An action record from a newer server with an unknown action is dropped;
 // an unknown status reads as failed, which offers a retry.
-export const IssueEnvironmentActionSchema = z.lazy(() => z.object({
+export const IssueEnvironmentActionSchema = z.object({
   id: z.string(),
   action: z.enum(["stop", "restart", "start", "logs"]),
   status: z.enum(["pending", "succeeded", "failed", "expired"]).catch("failed"),
@@ -501,13 +502,13 @@ export const IssueEnvironmentActionSchema = z.lazy(() => z.object({
   actor_id: z.string().nullable().optional().default(null),
   created_at: z.string(),
   completed_at: z.string().nullable().optional().default(null),
-}).loose());
+}).loose();
 
-const OptionalIssueEnvironmentActionSchema = z.lazy(() => IssueEnvironmentActionSchema.unwrap().nullable().optional().default(null).catch(null));
+const OptionalIssueEnvironmentActionSchema = IssueEnvironmentActionSchema.nullable().optional().default(null).catch(null);
 
-export const IssueEnvironmentCommandSchema = z.lazy(() => IssueEnvironmentActionSchema.unwrap().extend({
+export const IssueEnvironmentCommandSchema = IssueEnvironmentActionSchema.extend({
   output: z.string().nullable().optional().default(null),
-}).loose());
+}).loose();
 
 // One malformed environment drops out of the list instead of taking the
 // whole section with it; an unknown state from a newer server reads as
@@ -515,7 +516,7 @@ export const IssueEnvironmentCommandSchema = z.lazy(() => IssueEnvironmentAction
 // or none from an older server, reads as a server: the row then opens its URL
 // if it has one and offers nothing otherwise. A missing or malformed
 // local_key reads as empty, which leaves an app row without its switch action.
-export const IssueEnvironmentSchema = z.lazy(() => z.object({
+export const IssueEnvironmentSchema = z.object({
   id: z.string(),
   issue_id: z.string(),
   task_id: z.string(),
@@ -542,7 +543,7 @@ export const IssueEnvironmentSchema = z.lazy(() => z.object({
   pending_action: OptionalIssueEnvironmentActionSchema,
   last_action: OptionalIssueEnvironmentActionSchema,
   origin: OptionalIssueEnvironmentActionSchema,
-}).loose());
+}).loose();
 
 const DeclaredEnvironmentSchema = z.object({
   repo: z.string(),
@@ -572,12 +573,12 @@ function lenientArray<T extends z.ZodType>(schema: T) {
     );
 }
 
-export const IssueEnvironmentsResponseSchema = z.lazy(() => z.object({
+export const IssueEnvironmentsResponseSchema = z.object({
   environments: lenientArray(IssueEnvironmentSchema),
   configs: lenientArray(IssueEnvironmentConfigSchema),
   pending_starts: lenientArray(IssueEnvironmentActionSchema),
   failed_starts: lenientArray(IssueEnvironmentActionSchema),
-}).loose());
+}).loose();
 
 export const EMPTY_ISSUE_ENVIRONMENTS_RESPONSE: IssueEnvironmentsResponse = {
   environments: [],
@@ -600,9 +601,9 @@ const IssuePullRequestSummarySchema = z.object({
   html_url: z.string(),
 }).loose();
 
-export const IssuePullRequestSummariesResponseSchema = z.lazy(() => z.object({
+export const IssuePullRequestSummariesResponseSchema = z.object({
   pull_requests: lenientArray(IssuePullRequestSummarySchema),
-}).loose());
+}).loose();
 
 export const EMPTY_ISSUE_PULL_REQUEST_SUMMARIES_RESPONSE: IssuePullRequestSummariesResponse = {
   pull_requests: [],
@@ -611,7 +612,7 @@ export const EMPTY_ISSUE_PULL_REQUEST_SUMMARIES_RESPONSE: IssuePullRequestSummar
 // Label responses are consumed by settings tables and resource pickers. Keep
 // the resource type lenient so newer server scopes do not break older clients,
 // while defaulting fields that predate scoped label catalogs.
-export const LabelSchema = z.lazy(() => z.object({
+export const LabelSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   resource_type: z.string().optional().default("issue"),
@@ -621,7 +622,7 @@ export const LabelSchema = z.lazy(() => z.object({
   usage_count: z.number().optional().default(0),
   created_at: z.string(),
   updated_at: z.string(),
-}).loose());
+}).loose();
 
 export const EMPTY_LABEL: Label = {
   id: "",
@@ -635,10 +636,10 @@ export const EMPTY_LABEL: Label = {
   updated_at: "",
 };
 
-export const ListLabelsResponseSchema = z.lazy(() => z.object({
+export const ListLabelsResponseSchema = z.object({
   labels: z.array(LabelSchema).default([]),
   total: z.number().default(0),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_LABELS_RESPONSE: ListLabelsResponse = {
   labels: [],
@@ -650,7 +651,7 @@ export const EMPTY_LIST_LABELS_RESPONSE: ListLabelsResponse = {
 // build does not know, and failing the whole catalog parse would leave the UI
 // with no statuses at all. Consumers fall back to rendering by `color`/`name`
 // when they do not recognize a category.
-export const IssueStatusEntrySchema = z.lazy(() => z.object({
+export const IssueStatusEntrySchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   key: z.string(),
@@ -664,7 +665,7 @@ export const IssueStatusEntrySchema = z.lazy(() => z.object({
   archived_at: z.string().nullable().optional().default(null),
   created_at: z.string(),
   updated_at: z.string(),
-}).loose());
+}).loose();
 
 export const EMPTY_ISSUE_STATUS_ENTRY: IssueStatusEntry = {
   id: "",
@@ -681,11 +682,11 @@ export const EMPTY_ISSUE_STATUS_ENTRY: IssueStatusEntry = {
   updated_at: "",
 };
 
-export const ListIssueStatusesResponseSchema = z.lazy(() => z.object({
+export const ListIssueStatusesResponseSchema = z.object({
   statuses: z.array(IssueStatusEntrySchema).default([]),
   categories: z.array(z.string()).default([]).transform((values) => [...new Set(values.map((value) => normalizeIssueStatusCategory(value) ?? value))]),
   total: z.number().default(0),
-}).loose());
+}).loose();
 
 // The fallback carries the four lifecycle categories. Concrete built-in status
 // keys remain available through the status configuration.
@@ -698,52 +699,26 @@ export const EMPTY_LIST_ISSUE_STATUSES_RESPONSE: ListIssueStatusesResponse = {
 // Workspace workflows (MUL-7420). Handler types parse as plain strings and an
 // unknown one degrades to "none": a newer server may add a handler this build
 // cannot render, and the step's status must still show.
-const IssueWorkflowHandlerSchema = z.lazy(() => z.object({
+const IssueWorkflowHandlerSchema = z.object({
   type: z.string().transform((value): IssueWorkflowHandlerType =>
     ISSUE_WORKFLOW_HANDLER_TYPES.has(value) ? (value as IssueWorkflowHandlerType) : "none",
   ),
   id: z.string().optional(),
-  step: z.string().optional(),
-}).loose());
+}).loose();
 
 const ISSUE_WORKFLOW_HANDLER_TYPES = new Set<string>([
-  "none", "agent", "squad", "member", "project_lead", "creator", "human_by_role", "human_in_charge",
-  "author", "reviewer", "same_as",
+  "none", "agent", "squad", "member", "project_lead", "creator",
 ]);
 
-const IssueWorkflowEdgeSchema = z.lazy(() => z.object({
-  to: z.string(),
-  guard: z.string(),
-  timeout: z.string().optional(),
-  on_timeout: z.string().optional(),
-}));
-
-const IssueWorkflowEntryGateSchema = z.lazy(() => z.object({
-  guard: z.string(),
-  mode: z.string(),
-  member_override: z.boolean().default(true),
-  // Loose: `param` and `projects` (and later gate fields) must survive a save.
-}).loose());
-
-const IssueWorkflowSubWorkflowSchema = z.lazy(() => z.object({
-  workflow_id: z.string(),
-  stage: z.number().optional(),
-}));
-
-const IssueWorkflowStepSchema = z.lazy(() => z.object({
+const IssueWorkflowStepSchema = z.object({
   status_key: z.string(),
   handler: IssueWorkflowHandlerSchema.default({ type: "none" }),
   instructions: z.string().default(""),
   next_status_key: z.string().optional(),
   back_status_key: z.string().optional(),
-  advance_on_ci_green: z.boolean().optional(),
-  keep_other_assignee: z.boolean().optional(),
-  edges: z.array(IssueWorkflowEdgeSchema).optional(),
-  entry: z.array(IssueWorkflowEntryGateSchema).optional(),
-  sub_workflow: IssueWorkflowSubWorkflowSchema.optional(),
-}).loose());
+}).loose();
 
-export const IssueWorkflowSchema = z.lazy(() => z.object({
+export const IssueWorkflowSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   name: z.string(),
@@ -751,33 +726,20 @@ export const IssueWorkflowSchema = z.lazy(() => z.object({
   is_default: z.boolean().default(false),
   owner_id: z.string().nullable().default(null),
   steps: z.array(IssueWorkflowStepSchema).default([]),
-  // Run rules (CHE-2152): null keeps the server default budget.
-  max_runs_per_issue: z.number().nullable().default(null),
-  include_child_prs: z.boolean().default(true),
   project_ids: z.array(z.string()).default([]),
   created_at: z.string(),
   updated_at: z.string(),
-  // Full-precision updated_at; a save names the version it edited. Absent from
-  // an older server, which then keeps last-writer-wins.
-  version: z.string().default(""),
-  lint_override_reason: z.string().nullable().default(null),
-  lint_overridden_at: z.string().nullable().default(null),
-  // Findings of the last save (warnings, info, waived errors); absent from an older server.
-  lint_findings: z.array(z.object({
-    rule: z.string(),
-    level: z.enum(["error", "warning", "info"]).catch("info"),
-    step: z.string().optional(),
-    message: z.string().default(""),
-    hint: z.string().optional(),
-    waived: z.boolean().optional(),
-    waive_reason: z.string().optional(),
-  }).loose()).default([]),
-}).loose());
+}).loose();
 
-export const ListIssueWorkflowsResponseSchema = z.lazy(() => z.object({
+export const ListIssueWorkflowsResponseSchema = z.object({
   workflows: z.array(IssueWorkflowSchema).default([]),
   total: z.number().default(0),
-}).loose());
+}).loose();
+
+export const EMPTY_LIST_ISSUE_WORKFLOWS_RESPONSE: ListIssueWorkflowsResponse = {
+  workflows: [],
+  total: 0,
+};
 
 export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   id: "",
@@ -787,17 +749,12 @@ export const EMPTY_ISSUE_WORKFLOW: IssueWorkflow = {
   is_default: false,
   owner_id: null,
   steps: [],
-  max_runs_per_issue: null,
-  include_child_prs: true,
   project_ids: [],
   created_at: "",
   updated_at: "",
-  version: "",
-  lint_override_reason: null,
-  lint_overridden_at: null,
 };
 
-export const IssueWorkflowMappingPlanSchema = z.lazy(() => z.object({
+export const IssueWorkflowMappingPlanSchema = z.object({
   required: z.array(z.object({
     status_key: z.string(),
     issue_count: z.number().default(0),
@@ -809,30 +766,26 @@ export const IssueWorkflowMappingPlanSchema = z.lazy(() => z.object({
   }).loose()).default([]),
   total_issues: z.number().default(0),
   affected_issues: z.number().default(0),
-}).loose());
+}).loose();
 
-export const IssueWorkflowDryRunResponseSchema = z.lazy(() => z.object({
+export const IssueWorkflowDryRunResponseSchema = z.object({
   dry_run: z.literal(true).default(true),
   plan: IssueWorkflowMappingPlanSchema.default({ required: [], unchanged: [], total_issues: 0, affected_issues: 0 }),
-}).loose());
+}).loose();
 
 export const EMPTY_ISSUE_WORKFLOW_DRY_RUN: IssueWorkflowDryRunResponse = {
   dry_run: true,
   plan: { required: [], unchanged: [], total_issues: 0, affected_issues: 0 },
 };
 
-export const IssueWorkflowBriefPreviewSchema = z.lazy(() => z.object({
+export const IssueWorkflowBriefPreviewSchema = z.object({
   brief: z.string().default(""),
-}).loose());
+}).loose();
 
 const HANDOFF_HANDLER_TYPES = new Set(["agent", "squad", "member"]);
 
-// A preview the client cannot read is an error, never "no handoff": the dialog
-// applies a no-handoff preview on its own, and the server then applies the
-// workflow's handoff with no confirmation shown. The server always sends
-// `handoff`, so a missing or mistyped flag is malformed.
-export const WorkflowHandoffPreviewSchema = z.lazy(() => z.object({
-  handoff: z.boolean(),
+export const WorkflowHandoffPreviewSchema = z.object({
+  handoff: z.boolean().default(false),
   workflow_name: z.string().default(""),
   from_status: z.string().default(""),
   to_status: z.string().default(""),
@@ -849,12 +802,27 @@ export const WorkflowHandoffPreviewSchema = z.lazy(() => z.object({
     started_at: z.string().nullable().default(null),
   }).loose()).default([]),
   brief: z.string().default(""),
-}).loose());
+}).loose();
 
-export const ResourceLabelsResponseSchema = z.lazy(() => z.object({
+// A preview the client cannot read says "no handoff": the write path still
+// applies the workflow, it only loses the confirmation.
+export const EMPTY_WORKFLOW_HANDOFF_PREVIEW: WorkflowHandoffPreview = {
+  handoff: false,
+  workflow_name: "",
+  from_status: "",
+  to_status: "",
+  handler_type: null,
+  handler_id: null,
+  previous_assignee_type: null,
+  previous_assignee_id: null,
+  previous_runs: [],
+  brief: "",
+};
+
+export const ResourceLabelsResponseSchema = z.object({
   labels: z.array(LabelSchema).default([]),
   issue_revision: z.number().int().positive().optional(),
-}).loose());
+}).loose();
 
 export const EMPTY_RESOURCE_LABELS_RESPONSE: ResourceLabelsResponse = {
   labels: [],
@@ -865,7 +833,7 @@ export const EMPTY_RESOURCE_LABELS_RESPONSE: ResourceLabelsResponse = {
 // loose records so newer servers can add fields freely. `scope_type` /
 // `visibility` stay lenient strings; downstream code uses explicit `===`
 // comparisons and default branches per the API-compat rules.
-export const IssueViewSchema = z.lazy(() => z.object({
+export const IssueViewSchema = z.object({
   id: z.string(),
   workspace_id: z.string().default(""),
   owner_id: z.string().default(""),
@@ -880,13 +848,13 @@ export const IssueViewSchema = z.lazy(() => z.object({
   revision: z.number().default(1),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
-}).loose());
+}).loose();
 
 export type IssueView = z.infer<typeof IssueViewSchema>;
 
-export const IssueViewListSchema = z.lazy(() => z.array(IssueViewSchema));
+export const IssueViewListSchema = z.array(IssueViewSchema);
 
-export const IssueViewPreferenceSchema = z.lazy(() => z.object({
+export const IssueViewPreferenceSchema = z.object({
   scope_type: z.string().default("workspace"),
   scope_id: z.string().nullish(),
   prefs: z.object({
@@ -894,7 +862,7 @@ export const IssueViewPreferenceSchema = z.lazy(() => z.object({
     order: z.array(z.string()).default([]),
   }).loose().default({ hidden: [], order: [] }),
   updated_at: z.string().default(""),
-}).loose());
+}).loose();
 
 export type IssueViewPreference = z.infer<typeof IssueViewPreferenceSchema>;
 
@@ -910,7 +878,7 @@ export const EMPTY_ISSUE_VIEW_PREFERENCE: IssueViewPreference = {
  * saved values this one does not know; every field that does not parse comes
  * out undefined so the caller's default stands in for it.
  */
-export const SidebarProjectPrefsDocSchema = z.lazy(() => z.object({
+export const SidebarProjectPrefsDocSchema = z.object({
   projects: z.object({
     ordering: z.enum(["manual", "name", "updated", "created"]).optional().catch(undefined),
     statuses: z.array(z.string()).optional().catch(undefined),
@@ -927,7 +895,7 @@ export const SidebarProjectPrefsDocSchema = z.lazy(() => z.object({
     showSubIssues: z.boolean().optional().catch(undefined),
   }).catch({}),
   order: z.array(z.unknown()).catch([]).transform((ids) => ids.filter((id): id is string => typeof id === "string")),
-}));
+});
 
 export type SidebarProjectPrefsDoc = z.infer<typeof SidebarProjectPrefsDocSchema>;
 
@@ -935,7 +903,7 @@ export interface CreateIssueViewRequest {
   name: string;
   scope_type: "workspace" | "my" | "project";
   scope_id?: string | null;
-  scope_variant?: "assigned" | "created" | "requested" | "involved" | "any" | "members" | "agents" | null;
+  scope_variant?: "assigned" | "created" | "involved" | "any" | "members" | "agents" | null;
   visibility: "private" | "workspace";
   definition_version: number;
   query: Record<string, unknown>;
@@ -944,7 +912,7 @@ export interface CreateIssueViewRequest {
 
 // Custom property definitions. `type` stays a lenient string so newer server
 // types don't break installed clients; UI narrows with isKnownPropertyType.
-export const IssuePropertySchema = z.lazy(() => z.object({
+export const IssuePropertySchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   name: z.string(),
@@ -964,7 +932,7 @@ export const IssuePropertySchema = z.lazy(() => z.object({
   usage_count: z.number().optional().default(0),
   created_at: z.string(),
   updated_at: z.string(),
-}).loose());
+}).loose();
 
 export const EMPTY_ISSUE_PROPERTY: IssueProperty = {
   id: "",
@@ -984,7 +952,7 @@ export const EMPTY_ISSUE_PROPERTY: IssueProperty = {
 // Quick actions (MUL-5465). `visibility` and `status` stay z.string() rather
 // than z.enum: they are server-driven, and a newer server adding a value must
 // degrade to the UI's default branch, not blank the whole list.
-export const QuickActionSchema = z.lazy(() => z.object({
+export const QuickActionSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   name: z.string(),
@@ -1005,7 +973,7 @@ export const QuickActionSchema = z.lazy(() => z.object({
   // rather than asserting a state the server never sent.
   target_public: z.boolean().optional().default(false),
   target_missing: z.boolean().optional().default(false),
-}).loose());
+}).loose();
 
 export const EMPTY_QUICK_ACTION: QuickAction = {
   id: "",
@@ -1026,22 +994,18 @@ export const EMPTY_QUICK_ACTION: QuickAction = {
   target_missing: true,
 };
 
-export const ListQuickActionsResponseSchema = z.lazy(() => z.object({
+export const ListQuickActionsResponseSchema = z.object({
   quick_actions: z.array(QuickActionSchema).default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_QUICK_ACTIONS_RESPONSE: ListQuickActionsResponse = {
   quick_actions: [],
 };
 
-export const QuickActionRenderSchema = z.lazy(() => z.object({
-  content: z.string().default(""),
-}).loose());
-
-export const ListPropertiesResponseSchema = z.lazy(() => z.object({
+export const ListPropertiesResponseSchema = z.object({
   properties: z.array(IssuePropertySchema).default([]),
   total: z.number().default(0),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_PROPERTIES_RESPONSE: ListPropertiesResponse = {
   properties: [],
@@ -1053,7 +1017,7 @@ export const EMPTY_LIST_PROPERTIES_RESPONSE: ListPropertiesResponse = {
 // shapes BEFORE validation — a newer server shipping an object-shaped value
 // (future actor/relation types) must degrade to "that one property missing",
 // never fail the whole IssueSchema and blank the list via parseWithFallback.
-export const IssuePropertyValuesSchema = z.lazy(() => z.preprocess(
+export const IssuePropertyValuesSchema = z.preprocess(
   (raw) => {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return {};
     const out: Record<string, unknown> = {};
@@ -1068,12 +1032,12 @@ export const IssuePropertyValuesSchema = z.lazy(() => z.preprocess(
     return out;
   },
   z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.array(z.string())])).default({}),
-));
+);
 
-export const IssuePropertiesResponseSchema = z.lazy(() => z.object({
+export const IssuePropertiesResponseSchema = z.object({
   properties: IssuePropertyValuesSchema,
   issue_revision: z.number().int().positive().optional(),
-}).loose());
+}).loose();
 
 export const EMPTY_ISSUE_PROPERTIES_RESPONSE: IssuePropertiesResponse = {
   properties: {},
@@ -1112,6 +1076,7 @@ export interface AppConfigResponse {
   /** Whether agent create/update persists `conversation_starters`. Older servers
    * silently ignored the unknown field, so absent must be treated as false. */
   agent_conversation_starters_supported?: boolean;
+  webhook_payload_conditions_supported?: boolean;
   /** Whether issue create atomically validates and persists `properties`.
    * Older servers silently ignore the field, so absent means unsupported. */
   issue_create_properties_supported?: boolean;
@@ -1124,10 +1089,6 @@ export interface AppConfigResponse {
    * servers, so the app shows no Browse entry and makes no store requests. */
   theme_store_enabled?: boolean;
   server_version?: string;
-  server_build?: string;
-  server_commit?: string;
-  /** Path ("/docs") or URL of the docs this instance serves; absent = none. */
-  docs_url?: string;
 }
 
 // Schemas for the highest-risk API endpoints — those whose responses drive
@@ -1156,14 +1117,14 @@ export interface AppConfigResponse {
 // returns the parsed value cast to the caller-supplied `T`, so the strict
 // type still flows out at the call site; the schema only guards shape.
 
-const ReactionSchema = z.lazy(() => z.object({
+const ReactionSchema = z.object({
   id: z.string(),
   comment_id: z.string(),
   actor_type: z.string(),
   actor_id: z.string(),
   emoji: z.string(),
   created_at: z.string(),
-}));
+});
 
 // Nested attachments embedded in timeline/comment responses stay lenient on
 // purpose: a single malformed attachment must not knock the whole timeline
@@ -1171,250 +1132,21 @@ const ReactionSchema = z.lazy(() => z.object({
 const AttachmentImageFields = {
   width: z.number().int().positive().optional().catch(undefined),
   height: z.number().int().positive().optional().catch(undefined),
+  thumbnail_url: z.string().min(1).optional().catch(undefined),
 };
 
-const AttachmentSchema = z.lazy(() => z.object({
+const AttachmentSchema = z.object({
   id: z.string(),
   ...AttachmentImageFields,
-}).loose());
+}).loose();
 
-const ChatQuickActionSchema = z.lazy(() => z.object({
+const ChatQuickActionSchema = z.object({
   label: z.string(),
   prompt: z.string(),
   primary: z.boolean().optional(),
-}).loose());
+}).loose();
 
-// Every field is required: a half-formed wakeup degrades to a normal bubble
-// (via .catch on the message field) rather than a row with holes.
-const ChatScheduledWakeupSchema = z.lazy(() => z.object({
-  id: z.string(),
-  agent_id: z.string(),
-  title: z.string().default(""),
-  instruction: z.string(),
-  fire_at: z.string(),
-  created_at: z.string(),
-}).loose());
-
-const DecisionStateSchema = z.lazy(() => z.enum(["pending", "effective", "disclaimed"]));
-
-// Display-only fields of a decision-stamped comment. Each degrades on its own so
-// a malformed or future value never hides the comment (API Compatibility).
-const decisionCommentShape = {
-  decision_comment_kind: z
-    .enum(["ask", "quote", "disclaim", "delivery", "cancel", "veto"])
-    .nullable()
-    .optional()
-    .catch(undefined),
-  decision_answer_id: z.string().nullable().optional().catch(undefined),
-  decision_human_user_id: z.string().optional().catch(undefined),
-  decision_recorder_agent_id: z.string().optional().catch(undefined),
-  decision_class: z.string().optional().catch(undefined),
-  decision_state: DecisionStateSchema.optional().catch(undefined),
-  decision_delivered: z.boolean().optional().catch(undefined),
-  decision_chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
-  decision_option_label: z.string().optional().catch(undefined),
-  decision_issue_comment_id: z.string().optional().catch(undefined),
-  decision_receipt_answer_id: z.string().optional().catch(undefined),
-  decision_issue_id: z.string().optional().catch(undefined),
-  decision_issue_identifier: z.string().optional().catch(undefined),
-  effective_at: z.string().nullable().optional().catch(undefined),
-  disclaimed_at: z.string().nullable().optional().catch(undefined),
-  decision_source_session_id: z.string().optional().catch(undefined),
-  decision_source_message_id: z.string().optional().catch(undefined),
-  decision_request_session_id: z.string().optional().catch(undefined),
-  decision_request_message_id: z.string().optional().catch(undefined),
-  decision_answered_label: z.string().optional().catch(undefined),
-  decision_full_message: z.string().optional().catch(undefined),
-  decision_answered_at: z.string().optional().catch(undefined),
-  decision_woken_at: z.string().nullable().optional().catch(undefined),
-};
-
-const DecisionCardSchema = z.lazy(() => z.object({
-  answer_id: z.string(),
-  issue_id: z.string(),
-  issue_identifier: z.string().default(""),
-  issue_comment_id: z.string(),
-  class: z.string().default(""),
-  state: DecisionStateSchema.catch("pending"),
-  effective_at: z.string().default(""),
-  disclaimed_at: z.string().nullable().optional().catch(undefined),
-  // A card on a forked copy is read-only provenance; clients show no Disclaim.
-  inherited: z.boolean().catch(false).default(false),
-  delivered: z.boolean().optional().catch(undefined),
-  chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
-  option_label: z.string().optional().catch(undefined),
-  request_session_id: z.string().optional().catch(undefined),
-  request_message_id: z.string().optional().catch(undefined),
-}).loose());
-
-// A malformed preview degrades to none (the card says details are unavailable and
-// offers no approval); an action without an id or digest cannot be approved, so it is dropped.
-// The preview also needs a SHA-256 hex digest and an action type this client
-// knows; otherwise it is dropped, so a newer or tampered response cannot enable approval.
-const DecisionActionSchema = z.lazy(() => z.object({
-  id: z.string(),
-  action_type: z.string().catch(""),
-  payload_sha256: z.string(),
-  state: z.string().optional().catch(undefined),
-  preview: z.object({
-    fields: z.array(z.object({ label: z.string(), current: z.string(), proposed: z.string() }).loose()).min(1),
-    sha256: z.string().regex(SHA256_HEX),
-  }).loose().optional().catch(undefined),
-  preview_unavailable: z.string().optional().catch(undefined),
-  // A malformed config change degrades to none: the card says details are unavailable and offers no approval.
-  config_change: z.object({
-    field: z.string(),
-    target_id: z.string(),
-    keys: z.array(z.string()),
-    diff_kind: z.string(), // an unknown kind parses; approvableConfigChange refuses it
-    diff: z.array(z.object({ old_start: z.number(), new_start: z.number(), lines: z.array(z.string()) }).loose()),
-    after: z.unknown(),
-    before_sha256: z.string().regex(SHA256_HEX),
-    after_sha256: z.string().regex(SHA256_HEX),
-    meta: z.record(z.string(), z.unknown()).optional().catch(undefined),
-    sha256: z.string().regex(SHA256_HEX),
-  }).loose().optional().catch(undefined),
-  owner_only: z.boolean().optional().catch(undefined),
-  effect: z.string().optional().catch(undefined),
-  effect_reason: z.string().optional().catch(undefined),
-  receipt: BudgetReceiptSchema,
-  decided_at: z.string().optional().catch(undefined),
-  decided_by_name: z.string().optional().catch(undefined),
-  on_behalf_of_name: z.string().optional().catch(undefined),
-  revocable: z.boolean().optional().catch(undefined),
-  revoke: z.object({ at: z.string(), by_name: z.string().optional().catch(undefined), reason: z.string().catch("") }).loose().optional().catch(undefined),
-}).loose().transform((action) =>
-  action.preview && !isPreviewedActionType(action.action_type) ? { ...action, preview: undefined } : action));
-
-export const DecisionRequestCardSchema = z.lazy(() => z.object({
-  id: z.string(),
-  issue_id: z.string(),
-  issue_identifier: z.string().default(""),
-  issue_title: z.string().optional().catch(undefined),
-  source_comment_id: z.string().nullish().catch(undefined),
-  ask: z.string(),
-  asking_agent_name: z.string().optional().catch(undefined),
-  options: z.array(z.object({
-    label: z.string(),
-    what_happens: z.string().optional().catch(undefined),
-    pros: z.array(z.string()).optional().catch([]),
-    cons: z.array(z.string()).optional().catch([]),
-    cost_or_time: z.string().optional().catch(undefined),
-  }).loose()).catch([]),
-  recommended_option_index: z.number().int().nonnegative().optional().catch(undefined),
-  state: z.enum(["open", "answered", "withdrawn"]).catch("open"),
-  created_at: z.string(),
-  withdrawn_at: z.string().nullish().catch(undefined),
-  reason: z.string().optional().catch(undefined),
-  record_comment_id: z.string().nullish().catch(undefined),
-  answer: z.object({
-    state: z.enum(["recorded", "delivered", "picked_up", "disclaimed"]).catch("recorded"),
-    run: z.object({ id: z.string(), agent_name: z.string().default("") }).loose().optional().catch(undefined),
-    chosen_option_index: z.number().int().nonnegative().optional().catch(undefined),
-    option_label: z.string().optional().catch(undefined),
-    answered_at: z.string().default(""),
-  }).loose().optional().catch(undefined),
-  action: DecisionActionSchema.optional().catch(undefined),
-  covers_request_ids: z.array(z.string()).optional().catch(undefined),
-  covered_cards: z.array(z.object({
-    id: z.string(),
-    issue_id: z.string().default(""),
-    issue_identifier: z.string().default(""),
-    issue_title: z.string().optional().catch(undefined),
-    decision: z.string().default(""),
-    options: z.array(z.object({
-      label: z.string(),
-      what_happens: z.string().optional().catch(undefined),
-    }).loose()).catch([]),
-  }).loose()).optional().catch(undefined),
-  answered_by_batch_request_id: z.string().nullish().catch(undefined),
-  batch_id: z.string().optional().catch(undefined),
-  // A malformed list degrades to none: the card then offers no per-item choice.
-  batch_items: z.array(z.object({
-    action_id: z.string(),
-    issue_id: z.string().default(""),
-    issue_identifier: z.string().default(""),
-    issue_title: z.string().optional().catch(undefined),
-    state: z.string().default(""),
-    result: z.unknown().optional(),
-    error_code: z.string().optional().catch(undefined),
-  }).loose()).optional().catch(undefined),
-}).loose());
-
-export const DecisionRequestCardListSchema = z.lazy(() => z.array(DecisionRequestCardSchema));
-
-export const DecisionArtifactListSchema = z.lazy(() => z.object({
-  artifacts: z.array(z.object({
-    attachment_id: z.string(),
-    label: z.string().catch(""),
-    sha256: z.string().catch(""),
-    supersedes_attachment_id: z.string().optional().catch(undefined),
-    signed_by: z.object({ reviewer: z.string(), comment_id: z.string() }).loose().optional().catch(undefined),
-    supersedes_signed_by: z.object({ reviewer: z.string(), comment_id: z.string() }).loose().optional().catch(undefined),
-    attachment: z.object({
-      id: z.string(),
-      filename: z.string().catch(""),
-      content_type: z.string().catch(""),
-      size_bytes: z.number().catch(0),
-      download_url: z.string().catch(""),
-      attachment_download_url: z.string().optional().catch(undefined),
-    }).loose().optional().catch(undefined),
-    diff: z.object({
-      previous_filename: z.string().catch(""),
-      hunks: z.array(z.object({
-        old_start: z.number().catch(0),
-        new_start: z.number().catch(0),
-        lines: z.array(z.string()).catch([]),
-      }).loose()).catch([]),
-      problem: z.enum(["not_text", "too_large", "unavailable"]).optional().catch("unavailable"),
-    }).loose().optional().catch(undefined),
-  }).loose()).catch([]),
-}).loose());
-
-export const OpenDecisionRequestListSchema = z.lazy(() => z.array(z.object({
-  id: z.string(),
-  issue_id: z.string(),
-  issue_identifier: z.string(),
-  asking_agent_id: z.string(),
-  asking_agent_name: z.string().catch(""),
-  ask: z.string(),
-  escalation_class: z.string(),
-  created_at: z.string(),
-  chat_session_id: z.string(),
-  message_id: z.string().nullable().catch(null),
-  source_comment_id: z.string().nullable().catch(null),
-  options: z.array(z.object({
-    label: z.string(),
-    what_happens: z.string().optional().catch(undefined),
-  }).loose()).catch([]),
-  covers_request_ids: z.array(z.string()).optional().catch(undefined),
-  covered_cards: z.array(z.object({
-    id: z.string(),
-    issue_id: z.string().default(""),
-    issue_identifier: z.string().default(""),
-    issue_title: z.string().optional().catch(undefined),
-    decision: z.string().default(""),
-    options: z.array(z.object({
-      label: z.string(),
-      what_happens: z.string().optional().catch(undefined),
-    }).loose()).catch([]),
-  }).loose()).optional().catch(undefined),
-}).loose()));
-
-// An unknown status degrades to `uncertain`: it never claims the agent read the
-// message and never invites a plain resend that could duplicate it.
-export const ChatSupplementSchema = z.lazy((): z.ZodType<ChatSupplement> => z.object({
-  message_id: z.string(),
-  chat_session_id: z.string(),
-  task_id: z.string().default(""),
-  status: z.enum(["pending", "delivering", "delivered", "uncertain", "failed"]).catch("uncertain"),
-  failure_reason: z.string().nullish().transform((v) => v ?? null),
-  delivered_at: z.string().nullish().transform((v) => v ?? null),
-  acked_after_resend_at: z.string().nullish().transform((v) => v ?? null),
-  resent_task_id: z.string().nullish().transform((v) => v ?? null),
-}).loose());
-
-export const ChatMessageSchema = z.lazy(() => z.object({
+export const ChatMessageSchema = z.object({
   id: z.string(),
   chat_session_id: z.string(),
   role: z.enum(["user", "assistant"]).catch("assistant"),
@@ -1425,25 +1157,19 @@ export const ChatMessageSchema = z.lazy(() => z.object({
   failure_reason: z.string().nullable().optional(),
   elapsed_ms: z.number().nullable().optional(),
   message_kind: z
-    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "continuation_summary", "compaction_summary", "compact_notice", "decision_reference", "decision_request", "decision_cancel_notice"])
+    .enum(["message", "no_response", "onboarding_kickoff", "onboarding_opening", "wakeup"])
     .catch("message")
     .optional(),
-  decision_quotes: z.array(DecisionCardSchema).optional().catch(undefined),
-  decision_ref: DecisionCardSchema.optional().catch(undefined),
-  decision_request: DecisionRequestCardSchema.optional().catch(undefined),
-  decision_requests: z.array(DecisionRequestCardSchema).optional().catch(undefined),
-  scheduled_wakeup: ChatScheduledWakeupSchema.nullish().catch(undefined),
-  carried_from_session_id: z.string().nullable().optional().catch(undefined),
-  supplement: ChatSupplementSchema.optional().catch(undefined),
   // Optional additive data degrades independently: a malformed suggestion
   // must not hide the assistant reply that contains it.
   quick_actions: z.array(ChatQuickActionSchema).catch([]).optional().default([]),
-}).loose());
+  wakeup_id: z.string().nullish().catch(undefined),
+}).loose();
 
-export const ChatMessageListSchema = z.lazy(() => z.array(ChatMessageSchema).default([]));
+export const ChatMessageListSchema = z.array(ChatMessageSchema).default([]);
 export const EMPTY_CHAT_MESSAGE_LIST: ChatMessage[] = [];
 
-export const ChatMessagesPageSchema = z.lazy(() => z.object({
+export const ChatMessagesPageSchema = z.object({
   messages: z.array(ChatMessageSchema).default([]),
   limit: z.number().default(50),
   has_more: z.boolean().default(false),
@@ -1451,21 +1177,7 @@ export const ChatMessagesPageSchema = z.lazy(() => z.object({
     created_at: z.string(),
     id: z.string(),
   }).loose().nullable().optional(),
-  has_newer: z.boolean().optional().catch(undefined),
-}).loose());
-
-export const ChatSearchPageSchema = z.lazy(() => z.object({
-  results: z.array(z.object({
-    session_id: z.string(),
-    title: z.string().default(""),
-    agent_id: z.string(),
-    message_id: z.string().nullable().optional().transform((v) => v ?? null),
-    snippet: z.string().default(""),
-    updated_at: z.string(),
-    archived: z.boolean().default(false),
-  }).loose()).default([]),
-  next_cursor: z.string().nullable().optional().transform((v) => v ?? null),
-}).loose());
+}).loose();
 
 // Standalone attachment lookup (`GET /api/attachments/{id}`) is the source of
 // truth for click-time download URLs. The two fields the download flow opens
@@ -1479,7 +1191,7 @@ export const ChatSearchPageSchema = z.lazy(() => z.object({
 // `useFileUpload` helper (which falls back to the legacy
 // `attachmentDownloadPath` shape when `markdown_url` is empty), so the
 // empty-string default does not silently break any persistence path.
-export const AttachmentResponseSchema = z.lazy(() => z.object({
+export const AttachmentResponseSchema = z.object({
   id: z.string(),
   url: z.string(),
   download_url: z.string(),
@@ -1495,21 +1207,11 @@ export const AttachmentResponseSchema = z.lazy(() => z.object({
   // Image metadata is optional and degrades on its own: a malformed value
   // means "unknown dimensions", never a lost attachment.
   ...AttachmentImageFields,
-}).loose());
-
-// Parsed with parseOrThrow, not a fallback: an empty fallback diff would read as
-// "no changes" and hide a broken response.
-export const AttachmentRevisionDiffSchema = z.lazy(() => z.object({
-  from: z.number(),
-  to: z.number(),
-  binary: z.boolean(),
-  diff: z.string().optional().default(""),
-  message: z.string().optional().default(""),
-}).loose());
+}).loose();
 
 // The issue file inventory uses comment origins for grouping and sorting.
 // Malformed optional origins must not discard otherwise usable attachments.
-export const AttachmentListSchema = z.lazy(() => z.array(AttachmentResponseSchema.unwrap().extend({
+export const AttachmentListSchema = z.array(AttachmentResponseSchema.extend({
   workspace_id: z.string(),
   issue_id: z.string().nullable().default(null),
   comment_id: z.string().nullable().default(null),
@@ -1523,7 +1225,7 @@ export const AttachmentListSchema = z.lazy(() => z.array(AttachmentResponseSchem
   comment_author_type: z.string().optional().catch(undefined),
   comment_author_id: z.string().optional().catch(undefined),
   comment_created_at: z.iso.datetime({ offset: true }).optional().catch(undefined),
-})).default([]));
+})).default([]);
 
 export const EMPTY_ATTACHMENT: Attachment = {
   id: "",
@@ -1552,38 +1254,21 @@ export const EMPTY_ATTACHMENT: Attachment = {
 // rest alone.
 // One receipt per running turn a comment steered. A malformed receipt is
 // dropped on its own rather than failing the whole comment.
-const CommentSupplementReceiptSchema = z.lazy(() => z.object({
+const CommentSupplementReceiptSchema = z.object({
   task_id: z.string(),
   agent_id: z.string().optional().catch(undefined),
   status: z.enum(["pending", "delivering", "delivered", "failed"]),
   failure_reason: z.string().optional().catch(undefined),
   delivered_at: z.string().optional().catch(undefined),
-}));
+});
 
-const CommentSupplementReceiptsSchema = z.lazy(() => z.array(z.unknown()).optional().catch(undefined)
+const CommentSupplementReceiptsSchema = z.array(z.unknown()).optional().catch(undefined)
   .transform((raw) => raw?.flatMap((item) => {
     const parsed = CommentSupplementReceiptSchema.safeParse(item);
     return parsed.success ? [parsed.data] : [];
-  })));
+  }));
 
-// Supersession links (CHE-2121). Lenient: a malformed link reads as absent
-// instead of failing the whole comment or timeline.
-const CommentSupersedeLinkSchema = z.lazy(() => z.object({
-  comment_id: z.string(),
-  resolved: z.boolean().optional().catch(undefined),
-  skipped_reason: z.string().optional().catch(undefined),
-}).loose());
-
-const supersessionShape = {
-  superseded_by_id: z.string().nullable().optional().catch(undefined),
-  supersedes: z.array(z.unknown()).optional().catch(undefined).transform((items) =>
-    items?.flatMap((item) => {
-      const parsed = CommentSupersedeLinkSchema.safeParse(item);
-      return parsed.success ? [parsed.data] : [];
-    })),
-};
-
-const TimelineEntrySchema = z.lazy(() => z.object({
+const TimelineEntrySchema = z.object({
   type: z.string(),
   id: z.string(),
   actor_type: z.string(),
@@ -1601,7 +1286,6 @@ const TimelineEntrySchema = z.lazy(() => z.object({
   reactions: z.array(ReactionSchema).optional(),
   attachments: z.array(AttachmentSchema).optional(),
   source_task_id: z.string().nullable().optional(),
-  ...supersessionShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
   supplement_status: z.enum(["pending", "delivering", "delivered", "failed"]).optional().catch(undefined),
@@ -1611,20 +1295,19 @@ const TimelineEntrySchema = z.lazy(() => z.object({
   // comment instead of failing the whole timeline.
   deleted_at: z.string().nullable().optional().catch(undefined),
   coalesced_count: z.number().optional(),
-  ...decisionCommentShape,
-}).loose());
+}).loose();
 
 // /timeline returns a flat array of TimelineEntry, oldest first. The
 // previously cursor-paginated wrapper was removed (#1929) — at observed data
 // sizes (p99 ~30 entries per issue) paged delivery only created bugs.
-export const TimelineEntriesSchema = z.lazy(() => z.array(TimelineEntrySchema));
+export const TimelineEntriesSchema = z.array(TimelineEntrySchema);
 
 export const EMPTY_TIMELINE_ENTRIES: TimelineEntry[] = [];
 
-const OptionalStringSchema = z.lazy(() => z.preprocess(
+const OptionalStringSchema = z.preprocess(
   (value) => (typeof value === "string" ? value : undefined),
   z.string().optional(),
-));
+);
 
 const BooleanWithDefaultSchema = (fallback: boolean) =>
   z.preprocess(
@@ -1632,13 +1315,13 @@ const BooleanWithDefaultSchema = (fallback: boolean) =>
     z.boolean().default(fallback),
   );
 
-const FeatureFlagsSchema = z.lazy(() => z.preprocess(
+const FeatureFlagsSchema = z.preprocess(
   (value) =>
     value && typeof value === "object" && !Array.isArray(value)
       ? value
       : undefined,
   z.record(z.string(), BooleanWithDefaultSchema(false)).default({}),
-));
+);
 
 /**
  * POST /api/auth/refresh — sliding session renewal (MUL-7436).
@@ -1660,12 +1343,12 @@ export interface RefreshSessionResponse {
   check_again_in_seconds: number;
 }
 
-export const RefreshSessionResponseSchema = z.lazy(() => z.object({
+export const RefreshSessionResponseSchema = z.object({
   token: OptionalStringSchema,
   expires_at: OptionalStringSchema,
   renewed: BooleanWithDefaultSchema(false),
   check_again_in_seconds: z.number().int().nonnegative().default(0),
-}).loose());
+}).loose();
 
 // Fail closed: an unreadable response means "nothing was renewed", so the
 // client keeps the session it already has and retries later. A fallback that
@@ -1676,7 +1359,7 @@ export const EMPTY_REFRESH_SESSION_RESPONSE: RefreshSessionResponse = {
   check_again_in_seconds: 0,
 };
 
-export const AppConfigSchema = z.lazy(() => z.object({
+export const AppConfigSchema = z.object({
   cdn_domain: z.string().default(""),
   attachment_public_url: OptionalStringSchema,
   cdn_signed: BooleanWithDefaultSchema(false),
@@ -1693,14 +1376,12 @@ export const AppConfigSchema = z.lazy(() => z.object({
   feature_flags: FeatureFlagsSchema,
   local_worktree_supported: BooleanWithDefaultSchema(false),
   agent_conversation_starters_supported: BooleanWithDefaultSchema(false),
+  webhook_payload_conditions_supported: BooleanWithDefaultSchema(false),
   issue_create_properties_supported: BooleanWithDefaultSchema(false),
   comment_delete_keep_replies_supported: BooleanWithDefaultSchema(false),
   theme_store_enabled: BooleanWithDefaultSchema(false),
   server_version: OptionalStringSchema,
-  server_build: OptionalStringSchema,
-  server_commit: OptionalStringSchema,
-  docs_url: OptionalStringSchema,
-}).loose());
+}).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
   cdn_domain: "",
@@ -1718,6 +1399,7 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   local_worktree_supported: false,
   // Fail closed: old servers returned success while dropping the field.
   agent_conversation_starters_supported: false,
+  webhook_payload_conditions_supported: false,
   // Fail closed: old servers returned success while dropping create properties.
   issue_create_properties_supported: false,
   // Fail closed: old servers delete a comment's replies with it.
@@ -1778,72 +1460,39 @@ const StoreThemeSchema = z
   .loose();
 
 /** One malformed entry drops that theme, not the whole list. */
-export const StoreThemeListSchema = z.lazy(() => z.object({
+export const StoreThemeListSchema = z.object({
   themes: z.preprocess(
     (value) => (Array.isArray(value) ? value.filter((item) => StoreThemeSchema.safeParse(item).success) : []),
     z.array(StoreThemeSchema),
   ),
-}));
+});
 
 export const EMPTY_STORE_THEME_LIST: { themes: StoreTheme[] } = { themes: [] };
 
 // Preference keys may grow over time, so keep both the key and value spaces
 // forward-compatible while still rejecting non-string persisted data.
-export const NotificationPreferenceResponseSchema = z.lazy(() => z.object({
+export const NotificationPreferenceResponseSchema = z.object({
   workspace_id: z.string(),
   preferences: z.record(z.string(), z.string()).default({}),
-}).loose());
-
-// Missing sources or switches take the server defaults: inbox in-app on, every
-// other switch off (DM switches are opt-in, CHE-1848).
-function notificationChannelSwitchesSchema(inApp: boolean) {
-  return z.object({
-    in_app: z.boolean().default(inApp),
-    push: z.boolean().default(false),
-  }).loose().default({ in_app: inApp, push: false });
-}
-
-export const NotificationChannelsResponseSchema = z.lazy(() => z.object({
-  workspace_id: z.string(),
-  channels: z.object({
-    inbox: notificationChannelSwitchesSchema(true),
-    dm: notificationChannelSwitchesSchema(false),
-  }).default({ inbox: { in_app: true, push: false }, dm: { in_app: false, push: false } }),
-}).loose());
-
-export const EMPTY_NOTIFICATION_CHANNELS_RESPONSE: NotificationChannelsResponse = {
-  workspace_id: "",
-  channels: {
-    inbox: { in_app: true, push: false },
-    dm: { in_app: false, push: false },
-  },
-};
+  auto_archive_prompt: z.boolean().optional(),
+}).loose();
 
 export const EMPTY_NOTIFICATION_PREFERENCE_RESPONSE: NotificationPreferenceResponse = {
   workspace_id: "",
   preferences: {},
 };
 
-export const CreateFeedbackResponseSchema = z.lazy(() => z.object({
+export const CreateFeedbackResponseSchema = z.object({
   id: z.string(),
   created_at: z.string(),
-}).loose());
+}).loose();
 
 export const EMPTY_CREATE_FEEDBACK_RESPONSE: CreateFeedbackResponse = {
   id: "",
   created_at: "",
 };
 
-// A thread's relation to the viewer, set on thread roots (CHE-6428). All three
-// flags are required: a partial object would read as "not with me" and hide a
-// thread, so anything malformed drops to undefined and the UI shows every thread.
-const ThreadRelationSchema = z.object({
-  with_me: z.boolean(),
-  agents_only: z.boolean(),
-  waiting_on_me: z.boolean(),
-}).loose();
-
-export const CommentSchema = z.lazy(() => z.object({
+export const CommentSchema = z.object({
   id: z.string(),
   issue_id: z.string(),
   author_type: z.string(),
@@ -1857,11 +1506,6 @@ export const CommentSchema = z.lazy(() => z.object({
   updated_at: z.string(),
   revision: z.number().int().positive().optional(),
   source_task_id: z.string().nullable().optional(),
-  decision_intent_id: z.string().nullable().optional().catch(undefined),
-  decision_request_id: z.string().nullable().optional().catch(undefined),
-  hints: z.array(z.string()).optional().catch(undefined),
-  ...supersessionShape,
-  ...decisionCommentShape,
   supplements: CommentSupplementReceiptsSchema,
   supplement_task_id: z.string().optional().catch(undefined),
   supplement_status: z.enum(["pending", "delivering", "delivered", "failed"]).optional().catch(undefined),
@@ -1870,10 +1514,9 @@ export const CommentSchema = z.lazy(() => z.object({
   // Set only on comments a quick action produced (MUL-5465). Server-only.
   quick_action_id: z.string().nullable().optional(),
   deleted_at: z.string().nullable().optional().catch(undefined),
-  thread_relation: ThreadRelationSchema.optional().catch(undefined),
-}).loose());
+}).loose();
 
-export const CommentsListSchema = z.lazy(() => z.array(CommentSchema));
+export const CommentsListSchema = z.array(CommentSchema);
 
 // Degraded placeholder for a comment response that failed schema validation.
 // The empty id is the caller's signal that nothing usable came back — the run
@@ -1895,25 +1538,25 @@ export const EMPTY_COMMENT: Comment = {
   resolved_by_id: null,
 };
 
-const CommentTriggerPreviewAgentSchema = z.lazy(() => z.object({
+const CommentTriggerPreviewAgentSchema = z.object({
   id: z.string(),
   name: z.string().default(""),
   avatar_url: z.string().optional(),
   source: z.string().default(""),
   reason: z.string().default(""),
-}).loose());
+}).loose();
 
 // Per-target outcome of an explicit @agent / @squad mention (MUL-4525 §2).
 // target_id is required to correlate with the client's rendered mention; a
 // malformed entry (missing id) is dropped rather than failing the whole payload.
-export const CommentTriggerOutcomeSchema = z.lazy(() => z.object({
+export const CommentTriggerOutcomeSchema = z.object({
   target_type: z.string().default(""),
   target_id: z.string(),
   status: z.string().default(""),
   reason_code: z.string().default(""),
-}).loose());
+}).loose();
 
-export const CommentTriggerPreviewSchema = z.lazy(() => z.object({
+export const CommentTriggerPreviewSchema = z.object({
   agents: z.array(CommentTriggerPreviewAgentSchema).default([]),
   // Drop malformed blocked entries INDIVIDUALLY (MUL-4525): a single bad item
   // must not discard the whole set of valid blocked mentions. A non-array
@@ -1928,36 +1571,25 @@ export const CommentTriggerPreviewSchema = z.lazy(() => z.object({
         return parsed.success ? [parsed.data] : [];
       }),
     ),
-}).loose());
+}).loose();
 
-const IssueTriggerPreviewItemSchema = z.lazy(() => z.object({
+const IssueTriggerPreviewItemSchema = z.object({
   issue_id: z.string(),
   agent_id: z.string().default(""),
   source: z.string().default(""),
-}).loose());
+}).loose();
 
-export const IssueTriggerPreviewSchema = z.lazy(() => z.object({
+export const IssueTriggerPreviewSchema = z.object({
   triggers: z.array(IssueTriggerPreviewItemSchema).default([]),
   total_count: z.number().default(0),
-}).loose());
+}).loose();
 
 // Metadata is primitive-only by API/DB contract. Stay lenient on shape:
-// the field defaults to {} so consumers never need to nil-guard
-// `issue.metadata`, and a non-primitive entry is dropped rather than failing
-// the whole issue. The server's decision park stores an object under
-// `decision_park`; rejecting it made GET /api/issues/:id "malformed", which the
-// detail view shows as "does not exist" (CHE-3472).
-const IssueMetadataSchema = z.lazy(() => z.preprocess(
-  (raw) =>
-    typeof raw === "object" && raw !== null && !Array.isArray(raw)
-      ? Object.fromEntries(
-          Object.entries(raw).filter(([, v]) => ["string", "number", "boolean"].includes(typeof v)),
-        )
-      : raw,
-  z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({}),
-));
+// unknown keys land as `unknown` to a caller, but the field itself defaults
+// to {} so consumers never need to nil-guard `issue.metadata`.
+const IssueMetadataSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({});
 
-const SourceContextAttachmentSchema = z.lazy(() => z.object({
+const SourceContextAttachmentSchema = z.object({
   id: z.string(),
   source_attachment_id: z.string().optional(),
   owner_type: z.string(),
@@ -1966,22 +1598,22 @@ const SourceContextAttachmentSchema = z.lazy(() => z.object({
   content_type: z.string(),
   size_bytes: z.number(),
   created_at: z.string(),
-}).loose());
+}).loose();
 
 // Early source-context servers encoded an empty Go slice as JSON null. Keep
 // installed clients compatible while normalizing consumers onto the canonical
 // array shape emitted by current servers.
-const SourceContextAttachmentsSchema = z.lazy(() => z.array(SourceContextAttachmentSchema)
+const SourceContextAttachmentsSchema = z.array(SourceContextAttachmentSchema)
   .nullish()
-  .transform((attachments) => attachments ?? []));
+  .transform((attachments) => attachments ?? []);
 
-const SourceContextAuthorSchema = z.lazy(() => z.object({
+const SourceContextAuthorSchema = z.object({
   type: z.string(),
   id: z.string(),
   name: z.string(),
-}).loose());
+}).loose();
 
-const SourceContextIssueSnapshotSchema = z.lazy(() => z.object({
+const SourceContextIssueSnapshotSchema = z.object({
   id: z.string(),
   identifier: z.string(),
   number: z.number(),
@@ -1991,9 +1623,9 @@ const SourceContextIssueSnapshotSchema = z.lazy(() => z.object({
   updated_at: z.string(),
   revision: z.number(),
   attachments: SourceContextAttachmentsSchema,
-}).loose());
+}).loose();
 
-const SourceContextCommentSnapshotSchema = z.lazy(() => z.object({
+const SourceContextCommentSnapshotSchema = z.object({
   id: z.string(),
   parent_id: z.string().nullable(),
   type: z.string(),
@@ -2004,28 +1636,18 @@ const SourceContextCommentSnapshotSchema = z.lazy(() => z.object({
   revision: z.number(),
   attachments: SourceContextAttachmentsSchema,
   deleted: z.boolean().optional().catch(undefined),
-}).loose());
+}).loose();
 
-export const SourceContextSnapshotSchema = z.lazy(() => z.object({
+export const SourceContextSnapshotSchema = z.object({
   version: z.number().optional(),
   captured_by_user_id: z.string().optional(),
   captured_at: z.string().optional(),
   source_issue: SourceContextIssueSnapshotSchema,
   comment_thread: z.array(SourceContextCommentSnapshotSchema),
   anchor_comment_id: z.string(),
-}).loose());
+}).loose();
 
-export const CommentPreviewSchema = z.lazy(() => z.object({
-  comment_id: z.string(),
-  issue_id: z.string(),
-  issue_identifier: z.string(),
-  author_type: z.string().catch(""),
-  author_id: z.string().catch(""),
-  author_name: z.string().catch(""),
-  preview: z.string().catch(""),
-}).loose());
-
-export const SourceContextPreviewSchema = z.lazy(() => SourceContextSnapshotSchema.unwrap().extend({
+export const SourceContextPreviewSchema = SourceContextSnapshotSchema.extend({
   capture_token: z.string().min(1),
   limits: z.object({
     comment_count: z.number(),
@@ -2033,9 +1655,9 @@ export const SourceContextPreviewSchema = z.lazy(() => SourceContextSnapshotSche
     attachment_count: z.number(),
     attachment_bytes: z.number(),
   }).loose(),
-}).loose());
+}).loose();
 
-const IssueSourceContextSchema = z.lazy(() => z.object({
+const IssueSourceContextSchema = z.object({
   id: z.string(),
   version: z.number(),
   usage: z.string(),
@@ -2070,13 +1692,22 @@ const IssueSourceContextSchema = z.lazy(() => z.object({
     state: z.string(),
   }).loose()).optional(),
   snapshot: SourceContextSnapshotSchema,
-}).loose());
+}).loose();
 
-export const CommentSubIssueTaskResponseSchema = z.lazy(() => z.object({
+export const CommentSubIssueTaskResponseSchema = z.object({
   task_id: z.string().min(1),
-}).loose());
+}).loose();
 
-export const IssueSchema = z.lazy(() => z.object({
+const IssueBlockerSchema = z.object({
+  id: z.string(), identifier: z.string(), title: z.string(), status: z.string(),
+  via: z.string(), closed: z.boolean(),
+});
+
+export const IssueSchema = z.object({
+  blocked_count: z.number().int().nonnegative().optional().catch(undefined),
+  blocked_by: z.array(IssueBlockerSchema).optional().catch(undefined),
+  // Detail reads only: the issues waiting on this one.
+  blocking: z.array(IssueBlockerSchema).optional().catch(undefined),
   id: z.string(),
   workspace_id: z.string(),
   number: z.number(),
@@ -2102,15 +1733,11 @@ export const IssueSchema = z.lazy(() => z.object({
   // this field to make a decision — useStatusLabel resolves the label from the
   // catalog — so dropping it costs a fallback to the key. (MUL-6749)
   status_name: z.string().optional().catch(undefined),
-  run_budget_blocked: z.boolean().optional().catch(undefined),
   priority: z.string(),
   assignee_type: z.string().nullable(),
   assignee_id: z.string().nullable(),
   creator_type: z.string(),
   creator_id: z.string(),
-  // Additive: older backends do not send it, and nothing breaks without it.
-  requested_by_id: z.string().nullable().optional().catch(undefined),
-  created_via: z.string().nullable().optional().catch(undefined),
   requester_id: z.string().nullable().optional().catch(undefined),
   parent_issue_id: z.string().nullable(),
   // Additive pointer (MUL-7349); same disproportionate-failure reasoning as
@@ -2121,22 +1748,12 @@ export const IssueSchema = z.lazy(() => z.object({
     .optional()
     .catch(undefined),
   project_id: z.string().nullable(),
-  // Older backends predate the per-issue workflow override.
-  workflow_id: z.string().nullable().optional().catch(null),
   position: z.number(),
   // Older backends predate `stage`; default to null so a missing field parses
   // cleanly into the non-optional Issue.stage (number | null).
   stage: z.number().nullable().default(null),
   start_date: z.string().nullable(),
   due_date: z.string().nullable(),
-  // Read-only deadline projection (CHE-3463). Additive: older backends and
-  // closed issues omit it, and a malformed value drops only itself.
-  effective_due: z.string().optional().catch(undefined),
-  due_source: z.string().optional().catch(undefined),
-  diagnostics: z
-    .array(z.object({ type: z.string(), members: z.array(z.string()).optional() }))
-    .optional()
-    .catch(undefined),
   metadata: IssueMetadataSchema,
   // Older backends predate custom properties; default {} so consumers never
   // nil-guard issue.properties.
@@ -2146,18 +1763,19 @@ export const IssueSchema = z.lazy(() => z.object({
   created_at: z.string(),
   updated_at: z.string(),
   revision: z.number().int().positive().optional(),
+  description_revision: z.number().int().nonnegative().optional(),
   // Optional for compatibility with older self-hosted backends; a current
   // backend emits null until its historical backfill reaches the issue.
   last_activity_at: z.string().nullable().optional(),
   // Detail-only and potentially large. A malformed additive field must not
   // erase an otherwise usable issue returned by a mixed-version server.
   source_context: IssueSourceContextSchema.optional().catch(undefined),
-}).loose());
+}).loose();
 
-export const ListIssuesResponseSchema = z.lazy(() => z.object({
+export const ListIssuesResponseSchema = z.object({
   issues: z.array(IssueSchema).default([]),
   total: z.number().default(0),
-}).loose());
+}).loose();
 
 // Response schema for POST /api/issues. Two tightenings over IssueSchema:
 //
@@ -2173,33 +1791,43 @@ export const ListIssuesResponseSchema = z.lazy(() => z.object({
 //     object, a garbage array) can never masquerade as "handled" and suppress
 //     the fallback. Unlike the loose IssueSchema.labels (z.array(z.unknown())),
 //     the elements are fully validated. See packages/views/modals/create-issue.tsx.
-export const CreateIssueResponseSchema = z.lazy(() => IssueSchema.unwrap().extend({
+export const CreateIssueResponseSchema = IssueSchema.extend({
   id: z.string().min(1),
   labels: z.array(LabelSchema).optional().catch(undefined),
   pr_auto_complete_disabled: z.boolean().optional().catch(undefined),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_ISSUES_RESPONSE: ListIssuesResponse = {
   issues: [],
   total: 0,
 };
 
-const SearchIssueResultSchema = z.lazy(() => IssueSchema.unwrap().extend({
+const SearchIssueResultSchema = IssueSchema.extend({
   match_source: z.string(),
   matched_snippet: z.string().optional(),
   matched_description_snippet: z.string().optional(),
   matched_comment_snippet: z.string().optional(),
-}).loose());
+}).loose();
 
-export const SearchIssuesResponseSchema = z.lazy(() => z.object({
+export const SearchIssuesResponseSchema = z.object({
   issues: z.array(SearchIssueResultSchema).default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_SEARCH_ISSUES_RESPONSE: SearchIssuesResponse = {
   issues: [],
 };
 
-export const ProjectSchema = z.lazy(() => z.object({
+const ProjectProgressSchema = z.object({
+  unit: z.literal("issues").catch("issues"),
+  scope: z.number().default(0),
+  completed: z.number().default(0),
+  started: z.number().default(0),
+  unstarted: z.number().default(0),
+  cancelled: z.number().default(0),
+  percent: z.number().default(0),
+}).loose();
+
+export const ProjectSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   title: z.string(),
@@ -2222,16 +1850,18 @@ export const ProjectSchema = z.lazy(() => z.object({
   last_activity_at: z.string().optional().catch(undefined),
   issue_count: z.number().default(0),
   done_count: z.number().default(0),
+  // Older servers omit it; consumers fall back to issue_count / done_count.
+  progress: ProjectProgressSchema.optional().catch(undefined),
   resource_count: z.number().default(0),
   workflow_id: z.string().nullable().default(null),
   archived_at: z.string().nullable().default(null).catch(null),
   archived_by_type: z.enum(["member", "agent"]).nullable().default(null).catch(null),
   archived_by_id: z.string().nullable().default(null).catch(null),
-}).loose());
+}).loose();
 
-export const ArchiveProjectResponseSchema = z.lazy(() => ProjectSchema.unwrap().extend({
+export const ArchiveProjectResponseSchema = ProjectSchema.extend({
   paused_autopilot_ids: z.array(z.string()).default([]).catch([]),
-}));
+});
 
 export const EMPTY_PROJECT: Project = {
   id: "", workspace_id: "", title: "", description: null, icon: null,
@@ -2240,32 +1870,86 @@ export const EMPTY_PROJECT: Project = {
   created_at: "", updated_at: "", issue_count: 0, done_count: 0, resource_count: 0,
 };
 
-export const ListProjectsResponseSchema = z.lazy(() => z.object({
+export const ListProjectsResponseSchema = z.object({
   projects: z.array(ProjectSchema).default([]),
   total: z.number().default(0),
-}).loose());
+}).loose();
+
+export const ProjectProgressDetailSchema = z.object({
+  progress: ProjectProgressSchema,
+  by_assignee: z.array(z.object({
+    assignee_type: z.enum(["member", "agent", "squad"]).nullable().catch(null),
+    assignee_id: z.string().nullable().default(null),
+    scope: z.number().default(0),
+    completed: z.number().default(0),
+    started: z.number().default(0),
+  }).loose()).default([]),
+  // Older servers omit it; the label breakdown then has nothing to show.
+  by_label: z.array(z.object({
+    label_id: z.string().nullable().default(null),
+    scope: z.number().default(0),
+    completed: z.number().default(0),
+    started: z.number().default(0),
+  }).loose()).default([]).catch([]),
+  history: z.array(z.object({
+    date: z.string(),
+    scope: z.number().default(0),
+    started: z.number().default(0),
+    completed: z.number().default(0),
+  }).loose()).default([]),
+  forecast: z.object({
+    completion_date: z.string(),
+    weekly_velocity: z.number(),
+  }).loose().nullable().default(null).catch(null),
+}).loose();
+
+export const EMPTY_PROJECT_PROGRESS_DETAIL: ProjectProgressDetail = {
+  progress: { unit: "issues", scope: 0, completed: 0, started: 0, unstarted: 0, cancelled: 0, percent: 0 },
+  by_assignee: [],
+  by_label: [],
+  history: [],
+  forecast: null,
+};
+
+export const ProjectActivityPageSchema = z.object({
+  entries: z.array(z.object({
+    id: z.string(),
+    issue_id: z.string(),
+    issue_identifier: z.string().default(""),
+    issue_title: z.string().default(""),
+    issue_status: z.string().default(""),
+    actor_type: z.string().default(""),
+    actor_id: z.string().default(""),
+    action: z.string(),
+    details: z.record(z.string(), z.unknown()).default({}).catch({}),
+    created_at: z.string(),
+  }).loose()).default([]),
+  next_cursor: z.string().nullable().default(null),
+}).loose();
+
+export const EMPTY_PROJECT_ACTIVITY_PAGE: ProjectActivityPage = { entries: [], next_cursor: null };
 
 export const EMPTY_LIST_PROJECTS_RESPONSE: ListProjectsResponse = { projects: [], total: 0 };
 
-export const ProjectMemberSchema = z.lazy(() => z.object({
+export const ProjectMemberSchema = z.object({
   project_id: z.string(),
   user_id: z.string(),
   name: z.string(),
   email: z.string(),
   avatar_url: z.string().nullable().default(null),
-}).loose());
+}).loose();
 
-export const ListProjectMembersResponseSchema = z.lazy(() => z.object({
+export const ListProjectMembersResponseSchema = z.object({
   members: z.array(ProjectMemberSchema),
   total: z.number(),
   // Absent from a server that predates it; see canManageProjectAccess.
   manager_id: z.string().nullable().default(null).catch(null),
-}).loose());
+}).loose();
 
 // The workspace owner's overview of private projects (`/api/projects/private`).
 // A row whose id is missing is dropped rather than failing the whole list: the
 // overview is how an owner gets back into a project nobody else can open.
-const PrivateProjectOverviewSchema = z.lazy(() => z.object({
+const PrivateProjectOverviewSchema = z.object({
   id: z.string(),
   title: z.string().catch(""),
   icon: z.string().nullable().default(null).catch(null),
@@ -2274,10 +1958,10 @@ const PrivateProjectOverviewSchema = z.lazy(() => z.object({
   created_at: z.string().catch(""),
   archived_at: z.string().nullable().default(null).catch(null),
   is_member: z.boolean().catch(false),
-  members: z.array(ProjectMemberSchema.unwrap().omit({ project_id: true })).default([]).catch([]),
-}).loose());
+  members: z.array(ProjectMemberSchema.omit({ project_id: true })).default([]).catch([]),
+}).loose();
 
-export const ListPrivateProjectsResponseSchema = z.lazy(() => z.object({
+export const ListPrivateProjectsResponseSchema = z.object({
   projects: z.array(z.unknown()).default([]).catch([]).transform((rows) =>
     rows.flatMap((row) => {
       const parsed = PrivateProjectOverviewSchema.safeParse(row);
@@ -2285,22 +1969,22 @@ export const ListPrivateProjectsResponseSchema = z.lazy(() => z.object({
     }),
   ),
   total: z.number().default(0).catch(0),
-}).loose());
+}).loose();
 
 // The viewer's own project subscription (`/api/projects/:id/subscription`).
 // Anything but an explicit `true` reads as not subscribed.
-export const ProjectSubscriptionSchema = z.lazy(() => z.object({
+export const ProjectSubscriptionSchema = z.object({
   subscribed: z.boolean().catch(false),
-}).loose());
+}).loose();
 
-const SearchProjectResultSchema = z.lazy(() => ProjectSchema.unwrap().extend({
+const SearchProjectResultSchema = ProjectSchema.extend({
   match_source: z.string(),
   matched_snippet: z.string().optional(),
-}).loose());
+}).loose();
 
-export const SearchProjectsResponseSchema = z.lazy(() => z.object({
+export const SearchProjectsResponseSchema = z.object({
   projects: z.array(SearchProjectResultSchema).default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_SEARCH_PROJECTS_RESPONSE: SearchProjectsResponse = {
   projects: [],
@@ -2309,38 +1993,38 @@ export const EMPTY_SEARCH_PROJECTS_RESPONSE: SearchProjectsResponse = {
 // Local search index sync (MUL-7754). Callers reject a response that fails
 // these schemas instead of degrading to an empty value: an empty snapshot page
 // or change set would be applied to the local copy as truth.
-const SearchIndexIssueSchema = z.lazy(() => IssueSchema.unwrap().extend({
+const SearchIndexIssueSchema = IssueSchema.extend({
   search_updated_at: z.string(),
-}).loose());
+}).loose();
 
-const SearchIndexProjectSchema = z.lazy(() => ProjectSchema.unwrap().extend({
+const SearchIndexProjectSchema = ProjectSchema.extend({
   search_updated_at: z.string(),
-}).loose());
+}).loose();
 
-const SearchIndexCommentSchema = z.lazy(() => z.object({
+const SearchIndexCommentSchema = z.object({
   id: z.string().min(1),
   issue_id: z.string().min(1),
   content: z.string(),
   created_at: z.string(),
-}).loose());
+}).loose();
 
-export const SearchIndexManifestSchema = z.lazy(() => z.object({
+export const SearchIndexManifestSchema = z.object({
   cursor: z.string().min(1),
   issue_count: z.number(),
   comment_count: z.number(),
   project_count: z.number(),
   text_bytes: z.number(),
-}).loose());
+}).loose();
 
-export const SearchIndexSnapshotPageSchema = z.lazy(() => z.object({
+export const SearchIndexSnapshotPageSchema = z.object({
   issues: z.array(SearchIndexIssueSchema),
   comments: z.array(SearchIndexCommentSchema),
   projects: z.array(SearchIndexProjectSchema),
   next_after_number: z.number(),
   done: z.boolean(),
-}).loose());
+}).loose();
 
-export const SearchIndexChangesSchema = z.lazy(() => z.object({
+export const SearchIndexChangesSchema = z.object({
   issues: z.array(SearchIndexIssueSchema),
   comments: z.array(SearchIndexCommentSchema),
   projects: z.array(SearchIndexProjectSchema),
@@ -2351,40 +2035,24 @@ export const SearchIndexChangesSchema = z.lazy(() => z.object({
   }).loose(),
   cursor: z.string().min(1),
   has_more: z.boolean(),
-}).loose());
+}).loose();
 
-const IssueAssigneeGroupSchema = z.lazy(() => z.object({
-  id: z.string(),
-  assignee_type: z.string().nullable(),
-  assignee_id: z.string().nullable(),
-  issues: z.array(IssueSchema).default([]),
-  total: z.number().default(0),
-}).loose());
-
-export const GroupedIssuesResponseSchema = z.lazy(() => z.object({
-  groups: z.array(IssueAssigneeGroupSchema).default([]),
-}).loose());
-
-export const EMPTY_GROUPED_ISSUES_RESPONSE: GroupedIssuesResponse = {
-  groups: [],
-};
-
-const IssueTableActorRefSchema = z.lazy(() => z.object({
+const IssueTableActorRefSchema = z.object({
   // Server-driven enums stay open so installed desktop clients survive a
   // backend that introduces another actor kind.
   type: z.string(),
   id: z.string(),
-}).loose());
+}).loose();
 
-const IssueTableParentRefSchema = z.lazy(() => z.object({
+const IssueTableParentRefSchema = z.object({
   id: z.string(),
   number: z.number(),
   identifier: z.string(),
   title: z.string(),
   status: z.string(),
-}).loose());
+}).loose();
 
-const IssueTableGroupValueSchema = z.lazy(() => z.discriminatedUnion("kind", [
+const IssueTableGroupValueSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("status"),
     // Preserve the requested bucket vocabulary (legacy wire, lifecycle, or
@@ -2411,7 +2079,7 @@ const IssueTableGroupValueSchema = z.lazy(() => z.discriminatedUnion("kind", [
     value: z.union([z.string(), z.boolean(), z.null()]).optional(),
     value_state: z.enum(["value", "unavailable", "unset"]),
   }).loose(),
-]));
+]);
 
 const IssueTableGroupDescriptorSchema: z.ZodType<IssueTableGroupDescriptor> = z.lazy(() => z.object({
   key: z.string(),
@@ -2420,12 +2088,12 @@ const IssueTableGroupDescriptorSchema: z.ZodType<IssueTableGroupDescriptor> = z.
   secondary_groups: z.array(IssueTableGroupDescriptorSchema).optional(),
 }).loose());
 
-export const IssueTableGroupsResponseSchema = z.lazy(() => z.object({
+export const IssueTableGroupsResponseSchema = z.object({
   query_fingerprint: z.string(),
   total: z.number(),
   groups: z.array(IssueTableGroupDescriptorSchema).default([]),
   next_cursor: z.string().nullable().default(null),
-}).loose());
+}).loose();
 
 export const EMPTY_ISSUE_TABLE_GROUPS_RESPONSE: IssueTableGroupsResponse = {
   query_fingerprint: "",
@@ -2434,12 +2102,12 @@ export const EMPTY_ISSUE_TABLE_GROUPS_RESPONSE: IssueTableGroupsResponse = {
   next_cursor: null,
 };
 
-const IssueTableRowSchema = z.lazy(() => z.object({
+const IssueTableRowSchema = z.object({
   issue: IssueSchema,
   direct_child_count: z.number().default(0),
-}).loose());
+}).loose();
 
-export const IssueTableRowsResponseSchema = z.lazy(() => z.object({
+export const IssueTableRowsResponseSchema = z.object({
   query_fingerprint: z.string(),
   group_key: z.string().nullable().default(null),
   parent_id: z.string().nullable().default(null),
@@ -2447,7 +2115,7 @@ export const IssueTableRowsResponseSchema = z.lazy(() => z.object({
   rows: z.array(IssueTableRowSchema).default([]),
   branch_total: z.number(),
   next_cursor: z.string().nullable().default(null),
-}).loose());
+}).loose();
 
 export const EMPTY_ISSUE_TABLE_ROWS_RESPONSE: IssueTableRowsResponse = {
   query_fingerprint: "",
@@ -2459,22 +2127,22 @@ export const EMPTY_ISSUE_TABLE_ROWS_RESPONSE: IssueTableRowsResponse = {
   next_cursor: null,
 };
 
-const IssueTableFacetValueSchema = z.lazy(() => z.object({
+const IssueTableFacetValueSchema = z.object({
   key: z.string(),
   count: z.number(),
-}).loose());
+}).loose();
 
-const IssueTableFacetSchema = z.lazy(() => z.object({
+const IssueTableFacetSchema = z.object({
   kind: z.enum(["status", "priority", "assignee", "creator", "project", "label", "property", "working_agents"]),
   property_id: z.string().optional(),
   values: z.array(IssueTableFacetValueSchema).default([]),
-}).loose());
+}).loose();
 
-export const IssueTableFacetsResponseSchema = z.lazy(() => z.object({
+export const IssueTableFacetsResponseSchema = z.object({
   query_fingerprint: z.string(),
   total: z.number(),
   facets: z.array(IssueTableFacetSchema).default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_ISSUE_TABLE_FACETS_RESPONSE: IssueTableFacetsResponse = {
   query_fingerprint: "",
@@ -2482,7 +2150,7 @@ export const EMPTY_ISSUE_TABLE_FACETS_RESPONSE: IssueTableFacetsResponse = {
   facets: [],
 };
 
-const SubscriberSchema = z.lazy(() => z.object({
+const SubscriberSchema = z.object({
   issue_id: z.string(),
   user_type: z.string(),
   user_id: z.string(),
@@ -2491,20 +2159,20 @@ const SubscriberSchema = z.lazy(() => z.object({
   // An unknown or malformed tier shows no badge; it must not drop the row,
   // which would read as "not subscribed".
   delivery: z.enum(["all", "key_updates", "delegated"]).optional().catch(undefined),
-}).loose());
+}).loose();
 
-export const SubscribersListSchema = z.lazy(() => z.array(SubscriberSchema));
+export const SubscribersListSchema = z.array(SubscriberSchema);
 
-export const ChildIssuesResponseSchema = z.lazy(() => z.object({
+export const ChildIssuesResponseSchema = z.object({
   issues: z.array(IssueSchema).default([]),
-}).loose());
+}).loose();
 
-export const IssueDuplicatesResponseSchema = z.lazy(() => z.object({
+export const IssueDuplicatesResponseSchema = z.object({
   duplicate_of: IssueSchema.nullable().default(null),
   duplicates: z.array(IssueSchema).default([]),
-}).loose());
+}).loose();
 
-export const ChildIssueProgressResponseSchema = z.lazy(() => z.object({
+export const ChildIssueProgressResponseSchema = z.object({
   progress: z
     .array(
       z
@@ -2516,9 +2184,9 @@ export const ChildIssueProgressResponseSchema = z.lazy(() => z.object({
         .loose(),
     )
     .default([]),
-}).loose());
+}).loose();
 
-export const CloudRuntimeNodeSchema = z.lazy(() => z.object({
+export const CloudRuntimeNodeSchema = z.object({
   id: z.string(),
   owner_id: z.string(),
   instance_id: z.string(),
@@ -2532,9 +2200,9 @@ export const CloudRuntimeNodeSchema = z.lazy(() => z.object({
   metadata: z.record(z.string(), z.unknown()).default({}),
   created_at: z.string(),
   updated_at: z.string(),
-}).loose());
+}).loose();
 
-export const CloudRuntimeNodeListSchema = z.lazy(() => z.array(CloudRuntimeNodeSchema));
+export const CloudRuntimeNodeListSchema = z.array(CloudRuntimeNodeSchema);
 
 export const EMPTY_CLOUD_RUNTIME_NODE_LIST: CloudRuntimeNode[] = [];
 
@@ -2581,13 +2249,9 @@ const CostSplitShape = {
   uncosted_output_tokens: z.number().optional(),
   uncosted_cache_read_tokens: z.number().optional(),
   uncosted_cache_write_tokens: z.number().optional(),
-  // The 1-hour-TTL part of uncosted_cache_write_tokens. Absent (older
-  // backend) means "no split": every uncosted written token prices at the
-  // 5-minute rate, exactly as before the field existed.
-  uncosted_cache_write_1h_tokens: z.number().optional(),
 };
 
-const DashboardUsageDailySchema = z.lazy(() => z.object({
+const DashboardUsageDailySchema = z.object({
   date: z.string().default(""),
   provider: z.string().default(""),
   model: z.string().default(""),
@@ -2597,11 +2261,11 @@ const DashboardUsageDailySchema = z.lazy(() => z.object({
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
   task_count: z.number().default(0),
-}).loose());
+}).loose();
 
-export const DashboardUsageDailyListSchema = z.lazy(() => z.array(DashboardUsageDailySchema));
+export const DashboardUsageDailyListSchema = z.array(DashboardUsageDailySchema);
 
-const DashboardUsageByAgentSchema = z.lazy(() => z.object({
+const DashboardUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
   provider: z.string().default(""),
   model: z.string().default(""),
@@ -2611,33 +2275,45 @@ const DashboardUsageByAgentSchema = z.lazy(() => z.object({
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
   task_count: z.number().default(0),
-}).loose());
+}).loose();
 
-export const DashboardUsageByAgentListSchema = z.lazy(() => z.array(DashboardUsageByAgentSchema));
+export const DashboardUsageByAgentListSchema = z.array(DashboardUsageByAgentSchema);
+
+const DashboardUsageBySquadSchema = DashboardUsageByAgentSchema.extend({
+  squad_id: z.string().default(""),
+}).loose();
+
+export const DashboardUsageBySquadListSchema = z.array(DashboardUsageBySquadSchema);
 
 // `cancelled_count` defaults to 0 so an installed client pointed at a
 // backend that predates it still renders: those rows simply carry no
 // cancelled segment, which is exactly what that backend measured.
-const DashboardAgentRunTimeSchema = z.lazy(() => z.object({
+const DashboardAgentRunTimeSchema = z.object({
   agent_id: z.string().default(""),
   total_seconds: z.number().default(0),
   task_count: z.number().default(0),
   metered_task_count: z.number().optional().catch(undefined),
   failed_count: z.number().default(0),
   cancelled_count: z.number().default(0),
-}).loose());
+}).loose();
 
-export const DashboardAgentRunTimeListSchema = z.lazy(() => z.array(DashboardAgentRunTimeSchema));
+export const DashboardAgentRunTimeListSchema = z.array(DashboardAgentRunTimeSchema);
 
-const DashboardRunTimeDailySchema = z.lazy(() => z.object({
+const DashboardSquadRunTimeSchema = DashboardAgentRunTimeSchema.extend({
+  squad_id: z.string().default(""),
+}).loose();
+
+export const DashboardSquadRunTimeListSchema = z.array(DashboardSquadRunTimeSchema);
+
+const DashboardRunTimeDailySchema = z.object({
   date: z.string().default(""),
   total_seconds: z.number().default(0),
   task_count: z.number().default(0),
   failed_count: z.number().default(0),
   cancelled_count: z.number().default(0),
-}).loose());
+}).loose();
 
-export const DashboardRunTimeDailyListSchema = z.lazy(() => z.array(DashboardRunTimeDailySchema));
+export const DashboardRunTimeDailyListSchema = z.array(DashboardRunTimeDailySchema);
 
 // Failure rollups. `failure_reason` is an open string on purpose — it carries
 // the backend's canonical taxonomy, which grows as new classifier rules land
@@ -2647,30 +2323,38 @@ export const DashboardRunTimeDailyListSchema = z.lazy(() => z.array(DashboardRun
 // string is the succeeded bucket, so `.default("")` is a meaningful default
 // only for a row that already lost its reason — such a row lands in the
 // denominator rather than inventing a failure that never happened.
-const DashboardFailureDailySchema = z.lazy(() => z.object({
+const DashboardFailureDailySchema = z.object({
   date: z.string().default(""),
   failure_reason: z.string().default(""),
   task_count: z.number().default(0),
-}).loose());
+}).loose();
 
-export const DashboardFailureDailyListSchema = z.lazy(() => z.array(DashboardFailureDailySchema));
+export const DashboardFailureDailyListSchema = z.array(DashboardFailureDailySchema);
 
-const DashboardFailureByAgentSchema = z.lazy(() => z.object({
+const DashboardFailureByAgentSchema = z.object({
   agent_id: z.string().default(""),
   failure_reason: z.string().default(""),
   task_count: z.number().default(0),
-}).loose());
+}).loose();
 
-export const DashboardFailureByAgentListSchema = z.lazy(() => z.array(
+export const DashboardFailureByAgentListSchema = z.array(
   DashboardFailureByAgentSchema,
-));
+);
+
+const DashboardFailureBySquadSchema = DashboardFailureByAgentSchema.extend({
+  squad_id: z.string().default(""),
+}).loose();
+
+export const DashboardFailureBySquadListSchema = z.array(
+  DashboardFailureBySquadSchema,
+);
 
 // Runtime usage schemas — the runtime-detail page's four usage endpoints
 // (`/api/runtimes/:id/usage*`). Same leniency rules as the dashboard
 // schemas above: numbers default to 0, strings to "", `.loose()` passes
 // unknown fields.
 
-const RuntimeUsageSchema = z.lazy(() => z.object({
+const RuntimeUsageSchema = z.object({
   runtime_id: z.string().default(""),
   date: z.string().default(""),
   provider: z.string().default(""),
@@ -2680,18 +2364,11 @@ const RuntimeUsageSchema = z.lazy(() => z.object({
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
-}).loose());
+}).loose();
 
-export const RuntimeUsageListSchema = z.lazy(() => z.array(RuntimeUsageSchema));
+export const RuntimeUsageListSchema = z.array(RuntimeUsageSchema);
 
-const RuntimeHourlyActivitySchema = z.lazy(() => z.object({
-  hour: z.number().default(0),
-  count: z.number().default(0),
-}).loose());
-
-export const RuntimeHourlyActivityListSchema = z.lazy(() => z.array(RuntimeHourlyActivitySchema));
-
-const RuntimeUsageByAgentSchema = z.lazy(() => z.object({
+const RuntimeUsageByAgentSchema = z.object({
   agent_id: z.string().default(""),
   provider: z.string().default(""),
   model: z.string().default(""),
@@ -2701,11 +2378,11 @@ const RuntimeUsageByAgentSchema = z.lazy(() => z.object({
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
   task_count: z.number().default(0),
-}).loose());
+}).loose();
 
-export const RuntimeUsageByAgentListSchema = z.lazy(() => z.array(RuntimeUsageByAgentSchema));
+export const RuntimeUsageByAgentListSchema = z.array(RuntimeUsageByAgentSchema);
 
-const RuntimeUsageByHourSchema = z.lazy(() => z.object({
+const RuntimeUsageByHourSchema = z.object({
   hour: z.number().default(0),
   model: z.string().default(""),
   input_tokens: z.number().default(0),
@@ -2714,9 +2391,75 @@ const RuntimeUsageByHourSchema = z.lazy(() => z.object({
   cache_write_tokens: z.number().default(0),
   ...CostSplitShape,
   task_count: z.number().default(0),
-}).loose());
+}).loose();
 
-export const RuntimeUsageByHourListSchema = z.lazy(() => z.array(RuntimeUsageByHourSchema));
+export const RuntimeUsageByHourListSchema = z.array(RuntimeUsageByHourSchema);
+
+// Runtime rate limits (`GET /api/runtimes/:id/rate-limits`). Unknown window
+// kinds and statuses from a newer server degrade to "other" / "" instead of
+// failing the whole response, and a malformed window is dropped on its own.
+const RuntimeRateLimitStatusSchema = z
+  .enum(["allowed", "warning", "rejected", ""])
+  .catch("");
+
+const RuntimeRateLimitWindowSchema = z.object({
+  kind: z
+    .enum(["session", "weekly", "weekly_opus", "weekly_sonnet", "other"])
+    .catch("other"),
+  used_percent: z.number().optional().catch(undefined),
+  window_minutes: z.number().default(0).catch(0),
+  resets_at: z.string().optional().catch(undefined),
+  status: RuntimeRateLimitStatusSchema.default(""),
+}).loose();
+
+const RuntimeRateLimitsSchema = z.object({
+  plan_type: z.string().default("").catch(""),
+  status: RuntimeRateLimitStatusSchema.default(""),
+  windows: z
+    .array(z.unknown())
+    .catch([])
+    .default([])
+    .transform((rows) =>
+      rows.flatMap((row) => {
+        const parsed = RuntimeRateLimitWindowSchema.safeParse(row);
+        return parsed.success ? [parsed.data] : [];
+      }),
+    ),
+  credits: z
+    .object({
+      has_credits: z.boolean().default(false),
+      unlimited: z.boolean().default(false),
+      balance: z.string().default(""),
+    })
+    .loose()
+    .optional()
+    .catch(undefined),
+  observed_at: z.string(),
+}).loose();
+
+export const RuntimeRateLimitsResponseSchema = z.object({
+  rate_limits: RuntimeRateLimitsSchema.nullable().catch(null),
+}).loose();
+
+export const RuntimeUpdateSchema = z.object({
+  id: z.string(),
+  runtime_id: z.string().default(""),
+  // An unknown future status keeps the card neutral and polling.
+  status: z
+    .enum(["pending", "scheduled", "running", "completed", "failed", "timeout", "cancelled", "expired"])
+    .catch("pending"),
+  target_version: z.string().default(""),
+  output: z.string().optional().catch(undefined),
+  error: z.string().optional().catch(undefined),
+  active_tasks: z.number().optional().catch(undefined),
+  cancellable: z.boolean().default(false).catch(false),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose();
+
+export const ActiveRuntimeUpdateResponseSchema = z.object({
+  update: RuntimeUpdateSchema.nullable().catch(null),
+}).loose();
 
 // Agent task responses. The base object stays loose so daemon/runtime fields
 // can drift while task-list consumers still validate the fields they render.
@@ -2725,19 +2468,19 @@ export const RuntimeUsageByHourListSchema = z.lazy(() => z.array(RuntimeUsageByH
 // that human was resolved. Every field is defensive so a departed member, an
 // autopilot run (no originator), or an older backend degrades to a partial
 // object instead of a parse failure.
-const AttributionUserSchema = z.lazy(() => z.object({
+const AttributionUserSchema = z.object({
   id: z.string().default(""),
   name: z.string().optional(),
   email: z.string().optional(),
   avatar_url: z.string().optional(),
-}).loose());
+}).loose();
 
-const TaskEvidenceSchema = z.lazy(() => z.object({
+const TaskEvidenceSchema = z.object({
   kind: z.string().default(""),
   ref_id: z.string().default(""),
-}).loose());
+}).loose();
 
-const TaskAttributionSchema = z.lazy(() => z.object({
+const TaskAttributionSchema = z.object({
   source: z.string().default("unattributed"),
   precise: z.boolean().default(false),
   initiator: AttributionUserSchema.optional(),
@@ -2747,92 +2490,38 @@ const TaskAttributionSchema = z.lazy(() => z.object({
   delegated_from_task_id: z.string().optional(),
   retry_of_task_id: z.string().optional(),
   rerun_of_task_id: z.string().optional(),
-}).loose());
+}).loose();
 
-const TaskCancellationActorSchema = z.lazy(() => z.object({
+const TaskCancellationActorSchema = z.object({
   type: z.string().default(""),
   id: z.string().optional(),
   name: z.string().optional(),
-}).loose());
+}).loose();
 
-const OptionalStringArraySchema = z.lazy(() => z.preprocess(
+const OptionalStringArraySchema = z.preprocess(
   (value) =>
     Array.isArray(value) && value.every((item) => typeof item === "string")
       ? value
       : undefined,
   z.array(z.string()).optional(),
-));
+);
 
 // One (provider, model) slice of a run's token usage. Token counts default to
 // 0 rather than failing the row: a slice missing one counter is still worth
 // pricing on the counters it does have, and the "we have no usage at all" case
 // is carried by the field's absence, not by a zeroed entry.
-const TaskUsageSchema = z.lazy(() => z.object({
+const TaskUsageSchema = z.object({
   provider: z.string().optional(),
   model: z.string().default(""),
   input_tokens: z.number().default(0),
   output_tokens: z.number().default(0),
   cache_read_tokens: z.number().default(0),
   cache_write_tokens: z.number().default(0),
-  // Absent = no TTL split reported; writes price at the 5-minute rate.
-  cache_write_1h_tokens: z.number().optional().catch(undefined),
   cost_usd_ticks: z.number().optional(),
   credits_micros: z.number().optional().catch(undefined),
-}).loose());
+}).loose();
 
-const NullableStringSchema = z.lazy(() => z.string().nullable().catch(null));
-
-const TaskPresetSettingsShape = {
-  model: NullableStringSchema,
-  thinking_level: NullableStringSchema,
-  service_tier: NullableStringSchema,
-  context_args: z.array(z.string()).catch([]),
-};
-
-export const TaskPresetRunSchema = z.lazy(() => z.object({
-  name: z.string(),
-  source: z.string().catch(""),
-  skips: z
-    .array(
-      z.object({
-        level: z.string().catch(""),
-        name: z.string().catch(""),
-        reason: z.string().catch(""),
-      }),
-    )
-    .catch([]),
-  claimed: z.object(TaskPresetSettingsShape).catch({
-    model: null,
-    thinking_level: null,
-    service_tier: null,
-    context_args: [],
-  }),
-  applied: z
-    .object({ ...TaskPresetSettingsShape, reported_at: z.string().catch("") })
-    .nullable()
-    .catch(null),
-}));
-
-// Stale reasons are an open set, so `stale` stays a plain string.
-export const AgentPresetListSchema = z.lazy(() => z.array(
-  z.object({
-    name: z.string(),
-    model: NullableStringSchema,
-    thinking_level: NullableStringSchema,
-    service_tier: NullableStringSchema,
-    context_args: z.array(z.string()).nullable().catch(null),
-    is_default: z.boolean().catch(false),
-    stale: z.string().catch(""),
-    created_at: z.string().catch(""),
-    updated_at: z.string().catch(""),
-  }).loose(),
-));
-
-export const PresetCompletionsSchema = z.lazy(() => z.object({
-  names: z.array(z.string()).catch([]),
-}).loose());
-
-export const AgentTaskSchema = z.lazy(() => z.object({
+export const AgentTaskSchema = z.object({
   wakeup_id: z.string().optional().catch(undefined),
   cancelled_by_comment_change: z.boolean().optional().catch(undefined),
   cancelled_by: TaskCancellationActorSchema.optional().catch(undefined),
@@ -2853,6 +2542,10 @@ export const AgentTaskSchema = z.lazy(() => z.object({
   created_at: z.string().default(""),
   chat_session_id: z.string().optional(),
   autopilot_run_id: z.string().optional(),
+  squad_id: z.string().optional().catch(undefined),
+  is_leader_task: z.boolean().optional().catch(undefined),
+  doc_id: z.string().optional().catch(undefined),
+  doc_thread_id: z.string().optional().catch(undefined),
   parent_task_id: z.string().optional(),
   attempt: z.number().optional(),
   trigger_comment_id: z.string().optional(),
@@ -2878,14 +2571,13 @@ export const AgentTaskSchema = z.lazy(() => z.object({
   // `.catch(undefined)` collapses a bad array to "no usage recorded", which
   // the UI already renders as an em dash.
   usage: z.array(TaskUsageSchema).optional().catch(undefined),
-  preset_run: TaskPresetRunSchema.optional().catch(undefined),
-}).loose());
+}).loose();
 
 // Outcome counts are required: every backend that serves this endpoint
 // reports them, so a response missing them is a contract drift, not an
 // older peer. `parseWithFallback` then degrades the whole list to `[]`
 // rather than letting a partial window masquerade as measured outcomes.
-export const AgentActivityBucketListSchema = z.lazy(() => z.array(z.object({
+export const AgentActivityBucketListSchema = z.array(z.object({
   agent_id: z.string(),
   bucket_at: z.string(),
   task_count: z.number().int().nonnegative(),
@@ -2894,14 +2586,14 @@ export const AgentActivityBucketListSchema = z.lazy(() => z.array(z.object({
   cancelled_count: z.number().int().nonnegative(),
   duration_ms: z.number().nonnegative().optional().catch(undefined),
   duration_count: z.number().int().nonnegative().optional().catch(undefined),
-}).loose()));
+}).loose());
 
-export const AgentTaskListSchema = z.lazy(() => z.array(AgentTaskSchema));
+export const AgentTaskListSchema = z.array(AgentTaskSchema);
 
-export const AgentTaskPageSchema = z.lazy(() => z.object({
+export const AgentTaskPageSchema = z.object({
   tasks: AgentTaskListSchema,
   nextCursor: z.string().min(1).nullable(),
-}));
+});
 
 // One row of a run transcript. `output_truncated` gates a completeness claim
 // the UI makes about a tool's output, so it stays `.optional()` with no
@@ -2912,22 +2604,22 @@ export const AgentTaskPageSchema = z.lazy(() => z.object({
 // `parseWithFallback` hands the viewer an empty transcript. Degrading one
 // field to "unknown" is the correct loss; deleting the run is not. Every other
 // field keeps a default for the same reason.
-export const TaskMessagePayloadSchema = z.lazy(() => z.object({
+export const TaskMessagePayloadSchema = z.object({
   call_id: z.string().optional().catch(undefined),
   task_id: z.string().default(""),
   issue_id: z.string().default(""),
   chat_session_id: z.string().optional(),
   seq: z.number().default(0),
-  type: z.enum(["text", "thinking", "tool_use", "tool_result", "error", "silence_warn", "tool_stalled"]).catch("text"),
+  type: z.enum(["text", "thinking", "tool_use", "tool_result", "error"]).catch("text"),
   tool: z.string().optional(),
   content: z.string().optional(),
   input: z.record(z.string(), z.unknown()).optional(),
   output: z.string().optional(),
   output_truncated: z.boolean().optional().catch(undefined),
   created_at: z.string().optional(),
-}).loose());
+}).loose();
 
-export const TaskMessageListSchema = z.lazy(() => z.array(TaskMessagePayloadSchema).default([]));
+export const TaskMessageListSchema = z.array(TaskMessagePayloadSchema).default([]);
 
 // Context receipt (`GET /api/tasks/:id/context-receipt`, MUL-9013). Lenient:
 // unknown enum values pass through as strings, and a malformed row is dropped
@@ -2966,15 +2658,15 @@ const ContextReceiptSchema = z.object({
     ),
 }).loose();
 
-export const TaskContextReceiptResponseSchema = z.lazy(() => z.object({
+export const TaskContextReceiptResponseSchema = z.object({
   receipt: ContextReceiptSchema.nullable().catch(null),
   recorded_at: z.string().optional(),
-}).loose());
+}).loose();
 
 // Task cancellation (`POST /api/tasks/:id/cancel`) is consumed directly by
 // chat recovery. Its optional message payload must be well-formed before the
 // UI deletes a message from cache or restores text into the input.
-const CancelledChatMessageSchema = z.lazy(() => z.object({
+const CancelledChatMessageSchema = z.object({
   chat_session_id: z.string(),
   message_id: z.string(),
   content: z.string(),
@@ -2982,16 +2674,14 @@ const CancelledChatMessageSchema = z.lazy(() => z.object({
   // Attachments detached from the deleted message so a restored draft can
   // re-bind them on re-send. Absent on servers that predate the field.
   attachments: z.array(AttachmentSchema).optional(),
-}).loose());
+}).loose();
 
-export const CancelTaskResponseSchema = z.lazy(() => AgentTaskSchema.unwrap().extend({
+export const CancelTaskResponseSchema = AgentTaskSchema.extend({
   cancelled_chat_message: CancelledChatMessageSchema.nullish()
     .transform((value) => value ?? undefined),
-}).loose());
+}).loose();
 
-const ChatLastMessageSchema = z.lazy(() => z.object({
-  id: z.string().uuid().optional().catch(undefined),
-  task_id: z.string().uuid().optional().catch(undefined),
+const ChatLastMessageSchema = z.object({
   content: z.string().default(""),
   role: z.enum(["user", "assistant"]).catch("assistant"),
   created_at: z.string().default(""),
@@ -3001,26 +2691,18 @@ const ChatLastMessageSchema = z.lazy(() => z.object({
     "no_response",
     "onboarding_kickoff",
     "onboarding_opening",
-    "continuation_summary",
-    "compact_notice",
-    "decision_reference",
+    "wakeup",
   ]).optional().catch(undefined),
-}).loose());
+}).loose();
 
-const ChatChannelSourceSchema = z.lazy(() => z.object({
+const ChatChannelSourceSchema = z.object({
   channel_type: z.string().default(""),
   installation_id: z.string().default(""),
   route_revision: z.number().default(0),
-}).loose());
+}).loose();
 
-export const ChatSessionSchema: z.ZodType<ChatSession> = z.lazy(() => z.object({
-  forked_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
-  fork_last_message_id: z.string().uuid().nullable().optional().catch(undefined),
-  fork_source_message_id: z.string().uuid().nullable().optional().catch(undefined),
-  fork_message_count: z.number().int().nonnegative().nullable().optional().catch(undefined),
+export const ChatSessionSchema: z.ZodType<ChatSession> = z.object({
   id: z.string(),
-  continued_into_session_id: z.string().uuid().nullable().optional().catch(undefined),
-  continued_from_session_id: z.string().uuid().nullable().optional().catch(undefined),
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
   creator_id: z.string().default(""),
@@ -3031,55 +2713,11 @@ export const ChatSessionSchema: z.ZodType<ChatSession> = z.lazy(() => z.object({
   unread_count: z.number().optional(),
   last_message: ChatLastMessageSchema.nullable().optional().catch(undefined),
   pinned: z.boolean().optional(),
-  preset_name: z.string().nullable().optional().catch(undefined),
   channel_source: ChatChannelSourceSchema.optional().catch(undefined),
-  compacting: z.boolean().optional().catch(undefined),
-  context_tokens: z.number().nullable().optional().catch(undefined),
-  context_window: z.number().nullable().optional().catch(undefined),
   is_current_channel_route: z.boolean().optional().catch(undefined),
-  attention_source: z.enum(["ask", "later", "unseen", "decision"]).nullable().optional().catch(null),
-  attention_since: z.string().nullable().optional().catch(undefined),
-  stale_level: z.enum(["none", "fresh", "yellow", "red"]).optional().catch("none"),
-  next_change_at: z.string().nullable().optional().catch(undefined),
-  attention_unclassified_keys: z.array(z.string()).optional().catch(undefined),
-  attention_keys: z.array(z.string()).optional().catch(undefined),
-  attention_ask_ids: z.array(z.string()).optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
-}).loose());
-
-export const EMPTY_CHAT_ATTENTION_VIEW: ChatAttentionView = {
-  root_id: "",
-  canonical_id: "",
-  stale_level: "none",
-  attention_source: null,
-  attention_since: null,
-  counts: {},
-  keys: [],
-  next_change_at: null,
-};
-
-export const ChatAttentionViewSchema: z.ZodType<ChatAttentionView> = z.lazy(() => z.object({
-  root_id: z.string().default(""),
-  canonical_id: z.string().default(""),
-  stale_level: z.enum(["none", "fresh", "yellow", "red"]).catch("none"),
-  attention_source: z.enum(["ask", "later", "unseen", "decision"]).nullable().catch(null),
-  attention_since: z.string().nullable().catch(null),
-  counts: z.record(z.string(), z.number()).catch({}),
-  keys: z.array(z.string()).catch([]),
-  next_change_at: z.string().nullable().catch(null),
-}).loose());
-
-export const ChatAttentionEnvelopeSchema: z.ZodType<{ attention: ChatAttentionView }> = z.lazy(() => z.object({
-  attention: ChatAttentionViewSchema,
-}).loose());
-
-export const EMPTY_CHAT_ATTENTION_BATCH: ChatAttentionBatch = { batch_id: "", attention: [] };
-
-export const ChatAttentionBatchSchema: z.ZodType<ChatAttentionBatch> = z.lazy(() => z.object({
-  batch_id: z.string().default(""),
-  attention: z.array(ChatAttentionViewSchema).catch([]),
-}).loose());
+}).loose();
 
 export const EMPTY_CHAT_SESSION: ChatSession = {
   id: "",
@@ -3092,113 +2730,11 @@ export const EMPTY_CHAT_SESSION: ChatSession = {
   created_at: "",
   updated_at: "",
 };
-export const ChatSessionListSchema = z.lazy(() => z
+export const ChatSessionListSchema = z
   .array(ChatSessionSchema.catch(EMPTY_CHAT_SESSION))
   .transform((sessions) => sessions.filter((session) => session.id !== ""))
-  .default([]));
+  .default([]);
 export const EMPTY_CHAT_SESSION_LIST: ChatSession[] = [];
-
-export const ChatContinueResponseSchema = z.lazy(() => z.object({
-  session: ChatSessionSchema,
-  previous_session_id: z.string().default(""),
-  url: z.string().default(""),
-}).loose());
-
-export const ChatForkResponseSchema = z.lazy(() => z.object({
-  session: ChatSessionSchema,
-  previous_session_id: z.string().default(""),
-  url: z.string().default(""),
-  message: ChatMessageSchema.nullable().optional().catch(undefined),
-  attachment_ids: z.array(z.string()).optional().catch(undefined),
-}).loose());
-
-export const ChatSessionUpdatedPayloadSchema = z.lazy(() => z.object({
-  chat_session_id: z.string().uuid(),
-  title: z.string().optional().catch(undefined),
-  project_id: z.string().nullable().optional().catch(undefined),
-  pinned: z.boolean().optional().catch(undefined),
-  status: z.enum(["active", "archived"]).optional().catch(undefined),
-  continued_into_session_id: z.string().uuid().optional().catch(undefined),
-  compacting: z.boolean().optional().catch(undefined),
-  updated_at: z.string().optional().catch(undefined),
-}).loose());
-
-const ChatUsageTokensSchema = z.lazy(() => z.object({
-  input: z.number().default(0),
-  output: z.number().default(0),
-  cache_read: z.number().default(0),
-  cache_write: z.number().default(0),
-}).loose());
-
-const EMPTY_CHAT_USAGE_TOKENS = { input: 0, output: 0, cache_read: 0, cache_write: 0 };
-
-const ChatUsageModelSchema = z.lazy(() => z.object({
-  tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
-  cost_usd_ticks: z.number().default(0),
-}).loose());
-
-// cost_usd_ticks (here and per model) is in ticks of 1e-10 USD: 1 USD = 1e10 ticks.
-export const ChatSessionUsageSchema = z.lazy(() => z.object({
-  session_id: z.string(),
-  tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
-  uncosted_tokens: ChatUsageTokensSchema.default(EMPTY_CHAT_USAGE_TOKENS),
-  cost_usd_ticks: z.number().default(0),
-  runs: z.object({
-    by_status: z.record(z.string(), z.number()).default({}),
-    terminal: z.number().default(0),
-    metered: z.number().default(0),
-    unreported: z.number().default(0),
-    total_run_ms: z.number().default(0),
-  }).loose().default({ by_status: {}, terminal: 0, metered: 0, unreported: 0, total_run_ms: 0 }),
-  messages: z.object({
-    by_role: z.record(z.string(), z.number()).default({}),
-  }).loose().default({ by_role: {} }),
-  by_model: z.record(z.string(), ChatUsageModelSchema).default({}),
-  continued_from_session_id: z.string().nullable().default(null),
-  continued_into_session_id: z.string().nullable().default(null),
-  forked_from_session_id: z.string().nullable().default(null),
-}).loose());
-
-export const EMPTY_CHAT_SESSION_USAGE: ChatSessionUsage = {
-  session_id: "",
-  tokens: EMPTY_CHAT_USAGE_TOKENS,
-  uncosted_tokens: EMPTY_CHAT_USAGE_TOKENS,
-  cost_usd_ticks: 0,
-  runs: { by_status: {}, terminal: 0, metered: 0, unreported: 0, total_run_ms: 0 },
-  messages: { by_role: {} },
-  by_model: {},
-  continued_from_session_id: null,
-  continued_into_session_id: null,
-  forked_from_session_id: null,
-};
-
-const ChatWakeupSchema = z.lazy(() => z.object({
-  id: z.string(),
-  agent_id: z.string().default(""),
-  fire_at: z.string(),
-  instruction: z.string().default(""),
-  status: z.string().default("pending"),
-  issue_id: z.string().optional().catch(undefined),
-  event: z.string().optional().catch(undefined),
-  until_status: z.string().optional().catch(undefined),
-  on_timeout: z.string().optional().catch(undefined),
-}).loose());
-
-export const ChatWakeupsSchema = z.lazy(() => z.array(ChatWakeupSchema));
-
-export const EMPTY_CHAT_WAKEUPS: ChatWakeup[] = [];
-
-export const EMPTY_CHAT_CONTINUE_RESPONSE = {
-  session: EMPTY_CHAT_SESSION,
-  previous_session_id: "",
-  url: "",
-};
-
-export const EMPTY_CHAT_FORK_RESPONSE = {
-  session: EMPTY_CHAT_SESSION,
-  previous_session_id: "",
-  url: "",
-};
 
 // Deferred-cancellation draft restores
 // (`GET /api/chat/sessions/{id}/draft-restores`, #5219) feed the composer
@@ -3206,89 +2742,114 @@ export const EMPTY_CHAT_FORK_RESPONSE = {
 // re-send, and `id` is the consume key. A malformed response falls back to
 // an empty list — the durable row stays pending server-side, so nothing is
 // lost by skipping a fetch.
-const ChatDraftRestoreSchema = z.lazy(() => z.object({
+const ChatDraftRestoreSchema = z.object({
   id: z.string(),
   chat_session_id: z.string(),
   task_id: z.string().optional(),
   content: z.string().default(""),
   attachments: z.array(AttachmentSchema).optional(),
   created_at: z.string().optional(),
-}).loose());
+}).loose();
 
-export const ChatDraftRestoresResponseSchema = z.lazy(() => z.object({
+export const ChatDraftRestoresResponseSchema = z.object({
   restores: z.array(ChatDraftRestoreSchema).default([]),
-}).loose());
+}).loose();
 
-const ChatQueuedTaskSchema = z.lazy(() => z.object({
+const ChatQueuedTaskSchema = z.object({
   task_id: z.string(),
   status: z.string().default("queued"),
   created_at: z.string().default(""),
   message_id: z.string().optional(),
   content: z.string().optional(),
-}).loose());
+  wakeup_id: z.string().optional().catch(undefined),
+}).loose();
 
-const ChatQueuedTasksSchema = z.lazy(() => z.array(z.unknown()).transform((tasks) =>
+const ChatQueuedTasksSchema = z.array(z.unknown()).transform((tasks) =>
   tasks.flatMap((task) => {
     const parsed = ChatQueuedTaskSchema.safeParse(task);
     return parsed.success ? [parsed.data] : [];
   }),
-));
+);
 
 // Root fields retain the legacy single-task response shape. Keep additive
 // fields optional so callers can distinguish an older server from an empty
 // queue. A malformed queue row is ignored without discarding a valid head.
-export const ChatPendingTaskSchema: z.ZodType<ChatPendingTask> = z.lazy(() => z.object({
+export const ChatPendingTaskSchema: z.ZodType<ChatPendingTask> = z.object({
   task_id: z.string().optional(),
   status: z.string().optional(),
   created_at: z.string().optional(),
   supports_queue: z.boolean().optional(),
-  // An unknown value reads as unsupported so Steer never fires on a guess.
-  head_supplement: z.enum(["capable", "starting", "unsupported"]).optional().catch("unsupported"),
+  can_supplement: z.boolean().optional().catch(undefined),
   queued_tasks: ChatQueuedTasksSchema.optional(),
-}).loose());
+}).loose();
 
 export const EMPTY_CHAT_PENDING_TASK: ChatPendingTask = {};
 
-export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> = z.lazy(() => z.object({
+// A malformed wakeup row is dropped rather than failing the list: the strip
+// and panel are status surfaces next to the conversation, not its content.
+const ChatWakeupSchema: z.ZodType<ChatWakeup> = z.object({
+  id: z.string().min(1),
+  chat_session_id: z.string().min(1),
+  chat_session_title: z.string().optional().catch(undefined),
+  agent_id: z.string().default(""),
+  title: z.string().default(""),
+  instruction: z.string().default(""),
+  kind: z.enum(["condition", "at", "check"]),
+  condition: z.record(z.string(), z.unknown()).nullish().catch(undefined),
+  interval_seconds: z.number().nullable().default(null),
+  fire_at: z.string().nullable().default(null),
+  next_eval_at: z.string().default(""),
+  expires_at: z.string().default(""),
+  status: z.enum(["active", "fired", "expired", "cancelled", "failed"]),
+  end_reason: z.string().nullable().default(null),
+  ended_at: z.string().nullable().default(null),
+  check_count: z.number().default(0),
+  last_check_note: z.string().nullable().default(null),
+  last_checked_at: z.string().nullable().default(null),
+  last_task_id: z.string().nullable().default(null),
+  last_task_status: z.string().optional().catch(undefined),
+  last_fired_at: z.string().nullable().default(null),
+  last_error: z.string().nullable().default(null),
+  source_message_id: z.string().nullable().default(null),
+  source_task_id: z.string().nullable().default(null),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose();
+
+export const ChatWakeupListSchema = z.array(z.unknown()).transform((rows) =>
+  rows.flatMap((row) => {
+    const parsed = ChatWakeupSchema.safeParse(row);
+    return parsed.success ? [parsed.data] : [];
+  }),
+);
+export const EMPTY_CHAT_WAKEUP_LIST: ChatWakeup[] = [];
+
+export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> = z.object({
+  steered: z.boolean().optional().catch(undefined),
+  message_created_at: z.string().optional().catch(undefined),
+  message_task_id: z.string().optional().catch(undefined),
   message_id: z.string().min(1),
-  // Empty when the send started no task (a decision reply for another agent's ask).
-  task_id: z.string(),
+  task_id: z.string().min(1),
   supports_queue: z.boolean().optional(),
   queued: z.boolean().optional().catch(undefined),
   created_at: z.string().min(1),
   attachment_ids: z.array(z.string()).nullish().transform((ids) => ids ?? undefined),
-}).loose());
+}).loose();
 
 // `started` is the only field the flow branches on, and a malformed response
 // must not be read as "the opening landed" — parseWithFallback's fallback says
 // it did not, which leaves the flow's own retry as the recovery path.
-export const StartMikaOnboardingResponseSchema: z.ZodType<StartMikaOnboardingResponse> = z.lazy(() => z.object({
+export const StartMikaOnboardingResponseSchema: z.ZodType<StartMikaOnboardingResponse> = z.object({
   started: z.boolean(),
   message_id: z.string().nullish().transform((id) => id ?? undefined),
   created_at: z.string().nullish().transform((at) => at ?? undefined),
-}).loose());
-
-export const EMPTY_CHAT_SUPPLEMENT: ChatSupplement = {
-  message_id: "",
-  chat_session_id: "",
-  task_id: "",
-  status: "pending",
-  failure_reason: null,
-  delivered_at: null,
-  acked_after_resend_at: null,
-  resent_task_id: null,
-};
-
-export const ResendChatSupplementResponseSchema: z.ZodType<ResendChatSupplementResponse> = z.lazy(() => z.object({
-  task_id: z.string(),
-  supplement: ChatSupplementSchema,
-}).loose());
+}).loose();
 
 export const PrioritizeQueuedChatTaskResponseSchema:
-  z.ZodType<PrioritizeQueuedChatTaskResponse> = z.lazy(() => z.object({
+  z.ZodType<PrioritizeQueuedChatTaskResponse> = z.object({
     task_id: z.string(),
     active_task_id: z.string().optional(),
-  }).loose());
+  }).loose();
 
 export const EMPTY_PRIORITIZE_QUEUED_CHAT_TASK_RESPONSE:
   PrioritizeQueuedChatTaskResponse = { task_id: "" };
@@ -3312,11 +2873,11 @@ export const EMPTY_CANCEL_TASK_RESPONSE: CancelTaskResponse = {
   created_at: "",
 };
 
-export const AgentBuilderSessionSchema = z.lazy(() => z.object({
+export const AgentBuilderSessionSchema = z.object({
   session_id: z.string(),
   builder_agent_id: z.string(),
   runtime_id: z.string(),
-}).loose());
+}).loose();
 
 export const EMPTY_AGENT_BUILDER_SESSION: AgentBuilderSession = {
   session_id: "",
@@ -3330,7 +2891,7 @@ export const EMPTY_AGENT_BUILDER_SESSION: AgentBuilderSession = {
  * transit) must still restore the fields it does understand rather than
  * discarding the user's work wholesale.
  */
-export const StoredAgentDraftSchema = z.lazy(() => z.object({
+export const StoredAgentDraftSchema = z.object({
   name: z.string().catch(""),
   description: z.string().catch(""),
   instructions: z.string().catch(""),
@@ -3355,14 +2916,14 @@ export const StoredAgentDraftSchema = z.lazy(() => z.object({
   qoder_agent_id: z.string().catch(""),
   applied_message_id: z.string().nullable().catch(null),
   dismissed_message_id: z.string().nullish().catch(null),
-}).loose());
+}).loose();
 
 /**
  * One unfinished creation draft. Every field except the id has a safe empty
  * default: an older server that omits `runtime_id` must degrade to "let the
  * user pick" rather than dropping the whole row and losing the conversation.
  */
-export const AgentBuilderSessionSummarySchema = z.lazy(() => z.object({
+export const AgentBuilderSessionSummarySchema = z.object({
   session_id: z.string(),
   title: z.string().catch(""),
   runtime_id: z.string().catch(""),
@@ -3374,19 +2935,19 @@ export const AgentBuilderSessionSummarySchema = z.lazy(() => z.object({
   // Absent for a conversation the user has never hand-edited; the client then
   // replays the last <agent_draft> block instead of restoring a stored copy.
   draft: StoredAgentDraftSchema.nullish().catch(null),
-}).loose());
+}).loose();
 
-export const AgentBuilderSessionListSchema = z.lazy(() => z.object({
+export const AgentBuilderSessionListSchema = z.object({
   sessions: z.array(AgentBuilderSessionSummarySchema).catch([]),
-}).loose());
+}).loose();
 
 export const EMPTY_AGENT_BUILDER_SESSION_LIST: {
   sessions: AgentBuilderSessionSummary[];
 } = { sessions: [] };
 
-export const AgentBuilderRuntimeSwitchSchema = z.lazy(() => z.object({
+export const AgentBuilderRuntimeSwitchSchema = z.object({
   runtime_id: z.string(),
-}).loose());
+}).loose();
 
 // This endpoint returns 2xx only after the carrier has been bound to the
 // runtime the caller asked for; anything else is a thrown error and no commit.
@@ -3401,13 +2962,13 @@ export const agentBuilderRuntimeSwitchFallback = (
 // Squad list responses carry lightweight membership previews used by hover
 // cards. The preview fields are additive API fields, so older backends default
 // cleanly to no preview instead of breaking newer frontends.
-const SquadMemberPreviewSchema = z.lazy(() => z.object({
+const SquadMemberPreviewSchema = z.object({
   member_type: z.string(),
   member_id: z.string(),
   role: z.string().default(""),
-}).loose());
+}).loose();
 
-export const SquadSchema = z.lazy(() => z.object({
+export const SquadSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   name: z.string(),
@@ -3424,9 +2985,11 @@ export const SquadSchema = z.lazy(() => z.object({
   archived_by: z.string().nullable().optional().transform((v) => v ?? null),
   member_count: z.number().default(0),
   member_preview: z.array(SquadMemberPreviewSchema).default([]),
-}).loose());
+  // Older backends predate handoff modes; they always routed through the leader.
+  handoff_mode: z.enum(["leader", "direct"]).catch("leader").default("leader"),
+}).loose();
 
-export const SquadListSchema = z.lazy(() => z.array(SquadSchema));
+export const SquadListSchema = z.array(SquadSchema);
 export const EMPTY_SQUAD_LIST: Squad[] = [];
 export const EMPTY_SQUAD: Squad = {
   id: "",
@@ -3443,32 +3006,45 @@ export const EMPTY_SQUAD: Squad = {
   archived_by: null,
   member_count: 0,
   member_preview: [],
+  handoff_mode: "leader",
 };
 
 // Squad member status — backs the Squad detail page's Members tab. status
 // is `string | null` (not the narrow `SquadMemberStatusValue` union) so a
 // new server-side status doesn't fail the parse; the UI defaults to a
 // neutral pill for unknown values.
-const SquadActiveIssueBriefSchema = z.lazy(() => z.object({
+const SquadActiveIssueBriefSchema = z.object({
   issue_id: z.string(),
   identifier: z.string(),
   title: z.string(),
   issue_status: z.string(),
-}).loose());
+}).loose();
 
-const SquadMemberStatusSchema = z.lazy(() => z.object({
+const SquadMemberStatusSchema = z.object({
   member_type: z.string(),
   member_id: z.string(),
   status: z.string().nullable().optional().transform((v) => v ?? null),
   active_issues: z.array(SquadActiveIssueBriefSchema).default([]),
   last_active_at: z.string().nullable().optional().transform((v) => v ?? null),
-}).loose());
+}).loose();
 
-export const SquadMemberStatusListResponseSchema = z.lazy(() => z.object({
+export const SquadMemberStatusListResponseSchema = z.object({
   members: z.array(SquadMemberStatusSchema).default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_SQUAD_MEMBER_STATUS_LIST = { members: [] };
+
+export const SquadBriefsResponseSchema = z.object({
+  handoff_mode: z.enum(["leader", "direct"]).catch("leader").default("leader"),
+  briefs: z.array(z.object({
+    member_type: z.string(),
+    member_id: z.string(),
+    is_leader: z.boolean().default(false),
+    brief: z.string().default(""),
+  }).loose()).default([]),
+}).loose();
+
+export const EMPTY_SQUAD_BRIEFS = { handoff_mode: "leader" as const, briefs: [] };
 
 // Structured error body — POST /api/workspaces/:wsId/issues 409 conflict.
 //
@@ -3490,7 +3066,7 @@ export const EMPTY_SQUAD_MEMBER_STATUS_LIST = { members: [] };
 //     out. `.loose()` lets the field pass through unchanged for any other
 //     consumer.
 
-export const DuplicateIssueErrorBodySchema = z.lazy(() => z.object({
+export const DuplicateIssueErrorBodySchema = z.object({
   code: z.literal("active_duplicate_issue"),
   error: z.string().optional(),
   issue: z.object({
@@ -3498,18 +3074,18 @@ export const DuplicateIssueErrorBodySchema = z.lazy(() => z.object({
     identifier: z.string(),
     title: z.string(),
   }).loose(),
-}).loose());
+}).loose();
 
 // A destructive confirmation must fail closed on an incomplete plan. Do not
 // default missing arrays to empty or silently discard malformed entries.
-export const RuntimeAccessRevocationPlanSchema = z.lazy(() => z.object({
+export const RuntimeAccessRevocationPlanSchema = z.object({
   code: z.enum(["runtime_has_nonowner_dependents", "runtime_access_revocation_plan_changed"]),
   nonowner_agents: z.array(z.object({ id: z.string().uuid(), name: z.string() })),
   active_task_ids: z.array(z.string().uuid()),
 }).refine((body) =>
   new Set(body.nonowner_agents.map((agent) => agent.id)).size === body.nonowner_agents.length &&
   new Set(body.active_task_ids).size === body.active_task_ids.length,
-).transform((body) => ({ agents: body.nonowner_agents, activeTaskIds: body.active_task_ids })));
+).transform((body) => ({ agents: body.nonowner_agents, activeTaskIds: body.active_task_ids }));
 
 export interface DuplicateIssueErrorBody {
   code: "active_duplicate_issue";
@@ -3528,7 +3104,22 @@ export interface DuplicateIssueErrorBody {
 // the empty array. `.loose()` lets unknown fields pass through, matching
 // the rule used by every other endpoint here.
 
-const WebhookDeliverySchema = z.lazy(() => z.object({
+const WebhookPayloadConditionFailureSchema = z.object({
+  filter_index: z.number().int().nonnegative(),
+  condition_index: z.number().int().nonnegative(),
+  condition: z.object({
+    path: z.string(),
+    op: z.enum(["equals", "not_equals", "contains", "in", "exists"]),
+    value: z.union([z.string(), z.number(), z.boolean()]).optional(),
+    values: z.array(z.union([z.string(), z.number(), z.boolean()])).optional(),
+    ignore_case: z.boolean().optional(),
+  }).loose(),
+  actual_values: z.array(z.string()),
+  missing: z.boolean(),
+  truncated: z.boolean(),
+}).loose();
+
+const WebhookDeliverySchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   autopilot_id: z.string(),
@@ -3550,6 +3141,7 @@ const WebhookDeliverySchema = z.lazy(() => z.object({
   replayed_from_delivery_id: z.string().nullable(),
   error: z.string().nullable(),
   reason_code: z.string().nullable().default(null),
+  payload_condition_failure: WebhookPayloadConditionFailureSchema.nullish().catch(null),
   replay_idempotency_key: z.string().nullable().default(null),
   received_at: z.string(),
   last_attempt_at: z.string(),
@@ -3559,14 +3151,14 @@ const WebhookDeliverySchema = z.lazy(() => z.object({
   selected_headers: z.record(z.string(), z.unknown()).nullable().optional(),
   raw_body: z.string().nullable().optional(),
   response_body: z.string().nullable().optional(),
-}).loose());
+}).loose();
 
-export const ListWebhookDeliveriesResponseSchema = z.lazy(() => z.object({
+export const ListWebhookDeliveriesResponseSchema = z.object({
   deliveries: z.array(WebhookDeliverySchema).default([]),
   total: z.number().default(0),
-}).loose());
+}).loose();
 
-export const WebhookDeliveryResponseSchema = z.lazy(() => WebhookDeliverySchema).unwrap();
+export const WebhookDeliveryResponseSchema = WebhookDeliverySchema;
 
 export const EMPTY_LIST_WEBHOOK_DELIVERIES_RESPONSE: ListWebhookDeliveriesResponse = {
   deliveries: [],
@@ -3579,7 +3171,7 @@ export const EMPTY_LIST_WEBHOOK_DELIVERIES_RESPONSE: ListWebhookDeliveriesRespon
 // next_run_at / last_run_status) are list-endpoint-only and absent on older
 // servers — optional by contract, the list renders "—" without them.
 
-const AutopilotListItemSchema = z.lazy(() => z.object({
+const AutopilotListItemSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   title: z.string(),
@@ -3604,12 +3196,12 @@ const AutopilotListItemSchema = z.lazy(() => z.object({
   can_write: z.boolean().optional(),
   // Narrower per-caller access-management capability (detail endpoint only).
   can_manage_access: z.boolean().optional(),
-}).loose());
+}).loose();
 
-export const ListAutopilotsResponseSchema = z.lazy(() => z.object({
+export const ListAutopilotsResponseSchema = z.object({
   autopilots: z.array(AutopilotListItemSchema).default([]),
   total: z.number().default(0),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_AUTOPILOTS_RESPONSE = {
   autopilots: [],
@@ -3622,7 +3214,7 @@ export const EMPTY_LIST_AUTOPILOTS_RESPONSE = {
 // classification of a non-success run the UI localizes; older servers omit it.
 // Defaults are conservative: an unreadable run degrades to a non-success status
 // so the UI never shows success it cannot confirm. .loose() tolerates new fields.
-export const AutopilotRunSchema = z.lazy(() => z.object({
+export const AutopilotRunSchema = z.object({
   id: z.string().default(""),
   autopilot_id: z.string().default(""),
   trigger_id: z.string().nullable().default(null),
@@ -3637,9 +3229,9 @@ export const AutopilotRunSchema = z.lazy(() => z.object({
   trigger_payload: z.unknown().default(null),
   result: z.unknown().default(null),
   created_at: z.string().default(""),
-}).loose());
+}).loose();
 
-export const AutopilotQuotaUsageSchema = z.lazy(() => z.object({
+export const AutopilotQuotaUsageSchema = z.object({
   action: z.enum(["off", "observe", "enforce"]).default("off"),
   used: z.number().nullable().default(null),
   reserved: z.number().nullable().default(null),
@@ -3650,7 +3242,7 @@ export const AutopilotQuotaUsageSchema = z.lazy(() => z.object({
   period_end: z.string().nullable().default(null),
   reset_at: z.string().nullable().default(null),
   blocked_counts: z.record(z.string(), z.number().int().nonnegative()).nullable().catch(null).default(null),
-}).loose());
+}).loose();
 
 export const FALLBACK_AUTOPILOT_RUN: AutopilotRun = {
   id: "",
@@ -3672,9 +3264,9 @@ export const FALLBACK_AUTOPILOT_RUN: AutopilotRun = {
 // `.default([])` here — a missing or reshaped field must fail validation so it
 // degrades to the `next_runs: null` fallback ("preview unreadable") instead of
 // masquerading as a valid empty list ("this expression never fires").
-export const CronPreviewResponseSchema = z.lazy(() => z.object({
+export const CronPreviewResponseSchema = z.object({
   next_runs: z.array(z.string()),
-}).loose());
+}).loose();
 
 export const UNREADABLE_CRON_PREVIEW_RESPONSE: CronPreviewResponse = {
   next_runs: null,
@@ -3715,7 +3307,7 @@ export const EMPTY_WEBHOOK_DELIVERY: WebhookDelivery = {
 // the schema defaults to `""` too — keeps the type tight without
 // breaking older backends that don't return the column yet.
 
-export const UserSchema = z.lazy(() => z.object({
+export const UserSchema = z.object({
   id: z.string(),
   name: z.string().default(""),
   email: z.string().default(""),
@@ -3734,7 +3326,7 @@ export const UserSchema = z.lazy(() => z.object({
   star_prompt_starred_at: z.string().nullable().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
-}).loose());
+}).loose();
 
 export const EMPTY_USER: User = {
   id: "",
@@ -3756,14 +3348,14 @@ export const EMPTY_USER: User = {
 // rules so a future field addition can't blank the dot — on malformed JSON
 // parseWithFallback returns the empty list, which simply hides the dot.
 
-export const InboxUnreadSummarySchema = z.lazy(() => z.array(
+export const InboxUnreadSummarySchema = z.array(
   z
     .object({
       workspace_id: z.string(),
       count: z.number(),
     })
     .loose(),
-));
+);
 
 export const EMPTY_INBOX_UNREAD_SUMMARY: InboxWorkspaceUnread[] = [];
 
@@ -3771,25 +3363,23 @@ export const EMPTY_INBOX_UNREAD_SUMMARY: InboxWorkspaceUnread[] = [];
 // unread dot. `outcome` stays a string so a future kind still lights the dot;
 // on malformed JSON parseWithFallback returns the empty list, which hides it.
 
-export const IssueUnreadPageSchema = z.lazy(() =>
-  z
-    .object({
-      items: z.array(
-        z
-          .object({
-            issue_id: z.string(),
-            outcome: z.string(),
-            agent_id: z.string().nullish().transform((v) => v ?? null),
-            task_id: z.string().nullish().transform((v) => v ?? null),
-            comment_id: z.string().nullish().transform((v) => v ?? null),
-            created_at: z.string(),
-          })
-          .loose(),
-      ),
-      next_cursor: z.string().nullish().transform((v) => v ?? null),
-    })
-    .loose(),
-);
+export const IssueUnreadPageSchema = z
+  .object({
+    items: z.array(
+      z
+        .object({
+          issue_id: z.string(),
+          outcome: z.string(),
+          agent_id: z.string().nullish().transform((v) => v ?? null),
+          task_id: z.string().nullish().transform((v) => v ?? null),
+          comment_id: z.string().nullish().transform((v) => v ?? null),
+          created_at: z.string(),
+        })
+        .loose(),
+    ),
+    next_cursor: z.string().nullish().transform((v) => v ?? null),
+  })
+  .loose();
 
 export const EMPTY_ISSUE_UNREAD_PAGE: { items: IssueUnread[]; next_cursor: string | null } = {
   items: [],
@@ -3800,39 +3390,39 @@ export const EMPTY_ISSUE_UNREAD_PAGE: { items: IssueUnread[]; next_cursor: strin
 // `count` is how many rows the write read; the client refreshes its inbox
 // caches only when it is above zero. A body without a usable count cannot say
 // that nothing changed, so the client treats it as unknown and refreshes.
-export const IssueInboxReadSchema = z.lazy(() => z
+export const IssueInboxReadSchema = z
   .object({
     count: z.number().int().nonnegative(),
   })
-  .loose());
+  .loose();
 
 // Deletion returns the number of notifications removed from the selected view.
-export const InboxDeleteSchema = z.lazy(() => z
+export const InboxDeleteSchema = z
   .object({ count: z.number().int().nonnegative() })
-  .loose());
+  .loose();
 
 // The viewer's subscribed issue ids (`/api/issues/subscribed` GET), behind the
 // "subscribed" relation filter on client-filtered surfaces. A non-string entry
 // is dropped; a body without the list has no safe fallback — an empty set
 // would hide every row under the filter — so the client fails the request.
-export const SubscribedIssueIdsSchema = z.lazy(() => z
+export const SubscribedIssueIdsSchema = z
   .object({
     issue_ids: z
       .array(z.unknown())
       .transform((ids) => ids.filter((id): id is string => typeof id === "string" && id.length > 0)),
   })
-  .loose());
+  .loose();
 
 // The squads behind the viewer's "my agents" relation (`/api/squads/involved`
 // GET). Same rules as `SubscribedIssueIdsSchema`: an empty set would hide
 // every squad row under the filter, so a body without the list fails.
-export const InvolvedSquadIdsSchema = z.lazy(() => z
+export const InvolvedSquadIdsSchema = z
   .object({
     squad_ids: z
       .array(z.unknown())
       .transform((ids) => ids.filter((id): id is string => typeof id === "string" && id.length > 0)),
   })
-  .loose());
+  .loose();
 
 // Inbox items (`/api/inbox` and `/api/inbox/archived` GET).
 // Lenient per the usual rules: `severity` / `type` / `recipient_type` stay
@@ -3844,7 +3434,7 @@ export const InvolvedSquadIdsSchema = z.lazy(() => z
 // screening the inbox. Both endpoints share this boundary because they return
 // the same row shape and both feed the status/priority filter UI.
 
-export const InboxItemListSchema = z.lazy(() => z.array(
+export const InboxItemListSchema = z.array(
   z
     .object({
       id: z.string(),
@@ -3854,6 +3444,9 @@ export const InboxItemListSchema = z.lazy(() => z.array(
       type: z.string(),
       severity: z.string(),
       issue_id: z.string().nullish(),
+      // Only picks the link; a bad value falls back to the issue_id link
+      // instead of failing the whole list.
+      issue_identifier: z.string().min(1).nullish().catch(null),
       title: z.string(),
       body: z.string().nullish(),
       issue_status: z.string().nullish(),
@@ -3866,43 +3459,44 @@ export const InboxItemListSchema = z.lazy(() => z.array(
       read: z.boolean(),
       archived: z.boolean(),
       created_at: z.string(),
-      // DM notification records (CHE-1793). A wrong-typed value reads as null
-      // rather than discarding the whole list: these two are additive hints.
-      chat_session_id: z.string().nullish().catch(null),
-      updated_at: z.string().nullish().catch(null),
       snoozed_until: z.string().nullish(),
       snoozed_at: z.string().nullish(),
     })
     .loose(),
-));
+);
 
 // The viewer's snoozed issues (`/api/inbox/snoozed` GET). A malformed body
 // reads as nothing snoozed.
-export const SnoozedInboxListSchema = z.lazy(() => z.array(
+export const SnoozedInboxListSchema = z.array(
   z
     .object({
       issue_id: z.string(),
+      // Older servers omit it; the row then links by issue_id.
+      issue_identifier: z.string().min(1).nullish().catch(null),
+      // Older servers omit them; the row then fetches the issue.
+      issue_title: z.string().nullish().catch(null),
+      issue_status: z.string().min(1).nullish().catch(null),
       item_id: z.string(),
       snoozed_until: z.string(),
       snoozed_at: z.string(),
       updates: z.number().int().nonnegative(),
     })
     .loose(),
-));
+);
 
-export const ArchivedInboxPageSchema = z.lazy(() => z.object({
+export const ArchivedInboxPageSchema = z.object({
   items: InboxItemListSchema,
   next_cursor: z.string().min(1).nullable(),
   has_more: z.boolean(),
 }).refine((page) => page.has_more === (page.next_cursor !== null) &&
   (!page.has_more || page.items.length > 0))
-  .transform((page) => ({ items: page.items, nextCursor: page.next_cursor, hasMore: page.has_more })));
+  .transform((page) => ({ items: page.items, nextCursor: page.next_cursor, hasMore: page.has_more }));
 
-const FacetCountsSchema = z.lazy(() => z.record(z.string(), z.number().int().nonnegative()));
+const FacetCountsSchema = z.record(z.string(), z.number().int().nonnegative());
 
 // The type / project / assignee / label counts arrived later; an older server
 // omits them, so they default to empty rather than failing the whole menu.
-export const ArchivedInboxFacetsSchema = z.lazy(() => z.object({
+export const ArchivedInboxFacetsSchema = z.object({
   statuses: FacetCountsSchema,
   priorities: FacetCountsSchema,
   actors: FacetCountsSchema,
@@ -3916,7 +3510,7 @@ export const ArchivedInboxFacetsSchema = z.lazy(() => z.object({
   actors: facets.actors, types: facets.types ?? {},
   projects: facets.projects ?? {}, assignees: facets.assignees ?? {},
   labels: facets.labels ?? {}, unreadCount: facets.unread_count,
-})));
+}));
 
 export const EMPTY_INBOX_ITEMS: InboxItem[] = [];
 export const EMPTY_SNOOZED_INBOX: SnoozedInboxIssue[] = [];
@@ -3930,12 +3524,12 @@ export const EMPTY_SNOOZED_INBOX: SnoozedInboxIssue[] = [];
 // fallback parseWithFallback uses when the upstream response is malformed
 // or unparseable.
 
-export const BillingBalanceSchema = z.lazy(() => z.object({
+export const BillingBalanceSchema = z.object({
   owner_id: z.string(),
   balance_micro: z.number(),
   balance_credit: z.number(),
   updated_at: z.string(),
-}).loose());
+}).loose();
 
 export const EMPTY_BILLING_BALANCE: BillingBalance = {
   owner_id: "",
@@ -3948,7 +3542,7 @@ export const EMPTY_BILLING_BALANCE: BillingBalance = {
 // enumerates the canonical values but the frontend display tolerates
 // unknown ones gracefully. Strict enums would crash the page on a future
 // addition (e.g. a new `topup` source kind).
-export const BillingTransactionSchema = z.lazy(() => z.object({
+export const BillingTransactionSchema = z.object({
   id: z.string(),
   owner_id: z.string(),
   idempotency_key: z.string().default(""),
@@ -3960,14 +3554,14 @@ export const BillingTransactionSchema = z.lazy(() => z.object({
   description: z.string().default(""),
   metadata: z.record(z.string(), z.unknown()).default({}),
   created_at: z.string(),
-}).loose());
+}).loose();
 
-export const BillingTransactionsPageSchema = z.lazy(() => z.object({
+export const BillingTransactionsPageSchema = z.object({
   items: z.array(BillingTransactionSchema).default([]),
   total: z.number().default(0),
   page: z.number().default(1),
   page_size: z.number().default(20),
-}).loose());
+}).loose();
 
 export const EMPTY_BILLING_TRANSACTIONS_PAGE: BillingTransactionsPage = {
   items: [],
@@ -3976,7 +3570,7 @@ export const EMPTY_BILLING_TRANSACTIONS_PAGE: BillingTransactionsPage = {
   page_size: 20,
 };
 
-export const BillingBatchSchema = z.lazy(() => z.object({
+export const BillingBatchSchema = z.object({
   id: z.string(),
   owner_id: z.string(),
   source_tx_id: z.string().default(""),
@@ -3989,14 +3583,14 @@ export const BillingBatchSchema = z.lazy(() => z.object({
   expires_at: z.string().nullable().optional(),
   created_at: z.string(),
   updated_at: z.string(),
-}).loose());
+}).loose();
 
-export const BillingBatchesPageSchema = z.lazy(() => z.object({
+export const BillingBatchesPageSchema = z.object({
   items: z.array(BillingBatchSchema).default([]),
   total: z.number().default(0),
   page: z.number().default(1),
   page_size: z.number().default(20),
-}).loose());
+}).loose();
 
 export const EMPTY_BILLING_BATCHES_PAGE: BillingBatchesPage = {
   items: [],
@@ -4005,7 +3599,7 @@ export const EMPTY_BILLING_BATCHES_PAGE: BillingBatchesPage = {
   page_size: 20,
 };
 
-export const BillingTopupSchema = z.lazy(() => z.object({
+export const BillingTopupSchema = z.object({
   id: z.string(),
   owner_id: z.string(),
   amount_cents: z.number(),
@@ -4020,14 +3614,14 @@ export const BillingTopupSchema = z.lazy(() => z.object({
   purchase_batch_id: z.string().optional(),
   created_at: z.string(),
   updated_at: z.string(),
-}).loose());
+}).loose();
 
-export const BillingTopupsPageSchema = z.lazy(() => z.object({
+export const BillingTopupsPageSchema = z.object({
   items: z.array(BillingTopupSchema).default([]),
   total: z.number().default(0),
   page: z.number().default(1),
   page_size: z.number().default(20),
-}).loose());
+}).loose();
 
 export const EMPTY_BILLING_TOPUPS_PAGE: BillingTopupsPage = {
   items: [],
@@ -4036,7 +3630,7 @@ export const EMPTY_BILLING_TOPUPS_PAGE: BillingTopupsPage = {
   page_size: 20,
 };
 
-export const BillingPriceTierSchema = z.lazy(() => z.object({
+export const BillingPriceTierSchema = z.object({
   id: z.string(),
   // Cloud doc says display_name falls back to id; tolerate empty too.
   display_name: z.string().default(""),
@@ -4044,17 +3638,17 @@ export const BillingPriceTierSchema = z.lazy(() => z.object({
   credits: z.number(),
   bonus_credits: z.number().optional(),
   bonus_expires_in: z.string().optional(),
-}).loose());
+}).loose();
 
-export const BillingPriceTierListSchema = z.lazy(() => z.array(BillingPriceTierSchema));
+export const BillingPriceTierListSchema = z.array(BillingPriceTierSchema);
 
 export const EMPTY_BILLING_PRICE_TIER_LIST: BillingPriceTier[] = [];
 
-export const CreateBillingCheckoutSessionResponseSchema = z.lazy(() => z.object({
+export const CreateBillingCheckoutSessionResponseSchema = z.object({
   order_id: z.string(),
   session_id: z.string(),
   url: z.string(),
-}).loose());
+}).loose();
 
 export const EMPTY_CREATE_BILLING_CHECKOUT_SESSION_RESPONSE: CreateBillingCheckoutSessionResponse = {
   order_id: "",
@@ -4062,7 +3656,7 @@ export const EMPTY_CREATE_BILLING_CHECKOUT_SESSION_RESPONSE: CreateBillingChecko
   url: "",
 };
 
-export const BillingCheckoutSessionStatusSchema = z.lazy(() => z.object({
+export const BillingCheckoutSessionStatusSchema = z.object({
   order_id: z.string(),
   status: z.string(),
   amount_cents: z.number(),
@@ -4070,7 +3664,7 @@ export const BillingCheckoutSessionStatusSchema = z.lazy(() => z.object({
   bonus_credits: z.number().default(0),
   currency: z.string().default("usd"),
   tier_id: z.string().default(""),
-}).loose());
+}).loose();
 
 export const EMPTY_BILLING_CHECKOUT_SESSION_STATUS: BillingCheckoutSessionStatus = {
   order_id: "",
@@ -4082,9 +3676,9 @@ export const EMPTY_BILLING_CHECKOUT_SESSION_STATUS: BillingCheckoutSessionStatus
   tier_id: "",
 };
 
-export const CreateBillingPortalSessionResponseSchema = z.lazy(() => z.object({
+export const CreateBillingPortalSessionResponseSchema = z.object({
   url: z.string(),
-}).loose());
+}).loose();
 
 export const EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE: CreateBillingPortalSessionResponse = {
   url: "",
@@ -4104,17 +3698,18 @@ export const EMPTY_CREATE_BILLING_PORTAL_SESSION_RESPONSE: CreateBillingPortalSe
 //  3. `plan` and `status` stay open strings. A new plan or Stripe status must
 //     surface as unknown rather than be coerced into a known one.
 
-const WorkspaceSubscriptionIntervalSchema = z.lazy(() => z.enum(["month", "year"]));
+const WorkspaceSubscriptionIntervalSchema = z.enum(["month", "year"]);
+const WorkspaceSubscriptionPaidPlanSchema = z.enum(["pro", "business"]);
 
 // Stripe hosts Checkout and Portal, so those URLs leave the app. `z.string()
 // .url()` is not enough on its own — `new URL("javascript:...")` parses — and
 // the caller hands this value to location.assign, so the scheme is pinned here.
-const StripeHostedURLSchema = z.lazy(() => z.string().url().refine(
+const StripeHostedURLSchema = z.string().url().refine(
   (value) => value.startsWith("https://"),
   { message: "Stripe hosted URL must use HTTPS" },
-));
+);
 
-const WorkspaceEntitlementLimitSchema = z.lazy(() => z
+const WorkspaceEntitlementLimitSchema = z
   .discriminatedUnion("mode", [
     z
       .object({
@@ -4125,13 +3720,13 @@ const WorkspaceEntitlementLimitSchema = z.lazy(() => z
     z.object({ mode: z.literal("unlimited") }).loose(),
   ])
   .transform(
-    (value): WorkspaceSubscriptionEntitlements["limits"]["issueCount"] =>
+    (value): WorkspaceSubscriptionEntitlements["limits"]["autopilotRuns"] =>
       value.mode === "limited"
         ? { mode: "limited", limit: value.limit }
         : { mode: "unlimited", limit: null },
-  ));
+  );
 
-export const WorkspaceSubscriptionEntitlementsSchema = z.lazy(() => z
+export const WorkspaceSubscriptionEntitlementsSchema = z
   .object({
     workspace_id: z.string(),
     plan: z.string(),
@@ -4142,8 +3737,16 @@ export const WorkspaceSubscriptionEntitlementsSchema = z.lazy(() => z
     seats: z.number().int().nonnegative(),
     limits: z
       .object({
-        issue_count: WorkspaceEntitlementLimitSchema,
         autopilot_runs: WorkspaceEntitlementLimitSchema,
+        // Optional: a Cloud without the storage limit omits it, and a
+        // malformed one must not fail the whole snapshot.
+        storage_bytes: WorkspaceEntitlementLimitSchema.nullable().optional().catch(null),
+        // Newer than autopilot_runs: an older Cloud omits it, and a malformed
+        // one only hides its own row.
+        dashboard_history_days: WorkspaceEntitlementLimitSchema.nullable().catch(null).default(null),
+        // Newer still: an older Cloud omits it, and a malformed one only
+        // hides its own row.
+        app_tool_calls: WorkspaceEntitlementLimitSchema.nullable().catch(null).default(null),
       })
       .loose(),
     current_period_end: z.string().nullable().optional(),
@@ -4158,16 +3761,18 @@ export const WorkspaceSubscriptionEntitlementsSchema = z.lazy(() => z
       status: value.status,
       seats: value.seats,
       limits: {
-        issueCount: value.limits.issue_count,
         autopilotRuns: value.limits.autopilot_runs,
+        storageBytes: value.limits.storage_bytes ?? null,
+        dashboardHistoryDays: value.limits.dashboard_history_days,
+        appToolCalls: value.limits.app_tool_calls,
       },
       currentPeriodEnd: value.current_period_end ?? null,
       snapshotExpiresAt: value.snapshot_expires_at ?? null,
       version: value.version,
     }),
-  ));
+  );
 
-export const WorkspaceSubscriptionSummarySchema = z.lazy(() => z
+export const WorkspaceSubscriptionSummarySchema = z
   .object({
     entitlement: WorkspaceSubscriptionEntitlementsSchema,
     billing_interval: WorkspaceSubscriptionIntervalSchema.nullable(),
@@ -4200,7 +3805,56 @@ export const WorkspaceSubscriptionSummarySchema = z.lazy(() => z
       checkout: z.boolean(),
       portal: z.boolean(),
       purchase_seats: z.boolean(),
+      // Absent on a cloud that predates plan switching: no switch is offered.
+      change_plan: z.boolean().optional(),
+      check_plan_change: z.boolean().optional(),
+      // Absent on a cloud that predates add-ons; a malformed value offers none.
+      purchase_autopilot_runs: z.boolean().optional().catch(undefined),
     }).loose(),
+    // Absent on an older cloud, and a malformed value reads as no add-ons:
+    // the limit in the entitlement already includes them.
+    autopilot_addon: z
+      .object({
+        purchased_runs: z.number().int().nonnegative(),
+        period_start: z.string().min(1),
+        period_end: z.string().min(1),
+      })
+      .loose()
+      .nullable()
+      .optional()
+      .catch(null),
+    // Absent on an older cloud, and a malformed value reads as no hold: the
+    // server still refuses the operations a hold blocks.
+    plan_change: z
+      .object({
+        target_plan: z.string().min(1),
+        // An unknown state from a newer cloud is shown as still confirming,
+        // the state that asks the user to wait rather than act.
+        state: z.enum(["confirming", "unresolved"]).catch("confirming"),
+        since: z.string().min(1),
+      })
+      .loose()
+      .nullable()
+      .optional()
+      .catch(null),
+    // Absent on a cloud that predates trials. A malformed value reads as no
+    // trial: the entitlement still carries the plan the workspace has.
+    trial: z
+      .object({
+        plan: z.string().min(1),
+        state: z.enum(["active", "expired", "converted"]),
+        started_at: z.string().min(1),
+        ends_at: z.string().min(1),
+      })
+      .loose()
+      .refine(
+        (value) =>
+          !Number.isNaN(Date.parse(value.started_at)) &&
+          !Number.isNaN(Date.parse(value.ends_at)),
+      )
+      .nullable()
+      .optional()
+      .catch(null),
   })
   .loose()
   .transform(
@@ -4237,9 +3891,35 @@ export const WorkspaceSubscriptionSummarySchema = z.lazy(() => z
         checkout: value.available_actions.checkout,
         portal: value.available_actions.portal,
         purchaseSeats: value.available_actions.purchase_seats,
+        changePlan: value.available_actions.change_plan ?? false,
+        checkPlanChange: value.available_actions.check_plan_change ?? false,
+        purchaseAutopilotRuns:
+          value.available_actions.purchase_autopilot_runs ?? false,
       },
+      autopilotAddon: value.autopilot_addon
+        ? {
+            purchasedRuns: value.autopilot_addon.purchased_runs,
+            periodStart: value.autopilot_addon.period_start,
+            periodEnd: value.autopilot_addon.period_end,
+          }
+        : null,
+      planChange: value.plan_change
+        ? {
+            targetPlan: value.plan_change.target_plan,
+            state: value.plan_change.state,
+            since: value.plan_change.since,
+          }
+        : null,
+      trial: value.trial
+        ? {
+            plan: value.trial.plan,
+            state: value.trial.state,
+            startedAt: value.trial.started_at,
+            endsAt: value.trial.ends_at,
+          }
+        : null,
     }),
-  ));
+  );
 
 const BATCH_ISSUE_OUTCOMES: readonly string[] = [
   "updated",
@@ -4252,7 +3932,7 @@ const BATCH_ISSUE_OUTCOMES: readonly string[] = [
 
 // An outcome this client does not know is not a confirmed write: it reads as
 // skipped, never as success.
-const BatchIssueResultSchema = z.lazy(() => z
+const BatchIssueResultSchema = z
   .object({
     issue_id: z.string().min(1),
     identifier: z.string().optional().catch(undefined),
@@ -4269,81 +3949,26 @@ const BatchIssueResultSchema = z.lazy(() => z
       code: value.code,
       message: value.message,
     }),
-  ));
+  );
 
-const EntryGateFailureSchema = z.lazy(() => z
-  .object({
-    guard: z.string().min(1),
-    mode: z.string().catch(""),
-    fact: z.string().catch(""),
-    fix: z.string().catch(""),
-    member_override: z.boolean().catch(false),
-  })
-  .loose()
-  .transform(
-    (value): EntryGateFailure => ({
-      guard: value.guard,
-      mode: value.mode,
-      fact: value.fact,
-      fix: value.fix,
-      member_override: value.member_override,
-    }),
-  ));
-
-const BatchFailedIssueSchema = z.lazy(() => z
-  .object({
-    id: z.string().min(1),
-    code: z.string(),
-    step: z.string().optional().catch(undefined),
-    failed_guards: z.array(EntryGateFailureSchema).optional().catch(undefined),
-  })
-  .loose()
-  .transform((value): NonNullable<BatchUpdateIssuesResponse["failed"]>[number] => ({
-    id: value.id,
-    code: value.code,
-    ...(value.step !== undefined ? { step: value.step } : {}),
-    ...(value.failed_guards ? { failed_guards: value.failed_guards } : {}),
-  })));
-
-/**
- * `results` is absent on servers that predate per-issue batch results, and
- * `updated_ids` and `failed` on servers that predate partial-write reporting.
- * A malformed `updated_ids` or `failed` is dropped; the count still stands.
- */
-export const BatchUpdateIssuesResponseSchema = z.lazy(() => z
+/** `results` is absent on servers that predate per-issue batch results. */
+export const BatchUpdateIssuesResponseSchema = z
   .object({
     updated: z.number().int().nonnegative(),
-    updated_ids: z.array(z.string()).optional().catch(undefined),
     results: z.array(BatchIssueResultSchema).optional(),
-    failed: z.array(BatchFailedIssueSchema).optional().catch(undefined),
     dry_run: z.boolean().optional().catch(undefined),
   })
   .loose()
   .transform(
     (value): BatchUpdateIssuesResponse => ({
       updated: value.updated,
-      ...(value.updated_ids ? { updated_ids: value.updated_ids } : {}),
       ...(value.results ? { results: value.results } : {}),
-      ...(value.failed ? { failed: value.failed } : {}),
       ...(value.dry_run !== undefined ? { dry_run: value.dry_run } : {}),
     }),
-  ));
+  );
 
 /** A batch response that failed validation: whatever was written is unknown. */
 export const UNCONFIRMED_BATCH_UPDATE: BatchUpdateIssuesResponse = { updated: 0, unconfirmed: true };
-
-export const IssueLimitUsageSchema = z.lazy(() => z
-  .object({
-    used: z.number().int().nonnegative(),
-    limit: z.number().int().positive(),
-  })
-  .loose()
-  .transform(
-    (value): IssueLimitUsage => ({
-      used: value.used,
-      limit: value.limit,
-    }),
-  ));
 
 const WorkspaceSubscriptionPriceSchema = (
   expected: "month" | "year",
@@ -4372,20 +3997,238 @@ const WorkspaceSubscriptionPriceSchema = (
       }),
     );
 
-export const WorkspaceSubscriptionPricesSchema = z.lazy(() => z
+const WorkspaceSubscriptionPlanPricesSchema = z
   .object({
     month: WorkspaceSubscriptionPriceSchema("month"),
     year: WorkspaceSubscriptionPriceSchema("year"),
   })
   .loose()
   .transform(
-    (value): WorkspaceSubscriptionPrices => ({
+    (value): WorkspaceSubscriptionPlanPrices => ({
       month: value.month,
       year: value.year,
     }),
-  ));
+  );
 
-export const CreateWorkspaceSubscriptionCheckoutResponseSchema = z.lazy(() => z
+// The add-on pack is optional and read on its own: a missing or malformed
+// pack price hides the add-on without taking the plan prices down with it.
+const WorkspaceAutopilotAddonPriceSchema = z
+  .object({
+    currency: z.string().regex(/^[a-z]{3}$/),
+    unit_amount: z.number().int().positive(),
+    runs_per_pack: z.number().int().positive(),
+  })
+  .loose()
+  .transform(
+    (value): WorkspaceAutopilotAddonPrice => ({
+      currency: value.currency,
+      unitAmount: value.unit_amount,
+      runsPerPack: value.runs_per_pack,
+    }),
+  );
+
+// Every paid plan must be priced: a response missing one plan reads as "prices
+// unavailable" as a whole rather than offering one plan without the other.
+// A day count from a newer or malformed Cloud reads as unknown, never as a
+// number: the plan labels it feeds are hints, and a wrong one would point a
+// user at the wrong plan.
+const PlanDaysSchema = z.number().int().positive().nullable().catch(null).default(null);
+
+const WorkspacePlanLimitSchema = z
+  .object({ dashboard_history_days: PlanDaysSchema })
+  .loose()
+  .transform((value) => ({ dashboardHistoryDays: value.dashboard_history_days }));
+
+// Plan limits are optional: an older Cloud does not send them, and a malformed
+// block reads as absent rather than failing the prices themselves.
+const WorkspacePlanLimitsSchema = z
+  .object({
+    free: WorkspacePlanLimitSchema,
+    pro: WorkspacePlanLimitSchema,
+    business: WorkspacePlanLimitSchema,
+  })
+  .loose()
+  .transform(
+    (value): WorkspacePlanLimits => ({
+      free: value.free,
+      pro: value.pro,
+      business: value.business,
+    }),
+  )
+  .nullable()
+  .catch(null)
+  .default(null);
+
+export const WorkspaceSubscriptionPricesSchema = z
+  .object({
+    pro: WorkspaceSubscriptionPlanPricesSchema,
+    business: WorkspaceSubscriptionPlanPricesSchema,
+    autopilot_addon: WorkspaceAutopilotAddonPriceSchema.nullable()
+      .optional()
+      .catch(null),
+    plan_limits: WorkspacePlanLimitsSchema,
+  })
+  .loose()
+  .transform(
+    (value): WorkspaceSubscriptionPrices => ({
+      pro: value.pro,
+      business: value.business,
+      autopilotAddon: value.autopilot_addon ?? null,
+      planLimits: value.plan_limits,
+    }),
+  );
+
+export const CreateWorkspaceAutopilotAddonCheckoutResponseSchema = z
+  .object({
+    session_id: z.string().min(1),
+    url: StripeHostedURLSchema,
+  })
+  .loose()
+  .transform(
+    (value): CreateWorkspaceAutopilotAddonCheckoutResponse => ({
+      sessionId: value.session_id,
+      url: value.url,
+    }),
+  );
+
+// A session status this client does not know reads as open: the page keeps
+// waiting for Stripe instead of claiming success or failure.
+export const WorkspaceAutopilotAddonCheckoutSchema = z
+  .object({
+    session_id: z.string().min(1),
+    status: z.enum(["paid", "open", "unpaid", "expired"]).catch("open"),
+    packs: z.number().int().positive(),
+    runs: z.number().int().positive(),
+    currency: z.string().regex(/^[a-z]{3}$/),
+    amount: z.number().int().nonnegative(),
+  })
+  .loose()
+  .transform(
+    (value): WorkspaceAutopilotAddonCheckout => ({
+      sessionId: value.session_id,
+      status: value.status,
+      packs: value.packs,
+      runs: value.runs,
+      currency: value.currency,
+      amount: value.amount,
+    }),
+  );
+
+// An unknown state from a newer server reads as available: the server still
+// enforces on write, so the worst case is an upgrade prompt after the attempt
+// instead of before it. A malformed entry is dropped the same way.
+const WorkspaceFeatureStateSchema = z
+  .object({ state: z.enum(["available", "locked"]).catch("available") })
+  .loose()
+  .transform((value): WorkspaceFeatureState => value.state)
+  .catch("available" as const);
+
+// A limit that is missing (an older server) or malformed reads as none: the
+// server still cuts every dashboard response to the enforced range.
+const WorkspaceFeatureLimitsSchema = z
+  .object({ dashboard_history_days: PlanDaysSchema })
+  .loose()
+  .transform((value) => ({ dashboardHistoryDays: value.dashboard_history_days }))
+  .catch({ dashboardHistoryDays: null })
+  .default({ dashboardHistoryDays: null });
+
+export const WorkspaceFeaturesSchema = z
+  .object({
+    features: z.record(z.string(), WorkspaceFeatureStateSchema).catch({}),
+    limits: WorkspaceFeatureLimitsSchema,
+  })
+  .loose()
+  .transform(
+    (value): WorkspaceFeatures => ({
+      features: value.features as WorkspaceFeatures["features"],
+      limits: value.limits,
+    }),
+  );
+
+// A limit that cannot be read, or an action from a newer server, reads as off:
+// the server still checks every admission, so the worst case is a refusal
+// shown after the attempt instead of before it.
+export const MemberLimitSchema = z
+  .object({
+    action: z.enum(["off", "observe", "enforce"]).catch("off"),
+    limit: z.number().int().nonnegative().nullable().catch(null).default(null),
+    members: z.number().int().nonnegative().nullable().catch(null).default(null),
+    pending_invitations: z.number().int().nonnegative().nullable().catch(null).default(null),
+  })
+  .loose()
+  .transform(
+    (value): MemberLimit =>
+      value.action === "off" || value.limit === null
+        ? { action: "off", limit: null, members: null, pendingInvitations: null }
+        : {
+            action: value.action,
+            limit: value.limit,
+            members: value.members ?? 0,
+            pendingInvitations: value.pending_invitations ?? 0,
+          },
+  );
+
+// Storage usage that cannot be read, or an action from a newer server, reads
+// as off: the server still checks every upload.
+export const StorageUsageSchema = z
+  .object({
+    action: z.enum(["off", "observe", "enforce"]).catch("off"),
+    used_bytes: z.number().int().nonnegative().nullable().catch(null).default(null),
+    limit_bytes: z.number().int().nonnegative().nullable().catch(null).default(null),
+    reached: z.boolean().nullable().catch(null).default(null),
+  })
+  .loose()
+  .transform(
+    (value): StorageUsage =>
+      value.action === "off" || value.limit_bytes === null
+        ? { action: "off", usedBytes: null, limitBytes: null, reached: null }
+        : {
+            action: value.action,
+            // Missing when the server could not read usage in time.
+            usedBytes: value.used_bytes,
+            limitBytes: value.limit_bytes,
+            reached:
+              value.action === "enforce" && value.used_bytes !== null ? (value.reached ?? false) : null,
+          },
+  );
+
+// App call usage that cannot be read, or an action from a newer server, reads
+// as off: the gateway still checks every call. A malformed breakdown only
+// drops the breakdown.
+export const AppCallUsageSchema = z
+  .object({
+    action: z.enum(["off", "observe", "enforce"]).catch("off"),
+    used: z.number().int().nonnegative().nullable().catch(null).default(null),
+    limit: z.number().int().nonnegative().nullable().catch(null).default(null),
+    reached: z.boolean().nullable().catch(null).default(null),
+    reset_at: z.string().nullable().catch(null).default(null),
+    members: z
+      .array(
+        z.object({
+          user_id: z.string().nullable().catch(null).default(null),
+          calls: z.number().int().nonnegative(),
+        }),
+      )
+      .nullable()
+      .catch(null)
+      .default(null),
+  })
+  .loose()
+  .transform(
+    (value): AppCallUsage =>
+      value.action === "off" || value.limit === null || value.used === null
+        ? { action: "off", used: null, limit: null, reached: null, resetAt: null, members: [] }
+        : {
+            action: value.action,
+            used: value.used,
+            limit: value.limit,
+            reached: value.action === "enforce" ? (value.reached ?? value.used >= value.limit) : null,
+            resetAt: value.reset_at,
+            members: (value.members ?? []).map((m) => ({ userId: m.user_id, calls: m.calls })),
+          },
+  );
+
+export const CreateWorkspaceSubscriptionCheckoutResponseSchema = z
   .object({
     request_id: z.string(),
     session_id: z.string(),
@@ -4398,9 +4241,9 @@ export const CreateWorkspaceSubscriptionCheckoutResponseSchema = z.lazy(() => z
       sessionId: value.session_id,
       url: value.url,
     }),
-  ));
+  );
 
-export const WorkspaceSubscriptionSeatReconcileResultSchema = z.lazy(() => z
+export const WorkspaceSubscriptionSeatReconcileResultSchema = z
   .object({
     workspace_id: z.string(),
     action: z.string(),
@@ -4413,9 +4256,9 @@ export const WorkspaceSubscriptionSeatReconcileResultSchema = z.lazy(() => z
       action: value.action,
       version: value.version,
     }),
-  ));
+  );
 
-export const WorkspaceSeatPurchasePreviewSchema = z.lazy(() => z
+export const WorkspaceSeatPurchasePreviewSchema = z
   .object({
     current_seats: z.number().int().positive(),
     additional_seats: z.number().int().positive(),
@@ -4438,9 +4281,9 @@ export const WorkspaceSeatPurchasePreviewSchema = z.lazy(() => z
       nextInvoiceAmount: value.next_invoice_amount,
       quotedAt: value.quoted_at,
     }),
-  ));
+  );
 
-export const PurchaseWorkspaceSeatsResponseSchema = z.lazy(() => z
+export const PurchaseWorkspaceSeatsResponseSchema = z
   .object({
     request_id: z.string(),
     current_seats: z.number().int().positive(),
@@ -4463,9 +4306,74 @@ export const PurchaseWorkspaceSeatsResponseSchema = z.lazy(() => z
       nextInvoiceAmount: value.next_invoice_amount,
       status: value.status,
     }),
-  ));
+  );
 
-export const CreateWorkspaceSubscriptionPortalResponseSchema = z.lazy(() => z
+export const WorkspacePlanChangePreviewSchema = z
+  .object({
+    current_plan: WorkspaceSubscriptionPaidPlanSchema,
+    target_plan: WorkspaceSubscriptionPaidPlanSchema,
+    interval: WorkspaceSubscriptionIntervalSchema,
+    seats: z.number().int().positive(),
+    subscription_version: z.number().int().positive(),
+    currency: z.string().regex(/^[a-z]{3}$/),
+    // Negative for a downgrade: the unused difference is a credit.
+    proration_amount: z.number().int(),
+    next_invoice_amount: z.number().int().nonnegative(),
+    invoice_now: z.boolean(),
+    quoted_at: z.string().min(1),
+    // Absent on a cloud that predates add-ons.
+    autopilot_runs_limit_after: z
+      .number()
+      .int()
+      .nonnegative()
+      .nullable()
+      .optional()
+      .catch(null),
+  })
+  .loose()
+  .refine((value) => value.current_plan !== value.target_plan, {
+    message: "plan change preview must name two different plans",
+  })
+  .transform(
+    (value): WorkspacePlanChangePreview => ({
+      currentPlan: value.current_plan,
+      targetPlan: value.target_plan,
+      interval: value.interval,
+      seats: value.seats,
+      subscriptionVersion: value.subscription_version,
+      currency: value.currency,
+      prorationAmount: value.proration_amount,
+      nextInvoiceAmount: value.next_invoice_amount,
+      invoiceNow: value.invoice_now,
+      quotedAt: value.quoted_at,
+      autopilotRunsLimitAfter: value.autopilot_runs_limit_after ?? null,
+    }),
+  );
+
+export const ChangeWorkspacePlanResponseSchema = z
+  .object({
+    plan: WorkspaceSubscriptionPaidPlanSchema,
+    previous_plan: WorkspaceSubscriptionPaidPlanSchema,
+    interval: WorkspaceSubscriptionIntervalSchema,
+    seats: z.number().int().positive(),
+    currency: z.string().regex(/^[a-z]{3}$/),
+    proration_amount: z.number().int(),
+    invoice_now: z.boolean(),
+  })
+  .loose()
+  .transform(
+    (value): ChangeWorkspacePlanResponse => ({
+      plan: value.plan,
+      previousPlan: value.previous_plan,
+      interval: value.interval,
+      seats: value.seats,
+      currency: value.currency,
+      prorationAmount: value.proration_amount,
+      invoiceNow: value.invoice_now,
+    }),
+  );
+
+export const CreateWorkspaceSubscriptionPortalResponseSchema = z
   .object({
     url: StripeHostedURLSchema,
   })
@@ -4474,7 +4382,7 @@ export const CreateWorkspaceSubscriptionPortalResponseSchema = z.lazy(() => z
     (value): CreateWorkspaceSubscriptionPortalResponse => ({
       url: value.url,
     }),
-  ));
+  );
 
 // Runtime model discovery (`POST /api/runtimes/:id/models`,
 // `GET /api/runtimes/:id/models/:requestId`). Both endpoints return the same
@@ -4492,27 +4400,27 @@ export const CreateWorkspaceSubscriptionPortalResponseSchema = z.lazy(() => z
 // `cached` / `cached_at` are additive markers for a snapshot served from the
 // server-side catalog cache (MUL-5444); an older backend omits them.
 
-const RuntimeModelThinkingLevelSchema = z.lazy(() => z.object({
+const RuntimeModelThinkingLevelSchema = z.object({
   value: z.string(),
   label: z.string().default(""),
   description: z.string().optional(),
-}).loose());
+}).loose();
 
-const RuntimeModelThinkingSchema = z.lazy(() => z.object({
+const RuntimeModelThinkingSchema = z.object({
   supported_levels: z.array(RuntimeModelThinkingLevelSchema).default([]),
   default_level: z.string().optional(),
-}).loose());
+}).loose();
 
-const RuntimeModelServiceTierSchema = z.lazy(() => z.object({
+const RuntimeModelServiceTierSchema = z.object({
   id: z.string(),
   name: z.string().default(""),
   description: z.string().optional(),
-}).loose());
+}).loose();
 
 // A model entry with no `id` is unselectable — `onChange(m.id)` would persist
 // an empty model — so `id` is required and a malformed entry drops the whole
 // response to the fallback rather than rendering a dead row.
-const RuntimeModelSchema = z.lazy(() => z.object({
+const RuntimeModelSchema = z.object({
   id: z.string(),
   label: z.string().default(""),
   provider: z.string().optional(),
@@ -4521,19 +4429,19 @@ const RuntimeModelSchema = z.lazy(() => z.object({
     .transform((v) => v ?? undefined),
   service_tiers: z.array(RuntimeModelServiceTierSchema).optional(),
   supports_explicit_standard_service_tier: z.boolean().optional(),
-}).loose());
+}).loose();
 
 // A row the runtime named but will not run (MUL-6961). Parsed from its own
 // top-level list, never from `models`, so nothing here can become a selectable
 // value. `id` is required for the same reason it is on RuntimeModelSchema — a
 // row without one cannot even be keyed in a list.
-const RuntimeUnavailableModelSchema = z.lazy(() => z.object({
+const RuntimeUnavailableModelSchema = z.object({
   id: z.string(),
   label: z.string().default(""),
   reason: z.string().optional(),
-}).loose());
+}).loose();
 
-export const RuntimeModelListRequestSchema = z.lazy(() => z.object({
+export const RuntimeModelListRequestSchema = z.object({
   id: z.string().default(""),
   runtime_id: z.string().default(""),
   status: z.string(),
@@ -4547,7 +4455,7 @@ export const RuntimeModelListRequestSchema = z.lazy(() => z.object({
   updated_at: z.string().default(""),
   cached: z.boolean().optional(),
   cached_at: z.string().optional(),
-}).loose());
+}).loose();
 
 // Fallback for an unparseable model-discovery response. `failed` is the only
 // honest choice: `completed` would fabricate an empty catalog (and silently
@@ -4565,39 +4473,7 @@ export const MALFORMED_RUNTIME_MODEL_LIST_REQUEST: RuntimeModelListRequest = {
   updated_at: "",
 };
 
-const RuntimeUpdateProgressSchema = z.object({
-  phase: z.string(),
-  bytes_done: z.number(),
-  bytes_total: z.number(),
-});
-
-export const RuntimeUpdateSchema = z.lazy(() => z.object({
-  id: z.string().default(""),
-  runtime_id: z.string().default(""),
-  status: z.string(),
-  target_version: z.string().default(""),
-  output: z.string().optional(),
-  error: z.string().optional(),
-  // Progress is cosmetic: a malformed value drops to absent rather than
-  // failing the whole poll.
-  progress: RuntimeUpdateProgressSchema.optional().catch(undefined),
-  created_at: z.string().default(""),
-  updated_at: z.string().default(""),
-}).loose());
-
-// Fallback for an unparseable update response: `failed` ends the poll with an
-// explicit error rather than spinning until the client-side timeout.
-export const MALFORMED_RUNTIME_UPDATE: RuntimeUpdate = {
-  id: "",
-  runtime_id: "",
-  status: "failed",
-  target_version: "",
-  error: "invalid update response",
-  created_at: "",
-  updated_at: "",
-};
-
-export const DingTalkInstallationSchema = z.lazy(() => z.object({
+export const DingTalkInstallationSchema = z.object({
   id: z.string(),
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
@@ -4608,7 +4484,7 @@ export const DingTalkInstallationSchema = z.lazy(() => z.object({
   updated_at: z.string().default(""),
   agent_available: z.boolean().optional(),
   bound_dingtalk_user_ids: z.array(z.string()).catch([]).default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_DINGTALK_INSTALLATION: DingTalkInstallation = {
   id: "",
@@ -4622,50 +4498,50 @@ export const EMPTY_DINGTALK_INSTALLATION: DingTalkInstallation = {
   bound_dingtalk_user_ids: [],
 };
 
-export const ListDingTalkInstallationsResponseSchema = z.lazy(() => z.object({
+export const ListDingTalkInstallationsResponseSchema = z.object({
   installations: z.array(DingTalkInstallationSchema).default([]),
   configured: z.boolean().default(false),
   install_supported: z.boolean().optional(),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_DINGTALK_INSTALLATIONS_RESPONSE: ListDingTalkInstallationsResponse = {
   installations: [],
   configured: false,
 };
 
-export const DingTalkGroupBotSchema = z.lazy(() => z.object({
+export const DingTalkGroupBotSchema = z.object({
   installation_id: z.string().default(""),
   agent_id: z.string().default(""),
   bot_name: z.string().default(""),
   bot_identity_issue: z.string().default(""),
   last_active_at: z.string().optional(),
   mention_count: z.number().int().nonnegative().optional(),
-}).loose());
+}).loose();
 
-export const DingTalkGroupSchema = z.lazy(() => z.object({
+export const DingTalkGroupSchema = z.object({
   conversation_id: z.string(),
   conversation_title: z.string().default(""),
   bots: z.array(DingTalkGroupBotSchema).catch([]).default([]),
-}).loose());
+}).loose();
 
-export const ListDingTalkGroupsResponseSchema = z.lazy(() => z.object({
+export const ListDingTalkGroupsResponseSchema = z.object({
   groups: z.array(DingTalkGroupSchema).default([]),
   group_discovery_supported: z.boolean().default(false),
   inactive_group_counts: z.record(z.string(), z.number().int().nonnegative()).optional(),
   bot_identities: z.record(z.string(), DingTalkGroupBotSchema).optional(),
   next_offset: z.number().int().nonnegative().optional(),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_DINGTALK_GROUPS_RESPONSE: ListDingTalkGroupsResponse = {
   groups: [],
   group_discovery_supported: false,
 };
 
-export const RedeemDingTalkBindingTokenResponseSchema = z.lazy(() => z.object({
+export const RedeemDingTalkBindingTokenResponseSchema = z.object({
   workspace_id: z.string().default(""),
   installation_id: z.string().default(""),
   dingtalk_user_id: z.string().default(""),
-}).loose());
+}).loose();
 
 export const EMPTY_REDEEM_DINGTALK_BINDING_TOKEN_RESPONSE: RedeemDingTalkBindingTokenResponse = {
   workspace_id: "",
@@ -4680,7 +4556,7 @@ export const EMPTY_REDEEM_DINGTALK_BINDING_TOKEN_RESPONSE: RedeemDingTalkBinding
 // state rather than a Connect dialog whose submit is guaranteed to fail), and a
 // missing `status` defaults to "revoked" rather than "active" so a broken read
 // never shows a bot as connected when it may not be.
-export const WecomInstallationSchema = z.lazy(() => z.object({
+export const WecomInstallationSchema = z.object({
   id: z.string(),
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
@@ -4688,7 +4564,7 @@ export const WecomInstallationSchema = z.lazy(() => z.object({
   bot_name: z.string().optional(),
   installer_user_id: z.string().default(""),
   status: z.string().default("revoked"),
-}).loose());
+}).loose();
 
 export const EMPTY_WECOM_INSTALLATION: WecomInstallation = {
   id: "",
@@ -4699,7 +4575,7 @@ export const EMPTY_WECOM_INSTALLATION: WecomInstallation = {
   status: "revoked",
 };
 
-export const ListWecomInstallationsResponseSchema = z.lazy(() => z.object({
+export const ListWecomInstallationsResponseSchema = z.object({
   installations: z.array(WecomInstallationSchema).default([]),
   configured: z.boolean().default(false),
   install_supported: z.boolean().optional(),
@@ -4707,18 +4583,18 @@ export const ListWecomInstallationsResponseSchema = z.lazy(() => z.object({
   // declared and validated here rather than left to pass through the loose
   // object unchecked.
   scan_install_supported: z.boolean().optional(),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_WECOM_INSTALLATIONS_RESPONSE: ListWecomInstallationsResponse = {
   installations: [],
   configured: false,
 };
 
-export const BeginWecomInstallResponseSchema = z.lazy(() => z.object({
+export const BeginWecomInstallResponseSchema = z.object({
   session_id: z.string(),
   status: z.string().default("error"),
   poll_interval_seconds: z.number().optional().default(1),
-}).loose());
+}).loose();
 
 // A malformed begin response degrades to a terminal error rather than a session
 // the client would poll forever with an empty id.
@@ -4728,14 +4604,14 @@ export const MALFORMED_BEGIN_WECOM_INSTALL_RESPONSE: BeginWecomInstallResponse =
   poll_interval_seconds: 1,
 };
 
-export const WecomInstallStatusResponseSchema = z.lazy(() => z.object({
+export const WecomInstallStatusResponseSchema = z.object({
   status: z.string().default("error"),
   qr_code_url: z.string().optional(),
   expires_in_seconds: z.number().optional(),
   poll_interval_seconds: z.number().optional().default(2),
   installation_id: z.string().optional(),
   error_reason: z.string().optional(),
-}).loose());
+}).loose();
 
 // Same reasoning: an unparseable status stops the poll loop instead of leaving
 // the dialog spinning on a response nobody can read.
@@ -4745,11 +4621,11 @@ export const MALFORMED_WECOM_INSTALL_STATUS_RESPONSE: WecomInstallStatusResponse
   error_reason: "internal_error",
 };
 
-export const RedeemWecomBindingTokenResponseSchema = z.lazy(() => z.object({
+export const RedeemWecomBindingTokenResponseSchema = z.object({
   workspace_id: z.string().default(""),
   installation_id: z.string().default(""),
   wecom_user_id: z.string().default(""),
-}).loose());
+}).loose();
 
 export const EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE: RedeemWecomBindingTokenResponse = {
   workspace_id: "",
@@ -4757,7 +4633,7 @@ export const EMPTY_REDEEM_WECOM_BINDING_TOKEN_RESPONSE: RedeemWecomBindingTokenR
   wecom_user_id: "",
 };
 
-export const TelegramInstallationSchema = z.lazy(() => z.object({
+export const TelegramInstallationSchema = z.object({
   id: z.string(),
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
@@ -4768,7 +4644,7 @@ export const TelegramInstallationSchema = z.lazy(() => z.object({
   installed_at: z.string().default(""),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
-}).loose());
+}).loose();
 
 export const EMPTY_TELEGRAM_INSTALLATION: TelegramInstallation = {
   id: "",
@@ -4783,22 +4659,22 @@ export const EMPTY_TELEGRAM_INSTALLATION: TelegramInstallation = {
   updated_at: "",
 };
 
-export const ListTelegramInstallationsResponseSchema = z.lazy(() => z.object({
+export const ListTelegramInstallationsResponseSchema = z.object({
   installations: z.array(TelegramInstallationSchema).default([]),
   configured: z.boolean().default(false),
   install_supported: z.boolean().optional(),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_TELEGRAM_INSTALLATIONS_RESPONSE: ListTelegramInstallationsResponse = {
   installations: [],
   configured: false,
 };
 
-export const RedeemTelegramBindingTokenResponseSchema = z.lazy(() => z.object({
+export const RedeemTelegramBindingTokenResponseSchema = z.object({
   workspace_id: z.string().default(""),
   installation_id: z.string().default(""),
   telegram_user_id: z.string().default(""),
-}).loose());
+}).loose();
 
 export const EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE: RedeemTelegramBindingTokenResponse = {
   workspace_id: "",
@@ -4809,19 +4685,19 @@ export const EMPTY_REDEEM_TELEGRAM_BINDING_TOKEN_RESPONSE: RedeemTelegramBinding
 // Skills. Introduced for `POST /api/skills/:id/refresh` (update a skill from
 // its imported source). `config` stays a loose record: the server owns the
 // `origin` provenance shape and may extend it freely.
-export const SkillFileSchema = z.lazy(() => z.object({
+export const SkillFileSchema = z.object({
   id: z.string(),
   skill_id: z.string(),
   path: z.string(),
   content: z.string().optional().default(""),
   created_at: z.string().optional().default(""),
   updated_at: z.string().optional().default(""),
-}).loose());
+}).loose();
 
 // Workspace list shape (`GET /api/skills`). Intentionally no `content` /
 // `files`: those belong on the detail endpoint. Defaulting them here used
 // to invent empty bodies on every list row (GH #2174).
-export const SkillSummarySchema = z.lazy(() => z.object({
+export const SkillSummarySchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   name: z.string(),
@@ -4835,7 +4711,7 @@ export const SkillSummarySchema = z.lazy(() => z.object({
   // whole skill (or the list it lives in). Older backends omit it; the
   // filter treats an empty array as "no labels".
   labels: z.array(LabelSchema).catch([]),
-}).loose());
+}).loose();
 
 export const EMPTY_SKILL_SUMMARY: SkillSummary = {
   id: "",
@@ -4849,10 +4725,10 @@ export const EMPTY_SKILL_SUMMARY: SkillSummary = {
   labels: [],
 };
 
-export const SkillSchema = z.lazy(() => SkillSummarySchema.unwrap().extend({
+export const SkillSchema = SkillSummarySchema.extend({
   content: z.string().optional().default(""),
   files: z.array(SkillFileSchema).optional().default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_SKILL: Skill = {
   ...EMPTY_SKILL_SUMMARY,
@@ -4860,7 +4736,7 @@ export const EMPTY_SKILL: Skill = {
   files: [],
 };
 
-export const SkillSummaryListSchema = z.lazy(() => z.array(SkillSummarySchema).default([]));
+export const SkillSummaryListSchema = z.array(SkillSummarySchema).default([]);
 
 const SKILL_VERSION_SOURCES = [
   "baseline",
@@ -4871,7 +4747,7 @@ const SKILL_VERSION_SOURCES = [
   "restore",
 ] as const;
 
-export const SkillVersionSummarySchema = z.lazy(() => z.object({
+export const SkillVersionSummarySchema = z.object({
   id: z.string(),
   skill_id: z.string(),
   version: z.number(),
@@ -4880,22 +4756,22 @@ export const SkillVersionSummarySchema = z.lazy(() => z.object({
   restored_from_version: z.number().nullable().optional().default(null),
   created_by: z.string().nullable().optional().default(null),
   created_at: z.string().optional().default(""),
-}).loose());
+}).loose();
 
-export const SkillVersionSummaryListSchema = z.lazy(() => z
+export const SkillVersionSummaryListSchema = z
   .array(SkillVersionSummarySchema)
-  .default([]));
+  .default([]);
 
 export const EMPTY_SKILL_VERSION_SUMMARY_LIST: SkillVersionSummary[] = [];
 
-export const SkillVersionSchema = z.lazy(() => SkillVersionSummarySchema.unwrap().extend({
+export const SkillVersionSchema = SkillVersionSummarySchema.extend({
   description: z.string().optional().default(""),
   content: z.string().optional().default(""),
   files: z
     .array(z.object({ path: z.string(), content: z.string().optional().default("") }).loose())
     .optional()
     .default([]),
-}).loose());
+}).loose();
 
 export const EMPTY_SKILL_VERSION: SkillVersion = {
   id: "",
@@ -4913,12 +4789,12 @@ export const EMPTY_SKILL_VERSION: SkillVersion = {
 
 export const EMPTY_SKILL_SUMMARY_LIST: SkillSummary[] = [];
 
-export const SkillImportExistingSkillSchema = z.lazy(() => z.object({
+export const SkillImportExistingSkillSchema = z.object({
   id: z.string(),
   name: z.string(),
   created_by: z.string().optional(),
   can_overwrite: z.boolean().optional(),
-}).loose());
+}).loose();
 
 /**
  * Envelope of POST /api/skills/import.
@@ -4930,12 +4806,12 @@ export const SkillImportExistingSkillSchema = z.lazy(() => z.object({
  * `string`, so it is free to grow. `skillFromImportResult` has the default
  * branch: anything outside created/updated is treated as a failure.
  */
-export const SkillImportResultSchema = z.lazy(() => z.object({
+export const SkillImportResultSchema = z.object({
   status: z.string().default("failed"),
   reason: z.string().optional().default(""),
   skill: SkillSchema.optional(),
   existing_skill: SkillImportExistingSkillSchema.optional(),
-}).loose());
+}).loose();
 
 export const EMPTY_SKILL_IMPORT_RESULT: SkillImportResult = {
   status: "failed",
@@ -4955,7 +4831,7 @@ export const EMPTY_SKILL_IMPORT_RESULT: SkillImportResult = {
  * `transport` stays a plain string (not an enum) so an unknown value from a
  * newer backend still parses — the UI has a default branch for it.
  */
-export const WorkspaceMcpServerSchema = z.lazy(() => z.object({
+export const WorkspaceMcpServerSchema = z.object({
   id: z.string().default(""),
   workspace_id: z.string().default(""),
   name: z.string().default(""),
@@ -4966,9 +4842,9 @@ export const WorkspaceMcpServerSchema = z.lazy(() => z.object({
   agent_count: z.number().int().nonnegative().optional().catch(undefined),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
-}));
+});
 
-export const WorkspaceMcpServerListSchema = z.lazy(() => z.array(WorkspaceMcpServerSchema));
+export const WorkspaceMcpServerListSchema = z.array(WorkspaceMcpServerSchema);
 
 export const EMPTY_WORKSPACE_MCP_SERVER: WorkspaceMcpServer = {
   id: "",
@@ -4981,7 +4857,7 @@ export const EMPTY_WORKSPACE_MCP_SERVER: WorkspaceMcpServer = {
 
 // Share links. Introduced with the workspace share-link invite flow; schemas
 // mirror the API responses so malformed payloads fall back to safe defaults.
-export const ShareLinkSchema = z.lazy(() => z.object({
+export const ShareLinkSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   code: z.string(),
@@ -4994,7 +4870,7 @@ export const ShareLinkSchema = z.lazy(() => z.object({
   created_at: z.string().optional().default(""),
   creator_name: z.string().optional().default(""),
   creator_email: z.string().optional().default(""),
-}).loose());
+}).loose();
 
 export const EMPTY_SHARE_LINK: ShareLink = {
   id: "",
@@ -5009,14 +4885,14 @@ export const EMPTY_SHARE_LINK: ShareLink = {
   created_at: "",
 };
 
-export const ShareLinkListResponseSchema = z.lazy(() => z.array(ShareLinkSchema).default([]));
+export const ShareLinkListResponseSchema = z.array(ShareLinkSchema).default([]);
 
-export const ShareLinkInfoSchema = z.lazy(() => z.object({
+export const ShareLinkInfoSchema = z.object({
   workspace_name: z.string().optional().default(""),
   workspace_slug: z.string().optional().default(""),
   creator_name: z.string().optional().default(""),
   role: z.string().optional().default("member"),
-}).loose());
+}).loose();
 
 export const EMPTY_SHARE_LINK_INFO: ShareLinkInfo = {
   workspace_name: "",
@@ -5024,7 +4900,7 @@ export const EMPTY_SHARE_LINK_INFO: ShareLinkInfo = {
   role: "member",
 };
 
-export const MemberWithUserSchema = z.lazy(() => z.object({
+export const MemberWithUserSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   user_id: z.string(),
@@ -5033,13 +4909,13 @@ export const MemberWithUserSchema = z.lazy(() => z.object({
   name: z.string().optional().default(""),
   email: z.string().optional().default(""),
   avatar_url: z.string().nullable().optional().default(null),
-}).loose());
+}).loose();
 
-export const JoinShareLinkResponseSchema = z.lazy(() => z.object({
+export const JoinShareLinkResponseSchema = z.object({
   member: MemberWithUserSchema,
   workspace_id: z.string(),
   workspace_slug: z.string().optional().default(""),
-}).loose());
+}).loose();
 
 export const EMPTY_JOIN_SHARE_LINK_RESPONSE: {
   member: MemberWithUser;
@@ -5060,25 +4936,7 @@ export const EMPTY_JOIN_SHARE_LINK_RESPONSE: {
   workspace_slug: "",
 };
 
-// CHE-766: `redaction_mode` stays `z.string()`, not `z.enum(["small",
-// "strict"])` — an unrecognized future value must surface to the UI as an
-// unrecognized value (which the dashboard renders as read-only/unavailable),
-// not get coerced into "small" by a fallback that would misreport the active
-// policy.
-export const WorkspaceExportPrivacySchema = z.lazy(() => z
-  .object({
-    redaction_mode: z.string().min(1),
-    manifest_retention_days: z.number().int().positive(),
-  })
-  .loose()
-  .transform(
-    (value): WorkspaceExportPrivacy => ({
-      redaction_mode: value.redaction_mode,
-      manifest_retention_days: value.manifest_retention_days,
-    }),
-  ));
-
-export const WakeupConditionSchema = z.lazy(() => z.union([
+export const WakeupConditionSchema = z.union([
   z.object({ type: z.literal("issue_field"), field: z.literal("status"), value: z.string() }),
   z.object({ type: z.literal("issue_field"), field: z.literal("assignee"), assignee_type: z.enum(["member", "agent", "squad"]), assignee_id: z.string() }),
   z.object({ type: z.literal("issue_field"), field: z.literal("label"), label_id: z.string() }),
@@ -5086,29 +4944,21 @@ export const WakeupConditionSchema = z.lazy(() => z.union([
   z.object({ type: z.literal("children_done"), stage: z.number().int().nullish() }),
   z.object({ type: z.literal("pull_request"), event: z.enum(["checks_finished", "merged", "conflicts"]) }),
   z.object({ type: z.literal("other_issue"), issue_id: z.string(), state: z.enum(["done", "ended", "in_review", "blocked"]), identifier: z.string().optional() }),
-  z.object({
-    type: z.literal("github_run"),
-    repo: z.string(),
-    run_id: z.number().int().optional(),
-    workflow: z.string().optional(),
-    head_sha: z.string().optional(),
-    state: z.enum(["completed", "waiting"]),
-  }),
-]));
+]);
 
-export const WakeupRunSchema = z.lazy(() => z.object({
+export const WakeupRunSchema = z.object({
   id: z.string(), status: z.string(), created_at: z.string(),
   started_at: z.string().nullable(), completed_at: z.string().nullable(),
   checkin_note: z.string().default(""), triggers: z.array(z.string()).default([]),
   commented: z.boolean().default(false),
-}));
+});
 
-export const PausedWakeupSchema = z.lazy(() => z.object({
+export const PausedWakeupSchema = z.object({
   issue_id: z.string(), id: z.string(), agent_id: z.string(),
-  paused_reason: z.enum(["max_fires", "loop", "rate", "run_budget", "weekly_run_guard"]).catch("rate"),
-}));
+  paused_reason: z.enum(["max_fires", "loop", "rate"]).catch("rate"),
+});
 
-export const IssueWakeupSchema = z.lazy(() => z.object({
+export const IssueWakeupSchema = z.object({
   id: z.string(), issue_id: z.string(), agent_id: z.string(), agent_name: z.string().default(""),
   instruction: z.string(), kind: z.enum(["event", "at", "every", "cron"]), mode: z.enum(["once", "continuous"]),
   event_types: z.array(z.string()), filter_agent_id: z.string().nullable(), filter_task_id: z.string().nullable(),
@@ -5127,86 +4977,35 @@ export const IssueWakeupSchema = z.lazy(() => z.object({
   // An unknown condition shape from a newer server reads as "no condition".
   condition: WakeupConditionSchema.nullish().catch(null),
   max_fires: z.number().int().nullish(), fire_count: z.number().int().nonnegative().optional().catch(undefined),
-  paused_reason: z.enum(["max_fires", "loop", "rate", "run_budget", "weekly_run_guard"]).nullish().catch(null),
-  // Set for an instance a scoped default created; absent from older servers.
-  default_rule_key: z.string().nullish().catch(null),
-}));
+  paused_reason: z.enum(["max_fires", "loop", "rate"]).nullish().catch(null),
+});
 
-export const SystemWakeupSchema = z.lazy(() => z.object({
+export const SystemWakeupSchema = z.object({
   id: z.string().default(""), revision: z.number().int().nonnegative().default(0),
   rule: z.literal("child_done"), enabled: z.boolean(), instruction: z.string().default(""),
   default_instruction: z.string().default(""), customized: z.boolean().default(false),
-  paused_reason: z.enum(["max_fires", "loop", "rate", "run_budget", "weekly_run_guard"]).nullish().catch(null).transform((v) => v ?? null),
+  paused_reason: z.enum(["max_fires", "loop", "rate"]).nullish().catch(null).transform((v) => v ?? null),
   staged: z.boolean(), stage: z.number().int().nullable(), total: z.number().int().nonnegative(),
   remaining: z.number().int().nonnegative(), waiting: z.array(z.string()).default([]),
   target: z.object({ type: z.enum(["agent", "squad", "member"]), id: z.string(), name: z.string() }).nullable().catch(null),
   blocked: z.enum(["", "backlog", "member_assignee", "no_assignee"]).catch(""),
   workspace_default: z.boolean().default(true),
-}));
+});
 
-export const WorkspaceSystemWakeupSchema = z.lazy(() => z.object({
+export const WorkspaceSystemWakeupSchema = z.object({
   rule: z.literal("child_done"), enabled: z.boolean().default(true), instruction: z.string().default(""),
   builtin_instruction: z.string().default(""), customized: z.number().int().nonnegative().default(0),
-}));
+});
 
-// Scoped wakeup definitions (CHE-1082). Scopes and rule keys stay plain strings
-// so a newer server's value still parses; the config keeps unknown fields.
-export const WakeupDefinitionConfigSchema = z.lazy(() => z.object({ v: z.number().int().default(1) }).passthrough());
-
-// Closed unless the server says otherwise.
-const CLOSED_WAKEUP_CAPABILITIES = { definition_writes: false, trigger_kinds: [], fields: [] };
-const WakeupCapabilitiesSchema = z.lazy(() => z
-  .object({
-    definition_writes: z.boolean().catch(false),
-    trigger_kinds: z.array(z.string()).catch([]),
-    fields: z.array(z.string()).catch([]),
-  })
-  .nullish()
-  .catch(null)
-  .transform((v) => v ?? { ...CLOSED_WAKEUP_CAPABILITIES }));
-
-export const WakeupDefinitionSchema = z.lazy(() => z.object({
-  scope: z.string(), scope_id: z.string(), rule_key: z.string(),
-  root: z.boolean().default(false), revision: z.string().regex(/^\d+$/),
-  config: WakeupDefinitionConfigSchema,
-  updated_at: z.string().nullish().transform((v) => v ?? null),
-  redacted: z.boolean().default(false),
-}));
-
-export const WakeupDefinitionListSchema = z.lazy(() => z.object({
-  definitions: z.array(WakeupDefinitionSchema),
-  capabilities: WakeupCapabilitiesSchema,
-}));
-
-export const WakeupEffectiveRuleSchema = z.lazy(() => z.object({
-  rule_key: z.string(), scope: z.string(), applicable: z.boolean(),
-  inapplicable_reason: z.string().default(""), enabled: z.boolean(),
-  config: WakeupDefinitionConfigSchema,
-  sources: z.record(z.string(), z.string()).default({}),
-  overrides: z.array(z.string()).default([]),
-  aggregate_caps: z.array(z.object({ scope: z.string(), scope_id: z.string(), limit: z.number().int() })).default([]),
-  fingerprint: z.string().default(""),
-  execution: z.object({
-    instance_id: z.string(), enabled: z.boolean(),
-    paused_reason: z.string().nullish().transform((v) => v ?? null),
-  }).nullish().transform((v) => v ?? null),
-  // Only a condition rule's preview carries it; an older server never does.
-  already_satisfied: z.object({
-    satisfied: z.number().int().nonnegative(), examined: z.number().int().nonnegative(), truncated: z.boolean().default(false),
-  }).nullish().catch(null).transform((v) => v ?? null),
-  redacted: z.boolean().default(false),
-  capabilities: WakeupCapabilitiesSchema,
-}));
-
-export const IssueWakeupSummaryRowSchema = z.lazy(() => IssueWakeupSchema.unwrap().pick({
+export const IssueWakeupSummaryRowSchema = IssueWakeupSchema.pick({
   id: true, issue_id: true, agent_id: true, agent_name: true, kind: true, mode: true,
   event_types: true, filter_task_id: true, filter_agent_name: true, interval_seconds: true,
   filter_actor_type: true, filter_actor_id: true, filter_actor_name: true,
   cron_expression: true, timezone: true, next_fire_at: true, condition: true,
-}).extend({ active_count: z.number().int().positive(), event_count: z.number().int().nonnegative() }));
+}).extend({ active_count: z.number().int().positive(), event_count: z.number().int().nonnegative() });
 
-export const WorkspaceWakeupPageSchema = z.lazy(() => z.object({
-  items: z.array(IssueWakeupSchema.unwrap().omit({ instruction: true }).extend({
+export const WorkspaceWakeupPageSchema = z.object({
+  items: z.array(IssueWakeupSchema.omit({ instruction: true }).extend({
     issue_title: z.string(), issue_identifier: z.string(), issue_closed: z.boolean(),
     can_manage: z.boolean(), active_runs: z.number().int().nonnegative(),
     task: AgentTaskSchema.nullable(),
@@ -5227,13 +5026,14 @@ export const WorkspaceWakeupPageSchema = z.lazy(() => z.object({
     disabled: z.number().int().nonnegative(), ended: z.number().int().nonnegative(),
   }),
   agents: z.array(z.object({ id: z.string(), name: z.string() })),
-}));
+});
 
 // Older servers omit runtime_type; the protocol remains their compatibility target.
-export const RuntimeProfileSchema = z.lazy(() => z
+export const RuntimeProfileSchema = z
   .object({
     id: z.string(),
     workspace_id: z.string(),
+    daemon_id: z.string().nullable().catch(null),
     display_name: z.string(),
     protocol_family: z.string(),
     runtime_type: z.string().nullish().catch(undefined),
@@ -5250,12 +5050,12 @@ export const RuntimeProfileSchema = z.lazy(() => z
   .transform((profile) => ({
     ...profile,
     runtime_type: profile.runtime_type || profile.protocol_family,
-  })));
-export const RuntimeProfileListSchema = z.lazy(() => z.array(RuntimeProfileSchema));
+  }));
+export const RuntimeProfileListSchema = z.array(RuntimeProfileSchema);
 
 // Receipt evidence is optional across mixed server/desktop versions. A malformed
 // timestamp must never render the binding as verified.
-export const LarkInstallationSchema = z.lazy(() => z.object({
+export const LarkInstallationSchema = z.object({
   id: z.string(),
   workspace_id: z.string().default(""),
   agent_id: z.string().default(""),
@@ -5269,107 +5069,18 @@ export const LarkInstallationSchema = z.lazy(() => z.object({
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
   first_message_received_at: z.iso.datetime({ offset: true }).nullable().optional().catch(undefined),
-}).loose());
+}).loose();
 
-export const ListLarkInstallationsResponseSchema = z.lazy(() => z.object({
+export const ListLarkInstallationsResponseSchema = z.object({
   installations: z.array(LarkInstallationSchema).default([]),
   configured: z.boolean().default(false),
   install_supported: z.boolean().optional(),
-}).loose());
+}).loose();
 
 export const EMPTY_LIST_LARK_INSTALLATIONS_RESPONSE: ListLarkInstallationsResponse = {
   installations: [],
   configured: false,
 };
-
-// GET /api/agent-decisions/brief carries more (decisions, pilot); the Settings
-// switch reads only the setting and the automatic-stop record.
-export const AgentDecisionSettingSchema = z.lazy(() => z.object({
-  enabled: z.boolean(),
-  stopped: z.object({ reason: z.string().catch("") }).nullish().transform((v) => v ?? null),
-}).loose());
-export type AgentDecisionSetting = z.infer<typeof AgentDecisionSettingSchema>;
-
-// CHE-4123: GET/PUT /api/workspaces/{id}/background-agents. One object keyed
-// by job (dm_title, quick_actions, compact, routing); a job is a two-slot chain.
-// An unset slot is absent or null and reads as "". `routing` also carries
-// statuses and overrides, and an unknown field passes through, so a save that
-// echoes the whole value keeps what this form does not edit.
-export const BackgroundAgentChainSchema = z.lazy(() => z.object({
-  agent_id: z.string().nullish().transform((v) => v ?? ""),
-  fallback_agent_id: z.string().nullish().transform((v) => v ?? ""),
-}).loose());
-export type BackgroundAgentChain = z.infer<typeof BackgroundAgentChainSchema>;
-
-export const BackgroundAgentsSchema = z.lazy(() => z.record(z.string(), BackgroundAgentChainSchema));
-export type BackgroundAgents = z.infer<typeof BackgroundAgentsSchema>;
-// A read plus the ETag a save must present so a concurrent save is refused.
-export type BackgroundAgentsRead = { value: BackgroundAgents; etag: string | null };
-
-// CHE-4617: GET/PUT /api/workspaces/{id}/delegated-writes. Lists default to
-// empty; a malformed requires_human_decision reads as true, the fail-closed
-// value the server also uses.
-export const DelegatedWritesSchema = z.lazy(() => z.object({
-  allowed_agents: z.array(z.string()).nullish().transform((v) => v ?? []),
-  allowed_fields: z.array(z.string()).nullish().transform((v) => v ?? []),
-  requires_human_decision: z.boolean().catch(true),
-}).loose());
-export type DelegatedWrites = z.infer<typeof DelegatedWritesSchema>;
-
-// Provider breaker state (CHE-4382). An unknown state reads as `open`: the
-// panel must not tell an admin a breaker is closed when it cannot tell.
-export const ProviderBreakerSchema = z.lazy(() => z.object({
-  provider: z.string(),
-  state: z.enum(["closed", "open", "half_open"]).catch("open"),
-  open_reason: z.string().nullish().transform((v) => v ?? ""),
-  failure_count: z.number().int().nonnegative().catch(0),
-  opened_at: z.string().nullish().transform((v) => v ?? null),
-  next_probe_at: z.string().nullish().transform((v) => v ?? null),
-  last_success_at: z.string().nullish().transform((v) => v ?? null),
-  trip_evidence: z.array(z.string()).nullish().transform((v) => v ?? []),
-}));
-// Tool-guard decision counts and rows (CHE-5207). Counts default to zero and
-// the list shapes are strict: a malformed body must not read as "no hits".
-const guardCount = z.number().int().nonnegative().catch(0);
-const guardText = z.string().nullish().transform((v) => v ?? "");
-export const GuardDayCountsSchema = z.lazy(() => z.object({
-  day: z.string(),
-  fixed: guardCount,
-  refused: guardCount,
-  errors: guardCount,
-}));
-export const GuardStatsSchema = z.lazy(() => z.object({
-  days: z.number().int().catch(7),
-  tz: guardText,
-  since: guardText,
-  plugins: z.array(z.object({
-    plugin: z.string(),
-    fixed: guardCount,
-    refused: guardCount,
-    errors: guardCount,
-    shadow_hits: guardCount,
-    passes: guardCount,
-    daily: z.array(GuardDayCountsSchema).nullish().transform((v) => v ?? []),
-  })),
-}));
-export const GuardDecisionListSchema = z.lazy(() => z.object({
-  decisions: z.array(z.object({
-    id: z.string(),
-    task_id: guardText,
-    time: guardText,
-    plugin: guardText,
-    action: guardText,
-    tool: guardText,
-    subcommand: guardText,
-    line: guardText,
-    issue: guardText,
-    note: guardText,
-    runtime: guardText,
-  })),
-}));
-export const ProviderBreakerListSchema = z.lazy(() => z.object({
-  breakers: z.array(ProviderBreakerSchema).nullish().transform((v) => v ?? []),
-}));
 
 // Connected Apps (MUL-8516). Enum fields the UI indexes into label tables
 // fall back to their most cautious value, so a value this client does not
@@ -5383,7 +5094,7 @@ const AppActionClassSchema = z.enum(["read", "write", "send", "delete", "share"]
 const AppActionPolicySchema = z.enum(["allow", "confirm", "block"]).catch("confirm");
 const AppCatalogModeSchema = z.enum(["all", "curated", "custom"]).catch("curated");
 
-const AppConnectionSchema = z.lazy(() => z.object({
+const AppConnectionSchema = z.object({
   id: z.string(),
   toolkit_slug: z.string(),
   status: z.string().default("active"),
@@ -5391,54 +5102,73 @@ const AppConnectionSchema = z.lazy(() => z.object({
   connected_at: z.string().default(""),
   last_used_at: appNullableString,
   actions_blocked: z.boolean().default(false).catch(false),
-}).loose());
+}).loose();
 
-const AgentAppSchema = z.lazy(() => z.object({
+const AgentAppSchema = z.object({
   agent_id: z.string(),
   toolkit_slug: z.string(),
   account_scope: AppAccountScopeSchema,
   level: AppAccessLevelSchema,
-}).loose());
+}).loose();
 
-export const AppsOverviewSchema = z.lazy(() => z.object({
+export const AppsOverviewSchema = z.object({
   catalog_mode: AppCatalogModeSchema,
   allowed_toolkits: z.array(z.string()).default([]).catch([]),
   can_manage: z.boolean().default(false).catch(false),
   team: z.array(AppConnectionSchema).default([]),
   personal: z.array(AppConnectionSchema).default([]),
   agent_apps: z.array(AgentAppSchema).default([]),
-}).loose());
+  team_requests: z.array(z.object({
+    toolkit_slug: z.string(),
+    requested_by: z.array(z.string()).default([]).catch([]),
+    asked_by: z.array(z.string()).optional().catch(undefined),
+    agent_ids: z.array(z.string()).default([]).catch([]),
+    last_requested_at: z.string().default(""),
+  }).loose()).default([]).catch([]),
+}).loose();
 
-const AppCatalogEntrySchema = z.lazy(() => z.object({
+export const PersonalAppImpactSchema = z.object({
+  agents: z.array(z.object({
+    id: z.string(),
+    name: z.string().default(""),
+    workspace_id: z.string().default(""),
+    workspace_name: z.string().default(""),
+    running: z.boolean().default(false).catch(false),
+  }).loose()).default([]),
+}).loose();
+
+const AppCatalogEntrySchema = z.object({
   slug: z.string(),
   name: z.string().default(""),
   logo: z.string().optional().catch(undefined),
   category: z.string().optional().catch(undefined),
+  category_id: z.string().optional().catch(undefined),
   curated: z.boolean().default(false).catch(false),
   recommended_scope: AppAccountScopeSchema.optional(),
   allowed: z.boolean().optional().catch(undefined),
-}).loose());
+  connect_method: z.enum(["oauth", "key"]).optional().catch(undefined),
+}).loose();
 
-export const AppCatalogResponseSchema = z.lazy(() => z.object({
+export const AppCatalogResponseSchema = z.object({
   catalog_mode: AppCatalogModeSchema,
   apps: z.array(AppCatalogEntrySchema).default([]),
-}).loose());
+}).loose();
 
-export const AppSettingsResponseSchema = z.lazy(() => z.object({
+export const AppSettingsResponseSchema = z.object({
   catalog_mode: AppCatalogModeSchema,
   allowed_toolkits: z.array(z.string()).default([]).catch([]),
-}).loose());
+}).loose();
 
-export const AppRulesResponseSchema = z.lazy(() => z.object({
+export const AppRulesResponseSchema = z.object({
   rules: z.array(z.object({
     action_class: AppActionClassSchema,
     policy: AppActionPolicySchema,
     default_policy: AppActionPolicySchema,
     custom: z.boolean().default(false).catch(false),
   }).loose()).default([]),
-}).loose());
+}).loose();
 
-export const AppActivityResponseSchema = z.lazy(() => z.object({
+export const AppActivityResponseSchema = z.object({
   calls: z.array(z.object({
     id: z.string(),
     agent_id: z.string(),
@@ -5451,20 +5181,20 @@ export const AppActivityResponseSchema = z.lazy(() => z.object({
     error: appNullableString,
     created_at: z.string(),
   }).loose()).default([]),
-}).loose());
+}).loose();
 
-export const TeamAppImpactSchema = z.lazy(() => z.object({
+export const TeamAppImpactSchema = z.object({
   agents: z.array(z.object({ id: z.string(), name: z.string().default("") }).loose()).default([]),
   active_tasks: z.number().default(0).catch(0),
   active_autopilots: z.number().default(0).catch(0),
   pending_requests: z.number().default(0).catch(0),
-}).loose());
+}).loose();
 
-export const AgentAppsResponseSchema = z.lazy(() => z.object({
+export const AgentAppsResponseSchema = z.object({
   apps: z.array(AgentAppSchema).default([]),
-}).loose());
+}).loose();
 
-export const AppRequestSchema = z.lazy(() => z.object({
+export const AppRequestSchema = z.object({
   id: z.string(),
   kind: z.enum(["action", "connect"]).catch("action"),
   status: z.string(),
@@ -5484,29 +5214,20 @@ export const AppRequestSchema = z.lazy(() => z.object({
   reason: appNullableString,
   // Withhold the details unless the server said otherwise.
   redacted: z.boolean().default(true).catch(true),
+  adds_app: z.boolean().default(false).catch(false),
+  can_decide: z.boolean().optional().catch(undefined),
   expires_at: z.string(),
   decided_by: appNullableString,
   decided_at: appNullableString,
   created_at: z.string(),
-}).loose());
+}).loose();
 
-export const AppRequestListSchema = z.lazy(() => z.object({
+export const AppRequestListSchema = z.object({
   requests: z.array(AppRequestSchema).default([]),
   next_before: appNullableString,
-}).loose());
+}).loose();
 
-export const AppToolsResponseSchema = z.lazy(() => z.object({
-  tools: z.array(z.object({
-    slug: z.string(),
-    name: z.string().default(""),
-    description: z.string().default(""),
-    auto_class: AppActionClassSchema,
-    class: AppActionClassSchema,
-    overridden: z.boolean().default(false).catch(false),
-  }).loose()).default([]),
-}).loose());
-
-export const IssueAppCallsResponseSchema = z.lazy(() => z.object({
+export const IssueAppCallsResponseSchema = z.object({
   calls: z.array(z.object({
     id: z.string(),
     task_id: appNullableString,
@@ -5521,9 +5242,9 @@ export const IssueAppCallsResponseSchema = z.lazy(() => z.object({
     error: appNullableString,
     created_at: z.string(),
   }).loose()).default([]),
-}).loose());
+}).loose();
 
-export const AppConnectInitSchema = z.lazy(() => z.object({ redirect_url: z.string().min(1) }).loose());
+export const AppConnectInitSchema = z.object({ redirect_url: z.string().min(1) }).loose();
 
 export const EMPTY_APPS_OVERVIEW: AppsOverview = {
   catalog_mode: "curated",
@@ -5532,6 +5253,7 @@ export const EMPTY_APPS_OVERVIEW: AppsOverview = {
   team: [],
   personal: [],
   agent_apps: [],
+  team_requests: [],
 };
 
 export const EMPTY_APP_CATALOG: AppCatalogResponse = { catalog_mode: "curated", apps: [] };
@@ -5545,14 +5267,14 @@ export const EMPTY_TEAM_APP_IMPACT: TeamAppImpact = {
 
 // Only `pinned_at` is new here; every other field keeps its pre-schema
 // leniency so one odd workspace can never empty the whole switcher.
-export const WorkspaceListItemSchema = z.lazy(() => z.object({
+export const WorkspaceListItemSchema = z.object({
   id: z.string(),
   name: z.string(),
   slug: z.string(),
   created_at: z.string(),
   pinned_at: z.iso.datetime({ offset: true }).nullable().optional().catch(null).default(null),
-}).loose());
+}).loose();
 
-export const WorkspacePinnedSchema = z.lazy(() => z.object({
+export const WorkspacePinnedSchema = z.object({
   pinned_at: z.iso.datetime({ offset: true }).nullable().catch(null),
-}));
+});

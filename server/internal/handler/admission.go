@@ -53,34 +53,24 @@ const (
 type DispatchReasonCode = dispatch.ReasonCode
 
 const (
-	ReasonQueued                              = dispatch.ReasonQueued
-	ReasonProjectInactive                     = dispatch.ReasonProjectInactive
-	ReasonCoalesced                           = dispatch.ReasonCoalesced
-	ReasonDeferred                            = dispatch.ReasonDeferred
-	ReasonSteered                             = dispatch.ReasonSteered
-	ReasonInvocationNotAllowed                = dispatch.ReasonInvocationNotAllowed
-	ReasonTargetUnavailable                   = dispatch.ReasonTargetUnavailable
-	ReasonRuntimeOffline                      = dispatch.ReasonRuntimeOffline
-	ReasonRuntimeUnusable                     = dispatch.ReasonRuntimeUnusable
-	ReasonRuntimeAccessDenied                 = dispatch.ReasonRuntimeAccessDenied
-	ReasonRuntimeProfileMissing               = dispatch.ReasonRuntimeProfileMissing
-	ReasonAgentRuntimeRequired                = dispatch.ReasonAgentRuntimeRequired
-	ReasonAttributionBlocked                  = dispatch.ReasonAttributionBlocked
-	ReasonAlreadyActive                       = dispatch.ReasonAlreadyActive
-	ReasonSelfTriggerSuppressed               = dispatch.ReasonSelfTriggerSuppressed
-	ReasonIssueInTriage                       = dispatch.ReasonIssueInTriage
-	ReasonIntakeHold                          = dispatch.ReasonIntakeHold
-	ReasonAgentCommentImplicitRouteSuppressed = dispatch.ReasonAgentCommentImplicitRouteSuppressed
-	ReasonAgentCommentRequiresAgentMention    = dispatch.ReasonAgentCommentRequiresAgentMention
-	ReasonCommentTriggerRateLimited           = dispatch.ReasonCommentTriggerRateLimited
-	ReasonRunBudgetExhausted                  = dispatch.ReasonRunBudgetExhausted
-	ReasonStageQueueFull                      = dispatch.ReasonStageQueueFull
-	ReasonReviewHeadAnswered                  = dispatch.ReasonReviewHeadAnswered
-	ReasonAgentPaused                         = dispatch.ReasonAgentPaused
-	ReasonAdmissionDeferred                   = dispatch.ReasonAdmissionDeferred
-	ReasonInternalError                       = dispatch.ReasonInternalError
-	ReasonProviderHold                        = dispatch.ReasonProviderHold
-	ReasonProjectAccessBlocked                = dispatch.ReasonProjectAccessBlocked
+	ReasonQueued                = dispatch.ReasonQueued
+	ReasonCoalesced             = dispatch.ReasonCoalesced
+	ReasonDeferred              = dispatch.ReasonDeferred
+	ReasonSteered               = dispatch.ReasonSteered
+	ReasonInvocationNotAllowed  = dispatch.ReasonInvocationNotAllowed
+	ReasonTargetUnavailable     = dispatch.ReasonTargetUnavailable
+	ReasonRuntimeOffline        = dispatch.ReasonRuntimeOffline
+	ReasonRuntimeUnusable       = dispatch.ReasonRuntimeUnusable
+	ReasonRuntimeAccessDenied   = dispatch.ReasonRuntimeAccessDenied
+	ReasonRuntimeProfileMissing = dispatch.ReasonRuntimeProfileMissing
+	ReasonAgentRuntimeRequired  = dispatch.ReasonAgentRuntimeRequired
+	ReasonAttributionBlocked    = dispatch.ReasonAttributionBlocked
+	ReasonAlreadyActive         = dispatch.ReasonAlreadyActive
+	ReasonSelfTriggerSuppressed = dispatch.ReasonSelfTriggerSuppressed
+	ReasonIssueInTriage         = dispatch.ReasonIssueInTriage
+	ReasonProjectAccessBlocked  = dispatch.ReasonProjectAccessBlocked
+	ReasonHandedToLeader        = dispatch.ReasonHandedToLeader
+	ReasonInternalError         = dispatch.ReasonInternalError
 )
 
 // DispatchTarget is the caller-visible reference to an execution target. Name
@@ -150,20 +140,6 @@ func dispatchBlockedFallbackMessage(code DispatchReasonCode) string {
 		return "a run is already active for this target"
 	case ReasonIssueInTriage:
 		return "the issue is in Triage and has no owner to run yet; accept it out of Triage first"
-	case ReasonIntakeHold:
-		return "the issue is held in backlog by the intake hold; a person moves it out of backlog to release it"
-	case ReasonRunBudgetExhausted:
-		return "the issue used its workflow's run budget; move it on to give it a new one"
-	case ReasonStageQueueFull:
-		return "the PR's stage is at capacity; it is queued and runs when a slot frees"
-	case ReasonReviewHeadAnswered:
-		return "the agent already answered this PR head; a new head runs again"
-	case ReasonAgentPaused:
-		return "the agent is paused; pick another agent by role"
-	case ReasonAdmissionDeferred:
-		return "the PR head is not admissible (a check is failing, pending or missing, or the PR has a merge conflict); the review is deferred"
-	case ReasonProviderHold:
-		return "the target's model provider is on a workspace policy hold"
 	case ReasonProjectAccessBlocked:
 		return "the agent's owner is not a member of this private project"
 	default:

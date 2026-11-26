@@ -9,22 +9,17 @@ import {
   useState,
 } from "react";
 import type { QueryClient } from "@tanstack/react-query";
+import type { Editor } from "@tiptap/core";
 import type { SuggestionOptions } from "@tiptap/suggestion";
 import { PluginKey } from "@tiptap/pm/state";
 import { closeHistory } from "@tiptap/pm/history";
 import { useAuthStore } from "@multica/core/auth";
 import { useChatStore } from "@multica/core/chat";
-import {
-  CHAT_COMMANDS,
-  getChatCommand,
-  matchesChatCommandQuery,
-  type ChatCommandId,
-} from "@multica/core/chat/commands";
 import { getCurrentWsId } from "@multica/core/platform";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { isImeComposing } from "@multica/core/utils";
 import { workspaceKeys } from "@multica/core/workspace/queries";
-import type { Agent, MemberWithUser } from "@multica/core/types";
+import type { Agent, AgentSkillSummary, MemberWithUser } from "@multica/core/types";
 import { useT } from "../../i18n";
 import {
   createSuggestionPopupRender,
@@ -38,13 +33,7 @@ import { isTriggerArmedAt } from "./suggestion-trigger-arming";
 const MAX_ITEMS = 20;
 
 /** Known built-in command ids — the keys under editor `slash_command.commands`. */
-export type BuiltinCommandKey = "note" | "preset" | ChatCommandId;
-
-/** DM commands a surface switches on one by one; compact is gated separately. */
-export type DmClientCommand = "statistic" | "archive" | "pin" | "unarchive" | "unseen" | "later";
-const DM_CLIENT_COMMANDS: readonly DmClientCommand[] = CHAT_COMMANDS
-  .filter((cmd): cmd is typeof cmd & { id: DmClientCommand } => cmd.args === "none" || cmd.id === "later")
-  .map((cmd) => cmd.id);
+export type BuiltinCommandKey = "note";
 
 export interface SlashCommandItem {
   id: string;
@@ -57,8 +46,6 @@ export interface SlashCommandItem {
    * so the visible string stays localized (the typed `/label` does not).
    */
   descriptionKey?: BuiltinCommandKey;
-  /** A bare value (a preset name), shown without the `/` command prefix. */
-  plain?: boolean;
 }
 
 interface SlashCommandListProps {
@@ -145,25 +132,7 @@ export const SlashCommandList = forwardRef<
   const describe = (item: SlashCommandItem): string | undefined =>
     item.descriptionKey === "note"
       ? t(($) => $.slash_command.commands.note)
-      : item.descriptionKey === "preset"
-        ? t(($) => $.slash_command.commands.preset)
-        : item.descriptionKey === "compact"
-        ? t(($) => $.slash_command.commands.compact)
-        : item.descriptionKey === "rename"
-          ? t(($) => $.slash_command.commands.rename)
-          : item.descriptionKey === "fork"
-            ? t(($) => $.slash_command.commands.fork)
-            : item.descriptionKey === "statistic"
-              ? t(($) => $.slash_command.commands.statistic)
-              : item.descriptionKey === "archive"
-                ? t(($) => $.slash_command.commands.archive)
-                : item.descriptionKey === "pin"
-                  ? t(($) => $.slash_command.commands.pin)
-                  : item.descriptionKey === "unseen"
-                    ? t(($) => $.slash_command.commands.unseen)
-                    : item.descriptionKey === "unarchive"
-                      ? t(($) => $.slash_command.commands.unarchive)
-                      : item.description;
+      : item.description;
 
   return (
     // Height budget clamps to min(design max, viewport-aware
@@ -180,7 +149,6 @@ export const SlashCommandList = forwardRef<
         return (
           <button
             key={item.id}
-            data-testid={isRegistryCommand(item) ? `chat-command-${item.id}` : undefined}
             ref={(el) => {
               itemRefs.current[index] = el;
             }}
@@ -189,41 +157,10 @@ export const SlashCommandList = forwardRef<
             }`}
             onClick={() => selectItem(index)}
           >
-            {isRegistryCommand(item) ? (
-              <span className="flex w-full items-center justify-between gap-2 font-medium">
-                <span className="font-mono">
-                  /{item.label}{" "}
-                  {isNoArgumentCommand(item) ? null : (
-                    <span className="text-muted-foreground">
-                      {getChatCommand(item.descriptionKey ?? "")?.argumentHintKey === "title_hint"
-                        ? t(($) => $.slash_command.title_hint)
-                        : getChatCommand(item.descriptionKey ?? "")?.argumentHintKey === "message_hint"
-                          ? t(($) => $.slash_command.message_hint)
-                          : t(($) => $.slash_command.focus_hint)}
-                    </span>
-                  )}
-                </span>
-                {isClientCommand(item) ? (
-                  <span className="shrink-0 rounded-sm border border-primary/20 bg-primary/10 px-1.5 py-0.5 text-primary">
-                    {t(($) => $.slash_command.client_command)}
-                  </span>
-                ) : null}
-              </span>
-            ) : (
-              <span className="font-medium">{item.plain ? "" : "/"}{item.label}</span>
-            )}
+            <span className="font-medium">/{item.label}</span>
             {description && (
-              <span
-                className={isRegistryCommand(item)
-                  ? "text-muted-foreground"
-                  : "truncate text-muted-foreground"}
-              >
+              <span className="truncate text-muted-foreground">
                 {description}
-              </span>
-            )}
-            {getChatCommand(item.descriptionKey ?? "")?.kind === "prompt" && (
-              <span className="text-[11px] text-muted-foreground">
-                {t(($) => $.slash_command.runs_the_agent)}
               </span>
             )}
           </button>
@@ -232,18 +169,6 @@ export const SlashCommandList = forwardRef<
     </div>
   );
 });
-
-/** Built-ins in the command registry; they insert plain text, not a skill node. */
-const isRegistryCommand = (item: SlashCommandItem) =>
-  item.descriptionKey !== undefined && getChatCommand(item.descriptionKey) !== undefined;
-
-/** Registry commands the client runs itself. A `prompt` command still runs the agent. */
-const isClientCommand = (item: SlashCommandItem) =>
-  item.descriptionKey !== undefined && getChatCommand(item.descriptionKey)?.kind === "client";
-
-/** The DM commands that take no argument, so the menu shows no hint after them. */
-const isNoArgumentCommand = (item: SlashCommandItem) =>
-  item.descriptionKey !== undefined && getChatCommand(item.descriptionKey)?.args === "none";
 
 const NO_MATCH = 4;
 
@@ -273,16 +198,7 @@ function rankSkillMatches<T extends { name: string; description?: string }>(
     .map((entry) => entry.skill);
 }
 
-function buildItems(
-  qc: QueryClient,
-  query: string,
-  firstWord: boolean,
-  canRename: boolean,
-  canFork: boolean,
-  canUse: (command: DmClientCommand) => boolean,
-  canCompact: boolean,
-  canPreset: boolean,
-): SlashCommandItem[] {
+function buildItems(qc: QueryClient, query: string): SlashCommandItem[] {
   const wsId = getCurrentWsId();
   if (!wsId) return [];
 
@@ -306,40 +222,46 @@ function buildItems(
     null;
 
   const q = query.toLowerCase();
-  const skills = rankSkillMatches(activeAgent?.skills ?? [], q)
+  return rankSkillMatches(
+    (activeAgent?.skills ?? []).filter((skill) => skill.enabled !== false),
+    q,
+  )
+    .slice(0, MAX_ITEMS)
     .map((s) => ({ id: s.id, label: s.name, description: s.description ?? "" }));
-  const commands: SlashCommandItem[] = firstWord
-    ? CHAT_COMMANDS.filter((command) =>
-        (command.id !== "rename" || canRename) &&
-        (command.id !== "fork" || canFork) &&
-        (command.id !== "compact" || canCompact) &&
-        (!isDmClientCommand(command.id) || canUse(command.id)) &&
-        matchesChatCommandQuery(command, q),
-      ).map((command) => ({
-        id: command.id,
-        label: command.id,
-        descriptionKey: command.descriptionKey,
-      }))
-    : [];
-  // `/preset` is answered by the server and takes a name from its own menu, so
-  // it sits outside the client command registry.
-  if (firstWord && canPreset && "preset".startsWith(q)) {
-    commands.push({ id: "preset", label: "preset", descriptionKey: "preset" });
-  }
-  return [...commands, ...skills].slice(0, MAX_ITEMS);
 }
 
-const isDmClientCommand = (command: string): command is DmClientCommand =>
-  DM_CLIENT_COMMANDS.some((candidate) => candidate === command);
+function insertSlashSkill(
+  editor: Editor,
+  range: { from: number; to: number },
+  id: string,
+  label: string,
+) {
+  const nodeAfter = editor.view.state.selection.$to.nodeAfter;
+  const overrideSpace = nodeAfter?.text?.startsWith(" ");
+  if (overrideSpace) {
+    range.to += 1;
+  }
 
-export function createSlashCommandSuggestion(
-  qc: QueryClient,
-  canRename = () => false,
-  canFork = () => false,
-  canUse: (command: DmClientCommand) => boolean = () => false,
-  canCompact = () => true,
-  canPreset = () => false,
-): Omit<
+  editor
+    .chain()
+    .focus()
+    .insertContentAt(range, [
+      {
+        type: "slashCommand",
+        attrs: {
+          id,
+          label,
+          mentionSuggestionChar: "/",
+        },
+      },
+      { type: "text", text: " " },
+    ])
+    .run();
+
+  window.getSelection()?.collapseToEnd();
+}
+
+export function createSlashCommandSuggestion(qc: QueryClient): Omit<
   SuggestionOptions<SlashCommandItem>,
   "editor"
 > {
@@ -351,51 +273,9 @@ export function createSlashCommandSuggestion(
     // Only open over a `/` the user actually typed, so a pasted path
     // (`/usr/local/bin`) never opens the skill picker (MUL-5429).
     shouldShow: ({ editor, range }) => isTriggerArmedAt(editor, range.from),
-    items: ({ query, editor }) => {
-      const triggerFrom = Math.max(0, editor.state.selection.from - query.length - 1);
-      const before = editor.state.doc.textBetween(0, triggerFrom, "\n", (node) =>
-        node.type.name === "hardBreak" ? "\n" : "\ufffc",
-      );
-      const position = editor.state.selection.$from;
-      const firstWord = before.trim() === ""
-        && position.depth === 1
-        && position.parent.type.name === "paragraph";
-      return buildItems(qc, query, firstWord, canRename(), canFork(), canUse, canCompact(), canPreset());
-    },
+    items: ({ query }) => buildItems(qc, query),
     command: ({ editor, range, props }) => {
-      const nodeAfter = editor.view.state.selection.$to.nodeAfter;
-      const overrideSpace = nodeAfter?.text?.startsWith(" ");
-      if (overrideSpace) {
-        range.to += 1;
-      }
-
-      if (isRegistryCommand(props) || props.id === "preset") {
-        editor
-          .chain()
-          .focus()
-          .insertContentAt(range, [{ type: "text", text: `/${props.descriptionKey} ` }])
-          .run();
-        window.getSelection()?.collapseToEnd();
-        return;
-      }
-
-      editor
-        .chain()
-        .focus()
-        .insertContentAt(range, [
-          {
-            type: "slashCommand",
-            attrs: {
-              id: props.id,
-              label: props.label,
-              mentionSuggestionChar: "/",
-            },
-          },
-          { type: "text", text: " " },
-        ])
-        .run();
-
-      window.getSelection()?.collapseToEnd();
+      insertSlashSkill(editor, range, props.id, props.label);
     },
     render: createSuggestionPopupRender<SlashCommandItem, SlashCommandItem, SlashCommandListRef, SlashCommandListProps>({
       pluginKey,
@@ -423,6 +303,8 @@ export const BUILTIN_COMMANDS: SlashCommandItem[] = [
   { id: "note", label: "note", descriptionKey: "note" },
 ];
 
+const SKILL_ITEM_PREFIX = "skill:";
+
 /** Marks a menu entry as a configured quick action rather than a built-in. */
 export const QUICK_ACTION_ITEM_PREFIX = "quick-action:";
 
@@ -434,24 +316,33 @@ export function quickActionIdFromItem(item: SlashCommandItem): string {
   return item.id.slice(QUICK_ACTION_ITEM_PREFIX.length);
 }
 
-// Match on the command label as a prefix only — the description is for display,
-// not search. With a single command this keeps the menu predictable (typing
-// `/no` surfaces `note`; an unrelated `/deploy` shows nothing).
+// Quick actions and built-ins match on label prefix only. Skills use the
+// shared name/description ranking; unrelated path/date queries stay empty.
 export function buildBuiltinCommandItems(
   query: string,
   quickActions: { id: string; name: string; description?: string }[] = [],
+  skills: AgentSkillSummary[] = [],
 ): SlashCommandItem[] {
   const q = query.toLowerCase();
   // Quick actions lead: on an issue they are the reason a user reaches for
   // `/`, and `/note` is a rarely-used escape hatch.
-  const actionItems: SlashCommandItem[] = quickActions.map((a) => ({
-    id: `${QUICK_ACTION_ITEM_PREFIX}${a.id}`,
-    label: a.name,
-    description: a.description || undefined,
-  }));
-  return [...actionItems, ...BUILTIN_COMMANDS]
-    .filter((c) => c.label.toLowerCase().startsWith(q))
-    .slice(0, MAX_ITEMS);
+  const actionItems: SlashCommandItem[] = quickActions
+    .filter((action) => action.name.toLowerCase().startsWith(q))
+    .map((action) => ({
+      id: `${QUICK_ACTION_ITEM_PREFIX}${action.id}`,
+      label: action.name,
+      description: action.description || undefined,
+    }));
+  const skillItems: SlashCommandItem[] = q ? rankSkillMatches(skills, q).map((skill) => ({
+    id: `${SKILL_ITEM_PREFIX}${skill.id}`,
+    label: skill.name,
+    description: skill.description ?? "",
+  })) : [];
+  const builtinItems = BUILTIN_COMMANDS.filter((command) =>
+    command.label.toLowerCase().startsWith(q),
+  );
+  const cap = Math.max(0, MAX_ITEMS - builtinItems.length);
+  return [...actionItems, ...skillItems].slice(0, cap).concat(builtinItems);
 }
 
 export interface BuiltinCommandSuggestionOptions {
@@ -460,6 +351,8 @@ export interface BuiltinCommandSuggestionOptions {
    * every keystroke and catalog notification without remounting the editor.
    */
   getQuickActions?: () => { id: string; name: string; description?: string }[];
+  /** Reads enabled skills for the draft's current target agents when the query is nonempty. */
+  getSkills?: (editor: Editor) => AgentSkillSummary[];
   subscribeQuickActions?: (refresh: () => void) => () => void;
   /**
    * Builds draft text synchronously from the cached catalog. Returning ""
@@ -479,7 +372,11 @@ export function createBuiltinCommandSuggestion(
     // Only open over a `/` the user actually typed, so a pasted path
     // (`/usr/local/bin`) never opens the command menu (MUL-5429).
     shouldShow: ({ editor, range }) => isTriggerArmedAt(editor, range.from),
-    items: ({ query }) => buildBuiltinCommandItems(query, options.getQuickActions?.() ?? []),
+    items: ({ editor, query }) => buildBuiltinCommandItems(
+      query,
+      options.getQuickActions?.() ?? [],
+      query ? (options.getSkills?.(editor) ?? []) : [],
+    ),
     command: ({ editor, range, props }) => {
       if (isQuickActionItem(props)) {
         const content = options.getQuickActionContent?.(quickActionIdFromItem(props));
@@ -496,6 +393,16 @@ export function createBuiltinCommandSuggestion(
           .insertContentAt(range, content, { contentType: "markdown" })
           .run();
         window.getSelection()?.collapseToEnd();
+        return;
+      }
+
+      if (props.id.startsWith(SKILL_ITEM_PREFIX)) {
+        insertSlashSkill(
+          editor,
+          range,
+          props.id.slice(SKILL_ITEM_PREFIX.length),
+          props.label,
+        );
         return;
       }
 
@@ -518,7 +425,11 @@ export function createBuiltinCommandSuggestion(
       getProps: (props) => ({
         // Read the current catalog even when Tiptap finishes an older items
         // request after a catalog notification.
-        items: buildBuiltinCommandItems(props.query, options.getQuickActions?.() ?? []),
+        items: buildBuiltinCommandItems(
+          props.query,
+          options.getQuickActions?.() ?? [],
+          props.query ? (options.getSkills?.(props.editor) ?? []) : [],
+        ),
         query: props.query,
         command: props.command,
         hideOnEmpty: true,

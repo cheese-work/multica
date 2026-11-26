@@ -19,14 +19,6 @@ Execution modes:
 - `create_issue` creates a Multica issue, making the run visible as issue state.
 - `run_only` creates an agent task directly. No issue is created; any durable
   report location has to come from other task context or instructions.
-- `script` runs one allowlisted script under the agent's task token, with no
-  model session: `--mode script --script <name> [--arg <value>]...`. The
-  description is never executed. With no daemon allowlist every script task
-  fails closed. `--output json` shows `script_config` (name and args).
-  The server deletes the task token at task end on a best-effort basis; if the
-  delete fails the token stays valid until it expires (no earlier revocation).
-  The run result records `script` (name, argv SHA-256, exit code, duration) and
-  `token_revoke_failed` when a delete failed.
 
 `issue-title-template` only supports `{{date}}`. Do not invent `{{trigger_id}}`,
 `{{branch}}`, or other variables.
@@ -36,14 +28,27 @@ Execution modes:
 ```bash
 multica autopilot list --output json
 multica autopilot get <autopilot-id> --output json
-multica autopilot create --title "<title>" --description "<task prompt>" --agent <agent-name-or-id> --mode create_issue|run_only|script [--script <name> --arg <value>] --output json
+multica autopilot create --title "<title>" --description "<task prompt>" --agent <agent-name-or-id> --mode create_issue|run_only --output json
+multica autopilot create --title "<title>" --description "<task prompt>" --squad <squad-name-or-id> --mode create_issue|run_only --output json
+multica autopilot update <autopilot-id> --squad <squad-name-or-id> --output json
 multica autopilot update <autopilot-id> --status active|paused --output json
 multica autopilot runs <autopilot-id> --output json
 multica autopilot trigger-add <autopilot-id> --kind schedule --cron "0 9 * * *" --timezone Asia/Shanghai --output json
 multica autopilot trigger-add <autopilot-id> --kind webhook --label "ci" --output json
+multica autopilot trigger-add <autopilot-id> --kind webhook --event-filters-file ./filters.json --output json
+multica autopilot trigger-update <autopilot-id> <trigger-id> --event-filters-file ./filters.json --output json
 multica autopilot trigger <autopilot-id> --output json
 multica autopilot trigger-rotate-url <autopilot-id> <trigger-id> --yes --output json
 ```
+
+The assignee flags `--agent`, `--squad`, and `--squad-id` are mutually exclusive,
+and `create` requires exactly one of them.
+On `update`, any of them retargets the autopilot (`--agent` moves a squad
+autopilot back to a single agent); leave them all out to keep the current
+assignee.
+
+A CLI that answers `unknown flag: --squad` predates squad assignees: assign the
+squad in the web app, or ask the user to update the CLI.
 
 Do not run `trigger`, `delete`, `trigger-delete`, or `trigger-rotate-url` to
 test — those are real side effects. Use `trigger` only when the user explicitly
@@ -60,6 +65,33 @@ The default `multica autopilot list` table includes `LAST_STATUS`. Treat a
 healthy-looking `STATUS=active` row with `LAST_STATUS=failed` as a failing
 autopilot; inspect `multica autopilot runs <id> --output json` for the failure
 reason.
+
+A webhook trigger accepts every event until it has event filters.
+`--event-filters-file` takes a JSON array of rows; a delivery is accepted when
+any row matches. A row matches when `event` equals the event name, `actions`
+(omit for any action) contains the action, and every one of its optional
+`conditions` holds on the payload:
+
+```json
+[
+  {
+    "event": "pull_request",
+    "actions": ["opened", "synchronize"],
+    "conditions": [
+      { "path": "pull_request.draft", "op": "equals", "value": false },
+      { "path": "pull_request.labels.*.name", "op": "equals", "value": "needs-review" },
+      { "path": "pull_request.base.ref", "op": "in", "values": ["main", "release"] }
+    ]
+  }
+]
+```
+
+`path` is dot-separated; a number indexes an array and `*` matches any element.
+`op` is `equals`, `not_equals`, `contains` (text), `in` (takes `values`), or
+`exists` (takes no value; a JSON `null` counts as absent); `ignore_case` applies to text. Values are compared
+with their JSON type, so `"false"` does not match `false`. A missing path never
+matches. A row holds at most 20 conditions. `trigger-update` without a filter
+flag keeps the current filters; `--clear-event-filters` removes them.
 
 A schedule trigger without `--timezone` runs in **UTC**. Name the zone whenever
 a human confirmed a wall-clock time, or they will confirm a morning job and
@@ -78,6 +110,7 @@ material into comments, logs, docs, or PRs.
 3. If assigned to a squad, inspect the squad: `multica squad get <squad-id> --output json`; execution goes to the leader.
 4. Inspect the target agent/runtime: `multica agent get <agent-id> --output json` and `multica runtime list --output json`.
 5. For webhooks, inspect delivery status: `queued` means the worker has not completed dispatch; `failed` carries the worker error. A provider retry with the same `X-GitHub-Delivery` / `Idempotency-Key` reuses the original delivery.
+   An `ignored` delivery created no run, so `runs` shows nothing for it. `trigger_disabled`, `autopilot_paused`, and `autopilot_archived` are recorded in its `error`; `quota_exceeded`, `event_filtered`, and `payload_filtered` in its `reason_code`. `event_filtered` means no row matched the event or action, and `payload_filtered` means a row matched but one of its `conditions` failed — `payload_condition_failure` names that condition and the payload value it saw.
 6. For `create_issue`, inspect the created issue if the run records one.
 
 ## Access
@@ -115,19 +148,3 @@ trigger.
 These mutate durable state or start work: `create`, `update`, `delete`, trigger
 add/update/delete/rotate, `trigger`, and webhook calls to
 `/api/webhooks/autopilots/{token}`.
-
-## Triggers and deletion
-
-```bash
-multica autopilot trigger-list <autopilot-id> --full-id   # ids for update/delete
-multica autopilot trigger-update <autopilot-id> <trigger-id> \
-  --cron "0 9 * * 1-5" --timezone Asia/Bangkok --label weekday --enabled=false
-multica autopilot trigger-delete <autopilot-id> <trigger-id>
-multica autopilot delete <id>
-```
-
-`trigger-update` takes `--cron`, `--timezone` (IANA), `--label` and
-`--enabled`; omit a flag to keep that field. `--enabled=false` pauses the
-trigger without losing it. Both deletes are permanent: `trigger-delete` removes
-one trigger, `delete` removes the autopilot. Prefer
-`trigger-update --enabled=false` when you may want it back.

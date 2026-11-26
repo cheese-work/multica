@@ -31,15 +31,13 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { ExtraProps } from "react-markdown";
-import { Check, Copy, Maximize2, RotateCcw } from "@multica/ui/icons";
+import { Maximize2, RotateCcw } from "@multica/ui/icons";
+import { CopyCheckIcon } from "@multica/ui/components/common/copy-check-icon";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
-import { useStandaloneMedia } from "../media/media-context";
 import { DeferredTooltip } from "../common/deferred-tooltip";
 import { RichTableDialog } from "./rich-table-dialog";
-import { useRichContentScrollRoot } from "./scroll-root";
-import { cachedOverflowWidths, headerCells, measureColumns } from "./rich-table-fit";
 import {
   columnWidthKey,
   readColumnWidths,
@@ -57,13 +55,6 @@ export interface RichTableSource {
 }
 
 export const RichTableSourceContext = createContext<RichTableSource>({ source: "", rendered: "" });
-
-/**
- * Set by an oversized comment body: its tables then mount only near the
- * viewport (CHE-2272). A 63 KB deep-link target mounted ~30 tables and ~65
- * icons at once, +30 MB of page-renderer RSS over a cold open.
- */
-export const RichTableDeferContext = createContext(false);
 
 /** Marks the frame's own controls, which the editor must leave to the browser. */
 export const RICH_TABLE_CHROME_ATTRIBUTE = "data-rich-table-chrome";
@@ -89,6 +80,62 @@ function sum(widths: number[]): number {
 
 function sameWidths(a: number[] | null, b: number[] | null): boolean {
   return a === b || (!!a && !!b && a.length === b.length && a.every((w, i) => w === b[i]));
+}
+
+// The editor keeps its header row in <tbody>, so the first row stands for the
+// columns in both renderers.
+function headerCells(table: HTMLTableElement): HTMLTableCellElement[] {
+  return Array.from(table.rows[0]?.cells ?? []);
+}
+
+// Each column's min-content and max-content width, read with the table's own
+// sizing lifted and restored within the same task, so the browser paints only
+// the restored layout. Only the <table> and its <col>s are touched: in the
+// editor, a style written to a cell would reach ProseMirror as an edit.
+function measureColumns(
+  table: HTMLTableElement,
+  available?: number,
+): { min: number[]; max: number[] } {
+  const { style } = table;
+  const saved = { layout: style.tableLayout, width: style.width, minWidth: style.minWidth };
+  const fixed = table.hasAttribute("data-column-widths");
+  const cols = Array.from(table.querySelectorAll<HTMLElement>("colgroup > col"));
+  const colWidths = cols.map((col) => col.style.width);
+  const read = () => headerCells(table).map((cell) => Math.ceil(cell.getBoundingClientRect().width));
+
+  if (fixed) table.removeAttribute("data-column-widths");
+  for (const col of cols) col.style.width = "";
+  style.tableLayout = "auto";
+  style.minWidth = "0";
+  style.width = "min-content";
+  const min = read();
+  let max: number[] = [];
+  if (available === undefined || sum(min) > available) {
+    style.width = "max-content";
+    max = read();
+  }
+
+  style.tableLayout = saved.layout;
+  style.width = saved.width;
+  style.minWidth = saved.minWidth;
+  cols.forEach((col, i) => {
+    col.style.width = colWidths[i] ?? "";
+  });
+  if (fixed) table.setAttribute("data-column-widths", "");
+  return { min, max };
+}
+
+// The browser's automatic layout reads well while the columns' minimums fit.
+// Once they do not, it shrinks every column to its minimum, which leaves a
+// prose column a few characters wide beside a column of unbreakable paths.
+// Past that point each column gets its content width, capped so one long cell
+// cannot claim the table, and the table scrolls.
+const PREFERRED_MAX_COLUMN_WIDTH = 320;
+
+function overflowWidths(table: HTMLTableElement, available: number): number[] | null {
+  const { min, max } = measureColumns(table, available);
+  if (min.length === 0 || sum(min) <= available) return null;
+  return min.map((least, i) => Math.max(least, Math.min(max[i] ?? least, PREFERRED_MAX_COLUMN_WIDTH)));
 }
 
 interface ColumnEdges {
@@ -144,15 +191,6 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
 
   const [widths, setWidths] = useState<number[] | null>(null);
   const [dragging, setDragging] = useState(false);
-  const copiedTimer = useRef<number | undefined>(undefined);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      window.clearTimeout(copiedTimer.current);
-    };
-  }, []);
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const tableRef = useRef<HTMLTableElement | null>(null);
@@ -189,23 +227,6 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     setWidths(stored ?? carried);
   }, [storageKey, columnCount]);
 
-  // One observer serves the auto-fit, the handle positions and the scroll
-  // shadows: each listener decides for itself whether the change concerns it.
-  const resizeListeners = useRef(new Set<() => void>());
-  const onResize = useCallback((listener: () => void) => {
-    resizeListeners.current.add(listener);
-    return () => {
-      resizeListeners.current.delete(listener);
-    };
-  }, []);
-  useEffect(() => {
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => resizeListeners.current.forEach((listener) => listener()));
-    if (wrapperRef.current) observer.observe(wrapperRef.current);
-    if (tableRef.current) observer.observe(tableRef.current);
-    return () => observer.disconnect();
-  }, []);
-
   const [autoWidths, setAutoWidths] = useState<number[] | null>(null);
   useLayoutEffect(() => {
     const wrapper = wrapperRef.current;
@@ -213,28 +234,30 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     if (!wrapper || !table || widths) return;
     let measuredAt = -1;
     let active = true;
-    const fit = (remeasure = false) => {
+    const fit = () => {
       const available = wrapper.clientWidth;
       if (!active || available === measuredAt) return;
       measuredAt = available;
-      const next = cachedOverflowWidths(storageKey, table, available, remeasure);
+      const next = overflowWidths(table, available);
       setAutoWidths((prev) => (sameWidths(prev, next) ? prev : next));
     };
     fit();
-    const unsubscribe = onResize(fit);
-    // Content widths change when a web font replaces its fallback. Fonts that
-    // are already loaded cannot change them, so a remount keeps its cached fit.
-    if (document.fonts?.status === "loading") {
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
+    observer?.observe(wrapper);
+    // Content widths change when a web font replaces its fallback. Once the
+    // fonts have loaded, `ready` resolves at once and a second measure of every
+    // table would only repeat the first.
+    if (document.fonts && document.fonts.status !== "loaded") {
       void document.fonts.ready.then(() => {
         measuredAt = -1;
-        fit(true);
+        fit();
       });
     }
     return () => {
       active = false;
-      unsubscribe();
+      observer?.disconnect();
     };
-  }, [widths, model, storageKey, onResize]);
+  }, [widths, model]);
 
   const userWidths = widths?.length === columnCount ? widths : null;
   const resized = userWidths !== null;
@@ -249,7 +272,13 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     setEdges((prev) => (sameEdges(prev, next) ? prev : next));
   }, []);
   useLayoutEffect(syncEdges, [syncEdges, columnWidths, model]);
-  useEffect(() => onResize(syncEdges), [onResize, syncEdges]);
+  useEffect(() => {
+    const table = tableRef.current;
+    if (!table || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(syncEdges);
+    observer.observe(table);
+    return () => observer.disconnect();
+  }, [syncEdges]);
 
   const [overflow, setOverflow] = useState({ start: false, end: false });
   useEffect(() => {
@@ -262,12 +291,14 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
     };
     sync();
     wrapper.addEventListener("scroll", sync, { passive: true });
-    const unsubscribe = onResize(sync);
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(sync);
+    observer?.observe(wrapper);
+    if (tableRef.current) observer?.observe(tableRef.current);
     return () => {
       wrapper.removeEventListener("scroll", sync);
-      unsubscribe();
+      observer?.disconnect();
     };
-  }, [onResize]);
+  }, []);
 
   const resize = useMemo(() => {
     const renderedWidths = (): number[] => {
@@ -362,10 +393,9 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
   };
 
   const copyMarkdown = async () => {
-    if ((await copyText(getMarkdown())) && mounted.current) {
+    if (await copyText(getMarkdown())) {
       setCopied(true);
-      window.clearTimeout(copiedTimer.current);
-      copiedTimer.current = window.setTimeout(() => setCopied(false), 2000);
+      setTimeout(() => setCopied(false), 2000);
     }
   };
 
@@ -410,7 +440,7 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
               className={cn(toolbarButton, "w-6")}
               aria-label={t(($) => $.table.copy_markdown)}
             >
-              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+              <CopyCheckIcon copied={copied} />
             </button>
           }
         />
@@ -455,20 +485,24 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
         </div>
         {/* Columns continue past the edge: a shadow, not a fade to a background
             colour, because the same table renders on cards, pages and chat. */}
-        {overflow.start && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-y-px left-px w-3 rounded-l-[var(--radius)]"
-            style={{ background: `linear-gradient(to right, ${SCROLL_SHADOW}, transparent)` }}
-          />
-        )}
-        {overflow.end && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-y-px right-px w-3 rounded-r-[var(--radius)]"
-            style={{ background: `linear-gradient(to left, ${SCROLL_SHADOW}, transparent)` }}
-          />
-        )}
+        <div
+          aria-hidden
+          data-overflow-shadow={overflow.start ? "start" : undefined}
+          className={cn(
+            "pointer-events-none absolute inset-y-px left-px w-3 rounded-l-[var(--radius)] transition-opacity duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
+            overflow.start ? "opacity-100" : "opacity-0",
+          )}
+          style={{ background: `linear-gradient(to right, ${SCROLL_SHADOW}, transparent)` }}
+        />
+        <div
+          aria-hidden
+          data-overflow-shadow={overflow.end ? "end" : undefined}
+          className={cn(
+            "pointer-events-none absolute inset-y-px right-px w-3 rounded-r-[var(--radius)] transition-opacity duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
+            overflow.end ? "opacity-100" : "opacity-0",
+          )}
+          style={{ background: `linear-gradient(to left, ${SCROLL_SHADOW}, transparent)` }}
+        />
       </div>
       {expanded && (
         <RichTableDialog model={model} open={expanded} onOpenChange={setExpanded} getMarkdown={getMarkdown} />
@@ -491,62 +525,17 @@ const TableContent = memo(function TableContent({ children }: { children: ReactN
   return <>{children}</>;
 });
 
-// One header or body row at one line of text; taller rows grow on mount.
-const ROW_HEIGHT_ESTIMATE = 38;
-const NEAR_VIEWPORT_ROOT_MARGIN = "800px 0px";
-
-/**
- * Holds a table's space until it is near the viewport, then mounts it for good
- * (a latch, so scrolling back never rebuilds it). Without IntersectionObserver
- * it mounts at once, like LazyRichBlock.
- */
-function NearViewportTable({ rowCount, children }: { rowCount: number; children: ReactNode }) {
-  const [near, setNear] = useState(false);
-  const placeholderRef = useRef<HTMLDivElement>(null);
-  const scrollRoot = useRichContentScrollRoot();
-  useEffect(() => {
-    if (near) return;
-    const placeholder = placeholderRef.current;
-    if (!placeholder || typeof IntersectionObserver === "undefined") {
-      setNear(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) setNear(true);
-      },
-      { root: scrollRoot, rootMargin: NEAR_VIEWPORT_ROOT_MARGIN },
-    );
-    observer.observe(placeholder);
-    return () => observer.disconnect();
-  }, [near, scrollRoot]);
-  if (near) return <>{children}</>;
-  return (
-    <div
-      ref={placeholderRef}
-      data-rich-table-placeholder=""
-      aria-hidden
-      className="rich-table"
-      style={{ height: (rowCount + 1) * ROW_HEIGHT_ESTIMATE + 2 }}
-    />
-  );
-}
-
 type RichTableProps = ComponentPropsWithoutRef<"table"> & ExtraProps;
 
 /** react-markdown's `table` override. */
 export function RichTable({ children, node }: RichTableProps) {
-  const standalone = useStandaloneMedia();
   const { source, rendered } = useContext(RichTableSourceContext);
-  const deferred = useContext(RichTableDeferContext);
   const model = useMemo(() => readTableModel(children), [children]);
   const getMarkdown = () =>
     tableMarkdownFromSource(source, rendered, node?.position?.start.offset, node?.position?.end.offset);
-  if (standalone) return <RichTableDialog model={model} open onOpenChange={() => {}} getMarkdown={getMarkdown} standalone />;
-  const frame = (
+  return (
     <RichTableFrame model={model} getMarkdown={getMarkdown}>
       <TableContent>{children}</TableContent>
     </RichTableFrame>
   );
-  return deferred ? <NearViewportTable rowCount={model.rows.length}>{frame}</NearViewportTable> : frame;
 }

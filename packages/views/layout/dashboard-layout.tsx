@@ -2,9 +2,10 @@
 
 import type { ReactNode } from "react";
 import { SidebarProvider } from "@multica/ui/components/ui/sidebar";
+import { WorkspaceTrialNotices } from "../billing/trial-notices";
 import { AppearanceSync } from "../common/appearance-sync";
 import { ModalRegistry } from "../modals/registry";
-import { SourceBackfillModal } from "../onboarding/source-backfill-modal";
+import { SourceBackfillModal } from "../onboarding";
 import { AppRail } from "./app-rail";
 import { AppBottomBar } from "./bottom-bar";
 import { AppShellProvider } from "./app-shell-context";
@@ -15,10 +16,6 @@ import { ShellRouteDataPrefetch } from "./route-data-prefetch";
 import { SpacePanel } from "./space-panel";
 import { WorkspacePresencePrefetch } from "./workspace-presence-prefetch";
 import { GlobalShortcuts } from "./global-shortcuts";
-import { MachinePauseBanner } from "./machine-pause-banner";
-import { MachineBannerHeaderSlot } from "./machine-banner-toggle";
-import { WorkspacePauseBanner } from "./workspace-pause-banner";
-import { OpenDecisionsChip } from "./open-decisions-chip";
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -75,10 +72,8 @@ export function DashboardLayout({
               <div className="flex min-w-0 flex-1 flex-col">
                 <AppShellCard>
                   <NavigationProgress />
-                  <MachinePauseBanner />
-                  <WorkspacePauseBanner />
-                  <OpenDecisionsChip />
-                  <MachineBannerHeaderSlot>{children}</MachineBannerHeaderSlot>
+                  <WorkspaceTrialNotices />
+                  {children}
                   <ModalRegistry />
                   <SourceBackfillModal />
                   {extra}

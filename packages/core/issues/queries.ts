@@ -176,10 +176,6 @@ export const issueKeys = {
   /** Full-issue timeline (single TanStack Query, no cursor). */
   timeline: (issueId: string) =>
     [...issueKeys.timelineAll(), issueId] as const,
-  /** Status-history dialog data. Nested under `timeline(issueId)` so every
-   *  timeline invalidation (WS events, reconnect recovery) refreshes it too. */
-  statusHistory: (issueId: string) =>
-    [...issueKeys.timeline(issueId), "status-history"] as const,
   commentThread: (issueId: string, commentId: string) =>
     [...issueKeys.timeline(issueId), "thread", commentId] as const,
   /** Prefix across all issues — WS task lifecycle events invalidate here so
@@ -197,9 +193,6 @@ export const issueKeys = {
   /** PREFIX — the picker hook appends a signature of the prospective write. */
   issueTriggerPreview: (signature: string) =>
     [...issueKeys.issueTriggerPreviewAll(), signature] as const,
-  reactionsAll: () => ["issues", "reactions"] as const,
-  reactions: (issueId: string) =>
-    [...issueKeys.reactionsAll(), issueId] as const,
   subscribersAll: () => ["issues", "subscribers"] as const,
   subscribers: (issueId: string) =>
     [...issueKeys.subscribersAll(), issueId] as const,
@@ -215,26 +208,10 @@ export const issueKeys = {
   tasksAll: () => ["issues", "tasks"] as const,
   /** Per-issue task list (issue-detail Execution log section). */
   tasks: (issueId: string) => [...issueKeys.tasksAll(), issueId] as const,
-  commentPreview: (wsId: string, commentId: string) =>
-    [...issueKeys.all(wsId), "comment-preview", commentId] as const,
   subtreeTasks: (issueId: string) => [...issueKeys.tasks(issueId), "subtree"] as const,
   sourceContextPreview: (wsId: string, anchorCommentId: string) =>
     ["source-context", "preview", wsId, anchorCommentId] as const,
 };
-
-/**
- * Resolve a comment UUID to its issue + first-line preview. A 404 (unknown,
- * deleted, or another workspace) is a stable answer, so it is not retried.
- */
-export function commentPreviewOptions(wsId: string, commentId: string) {
-  return queryOptions({
-    queryKey: issueKeys.commentPreview(wsId, commentId),
-    queryFn: () => api.getCommentPreview(commentId),
-    enabled: !!wsId,
-    retry: false,
-    staleTime: 5 * 60 * 1000,
-  });
-}
 
 export function sourceContextPreviewOptions(
   wsId: string,
@@ -255,7 +232,6 @@ export type MyIssuesFilter = Pick<
   | "assignee_types"
   | "creator_id"
   | "created_by_user_id"
-  | "requested_by_id"
   | "project_id"
   | "involves_user_id"
 >;
@@ -525,43 +501,10 @@ export function sidebarIssuesOptions(
   });
 }
 
-/**
- * Detail reads fail at once: the issue page shows Retry after the first failed
- * request. Every observer of this entry shares the options (the hover card
- * included) because a page that joins an in-flight read keeps that read's retry
- * policy, so a per-observer opt-out would still wait on the app default.
- */
 export function issueDetailOptions(wsId: string, id: string) {
   return queryOptions({
     queryKey: issueKeys.detail(wsId, id),
     queryFn: () => api.getIssue(id),
-    retry: false,
-  });
-}
-
-/**
- * The detail view's own observer on the detail entry.
- *
- * List rows and issue-created realtime payloads intentionally omit the
- * detail-only source-context snapshot. They can still seed this query via
- * `initialData`, so the view always reconciles with the authoritative detail
- * endpoint when it mounts. Without this, the global Infinity staleTime hides
- * source context until a full page refresh.
- *
- * `authoritative` says the entry is the detail endpoint's own response, read a
- * moment ago by the route's identifier lookup, so the mount skips reading it
- * again.
- *
- * Only seed when the description is present; the list API omits it, so a
- * partial list row must not masquerade as a hydrated issue detail.
- */
-export function issueDetailViewOptions(wsId: string, id: string, listRow?: Issue, authoritative = false) {
-  return queryOptions({
-    queryKey: issueKeys.detail(wsId, id),
-    queryFn: () => api.getIssue(id),
-    retry: false,
-    refetchOnMount: authoritative ? false : "always",
-    initialData: () => (listRow?.description != null ? listRow : undefined),
   });
 }
 
@@ -590,20 +533,9 @@ export function issueIdentifierOptions(wsId: string, identifier: string) {
     queryKey: issueKeys.identifier(wsId, identifier),
     // Keep this small, cacheable lookup alive when the last mention unmounts.
     // A remount can then share its request instead of aborting and restarting it.
-    queryFn: async ({ client }) => {
+    queryFn: async () => {
       try {
-        const issue = await api.getIssue(identifier);
-        // Seed the detail cache so the chip that renders next reads this issue
-        // instead of firing a second `getIssue(uuid)` and painting a label-only
-        // chip until it lands. Never overwrite an existing entry: it may be
-        // newer than this lookup, and WS updates keep it current afterwards.
-        // Skip `setQueryData` entirely when data exists: even a no-op updater
-        // clears the entry's invalidation flag, dropping its refresh obligation.
-        const detailKey = issueKeys.detail(wsId, issue.id);
-        if (client.getQueryData<Issue>(detailKey) === undefined) {
-          client.setQueryData<Issue>(detailKey, issue);
-        }
-        return issue;
+        return await api.getIssue(identifier);
       } catch (err) {
         // Unknown identifier / wrong workspace prefix → render as plain text.
         // Any other failure (401/5xx) must keep propagating so the query
@@ -739,12 +671,44 @@ export function issueTimelineOptions(issueId: string) {
   });
 }
 
-/** Timeline + truncation flag, fetched only while the status history is open. */
-export function issueStatusHistoryOptions(issueId: string) {
-  return queryOptions({
-    queryKey: issueKeys.statusHistory(issueId),
-    queryFn: () => api.listTimelineWithMeta(issueId),
-  });
+/**
+ * The issue a link names by UUID or identifier, also cached under its UUID,
+ * the key the issue page reads it by once an identifier URL has resolved
+ * through the identifier-keyed entry (`useCanonicalIssue`).
+ */
+export async function fetchIssueByRef(qc: QueryClient, wsId: string, ref: string): Promise<Issue> {
+  const issue = await qc.fetchQuery(issueDetailOptions(wsId, ref));
+  if (issue.id !== ref) {
+    qc.setQueryData<Issue>(issueKeys.detail(wsId, issue.id), (old) => old ?? issue);
+  }
+  return issue;
+}
+
+/**
+ * Warm what the issue page holds its first paint and a comment landing on: the
+ * issue, its timeline, its runs and its sub-issues, so opening it renders from
+ * cache instead of waiting on a request chain. All four are fetched in
+ * parallel. With an `identifier`, the issue is fetched under the key an
+ * identifier URL resolves through and mirrored to its UUID, so a link to that
+ * URL warming the same issue shares the request. prefetchQuery honours each
+ * query's staleTime: a warm entry costs nothing. `runs: false` leaves out the
+ * runs, for a viewer whose issue page shows none (a guest).
+ */
+export async function prefetchIssuePage(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  identifier?: string | null,
+  { runs = true }: { runs?: boolean } = {},
+): Promise<void> {
+  await Promise.all([
+    identifier
+      ? fetchIssueByRef(qc, wsId, identifier).catch(() => undefined)
+      : qc.prefetchQuery(issueDetailOptions(wsId, issueId)),
+    qc.prefetchQuery(issueTimelineOptions(issueId)),
+    runs && qc.prefetchQuery(issueTasksOptions(issueId)),
+    qc.prefetchQuery(childIssuesOptions(wsId, issueId)),
+  ]);
 }
 
 export function issueCommentThreadOptions(issueId: string, commentId: string) {
@@ -756,16 +720,6 @@ export function issueCommentThreadOptions(issueId: string, commentId: string) {
         throw new Error("Comment not found in thread");
       }
       return comments;
-    },
-  });
-}
-
-export function issueReactionsOptions(issueId: string) {
-  return queryOptions({
-    queryKey: issueKeys.reactions(issueId),
-    queryFn: async () => {
-      const issue = await api.getIssue(issueId);
-      return issue.reactions ?? [];
     },
   });
 }

@@ -6,8 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/multica-ai/multica/server/internal/cibroker"
-	"github.com/multica-ai/multica/server/internal/secrets/seal"
 	"log/slog"
 	"math"
 	"net/http"
@@ -20,30 +18,30 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
-	"github.com/multica-ai/multica/server/internal/bgagents"
-	"github.com/multica-ai/multica/server/internal/browserlease"
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
+	"github.com/multica-ai/multica/server/internal/collab"
 	"github.com/multica-ai/multica/server/internal/connectedapps"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/dbreader"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/inbox"
+	"github.com/multica-ai/multica/server/internal/inboxread"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 	"github.com/multica-ai/multica/server/internal/integrations/dingtalk"
 	"github.com/multica-ai/multica/server/internal/integrations/ghsnapshot"
-	"github.com/multica-ai/multica/server/internal/integrations/ghstack"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/integrations/slack"
 	"github.com/multica-ai/multica/server/internal/integrations/telegram"
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
+	"github.com/multica-ai/multica/server/internal/integrations/weixin"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
-	"github.com/multica-ai/multica/server/internal/passkey"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -75,11 +73,6 @@ type dbExecutor interface {
 }
 
 type Config struct {
-	// SetupComponents is the registry of Setup component ids the
-	// adoption_linked close gate checks metadata `components` and the `none`
-	// cross-check against (MULTICA_SETUP_COMPONENTS, comma separated). The
-	// registry lives outside this repo, so the operator mirrors its ids here.
-	SetupComponents     []string
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string
@@ -173,19 +166,12 @@ type Config struct {
 	// LLMDisableThinking is the parsed MULTICA_LLM_DISABLE_THINKING switch.
 	// cmd/server validates the raw value before the boot continues, so a
 	// non-boolean never reaches this struct.
-	LLMDisableThinking      bool
-	ProviderRecoveryBaseURL string
+	LLMDisableThinking bool
 	// ServerVersion is the build version of the running API binary (the same
 	// value main.go stamps via -X main.version and reports on /metrics).
 	// Surfaced through /api/config so self-hosted operators can confirm which
 	// server build is deployed. Empty in dev builds.
 	ServerVersion string
-	// ServerBuild is the fork ICT build stamp (YYYYMMDD-hhmm) stamped via
-	// -X main.build on CD/release builds. Empty on upstream/dev builds.
-	ServerBuild string
-	// ServerCommit is the commit SHA stamped via -X main.commit. Normalized to
-	// a 7-char short SHA on /api/config when ServerVersion is present.
-	ServerCommit string
 	// GitExtraCACerts is the PEM of the private CAs the operator added to the
 	// backend's trust store through SSL_CERT_DIR (see internal/gitca). It is
 	// handed to daemons with the workspace repos so their git can reach a
@@ -237,27 +223,9 @@ type RuntimeRecoveryNotifier interface {
 }
 
 type Handler struct {
-	// threadRelationsForTest replaces the thread relation read (CHE-6428).
-	threadRelationsForTest func(context.Context, threadRelationQuery) (threadRelationSet, error)
-	// handoffDispatchHook is a test seam (CHE-5488): it is called at named points of
-	// dispatchHandoffIntent, and an error it returns fails the dispatch there.
-	handoffDispatchHook func(point string) error
-	// MergeReceiptBroker verifies the GitHub Actions OIDC token of the workflow
-	// that writes merge receipts (CHE-5594). Nil leaves the route off.
-	MergeReceiptBroker *cibroker.Broker
-	// MergeReceiptWorkspaceID is the one workspace that route writes to.
-	MergeReceiptWorkspaceID string
-	// githubAllowlist is the GITHUB_ALLOWED_ACCOUNT_IDS policy (CHE-3418).
-	githubAllowlist githubAllowlist
-	// workflowWriter overrides how workflow deliveries are stored; nil means the
-	// default transaction-per-workspace writer. Tests inject faults through it.
-	workflowWriter workflowWriter
-	// ciWatch records completed runs for the CI failure watcher; nil = off.
-	ciWatch ciWatcher
-	Queries *db.Queries
-	// ActionRequestsEnabled lets `kind=action` decision requests be created. It
-	// stays off until the whole CHE-2394 stack is deployed (P7 removes it).
-	ActionRequestsEnabled  bool
+	InboxReads             *inboxread.Guard
+	InboxTrimmer           *inbox.Trimmer // nil leaves inboxes untrimmed
+	Queries                *db.Queries
 	ReadSelector           *dbreader.Selector
 	DB                     dbExecutor
 	TxStarter              txStarter
@@ -269,45 +237,28 @@ type Handler struct {
 	Bus                    *events.Bus
 	TaskService            *service.TaskService
 	PluginService          *service.PluginService
-
-	// SecretsKeyring seals scoped secrets (MULTICA_SECRETS_KEY). Nil means the
-	// feature is off: handlers answer writeFeatureDisabled("secrets_storage_disabled").
-	SecretsKeyring *seal.Keyring
-	// BrowserLeases serves the browser lease API (CHE-4732); nil answers 503.
-	BrowserLeases    *browserlease.Service
-	IssueService     *service.IssueService
-	AutopilotService *service.AutopilotService
+	IssueService           *service.IssueService
+	AutopilotService       *service.AutopilotService
 	// Entitlements supplies workspace-scoped commercial gates. A nil provider
 	// preserves self-hosted behavior without extra reads.
 	Entitlements entitlement.Provider
+	// Features restricts paid features (paid_feature.go). Nil leaves every
+	// feature usable, which is the self-hosted behavior.
+	Features entitlement.FeatureProvider
 	// SeatCapacity executes Cloud's pre-purchased human-seat protocol. Nil or
 	// disabled preserves self-hosted behavior.
-	SeatCapacity       seatcapacity.Executor
-	SeatCapacityLocker seatcapacity.WorkspaceLocker
-	SeatCapacityWorker *seatcapacity.Worker
-	DecisionWorker     *DecisionWorker
-	// ApprovalVerifier proves a human approved a decision action. Nil until
-	// the passkey verifier is wired; approve then fails closed.
-	ApprovalVerifier ApprovalVerifier
-	// ProposalGuard admits agent action proposals. New wires the real guard; nil
-	// refuses them all (C2).
-	ProposalGuard ProposalGuard
-	// Passkeys issues and verifies approval challenges. Nil leaves passkeys
-	// off (MULTICA_WEBAUTHN_* unset).
-	Passkeys       *passkey.Service
-	EmailService   *service.EmailService
-	UpdateStore    UpdateStore
-	ModelListStore ModelListStore
-	DaemonUpdate   *DaemonUpdateSource // daemon build baked into this image; nil when absent
-	// UpdateCycleReady runs when a draining update cycle has 0 live runs and an
-	// online runtime before its start cutoff; the updating step (CHE-5711) sets it.
-	UpdateCycleReady      func(context.Context, db.DaemonUpdateCycle) error
+	SeatCapacity          seatcapacity.Executor
+	SeatCapacityLocker    seatcapacity.WorkspaceLocker
+	SeatCapacityWorker    *seatcapacity.Worker
+	EmailService          *service.EmailService
+	UpdateStore           UpdateStore
+	ModelListStore        ModelListStore
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
 	FeatureFlags          *featureflag.Service
-	// WakeupActivationKey selects the wakeup definition activation the write gate
-	// reads; empty is production's. Tests set their own.
-	WakeupActivationKey string
+	// Collab is the live co-editing service for docs. Nil turns live editing
+	// off: docs save through the REST autosave path.
+	Collab *collab.Client
 	// ThemeStore serves the community theme registry. Nil only when
 	// MULTICA_THEME_REGISTRY_URL is invalid: its routes return 404 and
 	// /api/config omits it.
@@ -347,7 +298,6 @@ type Handler struct {
 	WebhookIPRateLimiter         WebhookRateLimiter
 	WebhookAbsoluteIPRateLimiter WebhookRateLimiter
 	InvitationRateLimiters       InvitationRateLimiters
-	SearchSuggestions            *SearchSuggestions
 	WebhookDeliveryWorker        *WebhookDeliveryWorker
 	CloudRuntime                 cloudRuntimeProxy
 	// Test-only HTTP override; nil uses the default client in production.
@@ -466,6 +416,9 @@ type Handler struct {
 	// enqueues EventChatDone work.
 	TelegramOutbound *telegram.Outbound
 
+	WeixinInstall  *weixin.InstallService
+	WeixinOutbound *weixin.Outbound
+
 	// channelFileDelivery names the channel types that can, IN THIS
 	// DEPLOYMENT, carry a file the agent produced the last hop into the
 	// conversation. It answers the claim response's
@@ -512,25 +465,8 @@ type Handler struct {
 	// so the feature degrades cleanly on deployments without a private key.
 	// Wired in cmd/server/router.go after New.
 	PRRefresh *ghsnapshot.Manager
-	// StackAutolink queues stack-link jobs for pull_request events (CHE-4143
-	// step 7). Nil disables the triggers. Enqueue never blocks or fails.
-	StackAutolink StackAutolinkEnqueuer
-
-	// ConfigSyncGitHub builds the GitHub reader for one config repo (CHE-3284);
-	// nil when the GitHub App is not configured. configSyncRun runs one
-	// evaluation (nil = in a goroutine); tests run it inline.
-	ConfigSyncGitHub func(installationID int64, owner, repo string) ConfigSyncGitHub
-	configSyncRun    func(func())
-	// fetchPullRequestJSON overrides the REST pull request read of
-	// RepairUnverifiedHeadPullRequests; nil uses PRRefresh.
-	fetchPullRequestJSON func(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error)
-	// readApprovalSnapshot overrides the snapshot read of the R3 approval action; nil uses PRRefresh.
-	readApprovalSnapshot githubSnapshotReader
-	cfg                  Config
+	cfg       Config
 }
-
-// StackAutolinkEnqueuer is the trigger side of ghstack.Dispatcher.
-type StackAutolinkEnqueuer interface{ Enqueue(ghstack.Job) }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
 	var executor dbExecutor
@@ -589,17 +525,6 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	)
 
 	taskSvc := service.NewTaskService(queries, txStarter, hub, bus, daemonHub)
-	// CHE-4568: the retry, recurring and watchdog writers share one claim store.
-	// Test starters that are not a pool leave it nil, which skips claiming.
-	if pool, ok := txStarter.(*pgxpool.Pool); ok {
-		taskSvc.RecoveryClaims = service.NewRecoveryClaimStore(pool)
-	}
-	probe, probeErr := service.NewHTTPProviderFailureProbe(cfg.ProviderRecoveryBaseURL)
-	if probeErr != nil {
-		slog.Error("provider recovery probe configuration is invalid", "error", probeErr)
-	} else if probe != nil {
-		taskSvc.ProviderFailureProbe = probe
-	}
 	taskSvc.Analytics = analyticsClient
 	taskSvc.SourceContextStorage = store
 	// Chat follow-up suggestions run through the same internal LLM layer that
@@ -607,11 +532,11 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	// a disabled client, which turns the feature off rather than failing.
 	taskSvc.QuickActions = llmClient
 	h := &Handler{
-		ProposalGuard:                admitProposalOnce,
 		Queries:                      queries,
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),
 		DB:                           executor,
 		TxStarter:                    txStarter,
+		InboxReads:                   inboxread.New(inboxread.ConfigFromEnv()),
 		Hub:                          hub,
 		DaemonHub:                    daemonHub,
 		DaemonProfileRefresh:         daemonProfileRefresh,
@@ -646,8 +571,6 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		cfg: cfg,
 	}
 	h.WebhookDeliveryWorker = NewWebhookDeliveryWorker(h)
-	h.DecisionWorker = NewDecisionWorker(h)
-	h.usePasskeysFromEnv(queries, txStarter)
 	// The default passthrough scheduler reports sweeper-race recoveries so the
 	// daemon:register refresh fires even without the production batched wiring.
 	if passthrough, ok := h.HeartbeatScheduler.(*PassthroughHeartbeatScheduler); ok {
@@ -664,41 +587,8 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		slog.Warn("github: PR snapshot pipeline disabled (invalid App private key)", "err", err)
 	}
 	h.PRRefresh = ghsnapshot.NewManager(ghClient, queries, txStarter, h.broadcastPRSnapshotApplied)
-	h.PRRefresh.SetOnClosed(func(ctx context.Context, installationID int64, owner, repo string, number int32) error {
-		err := h.replayClosedPullRequest(ctx, installationID, owner, repo, number)
-		if err != nil {
-			slog.Warn("github: closed pull request replay failed", "repo", owner+"/"+repo, "pr_number", number, "err", err)
-		}
-		return err
-	})
 	taskSvc.PRSnapshotsEnabled = h.PRRefresh.Enabled()
-	service.SetAdmissionSnapshotRefresh(func(pr db.GithubPullRequest) {
-		h.PRRefresh.Enqueue(pr.InstallationID, pr.RepoOwner, pr.RepoName, pr.PrNumber)
-	})
-	h.enableCIWatch(ghClient)
-	if h.PRRefresh.Enabled() {
-		h.ConfigSyncGitHub = func(installationID int64, owner, repo string) ConfigSyncGitHub {
-			return ghsnapshot.NewConfigSyncReader(ghClient, installationID, owner, repo)
-		}
-	}
-	taskSvc.WorkflowEdges = h.evaluateWorkflowEdges
-	taskSvc.PRMergeOwed = h.evaluatePRMergeOwed
-	taskSvc.PRMergeOwe = upsertPRMergeOwed
-	service.SetOnRunBudgetExhausted(h.onRunBudgetExhausted)
-	service.SetOnReviewRunSkipped(h.onReviewRunSkipped)
-	service.SetOnLoopBreakerTripped(h.onLoopBreakerTripped)
-	service.SetOnWeeklyRunGuardTripped(h.onWeeklyRunGuardTripped)
-	service.SetOnRunBudgetEvent(h.onRunBudgetEvent)
 
-	if h.IssueService != nil {
-		h.IssueService.SquadDispatcher = func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool {
-			return h.enqueueSquadLeaderTask(ctx, issue, triggerCommentID, authorType, authorID, "")
-		}
-	}
-
-	taskSvc.BackgroundWriters = map[string]service.BackgroundWriter{
-		bgagents.Purpose(bgagents.DMTitle): h.writeDMTitle,
-	}
 	return h
 }
 
@@ -910,6 +800,12 @@ func (h *Handler) channelDeliversFiles(channelType string) bool {
 
 // publish sends a domain event through the event bus.
 func (h *Handler) publish(eventType, workspaceID, actorType, actorID string, payload any) {
+	if fields, ok := payload.(map[string]any); ok {
+		if issue, ok := fields["issue"].(IssueResponse); ok {
+			fields["issue"] = publicBlockerResponse(issue)
+		}
+	}
+
 	h.Bus.Publish(events.Event{
 		Type:        eventType,
 		WorkspaceID: workspaceID,
@@ -955,24 +851,18 @@ func (h *Handler) NotifyRuntimeRecovered(_ context.Context, workspaceID string) 
 	h.PublishRuntimeRefresh(workspaceID, "system", "", "heartbeat_recovery")
 }
 
-// publishChat is publishChatFor for callers whose actor is the session's
-// creator: every member chat endpoint gates on creator ownership before
-// publishing.
+// publishChat is publish() plus the chat session routing hints. actorID must
+// be the session's creator: every chat endpoint gates on creator ownership
+// before publishing, and the realtime layer delivers the event to that user
+// only.
 func (h *Handler) publishChat(eventType, workspaceID, actorType, actorID, chatSessionID string, payload any) {
-	h.publishChatFor(eventType, workspaceID, actorType, actorID, actorID, chatSessionID, payload)
-}
-
-// publishChatFor is publish() plus the chat session routing hints. The realtime
-// layer delivers the event to ownerID only, so ownerID must be the session's
-// creator even when the actor is an agent or the system.
-func (h *Handler) publishChatFor(eventType, workspaceID, actorType, actorID, ownerID, chatSessionID string, payload any) {
 	h.Bus.Publish(events.Event{
 		Type:               eventType,
 		WorkspaceID:        workspaceID,
 		ActorType:          actorType,
 		ActorID:            actorID,
 		ChatSessionID:      chatSessionID,
-		ChatSessionOwnerID: ownerID,
+		ChatSessionOwnerID: actorID,
 		Payload:            payload,
 	})
 }
@@ -1111,6 +1001,17 @@ func (h *Handler) workspaceMember(w http.ResponseWriter, r *http.Request, worksp
 	return h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
 }
 
+// cacheMembership records member in the membership cache, which callers
+// read as "a member who is not a guest": the cache holds no role, and a hit
+// skips the guest allowlist (MUL-9420). A guest is therefore never cached and
+// is looked up on every request.
+func (h *Handler) cacheMembership(ctx context.Context, member db.Member) {
+	if projectaccess.IsGuestRole(member.Role) {
+		return
+	}
+	h.MembershipCache.Set(ctx, uuidToString(member.UserID), uuidToString(member.WorkspaceID))
+}
+
 func roleAllowed(role string, roles ...string) bool {
 	for _, candidate := range roles {
 		if role == candidate {
@@ -1131,10 +1032,6 @@ func countOwners(members []db.Member) int {
 }
 
 func (h *Handler) getWorkspaceMember(ctx context.Context, userID, workspaceID string) (db.Member, error) {
-	return workspaceMemberVia(ctx, h.Queries, userID, workspaceID)
-}
-
-func workspaceMemberVia(ctx context.Context, queries *db.Queries, userID, workspaceID string) (db.Member, error) {
 	userUUID, err := util.ParseUUID(userID)
 	if err != nil {
 		return db.Member{}, err
@@ -1143,7 +1040,7 @@ func workspaceMemberVia(ctx context.Context, queries *db.Queries, userID, worksp
 	if err != nil {
 		return db.Member{}, err
 	}
-	return queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
+	return h.Queries.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{
 		UserID:      userUUID,
 		WorkspaceID: wsUUID,
 	})
@@ -1166,6 +1063,10 @@ func (h *Handler) requireWorkspaceMember(w http.ResponseWriter, r *http.Request,
 			return db.Member{}, false
 		}
 		writeError(w, http.StatusNotFound, notFoundMsg)
+		return db.Member{}, false
+	}
+	if projectaccess.IsGuestRole(member.Role) && !middleware.GuestMayRequest(r) {
+		middleware.RefuseGuest(w, r)
 		return db.Member{}, false
 	}
 
@@ -1232,7 +1133,7 @@ func (h *Handler) loadIssueForUser(w http.ResponseWriter, r *http.Request, issue
 		if !h.requireProjectVisible(w, r, workspaceID, issue.ProjectID, http.StatusNotFound, "issue not found") {
 			return db.Issue{}, false
 		}
-		return issue, h.allowIssueProjectWrite(w, r, issue)
+		return issue, true
 	}
 
 	issueUUID, err := util.ParseUUID(issueID)
@@ -1263,7 +1164,7 @@ func (h *Handler) loadIssueForUser(w http.ResponseWriter, r *http.Request, issue
 	if !h.requireProjectVisible(w, r, workspaceID, issue.ProjectID, http.StatusNotFound, "issue not found") {
 		return db.Issue{}, false
 	}
-	return issue, h.allowIssueProjectWrite(w, r, issue)
+	return issue, true
 }
 
 // resolveIssueByIdentifier tries to look up an issue by "PREFIX-NUMBER" format.
@@ -1427,6 +1328,9 @@ func (h *Handler) loadInboxItemForUser(w http.ResponseWriter, r *http.Request, i
 	if !ok {
 		return db.InboxItem{}, false
 	}
+	if !h.requireInboxOwnerAccess(w, r, userID, wsUUID) {
+		return db.InboxItem{}, false
+	}
 
 	item, err := h.Queries.GetInboxItemInWorkspace(r.Context(), db.GetInboxItemInWorkspaceParams{
 		ID:          itemUUID,
@@ -1444,6 +1348,11 @@ func (h *Handler) loadInboxItemForUser(w http.ResponseWriter, r *http.Request, i
 	// An item on an issue in a private project the caller cannot see (never
 	// granted, or revoked since it was delivered) answers like a missing one.
 	if !h.requireIssueIDVisible(w, r, workspaceID, item.IssueID, http.StatusNotFound, "inbox item not found") {
+		return db.InboxItem{}, false
+	}
+	// An item without an issue (a doc comment) is outside any project, which
+	// a guest cannot see even when it was delivered before the demotion.
+	if !item.IssueID.Valid && !h.requireProjectVisible(w, r, workspaceID, pgtype.UUID{}, http.StatusNotFound, "inbox item not found") {
 		return db.InboxItem{}, false
 	}
 	return item, true
