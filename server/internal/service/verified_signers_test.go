@@ -60,8 +60,8 @@ func (m *mergeFix) wantSigners(t *testing.T, want ...string) VerifiedSignersResu
 func TestVerifiedSignersOneAgentWithTwoReviewerNamesIsOneSigner(t *testing.T) {
 	m := passFixture(t)
 	terra := m.signer(t, "terra", "gpt-6.1-terra")
-	m.say(t, "agent", terra, verdictBy("PASS", "a", "x99-codex-terra"), m.clock.Add(-2*time.Hour))
-	m.say(t, "agent", terra, verdictBy("PASS", "a", "x99-codex-sol"), m.clock.Add(-time.Hour))
+	m.say(t, "agent", terra, verdictBy("PASS", "a", "reviewer-one"), m.clock.Add(-2*time.Hour))
+	m.say(t, "agent", terra, verdictBy("PASS", "a", "reviewer-two"), m.clock.Add(-time.Hour))
 	got := m.wantSigners(t, terra)
 	if got.Signers[0].Lab != "openai" || got.Signers[0].AgentName == "" || got.Signers[0].CommentID == "" {
 		t.Fatalf("signer = %+v, want a named openai signer with its comment", got.Signers[0])
@@ -74,8 +74,8 @@ func TestVerifiedSignersTwoAgentsAreTwoSigners(t *testing.T) {
 	m := passFixture(t)
 	terra, sol := m.signer(t, "terra", "gpt-6.1-terra"), m.signer(t, "sol", "gpt-6.1-sol")
 	at := m.clock.Add(-time.Hour).UTC()
-	m.say(t, "agent", terra, verdictBy("PASS", "a", "x99-codex-terra"), m.clock.Add(-2*time.Hour))
-	id := m.say(t, "agent", sol, verdictBy("PASS", "a", "x99-codex-sol"), at)
+	m.say(t, "agent", terra, verdictBy("PASS", "a", "reviewer-one"), m.clock.Add(-2*time.Hour))
+	id := m.say(t, "agent", sol, verdictBy("PASS", "a", "reviewer-two"), at)
 	got := m.wantSigners(t, terra, sol)
 	for _, s := range got.Signers {
 		if s.AgentID == sol && (s.CommentID != id || !s.VerdictAt.Equal(at)) {
@@ -86,33 +86,33 @@ func TestVerifiedSignersTwoAgentsAreTwoSigners(t *testing.T) {
 
 func TestVerifiedSignersEditedPassDoesNotCount(t *testing.T) {
 	m := passFixture(t)
-	id := m.say(t, "agent", m.signer(t, "terra", "gpt-6.1-terra"), verdictBy("PASS", "a", "x99-codex-terra"), m.clock.Add(-2*time.Hour))
-	m.edit(t, id, verdictBy("PASS", "a", "x99-codex-terra")+"\nTypo fixed.")
+	id := m.say(t, "agent", m.signer(t, "terra", "gpt-6.1-terra"), verdictBy("PASS", "a", "reviewer-one"), m.clock.Add(-2*time.Hour))
+	m.edit(t, id, verdictBy("PASS", "a", "reviewer-one")+"\nTypo fixed.")
 	m.wantSigners(t)
 }
 
 func TestVerifiedSignersAFailEditedIntoPassDoesNotCount(t *testing.T) {
 	m := passFixture(t)
-	id := m.say(t, "agent", m.signer(t, "terra", "gpt-6.1-terra"), verdictBy("FAIL", "a", "x99-codex-terra"), m.clock.Add(-2*time.Hour))
-	m.edit(t, id, verdictBy("PASS", "a", "x99-codex-terra"))
+	id := m.say(t, "agent", m.signer(t, "terra", "gpt-6.1-terra"), verdictBy("FAIL", "a", "reviewer-one"), m.clock.Add(-2*time.Hour))
+	m.edit(t, id, verdictBy("PASS", "a", "reviewer-one"))
 	m.wantSigners(t)
 }
 
 func TestVerifiedSignersNeedsTheTaskOfTheSameAgent(t *testing.T) {
 	m := passFixture(t)
 	terra := m.signer(t, "terra", "gpt-6.1-terra")
-	m.sayFrom(t, "agent", terra, verdictBy("PASS", "a", "x99-codex-terra"), m.clock.Add(-time.Hour), nil)
+	m.sayFrom(t, "agent", terra, verdictBy("PASS", "a", "reviewer-one"), m.clock.Add(-time.Hour), nil)
 	m.wantSigners(t)
 	sol := m.signer(t, "sol", "gpt-6.1-sol")
 	solTask := m.f.Task(t, sol, testutil.Cols{"issue_id": util.UUIDToString(m.issue), "status": "completed", "completed_at": testutil.Raw("now()")})
-	m.sayFrom(t, "agent", terra, verdictBy("PASS", "a", "x99-codex-terra"), m.clock.Add(-time.Hour), solTask)
+	m.sayFrom(t, "agent", terra, verdictBy("PASS", "a", "reviewer-one"), m.clock.Add(-time.Hour), solTask)
 	m.wantSigners(t)
 }
 
 func TestVerifiedSignersIgnoresWhatIsNotAnAgentVerdictOnTheHead(t *testing.T) {
 	m := passFixture(t)
 	terra := m.signer(t, "terra", "gpt-6.1-terra")
-	m.say(t, "agent", terra, "**Verdict: PASS**, signed by x99-codex-sol. PR #9, head `a`.", m.clock.Add(-time.Hour))
+	m.say(t, "agent", terra, "**Verdict: PASS**, signed by reviewer-two. PR #9, head `a`.", m.clock.Add(-time.Hour))
 	m.say(t, "agent", terra, verdictBy("PASS", "z", "x"), m.clock.Add(-time.Hour))
 	m.say(t, "agent", terra, "Notes.\n"+verdictBy("PASS", "a", "x"), m.clock.Add(-time.Hour))
 	m.say(t, "member", m.f.UserID, verdictBy("PASS", "a", "x"), m.clock.Add(-time.Hour))
