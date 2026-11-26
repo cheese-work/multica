@@ -140,6 +140,7 @@ type Journal struct {
 	httpc    *http.Client
 	now      func() time.Time
 	insecure bool
+	writeKey func(*os.File, []byte) error // tests only: replaces writeKeyFile
 
 	mu      sync.Mutex
 	key     []byte
@@ -274,12 +275,11 @@ func (j *Journal) createKeyLocked() error {
 	if err != nil {
 		return fmt.Errorf("journal: create key: %w", err)
 	}
-	if err := f.Chmod(0o600); err == nil {
-		_, err = f.Write(key)
-		if err == nil {
-			err = f.Sync()
-		}
+	write := j.writeKey
+	if write == nil {
+		write = writeKeyFile
 	}
+	err = write(f, key)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
@@ -293,6 +293,17 @@ func (j *Journal) createKeyLocked() error {
 	sum := sha256.Sum256(key)
 	j.key, j.keyID = key, hex.EncodeToString(sum[:])[:8]
 	return nil
+}
+
+// writeKeyFile makes the key file 0600, writes all of key and syncs it.
+func writeKeyFile(f *os.File, key []byte) error {
+	if err := f.Chmod(0o600); err != nil {
+		return err
+	}
+	if _, err := f.Write(key); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 func (j *Journal) createKey() error {
@@ -595,8 +606,18 @@ func (j *Journal) sweepOne(ctx context.Context, name string, res *SweepResult) {
 			j.mu.Unlock()
 			return // deleted since the listing
 		}
+		// Authenticate before any decision: expiry and owner are header
+		// fields, and an altered header must not delete or hide an entry.
 		f, perr := parseEntry(b)
+		if perr == nil {
+			if j.key == nil {
+				j.loadKeyLocked()
+			}
+			_, perr = unseal(j.key, j.keyID, f)
+		}
 		if perr != nil {
+			// No header value can be trusted, so age comes from the file: a
+			// token lives an hour at most, far less than journalGarbageAge.
 			drop := false
 			if info, serr := os.Stat(j.path(name)); serr == nil && now.Sub(info.ModTime()) > journalGarbageAge {
 				os.Remove(j.path(name))

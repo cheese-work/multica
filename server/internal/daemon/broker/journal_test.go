@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -386,7 +387,7 @@ func TestJournalKeyNeverReplacedWhileEntriesExist(t *testing.T) {
 			t.Fatal("log holds a token value")
 		}
 	}
-	clock.add(2 * time.Hour)
+	clock.add(3 * time.Hour)
 	res := j2.Sweep(context.Background())
 	if res.ExpiredUnrevoked != 2 {
 		t.Fatalf("after expiry: %+v, want 2 expired_unrevoked", res)
@@ -425,12 +426,14 @@ func editHeader(t testing.TB, path, field string, value any) {
 func TestTamperedHeaderSendsNothing(t *testing.T) {
 	t.Parallel()
 	real, evil := newJFake(t), newJFake(t)
-	cases := map[string]func(prior string) any{
-		"base":     func(string) any { return evil.srv.URL },
-		"expiry":   func(string) any { return time.Now().Add(48 * time.Hour).Unix() },
-		"instance": func(string) any { return "00000000000000000000000000000001" },
+	cases := map[string]func(current string) any{
+		"base":          func(string) any { return evil.srv.URL },
+		"expiry":        func(string) any { return time.Now().Add(48 * time.Hour).Unix() },
+		"expiry-past":   func(string) any { return time.Now().Add(-time.Hour).Unix() },
+		"instance":      func(string) any { return "00000000000000000000000000000001" },
+		"instance-mine": func(current string) any { return current },
 	}
-	field := map[string]string{"base": "base", "expiry": "exp", "instance": "owner"}
+	field := map[string]string{"base": "base", "expiry": "exp", "expiry-past": "exp", "instance": "owner", "instance-mine": "owner"}
 	for name, edit := range cases {
 		t.Run(name, func(t *testing.T) {
 			root := journalRoot(t)
@@ -445,11 +448,12 @@ func TestTamperedHeaderSendsNothing(t *testing.T) {
 			if len(files) != 1 {
 				t.Fatalf("files %v", files)
 			}
-			editHeader(t, files[0], field[name], edit(""))
+			current := NewInstanceID()
+			editHeader(t, files[0], field[name], edit(current))
 			beforeReal, beforeEvil := real.requestCount(), evil.requestCount()
-			j2 := openTestJournal(t, root, NewInstanceID(), nil, nil)
+			j2 := openTestJournal(t, root, current, nil, nil)
 			res := j2.Sweep(context.Background())
-			if res.UnsealFailed != 1 || res.Revoked != 0 {
+			if res.UnsealFailed != 1 || res.Revoked != 0 || res.ExpiredUnrevoked != 0 || res.Orphan != 0 {
 				t.Fatalf("sweep %+v, want 1 unseal_failed", res)
 			}
 			if real.requestCount() != beforeReal || evil.requestCount() != beforeEvil {
@@ -457,6 +461,58 @@ func TestTamperedHeaderSendsNothing(t *testing.T) {
 			}
 			if got := entryFiles(t, root); len(got) != 1 {
 				t.Fatalf("entries %v, want the entry kept", got)
+			}
+		})
+	}
+}
+
+func TestKeyWriteFailureLeavesNoKeyAndRecovers(t *testing.T) {
+	t.Parallel()
+	fails := map[string]func(*os.File, []byte) error{
+		"chmod": func(*os.File, []byte) error { return errors.New("injected chmod failure") },
+		"short": func(f *os.File, k []byte) error {
+			f.Write(k[:5])
+			return errors.New("injected short write")
+		},
+		"sync": func(f *os.File, k []byte) error {
+			f.Write(k)
+			return errors.New("injected sync failure")
+		},
+	}
+	for name, fail := range fails {
+		t.Run(name, func(t *testing.T) {
+			root := journalRoot(t)
+			f := newJFake(t)
+			tok := "ghs_keyfail_" + name + "_hhhhhhhhhhhhhhhhhhhh"
+			f.mint(tok)
+			j := openTestJournal(t, root, NewInstanceID(), nil, nil)
+			j.writeKey = fail
+			if err := j.Put(entryFor(f, tok, time.Hour, time.Now())); err == nil {
+				t.Fatal("Put succeeded although the key could not be written")
+			}
+			if _, err := os.Stat(filepath.Join(root, "journal.key")); !os.IsNotExist(err) {
+				t.Fatalf("a failed key write left a key file behind (stat err %v)", err)
+			}
+			if got := entryFiles(t, root); len(got) != 0 {
+				t.Fatalf("entries %v after a refused Put", got)
+			}
+			j.writeKey = nil
+			if err := j.Put(entryFor(f, tok, time.Hour, time.Now())); err != nil {
+				t.Fatalf("Put after the failure: %v", err)
+			}
+			info, err := os.Stat(filepath.Join(root, "journal.key"))
+			if err != nil || info.Size() != 32 || info.Mode().Perm() != 0o600 {
+				t.Fatalf("key after recovery: %v, %v", info, err)
+			}
+			if err := j.Retire(tok); err != nil {
+				t.Fatal(err)
+			}
+			if err := j.Release(tok); err != nil {
+				t.Fatal(err)
+			}
+			res := openTestJournal(t, root, NewInstanceID(), nil, nil).Sweep(context.Background())
+			if res.Revoked != 1 || f.deleteCount(tok) != 1 {
+				t.Fatalf("restart sweep %+v, deletes %d, want 1 revoked", res, f.deleteCount(tok))
 			}
 		})
 	}
