@@ -1124,6 +1124,22 @@ WHERE id = (
               WHERE ctd.task_id = atq.id AND ctd.chat_type = 'group'
           )
       ))
+      -- CHE-10088: optional upper bound in claim order (aged priority DESC,
+      -- created_at ASC, id ASC). A runtime poll that walks candidates across
+      -- agents passes the last candidate key of this agent's consecutive group,
+      -- so the claim cannot take a row that is newer than another agent's
+      -- candidate. upto_priority is the bound row's stored priority; its aged
+      -- priority is recomputed here with the same now() as the row's own, so the
+      -- bound row compares equal to itself. All three params NULL means no bound.
+      AND (
+          sqlc.narg('upto_priority')::int IS NULL
+          OR GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) > GREATEST(sqlc.narg('upto_priority')::int, LEAST(sqlc.narg('upto_priority')::int + COALESCE(floor(extract(epoch FROM now() - sqlc.narg('upto_created_at')::timestamptz) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3))
+          OR (GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) = GREATEST(sqlc.narg('upto_priority')::int, LEAST(sqlc.narg('upto_priority')::int + COALESCE(floor(extract(epoch FROM now() - sqlc.narg('upto_created_at')::timestamptz) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) AND (
+              atq.created_at < sqlc.narg('upto_created_at')::timestamptz
+              OR (atq.created_at = sqlc.narg('upto_created_at')::timestamptz
+                  AND atq.id <= sqlc.narg('upto_id')::uuid)
+          ))
+      )
 -- CHE-9926 aging: a queued row gains one level per @aging_step_secs of wait,
     -- capped at 3 (high) so it never outranks an urgent row; 0 turns aging off. Keep the three
     -- claim orderings (ClaimAgentTask and both candidate lists) identical.
@@ -3296,7 +3312,7 @@ WHERE atq.runtime_id = @runtime_id
             OR r.visibility = 'private'
         )
   )
-ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC;
+ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC;
 
 -- name: CancelSupersededDeferredRetriesForRuntimes :many
 -- Cancels deferred auto-retry rows that a newer active task has already
@@ -3425,7 +3441,7 @@ WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
             OR r.visibility = 'private'
         )
   )
-ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC;
+ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC;
 
 -- name: NextDeferredTaskFireAtForRuntimes :one
 -- Returns the next future deferred task for a daemon's authorized runtime set,

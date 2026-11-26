@@ -757,7 +757,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `guard` | `log` | ワークスペースの最近のガード判定を新しい順に一覧表示する。`--plugin`、`--action`（`fixed`、`refused`、`plugin-error`、`shadow-hit`、`pass`）、`--since`（日数、`24h` や `7d` のような期間、または RFC 3339 の時刻。既定は `7d`）、`--limit`（既定 50、最大 500）で絞り込める。デーモンは各実行の終了時にその判定ログをアップロードする。Guard 設定ページも同じ行を表示する | 出力：JSON 行（`--output table` で表） |
 | `guard` | `stats` | プラグインごとのガード判定数（`fixed`、`refused`、`errors`）を直近 `--days` 日（既定 7、最大 90）について数える。Guard 設定ページも同じ数値を表示する | 出力：JSON 行（`--output table` で表） |
 
-`repository_allowlist` は所有者と許可するリポジトリ名を対応付け、大文字小文字を区別しません。指定した所有者は既定で拒否し、未指定の所有者は制限しません。プラグインや下位レイヤーより先に `gh pr create`、`gh pr comment`、`git push`、認証済み `repo checkout` の未許可操作を拒否します。Git は pushurl と URL 書き換えを含む実際の送信先を確認し、不明なら拒否します。承認前に daemon を更新してください。Cheese Work の正規ファイルは `config/tevo-prod1-guard.json` です。
+`repository_allowlist` は所有者と許可するリポジトリ名を対応付け、大文字小文字を区別しません。指定した所有者は既定で拒否し、未指定の所有者は制限しません。プラグインや下位レイヤーより先に `gh pr create`、`gh pr comment`、`git push`、認証済み `repo checkout` の未許可操作を拒否します。Git は pushurl と URL 書き換えを含む実際の送信先を確認し、不明なら拒否します。承認前に daemon を更新してください。
 
 
 ### 判断の提案
