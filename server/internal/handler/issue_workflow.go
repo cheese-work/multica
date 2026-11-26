@@ -1537,6 +1537,9 @@ func (h *Handler) SetProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if !openCard && refuseCardOnlyWrite(w, r) {
+		return
+	}
 	switchPlan, err := planProjectSwitch(ctx, qtx, project, target)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load issue statuses")

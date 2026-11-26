@@ -155,6 +155,9 @@ func (h *Handler) SetProjectsWorkflow(w http.ResponseWriter, r *http.Request) {
 		seals = append(seals, projectSwitchSeal{project: project, params: params})
 	}
 	if !needsCard {
+		if refuseCardOnlyWrite(w, r) {
+			return
+		}
 		writeErrorCode(w, http.StatusConflict, workflowBatchDirectCode, "none of these switches needs owner approval; switch the projects one at a time")
 		return
 	}

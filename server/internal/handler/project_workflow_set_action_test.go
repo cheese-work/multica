@@ -276,3 +276,96 @@ func TestProjectWorkflowSetCardPreviewListsEveryProject(t *testing.T) {
 		t.Fatalf("preview has %d project rows, want 2: %v", rows, fields)
 	}
 }
+
+// taskTokenRequest is a run's task token as the auth middleware stamps it.
+func (f projectSetFixture) taskTokenRequest(t *testing.T, path string, body map[string]any) *http.Request {
+	t.Helper()
+	req := withActorSource(workflowRequest("POST", path, body), "task_token")
+	req.Header.Set("X-Task-Token-Purpose", "agent_task")
+	req.Header.Set("X-Task-ID", f.taskID)
+	req.Header.Set("X-Agent-ID", seededReadyAgentID(t))
+	return req
+}
+
+// With MULTICA_TASK_WRITE_SCOPE=on a run's task token reaches the workflow
+// routes only to open the owner card; every path that would write is a 403.
+func TestProjectWorkflowSetCardOnlyForTaskTokenWhenWriteScopeIsOn(t *testing.T) {
+	cardOnly := func(h http.HandlerFunc) http.HandlerFunc {
+		return testHandler.TaskTokenCardOnly(TaskWriteScopeOn)(h).ServeHTTP
+	}
+	t.Run("a widening switch still opens the card on the single route", func(t *testing.T) {
+		f := newProjectSetFixture(t)
+		project := f.narrowProject(t)
+		req := withURLParam(f.taskTokenRequest(t, "/api/projects/"+project+"/workflow", map[string]any{"workflow_id": f.wide}), "id", project)
+		var opened workflowSetOpened
+		testutil.Call(t, cardOnly(testHandler.SetProjectWorkflow), req).Want(http.StatusAccepted).JSON(&opened)
+		adoptCard(t, opened)
+		if got := projectWorkflowOf(t, project); got != f.narrow {
+			t.Fatalf("project workflow = %s, want it unchanged at %s", got, f.narrow)
+		}
+	})
+	t.Run("a widening batch still opens one card", func(t *testing.T) {
+		f := newProjectSetFixture(t)
+		projects := []string{f.narrowProject(t), f.narrowProject(t)}
+		req := f.taskTokenRequest(t, "/api/projects/workflow", map[string]any{"project_ids": projects, "workflow_id": f.wide})
+		var opened workflowSetOpened
+		testutil.Call(t, cardOnly(testHandler.SetProjectsWorkflow), req).Want(http.StatusAccepted).JSON(&opened)
+		adoptCard(t, opened)
+	})
+	t.Run("a narrowing switch is refused and writes nothing", func(t *testing.T) {
+		f := newProjectSetFixture(t)
+		project := createWorkflowTestProject(t, "Card only narrowing "+workflowTestSuffix())
+		setProjectWorkflow(t, project, map[string]any{"workflow_id": f.wide}).Want(http.StatusOK)
+		req := withURLParam(f.taskTokenRequest(t, "/api/projects/"+project+"/workflow", map[string]any{"workflow_id": f.narrow}), "id", project)
+		testutil.Call(t, cardOnly(testHandler.SetProjectWorkflow), req).Want(http.StatusForbidden)
+		if got := projectWorkflowOf(t, project); got != f.wide {
+			t.Fatalf("project workflow = %s, want it unchanged at %s", got, f.wide)
+		}
+	})
+	t.Run("a batch that needs no card is refused, not told to switch one at a time", func(t *testing.T) {
+		f := newProjectSetFixture(t)
+		a := createWorkflowTestProject(t, "Card only a "+workflowTestSuffix())
+		setProjectWorkflow(t, a, map[string]any{"workflow_id": f.wide}).Want(http.StatusOK)
+		req := f.taskTokenRequest(t, "/api/projects/workflow", map[string]any{"project_ids": []string{a}, "workflow_id": f.narrow})
+		testutil.Call(t, cardOnly(testHandler.SetProjectsWorkflow), req).Want(http.StatusForbidden)
+	})
+	t.Run("a person's request passes the guard untouched", func(t *testing.T) {
+		f := newProjectSetFixture(t)
+		project := createWorkflowTestProject(t, "Card only human "+workflowTestSuffix())
+		req := withURLParam(withActorSource(workflowRequest("POST", "/api/projects/"+project+"/workflow", map[string]any{"workflow_id": f.wide}), "interactive_jwt"), "id", project)
+		testutil.Call(t, cardOnly(testHandler.SetProjectWorkflow), req).Want(http.StatusOK)
+	})
+}
+
+// CHE-10137 acceptance: projects on the budgeted Default move to an unbudgeted
+// Product workflow through one card, which is a widening.
+func TestProjectWorkflowSetFromBudgetedDefaultToUnbudgetedProduct(t *testing.T) {
+	f := newProjectSetFixture(t)
+	dropStoredDefaultWorkflow(t)
+	resetDefaultWorkflow(t)
+	dbfx.Exec(t, `INSERT INTO issue_workflow (workspace_id, name, initial_status_key, steps, is_default, max_runs_per_issue, run_budget_since)
+		VALUES ($1, 'Default', 'backlog', '[{"status_key":"backlog"},{"status_key":"todo"},{"status_key":"in_progress"},{"status_key":"in_review"},{"status_key":"blocked"}]'::jsonb, true, 25, now() - interval '1 hour')`, testWorkspaceID)
+	product := createTestWorkflow(t, "Product-"+workflowTestSuffix(), "todo", "in_progress", "in_review").ID
+	projects := []string{
+		createWorkflowTestProject(t, "Default project a "+workflowTestSuffix()),
+		createWorkflowTestProject(t, "Default project b "+workflowTestSuffix()),
+	}
+	body := map[string]any{"project_ids": projects, "workflow_id": product}
+	req := f.taskTokenRequest(t, "/api/projects/workflow", body)
+	var opened workflowSetOpened
+	testutil.Call(t, testHandler.SetProjectsWorkflow, req).Want(http.StatusAccepted).JSON(&opened)
+	card := adoptCard(t, opened)
+	for _, project := range projects {
+		if got := projectWorkflowOf(t, project); got != "-" {
+			t.Fatalf("project %s left Default for %s before approval", project, got)
+		}
+	}
+	if out := card.approve(t); out.State != "executed" {
+		t.Fatalf("outcome = %+v, want executed", out)
+	}
+	for _, project := range projects {
+		if got := projectWorkflowOf(t, project); got != product {
+			t.Fatalf("project %s workflow = %s, want Product %s", project, got, product)
+		}
+	}
+}
