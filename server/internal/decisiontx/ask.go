@@ -29,6 +29,17 @@ type AskOption struct {
 	// Action is the typed action of a server_action option; AfterWait is the event a human_steps option waits on (CHE-7358).
 	Action    *OptionAction `json:"action,omitempty"`
 	AfterWait *AfterWait    `json:"after_wait,omitempty"`
+	// Design cites the doop frame this option picks (CHE-7064 D1.2).
+	Design *OptionDesign `json:"design,omitempty"`
+}
+
+// OptionDesign is the doop frame an option cites. FrameUpdatedAt is server-owned:
+// a caller value that is not zero is refused, and the server stamps it after the
+// design guard passes.
+type OptionDesign struct {
+	FrameURL       string `json:"frame_url"`
+	AttestationID  string `json:"attestation_id"`
+	FrameUpdatedAt int64  `json:"frame_updated_at,omitempty"`
 }
 
 type Ask struct {
@@ -99,11 +110,25 @@ type AskError struct{ Field, Problem string }
 
 func (err *AskError) Error() string { return err.Field + " " + err.Problem }
 
+// DesignVersionServerOwnedCode is the refusal code of a caller-set design.frame_updated_at.
+const DesignVersionServerOwnedCode = "design_version_server_owned"
+
+// CodedAskError is an AskError that also carries a stable refusal code.
+type CodedAskError struct {
+	AskError
+	Code string
+}
+
+func (err *CodedAskError) Error() string { return err.Code + ": " + err.AskError.Error() }
+
+// Unwrap lets errors.As find the AskError.
+func (err *CodedAskError) Unwrap() error { return &err.AskError }
+
 const askOptionShape = "must be an object with label, what_happens, pros, cons, cost_or_time"
 
 var (
 	askFields    = []string{"context_eli10", "agent_did", "decision", "stakes_if_wrong", "options", "recommendation", "recommended_option", "confidence", "default_if_no_reply", "source_issue_id", "covers_issue_ids", "source_comment_id", "human_steps", "probes", "state_claims", "after_done", "subject", "artifacts", "topic", "waiver", "settings_needed"}
-	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key", "after_choice", "agent_surface", "agent_commands", "action", "after_wait"}
+	optionFields = []string{"label", "what_happens", "pros", "cons", "cost_or_time", "option_key", "after_choice", "agent_surface", "agent_commands", "action", "after_wait", "design"}
 	// actionFields is the whole action ask: no options, recommendation, decision or stakes.
 	actionFields = []string{"context_eli10", "agent_did", "why_human", "steps", "done_when", "default_if_no_reply", "source_issue_id", "source_comment_id", "observed", "files", "dry_run", "state_claims", "settings_needed"}
 	safeKey      = regexp.MustCompile(`^[a-z0-9_]{1,40}$`)
@@ -369,6 +394,9 @@ func decodeOptions(raw json.RawMessage, into *[]AskOption) error {
 			return err
 		}
 		if err := decodeAfterWait(prefix, fields["after_wait"], &option.AfterWait); err != nil {
+			return err
+		}
+		if err := decodeDesign(prefix, fields["design"], &option.Design); err != nil {
 			return err
 		}
 		*into = append(*into, option)

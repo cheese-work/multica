@@ -23,17 +23,19 @@ function placementFor(marker: boolean, touch: boolean) {
 const isTouch = () => !!window.matchMedia?.("(pointer: coarse)").matches;
 
 /** Match the description's EditorBubbleMenu geometry for readonly selections. */
-export function CommentSelectionBubble({ range, source, children, owner, markerRanges, onPositioned, portalTarget, keepInView = false }: {
+export function CommentSelectionBubble({ range, source, children, owner, markerRanges, markerZIndex = 20, onPositioned, portalTarget, keepInView = false, keepVisibleWhenDetached = false }: {
   range: Range;
   source: HTMLElement;
   children: ReactNode;
   owner: string;
   markerRanges?: Range[];
+  markerZIndex?: number;
   /** Called after the popup has a visible, usable position. */
   onPositioned?: () => void;
   /** Where the overlay lives in the DOM. Defaults to the page body. */
   portalTarget?: HTMLElement;
   keepInView?: boolean;
+  keepVisibleWhenDetached?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const marker = !!markerRanges;
@@ -48,6 +50,8 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
     let revision = 0;
     const update = () => {
       const currentRevision = ++revision;
+      // Keep an open note recoverable if realtime removes or replaces its source.
+      if (keepVisibleWhenDetached && (!source.isConnected || !range.startContainer.isConnected)) return;
       const touch = isTouch();
       const viewport = window.visualViewport;
       element.style.maxHeight = keepInView && viewport ? `${Math.max(0, viewport.height - 16)}px` : "";
@@ -87,11 +91,11 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
     // resizing its source element or triggering a window resize.
     const cleanup = autoUpdate(anchor, element, update, { animationFrame: true });
     return () => { active = false; cleanup(); };
-  }, [range, source, marker, markerRanges, onPositioned, keepInView]);
+  }, [range, source, marker, markerRanges, onPositioned, keepInView, keepVisibleWhenDetached]);
 
   return createPortal(
-    <div ref={ref} data-reply-annotation-overlay={owner}
-      style={{ position: "fixed", zIndex: marker ? 20 : 50, visibility: "hidden", width: "max-content", overflowY: keepInView ? "auto" : undefined }}>
+    <div ref={ref} data-reply-annotation-overlay={owner} data-editor-overlay-owner={owner}
+      style={{ position: "fixed", zIndex: marker ? markerZIndex : 50, visibility: "hidden", width: "max-content", overflowY: keepInView ? "auto" : undefined }}>
       {children}
     </div>,
     portalTarget ?? document.body,

@@ -102,6 +102,11 @@ export const DeferredContentEditor = forwardRef<ContentEditorRef, DeferredConten
         adoptContent: (markdown) => {
           if (inner.current || markdown) whenReady((e) => e.adoptContent(markdown), true);
         },
+        insertText: (text) => {
+          if (inner.current) return inner.current.insertText(text);
+          whenReady((e) => e.insertText(text), true);
+          return true;
+        },
         insertMarkdownAtEnd: (markdown) => {
           if (inner.current) return inner.current.insertMarkdownAtEnd(markdown);
           whenReady((e) => e.insertMarkdownAtEnd(markdown), true);

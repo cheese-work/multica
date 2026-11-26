@@ -6,7 +6,7 @@ runs:
     - name: Check packages/ui wildcard exports
       shell: bash
       run: |
-        bash scripts/check-ui-wildcard-exports.test.sh
+        node --test scripts/check-ui-wildcard-exports.test.mjs
         node scripts/check-ui-wildcard-exports.mjs
 
     - name: Check UI radius tokens
@@ -14,6 +14,10 @@ runs:
       run: |
         node --test scripts/check-ui-radius-tokens.test.mjs
         node scripts/check-ui-radius-tokens.mjs
+
+    - name: Check shared dependencies use the pnpm catalog
+      shell: bash
+      run: node scripts/check-dependency-catalog.mjs
 
     - name: Check design pattern ledger
       shell: bash
@@ -68,8 +72,6 @@ runs:
             node scripts/design/check-ui-pattern-ref.mjs --base FETCH_HEAD
         fi
 
-    # Keep existing knip findings advisory in either caller.
     - name: Check for dead code and phantom dependencies (knip)
-      continue-on-error: true
       shell: bash
       run: pnpm knip

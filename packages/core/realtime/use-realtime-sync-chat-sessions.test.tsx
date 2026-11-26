@@ -107,7 +107,7 @@ describe("useRealtimeSync — chat message session list refresh", () => {
 
     await waitFor(() => expect(listChatSessions).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(sessionList.result.current.data).toEqual([unreadSession]));
-    expect(listChatSessions).toHaveBeenLastCalledWith({ status: "all" });
+    expect(listChatSessions).toHaveBeenLastCalledWith({ status: "all" }, { workspaceId: "ws-1" });
   });
 
   it("refetches the list so a previously uncached DM appears after an assistant ping", async () => {

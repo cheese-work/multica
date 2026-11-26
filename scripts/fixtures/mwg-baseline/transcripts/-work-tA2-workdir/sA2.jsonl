@@ -1,0 +1,4 @@
+{"type": "user", "timestamp": "2026-11-01T00:00:00Z", "message": {"content": "start"}}
+{"type": "assistant", "timestamp": "2026-11-04T09:12:00Z", "message": {"content": [{"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "git status"}}]}}
+{"type": "assistant", "timestamp": "2026-11-04T09:13:00Z", "message": {"content": [{"type": "tool_use", "id": "toolu_2", "name": "Read", "input": {"file_path": "/repo/a.tsx"}}]}}
+{"type": "result", "sessionId": "sA2"}

@@ -1162,7 +1162,7 @@ func (q *Queries) GetDecisionIntentForTask(ctx context.Context, arg GetDecisionI
 }
 
 const getDecisionPingHeadItem = `-- name: GetDecisionPingHeadItem :one
-SELECT item.id, item.workspace_id, item.recipient_type, item.recipient_id, item.type, item.severity, item.issue_id, item.title, item.body, item.read, item.archived, item.created_at, item.actor_type, item.actor_id, item.details, item.chat_session_id, item.chat_message_id, item.dedupe_key, item.updated_at, item.section FROM decision_request head
+SELECT item.id, item.workspace_id, item.recipient_type, item.recipient_id, item.type, item.severity, item.issue_id, item.title, item.body, item.read, item.archived, item.created_at, item.actor_type, item.actor_id, item.details, item.chat_session_id, item.chat_message_id, item.dedupe_key, item.updated_at, item.section, item.snoozed_until, item.snoozed_at FROM decision_request head
 JOIN inbox_item item ON item.workspace_id = head.workspace_id
   AND item.details->>'decision_request_id' = head.id::text
   AND item.type = 'mentioned' AND item.read = false AND item.archived = false
@@ -1215,6 +1215,8 @@ func (q *Queries) GetDecisionPingHeadItem(ctx context.Context, arg GetDecisionPi
 		&i.DedupeKey,
 		&i.UpdatedAt,
 		&i.Section,
+		&i.SnoozedUntil,
+		&i.SnoozedAt,
 	)
 	return i, err
 }
@@ -2771,6 +2773,7 @@ WHERE request.authority = 'human' AND request.workspace_id = $1 AND request.id =
   AND COALESCE(request.ask_json->'artifacts', '[]'::jsonb) = '[]'::jsonb
   AND NOT request.options @> '[{"label": "Approve write"}]'::jsonb
   AND COALESCE(request.ask_json->>'decision', '') NOT LIKE 'Apply this change to %'
+  AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(request.options) AS option WHERE option ? 'design')
   AND NOT EXISTS (SELECT 1 FROM decision_action action WHERE action.decision_request_id = request.id)
   AND NOT EXISTS (SELECT 1 FROM decision_bound_write bound WHERE bound.decision_id = request.id)
 ORDER BY request.id
@@ -2792,8 +2795,9 @@ type LockBatchCoveredRequestsParams struct {
 // card), no attached action (the human must see the action preview on its own
 // card), and no governed write (an "Approve write" option, the "Apply this
 // change to <field>?" heading or a decision_bound_write row: the human must
-// see that exact change). A new kind of card is closed to batches until it is
-// added here.
+// see that exact change), and no design option (an option that cites a doop
+// frame: the human must see that frame's own card, CHE-7064 S10). A new kind of
+// card is closed to batches until it is added here.
 func (q *Queries) LockBatchCoveredRequests(ctx context.Context, arg LockBatchCoveredRequestsParams) ([]DecisionRequest, error) {
 	rows, err := q.db.Query(ctx, lockBatchCoveredRequests, arg.WorkspaceID, arg.Ids, arg.HumanUserID)
 	if err != nil {

@@ -9,9 +9,12 @@ vi.mock("node:fs", async (importOriginal) => {
   const readFileSync = vi.fn();
   return { ...actual, readFileSync, default: { ...actual, readFileSync } };
 });
-vi.mock("@/features/landing/components/landing-header", () => ({ LandingHeader: () => null }));
-vi.mock("@/features/landing/components/landing-footer", () => ({ LandingFooter: () => null }));
-vi.mock("@/features/landing/i18n", () => ({ useLocale: () => ({ locale: localeState.locale, t: createLandingDict(localeState.locale, true) }) }));
+vi.mock("@/features/landing/site/site-header", () => ({ SiteHeader: () => null }));
+vi.mock("@/features/landing/site/site-footer", () => ({ SiteFooter: () => null }));
+vi.mock("@/features/landing/i18n", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/features/landing/i18n")>()),
+  useLocale: () => ({ locale: localeState.locale, t: createLandingDict(localeState.locale) }),
+}));
 
 afterEach(() => { vi.unstubAllEnvs(); vi.resetModules(); localeState.locale = "en"; });
 
@@ -55,7 +58,7 @@ describe("build-time changelog page seam", () => {
     expect(html).toContain("release-fork-2026-10-14");
     expect(html).not.toContain("vfork-");
     expect(html).not.toContain("Fork entries unavailable");
-    expect(html).toContain(createLandingDict("ja", true).changelog.entries[0]!.title);
+    expect(html).toContain(createLandingDict("ja").changelog.entries[0]!.title);
   });
 
   it("takes a file snapshot at module load, not on each page request", async () => {

@@ -126,19 +126,6 @@ func countQueuedCommentTriggerTasks(t *testing.T, issueID, agentID string) int {
 	return n
 }
 
-func countCommentTriggerTasksWithStatus(t *testing.T, issueID, agentID, status string) int {
-	t.Helper()
-
-	var n int
-	if err := testPool.QueryRow(context.Background(), `
-		SELECT count(*) FROM agent_task_queue
-		WHERE issue_id = $1 AND agent_id = $2 AND status = $3
-	`, issueID, agentID, status).Scan(&n); err != nil {
-		t.Fatalf("count %s tasks: %v", status, err)
-	}
-	return n
-}
-
 func createCommentTriggerPreviewSquad(t *testing.T, name, leaderID string) string {
 	t.Helper()
 
@@ -1040,7 +1027,7 @@ func TestPreviewCommentTriggers_MalformedMentionIDDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestPreviewCommentTriggers_AllSuppressesAssigneeAndNewThreadFoldsIntoAssignment(t *testing.T) {
+func TestPreviewCommentTriggers_AllSuppressesAssigneeAndNewThreadKeepsAssignmentRun(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -1074,9 +1061,10 @@ func TestPreviewCommentTriggers_AllSuppressesAssigneeAndNewThreadFoldsIntoAssign
 	postCommentForTriggerPreviewTest(t, issueID, map[string]any{
 		"content": "can you continue here?",
 	})
-	// CHE-1418: the comment folds into the queued assignment run.
-	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 1 {
-		t.Fatalf("assignment and new comment thread queued tasks = %d, want 1", got)
+	// CHE-9605: the queued assignment run is a step run and is never rewritten,
+	// so the comment queues its own run beside it.
+	if got := countQueuedCommentTriggerTasks(t, issueID, agentID); got != 2 {
+		t.Fatalf("assignment and new comment thread queued tasks = %d, want 2", got)
 	}
 }
 

@@ -94,3 +94,16 @@ func TestFromSettingsReadsLeniently(t *testing.T) {
 		}
 	}
 }
+
+// CHE-9318: a type the table does not list, or no type, takes the default entry.
+func TestConfigForFallsBackToTheDefaultEntry(t *testing.T) {
+	cfg := Config{"feat": {Author: "a"}, DefaultKey: {Author: "d"}}
+	for typ, want := range map[string]string{"feat": "a", "task": "d", "": "d"} {
+		if got, ok := cfg.For(typ); !ok || got.Author != want {
+			t.Errorf("For(%q) = %q, %v; want %q", typ, got.Author, ok, want)
+		}
+	}
+	if _, ok := (Config{"feat": {Author: "a"}}).For("task"); ok {
+		t.Error("For(task) with no default entry routed")
+	}
+}

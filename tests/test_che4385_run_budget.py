@@ -81,12 +81,6 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
                 self.assertEqual(p.name, "security-gate.yml")
                 self.assertEqual(sorted(on["issue_comment"]["types"]), ["created", "deleted", "edited"])
 
-    def test_the_queue_workflow_starts_only_for_a_merge_queue_branch(self):
-        # `workflow_run` runs only from main; the branch filter stops a non-queue security-gate run starting a skipped queue run.
-        run = load("security-gate-queue.yml")["on"]["workflow_run"]
-        self.assertEqual(run["workflows"], ["security-gate"])
-        self.assertEqual(run["branches"], ["gh-readonly-queue/**"])
-
     def test_mechanical_tier_is_called_never_a_run_of_its_own(self):
         self.assertEqual(triggers(load("mechanical-tier.yml")), {"workflow_call"})
 
@@ -97,9 +91,9 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual(jobs["mechanical-tier"]["needs"], "security-gate")
 
     def test_push_to_main_workflows_do_not_start_each_other(self):
-        # The only workflow_run chain is security-gate -> security-gate-queue (CHE-4251); cd-deploy runs on a schedule (CHE-5182).
-        # It fires once per security-gate run, now only a queue entry, a verdict dispatch or a verdict edit or
-        # delete: no PR event and no created comment starts one. main-build calls the other two in its own run.
+        # The only workflow_run chain is Main Build -> PR main sync; cd-deploy runs on a schedule (CHE-5182).
+        # security-gate-queue.yml (security-gate -> queue) was removed in CHE-9846: it ran 27 of 27 skipped.
+        # main-build calls the other two in its own run.
         chains = {}
         for p in WF.glob("*.yml"):
             on = load(p.name)["on"]
@@ -108,7 +102,6 @@ class NoCommentOrCascadeRuns(unittest.TestCase):
         self.assertEqual(
             chains,
             {
-                "security-gate-queue.yml": ["security-gate"],
                 "pr-main-sync.yml": ["Main Build"],  # CHE-4963: one run per main push, as its old Main Build job was
             },
         )

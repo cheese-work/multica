@@ -77,3 +77,43 @@ func TestWorkspaceTokenLimitReplacesSavedPercent(t *testing.T) {
 		t.Fatalf("settings %s resolve to pct %d, 1M tokens %d; want the 300000-token limit", stored.Settings, rule.ThresholdPct, rule.Tokens1M)
 	}
 }
+
+// CHE-10000 (S2): saving a threshold alone (the settings page does) must keep
+// a saved run cap, and a revert that nulls the cap resolves to the default.
+func TestWorkspaceThresholdPatchKeepsSavedRunCap(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	workspace, err := testHandler.Queries.GetWorkspace(ctx, parseUUID(testWorkspaceID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		dbfx.Exec(t, `UPDATE workspace SET settings = $1 WHERE id = $2`, workspace.Settings, testWorkspaceID)
+	})
+	dbfx.Exec(t, `UPDATE workspace SET settings = $1 WHERE id = $2`, []byte(`{"auto_compact":{"threshold_tokens_1m":350000,"dm_run_cap_tokens_1m":430000,"dm_run_cap_tokens_200k":150000}}`), testWorkspaceID)
+
+	resolve := func() service.AutoCompact {
+		t.Helper()
+		stored, err := testHandler.Queries.GetWorkspace(ctx, parseUUID(testWorkspaceID))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return service.ResolveAutoCompact(stored.Settings, nil)
+	}
+	patch := func(body map[string]any) {
+		t.Helper()
+		request := withURLParam(newRequest(http.MethodPatch, "/api/workspaces/"+testWorkspaceID, map[string]any{"auto_compact": body}), "id", testWorkspaceID)
+		testutil.Call(t, testHandler.UpdateWorkspace, request).Want(http.StatusOK)
+	}
+
+	patch(map[string]any{"threshold_tokens_1m": 300000})
+	if rule := resolve(); rule.Tokens1M != 300000 || rule.DMRunCap1M != 430000 || rule.DMRunCap200k != 150000 {
+		t.Fatalf("after a threshold-only patch: %+v, want threshold 300000 with caps 430000 and 150000 kept", rule)
+	}
+	patch(map[string]any{"dm_run_cap_tokens_1m": nil})
+	if rule := resolve(); rule.Tokens1M != 300000 || rule.DMRunCap1M != service.AutoCompactDefaultRunCap1M || rule.DMRunCap200k != 150000 {
+		t.Fatalf("after a null cap patch: %+v, want the 1M cap back to the default and the rest kept", rule)
+	}
+}

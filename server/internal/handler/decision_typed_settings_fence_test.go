@@ -496,3 +496,69 @@ func TestTypedSettingsFenceUnfencedPatchLeavesFencedKeys(test *testing.T) {
 		test.Fatalf("standing_answers = %s, want review_cap split", got)
 	}
 }
+
+// startPendingIntentTypedSend posts a typed card from the lane's open intent (the
+// pending-intent branch, not the single-call one) from another goroutine.
+func startPendingIntentTypedSend(test *testing.T, fixture requestCoreFixture) <-chan callResult {
+	test.Helper()
+	body := map[string]any{"issue_id": fixture.issueID, "session_id": fixture.sessionID, "escalation_class": "reversible", "ask": typedAsk(fixture)}
+	request := newRequest(http.MethodPost, "/api/decisions", body)
+	request.Header.Set("X-Actor-Source", "task_token")
+	request.Header.Set("X-Agent-ID", fixture.agentID)
+	request.Header.Set("X-Task-ID", fixture.taskID)
+	done := make(chan callResult, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		testHandler.RequestDecision(recorder, request)
+		done <- callResult{recorder.Code, recorder.Body.String()}
+	}()
+	return done
+}
+
+// CHE-9716 (A5e F12). A pending-intent send whose preflight read "on" and whose
+// owner then committed "off" must refuse inside its own transaction and leave no card.
+func TestPendingIntentTypedSendRefusesWhenSettingIsOffAfterPreflight(test *testing.T) {
+	setWorkspaceSettings(test, `{"decision_server_actions":"on"}`)
+	fixture := newRequestCoreFixture(test, false)
+	pause := pauseTypedSend(test, "before_fence")
+	send := startPendingIntentTypedSend(test, fixture)
+	pause.waitReached(test) // the API preflight has passed with the setting on
+
+	setWorkspaceSettings(test, `{"decision_server_actions":"off"}`) // the owner commits off
+	pause.Release()
+
+	if result := waitResult(test, send, 10*time.Second, "the send"); result.status != http.StatusBadRequest || !strings.Contains(result.body, "server_actions_off") {
+		test.Fatalf("send = %d %s, want 400 server_actions_off", result.status, result.body)
+	}
+	if cards := requestCount(test, fixture); cards != 0 {
+		test.Fatalf("cards = %d, want 0", cards)
+	}
+}
+
+// CHE-9716 (A5e F12). A pending-intent typed send holds the shared fence, so an owner
+// write that turns the setting off waits for the send to commit.
+func TestPendingIntentTypedSendHoldsTheFenceAgainstAnOwnerWrite(test *testing.T) {
+	setWorkspaceSettings(test, `{"decision_server_actions":"on"}`)
+	fixture := newRequestCoreFixture(test, false)
+	pause := pauseTypedSend(test, "after_setting_read")
+	send := startPendingIntentTypedSend(test, fixture)
+	pause.waitReached(test)
+
+	write := startOwnerWrite(test, map[string]any{"decision_server_actions": "off"})
+	waitForFenceWaiter(test)
+	assertPending(test, write, 100*time.Millisecond, "the owner write")
+	pause.Release()
+
+	if result := waitResult(test, send, 10*time.Second, "the send"); result.status != http.StatusCreated {
+		test.Fatalf("send = %d %s, want 201", result.status, result.body)
+	}
+	if result := waitResult(test, write, 10*time.Second, "the owner write"); result.status != http.StatusOK {
+		test.Fatalf("write = %d %s, want 200", result.status, result.body)
+	}
+	if got := serverActionsValue(test); got != "off" {
+		test.Fatalf("decision_server_actions = %q, want off", got)
+	}
+	if cards := requestCount(test, fixture); cards != 1 {
+		test.Fatalf("cards = %d, want 1", cards)
+	}
+}

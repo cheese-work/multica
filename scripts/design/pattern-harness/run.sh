@@ -295,18 +295,6 @@ cap delegated-writes-section --height 1200 \
   --token GOVERNED_FIELDS --token text-caption --token text-muted-foreground
 
 # SS4 (CHE-5537)
-cap dingtalk-tab --height 1500 \
-  --component packages/views/settings/components/dingtalk-tab.tsx \
-  --token text-body --token text-caption --token text-micro
-cap lark-tab --height 1500 \
-  --component packages/views/settings/components/lark-tab.tsx \
-  --token text-body --token text-caption --token text-micro
-cap slack-tab --height 1200 \
-  --component packages/views/settings/components/slack-tab.tsx \
-  --token text-body --token text-caption --token text-micro
-cap telegram-tab --height 1200 \
-  --component packages/views/settings/components/telegram-tab.tsx \
-  --token text-body --token text-caption --token text-micro
 cap wecom-tab --height 1200 \
   --component packages/views/settings/components/wecom-tab.tsx \
   --token text-body --token text-caption --token text-micro
@@ -352,14 +340,8 @@ cap media-context \
 cap media-page --height 1100 \
   --component packages/views/media/media-page.tsx \
   --token text-body --token text-display-sm --token text-muted-foreground
-cap local-directory-mode-dialog --height 1000 \
-  --component packages/views/projects/components/local-directory-mode-dialog.tsx \
-  --token text-body --token text-micro --token text-caption --token ring-primary
 cap next-self-mention --height 1000 \
   --component packages/views/rich-content/next-self-mention.tsx \
   --token text-caption --token bg-primary --token text-primary-foreground
-cap project-workflow-menu --height 1000 \
-  --component packages/views/workflows/project-workflow-menu.tsx \
-  --token text-caption --token text-muted-foreground --token text-body
 
 rm -rf "$build"
