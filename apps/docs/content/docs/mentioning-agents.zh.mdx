@@ -75,7 +75,7 @@ import { SteerDemo } from "@/components/demos/steer-demo";
 
 一条评论 @多个不同智能体时，每个智能体各得一次运行；多个提及指向同一个智能体时，只保留一次。
 
-当审查阶段已满、运行暂时无法启动时，触发结果为 `deferred`，原因是 `stage_queue_full`：该提及已在队列中并会自动启动，请勿再次提及该智能体。 排队的运行会在有空位时启动；名额包含审查者自己已排队的运行，积压较长时会延迟。约 30 分钟后仍没有运行，请用条件唤醒启动（`multica issue wakeup create <issue> --until-status agent_review --agent-id <reviewer>`）。交接被延迟时，`multica issue assign`、`status`、`update` 也会打印同样的提示。
+当审查阶段已满、运行暂时无法启动时，触发结果为 `deferred`，原因是 `stage_queue_full`：该提及已在队列中并会自动启动，请勿再次提及该智能体。 排队的运行会在有空位时启动；名额包含审查者自己已排队的运行，积压较长时会延迟。想更早复查，可再次指定该审查者（`multica issue assign <issue> --to-id <reviewer>`）：它同样受阶段名额限制并并入已排队的条目，不会启动第二个运行。请勿使用状态唤醒，因为问题已处于该状态。交接被延迟时，`multica issue assign`、`status`、`update` 也会打印同样的提示。
 
 ## 不触发智能体的留言
 

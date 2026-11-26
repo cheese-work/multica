@@ -13,9 +13,11 @@ func warnBlockedTriggerOutcomes(w io.Writer, result map[string]any) {
 	for _, raw := range outcomes {
 		outcome, _ := raw.(map[string]any)
 		if outcome["status"] == "deferred" && outcome["reason_code"] == "stage_queue_full" {
-			fmt.Fprintf(w, "Note: review of %v %v is queued behind a full stage; it starts when a slot frees. "+
-				"If no run exists after about 30 minutes, start it with: multica issue wakeup create %v --until-status %v --agent-id %v. Do not re-mention or re-assign.\n",
-				outcome["target_type"], outcome["target_id"], retriggerIssueRef(result), retriggerStatus(result), outcome["target_id"])
+			fmt.Fprintf(w, "Note: review of %v %v is queued behind a full stage; it starts when a slot frees (checked every 30 s). "+
+				"To re-check now, name the reviewer again: multica issue assign %v --to-id %v. "+
+				"That goes through the same stage limit and joins the queued entry, so it starts no second run. "+
+				"Do not use a status wakeup: the issue is already in that status.\n",
+				outcome["target_type"], outcome["target_id"], retriggerIssueRef(result), outcome["target_id"])
 			continue
 		}
 		if outcome["status"] != "blocked" {
@@ -26,20 +28,11 @@ func warnBlockedTriggerOutcomes(w io.Writer, result map[string]any) {
 	}
 }
 
-// retriggerIssueRef names the issue in the re-trigger command: a comment
+// retriggerIssueRef names the issue in the re-assign command: a comment
 // response carries issue_id, an issue response its identifier.
 func retriggerIssueRef(result map[string]any) string {
 	if id := strVal(result, "issue_id"); id != "" {
 		return id
 	}
 	return issueDisplayKey(result)
-}
-
-// retriggerStatus is the review status the wakeup waits for. A comment
-// response has no issue status; the stage queue only holds review runs.
-func retriggerStatus(result map[string]any) string {
-	if status := strVal(result, "status"); status != "" {
-		return status
-	}
-	return "agent_review"
 }

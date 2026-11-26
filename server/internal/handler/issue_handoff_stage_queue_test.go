@@ -278,3 +278,100 @@ func TestReassignSameReviewerWhileStageFullIsQueued(t *testing.T) {
 		t.Fatalf("tasks after a slot frees = %d, want 1", n)
 	}
 }
+
+func waitingRows(t *testing.T, issueID string) int {
+	t.Helper()
+	return dbfx.Count(t, `SELECT count(*) FROM stage_queue_waiting WHERE issue_id = $1`, issueID)
+}
+
+func freeOneReviewSlot(t *testing.T, agentID string) {
+	t.Helper()
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now()
+	  WHERE id = (SELECT t.id FROM agent_task_queue t JOIN issue i ON i.id = t.issue_id
+	               WHERE t.agent_id = $1 AND t.status = 'running' AND i.title = 'stage slot holder' LIMIT 1)`, agentID)
+}
+
+// CHE-9895 recovery: the re-trigger the CLI names (assign the reviewer again)
+// respects the stage limit and joins the queued entry. While the stage is full
+// it adds no run and no second entry; once a slot frees it starts one run, and
+// the release tick that finds the entry afterwards adds none.
+func TestRecoveryReassignRespectsStageLimitAndNeverDuplicates(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := seededReadyAgentID(t)
+	reviewerFull(t, agentID, 2)
+	issueID := reviewHandoffIssue(t, agentID)
+
+	testutil.Call(t, testHandler.MoveIssue, moveStatus(issueID, "agent_review")).Want(http.StatusOK)
+	if n := waitingRows(t, issueID); n != 1 {
+		t.Fatalf("waiting entries after the deferred handoff = %d, want 1", n)
+	}
+
+	// Recovery while the stage is full: still deferred, no run, one entry.
+	for i := 0; i < 2; i++ {
+		out := reassignSameReviewer(t, issueID, agentID)
+		wantOutcome(t, out, agentID, DispatchDeferred, ReasonStageQueueFull)
+		if n := taskCount(t, issueID); n != 0 {
+			t.Fatalf("tasks after recovery %d while full = %d, want 0: recovery must respect the limit", i+1, n)
+		}
+		if n := waitingRows(t, issueID); n != 1 {
+			t.Fatalf("waiting entries after recovery %d = %d, want 1: recovery must join the entry", i+1, n)
+		}
+	}
+
+	// A slot frees; recovery starts exactly one run.
+	freeOneReviewSlot(t, agentID)
+	out := reassignSameReviewer(t, issueID, agentID)
+	wantOutcome(t, out, agentID, DispatchQueued, ReasonQueued)
+	if n := taskCount(t, issueID); n != 1 {
+		t.Fatalf("tasks after recovery with a free slot = %d, want 1", n)
+	}
+
+	// The release tick sees the original entry and the run it became: no second run.
+	if err := testHandler.TaskService.ReleaseStageQueues(t.Context()); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if n := taskCount(t, issueID); n != 1 {
+		t.Fatalf("tasks after the release tick = %d, want 1: the entry must not duplicate the run", n)
+	}
+}
+
+// CHE-9895 case 1: the issue already has the reviewer assigned when it enters
+// agent_review. With a free slot the move starts exactly one run.
+func TestEnterAgentReviewWithReviewerAlreadyAssignedStartsOneRun(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := seededReadyAgentID(t)
+	issueID := reviewHandoffIssue(t, agentID)
+	dbfx.Exec(t, `UPDATE issue SET assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, issueID, agentID)
+
+	testutil.Call(t, testHandler.MoveIssue, moveStatus(issueID, "agent_review")).Want(http.StatusOK)
+	if n := taskCount(t, issueID); n != 1 {
+		t.Fatalf("tasks after entering agent_review with the reviewer assigned = %d, want 1", n)
+	}
+}
+
+// Same entry with the stage full: no run, one queued entry, and the caller is told.
+func TestEnterAgentReviewWithReviewerAlreadyAssignedWhileFullIsQueued(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := seededReadyAgentID(t)
+	reviewerFull(t, agentID, 2)
+	issueID := reviewHandoffIssue(t, agentID)
+	dbfx.Exec(t, `UPDATE issue SET assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, issueID, agentID)
+
+	var out outcomesResp
+	testutil.Call(t, testHandler.MoveIssue, moveStatus(issueID, "agent_review")).Want(http.StatusOK).JSON(&out)
+	wantOutcome(t, out, agentID, DispatchDeferred, ReasonStageQueueFull)
+	if n := taskCount(t, issueID); n != 0 {
+		t.Fatalf("tasks while the stage is full = %d, want 0", n)
+	}
+	if n := waitingRows(t, issueID); n != 1 {
+		t.Fatalf("waiting entries = %d, want 1", n)
+	}
+
+	freeOneReviewSlot(t, agentID)
+	if err := testHandler.TaskService.ReleaseStageQueues(t.Context()); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if n := taskCount(t, issueID); n != 1 {
+		t.Fatalf("tasks after a slot frees = %d, want 1", n)
+	}
+}

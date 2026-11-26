@@ -70,12 +70,16 @@ func TestWarnTriggerOutcomes_StageQueueFullPrintsQueuedNote(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"Note: review of agent " + agentID + " is queued behind a full stage",
-		"multica issue wakeup create MUL-7 --until-status agent_review --agent-id " + agentID,
-		"Do not re-mention or re-assign.",
+		"multica issue assign MUL-7 --to-id " + agentID,
+		"starts no second run",
+		"Do not use a status wakeup",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("missing %q in %q", want, got)
 		}
+	}
+	if strings.Contains(got, "wakeup create") {
+		t.Fatalf("a status wakeup bypasses the stage queue and must not be advised: %q", got)
 	}
 	if strings.Contains(got, "other") {
 		t.Fatalf("an unrelated deferral must stay silent: %q", got)

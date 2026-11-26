@@ -5080,7 +5080,7 @@ func TestRunIssueAssignPrintsDeferredStageQueueOutcome(t *testing.T) {
 	if runErr != nil {
 		t.Fatalf("runIssueAssign: %v", runErr)
 	}
-	if !strings.Contains(string(out), "queued behind a full stage") || !strings.Contains(string(out), "wakeup create") {
+	if !strings.Contains(string(out), "queued behind a full stage") || !strings.Contains(string(out), "multica issue assign MUL-1 --to-id "+agentID) {
 		t.Fatalf("deferred outcome not printed to the caller:\n%s", out)
 	}
 }
