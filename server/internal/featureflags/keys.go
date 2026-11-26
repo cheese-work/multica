@@ -30,58 +30,33 @@ const (
 	// either way. Turning it off stops new intake and triage runs but leaves
 	// existing Triage issues workable.
 	TriageV1 = "triage_v1"
-	// WakeupDefinitionWrites (CHE-1082) is the server-side activation gate for
-	// scoped wakeup definition writes (create, update, delete). Its default is
-	// the completed legacy backfill (service.WakeupDefinitionsActivated), so it
-	// is closed until production holds the backfilled definitions and opens
-	// with the deploy that ran it; an explicit rule overrides either way.
-	// Reads and previews are not gated; they never persist.
-	WakeupDefinitionWrites = "wakeup_definition_writes"
-	// PasskeyEnrollment (CHE-2233) opens first-passkey enrollment. It is CLOSED
-	// in every environment until Cheese records that no agent or automation can
-	// read the account mailbox that receives the enrollment code.
-	PasskeyEnrollment = "passkey_enrollment"
-	// CIWatcher (CHE-4273) gates the CI failure watcher (CHE-4265): reading or
-	// writing its tables, and every code path built on them. Server-side only,
-	// read from MULTICA_FEATURE_FLAGS_FILE, and OFF unless a rule turns it on.
-	CIWatcher = "ci_watcher"
-	// CITokenBroker (CHE-4257) gates the CI token broker: the endpoint answers
-	// 404 unless a rule in MULTICA_FEATURE_FLAGS_FILE turns it on. OFF by default.
-	// Server-side only.
-	CITokenBroker = "ci_token_broker"
-	// InteractiveDM (CHE-5918, CHE-3073 v11 slice 1a) gates interactive actions
-	// on a `dm:` conversation source: bind, send a turn, find-or-create. It is
-	// per workspace (target it with allow_by workspace_id), OFF by default and
-	// enforced on the server. It must not be turned on before CHE-3073 slice 1c
-	// is recorded and the slice 2a isolation tests are green.
-	InteractiveDM = "interactive_dm"
-	// ExportPrivacyControls (CHE-766) is the kill switch for the CHE-755
-	// provenance-export capability and its export-privacy config endpoints.
-	// Default TRUE: export already shipped in CHE-755 without a flag, so a
-	// CONFIGURED provider that simply has no rule for this key must preserve
-	// that existing behavior, not silently disable a capability nobody asked
-	// to gate. That default only applies once a real provider is in play,
-	// though — ExportPrivacyControlsEnabled denies outright when the
-	// *Service or its provider is absent, rather than trusting this default in
-	// a state indistinguishable from "no flag evaluation happened at all". A
-	// provider that errors evaluating this key already returns
-	// Reason=ReasonError with Enabled=false unconditionally (see
-	// pkg/featureflag/env_provider.go), covering the "provider present but
-	// broken" half of unavailable. Turning this off in a working provider is
-	// the operator's explicit kill switch: it disables ExportProvenance AND
-	// both export-privacy config routes in one write.
-	ExportPrivacyControls = "export_privacy_controls"
-	// ProjectWorkflowsV1 gates project workflows (MUL-7420): creating a
-	// workflow and pointing a project at one, plus the Settings → Workflows
-	// and project workflow UI. Turning it off stops new adoption but leaves
-	// workflows already in use working, and a project can always switch back
-	// to the Default workflow.
-	ProjectWorkflowsV1 = "project_workflows_v1"
 	// LocalSearchIndex gates the sync endpoints behind Web/Desktop local search
 	// (MUL-7754). On by default. Turning it off (FF_LOCAL_SEARCH_INDEX=off)
 	// makes those endpoints answer 404, so clients stop syncing and search
 	// through the server again without a client release.
 	LocalSearchIndex = "local_search_index"
+	// DocsV1 gates workspace Docs (MUL-8370) while it is still being tested:
+	// the /api/docs and /api/doc-folders APIs, the Web/Desktop entry points,
+	// and the doc lines in the agent brief. Off by default so a release can
+	// ship the code without launching the feature; FF_DOCS_V1=true turns it on
+	// for a deployment. It is a GLOBAL switch. Turning it off leaves existing
+	// doc rows untouched — they simply become unreachable until it is back on.
+	DocsV1 = "docs_v1"
+	// IssueDescriptionLive lets people and agents edit an issue's description
+	// together in real time (MUL-9778), on the collaboration service Docs use.
+	// Off by default; FF_ISSUE_DESCRIPTION_LIVE=true turns it on where that
+	// service is configured. It is a GLOBAL switch. Turning it off sends
+	// editors back to saving through the API; sessions already open still
+	// save what was typed.
+	IssueDescriptionLive = "issue_description_live"
+	// DashboardHistory365d offers the 365-day range on the workspace dashboard
+	// (MUL-9490). On by default; FF_DASHBOARD_HISTORY_365D=off hides the range
+	// again if the year-long dashboard queries turn out too slow for a
+	// deployment. It only hides the range in the client; the plan's history
+	// limit is enforced on the server either way. Clients treat a missing key
+	// as off, so a newer client never offers 365 days to a server that would
+	// read days=371 as the default 30.
+	DashboardHistory365d = "dashboard_history_365d"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.
@@ -97,13 +72,16 @@ const (
 	// gate remained in every such client and fails closed (default false) if
 	// the key stops being published.
 	resourceLabelsCompat = "settings_resource_labels"
+	// projectWorkflowsCompat keeps workflow UI available in installed desktop
+	// clients that still gate it on this config decision and default to false.
+	projectWorkflowsCompat = "project_workflows_v1"
 )
 
 var frontendPublicFlags = []string{
 	BillingWorkspaceSubscriptions,
 	ComposioMCPApps,
 	PluginsV1,
-	ProjectWorkflowsV1,
+	DocsV1,
 }
 
 func BillingWorkspaceSubscriptionsEnabled(ctx context.Context, flags *featureflag.Service) bool {
@@ -122,84 +100,31 @@ func TriageV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, TriageV1, false)
 }
 
-// ExportPrivacyControlsEnabled reports whether CHE-755 provenance export and
-// the CHE-766 export-privacy config endpoints may run. See
-// [ExportPrivacyControls] for the fail-closed contract on error/unavailable.
-//
-// A nil *Service or a Service with no configured Provider is deliberately
-// NOT the same as "the key is unset on a working provider": IsEnabled alone
-// cannot tell those apart — both return this call's default — so relying on
-// it here would let export run under wiring that never evaluated the flag at
-// all (Sol's finding on df415ab6). This checks Provider() directly and
-// denies before ever reaching IsEnabled's default-passthrough.
-func ExportPrivacyControlsEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	if flags == nil || flags.Provider() == nil {
-		return false
-	}
-	return flags.IsEnabled(ctx, ExportPrivacyControls, true)
-}
-
-// WakeupDefinitionWritesEnabled reports whether scoped wakeup definition writes
-// are open. activated is the persisted state of the legacy backfill: writes
-// stay closed until it completed and open by themselves after it, with no
-// operator step. An explicit off rule is the kill switch. No rule, and no
-// explicit on rule, opens writes before the activation completed: production
-// holds zero definitions until then.
-func WakeupDefinitionWritesEnabled(ctx context.Context, flags *featureflag.Service, activated bool) bool {
-	return activated && flags.IsEnabled(ctx, WakeupDefinitionWrites, true)
-}
-
 func LocalSearchIndexEnabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, LocalSearchIndex, true)
 }
 
+func DocsV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, DocsV1, false)
+}
+
+func IssueDescriptionLiveEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, IssueDescriptionLive, false)
+}
+
+func DashboardHistory365dEnabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, DashboardHistory365d, true)
+}
+
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {
-	out := make(map[string]bool, len(frontendPublicFlags)+3)
+	out := make(map[string]bool, len(frontendPublicFlags)+5)
 	for _, key := range frontendPublicFlags {
 		out[key] = flags.IsEnabled(ctx, key, false)
 	}
+	out[DashboardHistory365d] = DashboardHistory365dEnabled(ctx, flags)
 	out[agentBuilderCompat] = true
 	out[agentSkillTogglesCompat] = true
 	out[resourceLabelsCompat] = true
+	out[projectWorkflowsCompat] = true
 	return out
-}
-
-func ProjectWorkflowsV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
-	return flags.IsEnabled(ctx, ProjectWorkflowsV1, false)
-}
-
-// PasskeyEnrollmentEnabled reports whether passkey enrollment is open. A nil
-// service or provider is closed, never "unset".
-func PasskeyEnrollmentEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	if flags == nil || flags.Provider() == nil {
-		return false
-	}
-	return flags.IsEnabled(ctx, PasskeyEnrollment, false)
-}
-
-// CIWatcherEnabled reports whether the CI failure watcher may run. A nil
-// service or provider is closed, never "unset".
-func CIWatcherEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	if flags == nil || flags.Provider() == nil {
-		return false
-	}
-	return flags.IsEnabled(ctx, CIWatcher, false)
-}
-
-// CITokenBrokerEnabled reports whether the CI token broker (CHE-4257) may
-// answer. A nil service or provider is closed, never "unset".
-func CITokenBrokerEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	if flags == nil || flags.Provider() == nil {
-		return false
-	}
-	return flags.IsEnabled(ctx, CITokenBroker, false)
-}
-
-// InteractiveDMEnabled reports whether interactive DM actions are open for the
-// workspace in ctx. A nil service or provider is closed, never "unset".
-func InteractiveDMEnabled(ctx context.Context, flags *featureflag.Service) bool {
-	if flags == nil || flags.Provider() == nil {
-		return false
-	}
-	return flags.IsEnabled(ctx, InteractiveDM, false)
 }

@@ -13,7 +13,7 @@ for (const scenario of [
     name: "same account language",
     language: "zh-Hans",
     htmlLang: "zh-CN",
-    continueLabel: "在 web 端继续",
+    continueLabel: "在网页端继续",
   },
 ]) {
   test(`Google callback keeps its single-use code while synchronizing ${scenario.name}`, async ({
@@ -25,20 +25,10 @@ for (const scenario of [
       throw new Error("The callback regression requires a configured baseURL");
     }
     const origin = new URL(baseURL).origin;
-    // A managed worktree env points NEXT_PUBLIC_API_URL at the backend port, so
-    // the page calls the API cross-origin. That origin is part of the HTTP
-    // boundary this test controls, not a third party.
-    const apiOrigin = process.env.NEXT_PUBLIC_API_URL
-      ? new URL(process.env.NEXT_PUBLIC_API_URL).origin
-      : origin;
-    const cors = apiOrigin === origin
-      ? {}
-      : {
-          "access-control-allow-origin": origin,
-          "access-control-allow-credentials": "true",
-          "access-control-allow-headers": "*",
-          "access-control-allow-methods": "*",
-        };
+    const apiBase =
+      process.env.NEXT_PUBLIC_API_URL || `http://localhost:${process.env.PORT || "8080"}`;
+    const apiOrigin = new URL(apiBase).origin;
+    const allowedOrigins = new Set([origin, apiOrigin]);
     const code = "locale-regression-code";
     const user = {
       id: "66666666-6666-4666-8666-666666666666",
@@ -91,7 +81,7 @@ for (const scenario of [
     await context.route("**/*", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
-      if (url.origin !== origin && url.origin !== apiOrigin) {
+      if (!allowedOrigins.has(url.origin)) {
         if (
           /(^|\.)(google\.com|googleapis\.com|googleusercontent\.com)$/.test(url.hostname)
         ) {
@@ -99,11 +89,7 @@ for (const scenario of [
         }
         return route.abort();
       }
-      if (request.method() === "OPTIONS" && url.origin === apiOrigin && apiOrigin !== origin) {
-        return route.fulfill({ status: 204, headers: cors });
-      }
-      const json = (status: number, body: unknown) =>
-        route.fulfill({ status, json: body, headers: cors });
+      const json = (status: number, body: unknown) => route.fulfill({ status, json: body });
       if (url.pathname === "/auth/google" && request.method() === "POST") {
         exchanges.push(request.postDataJSON());
         // A replay must fail, otherwise an accidental callback reload can look successful.
@@ -136,7 +122,7 @@ for (const scenario of [
         return json(200, []);
       }
       if (url.pathname === "/api/invitations") return json(200, []);
-      if (url.pathname === "/api/client-usage") return route.fulfill({ status: 204, headers: cors });
+      if (url.pathname === "/api/client-usage") return route.fulfill({ status: 204 });
       if (url.pathname.startsWith("/api/") || url.pathname === "/auth/google") {
         unexpectedApiRequests.push(`${request.method()} ${url.pathname}`);
         return json(500, { error: "Unexpected API request in callback locale test" });

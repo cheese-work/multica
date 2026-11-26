@@ -1,18 +1,21 @@
-import { app } from "electron";
+import { app, net } from "electron";
 import { execFile } from "child_process";
 import { createHash } from "crypto";
-import { existsSync } from "fs";
-import { chmod, mkdir, rename, rm, writeFile } from "fs/promises";
+import { createReadStream, createWriteStream, existsSync } from "fs";
+import { chmod, mkdir, rename, rm } from "fs/promises";
 import { join, dirname } from "path";
-import type { CliDownloadProgress } from "../shared/daemon-types";
+import { pipeline } from "stream/promises";
+import { tmpdir } from "os";
+import { Readable } from "stream";
+
+import { selectPlatformReleaseAssetName } from "./cli-release-asset";
 
 // Desktop prefers the bundled `multica` CLI shipped inside the app for
 // same-repo builds, but it can also repair or bootstrap a managed copy in
 // userData on first launch when the bundled binary is missing or unusable.
-//
-// The managed copy comes from the Multica server the app is connected to
-// (GET /api/daemon/update + /api/daemon/update/binary, CHE-2641), the same
-// source `multica update` and the daemon use. Never from upstream releases.
+
+const GITHUB_LATEST_BASE =
+  "https://github.com/multica-ai/multica/releases/latest/download";
 
 function binaryName(): string {
   return process.platform === "win32" ? "multica.exe" : "multica";
@@ -28,171 +31,127 @@ function run(cmd: string, args: string[], cwd?: string): Promise<void> {
   });
 }
 
-const NODE_TO_GO_OS: Record<string, string> = { darwin: "darwin", linux: "linux" };
-const NODE_TO_GO_ARCH: Record<string, string> = { x64: "amd64", arm64: "arm64" };
-
-/** The server's build key (`linux-amd64`) for a node platform/arch. */
-export function serverCliKey(
-  platform: string = process.platform,
-  arch: string = process.arch,
-): string {
-  const os = NODE_TO_GO_OS[platform];
-  const goArch = NODE_TO_GO_ARCH[arch];
-  if (!os || !goArch) {
-    throw new Error(
-      `unsupported platform for CLI auto-install: ${platform}/${arch} (the server builds linux and darwin on amd64/arm64)`,
-    );
+async function downloadToFile(url: string, dest: string): Promise<void> {
+  const res = await net.fetch(url, { redirect: "follow" });
+  if (!res.ok || !res.body) {
+    throw new Error(`download failed: ${res.status} ${res.statusText}`);
   }
-  return `${os}-${goArch}`;
+  await mkdir(dirname(dest), { recursive: true });
+  // Electron's net.fetch returns a web ReadableStream; adapt to a Node stream for pipeline.
+  const nodeStream = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+  await pipeline(nodeStream, createWriteStream(dest));
 }
 
-async function serverGet(
-  fetchImpl: typeof fetch,
-  serverUrl: string,
-  path: string,
-  token: string,
-): Promise<Response> {
-  const res = await fetchImpl(`${serverUrl}${path}`, {
-    redirect: "follow",
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
+// Fetch goreleaser's published checksums.txt and parse it into a
+// filename → sha256 lookup. Format is `<hex>  <filename>` per line.
+async function fetchChecksums(): Promise<Map<string, string>> {
+  const url = `${GITHUB_LATEST_BASE}/checksums.txt`;
+  const res = await net.fetch(url, { redirect: "follow" });
   if (!res.ok) {
-    throw new Error(`${path} failed: HTTP ${res.status}`);
-  }
-  return res;
-}
-
-async function readBody(
-  res: Response,
-  opts: {
-    total: number;
-    onProgress?: (progress: CliDownloadProgress) => void;
-    intervalMs: number;
-  },
-): Promise<Buffer> {
-  if (!res.body) return Buffer.from(await res.arrayBuffer());
-  const chunks: Uint8Array[] = [];
-  let bytesDone = 0;
-  let lastReport = Date.now();
-  let reportedDone = 0;
-  const report = () => {
-    if (!opts.onProgress || opts.total <= 0 || bytesDone === reportedDone) return;
-    lastReport = Date.now();
-    reportedDone = bytesDone;
-    opts.onProgress({ bytesDone, bytesTotal: opts.total });
-  };
-  for await (const chunk of res.body) {
-    chunks.push(chunk);
-    bytesDone += chunk.length;
-    if (Date.now() - lastReport >= opts.intervalMs) report();
-  }
-  report();
-  return Buffer.concat(chunks);
-}
-
-/**
- * Downloads the server's own CLI build for this platform and verifies it
- * against the sha256 in the server's manifest before returning the bytes.
- * `onProgress` fires at most once per `progressIntervalMs`, plus once on the
- * last chunk.
- */
-export async function downloadServerCli(opts: {
-  serverUrl: string;
-  token?: string;
-  platform?: string;
-  arch?: string;
-  fetchImpl?: typeof fetch;
-  onProgress?: (progress: CliDownloadProgress) => void;
-  progressIntervalMs?: number;
-}): Promise<Buffer> {
-  const serverUrl = opts.serverUrl.trim().replace(/\/+$/, "");
-  if (!/^https?:\/\/./.test(serverUrl)) {
-    throw new Error("no Multica server URL to download the CLI from");
-  }
-  const key = serverCliKey(opts.platform, opts.arch);
-  const token = opts.token ?? "";
-  const fetchImpl = opts.fetchImpl ?? fetch;
-
-  const manifest = (await (
-    await serverGet(fetchImpl, serverUrl, "/api/daemon/update", token)
-  ).json()) as { binaries?: Record<string, { sha256?: string; size?: number }> };
-  const expected = manifest.binaries?.[key]?.sha256?.toLowerCase();
-  if (!expected || !/^[0-9a-f]{64}$/.test(expected)) {
-    throw new Error(`the server has no ${key} CLI build`);
-  }
-
-  const [os, arch] = key.split("-");
-  const res = await serverGet(
-    fetchImpl,
-    serverUrl,
-    `/api/daemon/update/binary?os=${os}&arch=${arch}`,
-    token,
-  );
-  const bytes = await readBody(res, {
-    total: Number(res.headers.get("content-length")) || manifest.binaries?.[key]?.size || 0,
-    onProgress: opts.onProgress,
-    intervalMs: opts.progressIntervalMs ?? 250,
-  });
-  const actual = createHash("sha256").update(bytes).digest("hex");
-  if (actual !== expected) {
     throw new Error(
-      `checksum mismatch for ${key}: expected ${expected}, got ${actual} — refusing to install unverified binary`,
+      `checksums.txt fetch failed: ${res.status} ${res.statusText}`,
     );
   }
-  return bytes;
+  const text = await res.text();
+  const map = new Map<string, string>();
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const match = line.match(/^([a-f0-9]{64})\s+\*?(\S+)$/i);
+    if (match) map.set(match[2], match[1].toLowerCase());
+  }
+  return map;
 }
 
-export interface EnsureManagedCliOptions {
-  forceInstall?: boolean;
-  /** Base URL of the Multica server to download from. */
-  serverUrl?: string | null;
-  /** Credential for `serverUrl` (the update endpoints sit behind daemon auth). */
-  token?: string;
-  /** Throttled download progress, for the first-run "installing" UI. */
-  onProgress?: (progress: CliDownloadProgress) => void;
+async function sha256OfFile(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
 }
 
-async function installFresh(
-  serverUrl: string | null | undefined,
-  token: string | undefined,
-  onProgress: EnsureManagedCliOptions["onProgress"],
-): Promise<string> {
+async function verifyChecksum(
+  archivePath: string,
+  assetName: string,
+  expected: string,
+): Promise<void> {
+  const actual = await sha256OfFile(archivePath);
+  if (actual.toLowerCase() !== expected) {
+    throw new Error(
+      `checksum mismatch for ${assetName}: expected ${expected}, got ${actual}`,
+    );
+  }
+}
+
+async function extractArchive(archive: string, dest: string): Promise<void> {
+  await mkdir(dest, { recursive: true });
+  // Modern OSes all ship a `tar` that auto-detects tar.gz and zip:
+  // - macOS/Linux: GNU tar or bsdtar
+  // - Windows 10+: bsdtar is bundled as `tar.exe` since build 17063
+  await run("tar", ["-xf", archive, "-C", dest]);
+}
+
+async function installFresh(): Promise<string> {
   const target = managedCliPath();
-  const bytes = await downloadServerCli({ serverUrl: serverUrl ?? "", token, onProgress });
+  const checksums = await fetchChecksums();
+  const assetName = selectPlatformReleaseAssetName(checksums.keys());
+  const expectedChecksum = checksums.get(assetName);
+  if (!expectedChecksum) {
+    throw new Error(
+      `no checksum for ${assetName} in checksums.txt — refusing to install unverified binary`,
+    );
+  }
+  const url = `${GITHUB_LATEST_BASE}/${assetName}`;
 
-  console.log(`[cli-bootstrap] downloaded ${bytes.length} bytes from ${serverUrl}`);
-  await mkdir(dirname(target), { recursive: true });
-  const staged = `${target}.new`;
-  await writeFile(staged, bytes, { mode: 0o755 });
+  const workDir = join(tmpdir(), `multica-cli-${Date.now()}`);
+  await mkdir(workDir, { recursive: true });
+
   try {
-    await chmod(staged, 0o755);
+    const archivePath = join(workDir, assetName);
+    console.log(`[cli-bootstrap] downloading ${url}`);
+    await downloadToFile(url, archivePath);
+
+    console.log(`[cli-bootstrap] verifying ${assetName} against checksums.txt`);
+    await verifyChecksum(archivePath, assetName, expectedChecksum);
+
+    console.log(`[cli-bootstrap] extracting ${assetName}`);
+    await extractArchive(archivePath, workDir);
+
+    const extractedBin = join(workDir, binaryName());
+    if (!existsSync(extractedBin)) {
+      throw new Error(
+        `archive ${assetName} did not contain ${binaryName()} at its root`,
+      );
+    }
+
+    await mkdir(dirname(target), { recursive: true });
     await rm(target, { force: true }).catch(() => {});
-    await rename(staged, target);
+    await rename(extractedBin, target);
+    await chmod(target, 0o755);
+
+    // macOS: ad-hoc sign so spawning the child never hits a gatekeeper quirk.
+    // Non-fatal: unsigned binaries still execute when the parent app is trusted.
+    if (process.platform === "darwin") {
+      await run("codesign", ["-s", "-", "--force", target]).catch((err) => {
+        console.warn("[cli-bootstrap] ad-hoc codesign failed:", err);
+      });
+    }
+
+    console.log(`[cli-bootstrap] installed CLI at ${target}`);
+    return target;
   } finally {
-    await rm(staged, { force: true }).catch(() => {});
+    await rm(workDir, { recursive: true, force: true }).catch(() => {});
   }
-
-  // macOS: ad-hoc sign so spawning the child never hits a gatekeeper quirk.
-  // Non-fatal: unsigned binaries still execute when the parent app is trusted.
-  if (process.platform === "darwin") {
-    await run("codesign", ["-s", "-", "--force", target]).catch((err) => {
-      console.warn("[cli-bootstrap] ad-hoc codesign failed:", err);
-    });
-  }
-
-  console.log(`[cli-bootstrap] installed CLI at ${target}`);
-  return target;
 }
 
 /**
  * Returns the path to a usable `multica` binary. If one is already present at
  * the managed userData location, returns it immediately. Otherwise downloads
- * the server's build for the current platform and installs it.
+ * the latest release asset for the current platform and installs it.
  */
 export async function ensureManagedCli(
-  options: EnsureManagedCliOptions = {},
+  options: { forceInstall?: boolean } = {},
 ): Promise<string> {
   const target = managedCliPath();
   if (existsSync(target) && !options.forceInstall) return target;
-  return installFresh(options.serverUrl, options.token, options.onProgress);
+  return installFresh();
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const copyText = vi.hoisted(() => vi.fn(async () => true));
@@ -41,7 +41,6 @@ vi.mock("../editor/link-hover-card", () => ({
   LinkHoverCard: () => null,
 }));
 
-import { trackFeedbackTimers } from "../test/feedback-timer";
 import { RichContent } from "./rich-content";
 
 const TABLE = [
@@ -75,6 +74,26 @@ describe("RichTable", () => {
     expect(screen.queryByRole("button", { name: "Reset widths" })).toBeNull();
   });
 
+  it("skips max-content measurements when minimum column widths fit", () => {
+    const measurements: string[] = [];
+    const rect = vi
+      .spyOn(HTMLTableCellElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLTableCellElement) {
+        measurements.push(this.closest("table")?.style.width ?? "");
+        return new DOMRect(0, 0, 100, 20);
+      });
+    const clientWidth = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(560);
+    try {
+      const { table } = renderTable();
+      expect(measurements).toContain("min-content");
+      expect(measurements).not.toContain("max-content");
+      expect(table).not.toHaveAttribute("data-column-widths");
+    } finally {
+      rect.mockRestore();
+      clientWidth.mockRestore();
+    }
+  });
+
   it("gives an overflowing table capped content widths without saving them", () => {
     const natural = { "max-content": [500, 260, 90], "min-content": [200, 330, 64] } as const;
     const rect = vi
@@ -99,140 +118,34 @@ describe("RichTable", () => {
     }
   });
 
-  describe("auto-fit cost", () => {
-    // Counts the max-content pass of measureColumns, which lifts the table's
-    // sizing and forces a layout: one header-cell read per column.
-    function probeMeasurePasses() {
-      const natural = { "max-content": [500, 260, 90], "min-content": [200, 330, 64] } as const;
-      let passes = 0;
-      const rect = vi
-        .spyOn(HTMLTableCellElement.prototype, "getBoundingClientRect")
-        .mockImplementation(function (this: HTMLTableCellElement) {
-          const mode = this.closest("table")?.style.width as keyof typeof natural;
-          if (mode === "max-content" && this.cellIndex === 0) passes += 1;
-          return { width: natural[mode]?.[this.cellIndex] ?? 0, left: 0, right: 0, top: 0, height: 0 } as DOMRect;
-        });
-      const clientWidth = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(560);
-      return {
-        passes: () => passes,
-        restore: () => {
-          rect.mockRestore();
-          clientWidth.mockRestore();
-        },
-      };
-    }
-
-    it("reuses a table's measured widths when it remounts", () => {
-      const probe = probeMeasurePasses();
-      try {
-        const content = TABLE.replace("harness switch", "remount cache");
-        const first = render(<RichContent content={content} />);
-        expect(probe.passes()).toBe(1);
-        const cols = () =>
-          Array.from(document.querySelectorAll<HTMLElement>("colgroup col"), (col) => col.style.width);
-        const fitted = cols();
-        expect(fitted).toEqual(["320px", "330px", "90px"]);
-
-        first.unmount();
-        render(<RichContent content={content} />);
-        expect(probe.passes()).toBe(1);
-        expect(cols()).toEqual(fitted);
-      } finally {
-        probe.restore();
-      }
-    });
-
-    function stubFonts(status: "loaded" | "loading") {
-      let settle = () => {};
-      const ready = status === "loaded" ? Promise.resolve() : new Promise<void>((resolve) => (settle = resolve));
+  it("measures again for web fonts only while they are still loading", async () => {
+    const rect = vi.spyOn(HTMLTableCellElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 100 } as DOMRect);
+    const clientWidth = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(560);
+    const measures = async (status: FontFaceSet["status"]) => {
+      let fontsLoaded!: () => void;
+      const ready = new Promise<void>((resolve) => (fontsLoaded = resolve));
       Object.defineProperty(document, "fonts", { configurable: true, value: { status, ready } });
-      return {
-        loaded: async () => {
-          settle();
-          await act(async () => {});
-        },
-        restore: () => Reflect.deleteProperty(document, "fonts"),
-      };
+      rect.mockClear();
+      const view = renderTable();
+      const first = rect.mock.calls.length;
+      fontsLoaded();
+      await ready;
+      await Promise.resolve();
+      const total = rect.mock.calls.length;
+      view.unmount();
+      return { first, total };
+    };
+    try {
+      const loaded = await measures("loaded");
+      expect(loaded.first).toBeGreaterThan(0);
+      expect(loaded.total).toBe(loaded.first);
+      const loading = await measures("loading");
+      expect(loading.total).toBeGreaterThan(loading.first);
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+      rect.mockRestore();
+      clientWidth.mockRestore();
     }
-
-    it("keeps the cached widths on remount once fonts have loaded", async () => {
-      const probe = probeMeasurePasses();
-      const fonts = stubFonts("loaded");
-      try {
-        const content = TABLE.replace("harness switch", "loaded fonts remount");
-        const first = render(<RichContent content={content} />);
-        await act(async () => {});
-        expect(probe.passes()).toBe(1);
-
-        first.unmount();
-        render(<RichContent content={content} />);
-        await act(async () => {});
-        expect(probe.passes()).toBe(1);
-      } finally {
-        fonts.restore();
-        probe.restore();
-      }
-    });
-
-    it("measures again when a font finishes loading after the table mounted", async () => {
-      const probe = probeMeasurePasses();
-      const fonts = stubFonts("loading");
-      try {
-        render(<RichContent content={TABLE.replace("harness switch", "font swap")} />);
-        expect(probe.passes()).toBe(1);
-        await fonts.loaded();
-        expect(probe.passes()).toBe(2);
-      } finally {
-        fonts.restore();
-        probe.restore();
-      }
-    });
-
-    it("measures again when the available width changes", () => {
-      const probe = probeMeasurePasses();
-      try {
-        const content = TABLE.replace("harness switch", "width cache");
-        const first = render(<RichContent content={content} />);
-        first.unmount();
-        vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(900);
-        render(<RichContent content={content} />);
-        expect(probe.passes()).toBe(2);
-      } finally {
-        probe.restore();
-      }
-    });
-
-    it("skips auto-fit for a tall table", () => {
-      const probe = probeMeasurePasses();
-      try {
-        const rows = Array.from({ length: 120 }, (_, i) => `| row ${i} | value | ${i} |`);
-        const tall = ["| GitHub | Relation | Count |", "| --- | --- | --- |", ...rows].join("\n");
-        const { container } = render(<RichContent content={tall} />);
-        expect(probe.passes()).toBe(0);
-        expect(container.querySelector("table")).not.toHaveAttribute("data-column-widths");
-      } finally {
-        probe.restore();
-      }
-    });
-
-    it("observes size changes with a single ResizeObserver per table", () => {
-      const Original = globalThis.ResizeObserver;
-      let created = 0;
-      globalThis.ResizeObserver = class {
-        constructor() {
-          created += 1;
-        }
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      } as unknown as typeof ResizeObserver;
-      try {
-        renderTable();
-        expect(created).toBe(1);
-      } finally {
-        globalThis.ResizeObserver = Original;
-      }
-    });
   });
 
   it("resizes a column from the keyboard, persists it, and resets", async () => {
@@ -323,71 +236,5 @@ describe("RichTable", () => {
 
     await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  });
-
-  it("clears the copy-feedback timer when the dialog unmounts", async () => {
-    const view = renderTable();
-    await userEvent.click(screen.getByRole("button", { name: "Expand table" }));
-    const dialog = await screen.findByRole("dialog");
-
-    const timers = trackFeedbackTimers();
-    try {
-      await userEvent.click(within(dialog).getByRole("button", { name: "Copy as CSV" }));
-      expect(timers.ids).toHaveLength(1);
-      view.unmount();
-      expect(timers.cleared(timers.ids[0])).toBe(true);
-    } finally {
-      timers.restore();
-    }
-  });
-
-  it("clears the copy-feedback timer when the table unmounts", async () => {
-    const view = renderTable();
-    const timers = trackFeedbackTimers();
-    try {
-      await userEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
-      expect(timers.ids).toHaveLength(1);
-      view.unmount();
-      expect(timers.cleared(timers.ids[0])).toBe(true);
-    } finally {
-      timers.restore();
-    }
-  });
-
-  it("starts no feedback timer when the dialog unmounts before the copy resolves", async () => {
-    let resolveCopy!: (copied: boolean) => void;
-    copyText.mockReturnValueOnce(new Promise<boolean>((resolve) => (resolveCopy = resolve)));
-    const view = renderTable();
-    await userEvent.click(screen.getByRole("button", { name: "Expand table" }));
-    const dialog = await screen.findByRole("dialog");
-
-    const timers = trackFeedbackTimers();
-    try {
-      await userEvent.click(within(dialog).getByRole("button", { name: "Copy as CSV" }));
-      view.unmount();
-      resolveCopy(true);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(timers.ids).toHaveLength(0);
-    } finally {
-      timers.restore();
-    }
-  });
-
-  it("starts no feedback timer when the table unmounts before the copy resolves", async () => {
-    let resolveCopy!: (copied: boolean) => void;
-    copyText.mockReturnValueOnce(new Promise<boolean>((resolve) => (resolveCopy = resolve)));
-    const view = renderTable();
-    const timers = trackFeedbackTimers();
-    try {
-      await userEvent.click(screen.getByRole("button", { name: "Copy as Markdown" }));
-      view.unmount();
-      resolveCopy(true);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(timers.ids).toHaveLength(0);
-    } finally {
-      timers.restore();
-    }
   });
 });

@@ -32,10 +32,9 @@ function CallbackContent() {
   const loginWithGoogle = useAuthStore((s) => s.loginWithGoogle);
   const [error, setError] = useState<CallbackError | null>(null);
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
-  // The code is single-use. Strict Mode re-runs this effect in development,
-  // and so does any change of its dependencies; a second exchange would be
-  // refused and show an error for a login that succeeded.
-  const exchangedCode = useRef<string | null>(null);
+  // Single-use OAuth codes must only be exchanged once even if React StrictMode
+  // re-invokes mount effects in development.
+  const exchangedCodeRef = useRef<string | null>(null);
 
   useEffect(() => {
     const code = searchParams.get("code");
@@ -55,8 +54,10 @@ function CallbackContent() {
       return;
     }
 
-    if (exchangedCode.current === code) return;
-    exchangedCode.current = code;
+    if (exchangedCodeRef.current === code) {
+      return;
+    }
+    exchangedCodeRef.current = code;
 
     const state = searchParams.get("state") || "";
     const stateParts = state.split(",");
@@ -92,12 +93,12 @@ function CallbackContent() {
     const redirectUri = `${window.location.origin}/auth/callback`;
 
     if (cliCallback) {
+      // CLI login flow: exchange the Google code for a JWT, then redirect the
+      // token back to the CLI's local HTTP listener (e.g. WSL2 host).
       api
         .googleLogin(code, redirectUri)
-        .then(async ({ token }) => {
-          api.setToken(token);
-          const { token: cliToken } = await api.issueCliToken();
-          redirectToCliCallback(cliCallback, cliToken, cliState);
+        .then(({ token }) => {
+          redirectToCliCallback(cliCallback, token, cliState);
         })
         .catch((err) => {
           authLogger.error("CLI Google OAuth callback failed", err);
@@ -109,6 +110,7 @@ function CallbackContent() {
         .googleLogin(code, redirectUri)
         .then(({ token }) => {
           setDesktopToken(token);
+          window.location.href = `multica://auth/callback?token=${encodeURIComponent(token)}`;
         })
         .catch((err) => {
           authLogger.error("Desktop Google OAuth callback failed", err);

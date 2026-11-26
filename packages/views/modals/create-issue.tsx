@@ -57,16 +57,17 @@ import { useIssueCreateUploads } from "./use-issue-create-uploads";
 import { useShortcut } from "@multica/core/shortcuts";
 import { ShortcutKeycaps } from "../common/shortcut-keycaps";
 import { StatusIcon, StatusPicker, PriorityIcon, PriorityPicker, StagePicker, AssigneePicker, StartDatePicker, DueDatePicker, LabelPicker } from "../issues/components";
+import { useRecordAssigneePick } from "../issues/components/pickers/assignee-picker";
 import { maxSiblingStage } from "../issues/components/pickers/stage-picker";
 import { ProjectPicker } from "../projects/components/project-picker";
 import { useIssueTriggerPreview } from "../issues/hooks/use-issue-trigger-preview";
 import { useActorName } from "@multica/core/workspace/hooks";
-import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspacePaths, issueRouteRef } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
-import { useIssueWorkflows, useProjectWithWorkflow, workflowAllowsStatus, workflowIdForTitle, workflowStep } from "@multica/core/issue-workflows";
+import { useProjectWithWorkflow, useProjectWorkflow, workflowAllowsStatus, workflowStep } from "@multica/core/issue-workflows";
+import { projectListOptions } from "@multica/core/projects/queries";
 import { stepHandlerActor, useStepHandlerLabel } from "../workflows/step-handler";
-import { WorkflowChoicePill } from "../workflows/workflow-choice-pill";
 import { useIssueDraftStore, type IssueCreateDraft } from "@multica/core/issues/stores/draft-store";
 import { useCreateModeStore } from "@multica/core/issues/stores/create-mode-store";
 import { useQuickCreateStore } from "@multica/core/issues/stores/quick-create-store";
@@ -100,8 +101,8 @@ import {
 } from "../issues/components/pickers/custom-property-picker";
 import { IssuePickerModal } from "./issue-picker-modal";
 import { useT } from "../i18n";
+import { StorageLimitNotice, storageLimitRefusal, type StorageLimitRefusal } from "../billing/storage-limit-notice";
 import { SourceContextPreviewCard, useSourceContextFailureMessage } from "./source-context-preview";
-import { useIssueLimitUpgradePrompt } from "./use-issue-limit-upgrade-prompt";
 import { CopyParentFields } from "./copy-parent-fields";
 
 // ManualCreatePanel — manual-mode body of the create-issue dialog. Renders
@@ -175,8 +176,8 @@ function CreateRunHint({
   return (
     <div
       className={cn(
-        "grid shrink-0 transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none",
-        ready ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+        "grid shrink-0 transition-[grid-template-rows,opacity] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
+        ready ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
       )}
       aria-hidden={!ready}
     >
@@ -204,31 +205,43 @@ function CreateRunHint({
  * Names who a new issue will be handed to when its project's workflow starts
  * it on a step with a handler and no assignee was picked. (MUL-7420)
  */
-function WorkflowHandoffHint({ projectId, workflowId, status }: { projectId?: string; workflowId: string | null; status: IssueStatus }) {
+function WorkflowHandoffHint({ projectId, status }: { projectId?: string; status: IssueStatus }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
-  const { workflow, project, resolved, loading, retry } = useProjectWithWorkflow(wsId, projectId, workflowId);
+  const workflow = useProjectWorkflow(wsId, projectId);
+  const { data: projects } = useQuery({ ...projectListOptions(wsId), enabled: !!workflow });
+  const project = projects?.find((p) => p.id === projectId);
   const handlerLabel = useStepHandlerLabel(project);
   const step = workflowStep(workflow, status);
   const label = handlerLabel(step);
-  // The server hands the new issue to the workflow's handler whatever this form
-  // shows, so a catalog that cannot say must not read as "nobody gets it".
-  if ((projectId || workflowId) && !resolved && !loading) {
-    return (
-      <div aria-live="polite" className="flex items-center gap-1.5 px-4 pb-1 pt-0.5 text-micro text-muted-foreground">
-        <span className="truncate">{t(($) => $.workflows.create_handoff_unchecked)}</span>
-        <button type="button" onClick={retry} className="shrink-0 underline underline-offset-2 hover:text-foreground">
-          {t(($) => $.workflows.catalog_retry)}
-        </button>
-      </div>
-    );
-  }
-  if (!label) return null;
   const actor = stepHandlerActor(step, project);
+  const ready = Boolean(label);
+  const [shown, setShown] = useState<{ label: string; actor: ReturnType<typeof stepHandlerActor> } | null>(
+    label ? { label, actor } : null,
+  );
+  if (
+    label &&
+    (shown?.label !== label ||
+      shown.actor?.id !== actor?.id ||
+      shown.actor?.type !== actor?.type)
+  ) {
+    setShown({ label, actor });
+  }
+  if (!shown) return null;
   return (
-    <div aria-live="polite" className="flex items-center gap-1.5 px-4 pb-1 pt-0.5 text-micro text-muted-foreground">
-      {actor && <ActorAvatar actorType={actor.type} actorId={actor.id} size="sm" profileLink={false} />}
-      <span className="truncate">{t(($) => $.workflows.create_handoff_hint, { name: label })}</span>
+    <div
+      className={cn(
+        "grid shrink-0 transition-[grid-template-rows,opacity] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
+        ready ? "grid-rows-[1fr] opacity-100" : "grid-rows-[0fr] opacity-0",
+      )}
+      aria-hidden={!ready}
+    >
+      <div className="overflow-hidden">
+        <div aria-live="polite" className="flex items-center gap-1.5 px-4 pb-1 pt-0.5 text-micro text-muted-foreground">
+          {shown.actor && <ActorAvatar actorType={shown.actor.type} actorId={shown.actor.id} size="sm" profileLink={false} />}
+          <span className="truncate">{t(($) => $.workflows.create_handoff_hint, { name: shown.label })}</span>
+        </div>
+      </div>
     </div>
   );
 }
@@ -268,7 +281,6 @@ export function ManualCreatePanel({
     : undefined;
   const onSourceContextExpandedChange = data?.source_context_on_expanded_change as ((expanded: boolean) => void) | undefined;
   const sourceContextFailureMessage = useSourceContextFailureMessage();
-  const showIssueLimitUpgradePrompt = useIssueLimitUpgradePrompt();
 
   const draft = useIssueDraftStore((s) => s.draft);
   const setManual = useIssueDraftStore((s) => s.setManual);
@@ -313,6 +325,9 @@ export function ManualCreatePanel({
     return draft.manual.assigneeId;
   });
   const [assigneeCleared, setAssigneeCleared] = useState(data?.manual_assignee_cleared === true);
+  const recordAssigneePick = useRecordAssigneePick();
+  // The draft's pending hand pick that the request in flight submits.
+  const submittedPickRef = useRef<IssueCreateDraft["manual"]["assigneePick"]>(undefined);
   const [startDate, setStartDate] = useState<string | null>(draft.manual.startDate);
   const [dueDate, setDueDate] = useState<string | null>(
     (data?.due_date as string | undefined) ?? draft.shared.dueDate,
@@ -328,9 +343,6 @@ export function ManualCreatePanel({
     }
     return draft.shared.projectId;
   });
-  // This one issue's own workflow; null follows the project. Not drafted: it is
-  // a per-issue choice that should not outlive the dialog. (CHE-2822)
-  const [workflowId, setWorkflowId] = useState<string | null>(null);
   const [parentIssueId, setParentIssueId] = useState<string | undefined>(
     (data?.parent_issue_id as string) || undefined,
   );
@@ -420,7 +432,10 @@ export function ManualCreatePanel({
     attachments: draftAttachments,
     handleUpload,
     gate,
+    storageRefusal,
+    dismissStorageRefusal,
   } = useIssueCreateUploads("manual", uploadGate, descEditorRef);
+  const [storageCopyRefusal, setStorageCopyRefusal] = useState<StorageLimitRefusal | null>(null);
 
   // Sync field changes to the draft store — manual-only fields to the manual
   // slot, project / priority / due date to the shared slot.
@@ -428,27 +443,26 @@ export function ManualCreatePanel({
   const updateStatus = (v: IssueStatus) => { setStatus(v); setManual({ status: v }); };
   const updatePriority = (v: IssuePriority) => { setPriority(v); setShared({ priority: v }); };
   const updateAssignee = (type?: IssueAssigneeType, id?: string) => {
+    // Re-picking the current assignee is not a new pick; clearing drops it.
+    const changed = type !== assigneeType || id !== assigneeId;
     setAssigneeType(type); setAssigneeId(id);
     setAssigneeCleared(!id);
-    setManual({ assigneeType: type, assigneeId: id });
+    setManual({
+      assigneeType: type,
+      assigneeId: id,
+      ...(changed ? { assigneePick: type && id ? { type, id } : undefined } : {}),
+    });
   };
   const updateProject = (id?: string) => { setProjectId(id); setShared({ projectId: id }); };
   const updateParent = (id?: string) => {
     setParentIssueId(id);
     setStage(null);
   };
-  // An issue only takes its workflow's columns — its override's, its project's,
-  // or Default's outside a project: a status it does not list moves to todo,
-  // which every workflow keeps. (MUL-7420, MUL-8250)
-  // The server applies the workspace's title-type mapping when no workflow is
-  // named (CHE-5271), so the form follows the same rule: an explicit choice,
-  // else the workflow the title's type maps to, else the project's.
-  const { workflows: catalog } = useIssueWorkflows(wsId);
-  const titleTypeId = workflowIdForTitle(useCurrentWorkspace()?.settings, title);
-  const mappedWorkflowId = titleTypeId && catalog.some((w) => w.id === titleTypeId) ? titleTypeId : null;
-  const effectiveWorkflowId = workflowId ?? mappedWorkflowId;
-  const { workflow: issueWorkflow, defaultWorkflow: workspaceDefault } = useProjectWithWorkflow(wsId, projectId, effectiveWorkflowId);
-  const createWorkflow = projectId || effectiveWorkflowId ? issueWorkflow : workspaceDefault;
+  // An issue only takes its workflow's columns — its project's, or Default's
+  // outside a project: a status it does not list moves to todo, which every
+  // workflow keeps. (MUL-7420, MUL-8250)
+  const { workflow: projectWorkflow, defaultWorkflow: workspaceDefault } = useProjectWithWorkflow(wsId, projectId);
+  const createWorkflow = projectId ? projectWorkflow : workspaceDefault;
   useEffect(() => {
     if (createWorkflow && !workflowAllowsStatus(createWorkflow, status)) {
       setStatus("todo");
@@ -496,7 +510,6 @@ export function ManualCreatePanel({
     setPropertyErrorId(null);
     setUnavailablePropertyRemoved(false);
     setProjectId(undefined);
-    setWorkflowId(null);
     setChildIssues([]);
     // Keep status and assignee in this batch. Parent and stage stay in local
     // state, while other manual and shared fields reset for the next issue.
@@ -566,6 +579,13 @@ export function ManualCreatePanel({
       const pendingDesc = descEditorRef.current?.flushPendingUpdate?.();
       if (pendingDesc != null) setManual({ description: pendingDesc });
       submittedDraftRef.current = useIssueDraftStore.getState().draft;
+      // Only a hand pick of the submitted assignee feeds the picker's
+      // ranking; a prefilled or remembered assignee never matches one.
+      const pendingPick = submittedDraftRef.current.manual.assigneePick;
+      submittedPickRef.current =
+        pendingPick?.type === assigneeType && pendingPick?.id === assigneeId
+          ? pendingPick
+          : undefined;
       try {
       const description = descEditorRef.current?.getMarkdown()?.trim() || undefined;
       const activeAttachmentIds = draftAttachments
@@ -592,7 +612,6 @@ export function ManualCreatePanel({
               ...(Object.keys(propertyValues).length > 0 ? { properties: propertyValues } : {}),
               stage: parentIssueId && stage != null ? stage : undefined,
               project_id: projectId,
-              workflow_id: workflowId ?? undefined,
             },
           },
         });
@@ -618,7 +637,6 @@ export function ManualCreatePanel({
           // Stage is only meaningful for a sub-issue (relative to its siblings).
           stage: parentIssueId && stage != null ? stage : undefined,
           project_id: projectId,
-          workflow_id: workflowId ?? undefined,
         });
       }
 
@@ -711,7 +729,7 @@ export function ManualCreatePanel({
               type="button"
               className="ml-7 mt-2 text-body text-primary hover:underline cursor-pointer"
               onClick={() => {
-                router.push(p.issueDetail(issue.id));
+                router.push(p.issueDetail(issueRouteRef(issue)));
                 toast.dismiss(toastId);
               }}
             >
@@ -722,6 +740,13 @@ export function ManualCreatePanel({
       }
       return true;
     } catch (err) {
+      // A sub-issue copies its source attachments; a full workspace refuses
+      // that before creating anything (MUL-9489).
+      const copyRefusal = anchorCommentId ? storageLimitRefusal(err, "") : null;
+      if (copyRefusal) {
+        if (mountedRef.current) setStorageCopyRefusal({ ...copyRefusal, kind: "copy" });
+        return false;
+      }
       const sourceCode = err instanceof ApiError && err.body && typeof err.body === "object"
         ? (err.body as { code?: unknown }).code
         : undefined;
@@ -740,10 +765,6 @@ export function ManualCreatePanel({
       }
       if (anchorCommentId && sourceCode === "source_context_too_large") {
         toast.error(sourceContextFailureMessage(err) ?? tIssues(($) => $.source_context.error_too_large));
-        return false;
-      }
-      if (sourceCode === "issue_limit_reached") {
-        showIssueLimitUpgradePrompt();
         return false;
       }
       if (sourceCode === "invalid_issue_property" && err instanceof ApiError) {
@@ -819,7 +840,7 @@ export function ManualCreatePanel({
                   type="button"
                   className="ml-7 mt-2 text-body text-primary hover:underline cursor-pointer"
                   onClick={() => {
-                    router.push(p.issueDetail(dup.issue.id));
+                    router.push(p.issueDetail(issueRouteRef(dup.issue)));
                     toast.dismiss(toastId);
                   }}
                 >
@@ -841,6 +862,9 @@ export function ManualCreatePanel({
     }
   },
     onAccepted: () => {
+      const pick = submittedPickRef.current;
+      if (pick) recordAssigneePick(pick.type, pick.id);
+      submittedPickRef.current = undefined;
       // Only the assignee persists across independent create sessions.
       setLastAssignee(assigneeType, assigneeId);
       setLastMode("manual");
@@ -855,6 +879,11 @@ export function ManualCreatePanel({
       const untouched =
         useIssueDraftStore.getState().draft === submittedDraftRef.current;
       if (untouched) clearDraft();
+      // A kept draft must not count the same pick again on its next create;
+      // a newer pick made during the request stays.
+      else if (pick && useIssueDraftStore.getState().draft.manual.assigneePick === pick) {
+        setManual({ assigneePick: undefined });
+      }
       if (!mountedRef.current || !untouched) return;
       if (keepOpen) {
         resetForNextIssue();
@@ -978,7 +1007,6 @@ export function ManualCreatePanel({
               shortcut={sendShortcut}
               decorative
               className="ml-1 max-sm:hidden"
-              keyClassName="border-background/30 bg-background/15 text-primary-foreground shadow-none"
             />
           ) : null}
         </>
@@ -1089,6 +1117,21 @@ export function ManualCreatePanel({
               {descDragOver && <FileDropOverlay />}
             </div>
 
+            {storageRefusal && (
+              <StorageLimitNotice
+                refusal={storageRefusal}
+                onDismiss={dismissStorageRefusal}
+                className="mx-5 mb-2"
+              />
+            )}
+            {storageCopyRefusal && (
+              <StorageLimitNotice
+                refusal={storageCopyRefusal}
+                onDismiss={() => setStorageCopyRefusal(null)}
+                className="mx-5 mb-2"
+              />
+            )}
+
             {anchorCommentId && (
               <SourceContextPreviewCard
                 preview={sourcePreview}
@@ -1107,7 +1150,7 @@ export function ManualCreatePanel({
             {assigneeId ? (
               <CreateRunHint assigneeType={assigneeType} assigneeId={assigneeId} status={status} />
             ) : (
-              <WorkflowHandoffHint projectId={projectId} workflowId={effectiveWorkflowId} status={status} />
+              <WorkflowHandoffHint projectId={projectId} status={status} />
             )}
 
             {/* Property toolbar — each field renders per the Settings → Preferences → Issue creation
@@ -1118,7 +1161,6 @@ export function ManualCreatePanel({
                 <StatusPicker
                   status={status}
                   projectId={projectId ?? null}
-                  workflowId={effectiveWorkflowId}
                   onUpdate={(u) => { if (u.status) updateStatus(u.status); }}
                   triggerRender={<PillButton />}
                   tooltip={tIssues(($) => $.detail.prop_status)}
@@ -1150,6 +1192,7 @@ export function ManualCreatePanel({
                     u.assignee_type ?? undefined,
                     u.assignee_id ?? undefined,
                   )}
+                  recordPicks={false}
                   triggerRender={<PillButton />}
                   tooltip={tIssues(($) => $.detail.prop_assignee)}
                   align="start"
@@ -1191,9 +1234,6 @@ export function ManualCreatePanel({
                   onOpenChange={(open) => setFieldPickerOpen(open ? "project" : null)}
                 />
               )}
-
-              {/* Workflow — only for people who may switch it; follows the project until chosen */}
-              <WorkflowChoicePill projectId={projectId ?? null} workflowId={workflowId} onChange={setWorkflowId} />
 
               {/* Stage — only relevant when creating a sub-issue under a parent */}
               {parentIssueId && (
@@ -1590,7 +1630,7 @@ export function manualDialogContentClass(isExpanded: boolean) {
   return cn(
     "p-0 gap-0 flex flex-col overflow-hidden",
     "!top-1/2 !left-1/2 !-translate-x-1/2",
-    "!transition-all !duration-300 !ease-out",
+    "[interpolate-size:allow-keywords] [transition-property:width,max-width,height] [transition-duration:200ms] [transition-timing-function:cubic-bezier(0.23,1,0.32,1)] motion-reduce:[transition-duration:0ms]",
     // Phone gutter — see the matching note in create-issue-dialog.tsx: the
     // `!important` widths below also override DialogContent's
     // `max-w-[calc(100%-2rem)]`, leaving the card edge to edge on a phone

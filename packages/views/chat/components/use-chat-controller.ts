@@ -13,7 +13,7 @@ import { getCurrentWsId } from "@multica/core/platform";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
 import { projectListOptions } from "@multica/core/projects/queries";
 import { canAssignAgent } from "../../issues/components/pickers/assignee-picker";
-import { dispatchReasonCode, errorCode } from "@multica/core/api";
+import { api, dispatchReasonCode } from "@multica/core/api";
 import {
   isAgentRuntimeBound as hasAgentRuntime,
   useAgentPresenceDetail,
@@ -31,9 +31,9 @@ import {
   useCreateChatSession,
   useMarkChatSessionRead,
   useSetChatSessionProject,
+  useSetChatSessionArchived,
 } from "@multica/core/chat/mutations";
-import { DRAFT_NEW_SESSION, classifySendFailure, sendWithPendingId, useChatStore } from "@multica/core/chat";
-import { useCommentComposerStore } from "@multica/core/issues/stores/comment-composer-store";
+import { useChatStore } from "@multica/core/chat";
 import { upsertChatMessageToCaches } from "@multica/core/chat/message-cache";
 import { refetchChatSessionsAfterCommit } from "@multica/core/chat/session-list";
 import {
@@ -98,6 +98,13 @@ export type ProjectContextChange =
   | { kind: "startFreshChat"; agentId: string; projectId: string }
   | { kind: "setDraftProject"; projectId: string | null };
 
+export type ChatArchiveAdvanceDirection = "next" | "prev";
+
+export type ChatArchiveAdvanceResult =
+  | { moved: false }
+  | { moved: true; targetSessionId: string; direction: ChatArchiveAdvanceDirection }
+  | { moved: true; targetSessionId: null; direction: null };
+
 export function planProjectContextChange(input: {
   targetProjectId: string | null;
   activeSessionId: string | null;
@@ -145,8 +152,6 @@ export function seedAcceptedPendingTask(
     queued?: boolean;
   },
 ) {
-  // A decision reply for another agent's ask starts no task: nothing is pending.
-  if (!task.task_id) return;
   qc.setQueryData<ChatPendingTask>(
     chatKeys.pendingTask(sessionId),
     (old) => {
@@ -165,6 +170,8 @@ export function seedAcceptedPendingTask(
   );
   qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
 }
+
+const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
 
 
 /**
@@ -197,7 +204,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const { data: members = [], isSuccess: membersLoaded } = useQuery(
     memberListOptions(wsId),
   );
-  const { data: sessions = [], isSuccess: sessionsLoaded, error: sessionsError, refetch: refetchSessions } = useQuery(
+  const { data: sessions = [], isSuccess: sessionsLoaded } = useQuery(
     chatSessionsOptions(wsId),
   );
   const { data: projects = [], isSuccess: projectsLoaded } = useQuery(
@@ -206,8 +213,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const {
     data: rawMessagePages,
     isLoading: messagesLoading,
-    isSuccess: messagesFetched,
-    error: messagesError,
     fetchNextPage: fetchOlderMessages,
     hasNextPage: hasOlderMessages,
     isFetchingNextPage: isFetchingOlderMessages,
@@ -224,11 +229,16 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const { data: pendingTask, isLoading: pendingTaskLoading } = useQuery(
     pendingChatTaskOptions(activeSessionId ?? ""),
   );
-  // True only once the transcript query answered; a paused or failed one has not.
-  const messagesLoaded = !!activeSessionId && messagesFetched;
   const showSkeleton =
     !!activeSessionId && (messagesLoading || pendingTaskLoading);
   const messages = hideQueuedChatMessages(allMessages, pendingTask);
+  const olderMessageCount = messagePages
+    .slice(1)
+    .reduce((sum, page) => sum + page.messages.length, 0);
+  const firstItemIndex =
+    messages.length > 0
+      ? CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX - olderMessageCount
+      : 0;
   const pendingTaskId = pendingTask?.task_id ?? null;
   const stopRequestedBeforeTaskRef = useRef(false);
   // Durable deferred-cancellation draft restores (#5219). The whole lifecycle —
@@ -248,11 +258,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
     handleEditQueuedTask,
     handleRemoveQueuedTask,
     handleClearQueuedTasks,
-    steerQueuedChatTask,
-    handleSteerQueuedTask,
-    handleStopAndSendQueuedTask,
+    handleSendQueuedTaskNow,
   } = useChatTaskActions(activeSessionId, enqueueLocalRestore);
-  const runningAgentReply = useCommentComposerStore((s) => s.runningAgentReply);
   // Nonce handed to ChatInput to pull focus into the compose box when a new
   // chat starts (new chat, agent switch, project change, conversation
   // starter), so selecting an existing chat or a deep link never steals focus.
@@ -309,6 +316,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
   const createSession = useCreateChatSession();
   const markRead = useMarkChatSessionRead();
   const setSessionProject = useSetChatSessionProject();
+  const setArchived = useSetChatSessionArchived();
 
   const currentMember = members.find((m) => m.user_id === user?.id);
   const memberRole = currentMember?.role;
@@ -390,8 +398,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
     if (!currentHasUnread) return;
     const sessionId = activeSessionId;
     const timer = setTimeout(() => {
-      const { activeSessionId: openId, autoReadSuppressedId } = useChatStore.getState();
-      if (openId !== sessionId || autoReadSuppressedId === sessionId) return;
+      if (useChatStore.getState().activeSessionId !== sessionId) return;
       uiLogger.info("auto markRead", { sessionId });
       markRead.mutate(sessionId);
     }, 0);
@@ -471,8 +478,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
       attachmentIds?: string[],
       commitInput?: (options?: { extraDraftKeys?: string[]; clearEditor?: boolean }) => void,
       draftAttachments: Attachment[] = [],
-      decisionRequestId?: string,
-      askIds?: string[],
+      options?: { queue?: boolean },
     ): Promise<boolean> => {
       if (!activeAgent) {
         apiLogger.warn("sendChatMessage skipped: no active agent");
@@ -553,22 +559,11 @@ export function useChatController(opts?: { isActive?: boolean }) {
       // the draft for retry (ChatInput never cleared it).
       let result;
       try {
-        result = await sendWithPendingId(sessionId, finalContent, { attachmentIds, decisionRequestId, askIds });
+        result = options?.queue
+          ? await api.sendChatMessage(sessionId, finalContent, attachmentIds, options)
+          : await api.sendChatMessage(sessionId, finalContent, attachmentIds);
       } catch (err) {
         apiLogger.error("sendChatMessage.error", { sessionId, err });
-        // Unknown delivery (timeout, network, 5xx): the message may be stored.
-        // Keep the draft, keep the session, and say so; the retry reuses the
-        // same client_message_id, so the server stores one message (A22).
-        if (classifySendFailure(err) === "unknown") {
-          if (isNewSession) {
-            // The draft follows the session: a retry from the empty new-chat
-            // slot would create a second DM and store the message twice.
-            useChatStore.getState().moveInputDraft(DRAFT_NEW_SESSION, sessionId);
-            setActiveSession(sessionId);
-          }
-          toast.error(t(($) => $.input.send_unconfirmed_toast));
-          return false;
-        }
         // Invoke permission can be revoked mid-session; the send is refused with
         // a structured 403 before anything persists (MUL-4525). Surface the
         // specific cause so the user knows it is a permission change, not a
@@ -577,9 +572,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
         toast.error(
           reason === "invocation_not_allowed"
             ? t(($) => $.input.send_blocked_toast)
-            : reason === "chat_compacting"
-              ? t(($) => $.input.compacting_toast)
-              : reason === "agent_runtime_required"
+            : reason === "agent_runtime_required"
               ? t(($) => $.input.runtime_required_toast)
               : reason === "runtime_access_denied"
                 ? t(($) => $.input.runtime_access_denied_toast)
@@ -605,8 +598,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
         chat_session_id: sessionId,
         role: "user",
         content: finalContent,
-        task_id: result.task_id,
-        created_at: result.created_at,
+        task_id: result.message_task_id ?? result.task_id,
+        created_at: result.message_created_at ?? result.created_at,
         attachments: draftAttachments,
       };
       // Single door into the message caches (MUL-5711): idempotent by id, so
@@ -614,14 +607,16 @@ export function useChatController(opts?: { isActive?: boolean }) {
       // arrival order, and this richer row (it carries the draft attachments)
       // is never downgraded by the echo, which has no attachments field.
       upsertChatMessageToCaches(qc, sessionId, sent, { seedIfMissing: true });
-      seedAcceptedPendingTask(qc, sessionId, {
-        task_id: result.task_id,
-        created_at: result.created_at,
-        message_id: result.message_id,
-        content: finalContent,
-        supports_queue: result.supports_queue,
-        queued: result.queued,
-      });
+      if (result.steered !== true) {
+        seedAcceptedPendingTask(qc, sessionId, {
+          task_id: result.task_id,
+          created_at: result.created_at,
+          message_id: result.message_id,
+          content: finalContent,
+          supports_queue: result.supports_queue,
+          queued: result.queued,
+        });
+      }
       // This send just committed the new session's server-derived title.
       if (sessionId !== activeSessionId) {
         void refetchChatSessionsAfterCommit(qc, chatKeys.sessions(wsId));
@@ -657,17 +652,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
           toast.error(t(($) => $.input.attachment_bind_failed_toast));
         }
       }
-      // `running_agent_reply = steer`: add the follow-up to the running reply
-      // right away. Only a capable run is steered; a starting or unsupported one
-      // keeps the message queued. A refused steer leaves it queued too, so the
-      // send itself still succeeded.
-      if (
-        result.queued === true &&
-        runningAgentReply === "steer" &&
-        pendingTask?.head_supplement === "capable"
-      ) {
-        await steerQueuedChatTask(sessionId, result.task_id);
-      }
       qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
       qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
       return true;
@@ -683,8 +667,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
       isAgentRuntimeBound,
       ensureSession,
       cancelChatTask,
-      steerQueuedChatTask,
-      runningAgentReply,
       qc,
       setActiveSession,
       t,
@@ -854,26 +836,36 @@ export function useChatController(opts?: { isActive?: boolean }) {
   // right agent even when the next chat belongs to a different agent. A no-op
   // when the archived session isn't the open one — that selection stays put.
   const advanceSelectionAfterArchive = useCallback(
-    (session: { id: string; agent_id: string }) => {
-      if (activeSessionId !== session.id) return;
+    (session: { id: string; agent_id: string }): ChatArchiveAdvanceResult => {
+      if (activeSessionId !== session.id) return { moved: false };
       const history = sortChatSessions(
         sessions.filter((s) => s.status !== "archived"),
       );
       const idx = history.findIndex((s) => s.id === session.id);
-      const next = history[idx + 1] ?? history[idx - 1] ?? null;
-      if (next) handleSelectSession(next);
-      else setActiveSession(null);
+      const next = history[idx + 1] ?? null;
+      if (next) {
+        handleSelectSession(next);
+        return { moved: true, targetSessionId: next.id, direction: "next" };
+      }
+      const prev = history[idx - 1] ?? null;
+      if (prev) {
+        handleSelectSession(prev);
+        return { moved: true, targetSessionId: prev.id, direction: "prev" };
+      }
+      setActiveSession(null);
+      return { moved: true, targetSessionId: null, direction: null };
     },
     [activeSessionId, sessions, handleSelectSession, setActiveSession],
+  );
+
+  const archiveSession = useCallback(
+    (sessionId: string) => setArchived.mutate({ sessionId, archived: true }),
+    [setArchived],
   );
 
   const hasMessages = messages.length > 0 || !!pendingTaskId;
 
   return {
-    interactiveLoginRequired: Boolean(
-      (sessionsError && errorCode(sessionsError) === "interactive_login_required") ||
-      (messagesError && errorCode(messagesError) === "interactive_login_required"),
-    ),
     // identity / lists
     wsId,
     user,
@@ -881,9 +873,6 @@ export function useChatController(opts?: { isActive?: boolean }) {
     availableAgents,
     agentsSettled,
     sessions,
-    sessionsLoaded,
-    sessionsFailed: !!sessionsError,
-    refetchSessions,
     projects,
     activeSessionId,
     selectedAgentId,
@@ -905,8 +894,8 @@ export function useChatController(opts?: { isActive?: boolean }) {
     pendingTaskLoading,
     pendingTaskId,
     showSkeleton,
-    messagesLoaded,
     hasMessages,
+    firstItemIndex,
     hasOlderMessages: !!hasOlderMessages,
     isFetchingOlderMessages,
     fetchOlderMessages,
@@ -921,8 +910,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
     // actions
     handleSend,
     handleStop,
-    handleSteerQueuedTask,
-    handleStopAndSendQueuedTask,
+    handleSendQueuedTaskNow,
     handleEditQueuedTask,
     handleRemoveQueuedTask,
     handleClearQueuedTasks,
@@ -933,6 +921,7 @@ export function useChatController(opts?: { isActive?: boolean }) {
     handleSelectSession,
     handleProjectChange,
     advanceSelectionAfterArchive,
+    archiveSession,
     // store setters (for surfaces that sync selection to the URL, etc.)
     setActiveSession,
     setSelectedAgentId,

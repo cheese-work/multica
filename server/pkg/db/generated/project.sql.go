@@ -11,25 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const advanceWakeupsBatch = `-- name: AdvanceWakeupsBatch :exec
-UPDATE issue_wakeup w SET enabled=u.enabled AND w.paused_reason IS NULL AND w.disabled_at IS NULL,
- next_fire_at=u.next_fire_at, updated_at=clock_timestamp()
-FROM (SELECT unnest($1::uuid[]) AS id, unnest($2::bool[]) AS enabled, unnest($3::timestamptz[]) AS next_fire_at) u
-WHERE w.id=u.id
-`
-
-type AdvanceWakeupsBatchParams struct {
-	Ids        []pgtype.UUID        `json:"ids"`
-	Enabled    []bool               `json:"enabled"`
-	NextFireAt []pgtype.Timestamptz `json:"next_fire_at"`
-}
-
-// AdvanceIssueWakeup for many rules in one statement; it leaves last_error alone.
-func (q *Queries) AdvanceWakeupsBatch(ctx context.Context, arg AdvanceWakeupsBatchParams) error {
-	_, err := q.db.Exec(ctx, advanceWakeupsBatch, arg.Ids, arg.Enabled, arg.NextFireAt)
-	return err
-}
-
 const archiveProject = `-- name: ArchiveProject :one
 UPDATE project SET
     archived_at = now(),
@@ -37,7 +18,7 @@ UPDATE project SET
     archived_by_id = $4,
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type ArchiveProjectParams struct {
@@ -72,195 +53,15 @@ func (q *Queries) ArchiveProject(ctx context.Context, arg ArchiveProjectParams) 
 		&i.StartDate,
 		&i.DueDate,
 		&i.WorkflowID,
-		&i.DecisionDelegates,
-		&i.WorkflowSplit,
 		&i.CreatorType,
 		&i.CreatorID,
 		&i.Visibility,
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
-}
-
-const bumpProjectWakeupRevisions = `-- name: BumpProjectWakeupRevisions :many
-WITH bumped AS (
- UPDATE issue_wakeup w SET revision=w.revision+1
- FROM issue i WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
- AND i.project_id=$1 AND i.workspace_id=$2
- RETURNING w.id, w.revision, w.next_fire_at, w.enabled, w.condition, w.system_rule
-)
-SELECT id, revision, next_fire_at FROM bumped
-WHERE enabled AND condition IS NOT NULL
-AND system_rule IS DISTINCT FROM 'workflow_edges'
-AND system_rule IS DISTINCT FROM 'pr_merge_owed'
-ORDER BY id
-`
-
-type BumpProjectWakeupRevisionsParams struct {
-	ProjectID   pgtype.UUID `json:"project_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-type BumpProjectWakeupRevisionsRow struct {
-	ID         pgtype.UUID        `json:"id"`
-	Revision   int64              `json:"revision"`
-	NextFireAt pgtype.Timestamptz `json:"next_fire_at"`
-}
-
-// Returns the condition rules the baseline pass owns, with the revision and
-// hold the flip left on them. The pass writes a rule only while both still
-// match, so a later flip, edit or poll wins over an older pass.
-func (q *Queries) BumpProjectWakeupRevisions(ctx context.Context, arg BumpProjectWakeupRevisionsParams) ([]BumpProjectWakeupRevisionsRow, error) {
-	rows, err := q.db.Query(ctx, bumpProjectWakeupRevisions, arg.ProjectID, arg.WorkspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []BumpProjectWakeupRevisionsRow{}
-	for rows.Next() {
-		var i BumpProjectWakeupRevisionsRow
-		if err := rows.Scan(&i.ID, &i.Revision, &i.NextFireAt); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const cancelProjectAgentTasks = `-- name: CancelProjectAgentTasks :many
-UPDATE agent_task_queue t
-SET status='cancelled', completed_at=now(), prepare_lease_expires_at=NULL,
-    cancelled_by_type='system', cancelled_by_id=NULL, cancelled_by_name=NULL
-WHERE t.status IN ('queued','dispatched','running','waiting_local_directory','deferred')
-AND NOT ($1::bool AND t.status='running')
-AND (t.issue_id IN (SELECT i.id FROM issue i WHERE i.project_id=$2::uuid AND i.workspace_id=$3::uuid)
- OR (t.issue_id IS NULL AND t.autopilot_run_id IN (SELECT r.id FROM autopilot_run r JOIN autopilot a ON a.id=r.autopilot_id WHERE a.project_id=$2::uuid AND a.workspace_id=$3::uuid))
- OR (t.issue_id IS NULL AND t.context->>'type'='quick_create' AND t.context->>'project_id'=$2::uuid::text AND t.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id=$3::uuid)))
-RETURNING t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.comment_thread_id, t.cancelled_by_type, t.cancelled_by_id, t.cancelled_by_name, t.issue_snapshot, t.context_tokens, t.context_window, t.task_kind, t.compact_reason, t.compact_trigger_tokens, t.workflow_step, t.claimed_model, t.chat_compaction_epoch, t.preset_name, t.preset_source, t.preset_skips, t.claimed_thinking_level, t.claimed_service_tier, t.claimed_context_args, t.cancel_acked_at, t.stop_unconfirmed_at, t.pull_request_id, t.replacement_released_at, t.stop_hold_issue_wide, t.taint_ids, t.applied_model, t.applied_thinking_level, t.applied_service_tier, t.applied_context_args, t.applied_reported_at, t.external_read, t.purpose, t.cancel_ack_reason, t.source_chat_session_id, t.trigger_kind, t.handoff_dispatch_id, t.first_dispatched_at
-`
-
-type CancelProjectAgentTasksParams struct {
-	KeepRunning bool        `json:"keep_running"`
-	ProjectID   pgtype.UUID `json:"project_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-// keep_running: a pause drains, so a running run lives on; cancel and complete stop it.
-func (q *Queries) CancelProjectAgentTasks(ctx context.Context, arg CancelProjectAgentTasksParams) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, cancelProjectAgentTasks, arg.KeepRunning, arg.ProjectID, arg.WorkspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []AgentTaskQueue{}
-	for rows.Next() {
-		var i AgentTaskQueue
-		if err := rows.Scan(
-			&i.ID,
-			&i.AgentID,
-			&i.IssueID,
-			&i.Status,
-			&i.Priority,
-			&i.DispatchedAt,
-			&i.StartedAt,
-			&i.CompletedAt,
-			&i.Result,
-			&i.Error,
-			&i.CreatedAt,
-			&i.Context,
-			&i.RuntimeID,
-			&i.SessionID,
-			&i.WorkDir,
-			&i.TriggerCommentID,
-			&i.ChatSessionID,
-			&i.AutopilotRunID,
-			&i.Attempt,
-			&i.MaxAttempts,
-			&i.ParentTaskID,
-			&i.FailureReason,
-			&i.TriggerSummary,
-			&i.ForceFreshSession,
-			&i.IsLeaderTask,
-			&i.WaitReason,
-			&i.InitiatorUserID,
-			&i.HandoffNote,
-			&i.PrepareLeaseExpiresAt,
-			&i.SquadID,
-			&i.RuntimeMcpOverlay,
-			&i.EscalationForTaskID,
-			&i.FireAt,
-			&i.OriginatorUserID,
-			&i.RuntimeConnectedApps,
-			&i.CoalescedCommentIds,
-			&i.DeliveredCommentIds,
-			&i.ChatInputTaskID,
-			&i.ChatFinalizeDeferredAt,
-			&i.OriginatorSource,
-			&i.DelegatedFromTaskID,
-			&i.RetryOfTaskID,
-			&i.RerunOfTaskID,
-			&i.RuleVersionID,
-			&i.TriggerEvidenceKind,
-			&i.TriggerEvidenceRefID,
-			&i.AccountableUserID,
-			&i.SessionRolloutMissing,
-			&i.RetiredSessionID,
-			&i.QuickActionsDisabled,
-			&i.RegenerateQuickActionsFor,
-			&i.BranchName,
-			&i.DurableWorkDir,
-			&i.ChannelContextRevision,
-			&i.CommentThreadID,
-			&i.CancelledByType,
-			&i.CancelledByID,
-			&i.CancelledByName,
-			&i.IssueSnapshot,
-			&i.ContextTokens,
-			&i.ContextWindow,
-			&i.TaskKind,
-			&i.CompactReason,
-			&i.CompactTriggerTokens,
-			&i.WorkflowStep,
-			&i.ClaimedModel,
-			&i.ChatCompactionEpoch,
-			&i.PresetName,
-			&i.PresetSource,
-			&i.PresetSkips,
-			&i.ClaimedThinkingLevel,
-			&i.ClaimedServiceTier,
-			&i.ClaimedContextArgs,
-			&i.CancelAckedAt,
-			&i.StopUnconfirmedAt,
-			&i.PullRequestID,
-			&i.ReplacementReleasedAt,
-			&i.StopHoldIssueWide,
-			&i.TaintIds,
-			&i.AppliedModel,
-			&i.AppliedThinkingLevel,
-			&i.AppliedServiceTier,
-			&i.AppliedContextArgs,
-			&i.AppliedReportedAt,
-			&i.ExternalRead,
-			&i.Purpose,
-			&i.CancelAckReason,
-			&i.SourceChatSessionID,
-			&i.TriggerKind,
-			&i.HandoffDispatchID,
-			&i.FirstDispatchedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const countIssuesByProject = `-- name: CountIssuesByProject :one
@@ -282,7 +83,7 @@ INSERT INTO project (
     creator_type, creator_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type CreateProjectParams struct {
@@ -333,14 +134,13 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.StartDate,
 		&i.DueDate,
 		&i.WorkflowID,
-		&i.DecisionDelegates,
-		&i.WorkflowSplit,
 		&i.CreatorType,
 		&i.CreatorID,
 		&i.Visibility,
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }
@@ -360,68 +160,8 @@ func (q *Queries) DeleteProject(ctx context.Context, arg DeleteProjectParams) er
 	return err
 }
 
-const disableProjectDueOneShots = `-- name: DisableProjectDueOneShots :exec
-UPDATE issue_wakeup w SET enabled=false, next_fire_at=NULL, updated_at=clock_timestamp()
-FROM issue i
-WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
-AND i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
-AND w.system_rule IS DISTINCT FROM 'workflow_edges'
-AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
-AND w.condition IS NULL AND w.kind='at' AND w.next_fire_at<=now()
-`
-
-type DisableProjectDueOneShotsParams struct {
-	ProjectID   pgtype.UUID `json:"project_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-// A one-shot that came due while the project was inactive does not fire later.
-func (q *Queries) DisableProjectDueOneShots(ctx context.Context, arg DisableProjectDueOneShotsParams) error {
-	_, err := q.db.Exec(ctx, disableProjectDueOneShots, arg.ProjectID, arg.WorkspaceID)
-	return err
-}
-
-const discardProjectWakeupReceipts = `-- name: DiscardProjectWakeupReceipts :exec
-
-UPDATE issue_wakeup_receipt r SET processed_at=now()
-FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
-WHERE r.wakeup_id=w.id AND r.processed_at IS NULL
-AND i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
-AND w.system_rule IS DISTINCT FROM 'workflow_edges'
-AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
-`
-
-type DiscardProjectWakeupReceiptsParams struct {
-	ProjectID   pgtype.UUID `json:"project_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-// A status flip settles a project's wakeups with set-based statements, one per
-// step, so its cost does not grow with the number of rules (CHE-9000: a
-// per-rule loop in the flip's transaction timed out resuming a 5,365-issue
-// project). The rules in scope are the enabled ones that are not the
-// platform's own workflow_edges watch (it waits out an inactive project in its
-// evaluator) or pr_merge_owed. A disabled rule cannot fire, so it has nothing
-// to settle (CHE-7652); the revision bump still covers it.
-func (q *Queries) DiscardProjectWakeupReceipts(ctx context.Context, arg DiscardProjectWakeupReceiptsParams) error {
-	_, err := q.db.Exec(ctx, discardProjectWakeupReceipts, arg.ProjectID, arg.WorkspaceID)
-	return err
-}
-
-const getIssueProjectStatus = `-- name: GetIssueProjectStatus :one
-SELECT p.status FROM project p JOIN issue i ON i.project_id=p.id AND i.workspace_id=p.workspace_id
-WHERE i.id=$1
-`
-
-func (q *Queries) GetIssueProjectStatus(ctx context.Context, id pgtype.UUID) (string, error) {
-	row := q.db.QueryRow(ctx, getIssueProjectStatus, id)
-	var status string
-	err := row.Scan(&status)
-	return status, err
-}
-
 const getProjectInWorkspace = `-- name: GetProjectInWorkspace :one
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -448,14 +188,13 @@ func (q *Queries) GetProjectInWorkspace(ctx context.Context, arg GetProjectInWor
 		&i.StartDate,
 		&i.DueDate,
 		&i.WorkflowID,
-		&i.DecisionDelegates,
-		&i.WorkflowSplit,
 		&i.CreatorType,
 		&i.CreatorID,
 		&i.Visibility,
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }
@@ -464,28 +203,43 @@ const getProjectIssueStats = `-- name: GetProjectIssueStats :many
 SELECT project_id,
        count(*)::bigint AS total_count,
        count(*) FILTER (WHERE status = ANY($1::text[]))::bigint AS done_count,
+       count(*) FILTER (WHERE status = ANY($2::text[]))::bigint AS completed_count,
+       count(*) FILTER (WHERE status = ANY($3::text[]))::bigint AS started_count,
        max(GREATEST(updated_at, last_activity_at))::timestamptz AS last_issue_activity_at
 FROM issue
-WHERE workspace_id = $2::uuid
-  AND project_id = ANY($3::uuid[])
+WHERE workspace_id = $4::uuid
+  AND project_id = ANY($5::uuid[])
 GROUP BY project_id
 `
 
 type GetProjectIssueStatsParams struct {
-	TerminalStatusKeys []string      `json:"terminal_status_keys"`
-	WorkspaceID        pgtype.UUID   `json:"workspace_id"`
-	ProjectIds         []pgtype.UUID `json:"project_ids"`
+	TerminalStatusKeys  []string      `json:"terminal_status_keys"`
+	CompletedStatusKeys []string      `json:"completed_status_keys"`
+	StartedStatusKeys   []string      `json:"started_status_keys"`
+	WorkspaceID         pgtype.UUID   `json:"workspace_id"`
+	ProjectIds          []pgtype.UUID `json:"project_ids"`
 }
 
 type GetProjectIssueStatsRow struct {
 	ProjectID           pgtype.UUID        `json:"project_id"`
 	TotalCount          int64              `json:"total_count"`
 	DoneCount           int64              `json:"done_count"`
+	CompletedCount      int64              `json:"completed_count"`
+	StartedCount        int64              `json:"started_count"`
 	LastIssueActivityAt pgtype.Timestamptz `json:"last_issue_activity_at"`
 }
 
+// done_count counts every terminal issue (done and closed categories) and
+// keeps that meaning for older clients; completed_count is the done category
+// alone, so cancelled = done_count - completed_count.
 func (q *Queries) GetProjectIssueStats(ctx context.Context, arg GetProjectIssueStatsParams) ([]GetProjectIssueStatsRow, error) {
-	rows, err := q.db.Query(ctx, getProjectIssueStats, arg.TerminalStatusKeys, arg.WorkspaceID, arg.ProjectIds)
+	rows, err := q.db.Query(ctx, getProjectIssueStats,
+		arg.TerminalStatusKeys,
+		arg.CompletedStatusKeys,
+		arg.StartedStatusKeys,
+		arg.WorkspaceID,
+		arg.ProjectIds,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -497,6 +251,8 @@ func (q *Queries) GetProjectIssueStats(ctx context.Context, arg GetProjectIssueS
 			&i.ProjectID,
 			&i.TotalCount,
 			&i.DoneCount,
+			&i.CompletedCount,
+			&i.StartedCount,
 			&i.LastIssueActivityAt,
 		); err != nil {
 			return nil, err
@@ -509,81 +265,169 @@ func (q *Queries) GetProjectIssueStats(ctx context.Context, arg GetProjectIssueS
 	return items, nil
 }
 
-const listProjectOverdueRecurringWakeups = `-- name: ListProjectOverdueRecurringWakeups :many
-SELECT w.id, w.workspace_id, w.issue_id, w.agent_id, w.created_by, w.source_task_id, w.parent_comment_id, w.instruction, w.kind, w.mode, w.event_types, w.filter_agent_id, w.filter_task_id, w.interval_seconds, w.cron_expression, w.timezone, w.next_fire_at, w.enabled, w.disabled_at, w.revision, w.last_task_id, w.last_error, w.created_at, w.updated_at, w.filter_actor_type, w.filter_actor_id, w.expires_at, w.expiry_seconds, w.on_timeout, w.timed_out_at, w.system_rule, w.customized_at, w.condition, w.condition_state, w.max_fires, w.fire_count, w.paused_reason, w.default_rule_key, w.default_scope_kind, w.default_scope_id, w.config_fingerprint, w.capacity_reason, w.aggregate_blocked_scope_kind, w.aggregate_blocked_scope_id, w.aggregate_retry_at, w.content_revision, w.workflow_step, w.purpose, w.decision_request_id, w.followup_instance_id, w.watch_inputs FROM issue_wakeup w JOIN issue i ON i.id=w.issue_id AND i.workspace_id=w.workspace_id
-WHERE i.project_id=$1 AND i.workspace_id=$2 AND w.enabled
-AND w.system_rule IS DISTINCT FROM 'workflow_edges'
-AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
-AND w.condition IS NULL AND w.kind IN ('every','cron') AND w.next_fire_at<=now()
-ORDER BY w.id FOR UPDATE OF w
+const listIssueStatusChangesSince = `-- name: ListIssueStatusChangesSince :many
+SELECT issue_id, details, created_at
+FROM activity_log
+WHERE workspace_id = $1::uuid
+  AND issue_id = ANY($2::uuid[])
+  AND action = 'status_changed'
+  AND created_at >= $3::timestamptz
+ORDER BY created_at, id
 `
 
-type ListProjectOverdueRecurringWakeupsParams struct {
-	ProjectID   pgtype.UUID `json:"project_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
+type ListIssueStatusChangesSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueIds    []pgtype.UUID      `json:"issue_ids"`
+	Since       pgtype.Timestamptz `json:"since"`
 }
 
-func (q *Queries) ListProjectOverdueRecurringWakeups(ctx context.Context, arg ListProjectOverdueRecurringWakeupsParams) ([]IssueWakeup, error) {
-	rows, err := q.db.Query(ctx, listProjectOverdueRecurringWakeups, arg.ProjectID, arg.WorkspaceID)
+type ListIssueStatusChangesSinceRow struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	Details   []byte             `json:"details"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListIssueStatusChangesSince(ctx context.Context, arg ListIssueStatusChangesSinceParams) ([]ListIssueStatusChangesSinceRow, error) {
+	rows, err := q.db.Query(ctx, listIssueStatusChangesSince, arg.WorkspaceID, arg.IssueIds, arg.Since)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []IssueWakeup{}
+	items := []ListIssueStatusChangesSinceRow{}
 	for rows.Next() {
-		var i IssueWakeup
+		var i ListIssueStatusChangesSinceRow
+		if err := rows.Scan(&i.IssueID, &i.Details, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectActivity = `-- name: ListProjectActivity :many
+SELECT a.id, a.issue_id, a.actor_type, a.actor_id, a.action, a.details, a.created_at,
+       i.number AS issue_number, i.title AS issue_title, i.status AS issue_status
+FROM activity_log a
+JOIN issue i ON i.id = a.issue_id
+WHERE i.workspace_id = $1::uuid
+  AND i.project_id = $2::uuid
+  AND a.action = ANY($3::text[])
+  AND (
+      $4::timestamptz IS NULL
+      OR (a.created_at, a.id) < ($4::timestamptz, $5::uuid)
+  )
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT $6
+`
+
+type ListProjectActivityParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	Actions     []string           `json:"actions"`
+	BeforeAt    pgtype.Timestamptz `json:"before_at"`
+	BeforeID    pgtype.UUID        `json:"before_id"`
+	RowLimit    int32              `json:"row_limit"`
+}
+
+type ListProjectActivityRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	ActorType   pgtype.Text        `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	Action      string             `json:"action"`
+	Details     []byte             `json:"details"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	IssueNumber int32              `json:"issue_number"`
+	IssueTitle  string             `json:"issue_title"`
+	IssueStatus string             `json:"issue_status"`
+}
+
+// The newest activity on a project's issues, newest first, keyset-paged on
+// (created_at, id). Only the given actions are read, so autosaves and run
+// bookkeeping stay out of the project feed. A zero cursor reads from the top.
+func (q *Queries) ListProjectActivity(ctx context.Context, arg ListProjectActivityParams) ([]ListProjectActivityRow, error) {
+	rows, err := q.db.Query(ctx, listProjectActivity,
+		arg.WorkspaceID,
+		arg.ProjectID,
+		arg.Actions,
+		arg.BeforeAt,
+		arg.BeforeID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectActivityRow{}
+	for rows.Next() {
+		var i ListProjectActivityRow
 		if err := rows.Scan(
 			&i.ID,
-			&i.WorkspaceID,
 			&i.IssueID,
-			&i.AgentID,
-			&i.CreatedBy,
-			&i.SourceTaskID,
-			&i.ParentCommentID,
-			&i.Instruction,
-			&i.Kind,
-			&i.Mode,
-			&i.EventTypes,
-			&i.FilterAgentID,
-			&i.FilterTaskID,
-			&i.IntervalSeconds,
-			&i.CronExpression,
-			&i.Timezone,
-			&i.NextFireAt,
-			&i.Enabled,
-			&i.DisabledAt,
-			&i.Revision,
-			&i.LastTaskID,
-			&i.LastError,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Action,
+			&i.Details,
 			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.FilterActorType,
-			&i.FilterActorID,
-			&i.ExpiresAt,
-			&i.ExpirySeconds,
-			&i.OnTimeout,
-			&i.TimedOutAt,
-			&i.SystemRule,
-			&i.CustomizedAt,
-			&i.Condition,
-			&i.ConditionState,
-			&i.MaxFires,
-			&i.FireCount,
-			&i.PausedReason,
-			&i.DefaultRuleKey,
-			&i.DefaultScopeKind,
-			&i.DefaultScopeID,
-			&i.ConfigFingerprint,
-			&i.CapacityReason,
-			&i.AggregateBlockedScopeKind,
-			&i.AggregateBlockedScopeID,
-			&i.AggregateRetryAt,
-			&i.ContentRevision,
-			&i.WorkflowStep,
-			&i.Purpose,
-			&i.DecisionRequestID,
-			&i.FollowupInstanceID,
-			&i.WatchInputs,
+			&i.IssueNumber,
+			&i.IssueTitle,
+			&i.IssueStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectProgressIssues = `-- name: ListProjectProgressIssues :many
+SELECT id, status, assignee_type, assignee_id, created_at,
+       ARRAY(
+           SELECT il.label_id FROM issue_to_label il
+           WHERE il.issue_id = issue.id
+           ORDER BY il.label_id
+       )::uuid[] AS label_ids
+FROM issue
+WHERE workspace_id = $1::uuid
+  AND project_id = $2::uuid
+`
+
+type ListProjectProgressIssuesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+}
+
+type ListProjectProgressIssuesRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Status       string             `json:"status"`
+	AssigneeType pgtype.Text        `json:"assignee_type"`
+	AssigneeID   pgtype.UUID        `json:"assignee_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	LabelIds     []pgtype.UUID      `json:"label_ids"`
+}
+
+func (q *Queries) ListProjectProgressIssues(ctx context.Context, arg ListProjectProgressIssuesParams) ([]ListProjectProgressIssuesRow, error) {
+	rows, err := q.db.Query(ctx, listProjectProgressIssues, arg.WorkspaceID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectProgressIssuesRow{}
+	for rows.Next() {
+		var i ListProjectProgressIssuesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Status,
+			&i.AssigneeType,
+			&i.AssigneeID,
+			&i.CreatedAt,
+			&i.LabelIds,
 		); err != nil {
 			return nil, err
 		}
@@ -596,7 +440,7 @@ func (q *Queries) ListProjectOverdueRecurringWakeups(ctx context.Context, arg Li
 }
 
 const listProjects = `-- name: ListProjects :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
 WHERE workspace_id = $1
   AND ($2::text IS NULL OR status = $2)
   AND ($3::text IS NULL OR priority = $3)
@@ -640,14 +484,13 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 			&i.StartDate,
 			&i.DueDate,
 			&i.WorkflowID,
-			&i.DecisionDelegates,
-			&i.WorkflowSplit,
 			&i.CreatorType,
 			&i.CreatorID,
 			&i.Visibility,
 			&i.ArchivedAt,
 			&i.ArchivedByType,
 			&i.ArchivedByID,
+			&i.FolderID,
 		); err != nil {
 			return nil, err
 		}
@@ -657,39 +500,6 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 		return nil, err
 	}
 	return items, nil
-}
-
-const lockIssueProjectStatus = `-- name: LockIssueProjectStatus :one
-SELECT p.status FROM project p JOIN issue i ON i.project_id=p.id AND i.workspace_id=p.workspace_id
-WHERE i.id=$1 FOR SHARE OF p
-`
-
-func (q *Queries) LockIssueProjectStatus(ctx context.Context, id pgtype.UUID) (string, error) {
-	row := q.db.QueryRow(ctx, lockIssueProjectStatus, id)
-	var status string
-	err := row.Scan(&status)
-	return status, err
-}
-
-const lockProjectArchiveState = `-- name: LockProjectArchiveState :one
-SELECT archived_at FROM project
-WHERE id = $1 AND workspace_id = $2
-FOR SHARE
-`
-
-type LockProjectArchiveStateParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-// Share-locks the project row and returns its archive bit. Archiving updates
-// the row, so a save that decides on this read serializes with the archive and
-// its autopilot pause sweep instead of reading a pre-archive snapshot.
-func (q *Queries) LockProjectArchiveState(ctx context.Context, arg LockProjectArchiveStateParams) (pgtype.Timestamptz, error) {
-	row := q.db.QueryRow(ctx, lockProjectArchiveState, arg.ID, arg.WorkspaceID)
-	var archived_at pgtype.Timestamptz
-	err := row.Scan(&archived_at)
-	return archived_at, err
 }
 
 const lockProjectForChatSessionCreate = `-- name: LockProjectForChatSessionCreate :one
@@ -732,57 +542,6 @@ func (q *Queries) LockProjectForDelete(ctx context.Context, arg LockProjectForDe
 	return id, err
 }
 
-const markProjectWakeupsSettled = `-- name: MarkProjectWakeupsSettled :exec
-UPDATE issue_wakeup w SET last_error=$1, updated_at=clock_timestamp(),
- next_fire_at=CASE WHEN w.condition IS NOT NULL THEN now()+make_interval(secs => $2::int) ELSE w.next_fire_at END
-FROM issue i
-WHERE i.id=w.issue_id AND i.workspace_id=w.workspace_id
-AND i.project_id=$3 AND i.workspace_id=$4 AND w.enabled
-AND w.system_rule IS DISTINCT FROM 'workflow_edges'
-AND w.system_rule IS DISTINCT FROM 'pr_merge_owed'
-`
-
-type MarkProjectWakeupsSettledParams struct {
-	LastError   pgtype.Text `json:"last_error"`
-	HoldSeconds int32       `json:"hold_seconds"`
-	ProjectID   pgtype.UUID `json:"project_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-// Sets the settle error (project_inactive on a pause, null on a resume). A
-// condition rule is held until hold_seconds from now: the baseline pass after
-// the commit re-polls it sooner, and if that pass never runs the rule falls
-// back to its ordinary poll once the hold ends.
-func (q *Queries) MarkProjectWakeupsSettled(ctx context.Context, arg MarkProjectWakeupsSettledParams) error {
-	_, err := q.db.Exec(ctx, markProjectWakeupsSettled,
-		arg.LastError,
-		arg.HoldSeconds,
-		arg.ProjectID,
-		arg.WorkspaceID,
-	)
-	return err
-}
-
-const requireActiveProject = `-- name: RequireActiveProject :one
-WITH workspace_lock AS MATERIALIZED (
-    SELECT id FROM workspace WHERE id=$2::uuid FOR KEY SHARE
-)
-SELECT p.status FROM project p JOIN workspace_lock w ON w.id=p.workspace_id
-WHERE p.id=$1::uuid FOR SHARE OF p
-`
-
-type RequireActiveProjectParams struct {
-	ProjectID   pgtype.UUID `json:"project_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) RequireActiveProject(ctx context.Context, arg RequireActiveProjectParams) (string, error) {
-	row := q.db.QueryRow(ctx, requireActiveProject, arg.ProjectID, arg.WorkspaceID)
-	var status string
-	err := row.Scan(&status)
-	return status, err
-}
-
 const restoreProject = `-- name: RestoreProject :one
 UPDATE project SET
     archived_at = NULL,
@@ -790,7 +549,7 @@ UPDATE project SET
     archived_by_id = NULL,
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND archived_at IS NOT NULL
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type RestoreProjectParams struct {
@@ -816,57 +575,13 @@ func (q *Queries) RestoreProject(ctx context.Context, arg RestoreProjectParams) 
 		&i.StartDate,
 		&i.DueDate,
 		&i.WorkflowID,
-		&i.DecisionDelegates,
-		&i.WorkflowSplit,
 		&i.CreatorType,
 		&i.CreatorID,
 		&i.Visibility,
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
-	)
-	return i, err
-}
-
-const setProjectWorkflowSplit = `-- name: SetProjectWorkflowSplit :one
-UPDATE project SET workflow_split = $3::jsonb, updated_at = now()
-WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
-`
-
-type SetProjectWorkflowSplitParams struct {
-	ID            pgtype.UUID `json:"id"`
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-	WorkflowSplit []byte      `json:"workflow_split"`
-}
-
-// NULL clears the split (CHE-5262).
-func (q *Queries) SetProjectWorkflowSplit(ctx context.Context, arg SetProjectWorkflowSplitParams) (Project, error) {
-	row := q.db.QueryRow(ctx, setProjectWorkflowSplit, arg.ID, arg.WorkspaceID, arg.WorkflowSplit)
-	var i Project
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.Title,
-		&i.Description,
-		&i.Icon,
-		&i.Status,
-		&i.LeadType,
-		&i.LeadID,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Priority,
-		&i.StartDate,
-		&i.DueDate,
-		&i.WorkflowID,
-		&i.DecisionDelegates,
-		&i.WorkflowSplit,
-		&i.CreatorType,
-		&i.CreatorID,
-		&i.Visibility,
-		&i.ArchivedAt,
-		&i.ArchivedByType,
-		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }
@@ -882,31 +597,28 @@ UPDATE project SET
     lead_id = CASE WHEN $11::boolean THEN $12 ELSE lead_id END,
     start_date = CASE WHEN $13::boolean THEN $14 ELSE start_date END,
     due_date = CASE WHEN $15::boolean THEN $16 ELSE due_date END,
-    decision_delegates = CASE WHEN $17::boolean THEN $18::uuid[] ELSE decision_delegates END,
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type UpdateProjectParams struct {
-	ID                   pgtype.UUID   `json:"id"`
-	Title                pgtype.Text   `json:"title"`
-	DescriptionSet       bool          `json:"description_set"`
-	Description          pgtype.Text   `json:"description"`
-	IconSet              bool          `json:"icon_set"`
-	Icon                 pgtype.Text   `json:"icon"`
-	Status               pgtype.Text   `json:"status"`
-	Priority             pgtype.Text   `json:"priority"`
-	LeadTypeSet          bool          `json:"lead_type_set"`
-	LeadType             pgtype.Text   `json:"lead_type"`
-	LeadIDSet            bool          `json:"lead_id_set"`
-	LeadID               pgtype.UUID   `json:"lead_id"`
-	StartDateSet         bool          `json:"start_date_set"`
-	StartDate            pgtype.Date   `json:"start_date"`
-	DueDateSet           bool          `json:"due_date_set"`
-	DueDate              pgtype.Date   `json:"due_date"`
-	DecisionDelegatesSet bool          `json:"decision_delegates_set"`
-	DecisionDelegates    []pgtype.UUID `json:"decision_delegates"`
+	ID             pgtype.UUID `json:"id"`
+	Title          pgtype.Text `json:"title"`
+	DescriptionSet bool        `json:"description_set"`
+	Description    pgtype.Text `json:"description"`
+	IconSet        bool        `json:"icon_set"`
+	Icon           pgtype.Text `json:"icon"`
+	Status         pgtype.Text `json:"status"`
+	Priority       pgtype.Text `json:"priority"`
+	LeadTypeSet    bool        `json:"lead_type_set"`
+	LeadType       pgtype.Text `json:"lead_type"`
+	LeadIDSet      bool        `json:"lead_id_set"`
+	LeadID         pgtype.UUID `json:"lead_id"`
+	StartDateSet   bool        `json:"start_date_set"`
+	StartDate      pgtype.Date `json:"start_date"`
+	DueDateSet     bool        `json:"due_date_set"`
+	DueDate        pgtype.Date `json:"due_date"`
 }
 
 func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (Project, error) {
@@ -927,8 +639,6 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		arg.StartDate,
 		arg.DueDateSet,
 		arg.DueDate,
-		arg.DecisionDelegatesSet,
-		arg.DecisionDelegates,
 	)
 	var i Project
 	err := row.Scan(
@@ -946,14 +656,13 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		&i.StartDate,
 		&i.DueDate,
 		&i.WorkflowID,
-		&i.DecisionDelegates,
-		&i.WorkflowSplit,
 		&i.CreatorType,
 		&i.CreatorID,
 		&i.Visibility,
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }

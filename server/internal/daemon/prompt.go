@@ -3,8 +3,8 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -73,19 +73,9 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	}
 	b.WriteString(execenv.BuildOnBehalfOfBlock(task.InitiatorName, task.InitiatorEmail))
 	b.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
-	// CHE-489: the checkpoint block is already-rendered Markdown from the
-	// server (internal/checkpoint.Render), appended verbatim. Nothing here
-	// re-derives or re-summarizes it — that would defeat the zero-model-call
-	// requirement the checkpoint was built under.
-	if task.CheckpointBlock != "" {
-		b.WriteString(task.CheckpointBlock)
-	}
 	b.WriteString(buildJoinedWakeupsBlock(task.WakeupJoined))
 	b.WriteString(buildProjectWorkflowBlock(task))
 	b.WriteString(buildParentIssueBlock(task))
-	if opts.taskBrief != "" {
-		b.WriteString("\n" + strings.TrimRight(opts.taskBrief, "\n") + "\n")
-	}
 	return b.String()
 }
 
@@ -94,6 +84,9 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 // on the parent. A resumed session may already have read the parent, so it gets
 // the pointer without the full instruction. It still names the commands,
 // because a session resumed from before this block existed never saw them.
+// The parent reads are part of workflow step 1 and depend on nothing but the
+// parent id given here, so both forms ask for them in the same turn as the
+// reads above rather than one after another (MUL-9919, MUL-10028).
 func buildParentIssueBlock(task Task) string {
 	p := task.ParentIssue
 	if p == nil || p.ID == "" || task.IssueID == "" || task.ChatSessionID != "" {
@@ -110,27 +103,31 @@ func buildParentIssueBlock(task Task) string {
 	b.WriteString("[Parent issue]\n")
 	fmt.Fprintf(&b, "This issue is a sub-issue of %s \"%s\" (status: %s).", name, p.Title, p.Status)
 	if task.PriorSessionID != "" && !task.PriorSessionResumeUnavailable {
-		fmt.Fprintf(&b, " If you have not read the parent in this session, read it before starting work: %s, then %s.\n\n", getCmd, scanCmd)
+		fmt.Fprintf(&b, " If you have not read the parent in this session, read it in the same turn as the reads above: %s and %s.\n\n", getCmd, scanCmd)
 		return b.String()
 	}
 	b.WriteString(" The discussion that produced this sub-issue — decisions, trade-offs, mockups — lives on the parent; this issue's description is only the part handed to you.\n")
-	fmt.Fprintf(&b, "Before starting work, read the parent: %s, then scan its threads with %s and expand the ones that shaped this sub-issue. `multica issue children %s --output json` shows what your sibling sub-issues cover.\n", getCmd, scanCmd, p.ID)
+	fmt.Fprintf(&b, "Read the parent in the same turn as the reads above: %s, %s, and `multica issue children %s --output json` (what your sibling sub-issues cover). Then expand the parent threads that shaped this sub-issue.\n", getCmd, scanCmd, p.ID)
 	b.WriteString("This issue's description defines your scope; the parent is context. If they conflict, ask on this issue instead of picking one.\n\n")
 	return b.String()
+}
+
+// taskHasProjectWorkflow reports whether this run's prompt carries a
+// [Project workflow] block — the same condition buildProjectWorkflowBlock
+// renders on — so the runtime brief points at it instead of its built-in
+// status rules (MUL-8145).
+func taskHasProjectWorkflow(task Task) bool {
+	return task.ProjectWorkflow != nil && strings.TrimSpace(task.ProjectWorkflow.Brief) != ""
 }
 
 // buildProjectWorkflowBlock carries the issue's project workflow and current
 // step (MUL-7420). It varies by project and by step, so it lives here and not
 // in the cached brief (MUL-5377).
 func buildProjectWorkflowBlock(task Task) string {
-	if task.ProjectWorkflow == nil {
+	if !taskHasProjectWorkflow(task) {
 		return ""
 	}
-	brief := strings.TrimSpace(task.ProjectWorkflow.Brief)
-	if brief == "" {
-		return ""
-	}
-	return "[Project workflow]\n" + brief + "\n\n"
+	return "[Project workflow]\n" + strings.TrimSpace(task.ProjectWorkflow.Brief) + "\n\n"
 }
 
 // buildJoinedWakeupsBlock carries wakeups that fired while this run was
@@ -148,21 +145,18 @@ func buildJoinedWakeupsBlock(notes string) string {
 // common BuildPrompt(task, provider) call sites stay unchanged.
 type promptOpts struct {
 	sharedLocalDirectory        bool
+	skillDirectories            map[string]string
+	omitChatMessage             bool
+	chatSkillRefs               []SlashSkillRef
+	triggerCommentStripped      bool
 	worktreeReplayConflicts     []string
 	worktreeBranch              string
 	worktreeBase                string
 	worktreeCommitsAllLeftovers bool
-	taskBrief                   string
 }
 
 // PromptOption tunes per-turn prompt copy with run-scoped context.
 type PromptOption func(*promptOpts)
-
-// WithTaskBrief appends the per-task part of a split runtime brief
-// (execenv.SplitRuntimeBrief) to the turn, after the cached prefix (CHE-6540).
-func WithTaskBrief(s string) PromptOption {
-	return func(o *promptOpts) { o.taskBrief = s }
-}
 
 // WithSharedLocalDirectory marks a turn that runs inside the user's own
 // directory WITHOUT holding its path mutex — today, a chat turn on an in_place
@@ -346,12 +340,7 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 	for _, apply := range options {
 		apply(&opts)
 	}
-	body := buildPromptBody(task, provider)
-	// A background job prompt is the bounded input only (CHE-4100): none of the
-	// run-scoped blocks below, which carry the originator's name and email.
-	if task.BackgroundJob != "" {
-		return body
-	}
+	body := buildPromptBodyWithOptions(task, provider, opts)
 	// Run-scoped context is appended, never prepended: everything ahead of it
 	// is stable across runs of a resumed session, and appending keeps it after
 	// the cached prefix (MUL-5377).
@@ -365,13 +354,14 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 }
 
 func buildPromptBody(task Task, provider string) string {
-	if task.BackgroundJob != "" {
-		return buildBackgroundPrompt(task)
-	}
+	return buildPromptBodyWithOptions(task, provider, promptOpts{})
+}
+
+func buildPromptBodyWithOptions(task Task, provider string, opts promptOpts) string {
 	if task.WakeupID != "" {
 		var b strings.Builder
 		fmt.Fprintf(&b, "You are running as a local coding agent for a Multica workspace.\n\nYour assigned issue ID is: %s\n\n[WAKEUP]\n%s\n\n", task.IssueID, task.HandoffNote)
-		fmt.Fprintf(&b, "Start by running `multica issue get %s --output json`, then read current run/comment state. Decide whether the instruction's goal is met; the trigger reports a fact, not business completion. This is an ordinary run with normal result delivery, except where the [WAKEUP] block offers a check-in.\n", task.IssueID)
+		fmt.Fprintf(&b, "Read the issue (`multica issue get %s --output json`) and current run/comment state together in one turn. Decide whether the instruction's goal is met; the trigger reports a fact, not business completion. This is an ordinary run with normal result delivery, except where the [WAKEUP] block offers a check-in.\n", task.IssueID)
 		fmt.Fprintf(&b, "Scan comment threads with `multica issue comment list %s --roots-only --summary --compact --output json`, then expand relevant threads with `--thread <id> --tail 30`.\n", task.IssueID)
 		if task.WakeupSystemRule != "" {
 			// Platform rules belong to the issue, not to a run; members manage them.
@@ -385,10 +375,13 @@ func buildPromptBody(task Task, provider string) string {
 		return b.String()
 	}
 	if task.ChatSessionID != "" {
-		return buildChatPrompt(task)
+		return buildChatPromptWithOptions(task, opts)
 	}
-	if task.TriggerCommentID != "" && !task.isStatusHandoff() {
-		return buildCommentPrompt(task, provider)
+	if task.DocID != "" {
+		return buildDocCommentPrompt(task)
+	}
+	if task.TriggerCommentID != "" {
+		return buildCommentPromptWithOptions(task, provider, opts)
 	}
 	if task.AutopilotRunID != "" {
 		return buildAutopilotPrompt(task)
@@ -408,46 +401,14 @@ func buildPromptBody(task Task, provider string) string {
 		}
 		b.WriteString("\n")
 	}
-	// CHE-5485: the comment a status move linked is context for the step, not a
-	// comment to answer, so it is labelled and carries no reply instructions.
-	if task.isStatusHandoff() && task.TriggerCommentContent != "" {
-		b.WriteString("Handoff context: the issue was moved to your step with the comment below. Treat it as the step brief for this run; do not reply to it as if it were a new comment:\n\n")
-		for _, line := range strings.Split(strings.TrimSpace(task.TriggerCommentContent), "\n") {
-			fmt.Fprintf(&b, "> %s\n", line)
-		}
-		b.WriteString("\n")
-	}
-	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
+	// The issue read and the comment scan below are independent, so this line
+	// asks for them in one turn rather than ordering them (MUL-9919, MUL-10028).
+	fmt.Fprintf(&b, "Read the issue with `multica issue get %s --output json` in the same turn as the comment scan below (workflow step 2), then complete the task.\n", task.IssueID)
 	// Workflow step 2 owns the catch-up rule for every issue turn; this line
 	// only hands over the commands. It used to add "(assignment-triggered tasks
 	// treat the read as mandatory)", which read as if comment-triggered turns
 	// did not (MUL-6984).
 	fmt.Fprintf(&b, "For comment history, workflow step 2 applies. Scan the threads first with `multica issue comment list %s --roots-only --summary --compact --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. For `--since` incremental polling, pagination, and folding, see `multica issue comment list --help`.\n", task.IssueID)
-	return b.String()
-}
-
-// taskRunTimeout is the agent timeout for a task: the daemon default, tightened
-// to the job's run deadline for a background task (CHE-4100). The server does
-// not enforce that deadline, so the daemon does.
-func taskRunTimeout(def time.Duration, task Task) time.Duration {
-	job := time.Duration(task.BackgroundRunSeconds) * time.Second
-	if task.BackgroundJob == "" || job <= 0 || (def > 0 && def <= job) {
-		return def
-	}
-	return job
-}
-
-// buildBackgroundPrompt is the whole prompt of an output_only background task
-// (CHE-4100): a read-only brief and the bounded input the server stored in the
-// task context. It names no issue and no multica command: the run has neither,
-// and its output comes back as the task result.
-func buildBackgroundPrompt(task Task) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "You are running a read-only background job (%s). Use no tools and change nothing: no files, no commands, no network. Reply with the job output only, no preamble.\n\n", task.BackgroundJob)
-	b.WriteString("Input:\n")
-	for _, line := range strings.Split(task.BackgroundInput, "\n") {
-		fmt.Fprintf(&b, "> %s\n", line)
-	}
 	return b.String()
 }
 
@@ -474,45 +435,21 @@ func buildQuickCreatePrompt(task Task) string {
 		fmt.Fprintf(&b, "User input:\n> %s\n\n", task.QuickCreatePrompt)
 	}
 
-	fill := task.QuickCreateFill // CHE-6090: workspace setting quick_create_fill
 	b.WriteString("Field rules:\n\n")
-	if fill {
-		b.WriteString("Fill every field the quick-create modal left empty, so the new issue passes the workspace's ready check on the first try. A value the modal picked always wins and is never re-inferred. Read-only lookups before the create (`multica project list`, `multica property list`, member/agent/squad list) are allowed; still run exactly one `issue create`, no retry.\n\n")
-	}
 
 	// title
 	b.WriteString("- **title**: required. A concise but semantically rich summary. If the input references external resources (PRs, issues, URLs), use your judgment on whether fetching the resource would produce a meaningfully better title — e.g. \"review PR #123\" → \"Review PR #123: Refactor auth module to OAuth2\". Strip filler words but preserve key semantic information.\n\n")
 
-	if fill && len(task.QuickCreateTitleTypes) > 0 {
-		types := make([]string, len(task.QuickCreateTitleTypes))
-		for i, t := range task.QuickCreateTitleTypes {
-			types[i] = "`" + t + "`"
-		}
-		fmt.Fprintf(&b, "- **title type**: this workspace routes by Conventional-Commit type. Start the title with one of %s as `<type>(<scope>): <summary>`, choosing the type that fits the request.\n\n", strings.Join(types, ", "))
-	}
-
 	// description — the core optimization
-	if fill {
-		b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use this structure:\n\n")
-	} else {
-		b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use a two-section structure:\n\n")
-	}
+	b.WriteString("- **description**: The description is the executing agent's primary context. Aim for high fidelity — they should grasp the user's intent as if they had read the raw input themselves. Use a two-section structure:\n\n")
 	b.WriteString("  1. **User request** — Faithfully restate what the user wants in their own words. Preserve specific names, identifiers, file paths, code snippets, and technical terms verbatim. Strip non-spec material before writing it (this is removal, not paraphrasing): verbal routing wrappers about creating the issue or routing it (e.g. \"create an issue\", \"分配给 X\", \"让 @X 处理\") and pure conversational fillers (e.g. \"对吧？\"). When in doubt, keep it.\n\n")
 	b.WriteString("     CC exception: `multica issue create` has no `--subscriber` flag, and the platform auto-subscribes members whose `[@Name](mention://member/<uuid>)` link appears in the description. When the user wrote \"cc @Y\", strip the verbal \"cc\" wrapper from the User request body and append a final `CC: <mention link(s)>` line to the description so the cc routing still fires.\n\n")
 	b.WriteString("  2. **Context** — include ONLY when the input cited external resources AND you successfully fetched them AND they produced verifiable facts worth recording. Summarize facts only (e.g. \"PR #45 changes auth to JWT\"), not interpretation or unsolicited reference implementations. If you have nothing factual to add, omit the section entirely — never use it as an apology log for resources you could not fetch.\n\n")
-	if fill {
-		b.WriteString("  3. **Acceptance criteria** — checkable items derived from the request. Label the section \"derived by <your agent name>\" so a reader can tell the user's words from yours.\n\n")
-		b.WriteString("  4. **Estimate** — one line `Estimate: <hours>`, labelled \"derived by <your agent name>\". It sets the due date below.\n\n")
-		b.WriteString("  Hard rules: keep the User request section verbatim apart from the routing wrappers stripped above; never invent implementation details; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
-	} else {
-		b.WriteString("  Hard rules: never invent requirements, implementation details, or acceptance criteria the user did not express; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
-	}
+	b.WriteString("  Hard rules: never invent requirements, implementation details, or acceptance criteria the user did not express; never reduce multi-sentence input to a single vague sentence; never echo the title.\n\n")
 
 	// priority
 	if task.QuickCreatePriority != "" {
 		fmt.Fprintf(&b, "- **priority**: required for this run. Pass `--priority %s`; the quick-create selection is authoritative.\n\n", task.QuickCreatePriority)
-	} else if fill {
-		b.WriteString("- **priority**: infer from the request: P0/P1, \"asap\", \"blocks\", \"broken\" → `urgent` or `high`. With no signal, pass `--priority medium`. Never omit it.\n\n")
 	} else {
 		b.WriteString("- **priority**: one of `urgent`, `high`, `medium`, `low`, or omit. Map P0/P1 → urgent/high; \"asap\" → urgent. If unspecified, omit.\n\n")
 	}
@@ -528,12 +465,6 @@ func buildQuickCreatePrompt(task Task) string {
 
 	if task.QuickCreateDueDate != "" {
 		fmt.Fprintf(&b, "- **due-date**: required for this run. Pass `--due-date %s`; the quick-create selection is authoritative.\n\n", task.QuickCreateDueDate)
-	} else if fill {
-		b.WriteString("- **due-date**: pass `--due-date YYYY-MM-DD` = the start date plus your estimate rounded up to whole days, at least 1 day.\n\n")
-	}
-	if fill {
-		b.WriteString("- **start-date**: pass `--start-date YYYY-MM-DD` = today's calendar date in ICT (UTC+7).\n\n")
-		b.WriteString("- **properties**: run `multica property list --output json`. Set each property your own instructions require at creation (for example `Readiness`) with `--property \"Name=Value\"`, one flag per property. Use only option values that exist in that list.\n\n")
 	}
 
 	// project — pinned by the modal when the user picked one, otherwise
@@ -546,8 +477,6 @@ func buildQuickCreatePrompt(task Task) string {
 		} else {
 			fmt.Fprintf(&b, "- **project**: required for this run. Pass `--project %q` so the new issue lands in the project the user picked in the quick-create modal. Do not infer a different project from the prompt text — the modal selection is authoritative.\n", task.ProjectID)
 		}
-	} else if fill {
-		b.WriteString("- **project**: run `multica project list --output json` and pass `--project <id>` for the project whose description matches the request. With no clear match, omit it.\n")
 	} else {
 		b.WriteString("- **project**: omit. The platform will route the issue to the workspace default.\n")
 	}
@@ -563,11 +492,7 @@ func buildQuickCreatePrompt(task Task) string {
 			fmt.Fprintf(&b, "- **parent**: required for this run. Pass `--parent %q` so the new issue is filed as a sub-issue of the parent the user picked in the quick-create modal. Do not infer a different parent from the prompt text — the modal entry point is authoritative.\n", task.ParentIssueID)
 		}
 	}
-	if task.QuickCreateDiscovery {
-		writeQuickCreateDiscoveryRule(&b)
-	} else {
-		b.WriteString("- **status**: omit (defaults to `todo`).\n")
-	}
+	b.WriteString("- **status**: omit (defaults to `todo`).\n")
 	b.WriteString("- **attachments**: `--attachment` takes LOCAL file paths, never URLs. Image URLs in the user input are already markdown — keep them inline. Files you produced: see `## Output`.\n\n")
 
 	// How to run the create and what to print is stated once, in the brief's
@@ -578,20 +503,6 @@ func buildQuickCreatePrompt(task Task) string {
 	return b.String()
 }
 
-// writeQuickCreateDiscoveryRule renders the status rule when the workspace
-// setting quick_create_discovery is on (CHE-9075). It applies the entry rule of
-// the Default `todo` step at creation time: a clear request keeps the default
-// status, an unclear one asks for `investigating` with a one-line reason. The
-// run cannot tell which workflow the issue will follow, so the server keeps
-// `investigating` only when that workflow has the step, and posts the Discovery
-// comment itself; the brief's one-create rule stays unchanged.
-func writeQuickCreateDiscoveryRule(b *strings.Builder) {
-	b.WriteString("- **status**: first decide whether the request is clear. It is clear only when ALL hold: it has a checkable done-when; it has no open product-direction choice; the work is 2 hours or less; every input it needs is named and readable; a UI change names its design lock or says none is needed.\n")
-	b.WriteString("    - clear request: omit `--status` (defaults to `todo`).\n")
-	b.WriteString("    - unclear request: pass `--status investigating` and `--discovery-reason \"<one line: why the request is unclear>\"` on the same create. Do not invent the missing facts. The platform files the issue in Discovery and posts the one-line Discovery comment itself when the issue's workflow has that step, and otherwise files it as it does today. Do not add a comment yourself.\n")
-	b.WriteString("\n")
-}
-
 // buildCommentPrompt constructs a prompt for comment-triggered tasks.
 // The triggering comment content is embedded directly so the agent cannot
 // miss it, even when stale output files exist in a reused workdir.
@@ -599,13 +510,22 @@ func writeQuickCreateDiscoveryRule(b *strings.Builder) {
 // are re-emitted on every turn so resumed sessions cannot carry forward a
 // previous turn's --parent UUID.
 func buildCommentPrompt(task Task, provider string) string {
+	return buildCommentPromptWithOptions(task, provider, promptOpts{})
+}
+
+func buildCommentPromptWithOptions(task Task, provider string, opts promptOpts) string {
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
 	// A real resume: the latest turn's session comes back. Shared by the
 	// edited-comment notes (MUL-8218) and the reading pointers below.
 	resumed := task.PriorSessionID != "" && !task.PriorSessionResumeUnavailable
-	if task.TriggerCommentContent != "" {
+	// An empty TriggerCommentContent normally means the server could not
+	// fetch the trigger body. triggerCommentStripped marks the other way it
+	// empties: the comment held only explicit skill links, consumed by the
+	// invocation below. The section must still render — headers, edit notes
+	// and every coalesced comment hang off it.
+	if task.TriggerCommentContent != "" || opts.triggerCommentStripped {
 		authorLabel := "A user"
 		if task.TriggerAuthorType == "system" {
 			authorLabel = "The platform"
@@ -626,19 +546,13 @@ func buildCommentPrompt(task Task, provider string) string {
 		} else {
 			fmt.Fprintf(&b, "[NEW COMMENT] %s just left a new comment. Focus on THIS comment — do not confuse it with previous ones:\n\n", authorLabel)
 		}
-		fmt.Fprintf(&b, "> %s\n\n", task.TriggerCommentContent)
+		quote := task.TriggerCommentContent
+		if quote == "" {
+			quote = "(explicit skill selection only — the selected link was consumed by the skill invocation)"
+		}
+		fmt.Fprintf(&b, "> %s\n\n", quote)
 		if editedSinceResume {
 			b.WriteString(buildEditedTriggerNote(task))
-		}
-		if task.TriggerRepeatCount > 0 {
-			name := task.TriggerAuthorName
-			if name == "" {
-				name = "The user"
-			}
-			fmt.Fprintf(&b, "%s repeated this message: it was sent %d time(s) before (earlier comments: %s).\n\n", name, task.TriggerRepeatCount, strings.Join(task.TriggerRepeatIDs, ", "))
-		}
-		if task.TriggerThreadContext != "" {
-			fmt.Fprintf(&b, "Thread context (thread %s, earlier messages, oldest first; the comment above is the newest):\n\n```text\n%s\n```\n\n", task.TriggerThreadID, task.TriggerThreadContext)
 		}
 		// MUL-4195: comments that arrived before this run started were folded
 		// into it rather than dropped. The trigger above is the newest; the
@@ -724,6 +638,12 @@ func buildCommentPrompt(task Task, provider string) string {
 			fmt.Fprintf(&b, "Fetch each id you still need directly: `multica issue comment list %s --thread <comment-id> --tail 30 --compact --output json`. `--thread` accepts a reply id, not just a thread root, so you do not need to know which thread the comment lives in. If it is older than those 30 replies, page back with the `Next reply cursor` values (`--before` / `--before-id`) until it appears. Do not finish this turn until every id above is accounted for.\n\n",
 				task.IssueID)
 		}
+	}
+	// Explicitly selected skills ride the same claim-scoped refs as chat: the
+	// member's slash-link picks, resolved to their on-disk names, shown once
+	// here so the quoted comments above can drop the links already acted on.
+	if block := explicitSkillSelectionBlock(task, opts.chatSkillRefs, opts.skillDirectories); block != "" {
+		b.WriteString(block)
 	}
 	// Issue-reading pointer (MUL-7344). Same gate as the comment hint below —
 	// `resumed` is computed once for both, so one turn can never claim the
@@ -816,7 +736,7 @@ func buildCommentPrompt(task Task, provider string) string {
 // case. Returns nil when there is no trigger or only a single distinct thread —
 // the caller then keeps the existing single-parent reply path unchanged.
 func commentReplyThreads(task Task) []execenv.ThreadReplyTarget {
-	if task.TriggerCommentID == "" || task.isStatusHandoff() {
+	if task.TriggerCommentID == "" {
 		return nil
 	}
 	// A comment with no explicit thread id is a root comment: it is its own
@@ -862,6 +782,10 @@ func commentReplyThreads(task Task) []execenv.ThreadReplyTarget {
 
 // buildChatPrompt constructs a prompt for interactive chat tasks.
 func buildChatPrompt(task Task) string {
+	return buildChatPromptWithOptions(task, promptOpts{})
+}
+
+func buildChatPromptWithOptions(task Task, opts promptOpts) string {
 	// Legacy compatibility for historical proactive-introduction sessions.
 	// New agent creation no longer creates a chat or runs this prompt.
 	if task.ChatIntro {
@@ -951,45 +875,21 @@ func buildChatPrompt(task Task) string {
 		// Scoped to process, not results — a completion confirmation IS the deliverable.
 		fmt.Fprintf(&b, "Reply to %s with the final outcome only. Do NOT narrate planned or in-progress steps (\"我先读取…\"); completed actions are part of the outcome.\n", platform)
 		b.WriteString("\n")
-	} else {
-		b.WriteString("Other agents' decision requests appear in `multica chat history`.\n\n")
-		b.WriteString(replyStateBlock(task.ChatOpenAskIDs))
 	}
-	if task.Agent != nil && len(task.Agent.Skills) > 0 {
-		refs := ExtractSlashSkills(task.ChatMessage)
-		if len(refs) > 0 {
-			agentSkills := make(map[string]string, len(task.Agent.Skills))
-			for _, s := range task.Agent.Skills {
-				agentSkills[s.ID] = s.Name
-			}
-
-			selected := make([]string, 0, len(refs))
-			seen := make(map[string]struct{}, len(refs))
-			for _, ref := range refs {
-				name, ok := agentSkills[ref.ID]
-				if !ok {
-					continue
-				}
-				if _, ok := seen[ref.ID]; ok {
-					continue
-				}
-				seen[ref.ID] = struct{}{}
-				selected = append(selected, name)
-			}
-
-			if len(selected) > 0 {
-				b.WriteString("Explicitly selected skills:\n")
-				for _, name := range selected {
-					fmt.Fprintf(&b, "- %s\n", name)
-				}
-				b.WriteString("\n")
-			}
+	refs := opts.chatSkillRefs
+	if refs == nil {
+		refs = uniqueSlashSkillRefs(chatSkillMatches(task))
+	}
+	if block := explicitSkillSelectionBlock(task, refs, opts.skillDirectories); block != "" {
+		b.WriteString(block)
+	}
+	if !opts.omitChatMessage {
+		message := task.ChatMessage
+		if task.PriorSessionID != "" && task.ChatResumeMessage != nil {
+			message = *task.ChatResumeMessage
 		}
+		fmt.Fprintf(&b, "User message:\n%s\n", message)
 	}
-	if task.ChatDecisionContext != "" {
-		b.WriteString(task.ChatDecisionContext + "\n")
-	}
-	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
 	// List attachments by id + filename so the agent can fetch them via
 	// the CLI. We deliberately do NOT inline the URL: chat attachments
 	// live behind a signed CDN with a short TTL, so by the time the agent
@@ -1037,21 +937,44 @@ func buildChatPrompt(task Task) string {
 	return b.String()
 }
 
-// replyStateBlock tells a DM turn how to declare its outcome (plan r4 T6-T8) and lists the ask ids
-// it may name. The server refuses an invalid outcome and records the turn as unclassified.
-func replyStateBlock(openAskIDs []string) string {
-	var b strings.Builder
-	b.WriteString("Before you finish, declare this turn's outcome with `multica chat reply-state`:\n")
-	b.WriteString("- `question [--ask <id> | --new]` — your reply asks the human something. `--ask` continues one of your open asks, `--new` opens another; with exactly one open ask or none, the flag may be omitted.\n")
-	b.WriteString("- `done --ask <id> [--ask <id>...]` — your reply settles the named asks. `--ask` is required.\n")
-	b.WriteString("- `info` — nothing is owed by the human.\n")
-	if len(openAskIDs) == 0 {
-		b.WriteString("Your open asks in this DM: no open asks.\n\n")
-		return b.String()
+// explicitSkillSelectionBlock renders bound skill names for a turn prompt.
+// Shared by the chat and comment prompt builders so both surfaces name
+// skills identically, by materialized directory name when the
+// daemon recorded one and by the agent's skill name otherwise. A ref whose
+// skill is not bound to this agent renders nothing — an unknown id in user
+// text must not announce a skill.
+func explicitSkillSelectionBlock(task Task, refs []SlashSkillRef, directories map[string]string) string {
+	if task.Agent == nil || len(task.Agent.Skills) == 0 || len(refs) == 0 {
+		return ""
 	}
-	b.WriteString("Your open asks in this DM, oldest first:\n")
-	for _, id := range openAskIDs {
-		fmt.Fprintf(&b, "- %s\n", id)
+	agentSkills := make(map[string]string, len(task.Agent.Skills))
+	for _, s := range task.Agent.Skills {
+		agentSkills[s.ID] = s.Name
+		if dir := directories[s.ID]; dir != "" {
+			agentSkills[s.ID] = filepath.Base(dir)
+		}
+	}
+
+	selected := make([]string, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		name, ok := agentSkills[ref.ID]
+		if !ok {
+			continue
+		}
+		if _, ok := seen[ref.ID]; ok {
+			continue
+		}
+		seen[ref.ID] = struct{}{}
+		selected = append(selected, name)
+	}
+	if len(selected) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Explicitly selected skills:\n")
+	for _, name := range selected {
+		fmt.Fprintf(&b, "- %s\n", name)
 	}
 	b.WriteString("\n")
 	return b.String()

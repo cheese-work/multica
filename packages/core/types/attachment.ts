@@ -61,22 +61,10 @@ export interface Attachment {
   width?: number;
   height?: number;
   /**
-   * 1 for a first upload; higher when a later upload replaced it (CHE-5295).
-   * Optional: a server older than revision chains omits it.
+   * Stable, auth-gated path of a downscaled copy for grid tiles, like
+   * `/api/attachments/<id>/thumbnail`. Set only for large raster images;
+   * absent everywhere else and from servers older than this field, where
+   * tiles load the original. Never use it for viewers or downloads.
    */
-  revision?: number;
-  /** Id of the previous revision of this file, null for the first. */
-  revision_of?: string | null;
-  sha256?: string;
-}
-
-/** `GET /api/attachments/{id}/diff` — a text diff, or the binary fallback. */
-export interface AttachmentRevisionDiff {
-  from: number;
-  to: number;
-  binary: boolean;
-  /** Unified diff text; empty for a binary file or two equal revisions. */
-  diff: string;
-  /** Binary fallback line, e.g. "binary, sizes and SHA differ". */
-  message: string;
+  thumbnail_url?: string;
 }

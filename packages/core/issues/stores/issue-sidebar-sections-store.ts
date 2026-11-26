@@ -8,16 +8,15 @@ import { defaultStorage } from "../../platform/storage";
 export const ISSUE_SIDEBAR_SECTIONS = [
   "properties",
   "quick_actions",
-  "pull_requests",
   "wakeups",
   "plugins",
   "parent",
-  "duplicates",
+  "relations",
+  "pull_requests",
   "environments",
   "deliverables",
   "apps",
   "execution_log",
-  "details",
   "metadata",
 ] as const;
 

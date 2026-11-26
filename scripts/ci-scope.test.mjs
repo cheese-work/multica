@@ -5,9 +5,7 @@ import { dirname, join, matchesGlob, posix, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import * as ciScope from "./ci-scope.mjs";
-
-const { checkGate, decideScopes, filters, hasGreenMergeGroup } = ciScope;
+import { checkGate, decideScopes, filters } from "./ci-scope.mjs";
 
 // The filters use only literal paths, * and **; Node's matcher exercises those
 // against realistic changes, including files removed or renamed by a PR.
@@ -18,22 +16,35 @@ function filterFiles(files) {
 }
 
 for (const [name, files, selected] of [
-  ["readme only", ["README.md"], []],
+  ["readme only", ["README.md"], ["docs"]],
+  ["translated readme", ["README.ja.md"], ["docs"]],
+  ["stable release promotion", [".github/workflows/promote-release.yml"], ["scripts"]],
+  ["release orchestration", [".github/workflows/release.yml"], ["scripts"]],
+  ["release creation", [".goreleaser.yml"], ["scripts"]],
   ["docs only", ["apps/docs/content/docs/guide.mdx"], ["quality", "docs"]],
   ["docs test", ["apps/docs/lib/unrendered-bold.test.ts"], ["quality", "docs"]],
-  ["web changelog", ["apps/web/features/landing/i18n/en.ts"], ["frontend", "quality"]],
+  ["AI traffic classifier", ["packages/core/ai-traffic/index.ts"], ["frontend", "quality", "docs", "e2e"]],
+  ["self-hosting guide for agents", ["SELF_HOSTING_AI.md"], ["docs"]],
+  ["Vercel upload filter", [".vercelignore"], ["docs"]],
+  ["web changelog", ["apps/web/features/landing/i18n/en.ts"], ["frontend", "quality", "docs", "e2e"]],
+  ["landing site copy", ["apps/web/features/landing/i18n/site-ko.ts"], ["frontend", "quality", "docs", "e2e"]],
+  ["cloud page", ["apps/web/features/landing/site/cloud-page.tsx"], ["frontend", "quality", "docs", "e2e"]],
+  ["landing demo copy", ["apps/web/features/landing/i18n/demo-en.ts"], ["frontend", "quality", "e2e"]],
   ["mobile UI", ["apps/mobile/app/index.tsx"], ["quality"]],
-  ["migration only", ["server/migrations/999_example.up.sql"], ["backend", "sqlc"]],
-  ["agent process code", ["server/pkg/agent/cursor_background.go"], ["backend", "runtime"]],
-  ["daemon dependency", ["server/internal/skill/service.go"], ["backend", "runtime"]],
-  ["process-group control", ["server/internal/daemon/processtree/controller_unix.go"], ["backend", "runtime", "processtree"]],
-  ["process-group caller", ["server/internal/daemon/gc.go"], ["backend", "runtime"]],
-  ["native test compilation dependency", ["server/pkg/db/generated/issues.sql.go"], ["backend", "sqlc", "runtime"]],
-  // server/go.mod also gates "installer": install-cli-from-ref.sh (CHE-765)
-  // reads its `go X.Y.Z` line to derive the minimum Go toolchain a daemon
-  // host must have before building a candidate CLI, so a version bump there
-  // should re-run that installer's own regression coverage.
-  ["Go dependencies", ["server/go.mod", "server/go.sum"], ["backend", "runtime", "installer"]],
+  ["collaboration service", ["apps/collab/src/documents.ts"], ["frontend", "quality"]],
+  ["migration only", ["server/migrations/999_example.up.sql"], ["backend", "sqlc", "e2e"]],
+  ["agent process code", ["server/pkg/agent/cursor_background.go"], ["backend", "runtime", "e2e"]],
+  ["runtime env variables", ["server/internal/daemon/agents_probe.go"], ["backend", "runtime", "docs", "e2e"]],
+  ["built-in runtime registry", ["server/pkg/agent/builtin_runtimes.go"], ["backend", "runtime", "docs", "e2e"]],
+  ["daemon config", ["server/internal/daemon/config.go"], ["backend", "runtime", "docs", "e2e"]],
+  ["feature flag keys", ["server/internal/featureflags/keys.go"], ["backend", "runtime", "docs", "e2e"]],
+  ["runtime protocol families", ["server/pkg/agent/agent.go"], ["backend", "runtime", "docs", "e2e"]],
+  ["steering support", ["server/pkg/agent/version.go"], ["backend", "runtime", "docs", "e2e"]],
+  ["daemon dependency", ["server/internal/skill/service.go"], ["backend", "runtime", "e2e"]],
+  ["process-group control", ["server/internal/daemon/processtree/controller_unix.go"], ["backend", "runtime", "processtree", "e2e"]],
+  ["process-group caller", ["server/internal/daemon/gc.go"], ["backend", "runtime", "e2e"]],
+  ["native test compilation dependency", ["server/pkg/db/generated/issues.sql.go"], ["backend", "sqlc", "runtime", "e2e"]],
+  ["Go dependencies", ["server/go.mod", "server/go.sum"], ["backend", "runtime", "e2e"]],
   ["Helm only", ["deploy/helm/multica/templates/deployment.yaml"], ["scripts"]],
   ["container entrypoint", ["docker/entrypoint.sh"], ["scripts"]],
   ["selfhost config", [".env.example"], ["backend", "scripts", "installer"]],
@@ -47,67 +58,41 @@ for (const [name, files, selected] of [
   ["cleanup script", ["scripts/drop-database.sh"], ["scripts"]],
   ["check script regression tests", ["scripts/check.test.sh"], ["scripts"]],
   ["performance harness", ["scripts/perf-compare.test.sh"], ["scripts"]],
-  ["attachment preview source", ["server/internal/handler/attachment_text_preview.json"], ["backend", "runtime", "scripts"]],
-  ["attachment preview output", ["packages/views/editor/utils/text-preview-whitelist.generated.ts"], ["frontend", "quality", "scripts"]],
-  ["reserved slug source", ["server/internal/handler/reserved_slugs.json"], ["backend", "runtime", "scripts"]],
-  ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts"]],
-  ["integration key gates", ["server/cmd/server/router.go"], ["backend", "runtime", "scripts"]],
-  ["brand source", ["packages/ui/lib/multica-brand.ts"], ["frontend", "quality"]],
-  ["CLI brand copy", ["server/cmd/multica/cmd_auth.go"], ["backend", "runtime", "quality"]],
+  ["attachment preview source", ["server/internal/handler/attachment_text_preview.json"], ["backend", "runtime", "scripts", "e2e"]],
+  ["attachment preview output", ["packages/views/editor/utils/text-preview-whitelist.generated.ts"], ["frontend", "quality", "scripts", "e2e"]],
+  ["reserved slug source", ["server/internal/handler/reserved_slugs.json"], ["backend", "runtime", "scripts", "e2e"]],
+  ["reserved slug output", ["packages/core/paths/reserved-slugs.ts"], ["frontend", "quality", "scripts", "e2e"]],
+  ["integration key gates", ["server/cmd/server/router.go"], ["backend", "runtime", "scripts", "e2e"]],
+  ["brand source", ["packages/ui/lib/multica-brand.ts"], ["frontend", "quality", "e2e"]],
+  ["CLI brand copy", ["server/cmd/multica/cmd_auth.go"], ["backend", "runtime", "quality", "e2e"]],
   ["mobile brand copy", ["apps/mobile/components/brand/multica-logo.tsx"], ["quality"]],
   ["README logo", ["docs/assets/logo-dark.svg"], ["quality"]],
   ["brand generator", ["scripts/brand/sync.mjs"], ["quality"]],
+  ["motion checks", ["scripts/motion/checks.test.mjs"], ["quality"]],
   ["PR evidence uploader", ["scripts/pr-shots"], ["quality"]],
-  ["cross-module runtime contract", ["packages/core/runtimes/cli-version.ts"], ["frontend", "backend", "runtime", "quality"]],
-  ["inbox type contract", ["packages/core/types/inbox.ts"], ["frontend", "backend", "quality"]],
-  ["shared quick action body contract", ["server/internal/handler/testdata/quick_action_bodies.json"], ["frontend", "backend", "runtime"]],
-  ["shared workflow guard case contract", ["server/internal/issueworkflow/testdata/guard_cases.json"], ["frontend", "backend", "runtime"]],
-  ["workflow editor guard list", ["packages/core/issue-workflows/graph-edit.ts"], ["frontend", "backend", "quality"]],
-  ["decision card browser contract", ["e2e/decision-dm-card-renders.spec.ts"], ["backend"]],
-  ["decision card preview list", ["packages/core/issues/decision-action-preview.ts"], ["frontend", "backend", "quality"]],
-  ["run status lists", ["packages/core/issues/run-status.ts"], ["frontend", "backend", "quality"]],
-  ["realtime specific events list", ["packages/core/realtime/specific-events.ts"], ["frontend", "backend", "quality"]],
-  ["search index events list", ["packages/core/search-index/hooks.ts"], ["frontend", "backend", "quality"]],
-  ["realtime sync hook alone stays out of backend", ["packages/core/realtime/use-realtime-sync.ts"], ["frontend", "quality"]],
-  ["wakeup event and run-end lists", ["packages/views/issues/components/wakeup-draft.ts"], ["frontend", "backend", "quality"]],
-  ["timeline wakeup activity and PR rule lists", ["packages/views/issues/components/wakeup-activity.tsx"], ["frontend", "backend", "quality"]],
-  ["timeline coalesce lists", ["packages/views/issues/components/timeline-coalesce.ts"], ["frontend", "backend", "quality"]],
-  ["issue detail alone stays out of backend", ["packages/views/issues/components/issue-detail.tsx"], ["frontend", "quality"]],
-  ["wakeup platform rule list", ["packages/views/issues/components/issue-wakeup-defaults.tsx"], ["frontend", "backend", "quality"]],
-  ["wakeup class list", ["packages/core/api/issue-graph-schema.ts"], ["frontend", "backend", "quality"]],
-  ["run budget state list", ["packages/core/run-budget/schema.ts"], ["frontend", "backend", "quality"]],
-  ["delegated writes field list", ["packages/views/settings/components/delegated-writes-section.tsx"], ["frontend", "backend", "quality"]],
-  ["background agents job list", ["packages/views/settings/components/background-agents-tab.tsx"], ["frontend", "backend", "quality"]],
-  ["notification group key array", ["packages/core/notification-preferences/patch.ts"], ["frontend", "backend", "quality"]],
-  ["notification group key union", ["packages/core/types/notification-preference.ts"], ["frontend", "backend", "quality"]],
-  ["notification inbox group list", ["packages/views/settings/components/notifications-tab.tsx"], ["frontend", "backend", "quality"]],
-  ["notification search group list", ["packages/views/settings/components/use-settings-search-index.ts"], ["frontend", "backend", "quality"]],
-  ["mobile notification group list", ["apps/mobile/app/(app)/[workspace]/more/settings/notifications.tsx"], ["backend", "quality"]],
-  ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality", "docs"]],
-  ["workspace catalog", ["pnpm-workspace.yaml"], ["frontend", "quality", "docs"]],
-  ["workspace package patch", ["patches/example.patch"], ["frontend", "quality", "docs"]],
+  ["cross-module runtime contract", ["packages/core/runtimes/cli-version.ts"], ["frontend", "backend", "runtime", "quality", "e2e"]],
+  ["inbox type contract", ["packages/core/types/inbox.ts"], ["frontend", "backend", "quality", "e2e"]],
+  ["theming reference generated by views tests", ["docs/theming.md"], ["frontend"]],
+  ["app manifest checked by views tests", ["apps/mobile/package.json"], ["frontend", "quality"]],
+  ["shared quick action body contract", ["server/internal/handler/testdata/quick_action_bodies.json"], ["frontend", "backend", "runtime", "e2e"]],
+  ["lockfile", ["pnpm-lock.yaml"], ["frontend", "quality", "docs", "e2e"]],
+  ["workspace catalog", ["pnpm-workspace.yaml"], ["frontend", "quality", "docs", "e2e"]],
+  ["workspace package patch", ["patches/example.patch"], ["frontend", "quality", "docs", "e2e"]],
   ["mobile package patch", ["apps/mobile/patches/example.patch"], ["quality"]],
   ["radius policy", ["scripts/check-ui-radius-tokens.mjs"], ["quality"]],
-  ["pattern ledger", ["design/patterns.yml"], ["quality"]],
-  ["pattern validator", ["scripts/design/validate-patterns.mjs"], ["quality"]],
-  ["design record", ["DESIGN.md"], ["quality"]],
-  // C3 ownership check (CHE-5793): every design input must reach frontend-quality, or a lock-only PR skips it.
-  ["lock-only design PR", ["design/decision-card/approved/direction-b.html", "design/decision-card/approved/LOCK.json"], ["quality"]],
-  ["ui ownership map only", ["design/ui-map.yml"], ["quality"]],
-  ["device profiles only", ["design/devices.yml"], ["quality"]],
-  ["fidelity blocks map only", ["tests/fidelity/decision-card.blocks.yml"], ["quality"]],
   ["shared quality action", [".github/actions/frontend-quality/action.yml"], ["frontend", "quality"]],
-  ["new bitmap", ["apps/web/public/hero.png"], ["frontend", "quality", "images"]],
-  ["mixed docs and migration", ["apps/docs/content/guide.mdx", "server/migrations/999_example.up.sql"], ["quality", "docs", "backend", "sqlc"]],
+  ["new bitmap", ["apps/web/public/hero.png"], ["frontend", "quality", "images", "e2e"]],
+  ["mixed docs and migration", ["apps/docs/content/guide.mdx", "server/migrations/999_example.up.sql"], ["quality", "docs", "backend", "sqlc", "e2e"]],
+  ["E2E spec", ["e2e/guest.spec.ts"], ["e2e"]],
+  ["Playwright config", ["playwright.config.ts"], ["e2e"]],
+  ["dev fixtures", ["scripts/dev-fixtures.mjs"], ["quality", "e2e"]],
+  ["fake Composio", ["scripts/fake-composio.mjs"], ["quality", "scripts"]],
+  ["Composio spec tooling", ["scripts/composio-spec.mjs"], ["quality", "scripts"]],
+  ["Composio OpenAPI snapshot", ["server/pkg/composio/composiotest/openapi-v3.1.json"], ["backend", "runtime", "scripts", "e2e"]],
   ["CI configuration", [".github/ci-paths.json"], Object.keys(filters)],
-  ["another workflow runs the wait-policy scan", [".github/workflows/release.yml"], ["deploy_cd"]],
-  ["wait policy script", [".github/scripts/ci-wait-policy.py"], ["deploy_cd"]],
-  ["wait policy exceptions", [".github/ci-policy.yml"], ["deploy_cd"]],
-  ["Go builder bump needs its pinned tarball checksum", ["Dockerfile"], ["deploy_cd"]],
-  ["backend binary build script", ["scripts/build-cd-backend-binaries.sh"], ["deploy_cd"]],
 ]) {
-  test(`PR, main and merge groups select only affected scopes: ${name}`, () => {
-    for (const event of ["pull_request", "push", "merge_group"]) {
+  test(`PR and main select only affected scopes: ${name}`, () => {
+    for (const event of ["pull_request", "push"]) {
       const outputs = decideScopes(event, filterFiles(files));
       assert.equal(outputs.full, "false");
       assert.deepEqual(Object.keys(filters).filter((scope) => outputs[scope] === "true").sort(),
@@ -119,55 +104,15 @@ for (const [name, files, selected] of [
 
 test("scheduled and manual runs select every scope without a path-filter result", () => {
   for (const event of ["schedule", "workflow_dispatch"]) {
-    const { quality_only, merge_group_green, ...scopes } = decideScopes(event, {});
+    const { quality_only, ...scopes } = decideScopes(event, {});
     assert.ok(Object.values(scopes).every((value) => value === "true"));
     assert.equal(quality_only, "false", "the full frontend build owns quality checks");
-    assert.equal(merge_group_green, "false");
-  }
-});
-
-test("upstream-sync heads never select the X99 self-hosted scopes", () => {
-  const everything = Object.fromEntries(Object.keys(filters).map((scope) => [scope, "true"]));
-  const syncHead = "upstream-sync/multica/" + "a".repeat(40);
-  for (const event of ["push", "pull_request"]) {
-    const outputs = decideScopes(event, everything, syncHead);
-    assert.equal(outputs.scripts, "false");
-    assert.equal(outputs.quality_only, "false");
-    assert.equal(outputs.backend, "true", "hosted jobs keep running");
-  }
-  assert.equal(decideScopes("workflow_dispatch", {}, syncHead).scripts, "false");
-  const ordinary = decideScopes("pull_request", { ...everything, frontend: "false" }, "feature/x");
-  assert.equal(ordinary.scripts, "true");
-  assert.equal(ordinary.quality_only, "true");
-  // The aggregate gates accept the skipped X99 jobs on a sync head.
-  for (const gate of ["frontend", "backend"]) {
-    checkGate(productionNeeds(gate, decideScopes("pull_request", everything, syncHead), syncHead), productionMapping(gate));
-  }
-});
-
-// A candidate controls scripts/ci-scope.mjs, which the runner does not block.
-// Simulate a candidate whose helper ignores the head ref: the sync-sensitive jobs must
-// still be skipped by their own job-level `if`, and the gate fails closed.
-test("a tampered ci-scope helper cannot admit a sync head to the sync-sensitive jobs", () => {
-  const everything = Object.fromEntries(Object.keys(filters).map((scope) => [scope, "true"]));
-  const syncHead = "upstream-sync/multica/" + "a".repeat(40);
-  const tampered = decideScopes("pull_request", { ...everything, frontend: "false" });
-  assert.equal(tampered.scripts, "true");
-  assert.equal(tampered.quality_only, "true");
-  for (const [job, gate] of [["script-checks", "backend"], ["frontend-quality", "frontend"]]) {
-    assert.match(jobs[job], /^    runs-on: (ubuntu-24\.04|\$\{\{ vars\.RUNNER_[A-Z_]+ \|\| 'ubuntu-24\.04' \}\})$/m);
-    assert.match(jobs[job], /!startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\)/);
-    const needs = productionNeeds(gate, tampered, syncHead);
-    assert.equal(needs[job].result, "skipped");
-    assert.throws(() => checkGate(needs, productionMapping(gate)), new RegExp(job));
   }
 });
 
 test("missing, malformed and unsupported filter results fail closed", () => {
-  for (const event of ["push", "merge_group"]) {
-    for (const value of [undefined, "", "unknown", true]) {
-      assert.throws(() => decideScopes(event, { ...filterFiles([]), backend: value }), /backend/);
-    }
+  for (const value of [undefined, "", "unknown", true]) {
+    assert.throws(() => decideScopes("push", { ...filterFiles([]), backend: value }), /backend/);
   }
   assert.throws(() => decideScopes("unknown", filterFiles([])), /Unsupported/);
 });
@@ -189,220 +134,14 @@ function field(source, pattern) {
 function productionMapping(gate) {
   return JSON.parse(field(jobs[gate], /^          JOB_SCOPES: '(.+)'$/m));
 }
-function productionNeeds(gate, outputs, headRef = "") {
+function productionNeeds(gate, outputs) {
   const dependencies = field(jobs[gate], /^    needs: \[(.+)\]$/m).split(", ");
   return Object.fromEntries(dependencies.map((job) => {
     if (job === "changes") return [job, { result: "success", outputs }];
-    const match = jobs[job].match(/^    if: \$\{\{ (?:!cancelled\(\) && )?needs\.changes\.outputs\.(\w+) == 'true'( && !startsWith\(github\.head_ref \|\| github\.ref_name, 'upstream-sync\/'\))? \}\}$/m);
-    if (!match) return [job, { result: "success" }];
-    const [, scope, syncExclusion] = match;
-    const excluded = syncExclusion && headRef.startsWith("upstream-sync/");
-    return [job, { result: outputs[scope] === "true" && !excluded ? "success" : "skipped" }];
+    const scope = field(jobs[job], /^    if: \$\{\{ needs\.changes\.outputs\.(\w+) == 'true' \}\}$/m);
+    return [job, { result: outputs[scope] === "true" ? "success" : "skipped" }];
   }));
 }
-
-test("deploy admission accepts skipped push tests only after green merge-group CI on the same SHA", (context) => {
-  const directory = mkdtempSync(join(tmpdir(), "ci-push-admission-"));
-  context.after(() => rmSync(directory, { recursive: true, force: true }));
-  const sourceSha = "a".repeat(40);
-  const outputs = decideScopes("push", filterFiles([".github/ci-paths.json"]), "main", true);
-  const contexts = { mobile: "success", "cd-qualification": "success" };
-  for (const gate of ["backend", "frontend"]) {
-    const needs = productionNeeds(gate, outputs);
-    for (const [job, scope] of Object.entries(productionMapping(gate))) {
-      if (scope !== "always") needs[job].result = "skipped";
-    }
-    checkGate(needs, productionMapping(gate));
-    contexts[gate] = "success";
-    const mapping = productionMapping(gate);
-    assert.ok(Object.entries(productionNeeds(gate, outputs)).slice(1).every(([job, { result }]) => mapping[job] === "always" || result === "skipped"));
-  }
-  const checks = join(directory, "checks.json");
-  writeFileSync(checks, JSON.stringify({ sha: sourceSha, contexts }));
-  const admission = spawnSync(process.execPath, ["deploy/cd/admission.mjs", "checks", "--checks", checks, "--source-sha", sourceSha], { encoding: "utf8" });
-  assert.equal(admission.status, 0, admission.stderr);
-  writeFileSync(checks, JSON.stringify({ sha: sourceSha, contexts: { ...contexts, backend: "skipped" } }));
-  const skippedAggregate = spawnSync(process.execPath, ["deploy/cd/admission.mjs", "checks", "--checks", checks, "--source-sha", sourceSha], { encoding: "utf8" });
-  assert.equal(skippedAggregate.status, 1);
-  assert.match(skippedAggregate.stderr, /required check backend is not success/);
-
-  const directPush = decideScopes("push", filterFiles([".github/ci-paths.json"]), "main", false);
-  assert.equal(directPush.push_full, "true");
-  assert.equal(directPush.backend, "true");
-  assert.equal(directPush.frontend, "true");
-  for (const gate of ["backend", "frontend"]) {
-    const needs = productionNeeds(gate, directPush);
-    checkGate(needs, productionMapping(gate));
-    assert.equal(needs[Object.keys(productionMapping(gate))[0]].result, "success");
-    needs[Object.keys(productionMapping(gate))[0]].result = "skipped";
-    assert.throws(() => checkGate(needs, productionMapping(gate)), /expected success, got skipped/);
-  }
-});
-
-// Fake clock: sleep advances time, so bounded polling finishes instantly and elapsed time is observable.
-const fakeClock = () => {
-  const clock = { time: 0, slept: [], now: () => clock.time, sleep: (ms) => { clock.slept.push(ms); clock.time += ms; } };
-  return clock;
-};
-
-test("only successful merge-group CI from this repository on this exact main SHA can suppress push tests", () => {
-  const env = { EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_SHA: "a".repeat(40), GITHUB_REPOSITORY: "cheese-work/multica" };
-  const green = { event: "merge_group", head_sha: env.GITHUB_SHA, status: "completed", conclusion: "success", head_repository: { full_name: env.GITHUB_REPOSITORY } };
-  const query = (endpoint) => {
-    assert.equal(endpoint, `repos/cheese-work/multica/actions/workflows/ci.yml/runs?event=merge_group&head_sha=${env.GITHUB_SHA}&per_page=10`);
-    return { workflow_runs: [green] };
-  };
-  assert.equal(hasGreenMergeGroup(env, query), true);
-  for (const patch of [
-    { CI_PUSH_FULL: "true" }, { EVENT_NAME: "pull_request" }, { EVENT_NAME: "merge_group" },
-    { EVENT_NAME: "schedule" }, { EVENT_NAME: "workflow_dispatch" }, { GITHUB_REF: "refs/heads/feature" },
-    { GITHUB_SHA: "" }, { GITHUB_REPOSITORY: "" },
-  ]) {
-    assert.equal(hasGreenMergeGroup({ ...env, ...patch }, () => assert.fail("must not query Actions")), false);
-  }
-  for (const run of [
-    { ...green, event: "pull_request" }, { ...green, head_sha: "b".repeat(40) },
-    { ...green, status: "in_progress" }, { ...green, head_repository: { full_name: "fork/multica" } },
-    ...["failure", "cancelled", "skipped", "neutral", null].map((conclusion) => ({ ...green, conclusion })),
-  ]) {
-    const { sleep, now } = fakeClock();
-    assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [run] }), sleep, now), false);
-  }
-  const empty = fakeClock();
-  assert.equal(hasGreenMergeGroup(env, () => ({ workflow_runs: [] }), empty.sleep, empty.now), false);
-  assert.equal(hasGreenMergeGroup(env, () => { throw new Error("API unavailable"); }), false);
-  assert.equal(hasGreenMergeGroup(env, () => ({})), false);
-  for (const event of ["pull_request", "merge_group", "schedule", "workflow_dispatch"]) {
-    assert.equal(decideScopes(event, filterFiles([]), "main", true).push_full, "true");
-  }
-  assert.equal(decideScopes("push", filterFiles([]), "feature", true).push_full, "true");
-});
-
-test("a merge-group run still in progress or not yet listed is awaited, within a total bound", () => {
-  const env = { EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", GITHUB_SHA: "a".repeat(40), GITHUB_REPOSITORY: "cheese-work/multica" };
-  const run = { event: "merge_group", head_sha: env.GITHUB_SHA, head_repository: { full_name: env.GITHUB_REPOSITORY } };
-  // Each state is one lookup; null means the run is not listed yet. `queryMs` is the time a lookup takes.
-  const sequence = (clock, queryMs, ...states) => {
-    let calls = 0;
-    const query = () => {
-      clock.time += queryMs;
-      const state = states[Math.min(calls++, states.length - 1)];
-      return { workflow_runs: state ? [{ ...run, ...state }] : [] };
-    };
-    return { query, calls: () => calls };
-  };
-  const running = { status: "in_progress", conclusion: null };
-  const success = { status: "completed", conclusion: "success" };
-  const failure = { status: "completed", conclusion: "failure" };
-
-  let clock = fakeClock();
-  let lookups = sequence(clock, 0, running, running, success);
-  assert.equal(hasGreenMergeGroup(env, lookups.query, clock.sleep, clock.now), true);
-  assert.equal(lookups.calls(), 3);
-  assert.deepEqual(clock.slept, [10000, 10000]);
-
-  clock = fakeClock();
-  lookups = sequence(clock, 0, null, null, success);
-  assert.equal(hasGreenMergeGroup(env, lookups.query, clock.sleep, clock.now), true);
-  assert.equal(lookups.calls(), 3);
-
-  clock = fakeClock();
-  lookups = sequence(clock, 0, running, failure);
-  assert.equal(hasGreenMergeGroup(env, lookups.query, clock.sleep, clock.now), false);
-  assert.equal(lookups.calls(), 2);
-
-  clock = fakeClock();
-  lookups = sequence(clock, 0, failure);
-  assert.equal(hasGreenMergeGroup(env, lookups.query, clock.sleep, clock.now), false);
-  assert.equal(lookups.calls(), 1);
-  assert.deepEqual(clock.slept, []);
-
-  // Slow lookups count against the same bound: the wait ends near 180 s, not 180 s plus the lookups.
-  for (const state of [running, null]) {
-    clock = fakeClock();
-    lookups = sequence(clock, 4000, state);
-    assert.equal(hasGreenMergeGroup(env, lookups.query, clock.sleep, clock.now), false);
-    assert.ok(clock.time >= 180000 && clock.time <= 184000, `elapsed ${clock.time}`);
-  }
-});
-
-test("the decide CLI queries merge-group evidence and preserves full CI on lookup errors or the kill switch", (context) => {
-  const directory = mkdtempSync(join(tmpdir(), "ci-push-lookup-"));
-  context.after(() => rmSync(directory, { recursive: true, force: true }));
-  const output = join(directory, "outputs");
-  const fixture = join(directory, "runs.json");
-  const command = fileURLToPath(new URL("./ci-scope.mjs", import.meta.url));
-  const sha = "a".repeat(40);
-  const green = { event: "merge_group", head_sha: sha, status: "completed", conclusion: "success", head_repository: { full_name: "cheese-work/multica" } };
-  writeFileSync(join(directory, "gh"), `#!/usr/bin/env node
-const {readFileSync} = require('node:fs');
-if (process.env.LOOKUP_FAIL === 'true') process.exit(1);
-process.stdout.write(readFileSync(process.env.RUN_FIXTURE));
-`, { mode: 0o700 });
-  for (const [runs, forceFull, failure, expected] of [
-    [[green], "", "", "false"], [[], "", "", "true"],
-    [[green], "true", "", "true"], [[green], "", "true", "true"],
-  ]) {
-    writeFileSync(fixture, JSON.stringify({ workflow_runs: runs }));
-    writeFileSync(output, "");
-    const result = spawnSync(process.execPath, [command, "decide"], {
-      encoding: "utf8",
-      env: { ...process.env, MERGE_GROUP_WAIT_MS: "0", PATH: `${directory}:${process.env.PATH}`, RUN_FIXTURE: fixture, LOOKUP_FAIL: failure,
-        EVENT_NAME: "push", GITHUB_REF: "refs/heads/main", HEAD_REF: "main", GITHUB_SHA: sha,
-        GITHUB_REPOSITORY: "cheese-work/multica", CI_PUSH_FULL: forceFull,
-        FILTER_RESULTS: JSON.stringify(filterFiles([".github/ci-paths.json"])), GITHUB_OUTPUT: output },
-    });
-    assert.equal(result.status, 0, result.stderr);
-    const outputs = Object.fromEntries(readFileSync(output, "utf8").trim().split("\n").map((line) => line.split("=")));
-    assert.equal(outputs.push_full, expected);
-    assert.equal(outputs.merge_group_green, String(expected === "false"));
-    for (const scope of Object.keys(filters)) assert.equal(outputs[scope], expected);
-  }
-});
-
-test("merge-group reuse is wired to authenticated Actions reads and separate hosted cache warmers", () => {
-  assert.match(jobs.changes, /^      actions: read$/m);
-  assert.match(jobs.changes, /CI_PUSH_FULL: \$\{\{ vars\.CI_PUSH_FULL \}\}/);
-  assert.match(jobs.changes, /GH_TOKEN: \$\{\{ github\.token \}\}/);
-  const mainBuild = readFileSync(new URL("../.github/workflows/main-build.yml", import.meta.url), "utf8");
-  const mainJobs = Object.fromEntries([...mainBuild.matchAll(/^  ([\w-]+):$/gm)].map((match, index, all) => [
-    match[1], mainBuild.slice(match.index, all[index + 1]?.index),
-  ]));
-  for (const name of ["push-go-cache-warm", "push-turbo-cache-warm"]) {
-    assert.match(mainJobs[name], /needs\.merge-group\.outputs\.merge_group_green == 'true'/);
-    assert.match(mainJobs[name], /^    runs-on: ubuntu-24\.04$/m);
-  }
-  assert.match(mainJobs["push-go-cache-warm"], /go test -race -run '\^\$' -exec \/bin\/true \.\/\.\.\./);
-  for (const prefix of ["go-mod-", "go-build-race-"]) {
-    assert.ok(jobs["backend-test-shards"].includes(prefix));
-    assert.ok(mainJobs["push-go-cache-warm"].includes(prefix));
-  }
-  assert.match(mainJobs["push-turbo-cache-warm"], /key: turbo-build-/);
-  assert.match(mainJobs["push-turbo-cache-warm"], /pnpm exec turbo build typecheck lint --concurrency=2/);
-  assert.ok(mainJobs["daemon-artifact"]);
-});
-
-test("merge groups filter the complete candidate against the queue base", () => {
-  assert.match(workflow, /^  merge_group:\n    types: \[checks_requested\]$/m);
-  assert.match(jobs.changes, /if: github\.event_name == 'pull_request' \|\| github\.event_name == 'push' \|\| github\.event_name == 'merge_group'/);
-  assert.match(jobs.changes, /base: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.base_sha \|\| \(github\.event_name == 'push' && github\.event\.before \|\| ''\) \}\}/);
-  assert.match(jobs.changes, /ref: \$\{\{ github\.event_name == 'merge_group' && github\.event\.merge_group\.head_sha \|\| \(github\.event_name == 'push' && github\.sha \|\| ''\) \}\}/);
-});
-
-test("a merge-group migration failure cannot pass the backend gate", () => {
-  const outputs = decideScopes("merge_group", filterFiles([
-    "server/migrations/999_first.up.sql",
-    "server/migrations/999_second.up.sql",
-  ]));
-  assert.equal(outputs.backend, "true");
-  assert.equal(outputs.sqlc, "true");
-  assert.equal(productionMapping("backend")["backend-tests"], "push_backend");
-  assert.match(jobs["backend-tests"], /^    if: \$\{\{ !cancelled\(\) && needs\.changes\.outputs\.push_backend == 'true' \}\}$/m);
-  const needs = productionNeeds("backend", outputs);
-  checkGate(needs, productionMapping("backend"));
-  needs["backend-tests"].result = "failure";
-  assert.throws(() => checkGate(needs, productionMapping("backend")), /backend-tests/);
-});
 
 for (const gate of ["frontend", "backend"]) {
   test(`production ${gate} gate matches every dependency, condition and scope output`, () => {
@@ -411,7 +150,6 @@ for (const gate of ["frontend", "backend"]) {
     assert.match(jobs[gate], /^          NEEDS_JSON: \$\{\{ toJSON\(needs\) \}\}$/m);
     assert.match(jobs[gate], /^        run: node scripts\/ci-scope\.mjs gate$/m);
     for (const scope of Object.values(mapping)) {
-      if (scope === "always") continue;
       assert.ok(jobs.changes.includes(`      ${scope}: \${{ steps.decide.outputs.${scope} }}`));
     }
     const scopes = Object.keys(filters);
@@ -459,7 +197,6 @@ for (const gate of ["frontend", "backend"]) {
       const failed = unselected();
       failed[job].result = "failure";
       assert.throws(() => checkGate(failed, mapping), new RegExp(job));
-      if (scope === "always") continue;
       for (const value of [undefined, "", "unknown"]) {
         const invalid = unselected();
         invalid.changes.outputs[scope] = value;
@@ -472,29 +209,6 @@ for (const gate of ["frontend", "backend"]) {
   });
 }
 
-// Upstream pins a three-platform matrix here. This fork runs no Windows jobs
-// (CHE-522: Linux CI only) and no macOS jobs (CHE-1012: no free macOS
-// runners), so the installer matrix is Linux-only. Restore the macOS
-// assertion together with the matrix entry when a macOS runner exists.
-test("the backend gate owns the Linux-only installer matrix", () => {
-  assert.equal(productionMapping("backend").installer, "installer");
-  assert.match(jobs.installer, /- \$\{\{ vars\.RUNNER_INSTALLER \|\| 'ubuntu-24\.04' \}\}/);
-  assert.doesNotMatch(jobs.installer, /- macos-/);
-  assert.doesNotMatch(jobs.installer, /continue-on-error:/);
-});
-
-test("installer does not advertise PowerShell coverage without Windows runners", () => {
-  assert.doesNotMatch(jobs.installer, /windows-latest/);
-  assert.doesNotMatch(jobs.installer, /runner\.os == 'Windows'/);
-  assert.doesNotMatch(jobs.installer, /shell: (powershell|pwsh)/);
-  assert.doesNotMatch(jobs.installer, /run: .*install\.ps1\.test\.ps1/);
-});
-
-test("go-lint filters findings from the locally fetched merge base", () => {
-  assert.match(jobs["go-lint"], /run: golangci-lint run --new-from-merge-base="origin\/\$BASE_REF"/);
-  assert.doesNotMatch(jobs["go-lint"], /only-new-issues:/);
-});
-
 // The gates trust job results, and continue-on-error reports a failed step as
 // a success, so a gate cannot see a failure behind it.
 test("no gated job or shared quality step continues past a failure", () => {
@@ -504,34 +218,27 @@ test("no gated job or shared quality step continues past a failure", () => {
 });
 
 // A push only checks the paths it changed, so a main run that is cancelled or
-// left pending behind a newer push skips its commit for good. Fork ci.yml has no
-// push trigger (PR and merge queue only), so the rule applies to mobile-verify.yml,
-// which still runs on push to main.
+// left pending behind a newer push skips its commit for good.
 test("path-filtered workflows never cancel or supersede a main run", () => {
-  const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-  assert.doesNotMatch(field(ci, /^on:\n((?:  .+\n|\s*\n)+)/m), /^  push:/m, "ci.yml has no push trigger on the fork");
-  const source = readFileSync(new URL("../.github/workflows/mobile-verify.yml", import.meta.url), "utf8");
-  const block = field(source, /^concurrency:\n((?:  .+\n)+)/m);
-  assert.match(block, /^  group: .*\$\{\{ github\.event\.pull_request\.number \|\| github\.run_id \}\}$/m);
-  assert.match(block, /^  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m);
+  for (const name of ["ci.yml", "mobile-verify.yml"]) {
+    const source = readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8");
+    const block = field(source, /^concurrency:\n((?:  .+\n)+)/m);
+    assert.match(block, /^  group: .*\$\{\{ github\.event\.pull_request\.number \|\| github\.run_id \}\}$/m, name);
+    assert.match(block, /^  cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}$/m, name);
+  }
 });
 
-test("quality checks run on frontend-build and, when frontend-build is skipped, frontend-quality", () => {
+test("quality checks have exactly one runner", () => {
   const invocation = "uses: ./.github/actions/frontend-quality";
   const owners = Object.entries(jobs).filter(([, source]) => source.includes(invocation)).map(([job]) => job);
   assert.deepEqual(owners.sort(), ["frontend-build", "frontend-quality"]);
   assert.equal(productionMapping("frontend")["frontend-quality"], "quality_only");
-  assert.match(jobs["frontend-build"], /      - name: Check frontend quality\n        uses: \.\/\.github\/actions\/frontend-quality\n/);
-  // CHE-748 made frontend-build unconditional, so a quality-only PR ran both runners. CHE-4874
-  // scopes it by push_frontend again: frontend PRs run quality in frontend-build, quality-only
-  // PRs in frontend-quality, and PRs with neither run no quality runner.
   for (const frontend of ["true", "false"]) {
     for (const quality of ["true", "false"]) {
       const outputs = decideScopes("pull_request", { ...filterFiles([]), frontend, quality });
       const results = productionNeeds("frontend", outputs);
       const runners = owners.filter((job) => results[job].result === "success");
-      const expected = frontend === "true" || quality === "true" ? 1 : 0;
-      assert.equal(runners.length, expected);
+      assert.equal(runners.length, frontend === "true" || quality === "true" ? 1 : 0);
     }
   }
 });
@@ -566,53 +273,6 @@ test("the CLI writes real Actions outputs and exits nonzero on a failed gate", (
   });
   assert.equal(gate.status, 1);
   assert.match(gate.stderr, /backend-tests/);
-});
-
-// CHE-4874: on pull requests the full-suite jobs follow their own path scope;
-// merge_group, main pushes and manual/scheduled runs keep the whole suite.
-const PUSH_SCOPES = { push_backend: "backend", push_frontend: "frontend", push_sqlc: "sqlc" };
-const pushOutputs = (outputs) => Object.fromEntries(Object.keys(PUSH_SCOPES).map((key) => [key, outputs[key]]));
-
-test("pull requests scope full-suite jobs by path", () => {
-  for (const [files, expected] of [
-    [["README.md"], { push_backend: "false", push_frontend: "false", push_sqlc: "false" }],
-    [["apps/docs/content/docs/guide.mdx"], { push_backend: "false", push_frontend: "false", push_sqlc: "false" }],
-    [["apps/web/features/landing/i18n/en.ts"], { push_backend: "false", push_frontend: "true", push_sqlc: "false" }],
-    [["server/internal/skill/service.go"], { push_backend: "true", push_frontend: "false", push_sqlc: "false" }],
-    [["server/migrations/999_example.up.sql"], { push_backend: "true", push_frontend: "false", push_sqlc: "true" }],
-    [["packages/core/runtimes/cli-version.ts"], { push_backend: "true", push_frontend: "true", push_sqlc: "false" }],
-    [[".github/ci-paths.json"], { push_backend: "true", push_frontend: "true", push_sqlc: "true" }],
-  ]) {
-    assert.deepEqual(pushOutputs(decideScopes("pull_request", filterFiles(files))), expected, files.join());
-  }
-});
-
-test("merge_group, main push, schedule and dispatch run every full-suite job whatever the paths", () => {
-  const every = { push_backend: "true", push_frontend: "true", push_sqlc: "true" };
-  assert.deepEqual(pushOutputs(decideScopes("merge_group", filterFiles(["README.md"]))), every);
-  assert.deepEqual(pushOutputs(decideScopes("push", filterFiles(["README.md"]), "main")), every);
-  assert.deepEqual(pushOutputs(decideScopes("push", filterFiles(["README.md"]), "main", false, true)), every);
-  assert.deepEqual(pushOutputs(decideScopes("schedule", {})), every);
-  assert.deepEqual(pushOutputs(decideScopes("workflow_dispatch", {})), every);
-  // A reused green merge group skips them all.
-  assert.deepEqual(pushOutputs(decideScopes("push", filterFiles(["README.md"]), "main", true)),
-    { push_backend: "false", push_frontend: "false", push_sqlc: "false" });
-});
-
-test("full-suite jobs use their scope's push output in the job condition and the gate map", () => {
-  const cases = [
-    ["sqlc-check", "push_sqlc", "backend"], ["go-vulnerability-scan", "push_backend", "backend"], ["go-lint", "push_backend", "backend"],
-    ["backend-test-shards", "push_backend", null], ["backend-tests", "push_backend", "backend"],
-    ["frontend-build", "push_frontend", "frontend"], ["frontend-test", "push_frontend", "frontend"],
-  ];
-  for (const [name, output, gate] of cases) {
-    assert.match(jobs[name], new RegExp(`^    if: \\$\\{\\{ (!cancelled\\(\\) && )?needs\\.changes\\.outputs\\.${output} == 'true' \\}\\}$`, "m"), name);
-    assert.doesNotMatch(jobs[name], /outputs\.push_full\b/, name);
-    if (gate) assert.equal(productionMapping(gate)[name], output, name);
-  }
-  for (const output of Object.keys(PUSH_SCOPES)) {
-    assert.ok(jobs.changes.includes(`      ${output}: \${{ steps.decide.outputs.${output} }}`), output);
-  }
 });
 
 // A Go test that reads a repository file outside server/ only runs on a PR

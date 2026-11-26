@@ -3,38 +3,19 @@
 -- are one state transition. A missing row is the fail-closed value for old
 -- daemons, old servers, unsupported providers and application rollback.
 WITH candidate AS MATERIALIZED (
-    SELECT t.id, t.issue_id, t.chat_session_id, t.task_kind, r.workspace_id, r.provider
+    SELECT t.id, t.issue_id, t.chat_session_id, r.workspace_id, r.provider
     FROM agent_task_queue t
     JOIN agent_runtime r ON r.id = t.runtime_id
     WHERE t.id = @task_id
       AND t.status IN ('dispatched', 'waiting_local_directory')
-      -- CHE-4103: a background task past its start bound (the claim deadline,
-      -- counted from the claim) never becomes running; the deadline sweep fails it.
-      AND (
-          t.context->>'type' IS DISTINCT FROM 'background'
-          OR COALESCE((t.context->>'claim_deadline_seconds')::int, 0) <= 0
-          OR COALESCE(t.dispatched_at, now()) >= now() - make_interval(secs => (t.context->>'claim_deadline_seconds')::double precision)
-      )
     FOR UPDATE OF t
 ), capability AS (
     INSERT INTO task_supplement_capability (task_id, workspace_id, issue_id, capability)
     SELECT id, workspace_id, issue_id, 'task-supplement-v1'
     FROM candidate
     WHERE @enable_task_supplement::boolean
-      AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'pi')
-      AND issue_id IS NOT NULL
-    ON CONFLICT DO NOTHING
-    RETURNING task_id
-), chat_capability AS (
-    -- Compaction runs never carry a human turn, so they never take steers.
-    INSERT INTO task_supplement_capability (task_id, workspace_id, chat_session_id, capability)
-    SELECT id, workspace_id, chat_session_id, 'task-supplement-chat-v1'
-    FROM candidate
-    WHERE @enable_chat_supplement::boolean
-      AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro')
-      AND issue_id IS NULL
-      AND chat_session_id IS NOT NULL
-      AND task_kind IS DISTINCT FROM 'compact'
+      AND provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'pi', 'antigravity', 'hermes')
+      AND (issue_id IS NOT NULL OR chat_session_id IS NOT NULL)
     ON CONFLICT DO NOTHING
     RETURNING task_id
 )
@@ -53,7 +34,6 @@ WHERE t.id = candidate.id
   -- Reference the data-modifying CTE explicitly: capability persistence and
   -- the returned running row are one indivisible statement.
   AND (SELECT count(*) FROM capability) >= 0
-  AND (SELECT count(*) FROM chat_capability) >= 0
 RETURNING t.*;
 
 -- name: CreateTaskSupplement :one
@@ -70,7 +50,7 @@ WITH locked_task AS MATERIALIZED (
       AND r.workspace_id = @workspace_id
       AND t.status = 'running'
       AND cap.capability = 'task-supplement-v1'
-      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'pi')
+      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'pi', 'antigravity', 'hermes')
     FOR UPDATE OF t
 ), touched_issue AS (
     UPDATE issue i SET
@@ -144,8 +124,12 @@ WITH locked_task AS MATERIALIZED (
       AND t.agent_id = @agent_id
       AND r.workspace_id = @workspace_id
       AND t.status = 'running'
+      AND (
+          sqlc.narg('required_leader_squad_id')::uuid IS NULL
+          OR (t.is_leader_task AND t.squad_id = sqlc.narg('required_leader_squad_id')::uuid)
+      )
       AND cap.capability = 'task-supplement-v1'
-      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'pi')
+      AND r.provider IN ('codex', 'claude', 'grok', 'cursor', 'kiro', 'pi', 'antigravity', 'hermes')
       AND (@author_type::text <> 'agent' OR (
           (SELECT count(*) FROM task_supplement s
            JOIN comment c ON c.id = s.comment_id
@@ -159,10 +143,10 @@ WITH locked_task AS MATERIALIZED (
 ), inserted AS (
     INSERT INTO task_supplement (
         task_id, workspace_id, issue_id, comment_id, author_id,
-        client_request_id, status, implicit
+        client_request_id, status
     )
     SELECT t.id, @workspace_id, t.issue_id, @comment_id, @author_id,
-           @client_request_id, 'pending', @implicit::bool
+           @client_request_id, 'pending'
     FROM locked_task t
     RETURNING *
 )
@@ -292,8 +276,7 @@ FROM task t
 WHERE s.task_id = t.id
   AND s.comment_id = @comment_id
   AND (s.status IN ('delivering', 'delivered')
-       OR (s.status = 'failed' AND s.attempt_count > 0
-           AND s.failure_reason IN ('turn_ended', 'replay_queued', 'replay_exhausted')))
+       OR (s.status = 'failed' AND s.failure_reason = 'turn_ended' AND s.attempt_count > 0))
 RETURNING s.*;
 
 -- name: AckTaskSupplementFailed :one
@@ -343,45 +326,3 @@ FOR UPDATE;
 -- name: DeleteTaskSupplementByComment :exec
 DELETE FROM task_supplement
 WHERE comment_id = @comment_id AND workspace_id = @workspace_id;
-
--- name: SetSupplementReplay :execrows
--- CHE-5542: records where the follow-up replay of an unread steer stands. The
--- reason is replay_queued (retry due at @next_at), replay_exhausted, or the
--- policy reason that refused it; only a replay_queued receipt carries a due time.
-UPDATE task_supplement
-SET failure_reason = @failure_reason,
-    replay_attempts = @replay_attempts,
-    replay_next_at = sqlc.narg('next_at')::timestamptz,
-    updated_at = now()
-WHERE comment_id = @comment_id AND task_id = @task_id AND status = 'failed';
-
--- name: ClaimDueSupplementReplays :many
--- Leases each due receipt for @lease_until so another server instance skips it
--- and a crash mid-retry is retried once the lease lapses. The caller settles
--- the receipt with SetSupplementReplay or deletes it.
-UPDATE task_supplement s
-SET replay_next_at = @lease_until
-FROM (
-    SELECT d.task_id, d.comment_id FROM task_supplement d
-    WHERE d.status = 'failed'
-      AND d.failure_reason = 'replay_queued'
-      AND d.replay_next_at <= @now
-    ORDER BY d.replay_next_at
-    LIMIT @batch_size
-    FOR UPDATE SKIP LOCKED
-) due
-WHERE s.task_id = due.task_id AND s.comment_id = due.comment_id
-RETURNING s.*;
-
--- name: CommentHasFollowUpRun :one
--- True when a run other than @task_id already carries the comment for the
--- agent: one follow-up per (agent, comment), however many paths replay it.
-SELECT EXISTS (
-    SELECT 1 FROM agent_task_queue t
-    WHERE t.issue_id = @issue_id
-      AND t.agent_id = @agent_id
-      AND t.id <> @task_id
-      AND t.created_at >= @since
-      AND t.status <> 'cancelled'
-      AND (t.trigger_comment_id = @comment_id OR @comment_id = ANY(t.coalesced_comment_ids))
-) AS covered;

@@ -3,8 +3,6 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -15,6 +13,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -29,6 +28,7 @@ type SquadResponse struct {
 	Name          string                       `json:"name"`
 	Description   string                       `json:"description"`
 	Instructions  string                       `json:"instructions"`
+	HandoffMode   string                       `json:"handoff_mode"`
 	AvatarURL     *string                      `json:"avatar_url"`
 	LeaderID      string                       `json:"leader_id"`
 	CreatorID     string                       `json:"creator_id"`
@@ -69,6 +69,7 @@ func (h *Handler) squadToResponse(s db.Squad) SquadResponse {
 		Name:          s.Name,
 		Description:   s.Description,
 		Instructions:  s.Instructions,
+		HandoffMode:   s.HandoffMode,
 		AvatarURL:     h.resolveAvatarURLPtr(textToPtr(s.AvatarUrl)),
 		LeaderID:      uuidToString(s.LeaderID),
 		CreatorID:     uuidToString(s.CreatorID),
@@ -264,25 +265,14 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Name         string  `json:"name"`
-		Description  string  `json:"description"`
-		LeaderID     string  `json:"leader_id"`
-		AvatarURL    *string `json:"avatar_url"`
-		Instructions *string `json:"instructions"`
+		Name        string  `json:"name"`
+		Description string  `json:"description"`
+		LeaderID    string  `json:"leader_id"`
+		AvatarURL   *string `json:"avatar_url"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
-	}
-	actorType, _ := h.resolveActor(r, uuidToString(member.UserID), workspaceID)
-	if refuseMachineCoveredWrite(w, r, actorType, req.Instructions != nil, squadInstructionsAction) {
-		return
-	}
-	if req.Instructions != nil {
-		if tokens := util.EstimateInstructionTokens(*req.Instructions); tokens > 3000 {
-			writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", tokens))
-			return
-		}
 	}
 	if req.Name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
@@ -327,15 +317,7 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 		avatarURL = pgtype.Text{String: accepted, Valid: true}
 	}
 
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create squad")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
-
-	squad, err := qtx.CreateSquad(r.Context(), db.CreateSquadParams{
+	squad, err := h.Queries.CreateSquad(r.Context(), db.CreateSquadParams{
 		WorkspaceID: wsUUID,
 		Name:        req.Name,
 		Description: req.Description,
@@ -349,26 +331,12 @@ func (h *Handler) CreateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Auto-add leader as a member with role "leader".
-	if _, err := qtx.AddSquadMember(r.Context(), db.AddSquadMemberParams{
+	h.Queries.AddSquadMember(r.Context(), db.AddSquadMemberParams{
 		SquadID:    squad.ID,
 		MemberType: "agent",
 		MemberID:   leaderUUID,
 		Role:       "leader",
-	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create squad")
-		return
-	}
-	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
-		Kind: "squad.create", WorkspaceID: wsUUID, TargetID: squad.ID,
-		After: squadAuditFields(squad),
-	}); err != nil {
-		writeAuditFailure(w, r, err, "squad.create")
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to create squad")
-		return
-	}
+	})
 
 	resp, err := h.squadToResponseWithPreview(r.Context(), squad)
 	if err != nil {
@@ -422,117 +390,12 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 		Name         *string `json:"name"`
 		Description  *string `json:"description"`
 		Instructions *string `json:"instructions"`
+		HandoffMode  *string `json:"handoff_mode"`
 		LeaderID     *string `json:"leader_id"`
 		AvatarURL    *string `json:"avatar_url"`
-
-		// ExpectedBeforeDigest drives two guarded paths: CHE-764's Hermes
-		// exception (hermesExceptionMatchesSquadInstructions: this exact
-		// squad, an `instructions` write, from exactly agent
-		// hermesExceptionAgentID) and CHE-1300's owner-only CAS
-		// (governed_instruction_owner_cas.go). Every other caller is refused
-		// when the key is present.
-		ExpectedBeforeDigest string `json:"expected_before_digest"`
 	}
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read request body")
-		return
-	}
-	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-
-	if req.Instructions != nil {
-		newTokens := util.EstimateInstructionTokens(*req.Instructions)
-		existingTokens := util.EstimateInstructionTokens(squad.Instructions)
-		if newTokens > 3000 {
-			if *req.Instructions != squad.Instructions && (existingTokens <= 3000 || newTokens > existingTokens) {
-				writeError(w, http.StatusUnprocessableEntity, fmt.Sprintf("squad instructions exceed limit of 3000 tokens (estimated: %d tokens)", newTokens))
-				return
-			}
-		}
-	}
-
-	// CHE-455: requireWorkspaceMember above does not reject agent actors —
-	// an explicit resolveActor check is required. Field-scoped: an agent
-	// actor can still rename a squad, change its leader, or update its
-	// avatar through this same endpoint. Gated on req.Instructions != nil
-	// — the decoded struct field the write below actually branches on —
-	// not a raw JSON key lookup, which a case-varied key ("Instructions")
-	// bypasses (encoding/json matches keys to struct fields
-	// case-insensitively).
-	actorType, actorID := h.resolveActor(r, uuidToString(member.UserID), workspaceID)
-
-	// CHE-3482: a machine identity needs a passkey-approved action; this runs
-	// before the older exceptions below.
-	if refuseMachineCoveredWrite(w, r, actorType, req.Instructions != nil, squadInstructionsAction) {
-		return
-	}
-
-	// CHE-764: a single, human-approved, narrowly-scoped exception to the
-	// CHE-455 rule immediately above — see
-	// governed_instruction_hermes_exception.go for the full predicate and
-	// provenance. Checked BEFORE the default-deny call so the one permitted
-	// (agent, squad, field) triple never reaches the generic guard; every
-	// other request falls through to the unmodified CHE-455 path below.
-	if hermesExceptionIdentityMatches(actorType, actorID) && hermesExceptionMatchesSquadInstructions(uuidToString(squad.ID), req.Instructions != nil) {
-		var rawFields map[string]json.RawMessage
-		if err := json.Unmarshal(bodyBytes, &rawFields); err != nil || !hermesExceptionOnlyAllowedKeys(rawFields, "instructions", "expected_before_digest") {
-			writeError(w, http.StatusBadRequest, "this request may only include instructions and expected_before_digest")
-			return
-		}
-		result, reason, swapErr := h.hermesExceptionVerifyAndSwapSquadInstructions(r.Context(), r, workspaceID, uuidToString(squad.ID), hermesExceptionRequest{
-			NewContent:           *req.Instructions,
-			ExpectedBeforeDigest: req.ExpectedBeforeDigest,
-		})
-		logHermesExceptionOutcome(r, actorID, "squad.instructions", uuidToString(squad.ID), result, reason, swapErr)
-		if failedAudit(w, r, swapErr, "squad.instructions") {
-			return
-		}
-		if reason != hermesExceptionRejectNone {
-			hermesExceptionWriteRejection(w, r, reason, swapErr)
-			return
-		}
-		updated, err := h.Queries.GetSquadInWorkspace(r.Context(), db.GetSquadInWorkspaceParams{
-			ID:          squad.ID,
-			WorkspaceID: wsUUID,
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to reload squad after hermes exception write")
-			return
-		}
-		resp, err := h.squadToResponseWithPreview(r.Context(), updated)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to load squad member preview")
-			return
-		}
-		// Publish the same live-update event the ordinary human path emits
-		// below (h.publish(protocol.EventSquadUpdated, ...)) so UI clients
-		// watching this squad see the change; the exception path returns
-		// before reaching that call (security review finding, CHE-764).
-		h.publish(protocol.EventSquadUpdated, workspaceID, "agent", actorID, map[string]any{"squad": resp})
-		writeJSON(w, http.StatusOK, map[string]any{
-			"squad":         resp,
-			"before_digest": result.BeforeDigest,
-			"after_digest":  result.AfterDigest,
-		})
-		return
-	}
-
-	var rawFields map[string]json.RawMessage
-	_ = json.Unmarshal(bodyBytes, &rawFields) // body already decoded into req above
-
-	// CHE-1862: the vote receipt entry; only a human reaches it.
-	if voteEntered(actorType, req.Instructions != nil, rawFields) {
-		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, actorID, rawFields)
-		return
-	}
-
-	// CHE-1300: owner-only atomic CAS, entered by the digest key. After the
-	// guard above so a machine actor never reaches it.
-	if ownerCASRequested(rawFields) {
-		h.ownerCASUpdateSquad(w, r, workspaceID, member, squad, actorType, actorID, rawFields)
 		return
 	}
 
@@ -545,6 +408,13 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Instructions != nil {
 		params.Instructions = pgtype.Text{String: *req.Instructions, Valid: true}
+	}
+	if req.HandoffMode != nil {
+		if !service.IsValidSquadHandoffMode(*req.HandoffMode) {
+			writeError(w, http.StatusBadRequest, "handoff_mode must be 'leader' or 'direct'")
+			return
+		}
+		params.HandoffMode = pgtype.Text{String: *req.HandoffMode, Valid: true}
 	}
 	if req.AvatarURL != nil {
 		accepted, ok := h.acceptAvatarURL(w, r, *req.AvatarURL, squad.AvatarUrl.String)
@@ -629,13 +499,6 @@ func (h *Handler) UpdateSquad(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
-		Kind: "squad.update", WorkspaceID: wsUUID, TargetID: squad.ID,
-		Before: squadAuditFields(squad), After: squadAuditFields(updated),
-	}); err != nil {
-		writeAuditFailure(w, r, err, "squad.update")
-		return
-	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to update squad")
 		return
@@ -676,25 +539,12 @@ func (h *Handler) DeleteSquad(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := requestUserID(r)
-	userUUID, _ := parseUUIDOrBadRequest(w, userID, "user_id")
-
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to archive squad")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
-
 	// Transfer issues assigned to this squad to the leader agent.
-	if err := qtx.TransferSquadAssignees(r.Context(), db.TransferSquadAssigneesParams{
+	if err := h.Queries.TransferSquadAssignees(r.Context(), db.TransferSquadAssigneesParams{
 		AssigneeID:   squad.ID,
 		AssigneeID_2: squad.LeaderID,
 	}); err != nil {
 		slog.Warn("transfer squad assignees failed", "squad_id", uuidToString(squad.ID), "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to archive squad")
-		return
 	}
 
 	// Mirror the issue-assignee transfer for autopilots that target this
@@ -703,30 +553,30 @@ func (h *Handler) DeleteSquad(w http.ResponseWriter, r *http.Request) {
 	// "assignee squad is archived" — visible to ops but useless to the
 	// owner. Rewriting to the leader keeps the autopilot semantics
 	// unchanged (Path A from MUL-2429 is leader-only execution anyway).
-	if err := qtx.TransferSquadAutopilotsToLeader(r.Context(), db.TransferSquadAutopilotsToLeaderParams{
+	if err := h.Queries.TransferSquadAutopilotsToLeader(r.Context(), db.TransferSquadAutopilotsToLeaderParams{
 		AssigneeID:   squad.ID,
 		AssigneeID_2: squad.LeaderID,
 	}); err != nil {
 		slog.Warn("transfer squad autopilots failed", "squad_id", uuidToString(squad.ID), "error", err)
-		writeError(w, http.StatusInternalServerError, "failed to archive squad")
-		return
 	}
 
-	if _, err := qtx.ArchiveSquad(r.Context(), db.ArchiveSquadParams{
+	// Workflow steps that hand off to this squad follow it to the leader too.
+	movedWorkflows, err := h.Queries.TransferSquadWorkflowStepsToLeader(r.Context(), db.TransferSquadWorkflowStepsToLeaderParams{
+		WorkspaceID: squad.WorkspaceID,
+		SquadID:     uuidToString(squad.ID),
+		LeaderID:    uuidToString(squad.LeaderID),
+	})
+	if err != nil {
+		slog.Warn("transfer squad workflow steps failed", "squad_id", uuidToString(squad.ID), "error", err)
+	}
+
+	userID := requestUserID(r)
+	userUUID, _ := parseUUIDOrBadRequest(w, userID, "user_id")
+
+	if _, err := h.Queries.ArchiveSquad(r.Context(), db.ArchiveSquadParams{
 		ID:         squad.ID,
 		ArchivedBy: userUUID,
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to archive squad")
-		return
-	}
-	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
-		Kind: "squad.delete", WorkspaceID: squad.WorkspaceID, TargetID: squad.ID,
-		Before: squadAuditFields(squad),
-	}); err != nil {
-		writeAuditFailure(w, r, err, "squad.delete")
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to archive squad")
 		return
 	}
@@ -735,6 +585,9 @@ func (h *Handler) DeleteSquad(w http.ResponseWriter, r *http.Request) {
 		"squad_id":  uuidToString(squad.ID),
 		"leader_id": uuidToString(squad.LeaderID),
 	})
+	if movedWorkflows > 0 {
+		h.publishIssueWorkflowChanged(workspaceID, member, "updated")
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1048,15 +901,7 @@ func (h *Handler) AddSquadMember(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to add squad member")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
-
-	sm, err := qtx.AddSquadMember(r.Context(), db.AddSquadMemberParams{
+	sm, err := h.Queries.AddSquadMember(r.Context(), db.AddSquadMemberParams{
 		SquadID:    squad.ID,
 		MemberType: req.MemberType,
 		MemberID:   memberUUID,
@@ -1067,17 +912,6 @@ func (h *Handler) AddSquadMember(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "member already in squad")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to add squad member")
-		return
-	}
-	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
-		Kind: "squad.member.add", WorkspaceID: wsUUID, TargetID: squad.ID,
-		After: map[string]any{"member": squadMemberAuditField(sm.MemberType, uuidToString(sm.MemberID), sm.Role)},
-	}); err != nil {
-		writeAuditFailure(w, r, err, "squad.member.add")
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to add squad member")
 		return
 	}
@@ -1124,20 +958,7 @@ func (h *Handler) RemoveSquadMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to remove squad member")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
-
-	role, err := squadMemberRole(r.Context(), qtx, squad.ID, req.MemberType, memberUUID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to remove squad member")
-		return
-	}
-	rows, err := qtx.RemoveSquadMember(r.Context(), db.RemoveSquadMemberParams{
+	rows, err := h.Queries.RemoveSquadMember(r.Context(), db.RemoveSquadMemberParams{
 		SquadID:    squad.ID,
 		MemberType: req.MemberType,
 		MemberID:   memberUUID,
@@ -1148,17 +969,6 @@ func (h *Handler) RemoveSquadMember(w http.ResponseWriter, r *http.Request) {
 	}
 	if rows == 0 {
 		writeError(w, http.StatusNotFound, "squad member not found")
-		return
-	}
-	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
-		Kind: "squad.member.remove", WorkspaceID: squad.WorkspaceID, TargetID: squad.ID,
-		Before: map[string]any{"member": squadMemberAuditField(req.MemberType, req.MemberID, role)},
-	}); err != nil {
-		writeAuditFailure(w, r, err, "squad.member.remove")
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to remove squad member")
 		return
 	}
 
@@ -1199,20 +1009,7 @@ func (h *Handler) UpdateSquadMemberRole(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	tx, err := h.TxStarter.Begin(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update squad member")
-		return
-	}
-	defer tx.Rollback(r.Context())
-	qtx := h.Queries.WithTx(tx)
-
-	oldRole, err := squadMemberRole(r.Context(), qtx, squad.ID, req.MemberType, memberUUID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update squad member")
-		return
-	}
-	sm, err := qtx.UpdateSquadMemberRole(r.Context(), db.UpdateSquadMemberRoleParams{
+	sm, err := h.Queries.UpdateSquadMemberRole(r.Context(), db.UpdateSquadMemberRoleParams{
 		SquadID:    squad.ID,
 		MemberType: req.MemberType,
 		MemberID:   memberUUID,
@@ -1220,18 +1017,6 @@ func (h *Handler) UpdateSquadMemberRole(w http.ResponseWriter, r *http.Request) 
 	})
 	if err != nil {
 		writeError(w, http.StatusNotFound, "squad member not found")
-		return
-	}
-	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
-		Kind: "squad.member.role.update", WorkspaceID: squad.WorkspaceID, TargetID: squad.ID,
-		Before: map[string]any{"member": squadMemberAuditField(sm.MemberType, uuidToString(sm.MemberID), oldRole)},
-		After:  map[string]any{"member": squadMemberAuditField(sm.MemberType, uuidToString(sm.MemberID), sm.Role)},
-	}); err != nil {
-		writeAuditFailure(w, r, err, "squad.member.role.update")
-		return
-	}
-	if err := tx.Commit(r.Context()); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update squad member")
 		return
 	}
 
@@ -1469,29 +1254,14 @@ func commentMentionsAnyone(content string) bool {
 // to a squad. Assign and backlog-promotion paths use this directly; comment
 // paths go through computeCommentAgentTriggers so preview and create share the
 // same trigger set.
-// It returns true only when a leader task was actually enqueued.
-func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID, handoffNote string) bool {
-	return h.enqueueSquadLeaderTaskOutcome(ctx, issue, triggerCommentID, authorType, authorID, handoffNote, false) != squadEnqueueNone
-}
-
-// squadEnqueueOutcome says whose run an enqueue for a squad assignment started.
-type squadEnqueueOutcome int
-
-const (
-	// squadEnqueueNone: no run was started.
-	squadEnqueueNone squadEnqueueOutcome = iota
-	// squadEnqueueLeader: the squad leader's run was queued.
-	squadEnqueueLeader
-)
-
-// enqueueSquadLeaderTaskOutcome is enqueueSquadLeaderTask reporting who got the run.
-func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID, handoffNote string, workflowHandoff bool) squadEnqueueOutcome {
+// It reports whether a leader task was enqueued and, if not, why.
+func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, authorType, authorID, handoffNote string, workflowHandoff bool) (DispatchStatus, DispatchReasonCode) {
 	squad, err := h.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          issue.AssigneeID,
 		WorkspaceID: issue.WorkspaceID,
 	})
 	if err != nil {
-		return squadEnqueueNone
+		return DispatchBlocked, ReasonTargetUnavailable
 	}
 
 	// The gate must judge the SAME top-of-chain human the enqueue path will
@@ -1507,15 +1277,11 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 	leaderOriginator := ""
 	if authorType == "member" {
 		leaderOriginator = authorID
-	} else if originator, ok := h.TaskService.StatusHandoffOriginator(ctx, issue); ok {
-		// A status move by an agent: the human is whoever its acting task serves,
-		// the same principal the enqueue persists (CHE-5485).
-		leaderOriginator = uuidToString(originator)
 	} else {
 		leaderOriginator = uuidToString(h.TaskService.OriginatorForIssueTask(ctx, issue, pgtype.UUID{}))
 	}
 	if !h.canEnqueueSquadLeader(ctx, squad.LeaderID, authorType, authorID, leaderOriginator, uuidToString(issue.WorkspaceID)) {
-		return squadEnqueueNone
+		return DispatchBlocked, ReasonInvocationNotAllowed
 	}
 
 	if !workflowHandoff {
@@ -1525,8 +1291,17 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 			// Key dedup on the reviewed head (TEN-356).
 			HeadSha: h.TaskService.ResolveIssueReviewSHAParam(ctx, issue.ID),
 		})
-		if err != nil || hasPending {
-			return squadEnqueueNone
+		if err != nil {
+			slog.WarnContext(ctx, "issue write: squad leader pending lookup failed",
+				"issue_id", uuidToString(issue.ID),
+				"squad_id", uuidToString(squad.ID),
+				"leader_id", uuidToString(squad.LeaderID),
+				"error", err,
+			)
+			return DispatchBlocked, ReasonInternalError
+		}
+		if hasPending {
+			return DispatchCoalesced, ReasonCoalesced
 		}
 	}
 
@@ -1539,12 +1314,66 @@ func (h *Handler) enqueueSquadLeaderTaskOutcome(ctx context.Context, issue db.Is
 		_, err = h.TaskService.EnqueueTaskForSquadLeaderWithHandoff(ctx, issue, squad.LeaderID, squad.ID, handoffNote, memberActorUserID(authorType, authorID))
 	}
 	if err != nil {
-		slog.Warn("enqueue squad leader task failed",
-			"issue_id", uuidToString(issue.ID),
-			"squad_id", uuidToString(squad.ID),
-			"leader_id", uuidToString(squad.LeaderID),
-			"error", err)
-		return squadEnqueueNone
+		return issueEnqueueFailure(issue, squad.LeaderID, err)
 	}
-	return squadEnqueueLeader
+	return DispatchQueued, ReasonQueued
+}
+
+type SquadBriefResponse struct {
+	MemberType string `json:"member_type"`
+	MemberID   string `json:"member_id"`
+	IsLeader   bool   `json:"is_leader"`
+	Brief      string `json:"brief"`
+}
+
+type SquadBriefsResponse struct {
+	HandoffMode string               `json:"handoff_mode"`
+	Briefs      []SquadBriefResponse `json:"briefs"`
+}
+
+// ListSquadBriefs previews the squad context each agent of the squad receives
+// on an issue assigned to the squad: the leader briefing for the leader, the
+// member brief for every other non-archived agent member. Limited to the
+// people who can edit the squad — it is a configuration aid, and the roster it
+// renders names agents a regular member may not otherwise see.
+func (h *Handler) ListSquadBriefs(w http.ResponseWriter, r *http.Request) {
+	workspaceID := workspaceIDFromURL(r, "workspaceId")
+	member, ok := h.requireWorkspaceMember(w, r, workspaceID, "workspace not found")
+	if !ok {
+		return
+	}
+	squad, _, ok := h.loadSquadInWorkspace(w, r)
+	if !ok {
+		return
+	}
+	if !canManageSquad(member, squad) {
+		writeError(w, http.StatusForbidden, "insufficient permissions")
+		return
+	}
+	members, err := h.Queries.ListSquadMembers(r.Context(), squad.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list squad members")
+		return
+	}
+	resp := SquadBriefsResponse{HandoffMode: squad.HandoffMode, Briefs: []SquadBriefResponse{{
+		MemberType: "agent",
+		MemberID:   uuidToString(squad.LeaderID),
+		IsLeader:   true,
+		Brief:      buildSquadLeaderBriefing(r.Context(), h.Queries, squad, true, leaderNoWorkflow, true),
+	}}}
+	for _, m := range members {
+		if m.MemberType != "agent" || m.MemberID == squad.LeaderID {
+			continue
+		}
+		agent, err := h.Queries.GetAgent(r.Context(), m.MemberID)
+		if err != nil || agent.ArchivedAt.Valid {
+			continue
+		}
+		resp.Briefs = append(resp.Briefs, SquadBriefResponse{
+			MemberType: "agent",
+			MemberID:   uuidToString(m.MemberID),
+			Brief:      buildSquadMemberBriefing(r.Context(), h.Queries, squad, agent),
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
 }

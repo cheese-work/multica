@@ -14,7 +14,7 @@ import (
 const createWorkspace = `-- name: CreateWorkspace :one
 INSERT INTO workspace (name, slug, description, context, issue_prefix)
 VALUES ($1, $2, $3, $4, $5)
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
+RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed
 `
 
 type CreateWorkspaceParams struct {
@@ -48,12 +48,6 @@ func (q *Queries) CreateWorkspace(ctx context.Context, arg CreateWorkspaceParams
 		&i.IssueCounter,
 		&i.AvatarUrl,
 		&i.AttributionFailClosed,
-		&i.ExportRedactionMode,
-		&i.ExportManifestRetentionDays,
-		&i.DecisionPasskeyGate,
-		&i.PolicyRevision,
-		&i.SchedulingPausedAt,
-		&i.SchedulingPausedBy,
 	)
 	return i, err
 }
@@ -105,6 +99,9 @@ cleared_outbound_cards AS (
 cleared_chat_submission_receipts AS (
     DELETE FROM chat_submission_receipt WHERE chat_submission_receipt.workspace_id = $1
 ),
+cleared_comment_idempotency_receipts AS (
+    DELETE FROM comment_idempotency_receipt WHERE comment_idempotency_receipt.workspace_id = $1
+),
 cleared_draft_restores AS (
     -- chat_draft_restore is keyed by chat_session_id with no FK (MUL-3515) and has
     -- no reaper, while its chat_session rows cascade away with the workspace. Reach
@@ -150,18 +147,6 @@ cleared_issue_properties AS (
 ),
 cleared_quick_actions AS (
     DELETE FROM quick_action WHERE workspace_id = $1
-),
-cleared_daemon_pauses AS (
-    DELETE FROM daemon_pause WHERE workspace_id = $1
-),
-cleared_ops_snapshots AS (
-    DELETE FROM ops_snapshot WHERE workspace_id = $1
-),
-cleared_ops_snapshots_5m AS (
-    DELETE FROM ops_snapshot_5m WHERE workspace_id = $1
-),
-cleared_agent_task_events AS (
-    DELETE FROM agent_task_event WHERE workspace_id = $1
 ),
 ws_mcp_servers AS (
     SELECT id FROM workspace_mcp_server WHERE workspace_id = $1
@@ -251,7 +236,7 @@ func (q *Queries) GetDaemonWorkspace(ctx context.Context, id pgtype.UUID) (GetDa
 }
 
 const getWorkspace = `-- name: GetWorkspace :one
-SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by FROM workspace
+SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed FROM workspace
 WHERE id = $1
 `
 
@@ -272,12 +257,6 @@ func (q *Queries) GetWorkspace(ctx context.Context, id pgtype.UUID) (Workspace, 
 		&i.IssueCounter,
 		&i.AvatarUrl,
 		&i.AttributionFailClosed,
-		&i.ExportRedactionMode,
-		&i.ExportManifestRetentionDays,
-		&i.DecisionPasskeyGate,
-		&i.PolicyRevision,
-		&i.SchedulingPausedAt,
-		&i.SchedulingPausedBy,
 	)
 	return i, err
 }
@@ -297,7 +276,7 @@ func (q *Queries) GetWorkspaceAttributionFailClosed(ctx context.Context, id pgty
 }
 
 const getWorkspaceBySlug = `-- name: GetWorkspaceBySlug :one
-SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by FROM workspace
+SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed FROM workspace
 WHERE slug = $1
 `
 
@@ -318,90 +297,6 @@ func (q *Queries) GetWorkspaceBySlug(ctx context.Context, slug string) (Workspac
 		&i.IssueCounter,
 		&i.AvatarUrl,
 		&i.AttributionFailClosed,
-		&i.ExportRedactionMode,
-		&i.ExportManifestRetentionDays,
-		&i.DecisionPasskeyGate,
-		&i.PolicyRevision,
-		&i.SchedulingPausedAt,
-		&i.SchedulingPausedBy,
-	)
-	return i, err
-}
-
-const getWorkspaceExportPrivacy = `-- name: GetWorkspaceExportPrivacy :one
-SELECT export_redaction_mode, export_manifest_retention_days FROM workspace
-WHERE id = $1
-`
-
-type GetWorkspaceExportPrivacyRow struct {
-	ExportRedactionMode         string `json:"export_redaction_mode"`
-	ExportManifestRetentionDays int32  `json:"export_manifest_retention_days"`
-}
-
-// CHE-766: lean read of the export privacy policy for the CHE-755 export
-// handler's fail-closed mode check, avoiding a full workspace-row fetch.
-func (q *Queries) GetWorkspaceExportPrivacy(ctx context.Context, id pgtype.UUID) (GetWorkspaceExportPrivacyRow, error) {
-	row := q.db.QueryRow(ctx, getWorkspaceExportPrivacy, id)
-	var i GetWorkspaceExportPrivacyRow
-	err := row.Scan(&i.ExportRedactionMode, &i.ExportManifestRetentionDays)
-	return i, err
-}
-
-const getWorkspaceExportPrivacyForUpdate = `-- name: GetWorkspaceExportPrivacyForUpdate :one
-SELECT export_redaction_mode, export_manifest_retention_days FROM workspace
-WHERE id = $1
-FOR UPDATE
-`
-
-type GetWorkspaceExportPrivacyForUpdateRow struct {
-	ExportRedactionMode         string `json:"export_redaction_mode"`
-	ExportManifestRetentionDays int32  `json:"export_manifest_retention_days"`
-}
-
-// CHE-766: same lean projection as GetWorkspaceExportPrivacy, but FOR UPDATE
-// so UpdateWorkspaceExportPrivacy's read-modify-write is atomic against a
-// second concurrent PATCH: two admins racing a partial update (one setting
-// only redaction_mode, the other only manifest_retention_days) cannot each
-// read the pre-update row and clobber the other's field. Call inside the same
-// transaction as the subsequent UpdateWorkspaceExportPrivacy.
-func (q *Queries) GetWorkspaceExportPrivacyForUpdate(ctx context.Context, id pgtype.UUID) (GetWorkspaceExportPrivacyForUpdateRow, error) {
-	row := q.db.QueryRow(ctx, getWorkspaceExportPrivacyForUpdate, id)
-	var i GetWorkspaceExportPrivacyForUpdateRow
-	err := row.Scan(&i.ExportRedactionMode, &i.ExportManifestRetentionDays)
-	return i, err
-}
-
-const getWorkspaceForUpdate = `-- name: GetWorkspaceForUpdate :one
-SELECT id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by FROM workspace
-WHERE id = $1
-FOR UPDATE
-`
-
-// Scheduling pause/resume reads the prior state under this lock, so the caller
-// that flips it is the only one that sees a transition.
-func (q *Queries) GetWorkspaceForUpdate(ctx context.Context, id pgtype.UUID) (Workspace, error) {
-	row := q.db.QueryRow(ctx, getWorkspaceForUpdate, id)
-	var i Workspace
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Slug,
-		&i.Description,
-		&i.Settings,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Context,
-		&i.Repos,
-		&i.IssuePrefix,
-		&i.IssueCounter,
-		&i.AvatarUrl,
-		&i.AttributionFailClosed,
-		&i.ExportRedactionMode,
-		&i.ExportManifestRetentionDays,
-		&i.DecisionPasskeyGate,
-		&i.PolicyRevision,
-		&i.SchedulingPausedAt,
-		&i.SchedulingPausedBy,
 	)
 	return i, err
 }
@@ -464,6 +359,7 @@ SELECT w.id, w.name
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
+  AND m.role IN ('owner', 'admin', 'member', 'guest')
 ORDER BY w.id ASC
 `
 
@@ -475,7 +371,8 @@ type ListDaemonWorkspacesRow struct {
 // Daemons only need the membership set and display name to discover which
 // workspaces should have local runtimes. Keep this projection intentionally
 // narrow so the periodic consistency check never reads UI-only JSON/text
-// columns such as settings, repos, or context.
+// columns such as settings, repos, or context. A role this build does not
+// know is no membership (see GetMemberByUserAndWorkspace).
 func (q *Queries) ListDaemonWorkspaces(ctx context.Context, userID pgtype.UUID) ([]ListDaemonWorkspacesRow, error) {
 	rows, err := q.db.Query(ctx, listDaemonWorkspaces, userID)
 	if err != nil {
@@ -496,67 +393,38 @@ func (q *Queries) ListDaemonWorkspaces(ctx context.Context, userID pgtype.UUID) 
 	return items, nil
 }
 
-const listWorkspaceIDsWithLegacyRoutingAgent = `-- name: ListWorkspaceIDsWithLegacyRoutingAgent :many
-SELECT id FROM workspace WHERE settings ? 'routing_agent'
-`
-
-// CHE-4116: workspaces still holding the routing setting under its old key.
-func (q *Queries) ListWorkspaceIDsWithLegacyRoutingAgent(ctx context.Context) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listWorkspaceIDsWithLegacyRoutingAgent)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listWorkspaces = `-- name: ListWorkspaces :many
 SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.created_at, w.updated_at, w.context, w.repos,
-       w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
-       w.export_redaction_mode, w.export_manifest_retention_days,
-       w.decision_passkey_gate, w.policy_revision,
-       w.scheduling_paused_at, w.scheduling_paused_by, m.pinned_at
+       w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed, m.pinned_at,
+       m.role
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
+  AND m.role IN ('owner', 'admin', 'member', 'guest')
 ORDER BY m.pinned_at DESC NULLS LAST, w.created_at ASC
 `
 
 type ListWorkspacesRow struct {
-	ID                          pgtype.UUID        `json:"id"`
-	Name                        string             `json:"name"`
-	Slug                        string             `json:"slug"`
-	Description                 pgtype.Text        `json:"description"`
-	Settings                    []byte             `json:"settings"`
-	CreatedAt                   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt                   pgtype.Timestamptz `json:"updated_at"`
-	Context                     pgtype.Text        `json:"context"`
-	Repos                       []byte             `json:"repos"`
-	IssuePrefix                 string             `json:"issue_prefix"`
-	IssueCounter                int32              `json:"issue_counter"`
-	AvatarUrl                   pgtype.Text        `json:"avatar_url"`
-	AttributionFailClosed       bool               `json:"attribution_fail_closed"`
-	ExportRedactionMode         string             `json:"export_redaction_mode"`
-	ExportManifestRetentionDays int32              `json:"export_manifest_retention_days"`
-	DecisionPasskeyGate         string             `json:"decision_passkey_gate"`
-	PolicyRevision              int32              `json:"policy_revision"`
-	SchedulingPausedAt          pgtype.Timestamptz `json:"scheduling_paused_at"`
-	SchedulingPausedBy          pgtype.UUID        `json:"scheduling_paused_by"`
-	PinnedAt                    pgtype.Timestamptz `json:"pinned_at"`
+	ID                    pgtype.UUID        `json:"id"`
+	Name                  string             `json:"name"`
+	Slug                  string             `json:"slug"`
+	Description           pgtype.Text        `json:"description"`
+	Settings              []byte             `json:"settings"`
+	CreatedAt             pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
+	Context               pgtype.Text        `json:"context"`
+	Repos                 []byte             `json:"repos"`
+	IssuePrefix           string             `json:"issue_prefix"`
+	IssueCounter          int32              `json:"issue_counter"`
+	AvatarUrl             pgtype.Text        `json:"avatar_url"`
+	AttributionFailClosed bool               `json:"attribution_fail_closed"`
+	PinnedAt              pgtype.Timestamptz `json:"pinned_at"`
+	Role                  string             `json:"role"`
 }
 
+// The role narrows what a guest is shown (workspaceResponseFor). A role this
+// build does not know is no membership (see GetMemberByUserAndWorkspace).
 func (q *Queries) ListWorkspaces(ctx context.Context, userID pgtype.UUID) ([]ListWorkspacesRow, error) {
 	rows, err := q.db.Query(ctx, listWorkspaces, userID)
 	if err != nil {
@@ -580,13 +448,8 @@ func (q *Queries) ListWorkspaces(ctx context.Context, userID pgtype.UUID) ([]Lis
 			&i.IssueCounter,
 			&i.AvatarUrl,
 			&i.AttributionFailClosed,
-			&i.ExportRedactionMode,
-			&i.ExportManifestRetentionDays,
-			&i.DecisionPasskeyGate,
-			&i.PolicyRevision,
-			&i.SchedulingPausedAt,
-			&i.SchedulingPausedBy,
 			&i.PinnedAt,
+			&i.Role,
 		); err != nil {
 			return nil, err
 		}
@@ -642,112 +505,6 @@ func (q *Queries) LockWorkspaceForDelete(ctx context.Context, id pgtype.UUID) (p
 	return id_2, err
 }
 
-const lockWorkspaceForJevCredentialWrite = `-- name: LockWorkspaceForJevCredentialWrite :one
-SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE
-`
-
-// Credential writes and key rotation must take the workspace row lock in their
-// own transaction. It conflicts with DeleteWorkspace's FOR UPDATE lock: a
-// write that wins commits before teardown and is swept, while a write that
-// loses sees no workspace row after teardown commits and fails closed.
-func (q *Queries) LockWorkspaceForJevCredentialWrite(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, lockWorkspaceForJevCredentialWrite, id)
-	var id_2 pgtype.UUID
-	err := row.Scan(&id_2)
-	return id_2, err
-}
-
-const lockWorkspaceSettings = `-- name: LockWorkspaceSettings :one
-SELECT settings FROM workspace
-WHERE id = $1
-FOR UPDATE
-`
-
-// CHE-1727: a settings write reads, reconciles and writes the blob under this
-// lock, so a concurrent pause flip cannot be overwritten by a stale save.
-func (q *Queries) LockWorkspaceSettings(ctx context.Context, id pgtype.UUID) ([]byte, error) {
-	row := q.db.QueryRow(ctx, lockWorkspaceSettings, id)
-	var settings []byte
-	err := row.Scan(&settings)
-	return settings, err
-}
-
-const pauseWorkspaceScheduling = `-- name: PauseWorkspaceScheduling :one
-UPDATE workspace
-SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
-    scheduling_paused_by = COALESCE(scheduling_paused_by, $1)
-WHERE id = $2
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
-`
-
-type PauseWorkspaceSchedulingParams struct {
-	ActorID pgtype.UUID `json:"actor_id"`
-	ID      pgtype.UUID `json:"id"`
-}
-
-// Pause claim for every agent in the workspace. Same contract as
-// PauseAgentScheduling (idempotent, first actor and time win): enqueue and running tasks are untouched.
-func (q *Queries) PauseWorkspaceScheduling(ctx context.Context, arg PauseWorkspaceSchedulingParams) (Workspace, error) {
-	row := q.db.QueryRow(ctx, pauseWorkspaceScheduling, arg.ActorID, arg.ID)
-	var i Workspace
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Slug,
-		&i.Description,
-		&i.Settings,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Context,
-		&i.Repos,
-		&i.IssuePrefix,
-		&i.IssueCounter,
-		&i.AvatarUrl,
-		&i.AttributionFailClosed,
-		&i.ExportRedactionMode,
-		&i.ExportManifestRetentionDays,
-		&i.DecisionPasskeyGate,
-		&i.PolicyRevision,
-		&i.SchedulingPausedAt,
-		&i.SchedulingPausedBy,
-	)
-	return i, err
-}
-
-const resumeWorkspaceScheduling = `-- name: ResumeWorkspaceScheduling :one
-UPDATE workspace
-SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
-WHERE id = $1
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
-`
-
-func (q *Queries) ResumeWorkspaceScheduling(ctx context.Context, id pgtype.UUID) (Workspace, error) {
-	row := q.db.QueryRow(ctx, resumeWorkspaceScheduling, id)
-	var i Workspace
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Slug,
-		&i.Description,
-		&i.Settings,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Context,
-		&i.Repos,
-		&i.IssuePrefix,
-		&i.IssueCounter,
-		&i.AvatarUrl,
-		&i.AttributionFailClosed,
-		&i.ExportRedactionMode,
-		&i.ExportManifestRetentionDays,
-		&i.DecisionPasskeyGate,
-		&i.PolicyRevision,
-		&i.SchedulingPausedAt,
-		&i.SchedulingPausedBy,
-	)
-	return i, err
-}
-
 const setWorkspacePinned = `-- name: SetWorkspacePinned :one
 UPDATE member
 SET pinned_at = CASE WHEN $1::bool THEN COALESCE(pinned_at, now()) ELSE NULL END
@@ -773,120 +530,24 @@ UPDATE workspace SET
     name = COALESCE($2, name),
     description = COALESCE($3, description),
     context = COALESCE($4, context),
-    -- CHE-1612: compact_prompt patches one settings key; every other key survives.
-    -- CHE-1806: auto_compact patches one settings key the same way, merging the
-    -- named fields into the saved object so an unnamed field keeps its value.
-    -- CHE-2269: github_review_members / github_review_authors replace one settings
-    -- key each; the other survives.
-    -- CHE-3296: idle_started_guard merges named fields into the saved object, so
-    -- the statuses list and any unnamed field keep their value.
-    -- CHE-3706: harness_profile sets or (reset) removes one settings key.
-    -- CHE-6969: auto_close replaces its one settings key.
-    -- CHE-6973: blocked_run_skip replaces its one settings key.
-    -- CHE-6460: decision_ask_park replaces its one settings key.
-    -- CHE-9026: run_guard and run_budget each replace their one settings key.
-    -- CHE-6992: wakeup_live_join replaces its one settings key.
-    -- CHE-7408: merge_queue is an object holding only the merge-queue keys the
-    -- handler validated; it replaces those keys and leaves every other key.
-    settings = (
-        SELECT CASE
-            WHEN $5::jsonb IS NOT NULL THEN w.v || $5::jsonb
-            ELSE w.v
-        END
-        FROM (SELECT CASE
-            WHEN $6::bool THEN h.v - 'harness_profile'
-            WHEN $7::text IS NOT NULL THEN jsonb_set(h.v, '{harness_profile}', to_jsonb($7::text))
-            ELSE h.v
-        END
-        FROM (SELECT CASE
-            WHEN $8::jsonb IS NOT NULL THEN jsonb_set(d.v, '{ask_guard_mode}', $8::jsonb)
-            ELSE d.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $9::jsonb IS NOT NULL THEN jsonb_set(x.v, '{run_guard}', $9::jsonb)
-            ELSE x.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $10::jsonb IS NOT NULL THEN jsonb_set(y.v, '{run_budget}', $10::jsonb)
-            ELSE y.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $11::jsonb IS NOT NULL THEN jsonb_set(l.v, '{wakeup_live_join}', $11::jsonb)
-            ELSE l.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $12::jsonb IS NOT NULL THEN jsonb_set(k.v, '{decision_ask_park}', $12::jsonb)
-            ELSE k.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $13::jsonb IS NOT NULL THEN jsonb_set(b.v, '{blocked_run_skip}', $13::jsonb)
-            ELSE b.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $14::jsonb IS NOT NULL THEN jsonb_set(c.v, '{auto_close}', $14::jsonb)
-            ELSE c.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $15::jsonb IS NOT NULL THEN jsonb_set(t.v, '{time_wakeup_skip}', $15::jsonb)
-            ELSE t.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $16::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || $16::jsonb)
-            ELSE g.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $17::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', $17::jsonb)
-            ELSE m.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $18::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', $18::jsonb)
-            ELSE a.v
-        END AS v FROM (SELECT CASE
-            WHEN $19::bool THEN base.v - 'auto_compact'
-            WHEN $20::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || $20::jsonb)
-            ELSE base.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN $21::bool THEN COALESCE($22::jsonb, settings) - 'compact_prompt'
-            WHEN $23::text IS NOT NULL THEN jsonb_set(COALESCE($22::jsonb, settings), '{compact_prompt}', to_jsonb($23::text))
-            ELSE COALESCE($22::jsonb, settings)
-        END AS v) AS base) AS a) AS m) AS g) AS t) AS c) AS b) AS k) AS l) AS y) AS x) AS d) AS h) AS w
-    ),
-    repos = COALESCE($24, repos),
-    issue_prefix = COALESCE($25, issue_prefix),
-    avatar_url = COALESCE($26, avatar_url),
+    settings = COALESCE($5, settings),
+    repos = COALESCE($6, repos),
+    issue_prefix = COALESCE($7, issue_prefix),
+    avatar_url = COALESCE($8, avatar_url),
     updated_at = now()
 WHERE id = $1
-RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed, export_redaction_mode, export_manifest_retention_days, decision_passkey_gate, policy_revision, scheduling_paused_at, scheduling_paused_by
+RETURNING id, name, slug, description, settings, created_at, updated_at, context, repos, issue_prefix, issue_counter, avatar_url, attribution_fail_closed
 `
 
 type UpdateWorkspaceParams struct {
-	ID                  pgtype.UUID `json:"id"`
-	Name                pgtype.Text `json:"name"`
-	Description         pgtype.Text `json:"description"`
-	Context             pgtype.Text `json:"context"`
-	MergeQueue          []byte      `json:"merge_queue"`
-	HarnessProfileReset pgtype.Bool `json:"harness_profile_reset"`
-	HarnessProfile      pgtype.Text `json:"harness_profile"`
-	AskGuardMode        []byte      `json:"ask_guard_mode"`
-	RunGuard            []byte      `json:"run_guard"`
-	RunBudget           []byte      `json:"run_budget"`
-	WakeupLiveJoin      []byte      `json:"wakeup_live_join"`
-	DecisionAskPark     []byte      `json:"decision_ask_park"`
-	BlockedRunSkip      []byte      `json:"blocked_run_skip"`
-	AutoClose           []byte      `json:"auto_close"`
-	TimeWakeupSkip      []byte      `json:"time_wakeup_skip"`
-	IdleStartedGuard    []byte      `json:"idle_started_guard"`
-	GithubReviewAuthors []byte      `json:"github_review_authors"`
-	GithubReviewMembers []byte      `json:"github_review_members"`
-	AutoCompactReset    pgtype.Bool `json:"auto_compact_reset"`
-	AutoCompact         []byte      `json:"auto_compact"`
-	CompactPromptReset  pgtype.Bool `json:"compact_prompt_reset"`
-	Settings            []byte      `json:"settings"`
-	CompactPrompt       pgtype.Text `json:"compact_prompt"`
-	Repos               []byte      `json:"repos"`
-	IssuePrefix         pgtype.Text `json:"issue_prefix"`
-	AvatarUrl           pgtype.Text `json:"avatar_url"`
+	ID          pgtype.UUID `json:"id"`
+	Name        pgtype.Text `json:"name"`
+	Description pgtype.Text `json:"description"`
+	Context     pgtype.Text `json:"context"`
+	Settings    []byte      `json:"settings"`
+	Repos       []byte      `json:"repos"`
+	IssuePrefix pgtype.Text `json:"issue_prefix"`
+	AvatarUrl   pgtype.Text `json:"avatar_url"`
 }
 
 func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams) (Workspace, error) {
@@ -895,25 +556,7 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		arg.Name,
 		arg.Description,
 		arg.Context,
-		arg.MergeQueue,
-		arg.HarnessProfileReset,
-		arg.HarnessProfile,
-		arg.AskGuardMode,
-		arg.RunGuard,
-		arg.RunBudget,
-		arg.WakeupLiveJoin,
-		arg.DecisionAskPark,
-		arg.BlockedRunSkip,
-		arg.AutoClose,
-		arg.TimeWakeupSkip,
-		arg.IdleStartedGuard,
-		arg.GithubReviewAuthors,
-		arg.GithubReviewMembers,
-		arg.AutoCompactReset,
-		arg.AutoCompact,
-		arg.CompactPromptReset,
 		arg.Settings,
-		arg.CompactPrompt,
 		arg.Repos,
 		arg.IssuePrefix,
 		arg.AvatarUrl,
@@ -933,44 +576,6 @@ func (q *Queries) UpdateWorkspace(ctx context.Context, arg UpdateWorkspaceParams
 		&i.IssueCounter,
 		&i.AvatarUrl,
 		&i.AttributionFailClosed,
-		&i.ExportRedactionMode,
-		&i.ExportManifestRetentionDays,
-		&i.DecisionPasskeyGate,
-		&i.PolicyRevision,
-		&i.SchedulingPausedAt,
-		&i.SchedulingPausedBy,
 	)
-	return i, err
-}
-
-const updateWorkspaceExportPrivacy = `-- name: UpdateWorkspaceExportPrivacy :one
-UPDATE workspace SET
-    export_redaction_mode = $2,
-    export_manifest_retention_days = $3,
-    updated_at = now()
-WHERE id = $1
-RETURNING export_redaction_mode, export_manifest_retention_days
-`
-
-type UpdateWorkspaceExportPrivacyParams struct {
-	ID                          pgtype.UUID `json:"id"`
-	ExportRedactionMode         string      `json:"export_redaction_mode"`
-	ExportManifestRetentionDays int32       `json:"export_manifest_retention_days"`
-}
-
-type UpdateWorkspaceExportPrivacyRow struct {
-	ExportRedactionMode         string `json:"export_redaction_mode"`
-	ExportManifestRetentionDays int32  `json:"export_manifest_retention_days"`
-}
-
-// CHE-766: dedicated, validated write path for the export privacy policy.
-// Deliberately separate from UpdateWorkspace's generic settings blob: mode
-// and retention_days are security-relevant and must go through the
-// handler's own CHECK-backed validation and owner/admin ACL, never through
-// an unvalidated settings overwrite.
-func (q *Queries) UpdateWorkspaceExportPrivacy(ctx context.Context, arg UpdateWorkspaceExportPrivacyParams) (UpdateWorkspaceExportPrivacyRow, error) {
-	row := q.db.QueryRow(ctx, updateWorkspaceExportPrivacy, arg.ID, arg.ExportRedactionMode, arg.ExportManifestRetentionDays)
-	var i UpdateWorkspaceExportPrivacyRow
-	err := row.Scan(&i.ExportRedactionMode, &i.ExportManifestRetentionDays)
 	return i, err
 }

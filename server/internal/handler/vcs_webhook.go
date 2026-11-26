@@ -2,11 +2,13 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -137,16 +139,41 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch provider.EventKind(r.Header) {
+	systemHook := conn.Provider == string(vcs.KindGitLab) && r.Header.Get("X-Gitlab-Event") == "System Hook"
+	switch provider.EventKind(r.Header, body) {
 	case vcs.EventPullRequest:
 		if pr, err := provider.ParsePullRequest(body); err != nil {
 			slog.Warn("vcs: bad pull_request payload", "provider", conn.Provider, "err", err)
 		} else {
-			if err := h.mirrorVCSPullRequest(r.Context(), conn, pr); err != nil {
-				slog.Error("vcs: pull_request event failed", "provider", conn.Provider, "err", err)
-				writeError(w, http.StatusInternalServerError, "failed to process pull_request event")
-				return
+			if systemHook {
+				ws, err := h.Queries.GetWorkspace(r.Context(), conn.WorkspaceID)
+				if err != nil {
+					slog.Warn("vcs: load workspace for system hook failed", "err", err)
+					writeError(w, http.StatusServiceUnavailable, "workspace lookup failed")
+					return
+				}
+				if !gitLabSystemHookRepoAllowed(ws.Repos, conn.InstanceUrl, pr.RepoOwner, pr.RepoName) {
+					break
+				}
+				if checker, ok := provider.(vcs.RepositoryAccessChecker); ok {
+					token, err := h.openVCSSecret(conn.AccessTokenEncrypted)
+					if err != nil || token == "" {
+						slog.Warn("vcs: open access token for system hook failed", "err", err)
+						writeError(w, http.StatusInternalServerError, "access token error")
+						return
+					}
+					readable, err := checker.RepositoryReadable(r.Context(), conn.InstanceUrl, pr.RepoOwner, pr.RepoName, token)
+					if err != nil {
+						slog.Warn("vcs: system-hook repository access lookup failed", "provider", conn.Provider, "err", err)
+						writeError(w, http.StatusServiceUnavailable, "repository access lookup failed")
+						return
+					}
+					if !readable {
+						break
+					}
+				}
 			}
+			h.mirrorVCSPullRequest(r.Context(), conn, pr)
 		}
 	case vcs.EventCIStatus:
 		if st, err := provider.ParseCIStatus(body); err != nil {
@@ -160,36 +187,79 @@ func (h *Handler) HandleVCSWebhook(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
-func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) error {
+// A system hook covers the entire GitLab instance. Only repositories explicitly
+// configured in this workspace may affect its issues; a similarly named repo
+// on another host or under another namespace must not match.
+func gitLabSystemHookRepoAllowed(raw []byte, instanceURL, owner, name string) bool {
+	var repos []workspaceRepoRef
+	if json.Unmarshal(raw, &repos) != nil || owner == "" || name == "" {
+		return false
+	}
+	instance, err := url.Parse(instanceURL)
+	if err != nil || instance.Host == "" {
+		return false
+	}
+	want := strings.Trim(instance.Path, "/")
+	if want != "" {
+		want += "/"
+	}
+	want += owner + "/" + name
+	for _, repo := range repos {
+		u, err := parseGitLabRepoURL(strings.TrimSpace(repo.URL))
+		if err != nil || !gitLabRepoURLMatchesInstance(u, instance) {
+			continue
+		}
+		path := strings.TrimSuffix(strings.Trim(u.Path, "/"), ".git")
+		if path == want {
+			return true
+		}
+	}
+	return false
+}
+
+func parseGitLabRepoURL(raw string) (*url.URL, error) {
+	if strings.Contains(raw, "://") {
+		return url.Parse(raw)
+	}
+	at := strings.Index(raw, "@")
+	colon := strings.Index(raw, ":")
+	if at <= 0 || colon <= at+1 || colon == len(raw)-1 {
+		return nil, errors.New("invalid scp-style repository URL")
+	}
+	return &url.URL{Scheme: "ssh", Host: raw[at+1 : colon], Path: "/" + raw[colon+1:], User: url.User(raw[:at])}, nil
+}
+func gitLabRepoURLMatchesInstance(repo, instance *url.URL) bool {
+	if repo.RawQuery != "" || repo.Fragment != "" {
+		return false
+	}
+	if repo.Scheme == "ssh" {
+		return strings.EqualFold(repo.Hostname(), instance.Hostname()) && repo.User != nil && repo.User.Username() == "git"
+	}
+	if repo.Scheme == "https" || repo.Scheme == "http" {
+		return repo.Scheme == instance.Scheme && strings.EqualFold(repo.Host, instance.Host) && repo.User == nil
+	}
+	return false
+}
+
+func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnection, ev vcs.PullRequestEvent) {
 	if ev.RepoOwner == "" || ev.RepoName == "" || ev.Number == 0 {
 		slog.Warn("vcs: pull_request missing repo identity", "provider", conn.Provider)
-		return nil
+		return
 	}
-	ws, err := h.Queries.GetWorkspace(ctx, conn.WorkspaceID)
-	if err != nil {
-		return fmt.Errorf("vcs: load workspace: %w", err)
-	}
-	tx, err := h.TxStarter.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("vcs: begin mirror transaction: %w", err)
-	}
-	defer tx.Rollback(ctx)
-	qtx := h.Queries.WithTx(tx)
+
 	// The stored state before this event, so a merge completes issues once —
 	// when it happens — and not again on a later event of a merged PR.
 	prevState := ""
-	if prev, err := qtx.GetVCSPullRequestByKey(ctx, db.GetVCSPullRequestByKeyParams{
+	if prev, err := h.Queries.GetVCSPullRequestByKey(ctx, db.GetVCSPullRequestByKeyParams{
 		ConnectionID: conn.ID,
 		RepoOwner:    ev.RepoOwner,
 		RepoName:     ev.RepoName,
 		PrNumber:     ev.Number,
 	}); err == nil {
 		prevState = prev.State
-	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("vcs: load previous pr state: %w", err)
 	}
 
-	pr, err := qtx.UpsertVCSPullRequest(ctx, db.UpsertVCSPullRequestParams{
+	pr, err := h.Queries.UpsertVCSPullRequest(ctx, db.UpsertVCSPullRequestParams{
 		WorkspaceID:     conn.WorkspaceID,
 		ConnectionID:    conn.ID,
 		Provider:        conn.Provider,
@@ -212,7 +282,8 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 		HeadSha:         ev.HeadSHA,
 	})
 	if err != nil {
-		return fmt.Errorf("vcs: upsert pr: %w", err)
+		slog.Warn("vcs: upsert pr failed", "err", err)
+		return
 	}
 
 	// Out-of-order guard for the link write. UpsertVCSPullRequest keeps the
@@ -226,7 +297,7 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	// stored value, so it proceeds.)
 	evUpdatedAt := parseGHTimeRequired(ev.UpdatedAt)
 	if pr.PrUpdatedAt.Valid && evUpdatedAt.Valid && pr.PrUpdatedAt.Time.After(evUpdatedAt.Time) {
-		return nil
+		return
 	}
 
 	workspaceID := uuidToString(conn.WorkspaceID)
@@ -237,60 +308,46 @@ func (h *Handler) mirrorVCSPullRequest(ctx context.Context, conn db.VcsConnectio
 	// per-workspace flag. The issue-side machinery is shared with GitHub
 	// (reconcileAutoLinks, maybeAutoCompleteIssue). A connection belongs to
 	// exactly one workspace, so there is no cross-workspace ambiguity to settle.
-	idents := prClaimedIdentifiers(ev.Title, ev.Body, ev.Branch)
-	permits := func(string) bool { return true }
-	linkedIssueIDs, touched, err := h.reconcileAutoLinks(ctx, qtx, ws, pr.ID, ev.State, prAutoLinkInput{
-		idents:    idents,
-		permits:   permits,
-		ambiguous: func(string) bool { return false },
-		link: func(issueID pgtype.UUID, _ string) (int64, error) {
-			return qtx.LinkIssueToVCSPullRequest(ctx, db.LinkIssueToVCSPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
-		},
-		unlink: func(issueID pgtype.UUID) (int64, error) {
-			return qtx.UnlinkIssueFromVCSPullRequest(ctx, db.UnlinkIssueFromVCSPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
-		},
-		listAuto: func() ([]pgtype.UUID, error) {
-			return qtx.ListAutoLinkedIssueIDsForVCSPullRequest(ctx, pr.ID)
-		},
-	})
-	if err != nil {
-		return fmt.Errorf("vcs: reconcile links: %w", err)
-	}
-	if ev.State == "merged" && prevState != "merged" {
-		issueIDs, err := qtx.ListIssueIDsForVCSPullRequest(ctx, pr.ID)
-		if err != nil {
-			return fmt.Errorf("vcs: list linked issues: %w", err)
+	linkedIssueIDs := make([]string, 0)
+	ws, err := h.Queries.GetWorkspace(ctx, conn.WorkspaceID)
+	if err == nil {
+		var touched map[pgtype.UUID]struct{}
+		idents := prClaimedIdentifiers(ev.Title, ev.Body, ev.Branch)
+		linkedIssueIDs, touched = h.reconcileAutoLinks(ctx, ws, pr.ID, ev.State, prAutoLinkInput{
+			idents:    idents,
+			permits:   func(string) bool { return true },
+			ambiguous: func(string) bool { return false },
+			link: func(issueID pgtype.UUID) (int64, error) {
+				return h.Queries.LinkIssueToVCSPullRequest(ctx, db.LinkIssueToVCSPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
+			},
+			unlink: func(issueID pgtype.UUID) (int64, error) {
+				return h.Queries.UnlinkIssueFromVCSPullRequest(ctx, db.UnlinkIssueFromVCSPullRequestParams{IssueID: issueID, PullRequestID: pr.ID})
+			},
+			listAuto: func() ([]pgtype.UUID, error) {
+				return h.Queries.ListAutoLinkedIssueIDsForVCSPullRequest(ctx, pr.ID)
+			},
+		})
+		if ev.State == "merged" && prevState != "merged" {
+			issueIDs, err := h.Queries.ListIssueIDsForVCSPullRequest(ctx, pr.ID)
+			if err != nil {
+				slog.Warn("vcs: list linked issues failed", "err", err)
+			}
+			for _, id := range issueIDs {
+				touched[id] = struct{}{}
+			}
 		}
-		for _, id := range issueIDs {
-			touched[id] = struct{}{}
+		resolver := issuestatus.NewResolver(conn.WorkspaceID)
+		for issueID := range touched {
+			h.maybeAutoCompleteIssue(ctx, conn.WorkspaceID, issueID, resolver)
 		}
-	}
-	// The decision this event owes commits with it (CHE-5244): a failure rolls
-	// the mirror back and the delivery returns 5xx for a redelivery.
-	touchedIDs := make([]pgtype.UUID, 0, len(touched))
-	for issueID := range touched {
-		touchedIDs = append(touchedIDs, issueID)
-	}
-	persisted, err := qtx.ListIssueIDsForVCSPullRequest(ctx, pr.ID)
-	if err != nil {
-		return fmt.Errorf("vcs: list persisted links: %w", err)
-	}
-	owed, err := h.owePRMergeWithLinked(ctx, qtx, conn.WorkspaceID, touchedIDs, persisted)
-	if err != nil {
-		return fmt.Errorf("vcs: record pr_merge_owed: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("vcs: commit mirror transaction: %w", err)
-	}
-	for _, err := range h.attemptPRMergeOwed(ctx, conn.WorkspaceID, owed, issuestatus.NewResolver(conn.WorkspaceID)) {
-		slog.Warn("pr auto-complete failed", "err", err)
+	} else {
+		slog.Warn("vcs: load workspace failed", "err", err)
 	}
 
 	h.publish(protocol.EventPullRequestUpdated, workspaceID, "system", "", map[string]any{
 		"pull_request":     resp,
 		"linked_issue_ids": linkedIssueIDs,
 	})
-	return nil
 }
 
 func (h *Handler) mirrorVCSCIStatus(ctx context.Context, conn db.VcsConnection, ev vcs.CIStatusEvent) {

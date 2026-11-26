@@ -14,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/projectaccess"
@@ -44,7 +45,10 @@ type ProjectResponse struct {
 	// latest activity on any of its issues.
 	LastActivityAt string `json:"last_activity_at"`
 	IssueCount     int64  `json:"issue_count"`
-	DoneCount      int64  `json:"done_count"`
+	// DoneCount counts every terminal issue, cancelled included. Progress is
+	// the figure to show as completion. (MUL-8879)
+	DoneCount int64           `json:"done_count"`
+	Progress  ProjectProgress `json:"progress"`
 	// ResourceCount is a breadcrumb pointing at the sub-collection at
 	// /api/projects/{id}/resources. Resources themselves stay out of this
 	// payload to keep parent metadata and child collections separate; clients
@@ -53,11 +57,6 @@ type ProjectResponse struct {
 	// WorkflowID is the workflow this project uses; null means the workspace
 	// Default workflow. (MUL-7420)
 	WorkflowID *string `json:"workflow_id"`
-	// DecisionDelegates are the member ids, besides the workspace owner, that a
-	// reversible decision on this project's issues may concern. Owner-only to set.
-	DecisionDelegates []string `json:"decision_delegates"`
-	// WorkflowSplit is the CHE-5238 A/B split; null means none.
-	WorkflowSplit *ProjectWorkflowSplit `json:"workflow_split"`
 	// Visibility is "workspace" (every member) or "private" (project members
 	// only, whatever their workspace role). (MUL-8472, MUL-9284)
 	Visibility string `json:"visibility"`
@@ -90,13 +89,11 @@ func projectToResponse(p db.Project) ProjectResponse {
 		LastActivityAt: timestampToString(p.UpdatedAt),
 		WorkflowID:     uuidToPtr(p.WorkflowID),
 		Visibility:     projectVisibilityOrDefault(p.Visibility),
+		Progress:       newProjectProgress(0, 0, 0, 0),
 
 		ArchivedAt:     timestampToPtr(p.ArchivedAt),
 		ArchivedByType: textToPtr(p.ArchivedByType),
 		ArchivedByID:   uuidToPtr(p.ArchivedByID),
-
-		DecisionDelegates: append([]string{}, uuidsToStrings(p.DecisionDelegates)...),
-		WorkflowSplit:     decodeWorkflowSplit(p.WorkflowSplit),
 	}
 }
 
@@ -109,49 +106,122 @@ func projectVisibilityOrDefault(v string) string {
 	return v
 }
 
-func (h *Handler) fillProjectIssueStats(ctx context.Context, resp *ProjectResponse, project db.Project) {
-	terminalStatusKeys := h.projectTerminalIssueStatusKeys(ctx, project.WorkspaceID)
-	stats, err := h.Queries.GetProjectIssueStats(ctx, db.GetProjectIssueStatsParams{
-		WorkspaceID:        project.WorkspaceID,
-		ProjectIds:         []pgtype.UUID{project.ID},
-		TerminalStatusKeys: terminalStatusKeys,
-	})
-	if err != nil || len(stats) == 0 {
-		return
+// ProjectProgress is a project's completion, counted in issues. Cancelled
+// (closed-category) issues leave the scope instead of counting as done, and
+// started issues are reported but do not add to Percent. (MUL-8879)
+type ProjectProgress struct {
+	// Unit is what the counts measure; "issues" until estimates exist.
+	Unit      string `json:"unit"`
+	Scope     int64  `json:"scope"`
+	Completed int64  `json:"completed"`
+	Started   int64  `json:"started"`
+	Unstarted int64  `json:"unstarted"`
+	Cancelled int64  `json:"cancelled"`
+	// Percent is Completed / Scope rounded down, so 100 means every issue in
+	// scope is done.
+	Percent int64 `json:"percent"`
+}
+
+func newProjectProgress(total, terminal, completed, started int64) ProjectProgress {
+	cancelled := terminal - completed
+	scope := total - cancelled
+	p := ProjectProgress{
+		Unit:      "issues",
+		Scope:     scope,
+		Completed: completed,
+		Started:   started,
+		Unstarted: scope - completed - started,
+		Cancelled: cancelled,
 	}
-	applyProjectIssueStats(resp, project.UpdatedAt, stats[0])
+	if scope > 0 {
+		p.Percent = completed * 100 / scope
+	}
+	return p
 }
 
-// loadProjectIssueStats keeps the fork caller in governed_instruction_vote.go
-// compiling after upstream replaced it with fillProjectIssueStats.
-func (h *Handler) loadProjectIssueStats(ctx context.Context, workspaceID, projectID pgtype.UUID) (int64, int64) {
-	var resp ProjectResponse
-	h.fillProjectIssueStats(ctx, &resp, db.Project{ID: projectID, WorkspaceID: workspaceID})
-	return resp.IssueCount, resp.DoneCount
-}
-
-// applyProjectIssueStats fills the issue counts and moves LastActivityAt to
-// the latest issue activity when that is later than the project's own edit.
+// applyProjectIssueStats fills the issue counts and progress, and moves
+// LastActivityAt to the latest issue activity when that is later than the
+// project's own edit.
 func applyProjectIssueStats(resp *ProjectResponse, projectUpdatedAt pgtype.Timestamptz, s db.GetProjectIssueStatsRow) {
 	resp.IssueCount = s.TotalCount
 	resp.DoneCount = s.DoneCount
+	resp.Progress = newProjectProgress(s.TotalCount, s.DoneCount, s.CompletedCount, s.StartedCount)
 	if s.LastIssueActivityAt.Valid &&
 		(!projectUpdatedAt.Valid || s.LastIssueActivityAt.Time.After(projectUpdatedAt.Time)) {
 		resp.LastActivityAt = timestampToString(s.LastIssueActivityAt)
 	}
 }
 
-// projectTerminalIssueStatusKeys keeps project responses useful if the custom
-// status catalog cannot be read. Canonical terminal keys are less complete
-// than the workspace catalog, but they avoid rendering every project as 0/0.
-func (h *Handler) projectTerminalIssueStatusKeys(ctx context.Context, workspaceID pgtype.UUID) []string {
-	keys, err := h.terminalIssueStatusKeys(ctx, workspaceID)
-	if err == nil {
-		return keys
+// projectStatusKeySets holds the status keys of each category project
+// progress counts, for indexed `status = ANY(...)` predicates.
+type projectStatusKeySets struct {
+	terminal  []string
+	completed []string
+	started   []string
+}
+
+// projectStatusKeySets keeps project responses useful if the custom status
+// catalog cannot be read: the built-in keys are less complete than the
+// workspace catalog, but they avoid rendering every project as 0/0.
+func (h *Handler) projectStatusKeySets(ctx context.Context, workspaceID pgtype.UUID) projectStatusKeySets {
+	custom, err := issuestatus.CustomKeyCategories(ctx, h.Queries, workspaceID)
+	if err != nil {
+		slog.Warn("read project status categories failed; using built-in keys",
+			"workspace_id", uuidToString(workspaceID), "error", err)
+		custom = nil
 	}
-	slog.Warn("expand project terminal status categories failed; using canonical keys",
-		"workspace_id", uuidToString(workspaceID), "error", err)
-	return []string{issuestatus.Done, issuestatus.Cancelled}
+	var sets projectStatusKeySets
+	add := func(key, category string) {
+		switch category {
+		case issuestatus.CategoryDone:
+			sets.completed = append(sets.completed, key)
+			sets.terminal = append(sets.terminal, key)
+		case issuestatus.CategoryClosed:
+			sets.terminal = append(sets.terminal, key)
+		case issuestatus.CategoryStarted:
+			sets.started = append(sets.started, key)
+		}
+	}
+	for _, key := range issuestatus.Canonical() {
+		category, _ := issuestatus.CategoryForBehavior(key)
+		add(key, category)
+	}
+	for key, category := range custom {
+		add(key, category)
+	}
+	return sets
+}
+
+// loadProjectIssueStatsMap returns issue stats keyed by project id. A failed
+// read leaves the map empty, so callers render zero counts rather than fail.
+func (h *Handler) loadProjectIssueStatsMap(ctx context.Context, workspaceID pgtype.UUID, projectIDs []pgtype.UUID) map[string]db.GetProjectIssueStatsRow {
+	out := make(map[string]db.GetProjectIssueStatsRow, len(projectIDs))
+	if len(projectIDs) == 0 {
+		return out
+	}
+	keys := h.projectStatusKeySets(ctx, workspaceID)
+	stats, err := h.Queries.GetProjectIssueStats(ctx, db.GetProjectIssueStatsParams{
+		WorkspaceID:         workspaceID,
+		ProjectIds:          projectIDs,
+		TerminalStatusKeys:  keys.terminal,
+		CompletedStatusKeys: keys.completed,
+		StartedStatusKeys:   keys.started,
+	})
+	if err != nil {
+		slog.Warn("load project issue stats failed",
+			"workspace_id", uuidToString(workspaceID), "error", err)
+		return out
+	}
+	for _, s := range stats {
+		out[uuidToString(s.ProjectID)] = s
+	}
+	return out
+}
+
+func (h *Handler) fillProjectIssueStats(ctx context.Context, resp *ProjectResponse, project db.Project) {
+	if s, ok := h.loadProjectIssueStatsMap(ctx, project.WorkspaceID, []pgtype.UUID{project.ID})[uuidToString(project.ID)]; ok {
+		applyProjectIssueStats(resp, project.UpdatedAt, s)
+	}
 }
 
 func (h *Handler) loadProjectResourceCount(ctx context.Context, projectID pgtype.UUID) int64 {
@@ -203,8 +273,6 @@ type UpdateProjectRequest struct {
 	LeadID      *string `json:"lead_id"`
 	StartDate   *string `json:"start_date"`
 	DueDate     *string `json:"due_date"`
-	// DecisionDelegates replaces the whole list; null or [] clears it.
-	DecisionDelegates *[]string `json:"decision_delegates"`
 	// Visibility switches between "workspace" and "private" (MUL-8472).
 	// MemberIDs adds project members to a project that is or becomes
 	// "private"; see prepareProjectAccessUpdate.
@@ -248,24 +316,14 @@ func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	projects = visible
 
 	// Batch-fetch issue stats and resource counts for all projects
-	statsMap := make(map[string]db.GetProjectIssueStatsRow)
+	statsMap := map[string]db.GetProjectIssueStatsRow{}
 	resourceCountMap := make(map[string]int64)
 	if len(projects) > 0 {
 		projectIDs := make([]pgtype.UUID, len(projects))
 		for i, p := range projects {
 			projectIDs[i] = p.ID
 		}
-		terminalStatusKeys := h.projectTerminalIssueStatusKeys(r.Context(), wsUUID)
-		stats, statsErr := h.Queries.GetProjectIssueStats(r.Context(), db.GetProjectIssueStatsParams{
-			WorkspaceID:        wsUUID,
-			ProjectIds:         projectIDs,
-			TerminalStatusKeys: terminalStatusKeys,
-		})
-		if statsErr == nil {
-			for _, s := range stats {
-				statsMap[uuidToString(s.ProjectID)] = s
-			}
-		}
+		statsMap = h.loadProjectIssueStatsMap(r.Context(), wsUUID, projectIDs)
 		counts, err := h.Queries.GetProjectResourceCounts(r.Context(), projectIDs)
 		if err == nil {
 			for _, c := range counts {
@@ -355,17 +413,14 @@ func (h *Handler) writeProjectWriteError(w http.ResponseWriter, r *http.Request,
 }
 
 func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
-	bodyBytes, err := io.ReadAll(r.Body)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, "failed to read request body")
-		return
-	}
 	var req CreateProjectRequest
-	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-
+	// PostgreSQL TEXT rejects NUL, which survives a JSON round trip.
+	req.Title = sanitizeNullBytes(req.Title)
+	req.Description = sanitizeNullBytesPtr(req.Description)
 	if req.Title == "" {
 		writeError(w, http.StatusBadRequest, "title is required")
 		return
@@ -375,17 +430,6 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-
-	// CHE-455: requireUserID does not reject agent actors. Gated on
-	// req.Description != nil — the decoded struct field the write below
-	// (`ptrToText(req.Description)`) actually branches on — not a raw JSON
-	// key lookup, which a case-varied key ("Description") bypasses
-	// (encoding/json matches keys to struct fields case-insensitively).
-	actorType, _ := h.resolveActor(r, userID, workspaceID)
-	if rejectGovernedFieldForAgentActor(w, r, actorType, req.Description != nil, "description") {
-		return
-	}
-
 	status := req.Status
 	if status == "" {
 		status = "planned"
@@ -418,9 +462,6 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 	var workflowID pgtype.UUID
 	if req.WorkflowID != nil && *req.WorkflowID != "" {
-		if !h.requireProjectWorkflowsV1(w, r) {
-			return
-		}
 		id, ok := parseUUIDOrBadRequest(w, *req.WorkflowID, "workflow_id")
 		if !ok {
 			return
@@ -528,6 +569,17 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		private = true
 		privateMemberIDs = ids
 	}
+	var admission featureAdmission
+	if private {
+		if admission, ok = h.requireFeatureAddition(w, r, wsUUID, entitlement.FeaturePrivateProjects, privateProjectOpCreate); !ok {
+			return
+		}
+	}
+	// A new project shared with a guest is a guest addition (MUL-9420).
+	guestAdmission, ok := h.requireGuestProjectAddition(w, r, wsUUID, pgtype.UUID{}, privateMemberIDs)
+	if !ok {
+		return
+	}
 
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	creatorID, ok := parseUUIDOrBadRequest(w, actorID, "creator_id")
@@ -550,7 +602,20 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		WorkflowID:  workflowID,
 	}
 
-	// Project, bundled resources and their audit rows are atomic.
+	// Without resources, keep the simple non-tx path.
+	if len(req.Resources) == 0 && !private {
+		project, err := h.Queries.CreateProject(r.Context(), createParams)
+		if err != nil {
+			h.writeProjectWriteError(w, r, err, "create")
+			return
+		}
+		resp := projectToResponse(project)
+		h.publish(protocol.EventProjectCreated, workspaceID, "member", userID, map[string]any{"project": resp})
+		writeJSON(w, http.StatusCreated, resp)
+		return
+	}
+
+	// Transactional path: project + all resources are atomic.
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start transaction")
@@ -588,15 +653,6 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
-		Kind:        "project.create",
-		WorkspaceID: project.WorkspaceID,
-		TargetID:    project.ID,
-		After:       projectAuditFields(project),
-	}); err != nil {
-		writeAuditFailure(w, r, err, "project.create")
-		return
-	}
 
 	creator, _ := h.parseUserUUIDOrZero(userID)
 	resourceRows := make([]db.ProjectResource, 0, len(req.Resources))
@@ -626,28 +682,14 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "failed to attach resource at index "+strconv.Itoa(i))
 			return
 		}
-		if err := h.writeAudit(r.Context(), qtx, r, auditInput{
-			Kind:        "project.resource.create",
-			WorkspaceID: row.WorkspaceID,
-			TargetID:    row.ID,
-			After:       projectResourceAuditFields(row),
-		}); err != nil {
-			writeAuditFailure(w, r, err, "project.resource.create")
-			return
-		}
 		resourceRows = append(resourceRows, row)
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit project create")
 		return
 	}
-
-	if len(resourceRows) == 0 {
-		resp := projectToResponse(project)
-		h.publish(protocol.EventProjectCreated, workspaceID, "member", userID, map[string]any{"project": resp})
-		writeJSON(w, http.StatusCreated, resp)
-		return
-	}
+	admission.admitted(r.Context())
+	guestAdmission.admitted(r.Context())
 
 	resourceResp := make([]ProjectResourceResponse, len(resourceRows))
 	for i, row := range resourceRows {
@@ -709,45 +751,10 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	req.Title = sanitizeNullBytesPtr(req.Title)
+	req.Description = sanitizeNullBytesPtr(req.Description)
 	var rawFields map[string]json.RawMessage
 	json.Unmarshal(bodyBytes, &rawFields)
-	descriptionKeyPresent := rawFieldsHasKeyFold(rawFields, "description")
-
-	// CHE-455: requireUserID does not reject agent actors. This endpoint
-	// needs the raw-key presence check (not a `req.Description != nil`
-	// struct check like the other 5 sites) because it distinguishes
-	// "description omitted" (leave unchanged) from "description explicitly
-	// null" (clear it) — both decode req.Description to nil. Gated on
-	// rawFieldsHasKeyFold, which matches case-insensitively like
-	// encoding/json's own struct decoding does; a plain rawFields[...] map
-	// lookup here previously let a case-varied key ("Description") through
-	// both this guard and the identically-keyed write condition below.
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
-	// CHE-9125: a project status moves only on a member's own write or on an
-	// approved project.status.set card. Checked on the decoded struct field, as
-	// CHE-455 requires, and before the inactive-project refusal so the agent
-	// is told the card path whatever the current status.
-	if isGovernedFieldMachineActor(r, actorType) && req.Status != nil {
-		writeError(w, http.StatusForbidden, "agents may not change a project status; propose it with `multica decision propose project.status.set` and the owner approves it with a passkey")
-		return
-	}
-	if !h.allowProjectWrite(w, r, wsUUID, prevProject.ID) {
-		return
-	}
-
-	// CHE-1862: an agent write backed by a vote receipt skips the denial below.
-	if voteEntered(actorType, descriptionKeyPresent, rawFields) {
-		h.voteUpdateProject(w, r, workspaceID, prevProject, actorID, rawFields)
-		return
-	}
-
-	if rejectGovernedFieldForAgentActor(w, r, actorType, descriptionKeyPresent, "description") {
-		return
-	}
-	_, delegatesKeyPresent := rawFields["decision_delegates"]
-	if rejectGovernedFieldForAgentActor(w, r, actorType, delegatesKeyPresent, "decision_delegates") {
-		return
-	}
 
 	params := db.UpdateProjectParams{ID: prevProject.ID}
 	_, params.DescriptionSet = rawFields["description"]
@@ -771,7 +778,7 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 		}
 		params.Priority = pgtype.Text{String: *req.Priority, Valid: true}
 	}
-	if descriptionKeyPresent {
+	if _, ok := rawFields["description"]; ok {
 		if req.Description != nil {
 			params.Description = pgtype.Text{String: *req.Description, Valid: true}
 		} else {
@@ -841,140 +848,29 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if delegatesKeyPresent {
-		delegates, ok := h.parseDecisionDelegates(w, r, wsUUID, userID, req.DecisionDelegates)
-		if !ok {
+	var admission featureAdmission
+	if access.privateAddition != "" {
+		if admission, ok = h.requireFeatureAddition(w, r, prevProject.WorkspaceID, entitlement.FeaturePrivateProjects, access.privateAddition); !ok {
 			return
 		}
-		params.DecisionDelegatesSet, params.DecisionDelegates = true, delegates
 	}
-	// The access update (visibility, members) runs inside the same transaction
-	// as the update and its audit row, so a rejected member list leaves the
-	// project untouched.
-	var updatedProject db.Project
-	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent",
-		func(ctx context.Context, q *db.Queries, previous, updated db.Project) error {
-			updatedProject = updated
-			if !access.empty() {
-				var accessErr error
-				if updatedProject, accessErr = h.applyProjectAccessUpdate(w, r, q, updated, access, userID); accessErr != nil {
-					return accessErr
-				}
-			}
-			if err := h.writeAudit(ctx, q, r, auditInput{
-				Kind: "project.update", WorkspaceID: updated.WorkspaceID, TargetID: updated.ID,
-				Before: projectAuditFields(previous), After: projectAuditFields(updatedProject),
-			}); err != nil {
-				return auditWriteError{err}
-			}
-			return nil
-		})
-	if err != nil {
-		if errors.Is(err, errProjectAccessRejected) {
-			return // applyProjectAccessUpdate already wrote the response
-		}
-		var auditErr auditWriteError
-		if errors.As(err, &auditErr) {
-			writeAuditFailure(w, r, auditErr.err, "project.update")
-			return
-		}
-		if writeProjectAdmissionError(w, err) {
-			return
-		}
-		h.writeProjectWriteError(w, r, err, "update")
+	// Adding a guest to the member list (or naming one lead of a private
+	// project) shares the project with it (MUL-9420).
+	guestAdmission, ok := h.requireGuestProjectAddition(w, r, prevProject.WorkspaceID, prevProject.ID, access.addIDs)
+	if !ok {
 		return
 	}
-	project = updatedProject
-	if access.visibility != "" {
-		slog.Info("project visibility changed", append(logger.RequestAttrs(r),
-			"project_id", uuidToString(project.ID), "visibility", project.Visibility)...)
+	project, ok := h.writeProjectUpdate(w, r, params, access, userID)
+	if !ok {
+		return
 	}
-	if len(access.addIDs) > 0 {
-		h.publishProjectMembersChanged(project, parseUUIDOrInvalid(userID))
-	}
+	admission.admitted(r.Context())
+	guestAdmission.admitted(r.Context())
 	resp := projectToResponse(project)
 	h.fillProjectIssueStats(r.Context(), &resp, project)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)
 	h.publish(protocol.EventProjectUpdated, workspaceID, "member", userID, map[string]any{"project": resp})
-	if delegatesKeyPresent {
-		// Removing a delegate cancels that person's open requests on the worker's next pass.
-		h.DecisionWorker.Notify()
-	}
 	writeJSON(w, http.StatusOK, resp)
-}
-
-// errProjectAccessRejected marks an access update whose error response
-// applyProjectAccessUpdate already wrote; the transaction rolls back.
-var errProjectAccessRejected = errors.New("project access update rejected")
-
-// applyProjectAccessUpdate applies a prepared access update (member adds, then
-// visibility) on the update's transaction queries. It writes the HTTP error itself and returns
-// errProjectAccessRejected.
-func (h *Handler) applyProjectAccessUpdate(w http.ResponseWriter, r *http.Request, q *db.Queries, project db.Project, access projectAccessUpdate, actorUserID string) (db.Project, error) {
-	ctx := r.Context()
-	if len(access.addIDs) > 0 {
-		inserted, err := q.AddProjectMembers(ctx, db.AddProjectMembersParams{
-			ProjectID:   project.ID,
-			WorkspaceID: project.WorkspaceID,
-			UserIds:     access.addIDs,
-			AddedBy:     parseUUIDOrInvalid(actorUserID),
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to add project members")
-			return project, errProjectAccessRejected
-		}
-		if !h.allProjectMembersExist(w, r, q, project, access.addIDs, inserted) {
-			return project, errProjectAccessRejected
-		}
-	}
-	if access.visibility != "" {
-		var err error
-		project, err = q.UpdateProjectVisibility(ctx, db.UpdateProjectVisibilityParams{
-			ID:          project.ID,
-			WorkspaceID: project.WorkspaceID,
-			Visibility:  access.visibility,
-		})
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to update project visibility")
-			return project, errProjectAccessRejected
-		}
-	}
-	if err := touchProjectSearchIndex(r, q, project); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to update search index")
-		return project, errProjectAccessRejected
-	}
-	return project, nil
-}
-
-// parseDecisionDelegates validates a decision_delegates write: only a workspace
-// owner sets it, and every id must be a distinct member of the workspace.
-func (h *Handler) parseDecisionDelegates(w http.ResponseWriter, r *http.Request, workspaceID pgtype.UUID, userID string, requested *[]string) ([]pgtype.UUID, bool) {
-	caller, err := h.getWorkspaceMember(r.Context(), userID, uuidToString(workspaceID))
-	if err != nil || caller.Role != "owner" {
-		writeError(w, http.StatusForbidden, "only a workspace owner can set decision_delegates")
-		return nil, false
-	}
-	delegates := []pgtype.UUID{}
-	if requested == nil {
-		return delegates, true
-	}
-	seen := map[string]bool{}
-	for _, raw := range *requested {
-		id, ok := parseUUIDOrBadRequest(w, raw, "decision_delegates")
-		if !ok {
-			return nil, false
-		}
-		if seen[uuidToString(id)] {
-			continue
-		}
-		seen[uuidToString(id)] = true
-		if _, err := h.Queries.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{UserID: id, WorkspaceID: workspaceID}); err != nil {
-			writeError(w, http.StatusBadRequest, "decision_delegates must be members of this workspace")
-			return nil, false
-		}
-		delegates = append(delegates, id)
-	}
-	return delegates, true
 }
 
 func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
@@ -1037,10 +933,6 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete project views")
 		return
 	}
-	if err := qtx.DeleteGitHubRouteGrantsByProject(r.Context(), project.ID); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to delete project route grants")
-		return
-	}
 	if err := qtx.DeleteProjectMembersByProject(r.Context(), db.DeleteProjectMembersByProjectParams{
 		ProjectID:   project.ID,
 		WorkspaceID: project.WorkspaceID,
@@ -1060,15 +952,6 @@ func (h *Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: project.WorkspaceID,
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete project")
-		return
-	}
-	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
-		Kind:        "project.delete",
-		WorkspaceID: project.WorkspaceID,
-		TargetID:    project.ID,
-		Before:      projectAuditFields(project),
-	}); err != nil {
-		writeAuditFailure(w, r, err, "project.delete")
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
@@ -1272,18 +1155,7 @@ func (h *Handler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 	}
 	terms := splitSearchTerms(q)
 
-	// The private-project lookup runs before the bounded search transaction, so
-	// it shares the search deadline: a locked project table must fail fast with
-	// the same 503, never hold the request open.
-	hiddenCtx, cancelHidden := context.WithTimeout(ctx, effectiveSearchStatementTimeout())
-	hidden, hiddenErr := h.hiddenProjects(r.WithContext(hiddenCtx), workspaceID)
-	cancelHidden()
-	if hiddenErr != nil && ctx.Err() == nil && errors.Is(hiddenErr, context.DeadlineExceeded) {
-		slog.Warn("search projects access lookup timed out", "workspace_id", workspaceID, "timeout", effectiveSearchStatementTimeout())
-		writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
-		return
-	}
-	hidden, ok = h.requestHiddenProjectsResult(w, r, workspaceID, hidden, hiddenErr)
+	hidden, ok := h.requestHiddenProjects(w, r, workspaceID)
 	if !ok {
 		return
 	}
@@ -1292,11 +1164,37 @@ func (h *Handler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 	args[len(args)-2] = limit
 	args[len(args)-1] = offset
 
-	var results []searchProjectResult
+	type projectSearchRow struct {
+		project     db.Project
+		matchSource string
+	}
+
+	var results []projectSearchRow
 	err := runSearchQuery(ctx, h.TxStarter, sqlQuery, args, func(rows pgx.Rows) error {
 		for rows.Next() {
-			row, err := scanSearchProject(rows)
-			if err != nil {
+			var row projectSearchRow
+			if err := rows.Scan(
+				&row.project.ID,
+				&row.project.WorkspaceID,
+				&row.project.Title,
+				&row.project.Description,
+				&row.project.Icon,
+				&row.project.Status,
+				&row.project.Priority,
+				&row.project.LeadType,
+				&row.project.LeadID,
+				&row.project.StartDate,
+				&row.project.DueDate,
+				&row.project.CreatedAt,
+				&row.project.UpdatedAt,
+				&row.project.Visibility,
+				&row.project.CreatorType,
+				&row.project.CreatorID,
+				&row.project.ArchivedAt,
+				&row.project.ArchivedByType,
+				&row.project.ArchivedByID,
+				&row.matchSource,
+			); err != nil {
 				return fmt.Errorf("scan: %w", err)
 			}
 			results = append(results, row)
@@ -1312,12 +1210,12 @@ func (h *Handler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 		if isSearchStatementTimeout(err) {
 			slog.Warn("search projects timed out",
 				"workspace_id", workspaceID,
-				"query_length", len([]rune(q)),
+				"query", q,
 				"timeout", searchStatementTimeout)
 			writeError(w, http.StatusServiceUnavailable, "search timed out; please refine your query or try again")
 			return
 		}
-		slog.Warn("search projects failed", "error", err, "workspace_id", workspaceID, "query_length", len([]rune(q)))
+		slog.Warn("search projects failed", "error", err, "workspace_id", workspaceID, "query", q)
 		writeError(w, http.StatusInternalServerError, "failed to search projects")
 		return
 	}
@@ -1326,24 +1224,14 @@ func (h *Handler) SearchProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Batch-fetch issue stats and resource counts
-	statsMap := make(map[string]db.GetProjectIssueStatsRow)
+	statsMap := map[string]db.GetProjectIssueStatsRow{}
 	resourceCountMap := make(map[string]int64)
 	if len(results) > 0 {
 		projectIDs := make([]pgtype.UUID, len(results))
 		for i, r := range results {
 			projectIDs[i] = r.project.ID
 		}
-		terminalStatusKeys := h.projectTerminalIssueStatusKeys(ctx, wsUUID)
-		stats, statsErr := h.Queries.GetProjectIssueStats(ctx, db.GetProjectIssueStatsParams{
-			WorkspaceID:        wsUUID,
-			ProjectIds:         projectIDs,
-			TerminalStatusKeys: terminalStatusKeys,
-		})
-		if statsErr == nil {
-			for _, s := range stats {
-				statsMap[uuidToString(s.ProjectID)] = s
-			}
-		}
+		statsMap = h.loadProjectIssueStatsMap(ctx, wsUUID, projectIDs)
 		counts, err := h.Queries.GetProjectResourceCounts(ctx, projectIDs)
 		if err == nil {
 			for _, c := range counts {

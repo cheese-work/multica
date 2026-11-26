@@ -3,12 +3,15 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/featureflags"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // claimAgentInstructionsForTest claims the next queued task for runtimeID and
@@ -153,6 +156,65 @@ func TestClaim_LeaderTaskFromCommentMention_InjectsBriefing(t *testing.T) {
 	}
 }
 
+func TestClaim_LeaderTaskWithMovedStepLeavesStatusUnchanged(t *testing.T) {
+	seedTestCatalog(t)
+	for _, bound := range []string{"waiting_for_merge", "in_progress", ""} {
+		for _, daemon := range []string{"legacy", "commands", "map"} {
+			t.Run(fmt.Sprintf("bound=%s/%s", bound, daemon), func(t *testing.T) {
+				fx := newSquadBriefingClaimFixture(t, t.Context(), "Workflow leader")
+				projectID := deliveryProject(t, "Leader workflow project", fx.AgentID)
+				dbfx.Exec(t, `UPDATE issue SET project_id=$2,status='in_progress',assignee_type='squad',assignee_id=$3 WHERE id=$1`, fx.IssueID, projectID, fx.SquadID)
+				cols := testutil.Cols{
+					"runtime_id": fx.RuntimeID, "issue_id": fx.IssueID,
+					"is_leader_task": true, "squad_id": fx.SquadID,
+				}
+				if bound != "" {
+					cols["workflow_step"] = bound
+				}
+				taskID := dbfx.Task(t, fx.AgentID, cols)
+				req := withURLParam(newOwnerDaemonRequest(http.MethodPost, "/api/daemon/runtimes/"+fx.RuntimeID+"/tasks/claim", nil), "runtimeId", fx.RuntimeID)
+				switch daemon {
+				case "commands":
+					req.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityWorkflowStatusRulesV1)
+				case "map":
+					req.Header.Set("X-Client-Capabilities", protocol.DaemonCapabilityWorkflowStatusRulesV1+","+protocol.DaemonCapabilityWorkflowStatusMapV1)
+				}
+				var resp struct {
+					Task *AgentTaskResponse `json:"task"`
+				}
+				testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK).JSON(&resp)
+				if resp.Task == nil || resp.Task.ID != taskID || !resp.Task.IsLeaderTask || resp.Task.Agent == nil || resp.Task.ProjectWorkflow == nil {
+					t.Fatalf("missing workflow leader claim: %+v", resp.Task)
+				}
+				instructions := resp.Task.Agent.Instructions
+				if resp.Task.ProjectWorkflow.StatusMap != (daemon == "map") {
+					t.Fatalf("status_map = %v for a %s daemon", resp.Task.ProjectWorkflow.StatusMap, daemon)
+				}
+				wrapUp := "run that block's Step done command"
+				if daemon == "map" {
+					wrapUp = "move it to the status the map gives for that step's finished work"
+				}
+				compact := strings.Join(strings.Fields(instructions), " ")
+				if !strings.Contains(instructions, "## Squad Roster") {
+					t.Fatal("workflow restriction removed the leader's coordination briefing")
+				}
+				if bound == "waiting_for_merge" {
+					if !strings.Contains(instructions, "Leave the parent issue's status unchanged") || strings.Contains(compact, wrapUp) {
+						t.Fatalf("stale leader's instructions contradict its workflow brief:\n%s", instructions)
+					}
+					for _, move := range builtInParentMoves {
+						if strings.Contains(strings.Join(strings.Fields(instructions), " "), move) {
+							t.Errorf("stale leader received built-in move %q", move)
+						}
+					}
+				} else if !strings.Contains(compact, wrapUp) {
+					t.Fatalf("current or unbound leader lost its wrap-up instruction:\n%s", instructions)
+				}
+			})
+		}
+	}
+}
+
 // TestClaim_NonLeaderTask_NoBriefing guards the negative: a task that is NOT a
 // leader task (is_leader_task=false), even with a squad_id present, must not
 // receive the briefing. This keeps worker/mention runs free of leader framing.
@@ -170,6 +232,27 @@ func TestClaim_NonLeaderTask_NoBriefing(t *testing.T) {
 	}
 	if isLeader {
 		t.Fatalf("non-leader task must not report is_leader_task=true: %s", raw)
+	}
+}
+
+// TestClaim_DocsEnabledFollowsFlag pins docs_enabled on the claim: the daemon
+// writes `multica doc` into the agent brief only when the server says so.
+func TestClaim_DocsEnabledFollowsFlag(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	for _, enabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("docs_v1=%v", enabled), func(t *testing.T) {
+			withFeatureFlag(t, testHandler, featureflags.DocsV1, enabled)
+			ctx := context.Background()
+			fx := newSquadBriefingClaimFixture(t, ctx, fmt.Sprintf("Docs flag %v", enabled))
+			enqueueClaimTask(t, ctx, fx, false /*isLeader*/, true /*withSquadID*/)
+
+			_, _, _, raw := claimAgentInstructionsForTest(t, fx.RuntimeID)
+			if got := strings.Contains(raw, `"docs_enabled":true`); got != enabled {
+				t.Fatalf("docs_enabled in claim = %v, want %v: %s", got, enabled, raw)
+			}
+		})
 	}
 }
 
@@ -271,147 +354,5 @@ func TestClaim_LeaderSwappedAfterEnqueue_NoBriefingAndNoLeaderRole(t *testing.T)
 	}
 	if isLeader {
 		t.Fatalf("skipped injection must clear is_leader_task on the claim response: %s", raw)
-	}
-}
-
-// claimAndDecodeAgent runs ClaimTaskByRuntime for the given runtime and
-// returns the agent block of the response. Fails the test on non-200.
-func claimAndDecodeAgent(t *testing.T, runtimeID string) *TaskAgentData {
-	t.Helper()
-	if _, err := testPool.Exec(context.Background(),
-		`UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id = $1`, runtimeID,
-	); err != nil {
-		t.Fatalf("refresh runtime heartbeat: %v", err)
-	}
-	w := httptest.NewRecorder()
-	req := newOwnerDaemonRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil)
-	req = withURLParam(req, "runtimeId", runtimeID)
-	testHandler.ClaimTaskByRuntime(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("ClaimTaskByRuntime: %d %s", w.Code, w.Body.String())
-	}
-	var resp struct {
-		Task *struct {
-			Agent *TaskAgentData `json:"agent"`
-		} `json:"task"`
-	}
-	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if resp.Task == nil || resp.Task.Agent == nil {
-		t.Fatalf("expected task.agent in response, got: %s", w.Body.String())
-	}
-	return resp.Task.Agent
-}
-
-// queueSquadIssueTaskFor creates an issue assigned to the squad and a queued
-// task for the given (agentID, runtimeID). Returns the issue + task IDs.
-func queueSquadIssueTaskFor(t *testing.T, squadID, agentID, runtimeID string, issueNumber int) (issueID, taskID string) {
-	t.Helper()
-	ctx := context.Background()
-	if err := testPool.QueryRow(ctx, `
-INSERT INTO issue (
-workspace_id, title, status, priority, creator_id, creator_type,
-assignee_type, assignee_id, number, position
-) VALUES ($1, 'Squad briefing claim test', 'todo', 'medium', $2, 'member',
-'squad', $3, $4, 0)
-RETURNING id
-`, testWorkspaceID, testUserID, squadID, issueNumber).Scan(&issueID); err != nil {
-		t.Fatalf("create squad-assigned issue: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID) })
-
-	if err := testPool.QueryRow(ctx, `
-INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, is_leader_task, squad_id)
-VALUES ($1, $2, $3, 'queued', 0,
-        ($1::uuid = (SELECT leader_id FROM squad WHERE id = $4::uuid)),
-        $4::uuid)
-RETURNING id
-`, agentID, runtimeID, issueID, squadID).Scan(&taskID); err != nil {
-		t.Fatalf("queue task: %v", err)
-	}
-	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
-	return
-}
-
-// TestClaimTask_LeaderGetsBriefing — when the squad leader claims a task on
-// a squad-assigned issue, the response's agent.instructions must include
-// the Operating Protocol + Roster + user instructions.
-func TestClaimTask_LeaderGetsBriefing(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-
-	var leaderID, runtimeID string
-	if err := testPool.QueryRow(ctx,
-		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&leaderID, &runtimeID); err != nil {
-		t.Fatalf("get leader agent: %v", err)
-	}
-
-	squad := seedSquadForBriefing(t, leaderID, "Briefing Claim Squad", "Be terse.")
-
-	helper := createHandlerTestAgent(t, "Briefing Helper", []byte("[]"))
-	addAgentMember(t, squad.ID, helper, "implementer")
-
-	queueSquadIssueTaskFor(t, util.UUIDToString(squad.ID), leaderID, runtimeID, 95001)
-
-	agent := claimAndDecodeAgent(t, runtimeID)
-	for _, want := range []string{
-		"## Squad Operating Protocol",
-		"## Squad Roster",
-		"Leader (you):",
-		"## Squad Instructions (Briefing Claim Squad)",
-		"Be terse.",
-		"`[@Briefing Helper](mention://agent/" + helper + ")`",
-	} {
-		if !strings.Contains(agent.Instructions, want) {
-			t.Errorf("expected agent.instructions to contain %q\n--- instructions ---\n%s", want, agent.Instructions)
-		}
-	}
-}
-
-// TestClaimTask_NonLeaderGetsNoBriefing — when a non-leader squad member
-// claims a task on a squad-assigned issue, NO briefing is injected.
-func TestClaimTask_NonLeaderGetsNoBriefing(t *testing.T) {
-	if testHandler == nil {
-		t.Skip("database not available")
-	}
-	ctx := context.Background()
-
-	var leaderID string
-	if err := testPool.QueryRow(ctx,
-		`SELECT id FROM agent WHERE workspace_id = $1 ORDER BY created_at ASC LIMIT 1`,
-		testWorkspaceID,
-	).Scan(&leaderID); err != nil {
-		t.Fatalf("get leader agent: %v", err)
-	}
-
-	squad := seedSquadForBriefing(t, leaderID, "Non-Leader Squad", "Squad guidance.")
-
-	// Create a second agent (NOT the leader) with its own runtime so the
-	// claim path picks its task without ambiguity.
-	helperID := createHandlerTestAgent(t, "Non Leader Helper", []byte("[]"))
-	addAgentMember(t, squad.ID, helperID, "")
-	var helperRuntime string
-	if err := testPool.QueryRow(ctx,
-		`SELECT runtime_id FROM agent WHERE id = $1`, helperID,
-	).Scan(&helperRuntime); err != nil {
-		t.Fatalf("get helper runtime: %v", err)
-	}
-
-	queueSquadIssueTaskFor(t, util.UUIDToString(squad.ID), helperID, helperRuntime, 95002)
-
-	agent := claimAndDecodeAgent(t, helperRuntime)
-	for _, mustNot := range []string{
-		"Squad Operating Protocol",
-		"Squad Roster",
-		"Squad Instructions (Non-Leader Squad)",
-	} {
-		if strings.Contains(agent.Instructions, mustNot) {
-			t.Errorf("non-leader claim should NOT contain %q\n--- instructions ---\n%s", mustNot, agent.Instructions)
-		}
 	}
 }

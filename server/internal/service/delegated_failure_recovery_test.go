@@ -299,7 +299,11 @@ type delegatedFailureFixture struct {
 
 func seedDelegatedFailureFixture(t *testing.T) (*delegatedFailureFixture, *TaskService) {
 	t.Helper()
-	pool := newResolveOriginatorPool(t)
+	return seedDelegatedFailureFixtureIn(t, newResolveOriginatorPool(t))
+}
+
+func seedDelegatedFailureFixtureIn(t *testing.T, pool *pgxpool.Pool) (*delegatedFailureFixture, *TaskService) {
+	t.Helper()
 	ctx := context.Background()
 	workspaceID, userID, coordinatorID, issueID := seedAttributionFixture(t, pool)
 	if _, err := pool.Exec(ctx, `UPDATE issue SET status = 'in_progress' WHERE id = $1`, issueID); err != nil {
@@ -552,275 +556,6 @@ func TestPendingDelegatedFailureSweepRepairsCommittedCommentWithoutTask(t *testi
 			t.Fatalf("%s: comments/tasks = %d/%d, want 1/1", phase, comments, tasks)
 		}
 	}
-}
-
-// TestEnsureDelegatedFailureRecoveryCommentReopensResolvedThread is the Round
-// 4 regression: ensureDelegatedFailureRecoveryComment takes
-// commentguard.LockThreadForReply before its insert (closing the
-// resolve/reply commit-ordering TOCTOU), but a lock-ordered commit is only
-// half the fix — the reply also has to make the thread's resolved state
-// reflect that a new reply landed, or the recovery comment is correctly
-// ordered yet invisible via foldResolvedThreads. This resolves the thread
-// root FIRST (a real resolve, not a race), then lets the recovery comment
-// commit strictly afterward, and asserts the thread reads as unresolved
-// again once the reply lands — proving AutoUnresolveThreadOnReply actually
-// runs for this call site now.
-func TestEnsureDelegatedFailureRecoveryCommentReopensResolvedThread(t *testing.T) {
-	f, svc := seedDelegatedFailureFixture(t)
-	ctx := context.Background()
-	failedID := f.insertWorkerTask(t, "failed", "comment", 1, 2)
-	if _, err := f.pool.Exec(ctx, `
-		UPDATE agent_task_queue
-		SET failure_reason = 'agent_error.process_failure', error = 'worker exited', completed_at = now()
-		WHERE id = $1`, failedID); err != nil {
-		t.Fatalf("stamp failed task: %v", err)
-	}
-
-	// Resolve the thread root before the recovery reply ever attempts to
-	// land. This is not the TOCTOU race itself (that is covered elsewhere by
-	// the lock-ordering tests) — it is the simplest deterministic setup that
-	// proves the reopen behavior: the root is already resolved, then a
-	// lock-ordered reply commits after.
-	if _, err := f.pool.Exec(ctx, `
-		UPDATE comment SET resolved_at = now(), resolved_by_type = 'member', resolved_by_id = $2
-		WHERE id = $1`, f.sourceTrigger, f.userID); err != nil {
-		t.Fatalf("resolve source trigger thread: %v", err)
-	}
-	if !commentResolvedByID(t, f.pool, f.sourceTrigger) {
-		t.Fatalf("source trigger must read as resolved before the recovery reply lands")
-	}
-
-	target, created, err := svc.ensureDelegatedFailureRecoveryComment(ctx, failedID)
-	if err != nil || target == nil || !created {
-		t.Fatalf("ensure recovery comment = target %v created %v err %v", target != nil, created, err)
-	}
-
-	if commentResolvedByID(t, f.pool, f.sourceTrigger) {
-		t.Fatalf("recovery reply landing in a resolved thread must auto-reopen it (resolved_at should be NULL), but the thread still reads as resolved")
-	}
-}
-
-// TestExhaustDelegatedFailureRecoveryReopensResolvedThread is the same Round
-// 4 regression as TestEnsureDelegatedFailureRecoveryCommentReopensResolvedThread,
-// for exhaustDelegatedFailureRecovery's exhaustion-comment insert instead of
-// the initial recovery comment.
-func TestExhaustDelegatedFailureRecoveryReopensResolvedThread(t *testing.T) {
-	f, svc := seedDelegatedFailureFixture(t)
-	ctx := context.Background()
-	failedID := f.insertWorkerTask(t, "failed", "comment", 1, 2)
-	if _, err := f.pool.Exec(ctx, `
-		UPDATE agent_task_queue
-		SET failure_reason = 'agent_error.process_failure', error = 'worker exited', completed_at = now()
-		WHERE id = $1`, failedID); err != nil {
-		t.Fatalf("stamp failed task: %v", err)
-	}
-	failed, err := svc.Queries.GetAgentTask(ctx, failedID)
-	if err != nil {
-		t.Fatalf("load failed task: %v", err)
-	}
-	if handled, err := svc.recoverDelegatedTaskFailure(ctx, failed); err != nil || !handled {
-		t.Fatalf("initial recovery = handled %v err %v", handled, err)
-	}
-
-	// Exhaust every automatic attempt exactly as
-	// TestDelegatedFailureRecoveryStopsAfterBoundedUndeliveredAttempts does,
-	// but resolve the thread root just before the final attempt fails so the
-	// exhaustion comment (the last one inserted, by exhaustDelegatedFailureRecovery)
-	// is the reply that has to reopen it.
-	for attempt := 1; attempt <= delegatedFailureRecoveryMaxTaskAttempts; attempt++ {
-		var currentTaskID pgtype.UUID
-		if err := f.pool.QueryRow(ctx, `
-			SELECT id FROM agent_task_queue
-			WHERE trigger_evidence_kind = 'delegated_failure'
-			  AND trigger_evidence_ref_id = $1
-			  AND status = 'queued'
-			ORDER BY created_at DESC, id DESC
-			LIMIT 1`, failedID).Scan(&currentTaskID); err != nil {
-			t.Fatalf("load recovery attempt %d: %v", attempt, err)
-		}
-		if _, err := f.pool.Exec(ctx, `
-			UPDATE agent_task_queue
-			SET status = 'failed', completed_at = now(), failure_reason = 'queued_expired',
-			    error = 'task expired in queue', delivered_comment_ids = '{}'
-			WHERE id = $1`, currentTaskID); err != nil {
-			t.Fatalf("fail recovery attempt %d: %v", attempt, err)
-		}
-
-		if attempt == delegatedFailureRecoveryMaxTaskAttempts {
-			if _, err := f.pool.Exec(ctx, `
-				UPDATE comment SET resolved_at = now(), resolved_by_type = 'member', resolved_by_id = $2
-				WHERE id = $1`, f.sourceTrigger, f.userID); err != nil {
-				t.Fatalf("resolve source trigger thread before exhaustion: %v", err)
-			}
-			if !commentResolvedByID(t, f.pool, f.sourceTrigger) {
-				t.Fatalf("source trigger must read as resolved before the exhaustion reply lands")
-			}
-		}
-
-		result, err := svc.RecoverPendingDelegatedFailures(ctx, 100)
-		if err != nil {
-			t.Fatalf("recovery sweep after attempt %d = %+v, %v", attempt, result, err)
-		}
-		if attempt < delegatedFailureRecoveryMaxTaskAttempts {
-			if result.Replayed != 1 || result.Exhausted != 0 {
-				t.Fatalf("recovery sweep after attempt %d = %+v, want one replay", attempt, result)
-			}
-			continue
-		}
-		if result.Replayed != 0 || result.Exhausted != 1 {
-			t.Fatalf("recovery sweep after final attempt = %+v, want one exhaustion", result)
-		}
-	}
-
-	if commentResolvedByID(t, f.pool, f.sourceTrigger) {
-		t.Fatalf("exhaustion reply landing in a resolved thread must auto-reopen it (resolved_at should be NULL), but the thread still reads as resolved")
-	}
-}
-
-// TestEnsureDelegatedFailureRecoveryCommentReopensResolvedReply is the Round 5
-// regression for the root-only limitation Sol found in Round 4's design:
-// AutoUnresolveThreadOnReply only ever cleared the thread ROOT's resolved_at,
-// so a resolved REPLY (not the root) was never reopened when a recovery
-// comment landed. commentguard.LockThreadForReplyAndClearResolution walks the
-// same recursive thread structure ClearOtherThreadResolutions enforces the
-// single-resolution invariant over, so it must find and clear a resolved
-// reply just as it would a resolved root.
-func TestEnsureDelegatedFailureRecoveryCommentReopensResolvedReply(t *testing.T) {
-	f, svc := seedDelegatedFailureFixture(t)
-	ctx := context.Background()
-	failedID := f.insertWorkerTask(t, "failed", "comment", 1, 2)
-	if _, err := f.pool.Exec(ctx, `
-		UPDATE agent_task_queue
-		SET failure_reason = 'agent_error.process_failure', error = 'worker exited', completed_at = now()
-		WHERE id = $1`, failedID); err != nil {
-		t.Fatalf("stamp failed task: %v", err)
-	}
-
-	// A reply under the source trigger — NOT the root itself — is the
-	// resolved comment. The recovery comment lands as a reply to
-	// f.sourceTrigger (the direct-parent trigger signal, per
-	// ensureDelegatedFailureRecoveryComment), which shares the same thread
-	// root as this deeper reply.
-	var replyID string
-	if err := f.pool.QueryRow(ctx, `
-		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, parent_id)
-		VALUES ($1, $2, 'member', $3, 'a reply under the trigger', $4)
-		RETURNING id`, f.workspaceID, f.issueID, f.userID, f.sourceTrigger).Scan(&replyID); err != nil {
-		t.Fatalf("seed thread reply: %v", err)
-	}
-	if _, err := f.pool.Exec(ctx, `
-		UPDATE comment SET resolved_at = now(), resolved_by_type = 'member', resolved_by_id = $2
-		WHERE id = $1`, replyID, f.userID); err != nil {
-		t.Fatalf("resolve thread reply: %v", err)
-	}
-	if !commentResolvedByID(t, f.pool, replyID) {
-		t.Fatalf("reply must read as resolved before the recovery reply lands")
-	}
-	if commentResolvedByID(t, f.pool, f.sourceTrigger) {
-		t.Fatalf("root must NOT be the resolved comment in this test — the reply is")
-	}
-
-	target, created, err := svc.ensureDelegatedFailureRecoveryComment(ctx, failedID)
-	if err != nil || target == nil || !created {
-		t.Fatalf("ensure recovery comment = target %v created %v err %v", target != nil, created, err)
-	}
-
-	if commentResolvedByID(t, f.pool, replyID) {
-		t.Fatalf("recovery reply landing in a thread whose RESOLVED comment is a non-root reply must still reopen it, but the reply still reads as resolved")
-	}
-}
-
-// TestExhaustDelegatedFailureRecoveryReopensResolvedReply is the exhaustion-path
-// counterpart to TestEnsureDelegatedFailureRecoveryCommentReopensResolvedReply:
-// the exhaustion comment (inserted by exhaustDelegatedFailureRecovery) must
-// also reopen a resolved non-root reply, not just a resolved root.
-func TestExhaustDelegatedFailureRecoveryReopensResolvedReply(t *testing.T) {
-	f, svc := seedDelegatedFailureFixture(t)
-	ctx := context.Background()
-	failedID := f.insertWorkerTask(t, "failed", "comment", 1, 2)
-	if _, err := f.pool.Exec(ctx, `
-		UPDATE agent_task_queue
-		SET failure_reason = 'agent_error.process_failure', error = 'worker exited', completed_at = now()
-		WHERE id = $1`, failedID); err != nil {
-		t.Fatalf("stamp failed task: %v", err)
-	}
-	failed, err := svc.Queries.GetAgentTask(ctx, failedID)
-	if err != nil {
-		t.Fatalf("load failed task: %v", err)
-	}
-	if handled, err := svc.recoverDelegatedTaskFailure(ctx, failed); err != nil || !handled {
-		t.Fatalf("initial recovery = handled %v err %v", handled, err)
-	}
-
-	var replyID string
-	if err := f.pool.QueryRow(ctx, `
-		INSERT INTO comment (workspace_id, issue_id, author_type, author_id, content, parent_id)
-		VALUES ($1, $2, 'member', $3, 'a reply under the trigger', $4)
-		RETURNING id`, f.workspaceID, f.issueID, f.userID, f.sourceTrigger).Scan(&replyID); err != nil {
-		t.Fatalf("seed thread reply: %v", err)
-	}
-
-	for attempt := 1; attempt <= delegatedFailureRecoveryMaxTaskAttempts; attempt++ {
-		var currentTaskID pgtype.UUID
-		if err := f.pool.QueryRow(ctx, `
-			SELECT id FROM agent_task_queue
-			WHERE trigger_evidence_kind = 'delegated_failure'
-			  AND trigger_evidence_ref_id = $1
-			  AND status = 'queued'
-			ORDER BY created_at DESC, id DESC
-			LIMIT 1`, failedID).Scan(&currentTaskID); err != nil {
-			t.Fatalf("load recovery attempt %d: %v", attempt, err)
-		}
-		if _, err := f.pool.Exec(ctx, `
-			UPDATE agent_task_queue
-			SET status = 'failed', completed_at = now(), failure_reason = 'queued_expired',
-			    error = 'task expired in queue', delivered_comment_ids = '{}'
-			WHERE id = $1`, currentTaskID); err != nil {
-			t.Fatalf("fail recovery attempt %d: %v", attempt, err)
-		}
-
-		if attempt == delegatedFailureRecoveryMaxTaskAttempts {
-			if _, err := f.pool.Exec(ctx, `
-				UPDATE comment SET resolved_at = now(), resolved_by_type = 'member', resolved_by_id = $2
-				WHERE id = $1`, replyID, f.userID); err != nil {
-				t.Fatalf("resolve thread reply before exhaustion: %v", err)
-			}
-			if !commentResolvedByID(t, f.pool, replyID) {
-				t.Fatalf("reply must read as resolved before the exhaustion reply lands")
-			}
-		}
-
-		result, err := svc.RecoverPendingDelegatedFailures(ctx, 100)
-		if err != nil {
-			t.Fatalf("recovery sweep after attempt %d = %+v, %v", attempt, result, err)
-		}
-		if attempt < delegatedFailureRecoveryMaxTaskAttempts {
-			if result.Replayed != 1 || result.Exhausted != 0 {
-				t.Fatalf("recovery sweep after attempt %d = %+v, want one replay", attempt, result)
-			}
-			continue
-		}
-		if result.Replayed != 0 || result.Exhausted != 1 {
-			t.Fatalf("recovery sweep after final attempt = %+v, want one exhaustion", result)
-		}
-	}
-
-	if commentResolvedByID(t, f.pool, replyID) {
-		t.Fatalf("exhaustion reply landing in a thread whose RESOLVED comment is a non-root reply must still reopen it, but the reply still reads as resolved")
-	}
-}
-
-// commentResolvedByID reports whether the given comment currently has a
-// non-null resolved_at, i.e. whether the thread it roots reads as resolved.
-func commentResolvedByID(t *testing.T, pool *pgxpool.Pool, id string) bool {
-	t.Helper()
-	var resolved bool
-	if err := pool.QueryRow(context.Background(),
-		`SELECT resolved_at IS NOT NULL FROM comment WHERE id = $1`, id,
-	).Scan(&resolved); err != nil {
-		t.Fatalf("check resolved_at for %s: %v", id, err)
-	}
-	return resolved
 }
 
 func TestPendingDelegatedFailureSweepSkipsCustomTerminalSourceIssue(t *testing.T) {
@@ -1606,48 +1341,42 @@ func TestPendingDelegatedFailureSweepSkipsTriageSourceIssue(t *testing.T) {
 	}
 }
 
-// A recovery task is a new coordinator run. While the superseded run on the
-// coordinator's issue is not proven stopped it must not start, and the durable
-// signal must survive until the daemon's cancel-ack opens the gate.
-func TestDelegatedFailureRecoveryWaitsForStopGate(t *testing.T) {
-	ctx := context.Background()
+// A squad member's recovery run, after work it handed on failed, still counts
+// toward the squad's usage: it continues the member's squad-attributed run.
+func TestDelegatedFailureRecoveryKeepsSquadUsage(t *testing.T) {
 	f, svc := seedDelegatedFailureFixture(t)
-	fx := dbfx.New(f.pool, f.workspaceID, f.userID)
-	failedID := f.insertWorkerTask(t, "failed", "comment", 1, 2)
-	target, created, err := svc.ensureDelegatedFailureRecoveryComment(ctx, failedID)
-	if err != nil || target == nil || !created {
-		t.Fatalf("seed recovery: created=%v err=%v", created, err)
+	ctx := context.Background()
+	var squadID string
+	if err := f.pool.QueryRow(ctx, `
+		INSERT INTO squad (workspace_id, name, description, leader_id, creator_id)
+		VALUES ($1, 'usage squad', '', $2, $3)
+		RETURNING id`, f.workspaceID, f.worker, f.userID).Scan(&squadID); err != nil {
+		t.Fatalf("seed squad: %v", err)
 	}
-	superseded := fx.Insert(t, "agent_task_queue", dbfx.Cols{
-		"agent_id": f.coordinator, "runtime_id": f.runtimeID, "issue_id": f.issueID,
-		"status": "cancelled", "failure_reason": FailureReasonSupersededHead,
-		"workflow_step": "in_progress", "dispatched_at": dbfx.Raw("now() - interval '5 minutes'"),
-		"completed_at": dbfx.Raw("now()"),
+	t.Cleanup(func() {
+		f.pool.Exec(context.Background(), `DELETE FROM squad_member WHERE squad_id = $1`, squadID)
+		f.pool.Exec(context.Background(), `DELETE FROM squad WHERE id = $1`, squadID)
 	})
-	recoveryTasks := func() (n int) {
-		if err := f.pool.QueryRow(ctx, `SELECT count(*) FROM agent_task_queue
-			WHERE trigger_evidence_kind = 'delegated_failure' AND trigger_evidence_ref_id = $1`, failedID).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
+	if _, err := f.pool.Exec(ctx, `INSERT INTO squad_member (squad_id, member_type, member_id) VALUES ($1, 'agent', $2)`, squadID, f.coordinator); err != nil {
+		t.Fatalf("seed squad member: %v", err)
 	}
-
-	if err := svc.DispatchDelegatedFailureRecoveryComment(ctx, target.comment, pgtype.UUID{}); err != nil {
-		t.Fatal(err)
+	// The member's own run was attributed to the squad, as a run the leader
+	// handed to it is.
+	if _, err := f.pool.Exec(ctx, `UPDATE agent_task_queue SET usage_squad_id = $2 WHERE id = $1`, f.sourceTask, squadID); err != nil {
+		t.Fatalf("attribute source task: %v", err)
 	}
-	if n := recoveryTasks(); n != 0 {
-		t.Fatalf("recovery tasks = %d while the superseded run is unacked, want 0", n)
+	failedID := f.insertWorkerTask(t, "running", "comment", 1, 1)
+	if _, err := svc.FailTask(ctx, failedID, "worker failed", "", "", "", "agent_error.process_failure", false, "", ""); err != nil {
+		t.Fatalf("FailTask: %v", err)
 	}
-	if f.settled(t, target.comment.ID) {
-		t.Fatal("a refused recovery must keep its durable signal")
+	var usageSquad string
+	if err := f.pool.QueryRow(ctx, `
+		SELECT COALESCE(COALESCE(usage_squad_id, squad_id)::text, '') FROM agent_task_queue
+		WHERE trigger_evidence_kind = 'delegated_failure' AND trigger_evidence_ref_id = $1`, failedID).Scan(&usageSquad); err != nil {
+		t.Fatalf("read recovery task: %v", err)
 	}
-
-	fx.Exec(t, `UPDATE agent_task_queue SET cancel_acked_at = now() WHERE id = $1`, superseded)
-	if result, err := svc.RecoverPendingDelegatedFailures(ctx, 100); err != nil || result != (DelegatedFailureRecoverySweepResult{Scanned: 1, Replayed: 1}) {
-		t.Fatalf("sweep after ack = %+v, %v; want one replay", result, err)
-	}
-	if n := recoveryTasks(); n != 1 {
-		t.Fatalf("recovery tasks after ack = %d, want 1", n)
+	if usageSquad != squadID {
+		t.Fatalf("recovery run squad usage = %q, want %s", usageSquad, squadID)
 	}
 }
 

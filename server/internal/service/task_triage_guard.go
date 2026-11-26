@@ -8,9 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/dispatch"
-	"github.com/multica-ai/multica/server/internal/intakehold"
-	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -59,25 +56,15 @@ const (
 	// OriginNamed: a person wrote this agent's name — an @mention, or a reply
 	// to something it said. Allowed in Triage.
 	OriginNamed
-	// OriginBudgetRecovery: the run the exhaustion move itself enqueues for the
-	// blocked step's handler (CHE-2297 L3). Admitted at zero like a named run.
-	OriginBudgetRecovery
 )
+
+// ErrIssueHasBlockers refuses derived runs until all prerequisites end.
+var ErrIssueHasBlockers = errors.New("the issue is waiting for unfinished blockers")
 
 // ErrIssueInTriage is returned by a derived enqueue path when the issue is
 // waiting in Triage. Handlers render it as 403 issue_in_triage; background
 // callers log it and drop the trigger.
 var ErrIssueInTriage = errors.New("the issue is in triage, so nothing derived from it runs")
-
-// ErrIntakeHold is returned by a derived enqueue path when the issue is held by
-// the workspace's intake_hold setting (CHE-6911 E2). The text starts with the
-// dispatch reason code, so a wakeup's last_error names it.
-var ErrIntakeHold = errors.New("intake_hold: the issue is held in backlog, so nothing derived from it runs")
-
-// ErrAgentPaused is returned by every enqueue path for an agent whose
-// scheduling is paused (CHE-5066). The pause already stops claims; this stops
-// the run from being queued at all, so a paused agent gains no backlog.
-var ErrAgentPaused = errors.New("agent_paused: this agent is paused; pick another agent by role")
 
 // ErrRerunSourceIsTriage is returned when a manual rerun names a triage run as
 // the task to repeat. Handlers render it as 400: the request is well-formed and
@@ -85,150 +72,37 @@ var ErrAgentPaused = errors.New("agent_paused: this agent is paused; pick anothe
 // run. Redoing triage is re-triage.
 var ErrRerunSourceIsTriage = errors.New("the source task is a triage run, which is redone by re-triaging the issue rather than by rerunning it")
 
-// ErrRecoveryCaused is returned for any run a budget recovery run's own request
-// would start: its assignment, rerun, @mention or reply. The recovery reserve
-// buys one run; what that run causes buys nothing (CHE-2297 L3).
-var ErrRecoveryCaused = errors.New("a budget recovery run cannot start another run")
-
-// guardIssueRunAllowed refuses a DERIVED enqueue for an issue in Triage or one
-// whose workflow run budget is spent (guardRunBudget). q is
+// guardIssueNotInTriage refuses a DERIVED enqueue for an issue in Triage. q is
 // the caller's own query handle so a transaction-scoped enqueue reads the
 // status its own transaction wrote — the deferred-channel path creates the
 // issue and its task together, and an uncommitted Triage issue must still be
 // seen.
 //
-// target names the agent and trigger of the run, for the run budget.
-//
-// A named run is never refused: it skips the Triage read and the budget check,
-// and only takes the budget lock and window credit for its debit.
+// A named run skips the read entirely: Triage never refuses it, so there is
+// nothing to look up.
 //
 // A missing issue is not in Triage: the enqueue proceeds and fails (or not) on
 // its own terms. A read error refuses, because a run that cannot be shown to be
 // allowed must not start.
-func guardIssueRunAllowed(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin, target RunTarget) error {
-	_, err := guardIssueRunGate(ctx, q, issueID, origin, target)
-	return err
-}
+func guardIssueNotInTriage(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin) error {
+	if origin == OriginNamed || !issueID.Valid {
+		return nil
+	}
+	admission, err := q.GetIssueRunAdmission(ctx, issueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("issue admission: %w", err)
+	}
+	if admission.TriageState.Valid {
+		return ErrIssueInTriage
+	}
+	if admission.Blocked {
+		return ErrIssueHasBlockers
+	}
 
-// guardIssueRunGate is guardIssueRunAllowed for an enqueue that inserts the
-// task row itself: it also returns the review gate to apply to that insert.
-func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, origin RunOrigin, target RunTarget) (ReviewGate, error) {
-	if err := RequireActiveIssueProject(ctx, q, issueID); err != nil {
-		return ReviewGate{}, err
-	}
-	// A paused agent takes no new run, whoever asks (CHE-5066). Before every
-	// exit below, so a named mention is refused too.
-	if err := guardAgentNotPaused(ctx, q, target.AgentID); err != nil {
-		return ReviewGate{}, err
-	}
-	// Before the OriginNamed exit: a person naming an agent does not start a
-	// second runner next to one that is not proven stopped.
-	if issueID.Valid {
-		if err := StopGate(ctx, q, issueID); err != nil {
-			return ReviewGate{}, err
-		}
-	}
-	if !issueID.Valid {
-		return ReviewGate{}, nil
-	}
-	if origin != OriginBudgetRecovery && dispatch.BudgetRecoveryCaller(ctx) {
-		return ReviewGate{}, ErrRecoveryCaused
-	}
-	if origin == OriginNamed || origin == OriginBudgetRecovery {
-		// Never refused, but the lock and the window credit are taken here so
-		// the named run's debit lands in the same window the others read.
-		if _, _, _, err := openRunBudget(ctx, q, issueID, pgtype.UUID{}); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return ReviewGate{}, fmt.Errorf("run budget: %w", err)
-		}
-		// A person's wakeup of a reviewer is judged too; a person's comment or
-		// mention naming an agent still starts it.
-		// ponytail: wakeups only, a named mention stays unrefused by design.
-		if origin == OriginNamed && (target.Trigger == "wakeup" || target.Trigger == "system wakeup") {
-			decision, err := guardReviewAdmission(ctx, q, issueID, target)
-			if err != nil {
-				return ReviewGate{}, err
-			}
-			return admittedGate(ctx, ReviewGate{}, decision)
-		}
-		return ReviewGate{}, nil
-	}
-	state, err := q.GetIssueTriageState(ctx, issueID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return ReviewGate{}, nil
-		}
-		return ReviewGate{}, fmt.Errorf("triage guard: load issue triage state: %w", err)
-	}
-	if state.Valid {
-		return ReviewGate{}, ErrIssueInTriage
-	}
-	// Beside the Triage check: a held issue runs nothing that was derived from
-	// it. The row checks run first; the setting is read only when they pass.
-	if err := guardIntakeHold(ctx, q, issueID, target); err != nil {
-		return ReviewGate{}, err
-	}
-	// Before the budget: a skipped run is no task row and takes no stage slot.
-	if err := guardReviewHeadAnswered(ctx, q, issueID, target); err != nil {
-		return ReviewGate{}, err
-	}
-	// Before the budget: a loop is refused whatever the budget has left.
-	if err := guardLoopBreaker(ctx, q, issueID, target); err != nil {
-		return ReviewGate{}, err
-	}
-	// Before the budget: a member's status move reopens a budget window, never
-	// this one (CHE-5720).
-	if err := guardWeeklyRuns(ctx, q, issueID, target); err != nil {
-		return ReviewGate{}, err
-	}
-	gate, err := guardRunBudget(ctx, q, issueID, target)
-	if err != nil {
-		return ReviewGate{}, err
-	}
-	// After the budget, before the stage queue: a PR head that is not
-	// admissible neither starts nor takes a stage slot (CHE-4650).
-	decision, err := guardReviewAdmission(ctx, q, issueID, target)
-	if err != nil {
-		return ReviewGate{}, err
-	}
-	// After the budget: a run the budget refuses never takes a stage slot.
-	if err := guardStageQueue(ctx, q, issueID, target); err != nil {
-		return ReviewGate{}, err
-	}
-	return admittedGate(ctx, gate, decision)
-}
-
-// guardIntakeHold refuses a derived run on an issue the intake hold owns. A
-// read error refuses: a run that cannot be shown to be allowed must not start.
-// A missing issue is not held.
-func guardIntakeHold(ctx context.Context, q *db.Queries, issueID pgtype.UUID, target RunTarget) error {
-	loaded, err := intakehold.Load(ctx, q.Conn(), util.UUIDToString(issueID))
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		return fmt.Errorf("intake hold: %w", err)
-	}
-	if err := intakehold.Enforce(loaded, "run:"+target.Trigger, "agent", util.UUIDToString(target.AgentID)); err != nil {
-		return ErrIntakeHold
-	}
 	return nil
-}
-
-// admittedGate folds the admission decision into the gate the enqueue applies,
-// so the task row names the head the admission judged and carries the expiry
-// reason only for a validated expiry. The budget and the admission must have
-// read one head: a gate that names another head means the PR moved between
-// the two reads, and the run is refused so the caller judges the new head.
-func admittedGate(ctx context.Context, gate ReviewGate, d admissionDecision) (ReviewGate, error) {
-	if d.Head == "" {
-		return gate, nil
-	}
-	if gate.Head != "" && gate.Head != d.Head {
-		return ReviewGate{}, ErrReviewHeadMoved
-	}
-	gate.Expired = d.Expired
-	gate.Pin = d.Head
-	return gate, nil
 }
 
 // TriageContextType marks a task as a Triage run in its context JSONB
@@ -252,23 +126,4 @@ func IsTriageTask(t db.AgentTaskQueue) bool {
 		Type string `json:"type"`
 	}
 	return json.Unmarshal(t.Context, &payload) == nil && payload.Type == TriageContextType
-}
-
-// guardAgentNotPaused refuses a run for an agent whose scheduling is paused. A
-// missing agent row is left to the insert that follows.
-func guardAgentNotPaused(ctx context.Context, q *db.Queries, agentID pgtype.UUID) error {
-	if !agentID.Valid {
-		return nil
-	}
-	agent, err := q.GetAgent(ctx, agentID)
-	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		return fmt.Errorf("paused guard: load agent: %w", err)
-	}
-	if agent.SchedulingPausedAt.Valid {
-		return ErrAgentPaused
-	}
-	return nil
 }

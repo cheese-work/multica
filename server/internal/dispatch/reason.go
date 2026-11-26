@@ -15,7 +15,6 @@ package dispatch
 type ReasonCode string
 
 const (
-	ReasonProjectInactive ReasonCode = "project_inactive"
 	// ReasonQueued / ReasonCoalesced / ReasonDeferred are the success-path codes.
 	ReasonQueued    ReasonCode = "queued"
 	ReasonCoalesced ReasonCode = "coalesced"
@@ -90,33 +89,6 @@ const (
 	// nothing is pending — the trigger is answered by accepting the issue out of
 	// Triage, not by waiting.
 	ReasonIssueInTriage ReasonCode = "issue_in_triage"
-	// ReasonIntakeHold: the workspace's intake_hold setting holds the issue in
-	// backlog (CHE-6911), so no run derived from it starts. A property of the
-	// ISSUE, enumeration-safe like ReasonIssueInTriage. A member naming an agent
-	// by hand, or a person's release of the issue, runs again.
-	ReasonIntakeHold ReasonCode = "intake_hold"
-	// ReasonRunBudgetExhausted: the issue used the run budget its workflow
-	// allows (CHE-2152), so no run derived from it starts. A property of the
-	// issue like ReasonIssueInTriage; a person unblocking the issue, or
-	// naming an agent by hand, runs again.
-	ReasonRunBudgetExhausted ReasonCode = "run_budget_exhausted"
-	// ReasonStageQueueFull: the PR's bottleneck stage (cross-lab review, device
-	// lane or browser lane) already runs its capacity of PRs (CHE-3611). The PR
-	// is listed as queued and runs when a slot frees; nothing is lost. A property
-	// of the stage, not of the target, so it is enumeration-safe.
-	ReasonStageQueueFull ReasonCode = "stage_queue_full"
-	// ReasonReviewHeadAnswered: the reviewer agent already posted a verdict,
-	// BLOCKED or NOT-RUN for the PR head the run would review (CHE-4649), so no
-	// run starts. A property of the issue and its head; a new head runs again.
-	ReasonReviewHeadAnswered ReasonCode = "review_head_answered"
-	// ReasonAgentPaused: the target agent is paused (CHE-5066), so no run is
-	// queued for it. A property of the agent; pick another agent by role.
-	ReasonAgentPaused ReasonCode = "agent_paused"
-	// ReasonAdmissionDeferred: the reviewer run was held back because the PR
-	// head is not admissible (CHE-4650): an admission check is failing, pending
-	// or missing, or the PR has a merge conflict. The deferral is on record for
-	// 24 h. A property of the PR, not of the target, so it is enumeration-safe.
-	ReasonAdmissionDeferred ReasonCode = "admission_deferred"
 	// ReasonProjectAccessBlocked: the issue is in a private project that the
 	// run's member or the agent's owner cannot access (MUL-8472). The caller
 	// already sees the issue, so the code reveals nothing new about it.
@@ -124,35 +96,10 @@ const (
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"
-	// ReasonProviderFailureCooldown means a recurring trigger was withheld after
-	// its latest provider server failure because no unused, healthy recovery was
-	// established before dispatch.
-	ReasonProviderFailureCooldown ReasonCode = "provider_failure_cooldown"
-	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
-	// run, but Cloud's effective workspace issue-count limit blocked the issue.
-	ReasonIssueLimitReached                   ReasonCode = "issue_limit_reached"
-	ReasonAgentCommentImplicitRouteSuppressed ReasonCode = "agent_comment_implicit_route_suppressed"
-	ReasonAgentCommentRequiresAgentMention    ReasonCode = "agent_comment_requires_agent_mention"
-	ReasonCommentTriggerRateLimited           ReasonCode = "comment_trigger_rate_limited"
+	// ReasonHandedToLeader: a squad member handed the issue to another member,
+	// but the squad's handoff guard (round or daily limit) sent it to the squad
+	// leader instead. The leader's run covers the comment.
+	ReasonHandedToLeader ReasonCode = "handed_to_leader"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
-	// ReasonProviderHold: the target resolves to a model provider a workspace
-	// policy has put on hold (CHE-588) — e.g. "stop routing to OpenAI-based
-	// agents" — so the trigger is refused before any runtime or network work
-	// happens. Kept APART from every runtime_* / agent_runtime_required code
-	// above and from ReasonTargetUnavailable, on purpose: those all mean "this
-	// cannot run" (broken machine, missing CLI, unbound runtime) and their
-	// remedies live on the machine or the agent's runtime binding. A provider
-	// hold means the opposite — the machine, the CLI, and the runtime binding
-	// are all fine, and running it anyway is exactly what must not happen. A
-	// client that collapses this into runtime_unusable or
-	// agent_runtime_required tells the user to reinstall a CLI or rebind a
-	// runtime that was never broken, sends them chasing a healthy machine, and
-	// hides the one fact that actually explains the refusal: a human decided
-	// this provider does not run right now. Without its own code the failure
-	// is indistinguishable from a live provider outage until someone reads the
-	// hold text by hand — see taskfailure.ReasonDispatchBlockedProviderHold for
-	// the matching failure_reason story once dispatch has already happened.
-	ReasonProviderHold    ReasonCode = "provider_hold"
-	ReasonProviderBreaker ReasonCode = "provider_breaker"
 )

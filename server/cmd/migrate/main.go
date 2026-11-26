@@ -3,16 +3,12 @@ package main
 import (
 	"context"
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -144,185 +140,84 @@ var pgBigmOperatorClass = extensionOperatorClass{
 // they are still pending: a fresh self-hosted install, which is exactly where an
 // interrupted build would otherwise leave a permanently unusable index.
 var concurrentIndexCleanups = map[string]string{
-	"942_issue_workflow_lint_override_log_idx":      "idx_issue_workflow_lint_override_workflow",
-	"9999918_skill_version_index":                   "idx_skill_version_skill_version",
-	"962_agent_task_queue_one_active_per_chat":      "idx_agent_task_queue_one_active_per_chat",
-	"901_workspace_audit_event_workspace_at_index":  "idx_workspace_audit_event_workspace_at",
-	"881_decision_request_proposal_fingerprint_idx": "idx_decision_request_open_proposal",
-	"893_issue_search_text_title_trgm_idx":          "idx_issue_search_text_title_trgm",
-	"894_issue_search_text_description_trgm_idx":    "idx_issue_search_text_description_trgm",
-	"895_comment_search_text_content_trgm_idx":      "idx_comment_search_text_content_trgm",
-	"937_system1_observation_decision_subject_idx":  "system1_observation_decision_subject",
-	"938_system1_observation_precedent_idx":         "system1_observation_precedent",
-	"939_system1_observation_routing_subject_idx":   "system1_observation_routing_subject",
-	"994_ci_watch_config_repo_uidx":                 "ci_watch_config_repo_uidx",
-	"995_ci_failure_event_run_attempt_uidx":         "ci_failure_event_run_attempt_uidx",
-	"996_ci_watch_action_key_uidx":                  "ci_watch_action_key_uidx",
-	"997_ci_signature_owner_signature_uidx":         "ci_signature_owner_signature_uidx",
-	"998_ci_signature_owner_issue_uidx":             "ci_signature_owner_issue_uidx",
-	"999n_task_pr_event_delivery_wakeup_idx":        "task_pr_event_delivery_wakeup_idx",
-	"999n_daemon_update_cycle_fire_uidx":            "daemon_update_cycle_fire_uidx",
-	"999o_daemon_update_cycle_open_uidx":            "daemon_update_cycle_open_uidx",
-	"999_ci_failure_event_created_at_idx":           "ci_failure_event_created_at_idx",
-	"999c_ci_watch_event_notify_uidx":               "ci_watch_event_notify_uidx",
-	"9999939_agent_task_handoff_dispatch_idx":       "agent_task_queue_handoff_dispatch_uidx",
-	"999f_task_supplement_replay_due_idx":           "task_supplement_replay_due_idx",
-	"9992_system1_observation_ci_event_subject_idx": "system1_observation_ci_event_subject",
-	"99953_system1_observation_route_event_id_idx":  "system1_observation_route_event_idx",
-	"99961_browser_profile_name_idx":                "browser_profile_workspace_name_uidx",
-	"99962_browser_instance_name_idx":               "browser_instance_workspace_name_uidx",
-	"99963_browser_lease_one_holder_idx":            "browser_lease_one_holder_uidx",
-	"99973_system1_epoch_open_idx":                  "system1_epoch_open",
-	"99964_browser_lease_epoch_idx":                 "browser_lease_instance_epoch_uidx",
-	"99964b_browser_gateway_credential_hash_idx":    "browser_gateway_credential_hash_uidx",
-	"99964d_browser_profile_member_idx":             "browser_profile_member_uidx",
-	"99964e_browser_profile_agent_idx":              "browser_profile_agent_uidx",
-	"999l_agent_task_queue_task_key_idx":            "idx_agent_task_queue_task_key",
-	"999r_issue_step_watchdog_action_uidx":          "issue_step_watchdog_action_occurrence_uidx",
-	"975_chat_session_chain_root_idx":               "idx_chat_session_chain_root",
-	"999z_decision_backing_lane_uidx":               "decision_backing_lane_member_topic_uidx",
-	"898_issue_workspace_updated_at_idx":            "idx_issue_workspace_updated_at",
-	"899a_issue_search_text_title_grams_idx":        "idx_issue_search_text_title_grams",
-	// v0.10.0 merge (CHE-7023): migrations that build an index concurrently on up
-	// but were never registered. Without a hook an interrupted build leaves an
-	// INVALID index that `IF NOT EXISTS` skips on retry.
-	"999r_merge_queue_intake_removal_uidx":                      "merge_queue_intake_removal_uidx",
-	"999s_merge_queue_epoch_key_uidx":                           "merge_queue_epoch_key_uidx",
-	"999t_merge_queue_association_active_uidx":                  "merge_queue_association_active_uidx",
-	"999u_merge_queue_wait_unmet_uidx":                          "merge_queue_wait_unmet_uidx",
-	"999v_merge_queue_pr_close_uidx":                            "merge_queue_pr_close_uidx",
-	"999w_merge_queue_enqueue_event_node_uidx":                  "merge_queue_enqueue_event_node_uidx",
-	"999x_merge_queue_state_pr_uidx":                            "merge_queue_state_pr_uidx",
-	"999l_issue_wakeup_receipt_pr_event_id_idx":                 "idx_issue_wakeup_receipt_pr_event_id",
-	"99g_issue_wakeup_receipt_started_pr_event_idx":             "idx_issue_wakeup_receipt_pr_event_id_task",
-	"9999969_activity_log_status_moves_idx":                     "idx_activity_log_status_moves",
-	"9999971_issue_handoff_operation_created_idx":               "idx_issue_handoff_operation_created",
-	"910_ask_guard_event_intent_target_index":                   "idx_ask_guard_event_intent_target",
-	"911_ask_guard_event_request_index":                         "idx_ask_guard_event_cleared_by_request",
-	"915_ask_recovery_notice_event_index":                       "idx_ask_recovery_notice_event",
-	"916_ask_recovery_notice_comment_index":                     "idx_ask_recovery_notice_comment",
-	"918_ask_repair_root_task_index":                            "idx_ask_repair_root_task",
-	"99970_system1_label_labeller_key_idx":                      "system1_label_labeller_key",
-	"99991_attachment_revision_chain_idx":                       "attachment_revision_chain_uniq",
-	"99996_dm_progress_pending_lineage_created_idx":             "dm_progress_pending_lineage_created_idx",
-	"999h_weekly_run_guard_refusal_open_uidx":                   "weekly_run_guard_refusal_open_uidx",
-	"999i_weekly_run_guard_allowance_issue_idx":                 "weekly_run_guard_allowance_issue_idx",
-	"999j_weekly_run_guard_refusal_action_idx":                  "weekly_run_guard_refusal_action_idx",
-	"999k_issue_wakeup_receipt_head_sha_idx":                    "issue_wakeup_receipt_head_sha_idx",
-	"99957_review_admission_deferral_key":                       "review_admission_deferral_issue_agent_idx",
-	"976_chat_attention_item_one_open_later_idx":                "chat_attention_item_one_open_later_idx",
-	"977_chat_attention_item_open_idx":                          "chat_attention_item_open_idx",
-	"979_chat_message_client_message_id_idx":                    "chat_message_client_message_id_idx",
-	"971_dm_progress_data_incident_follow_kind_idx":             "idx_dm_progress_data_incident_follow_kind",
-	"944_decision_wake_event_request_seq_idx":                   "decision_wake_event_request_seq_uidx",
-	"945_decision_wake_receipt_event_recipient_idx":             "decision_wake_receipt_event_recipient_uidx",
-	"957_agent_task_queue_runtime_active_index":                 "idx_agent_task_queue_runtime_active",
-	"955_wecom_install_session_begin_rate_idx":                  "idx_wecom_install_session_begin_rate",
-	"954_wecom_install_session_agent_pending_idx":               "idx_wecom_install_session_agent_pending",
-	"953_wecom_install_session_request_idx":                     "idx_wecom_install_session_request",
-	"952_wecom_install_session_due_idx":                         "idx_wecom_install_session_due",
-	"888_issue_search_text_workspace_idx":                       "idx_issue_search_text_workspace",
-	"889_comment_search_text_workspace_idx":                     "idx_comment_search_text_workspace",
-	"908_wakeup_decision_request_index":                         "idx_issue_wakeup_decision_request",
-	"906_ask_guard_event_operation_key":                         "idx_ask_guard_event_operation_key",
-	"865_idx_recovery_claim_workspace_issue":                    "recovery_claim_workspace_issue_idx",
-	"864_idx_recovery_claim_failed_task":                        "recovery_claim_failed_task_idx",
-	"861_agent_task_event_index":                                "idx_agent_task_event_ws_runtime_at",
-	"860_ops_snapshot_ws_bucket_index":                          "idx_ops_snapshot_ws_bucket",
-	"815_agent_decision_reliance_instance":                      "agent_decision_reliance_instance_idx",
-	"810_agent_decision_events_index":                           "agent_decision_events_idx",
-	"811_agent_decision_scope_candidate_gate_index":             "agent_decision_scope_candidate_gate_uidx",
-	"747_decision_action_request_index":                         "idx_decision_action_request",
-	"787_passkey_assertion_open":                                "uq_passkey_assertion_open",
-	"788_passkey_enroll_open":                                   "uq_passkey_enroll_open",
-	"789_user_passkey_credential":                               "uq_user_passkey_credential",
-	"790_idx_user_passkey_user":                                 "idx_user_passkey_user",
-	"792_idx_passkey_event_user":                                "idx_passkey_event_user",
-	"735_agent_preset_one_default_uq":                           "agent_preset_one_default_uq",
-	"734_agent_preset_agent_name_uq":                            "agent_preset_agent_name_uq",
-	"762_run_budget_notice_unique":                              "idx_one_run_budget_notice_per_window",
-	"763_run_budget_notice_workspace_index":                     "idx_run_budget_notice_workspace_id",
-	"903_run_budget_refusal_unique":                             "idx_one_run_budget_refusal_per_window",
-	"805_issue_run_budget_entry_unique":                         "idx_one_issue_run_budget_entry",
-	"806_issue_run_budget_entry_workspace_index":                "idx_issue_run_budget_entry_workspace_id",
-	"759_issue_pr_event_dedupe_index":                           "idx_issue_pr_event_dedupe",
-	"760_issue_pr_event_latest_index":                           "idx_issue_pr_event_latest",
-	"770_task_pr_event_capability_index":                        "task_pr_event_capability_task_uidx",
-	"772_task_pr_event_delivery_key_index":                      "task_pr_event_delivery_key_uidx",
-	"799_decision_topic_index":                                  "idx_chat_session_decision_topic",
-	"738_agent_task_process_cleanup_index":                      "idx_agent_task_queue_process_cleanup",
-	"749_github_revision_id":                                    "idx_github_webhook_revision_id",
-	"750_github_dispatch_revision_key":                          "idx_github_webhook_dispatch_revision_key",
-	"728_github_revision_identity":                              "idx_github_webhook_revision_identity",
-	"740_github_webhook_dispatch_key":                           "idx_github_webhook_dispatch_key",
-	"741_github_webhook_worker_due":                             "idx_github_webhook_worker_due",
-	"723_github_webhook_delivery_unique_index":                  "idx_github_webhook_delivery_guid",
-	"724_github_webhook_revision_unique_index":                  "idx_github_webhook_revision_key",
-	"704_workflow_webhook_endpoint_name_index":                  "workflow_webhook_endpoint_workflow_name_uidx",
-	"705_workflow_webhook_nonce_seen_index":                     "workflow_webhook_nonce_endpoint_seen_idx",
-	"706_workflow_webhook_event_ref_index":                      "workflow_webhook_event_ref_uidx",
-	"707_workflow_webhook_event_issue_index":                    "workflow_webhook_event_endpoint_issue_idx",
-	"702_chat_wakeup_pending_index":                             "idx_chat_wakeup_pending",
-	"802_idx_run_capability_grant_issue":                        "idx_run_capability_grant_issue",
-	"849_idx_provider_failure_recovery_wakeup":                  "provider_failure_recovery_wakeup_idx",
-	"868_host_sample_key_idx":                                   "host_sample_key_idx",
-	"876_chat_task_supplement_task_status_idx":                  "chat_task_supplement_task_status_idx",
-	"797_chat_wakeup_fired_task_index":                          "idx_chat_wakeup_fired_task",
-	"695_issue_relations_description_trgm_index":                "idx_issue_description_trgm",
-	"696_issue_relations_comment_content_trgm_index":            "idx_comment_content_trgm",
-	"621_chat_fork_operation_index":                             "chat_session_fork_operation_idx",
-	"628_notification_channel_preference_index":                 "notification_channel_preference_key_uidx",
-	"651_inbox_item_dedupe_index":                               "idx_inbox_item_dedupe_unread",
-	"652_inbox_item_updated_listing_index":                      "idx_inbox_item_active_updated",
-	"841_push_subscription_endpoint_index":                      "push_subscription_endpoint_uidx",
-	"842_push_subscription_user_index":                          "push_subscription_user_idx",
-	"844_push_delivery_key_index":                               "push_delivery_record_subscription_uidx",
-	"845_push_delivery_due_index":                               "push_delivery_due_idx",
-	"615_decision_request_comment_v2_index":                     "comment_decision_request_kind_v2_uidx",
-	"598_decision_request_id_index":                             "decision_request_id_uidx",
-	"599_decision_intent_id_index":                              "decision_intent_id_uidx",
-	"601_decision_answer_id_index":                              "decision_answer_id_uidx",
-	"602_decision_target_identity_index":                        "decision_intent_target_uidx",
-	"603_decision_live_answer_index":                            "decision_answer_live_uidx",
-	"604_decision_open_intent_index":                            "decision_intent_open_task_uidx",
-	"605_decision_answer_comment_index":                         "comment_decision_answer_kind_uidx",
-	"606_decision_request_comment_index":                        "comment_decision_request_kind_uidx",
-	"607_decision_answer_messages_index":                        "decision_answer_messages_idx",
-	"608_decision_request_scope_index":                          "decision_request_scope_idx",
-	"609_decision_worker_lease_name_index":                      "decision_worker_lease_name_uidx",
-	"610_decision_class_change_request_index":                   "decision_class_change_request_idx",
-	"611_decision_answer_request_index":                         "decision_answer_request_idx",
-	"629_chat_session_title_trgm_index":                         "idx_chat_session_title_trgm",
-	"571_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
-	"570_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",
-	"560_agent_task_history_page_index":                         "idx_agent_task_queue_history_page",
-	"572_governance_budget_window_overlap_idx":                  "governance_budget_window_overlap_idx",
-	"573_governance_budget_reservation_open_window_idx":         "governance_budget_reservation_open_window_idx",
-	"99zz41_chat_submission_receipt_key":                        "uq_chat_submission_receipt_key",
-	"99zz42_chat_submission_receipt_workspace":                  "idx_chat_submission_receipt_workspace",
-	"99zz38_task_context_receipt_issue_idx":                     "idx_task_context_receipt_issue",
-	"99zz37_task_context_receipt_workspace_idx":                 "idx_task_context_receipt_workspace",
-	"99zz35_project_subscriber_user_idx":                        "idx_project_subscriber_workspace_user",
-	"99zz32_issue_member_creator_index":                         "idx_issue_workspace_member_creator",
-	"99zz31_issue_requester_index":                              "idx_issue_workspace_requester",
-	"99zz29_issue_environment_config_issue_idx":                 "idx_issue_environment_config_issue",
-	"99zz28_issue_environment_command_logs_idx":                 "idx_issue_environment_command_logs",
-	"99zz27_issue_environment_command_issue_idx":                "idx_issue_environment_command_issue",
-	"99zz26_issue_environment_command_pending_idx":              "idx_issue_environment_command_pending",
-	"99zz22_issue_environment_issue_idx":                        "idx_issue_environment_issue",
-	"99zz21_issue_environment_task_key_idx":                     "uq_issue_environment_task_key",
-	"99zz19_project_member_user_idx":                            "idx_project_member_workspace_user",
-	"99zz15_app_action_request_chat_idx":                        "idx_app_action_request_chat",
-	"99zz14_app_tool_call_issue_idx":                            "idx_app_tool_call_issue",
-	"99zz13_app_action_request_task_idx":                        "idx_app_action_request_task",
-	"99zz12_app_tool_call_workspace_idx":                        "idx_app_tool_call_workspace",
-	"99zz11_app_action_request_pending_idx":                     "idx_app_action_request_pending",
-	"99zz10_app_action_request_issue_idx":                       "idx_app_action_request_issue",
-	"99zz09_app_action_rule_scope_idx":                          "idx_app_action_rule_scope",
-	"99zz08_agent_app_workspace_toolkit_idx":                    "idx_agent_app_workspace_toolkit",
-	"99zz07_agent_app_agent_toolkit_idx":                        "idx_agent_app_agent_toolkit",
-	"99zz06_workspace_composio_connection_status_idx":           "idx_workspace_composio_connection_status",
-	"99zz05_workspace_composio_connection_account_idx":          "idx_workspace_composio_connection_account",
+	"753_agent_task_queue_doc_idx":                              "idx_agent_task_queue_doc",
+	"749_app_tool_call_quota_period_scope_idx":                  "uq_app_tool_call_quota_period_scope",
+	"751_app_tool_call_workspace_metered_idx":                   "idx_app_tool_call_workspace_metered",
+	"736_task_usage_hourly_squad_uq_idx":                        "uq_task_usage_hourly_squad_key_idx",
+	"737_task_usage_hourly_dirty_squad_uq_idx":                  "uq_task_usage_hourly_dirty_squad_key_idx",
+	"738_task_usage_hourly_workspace_squad_idx":                 "idx_task_usage_hourly_workspace_squad_time",
+	"744_issue_blocker_unique":                                  "issue_blocker_unique",
+	"745_issue_blocker_reverse":                                 "issue_blocker_reverse",
+	"733_comment_idempotency_receipt_key":                       "uq_comment_idempotency_receipt_key",
+	"734_comment_idempotency_receipt_created":                   "idx_comment_idempotency_receipt_created",
+	"729_remote_app_connection_workspace_idx":                   "uq_remote_app_connection_owner_ws",
+	"720_remote_app_oauth_client_idx":                           "uq_remote_app_oauth_client_app_redirect",
+	"721_remote_app_connection_owner_idx":                       "uq_remote_app_connection_owner",
+	"676_chat_wakeup_due_idx":                                   "idx_chat_wakeup_due",
+	"677_chat_wakeup_session_idx":                               "idx_chat_wakeup_session",
+	"678_chat_wakeup_requester_idx":                             "idx_chat_wakeup_requester",
+	"680_entitlement_limit_overage_scope_idx":                   "uq_entitlement_limit_overage_scope",
+	"682_project_folder_name_idx":                               "uq_project_folder_workspace_name",
+	"684_entitlement_feature_attempt_scope_idx":                 "uq_entitlement_feature_attempt_scope",
+	"686_doc_folder_pkey_index":                                 "doc_folder_pkey_idx",
+	"688_doc_pkey_index":                                        "doc_pkey_idx",
+	"690_doc_version_pkey_index":                                "doc_version_pkey_idx",
+	"692_doc_folder_workspace_idx":                              "doc_folder_workspace_idx",
+	"693_doc_workspace_idx":                                     "doc_workspace_idx",
+	"694_doc_version_workspace_idx":                             "doc_version_workspace_idx",
+	"696_inbox_item_active_shown_idx":                           "idx_inbox_active_shown",
+	"698_autopilot_run_idempotency_key_idx":                     "uq_autopilot_run_idempotency_key",
+	"701_member_search_access_pkey_index":                       "member_search_access_pkey_idx",
+	"704_doc_comment_pkey_index":                                "doc_comment_pkey_idx",
+	"706_doc_comment_doc_idx":                                   "doc_comment_doc_idx",
+	"707_doc_comment_workspace_idx":                             "doc_comment_workspace_idx",
+	"708_attachment_workspace_size_idx":                         "idx_attachment_workspace_size",
+	"712_dashboard_range_view_scope_idx":                        "uq_dashboard_range_view_scope",
+	"714_doc_collab_state_pkey_index":                           "doc_collab_state_pkey_idx",
+	"716_doc_revision_pkey_index":                               "doc_revision_pkey_idx",
+	"724_issue_description_collab_state_pkey_index":             "issue_description_collab_state_pkey_idx",
+	"726_issue_description_revision_pkey_index":                 "issue_description_revision_pkey_idx",
+	"671_weixin_account_state_unique_index":                     "weixin_account_state_pkey",
+	"669_weixin_login_session_unique_index":                     "weixin_login_session_pkey",
+	"666_weixin_login_expiry_idx":                               "weixin_login_expiry_idx",
+	"662_chat_task_supplement_message":                          "uq_chat_task_supplement_message",
+	"663_chat_task_supplement_task":                             "idx_chat_task_supplement_task",
+	"664_chat_task_supplement_workspace":                        "idx_chat_task_supplement_workspace",
+	"654_chat_submission_receipt_key":                           "uq_chat_submission_receipt_key",
+	"655_chat_submission_receipt_workspace":                     "idx_chat_submission_receipt_workspace",
+	"651_task_context_receipt_issue_idx":                        "idx_task_context_receipt_issue",
+	"650_task_context_receipt_workspace_idx":                    "idx_task_context_receipt_workspace",
+	"648_project_subscriber_user_idx":                           "idx_project_subscriber_workspace_user",
+	"645_issue_member_creator_index":                            "idx_issue_workspace_member_creator",
+	"644_issue_requester_index":                                 "idx_issue_workspace_requester",
+	"642_issue_environment_config_issue_idx":                    "idx_issue_environment_config_issue",
+	"641_issue_environment_command_logs_idx":                    "idx_issue_environment_command_logs",
+	"640_issue_environment_command_issue_idx":                   "idx_issue_environment_command_issue",
+	"639_issue_environment_command_pending_idx":                 "idx_issue_environment_command_pending",
+	"635_issue_environment_issue_idx":                           "idx_issue_environment_issue",
+	"634_issue_environment_task_key_idx":                        "uq_issue_environment_task_key",
+	"632_project_member_user_idx":                               "idx_project_member_workspace_user",
+	"628_app_action_request_chat_idx":                           "idx_app_action_request_chat",
+	"627_app_tool_call_issue_idx":                               "idx_app_tool_call_issue",
+	"626_app_action_request_task_idx":                           "idx_app_action_request_task",
+	"625_app_tool_call_workspace_idx":                           "idx_app_tool_call_workspace",
+	"624_app_action_request_pending_idx":                        "idx_app_action_request_pending",
+	"623_app_action_request_issue_idx":                          "idx_app_action_request_issue",
+	"622_app_action_rule_scope_idx":                             "idx_app_action_rule_scope",
+	"621_agent_app_workspace_toolkit_idx":                       "idx_agent_app_workspace_toolkit",
+	"620_agent_app_agent_toolkit_idx":                           "idx_agent_app_agent_toolkit",
+	"619_workspace_composio_connection_status_idx":              "idx_workspace_composio_connection_status",
+	"618_workspace_composio_connection_account_idx":             "idx_workspace_composio_connection_account",
+	"613_skill_version_index":                                   "idx_skill_version_skill_version",
+	"606_agent_task_queue_runtime_active_index":                 "idx_agent_task_queue_runtime_active",
+	"604_wecom_install_session_begin_rate_idx":                  "idx_wecom_install_session_begin_rate",
+	"603_wecom_install_session_agent_pending_idx":               "idx_wecom_install_session_agent_pending",
+	"602_wecom_install_session_request_idx":                     "idx_wecom_install_session_request",
+	"601_wecom_install_session_due_idx":                         "idx_wecom_install_session_due",
+	"594_agent_task_process_cleanup_index":                      "idx_agent_task_queue_process_cleanup",
+	"563_search_index_change_changed_at_index":                  "idx_search_index_change_changed_at",
+	"562_search_index_change_workspace_index":                   "idx_search_index_change_workspace_xid",
+	"552_agent_task_history_page_index":                         "idx_agent_task_queue_history_page",
 	"535_github_pr_address_index":                               "idx_github_pull_request_pr_owner_repo",
 	"539_task_supplement_request_index":                         "task_supplement_task_request_uidx",
 	"540_task_supplement_capability_index":                      "task_supplement_capability_task_uidx",
@@ -330,40 +225,13 @@ var concurrentIndexCleanups = map[string]string{
 	"546_issue_pr_automation_workspace_index":                   "idx_issue_pr_automation_workspace",
 	"547_issue_pull_request_exclusion_workspace_index":          "idx_issue_pull_request_exclusion_workspace",
 	"548_task_supplement_comment_task_index":                    "task_supplement_comment_task_uidx",
-	"658_issue_workflow_pkey_index":                             "issue_workflow_pkey_uidx",
-	"660_issue_workflow_workspace_name_index":                   "idx_issue_workflow_workspace_name",
-	"665_issue_workflow_default_index":                          "idx_issue_workflow_workspace_default",
-	"677_issue_workflow_override_index":                         "idx_issue_workflow_override",
-	"851_comment_supersession_issue_index":                      "idx_comment_supersession_issue",
-	"700_comment_trigger_rate_limit_unique_index":               "comment_trigger_rate_limit_issue_agent_uidx",
-	"675_issue_ci_advance_index":                                "idx_issue_ci_advance_issue_head",
-	"562_wakeup_expiry_index":                                   "issue_wakeup_expiry_idx",
-	"564_wakeup_system_rule_index":                              "issue_wakeup_system_rule_idx",
-	"567_issue_child_event_id":                                  "issue_child_event_id_idx",
-	"568_issue_child_event_pending":                             "issue_child_event_pending_idx",
-	"579_pr_wakeup_event_identity_index":                        "issue_wakeup_pr_event_identity_idx",
-	"582_wakeup_definition_identity_index":                      "issue_wakeup_definition_identity_idx",
-	"584_wakeup_default_scope_index":                            "issue_wakeup_default_scope_idx",
-	"586_wakeup_aggregate_budget_identity_index":                "wakeup_aggregate_budget_identity_idx",
-	"587_wakeup_aggregate_reservation_identity_index":           "wakeup_aggregate_reservation_identity_idx",
-	"588_wakeup_aggregate_reservation_window_index":             "wakeup_aggregate_reservation_window_idx",
-	"589_wakeup_aggregate_blocked_index":                        "issue_wakeup_aggregate_blocked_idx",
-	"923_dm_progress_follow_issue_lineage_idx":                  "idx_dm_progress_follow_issue_lineage",
-	"924_dm_progress_follow_lineage_idx":                        "idx_dm_progress_follow_lineage",
-	"933_issue_wakeup_followup_uidx":                            "issue_wakeup_followup_instance_uidx",
-	"591_wakeup_aggregate_reservation_age_index":                "wakeup_aggregate_reservation_age_idx",
-	"632_wakeup_scoped_event_id_index":                          "wakeup_scoped_event_id_idx",
-	"633_wakeup_scoped_event_pending_index":                     "wakeup_scoped_event_pending_idx",
-	"634_wakeup_scoped_event_handled_index":                     "wakeup_scoped_event_handled_idx",
-	"635_wakeup_scoped_event_issue_index":                       "wakeup_scoped_event_issue_idx",
-	"641_wakeup_definition_sweep_index":                         "issue_wakeup_definition_sweep_idx",
-	"642_issue_project_keyset_index":                            "idx_issue_project_id_keyset",
-	"643_wakeup_capacity_held_index":                            "issue_wakeup_capacity_held_idx",
-	"644_wakeup_scoped_event_delayed_index":                     "wakeup_scoped_event_delayed_idx",
-	"558_governance_budget_reservation_attempt_obligation_uidx": "governance_budget_reservation_attempt_obligation_uidx",
-	"557_governance_budget_outbox_due_idx":                      "governance_budget_outbox_due_idx",
-	"556_governance_budget_reservation_root_window_idx":         "governance_budget_reservation_root_window_idx",
-	"555_governance_budget_reservation_receipt_idx":             "governance_budget_reservation_receipt_uidx",
+	"574_issue_workflow_pkey_index":                             "issue_workflow_pkey_uidx",
+	"576_issue_workflow_workspace_name_index":                   "idx_issue_workflow_workspace_name",
+	"582_issue_workflow_default_index":                          "idx_issue_workflow_workspace_default",
+	"554_wakeup_expiry_index":                                   "issue_wakeup_expiry_idx",
+	"556_wakeup_system_rule_index":                              "issue_wakeup_system_rule_idx",
+	"559_issue_child_event_id":                                  "issue_child_event_id_idx",
+	"560_issue_child_event_pending":                             "issue_child_event_pending_idx",
 	"566_channel_typing_reaction_id_idx":                        "channel_typing_reaction_id_idx",
 	"567_channel_typing_reaction_retry_idx":                     "channel_typing_reaction_retry_idx",
 	"568_channel_typing_reaction_gc_idx":                        "channel_typing_reaction_gc_idx",
@@ -394,15 +262,9 @@ var concurrentIndexCleanups = map[string]string{
 	"486_maintenance_job_id_index":                              "idx_maintenance_job_id",
 	"487_maintenance_job_idempotency_index":                     "idx_maintenance_job_idempotency",
 	"488_maintenance_job_active_index":                          "idx_maintenance_job_active",
-	"680_cloud_agent_connection_provider_index":                 "cloud_agent_connection_provider_index",
-	"683_member_delegation_day_unique_index":                    "member_delegation_day_user_date_uidx",
-	"712_github_workflow_run_identity_index":                    "github_workflow_run_identity_uidx",
-	"713_github_workflow_run_head_sha_index":                    "github_workflow_run_head_sha_idx",
-	"714_github_workflow_run_updated_at_index":                  "github_workflow_run_updated_at_idx",
-	"716_github_workflow_job_identity_index":                    "github_workflow_job_identity_uidx",
-	"717_github_workflow_job_run_attempt_index":                 "github_workflow_job_run_attempt_idx",
-	"718_github_workflow_job_updated_at_index":                  "github_workflow_job_updated_at_idx",
-	"949_issue_unread_unique_index":                             "issue_unread_workspace_user_issue_uidx",
+	"587_cloud_agent_connection_provider_index":                 "cloud_agent_connection_provider_index",
+	"590_member_delegation_day_unique_index":                    "member_delegation_day_user_date_uidx",
+	"598_issue_unread_unique_index":                             "issue_unread_workspace_user_issue_uidx",
 	"035_task_queue_issue_id_index":                             "idx_agent_task_queue_issue_id",
 	"067_task_queue_claim_candidate_index":                      "idx_agent_task_queue_claim_candidates",
 	"074_task_usage_updated_at_index":                           "idx_task_usage_updated_at",
@@ -572,310 +434,7 @@ var concurrentIndexCleanups = map[string]string{
 	"480_instance_telemetry_state_singleton_index":              "instance_telemetry_state_singleton_uidx",
 	"482_agent_task_queue_telemetry_started_index":              "idx_agent_task_queue_telemetry_started",
 	"484_issue_triage_state_index":                              "idx_issue_triage_state",
-	"501_protocol_lint_run_checked_at_idx":                      "idx_protocol_lint_run_checked_at",
-	"503_issue_checkpoint_owner_uidx":                           "uq_issue_checkpoint_owner",
-	"505_github_merge_announcement_identity_uidx":               "uq_github_merge_announcement_identity",
-	"506_github_merge_announcement_pending_idx":                 "idx_github_merge_announcement_pending_claim",
-	"508_agent_task_rerun_lineage_unique":                       "idx_one_live_rerun_per_source_task_actor",
-	"510_stage_completion_wake_unique":                          "idx_one_wake_per_parent_stage_generation",
-	"511_stage_generation_workspace_index":                      "idx_stage_generation_workspace_id",
-	"512_stage_completion_wake_workspace_index":                 "idx_stage_completion_wake_workspace_id",
-	"514_governance_receipt_comment_idx":                        "idx_governance_receipt_comment_id",
-	"516_provenance_export_log_workspace_idx":                   "idx_provenance_export_log_workspace_created",
-	"519_governance_case_identity_uidx":                         "uq_governance_case_identity_generation",
-	"520_governance_case_material_fingerprint_uidx":             "uq_governance_case_material_fingerprint",
-	"521_governance_case_workspace_created_idx":                 "idx_governance_case_workspace_created",
-	"522_governance_case_transition_identity_uidx":              "uq_governance_case_transition_revision",
-	"523_governance_case_transition_cause_uidx":                 "uq_governance_case_transition_cause",
-	"524_governance_case_transition_workspace_created_idx":      "idx_governance_case_transition_workspace_created",
-	"525_governance_attempt_identity_uidx":                      "uq_governance_attempt_case_ordinal",
-	"526_governance_attempt_active_agent_uidx":                  "uq_governance_attempt_active_agent",
-	"527_governance_attempt_workspace_deadline_idx":             "idx_governance_attempt_workspace_deadline",
-	"528_governance_evaluation_workspace_captured_idx":          "idx_governance_evaluation_workspace_captured",
-	"529_governance_evaluation_source_identity_uidx":            "uq_governance_evaluation_source_identity",
-	"530_governance_evaluation_source_workspace_object_idx":     "idx_governance_evaluation_source_workspace_object",
 	"537_issue_duplicate_of_index":                              "idx_issue_duplicate_of",
-	"532_governance_attempt_workspace_case_created_idx":         "idx_governance_attempt_workspace_case_created",
-	"533_governance_attempt_workspace_created_idx":              "idx_governance_attempt_workspace_created",
-	"534_governance_evaluation_workspace_case_captured_idx":     "idx_governance_evaluation_workspace_case_captured",
-	"535_governance_case_transition_workspace_case_created_idx": "idx_governance_case_transition_workspace_case_created",
-	"536_governance_receipt_workspace_comment_created_idx":      "idx_governance_receipt_workspace_comment_created",
-	"552_governance_concurrency_guard_identity":                 "governance_concurrency_guard_identity_uidx",
-	"553_governance_concurrency_hold_identity":                  "governance_concurrency_hold_identity_uidx",
-	"930_decision_wait_open_issue_idx":                          "decision_wait_open_issue_idx",
-}
-
-type requiredConcurrentIndex struct {
-	IndexRegclass string
-	TableRegclass string
-	Unique        bool
-	Columns       []string
-	Predicate     string
-}
-
-var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
-	"999r_merge_queue_intake_removal_uidx": {
-		IndexRegclass: "merge_queue_intake_removal_uidx",
-		TableRegclass: "merge_queue_intake",
-		Unique:        true,
-		Columns:       []string{"removal_node_id"},
-		Predicate:     "removal_node_id IS NOT NULL",
-	},
-	"999s_merge_queue_epoch_key_uidx": {
-		IndexRegclass: "merge_queue_epoch_key_uidx",
-		TableRegclass: "merge_queue_epoch",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "cause_key", "epoch_no"},
-	},
-	"999t_merge_queue_association_active_uidx": {
-		IndexRegclass: "merge_queue_association_active_uidx",
-		TableRegclass: "merge_queue_association",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "pr_number", "cause_key"},
-		Predicate:     "ended_at IS NULL",
-	},
-	"999u_merge_queue_wait_unmet_uidx": {
-		IndexRegclass: "merge_queue_wait_unmet_uidx",
-		TableRegclass: "merge_queue_wait",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "pr_number", "issue_id"},
-		Predicate:     "state = 'unmet'::text",
-	},
-	"999v_merge_queue_pr_close_uidx": {
-		IndexRegclass: "merge_queue_pr_close_uidx",
-		TableRegclass: "merge_queue_pr_close",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "pr_number", "closed_at"},
-	},
-	"999w_merge_queue_enqueue_event_node_uidx": {
-		IndexRegclass: "merge_queue_enqueue_event_node_uidx",
-		TableRegclass: "merge_queue_enqueue_event",
-		Unique:        true,
-		Columns:       []string{"node_id"},
-	},
-	"999x_merge_queue_state_pr_uidx": {
-		IndexRegclass: "merge_queue_state_pr_uidx",
-		TableRegclass: "merge_queue_state",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "pr_number"},
-	},
-	"962_agent_task_queue_one_active_per_chat": {
-		IndexRegclass: "idx_agent_task_queue_one_active_per_chat",
-		TableRegclass: "agent_task_queue",
-		Unique:        true,
-		Columns:       []string{"chat_session_id"},
-		// Postgres stores IN (...) as = ANY (ARRAY[...]) in indpred.
-		Predicate: "chat_session_id IS NOT NULL AND status = ANY (ARRAY['dispatched'::text, 'waiting_local_directory'::text, 'running'::text])",
-	},
-	"994_ci_watch_config_repo_uidx": {
-		IndexRegclass: "ci_watch_config_repo_uidx",
-		TableRegclass: "ci_watch_config",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "repo_owner", "repo_name"},
-	},
-	"995_ci_failure_event_run_attempt_uidx": {
-		IndexRegclass: "ci_failure_event_run_attempt_uidx",
-		TableRegclass: "ci_failure_event",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "run_id", "run_attempt"},
-	},
-	"996_ci_watch_action_key_uidx": {
-		IndexRegclass: "ci_watch_action_key_uidx",
-		TableRegclass: "ci_watch_action",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "original_run_id", "action_kind"},
-	},
-	"997_ci_signature_owner_signature_uidx": {
-		IndexRegclass: "ci_signature_owner_signature_uidx",
-		TableRegclass: "ci_signature_owner",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "signature_hash"},
-	},
-	"998_ci_signature_owner_issue_uidx": {
-		IndexRegclass: "ci_signature_owner_issue_uidx",
-		TableRegclass: "ci_signature_owner",
-		Unique:        true,
-		Columns:       []string{"issue_id"},
-	},
-	"999_ci_failure_event_created_at_idx": {
-		IndexRegclass: "ci_failure_event_created_at_idx",
-		TableRegclass: "ci_failure_event",
-		Columns:       []string{"created_at"},
-	},
-	"999c_ci_watch_event_notify_uidx": {
-		IndexRegclass: "ci_watch_event_notify_uidx",
-		TableRegclass: "ci_watch_event",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "repo_owner", "repo_name", "signature_hash", "day"},
-		Predicate:     "kind = 'notify'::text",
-	},
-	"9999939_agent_task_handoff_dispatch_idx": {
-		IndexRegclass: "agent_task_queue_handoff_dispatch_uidx",
-		TableRegclass: "agent_task_queue",
-		Unique:        true,
-		Columns:       []string{"handoff_dispatch_id"},
-		Predicate:     "handoff_dispatch_id IS NOT NULL",
-	},
-	"9992_system1_observation_ci_event_subject_idx": {
-		IndexRegclass: "system1_observation_ci_event_subject",
-		TableRegclass: "system1_observation",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "subject_id"},
-		Predicate:     "kind = 'ci_event'::text",
-	},
-	"99953_system1_observation_route_event_id_idx": {
-		IndexRegclass: "system1_observation_route_event_idx",
-		TableRegclass: "system1_observation",
-		Columns:       []string{"workspace_id", "event_id"},
-		Predicate:     "kind = 'route'::text",
-	},
-	"99957_review_admission_deferral_key": {
-		IndexRegclass: "review_admission_deferral_issue_agent_idx",
-		TableRegclass: "review_admission_deferral",
-		Unique:        true,
-		Columns:       []string{"issue_id", "agent_id"},
-	},
-	"971_dm_progress_data_incident_follow_kind_idx": {
-		IndexRegclass: "idx_dm_progress_data_incident_follow_kind",
-		TableRegclass: "dm_progress_data_incident",
-		Unique:        true,
-		Columns:       []string{"follow_id", "kind"},
-	},
-	"621_chat_fork_operation_index": {
-		IndexRegclass: "chat_session_fork_operation_idx",
-		TableRegclass: "chat_session",
-		Unique:        true,
-		Columns:       []string{"forked_from_session_id", "fork_idempotency_key"},
-		Predicate:     "forked_from_session_id IS NOT NULL",
-	},
-	"615_decision_request_comment_v2_index": {
-		IndexRegclass: "comment_decision_request_kind_v2_uidx",
-		TableRegclass: "comment",
-		Unique:        true,
-		Columns:       []string{"decision_request_id", "decision_comment_kind"},
-		Predicate:     "decision_answer_id IS NULL AND decision_request_id IS NOT NULL",
-	},
-	"582_wakeup_definition_identity_index": {
-		IndexRegclass: "issue_wakeup_definition_identity_idx",
-		TableRegclass: "issue_wakeup_definition",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "scope_kind", "scope_id", "rule_key"},
-	},
-	"584_wakeup_default_scope_index": {
-		IndexRegclass: "issue_wakeup_default_scope_idx",
-		TableRegclass: "issue_wakeup",
-		Columns:       []string{"workspace_id", "default_scope_kind", "default_scope_id"},
-		Predicate:     "enabled AND system_rule IS NULL AND default_rule_key IS NOT NULL",
-	},
-	"586_wakeup_aggregate_budget_identity_index": {
-		IndexRegclass: "wakeup_aggregate_budget_identity_idx",
-		TableRegclass: "wakeup_aggregate_budget",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "scope_kind", "scope_id", "rule_key"},
-	},
-	"587_wakeup_aggregate_reservation_identity_index": {
-		IndexRegclass: "wakeup_aggregate_reservation_identity_idx",
-		TableRegclass: "wakeup_aggregate_reservation",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "scope_kind", "scope_id", "rule_key", "task_id"},
-	},
-	"588_wakeup_aggregate_reservation_window_index": {
-		IndexRegclass: "wakeup_aggregate_reservation_window_idx",
-		TableRegclass: "wakeup_aggregate_reservation",
-		Columns:       []string{"workspace_id", "scope_kind", "scope_id", "rule_key", "reserved_at"},
-	},
-	"589_wakeup_aggregate_blocked_index": {
-		IndexRegclass: "issue_wakeup_aggregate_blocked_idx",
-		TableRegclass: "issue_wakeup",
-		Columns:       []string{"workspace_id", "aggregate_blocked_scope_kind", "aggregate_blocked_scope_id"},
-		Predicate:     "aggregate_retry_at IS NOT NULL",
-	},
-	"591_wakeup_aggregate_reservation_age_index": {
-		IndexRegclass: "wakeup_aggregate_reservation_age_idx",
-		TableRegclass: "wakeup_aggregate_reservation",
-		Columns:       []string{"reserved_at"},
-	},
-	"632_wakeup_scoped_event_id_index": {
-		IndexRegclass: "wakeup_scoped_event_id_idx",
-		TableRegclass: "wakeup_scoped_event",
-		Unique:        true,
-		Columns:       []string{"id"},
-	},
-	"633_wakeup_scoped_event_pending_index": {
-		IndexRegclass: "wakeup_scoped_event_pending_idx",
-		TableRegclass: "wakeup_scoped_event",
-		Columns:       []string{"captured_at", "id"},
-		Predicate:     "handled_at IS NULL",
-	},
-	"634_wakeup_scoped_event_handled_index": {
-		IndexRegclass: "wakeup_scoped_event_handled_idx",
-		TableRegclass: "wakeup_scoped_event",
-		Columns:       []string{"handled_at"},
-		Predicate:     "handled_at IS NOT NULL",
-	},
-	"635_wakeup_scoped_event_issue_index": {
-		IndexRegclass: "wakeup_scoped_event_issue_idx",
-		TableRegclass: "wakeup_scoped_event",
-		Columns:       []string{"issue_id", "captured_at", "id"},
-		Predicate:     "handled_at IS NULL",
-	},
-	"641_wakeup_definition_sweep_index": {
-		IndexRegclass: "issue_wakeup_definition_sweep_idx",
-		TableRegclass: "issue_wakeup_definition",
-		Columns:       []string{"updated_at", "rule_key"},
-		Predicate:     "NOT sweep_done OR sweep_revision <> revision",
-	},
-	"642_issue_project_keyset_index": {
-		IndexRegclass: "idx_issue_project_id_keyset",
-		TableRegclass: "issue",
-		Columns:       []string{"project_id", "id"},
-	},
-	"643_wakeup_capacity_held_index": {
-		IndexRegclass: "issue_wakeup_capacity_held_idx",
-		TableRegclass: "issue_wakeup",
-		Columns:       []string{"updated_at", "id"},
-		Predicate:     "capacity_reason IS NOT NULL",
-	},
-	"644_wakeup_scoped_event_delayed_index": {
-		IndexRegclass: "wakeup_scoped_event_delayed_idx",
-		TableRegclass: "wakeup_scoped_event",
-		Columns:       []string{"captured_at", "id"},
-		Predicate:     "handled_at IS NULL AND retry_at IS NOT NULL",
-	},
-	"555_governance_budget_reservation_receipt_idx": {
-		IndexRegclass: "governance_budget_reservation_receipt_uidx",
-		TableRegclass: "governance_budget_reservation",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "settlement_receipt_id"},
-		Predicate:     "settlement_receipt_id IS NOT NULL",
-	},
-	"556_governance_budget_reservation_root_window_idx": {
-		IndexRegclass: "governance_budget_reservation_root_window_idx",
-		TableRegclass: "governance_budget_reservation",
-		Columns:       []string{"workspace_id", "budget_root_id", "window_start", "reservation_id"},
-	},
-	"557_governance_budget_outbox_due_idx": {
-		IndexRegclass: "governance_budget_outbox_due_idx",
-		TableRegclass: "governance_budget_outbox",
-		Columns:       []string{"workspace_id", "state", "created_at", "event_id"},
-	},
-	"558_governance_budget_reservation_attempt_obligation_uidx": {
-		IndexRegclass: "governance_budget_reservation_attempt_obligation_uidx",
-		TableRegclass: "governance_budget_reservation",
-		Unique:        true,
-		Columns:       []string{"workspace_id", "attempt_id", "obligation_id"},
-	},
-	"572_governance_budget_window_overlap_idx": {
-		IndexRegclass: "governance_budget_window_overlap_idx",
-		TableRegclass: "governance_budget_window",
-		Columns:       []string{"workspace_id", "window_end", "window_start"},
-	},
-	"573_governance_budget_reservation_open_window_idx": {
-		IndexRegclass: "governance_budget_reservation_open_window_idx",
-		TableRegclass: "governance_budget_reservation",
-		Columns:       []string{"workspace_id", "window_start"},
-		Predicate:     "state = 'reserved'::text",
-	},
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -884,9 +443,9 @@ var requiredConcurrentIndexes = map[string]requiredConcurrentIndex{
 // the retry, while a bare CREATE would stay wedged on "already exists"; both
 // cases need direction-specific cleanup before the rollback can retry safely.
 var concurrentDownIndexCleanups = map[string]string{
-	"751_github_dispatch_drop_body_key":                     "idx_github_webhook_dispatch_key",
-	"729_github_revision_body_key":                          "idx_github_webhook_revision_key",
-	"616_decision_request_comment_index_retire":             "comment_decision_request_kind_uidx",
+	"740_task_usage_hourly_drop_legacy_key":                 "uq_task_usage_hourly_key",
+	"741_task_usage_hourly_dirty_drop_legacy_key":           "uq_task_usage_hourly_dirty_key",
+	"730_drop_remote_app_connection_owner_idx":              "uq_remote_app_connection_owner",
 	"144_drop_agent_task_queue_chat_pending_v1":             "idx_agent_task_queue_chat_pending",
 	"171_drop_legacy_label_namespace_index":                 "issue_label_workspace_name_lower_idx",
 	"256_drop_agent_task_queue_chat_pending_v2":             "idx_agent_task_queue_chat_pending_v2",
@@ -910,9 +469,7 @@ var concurrentDownIndexCleanups = map[string]string{
 	"463_drop_issue_description_bigm_index":                 "idx_issue_description_bigm",
 	"464_drop_issue_description_trgm_index":                 "idx_issue_description_trgm",
 	"473_drop_agent_task_queue_chat_with_session_index":     "idx_agent_task_queue_chat_with_session_created_at",
-	"574_drop_github_merge_announcement_identity_index":     "uq_github_merge_announcement_identity",
-	"575_drop_github_merge_announcement_pending_index":      "idx_github_merge_announcement_pending_claim",
-	"612_decision_target_primary_key":                       "decision_intent_target_uidx",
+	"709_drop_attachment_workspace_index":                   "idx_attachment_workspace",
 }
 
 var preMigrationHooks = func() map[string]preMigrationHook {
@@ -923,17 +480,6 @@ var preMigrationHooks = func() map[string]preMigrationHook {
 	}
 	for version, index := range concurrentIndexCleanups {
 		hooks[version] = cleanupInvalidConcurrentIndexHook(index)
-	}
-	// CHE-2910: report DMs that already hold more than one active task. A
-	// duplicate would make the unique build fail and leave an INVALID index with
-	// no row detail. The hook only reads; resolving the rows is an operator call.
-	const oneActiveChatVersion = "962_agent_task_queue_one_active_per_chat"
-	cleanup := hooks[oneActiveChatVersion]
-	hooks[oneActiveChatVersion] = func(ctx context.Context, pool *pgxpool.Pool) error {
-		if err := cleanup(ctx, pool); err != nil {
-			return err
-		}
-		return refuseDuplicateActiveChatTasks(ctx, pool)
 	}
 	return hooks
 }()
@@ -950,15 +496,6 @@ var preRollbackHooks = func() map[string]preMigrationHook {
 		hooks[version] = ensureSourceContextRollbackSafe
 	}
 	hooks["430_channel_outbound_message_binding_index"] = refuseChannelChatRouteHistoryRollback
-	hooks["612_decision_target_primary_key"] = func(ctx context.Context, pool *pgxpool.Pool) error {
-		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-			_, err := tx.Exec(ctx, "SET LOCAL lock_timeout = '2s'; ALTER TABLE IF EXISTS decision_intent_target DROP CONSTRAINT IF EXISTS decision_intent_target_pkey")
-			return err
-		}); err != nil {
-			return err
-		}
-		return cleanupInvalidConcurrentIndexHook("decision_intent_target_uidx")(ctx, pool)
-	}
 	return hooks
 }()
 
@@ -1251,75 +788,6 @@ func cleanupInvalidConcurrentIndexHook(indexRegclass string) preMigrationHook {
 	}
 }
 
-func verifyRequiredConcurrentIndex(ctx context.Context, conn *pgxpool.Conn, version string) error {
-	requirement, ok := requiredConcurrentIndexes[version]
-	if !ok {
-		return nil
-	}
-
-	var isIndex, isValid, isReady, tableMatches, isUnique bool
-	var accessMethod, predicate string
-	var columns []string
-	err := conn.QueryRow(ctx, `
-		SELECT c.relkind = 'i',
-		       COALESCE(i.indisvalid, FALSE),
-		       COALESCE(i.indisready, FALSE),
-		       COALESCE(i.indrelid = to_regclass($2), FALSE),
-		       COALESCE(i.indisunique, FALSE),
-		       COALESCE(am.amname, ''),
-		       COALESCE((
-		           SELECT array_agg(pg_get_indexdef(i.indexrelid, key_position, FALSE) ORDER BY key_position)
-		           FROM generate_series(1, i.indnkeyatts) AS key_position
-		       ), ARRAY[]::text[]),
-		       COALESCE(pg_get_expr(i.indpred, i.indrelid), '')
-		FROM pg_class AS c
-		LEFT JOIN pg_index AS i ON i.indexrelid = c.oid
-		LEFT JOIN pg_am AS am ON am.oid = c.relam
-		WHERE c.oid = to_regclass($1)
-	`, requirement.IndexRegclass, requirement.TableRegclass).Scan(
-		&isIndex,
-		&isValid,
-		&isReady,
-		&tableMatches,
-		&isUnique,
-		&accessMethod,
-		&columns,
-		&predicate,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("required index %q is missing", requirement.IndexRegclass)
-	}
-	if err != nil {
-		return fmt.Errorf("inspect required index %q: %w", requirement.IndexRegclass, err)
-	}
-	if !isIndex {
-		return fmt.Errorf("required relation %q is not an index", requirement.IndexRegclass)
-	}
-	if !isValid || !isReady {
-		return fmt.Errorf("required index %q is not valid and ready", requirement.IndexRegclass)
-	}
-	if !tableMatches || accessMethod != "btree" || isUnique != requirement.Unique || !equalIndexColumns(columns, requirement.Columns) || normalizeIndexPredicate(predicate) != normalizeIndexPredicate(requirement.Predicate) {
-		return fmt.Errorf("required index %q has an unexpected definition", requirement.IndexRegclass)
-	}
-	return nil
-}
-
-func equalIndexColumns(left, right []string) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
-}
-
-func normalizeIndexPredicate(predicate string) string {
-	return strings.ToLower(strings.NewReplacer(" ", "", "\n", "", "\t", "", "(", "", ")", "").Replace(predicate))
-}
-
 func runTaskUsageHourlyHook(ctx context.Context, pool *pgxpool.Pool) error {
 	res, err := taskusagebackfill.Hook(ctx, pool, taskusagebackfill.HookOptions{})
 	if err != nil {
@@ -1404,97 +872,17 @@ type runOptions struct {
 	Conditions map[string]migrationCondition
 }
 
-// usage is printed on any argument error. Kept as a single literal so the
-// "up|down" line and the "--to" line always describe the same two commands.
-const usage = "Usage: go run ./cmd/migrate <up|down> [--to <version>]"
-
-// parseToFlag reads an optional "--to <version>" flag from the arguments
-// that follow the up/down positional argument. It returns "" when the flag
-// is absent, which callers treat as "no bound" — i.e. the existing
-// unbounded behavior for both up and down. version is the migration's
-// filename stem exactly as migrations.ExtractVersion returns it (e.g.
-// "460_agent_task_queue_autopilot_run_created_at_index"), not a bare
-// integer: numeric prefixes are not globally unique (e.g. two files both
-// start "020_"), so only the full stem identifies one migration.
-func parseToFlag(direction string, args []string) (string, error) {
-	fs := flag.NewFlagSet("migrate "+direction, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	toVersion := fs.String("to", "", "roll back down to (and including) this version, stopping before any earlier migration")
-	if err := fs.Parse(args); err != nil {
-		return "", err
-	}
-	if fs.NArg() > 0 {
-		return "", fmt.Errorf("unexpected argument(s): %v", fs.Args())
-	}
-	if *toVersion == "" {
-		return "", nil
-	}
-	if direction != "down" {
-		return "", fmt.Errorf("--to is only valid with \"down\"")
-	}
-	return *toVersion, nil
-}
-
-// boundDownFiles trims an already-direction-sorted "down" file list (as
-// produced by migrations.Files("down"), i.e. reverse-lexicographic — the
-// same order runMigrations walks) so it stops as soon as it reaches
-// toVersion, without rolling that migration itself back. The bound is
-// inclusive of every migration strictly newer than toVersion and excludes
-// toVersion and everything older: rolling "back to" a version means the
-// database ends up AT that version, still applied.
-//
-// This never removes files from the middle or reorders them — it only cuts
-// the tail once the target version is found — so every hook/condition
-// lookup keyed by version in hooksForDirection/conditionsForDirection still
-// sees the exact same version strings it always would for the migrations
-// that do run.
-//
-// An unknown toVersion (no down migration file matches it) is a hard error:
-// silently running the full unbounded rollback when the caller asked for a
-// specific stop point would be exactly the overshoot this flag exists to
-// prevent.
-func boundDownFiles(downFiles []string, toVersion string) ([]string, error) {
-	for i, file := range downFiles {
-		if migrations.ExtractVersion(file) == toVersion {
-			return downFiles[:i], nil
-		}
-	}
-	return nil, fmt.Errorf("version %q not found among known down migrations (check the exact filename stem, e.g. %q)", toVersion, migrations.ExtractVersion(firstOrEmpty(downFiles)))
-}
-
-// firstOrEmpty returns files[0] or "" for an empty slice, so the error
-// message in boundDownFiles has a concrete example to show without a
-// separate nil-check at every call site.
-func firstOrEmpty(files []string) string {
-	if len(files) == 0 {
-		return ""
-	}
-	return files[0]
-}
-
 func main() {
 	logger.Init()
 
 	if len(os.Args) < 2 {
-		fmt.Println(usage)
+		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
 		os.Exit(1)
 	}
 
 	direction := os.Args[1]
 	if direction != "up" && direction != "down" {
-		fmt.Println(usage)
-		os.Exit(1)
-	}
-
-	// --to is a bounded-rollback mode: only valid for "down". Bare "up" and
-	// bare "down" (no flag) keep their existing, unbounded behavior exactly
-	// as before — "down" with no --to still walks every applied migration
-	// back to 001, same as it always has. This is additive: it does not
-	// repurpose os.Args[1] or change what happens when --to is absent.
-	toVersion, err := parseToFlag(direction, os.Args[2:])
-	if err != nil {
-		fmt.Println(usage)
-		fmt.Println(err)
+		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
 		os.Exit(1)
 	}
 
@@ -1504,7 +892,13 @@ func main() {
 	}
 
 	startupSettings := dbstartup.SettingsFromEnv()
-	pool, err := newMigratorPool(context.Background(), dbURL, startupSettings.ConnectTimeout)
+	poolConfig, err := dbstartup.ParsePoolConfig(dbURL, startupSettings.ConnectTimeout)
+	if err != nil {
+		slog.Error("unable to connect to database", "error", err)
+		os.Exit(1)
+	}
+	poolConfig.ConnConfig.OnNotice = logMigrationNotice
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
 		slog.Error("unable to connect to database", "error", err)
 		os.Exit(1)
@@ -1515,14 +909,6 @@ func main() {
 	if err != nil {
 		slog.Error("failed to find migration files", "error", err)
 		os.Exit(1)
-	}
-
-	if toVersion != "" {
-		files, err = boundDownFiles(files, toVersion)
-		if err != nil {
-			slog.Error("invalid --to target", "error", err)
-			os.Exit(1)
-		}
 	}
 
 	options := runOptions{
@@ -1600,74 +986,6 @@ func logMigrationNotice(_ *pgconn.PgConn, notice *pgconn.Notice) {
 	if report, ok := migrationReport(notice); ok {
 		slog.Info("migration report", "message", report)
 	}
-}
-
-// migrateEnforcedStatementTimeoutEnv, migrateEnforcedLockTimeoutEnv, and
-// migrateAttemptLockKeyEnv are D2 CD-supervision-only inputs (CHE-372). They
-// are unset by default, so newMigratorPool behaves exactly like
-// dbstartup.NewPool for every existing caller. When both timeout vars are
-// set to positive millisecond values, every physical connection this
-// migrator's pool opens — the pinned advisory-lock connection and every
-// hook connection its pool opens afterward alike — has statement_timeout/
-// lock_timeout enforced and read back after connecting, regardless of any
-// conflicting "options=" the DATABASE_URL itself carries. See
-// dbstartup.NewPoolWithEnforcedTimeouts for why this must run inside the
-// pool's own connection lifecycle rather than as an external probe.
-//
-// migrateAttemptLockKeyEnv, when set to a nonzero int64, is a fresh,
-// cryptographically random secret the CD supervisor generates once per
-// attempt and passes ONLY through this environment variable — never logged,
-// never written to any file, never part of a connection string. It is
-// acquired in shared advisory-lock mode on every connection this pool
-// opens, marking each one as attempt-bound so the supervisor's fencing
-// checks can distinguish "a session this attempt actually opened" from "a
-// foreign session merely authenticated as the same database role."
-//
-// Every path below routes through dbstartup.ParsePoolConfig internally
-// (NewPool directly, NewPoolWithEnforcedTimeouts via its own call to it),
-// which is exactly where logMigrationNotice (added by the upstream v0.4.44
-// sync, CHE-548) attaches OnNotice — so migration-report log forwarding
-// applies identically whether or not D2's enforced timeouts/attempt-lock
-// are active.
-const (
-	migrateEnforcedStatementTimeoutEnv = "MULTICA_INTERNAL_D2_ENFORCED_STATEMENT_TIMEOUT_MS"
-	migrateEnforcedLockTimeoutEnv      = "MULTICA_INTERNAL_D2_ENFORCED_LOCK_TIMEOUT_MS"
-	migrateAttemptLockKeyEnv           = "MULTICA_INTERNAL_D2_ATTEMPT_LOCK_KEY"
-)
-
-func newMigratorPool(ctx context.Context, dbURL string, connectTimeout time.Duration) (*pgxpool.Pool, error) {
-	statementTimeoutRaw := os.Getenv(migrateEnforcedStatementTimeoutEnv)
-	lockTimeoutRaw := os.Getenv(migrateEnforcedLockTimeoutEnv)
-	attemptLockKeyRaw := os.Getenv(migrateAttemptLockKeyEnv)
-	if statementTimeoutRaw == "" && lockTimeoutRaw == "" && attemptLockKeyRaw == "" {
-		poolConfig, err := dbstartup.ParsePoolConfig(dbURL, connectTimeout)
-		if err != nil {
-			return nil, err
-		}
-		poolConfig.ConnConfig.OnNotice = logMigrationNotice
-		return pgxpool.NewWithConfig(ctx, poolConfig)
-	}
-	statementTimeoutMs, err := strconv.ParseInt(statementTimeoutRaw, 10, 64)
-	if err != nil || statementTimeoutMs <= 0 {
-		return nil, fmt.Errorf("%s must be a positive integer of milliseconds, got %q", migrateEnforcedStatementTimeoutEnv, statementTimeoutRaw)
-	}
-	lockTimeoutMs, err := strconv.ParseInt(lockTimeoutRaw, 10, 64)
-	if err != nil || lockTimeoutMs <= 0 {
-		return nil, fmt.Errorf("%s must be a positive integer of milliseconds, got %q", migrateEnforcedLockTimeoutEnv, lockTimeoutRaw)
-	}
-	var attemptLockKey int64
-	if attemptLockKeyRaw != "" {
-		attemptLockKey, err = strconv.ParseInt(attemptLockKeyRaw, 10, 64)
-		if err != nil || attemptLockKey == 0 {
-			return nil, fmt.Errorf("%s must be a nonzero int64, got %q", migrateAttemptLockKeyEnv, attemptLockKeyRaw)
-		}
-	}
-	return dbstartup.NewPoolWithEnforcedTimeouts(ctx, dbURL, connectTimeout, dbstartup.EnforcedTimeouts{
-		StatementTimeout: time.Duration(statementTimeoutMs) * time.Millisecond,
-		LockTimeout:      time.Duration(lockTimeoutMs) * time.Millisecond,
-		OnNotice:         logMigrationNotice,
-		AttemptLockKey:   attemptLockKey,
-	})
 }
 
 // runMigrations applies (direction="up") or rolls back (direction="down")
@@ -1758,9 +1076,6 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 
 		if opts.Direction == "up" {
 			if exists {
-				if err := verifyRequiredConcurrentIndex(ctx, conn, version); err != nil {
-					return fmt.Errorf("verify recorded migration %q: %w", version, err)
-				}
 				fmt.Printf("  skip  %s (already applied)\n", version)
 				continue
 			}
@@ -1805,9 +1120,6 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		}
 
 		if opts.Direction == "up" {
-			if err := verifyRequiredConcurrentIndex(ctx, conn, version); err != nil {
-				return fmt.Errorf("verify migration %q before recording: %w", version, err)
-			}
 			_, err = conn.Exec(ctx, insertSQL, version)
 		} else {
 			_, err = conn.Exec(ctx, deleteSQL, version)
@@ -1850,47 +1162,4 @@ func quoteQualifiedIdentifier(name string) (string, error) {
 		}
 	}
 	return pgx.Identifier(parts).Sanitize(), nil
-}
-
-// refuseDuplicateActiveChatTasks stops migration 962 when any DM already has
-// more than one active task. It lists each offending chat_session_id with its
-// task ids and statuses, and changes nothing.
-func refuseDuplicateActiveChatTasks(ctx context.Context, pool *pgxpool.Pool) error {
-	var exists bool
-	if err := pool.QueryRow(ctx, `SELECT to_regclass('agent_task_queue') IS NOT NULL`).Scan(&exists); err != nil {
-		return fmt.Errorf("inspect agent_task_queue: %w", err)
-	}
-	if !exists {
-		return nil
-	}
-	rows, err := pool.Query(ctx, `
-		SELECT chat_session_id::text, count(*), string_agg(id::text || ':' || status, ', ' ORDER BY created_at, id)
-		FROM agent_task_queue
-		WHERE chat_session_id IS NOT NULL
-		  AND status IN ('dispatched', 'waiting_local_directory', 'running')
-		GROUP BY chat_session_id
-		HAVING count(*) > 1
-		ORDER BY chat_session_id
-	`)
-	if err != nil {
-		return fmt.Errorf("count duplicate active chat tasks: %w", err)
-	}
-	defer rows.Close()
-	var lines []string
-	for rows.Next() {
-		var chatSessionID, tasks string
-		var count int
-		if err := rows.Scan(&chatSessionID, &count, &tasks); err != nil {
-			return fmt.Errorf("scan duplicate active chat tasks: %w", err)
-		}
-		lines = append(lines, fmt.Sprintf("chat_session_id=%s active=%d tasks=[%s]", chatSessionID, count, tasks))
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read duplicate active chat tasks: %w", err)
-	}
-	if len(lines) > 0 {
-		return fmt.Errorf("%d DM(s) have more than one active task; resolve them (no automatic cleanup) and re-run:\n%s",
-			len(lines), strings.Join(lines, "\n"))
-	}
-	return nil
 }

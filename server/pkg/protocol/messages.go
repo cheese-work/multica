@@ -1,9 +1,6 @@
 package protocol
 
-import (
-	"encoding/json"
-	"time"
-)
+import "encoding/json"
 
 const (
 	DaemonCapabilitySkillBundlesV1      = "skill-bundles-v1"
@@ -24,13 +21,6 @@ const (
 	// two-section quick-create prompt that keeps a new instruction separate
 	// from immutable historical source context.
 	DaemonCapabilitySourceContextQuickCreateV1 = "source_context_quick_create_v1"
-
-	// DaemonCapabilityBackgroundOutputOnlyV1 advertises that the daemon can run an
-	// output_only background task (CHE-4100): a prompt built from the task's
-	// bounded context input, returning text in the task output. The server hands
-	// such a task only to a runtime that lists this; a daemon without it never
-	// sees one (chat_compaction tasks are unaffected).
-	DaemonCapabilityBackgroundOutputOnlyV1 = "background_output_only_v1"
 
 	// DaemonCapabilityRPCV1 advertises that the daemon can carry
 	// request/response RPCs over the WebSocket control connection (MUL-4257).
@@ -81,22 +71,6 @@ const (
 	// It is persisted when this exact task enters running; absence always means
 	// unsupported so mixed server/daemon versions fail closed.
 	DaemonCapabilityTaskSupplementV1 = "task-supplement-v1"
-	// DaemonCapabilityTaskSupplementPREventV1 advertises that this provider run
-	// can accept a typed, system-labelled PR event notice. It is negotiated and
-	// stored apart from task-supplement-v1, so member steering and PR events
-	// coexist on one task and a daemon with only the old capability never
-	// receives a PR event through the mid-run channel.
-	DaemonCapabilityTaskSupplementPREventV1 = "task-supplement-pr-event-v1"
-	// DaemonCapabilityTaskSupplementPREventV2 is v1 plus wakeup items: a
-	// condition wakeup's instruction delivered to a live run through the same
-	// typed delivery table (CHE-6971, scope amendment SA-1). The server records
-	// it only when the daemon offers it; PR items behave exactly as under v1.
-	DaemonCapabilityTaskSupplementPREventV2 = "task-supplement-pr-event-v2"
-	// DaemonCapabilityTaskSupplementChatV1 extends task-supplement-v1 to a DM
-	// chat run: a steered follow-up is claimed through the same supplement
-	// endpoints. Offered only for chat tasks, so an old daemon's chat run has
-	// no capability row and its follow-ups stay queued.
-	DaemonCapabilityTaskSupplementChatV1 = "task-supplement-chat-v1"
 	// DaemonCapabilityPiProcessCleanupV1 promises that this Pi/omp run joins
 	// descendant cleanup and explicitly confirms its cancellation outcome.
 	// Persist only at start; old daemons must retain their cancellation contract.
@@ -110,6 +84,11 @@ const (
 	// the server leave out the workflow brief's lines that override those
 	// rules; an older daemon still states them, so it keeps getting them.
 	DaemonCapabilityWorkflowStatusRulesV1 = "workflow-status-rules-v1"
+	// DaemonCapabilityWorkflowStatusMapV1 advertises that the daemon's
+	// runtime brief states the status-map rules for an issue whose claim
+	// carries a status-map workflow brief (MUL-9913). Without it the server
+	// keeps sending the per-step command brief those daemons point at.
+	DaemonCapabilityWorkflowStatusMapV1 = "workflow-status-map-v1"
 	// DaemonCapabilityTaskSupplementAuthorV1 is sent when claiming a
 	// supplement: the daemon renders the claim's author_type, so an agent's
 	// message is presented as an agent's. Without it the server marks an
@@ -119,15 +98,11 @@ const (
 	// daemon puts on the agent's PATH has `issue comment add --steer`. The
 	// server tells a squad leader about steering only then.
 	DaemonCapabilityCLICommentSteerV1 = "cli-comment-steer-v1"
-	// DaemonCapabilityAppliedSettingsV1 advertises that the daemon reports the
-	// launch selection it passed to the CLI (model, thinking level, service
-	// tier, context args) for each claim, via /api/daemon/tasks/{id}/applied-settings.
-	DaemonCapabilityAppliedSettingsV1 = "applied-settings-v1"
-	// DaemonCapabilityRuntimeProfileV1 advertises that the daemon honors the
-	// claim's harness_profile (personal | managed). A daemon without it would
-	// drop the field and launch the user's personal config, so the server never
-	// hands a managed task to a claimer that lacks it.
-	DaemonCapabilityRuntimeProfileV1 = "runtime-profile-v1"
+	// DaemonCapabilityDocCommentV1 advertises that the daemon runs doc
+	// discussion tasks (MUL-9933): it renders their prompt and brief, and its
+	// CLI has `doc comment add`. An older daemon would treat such a task as an
+	// issue run with no issue, so the claim fails it before launch instead.
+	DaemonCapabilityDocCommentV1 = "doc-comment-v1"
 
 	TaskSupplementFailureTurnNotStarted   = "turn_not_started"
 	TaskSupplementFailureProviderRejected = "provider_rejected"
@@ -142,6 +117,13 @@ const (
 	// synchronous restore — a client without this capability would silently
 	// drop the user's prompt, and keeps the legacy synchronous restore instead.
 	AppCapabilityChatDraftRestoreV1 = "chat-draft-restore-v1"
+
+	// AppCapabilityWorkspaceGuestsV1 is advertised (X-Client-Capabilities) by
+	// clients that can render the guest member role. Workspace member and
+	// invitation lists leave guest rows out for any other caller: clients
+	// released before guests index their role tables by role and crash on an
+	// unknown one. Authorization never depends on it.
+	AppCapabilityWorkspaceGuestsV1 = "workspace-guests-v1"
 )
 
 // ChatQuickAction is a server-validated follow-up attached to one assistant
@@ -255,6 +237,23 @@ type TaskUsageUpdatedPayload struct {
 	TaskID string `json:"task_id"`
 }
 
+// TaskFailRequest reports the terminal failure of a daemon task.
+type TaskFailRequest struct {
+	Error          string `json:"error"`
+	SessionID      string `json:"session_id,omitempty"`
+	WorkDir        string `json:"work_dir,omitempty"`
+	DurableWorkDir string `json:"durable_work_dir,omitempty"`
+	FailureReason  string `json:"failure_reason,omitempty"`
+	// A worktree can produce a branch even when its task fails.
+	BranchName string `json:"branch_name,omitempty"`
+	// A missing rollout invalidates the withheld session's resume pointer.
+	SessionRolloutMissing bool `json:"session_rollout_missing,omitempty"`
+	// A known unresumable session must also be retired for subsequent tasks.
+	RetiredSessionID string `json:"retired_session_id,omitempty"`
+	// Older daemons and incomplete transcripts leave this proof unset.
+	NoToolCallsStarted bool `json:"no_tool_calls_started,omitempty"`
+}
+
 // TaskCompletedPayload is sent from daemon to server when a task finishes.
 type TaskCompletedPayload struct {
 	TaskID string `json:"task_id"`
@@ -322,85 +321,31 @@ type ChatMessagePayload struct {
 	Content       string `json:"content"`
 	TaskID        string `json:"task_id,omitempty"`
 	CreatedAt     string `json:"created_at"`
-	MessageKind   string `json:"message_kind,omitempty"`
-}
-
-// ProgressCardPayload is the typed content of a progress card
-// (dm_progress_delivery.payload). It holds IDs, statuses and change kinds only:
-// titles are resolved at read time under the access gate (CHE-3369 I6).
-type ProgressCardPayload struct {
-	Items []ProgressCardItem `json:"items"`
-	// Epics lists the epics whose completion episode fired with this card
-	// (CHE-3473 M13): once per episode, never again until a reopen starts the next.
-	Epics []ProgressCardEpic `json:"epics,omitempty"`
-}
-
-// ProgressCardEpic announces one fired completion episode of a reporting root.
-// Cancelled counts tracked descendants that ended cancelled, reported apart.
-type ProgressCardEpic struct {
-	IssueID   string `json:"issue_id"`
-	Revision  int32  `json:"revision"`
-	Cancelled int64  `json:"cancelled,omitempty"`
-}
-
-// ProgressCardItem is one issue's net change since the last card: FromStatus is
-// the status the DM was last told, Status the current one.
-type ProgressCardItem struct {
-	IssueID    string   `json:"issue_id"`
-	Status     string   `json:"status"`
-	FromStatus string   `json:"from_status"`
-	Kinds      []string `json:"kinds"`
-	// DuplicateOf names the original of an issue cancelled as a duplicate, only
-	// while the card's owner can read it. FollowOffer is true when the lane does
-	// not follow that original yet: the card offers a one-click follow, and the
-	// follow endpoint repeats the access check (CHE-3473 M10, D6).
-	DuplicateOf string `json:"duplicate_of,omitempty"`
-	FollowOffer bool   `json:"follow_offer,omitempty"`
 }
 
 // Chat message kinds (chat_message.message_kind). Additive: unknown values
 // degrade to ChatMessageKindMessage on older readers.
 const (
 	// ChatMessageKindMessage is an ordinary user/assistant message.
-	ChatMessageKindMessage             = "message"
-	ChatMessageKindContinuationSummary = "continuation_summary"
-	// ChatMessageKindCompactionSummary is the agent-written summary that opens a
-	// new compaction epoch inside the same DM.
-	ChatMessageKindCompactionSummary = "compaction_summary"
-	// ChatMessageKindCompactNotice is the server-authored note that a DM was (or
-	// failed to be) automatically compacted. It is an assistant row that never
-	// enters a prompt.
-	ChatMessageKindCompactNotice = "compact_notice"
+	ChatMessageKindMessage = "message"
 	// ChatMessageKindNoResponse marks a direct-chat turn the agent completed
 	// without any text reply — a visible, deliberate terminal outcome rather
 	// than a silently-dropped turn (MUL-4351).
 	ChatMessageKindNoResponse = "no_response"
-	// ChatMessageKindProgressCard is the server-authored DM progress card
-	// (CHE-3369). Its content is a titleless fallback line; the typed payload
-	// lives in dm_progress_delivery.
-	ChatMessageKindProgressCard = "progress_card"
 	// ChatMessageKindOnboardingKickoff is the server-authored, hidden first
 	// turn used to start Mika's onboarding conversation. It is persisted so
 	// the runtime receives a normal immutable chat input batch. User-facing
 	// APIs filter it out; clients also ignore the kind defensively.
 	ChatMessageKindOnboardingKickoff = "onboarding_kickoff"
-	// ChatMessageKindDecisionReference is the server-authored note that a
-	// decision was recorded from this DM. Its decision_answer_id names the card.
-	ChatMessageKindDecisionReference    = "decision_reference"
-	ChatMessageKindDecisionRequest      = "decision_request"
-	ChatMessageKindDecisionCancelNotice = "decision_cancel_notice"
-	// ChatMessageKindAskRecovery is the automatic notice that an ask never
-	// reached this person. It is not a decision request and carries no action.
-	ChatMessageKindAskRecovery = "ask_recovery"
-	// ChatMessageKindStepWatchdog is the automatic notice that the step watchdog
-	// acted on an issue the person requested (CHE-6116). Like ask recovery, it
-	// carries no action.
-	ChatMessageKindStepWatchdog = "step_watchdog"
 	// ChatMessageKindOnboardingOpening marks the assistant reply produced by
 	// the onboarding kickoff. The kickoff row itself never reaches clients, so
 	// the opening self-describes: chat renders the starter cards under this
 	// kind instead of quick-action chips (MUL-5765).
 	ChatMessageKindOnboardingOpening = "onboarding_opening"
+	// ChatMessageKindWakeup is the server-authored input of a turn a chat
+	// wakeup started. Its content is for the runtime; clients render a
+	// divider naming the wakeup (wakeup_id) instead of the text.
+	ChatMessageKindWakeup = "wakeup"
 )
 
 // ChatDonePayload is broadcast when an agent finishes responding to a chat
@@ -519,10 +464,19 @@ type ChatSessionDeletedPayload struct {
 // chat session changes (today: title via inline rename). Other tabs/devices
 // patch the session row in their cached list so the dropdown stays in sync
 // without a full refetch.
+// ChatWakeupChangedPayload says one chat wakeup was created, changed, fired or
+// ended. Receivers refetch the session's wakeups; TaskID is set when the
+// change started a turn, so they can also pick up its hidden input row.
+type ChatWakeupChangedPayload struct {
+	ChatSessionID string `json:"chat_session_id"`
+	WakeupID      string `json:"wakeup_id"`
+	Status        string `json:"status"`
+	TaskID        string `json:"task_id,omitempty"`
+}
+
 type ChatSessionUpdatedPayload struct {
-	ChatSessionID          string `json:"chat_session_id"`
-	Title                  string `json:"title"`
-	ContinuedIntoSessionID string `json:"continued_into_session_id,omitempty"`
+	ChatSessionID string `json:"chat_session_id"`
+	Title         string `json:"title"`
 	// ProjectID is set only by the project-context update path. The double
 	// pointer distinguishes an omitted field from an explicit JSON null.
 	ProjectID **string `json:"project_id,omitempty"`
@@ -531,16 +485,8 @@ type ChatSessionUpdatedPayload struct {
 	Pinned *bool `json:"pinned,omitempty"`
 	// Status is set only by the archive/unarchive path ("active"/"archived");
 	// nil on rename/pin so a receiver leaves the existing status untouched.
-	Status *string `json:"status,omitempty"`
-	// Compacting is set only when a compaction task starts or ends; nil leaves
-	// the receiver's value untouched.
-	Compacting *bool `json:"compacting,omitempty"`
-	// CompactAgentName is the agent running the compaction (set with
-	// Compacting=true). CompactFallbackReason is why the configured compaction
-	// agent was skipped and the DM agent runs it instead; empty otherwise.
-	CompactAgentName      string `json:"compact_agent_name,omitempty"`
-	CompactFallbackReason string `json:"compact_fallback_reason,omitempty"`
-	UpdatedAt             string `json:"updated_at"`
+	Status    *string `json:"status,omitempty"`
+	UpdatedAt string  `json:"updated_at"`
 }
 
 // DaemonHeartbeatRequestPayload is sent from daemon to server over WebSocket
@@ -548,64 +494,11 @@ type ChatSessionUpdatedPayload struct {
 // Mirrors the body of POST /api/daemon/heartbeat so both transports share
 // identical semantics.
 type DaemonHeartbeatRequestPayload struct {
-	RuntimeID string `json:"runtime_id"`
-	// Seq numbers a WebSocket heartbeat frame; the ack echoes it. Zero over HTTP.
-	Seq                 uint64 `json:"seq,omitempty"`
+	RuntimeID           string `json:"runtime_id"`
 	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
-	// InFlightTasks is the number of tasks the whole daemon is running or
-	// admitting, not just this runtime's (CHE-2673). Nil from a daemon that does
-	// not report it; zero is a real "idle".
-	InFlightTasks *int `json:"in_flight_tasks,omitempty"`
-	// LiveTaskIDs is the ids of every task the daemon still holds: claimed and
-	// not yet finished, cancel-ack and process cleanup included (CHE-3114 part
-	// 2). A cancelled run absent from it is proven stopped. Nil from a daemon
-	// that does not report it, which proves nothing; an empty non-nil set is a
-	// real "holds none".
-	LiveTaskIDs *[]string `json:"live_task_ids,omitempty"`
-	// DaemonUptimeMs is how long this daemon process has been up, sent with
-	// LiveTaskIDs. A restarted daemon starts with an empty set while the runner
-	// of a run it did not start can still be alive, so the server attests only
-	// runs dispatched since the process booted. Nil attests nothing.
-	DaemonUptimeMs *int64 `json:"daemon_uptime_ms,omitempty"`
-	// HostTaskIDs is the MULTICA_TASK_ID of every live same-uid process on the
-	// host (Linux /proc/*/environ), the proof that a runner outside this
-	// daemon's live set is gone. Meaningful only when HostScanOK is true.
-	HostTaskIDs *[]string `json:"host_task_ids,omitempty"`
-	// HostScanOK is true only when the host scan read every process it must.
-	// Nil or false (error, non-Linux host) leaves the uptime rule in force.
-	HostScanOK *bool `json:"host_scan_ok,omitempty"`
-	// HostSample is the daemon's latest host CPU/RAM/disk sample (per daemon,
-	// not per runtime), repeated on every runtime heartbeat until the next
-	// sample. Nil from a daemon that does not sample (older, macOS, Windows).
-	HostSample *DaemonHostSample `json:"host_sample,omitempty"`
-}
-
-// HostSampleInterval is how often a daemon takes a host sample.
-const HostSampleInterval = time.Minute
-
-// HostSampleStaleAfter is three sample intervals: a sample older than this is
-// unknown, never the last value.
-const HostSampleStaleAfter = 3 * HostSampleInterval
-
-// MaxHostSampleDisks bounds the mounts in one sample.
-const MaxHostSampleDisks = 8
-
-// DaemonHostSample is one host reading. SampledAt is truncated to the minute.
-type DaemonHostSample struct {
-	SampledAt  time.Time        `json:"sampled_at"`
-	CPUPercent float64          `json:"cpu_percent"`
-	RAMPercent float64          `json:"ram_percent"`
-	Disks      []DaemonHostDisk `json:"disks,omitempty"`
-}
-
-type DaemonHostDisk struct {
-	MountPath string  `json:"mount_path"`
-	Percent   float64 `json:"percent"`
-}
-
-// HostSampleStale reports whether a sample taken at sampledAt is stale at now.
-func HostSampleStale(sampledAt, now time.Time) bool {
-	return now.Sub(sampledAt) > HostSampleStaleAfter
+	// SupportsQueuedUpdate: the daemon can hold a deferrable update while
+	// busy and install it once idle (see DaemonHeartbeatPendingUpdate).
+	SupportsQueuedUpdate bool `json:"supports_queued_update,omitempty"`
 }
 
 // DaemonHeartbeatAckPayload is the server's reply to DaemonHeartbeatRequestPayload.
@@ -634,23 +527,6 @@ type DaemonHeartbeatAckPayload struct {
 	// that don't know this field silently ignore it (standard JSON behavior)
 	// and fall back to the singular PendingLocalSkillImport above.
 	PendingLocalSkillImports []DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_imports,omitempty"`
-	// Paused is the machine's live pause (CHE-2673). Absent when the machine
-	// takes work. The server claim gate holds either way; the daemon mirrors it.
-	Paused *DaemonHeartbeatPaused `json:"paused,omitempty"`
-	// Seq echoes DaemonHeartbeatRequestPayload.Seq of the heartbeat this ack
-	// answers (WebSocket). Zero from a server that does not echo it.
-	Seq uint64 `json:"seq,omitempty"`
-}
-
-// DaemonHeartbeatPaused is the desired pause state a heartbeat ack carries.
-type DaemonHeartbeatPaused struct {
-	Reason    string `json:"reason"`
-	PausedAt  string `json:"paused_at"`
-	ExpiresAt string `json:"expires_at"`
-	// ExpiresInMs ends the pause that many ms after the heartbeat that carried
-	// it was sent, on the daemon's monotonic clock, so host clock skew cannot
-	// stretch it. Nil from a server that does not send it.
-	ExpiresInMs *int64 `json:"expires_in_ms,omitempty"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no
@@ -662,11 +538,12 @@ const HeartbeatStatusRuntimeGone = "runtime_gone"
 type DaemonHeartbeatPendingUpdate struct {
 	ID            string `json:"id"`
 	TargetVersion string `json:"target_version"`
-	// StartWithinMs and FinishWithinMs are measured from the send time of the
-	// heartbeat whose ack carried them, on the daemon's monotonic clock. Nil
-	// from a server that does not send them (and from a manual update).
-	StartWithinMs  *int64 `json:"start_within_ms,omitempty"`
-	FinishWithinMs *int64 `json:"finish_within_ms,omitempty"`
+	// Deferrable: a busy daemon should hold this update, report "scheduled",
+	// and install it once idle — only after the server accepts its "running"
+	// report, which it refuses once the update was cancelled or expired. The
+	// offer repeats on every heartbeat until then. Without it, the update
+	// is running from delivery and a busy daemon fails it.
+	Deferrable bool `json:"deferrable,omitempty"`
 }
 
 // DaemonHeartbeatPendingModelList describes a request for the daemon to

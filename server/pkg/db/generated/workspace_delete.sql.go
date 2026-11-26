@@ -11,30 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const deleteProviderBreakerAuditForWorkspace = `-- name: DeleteProviderBreakerAuditForWorkspace :exec
-DELETE FROM provider_breaker_audit WHERE workspace_id = $1
-`
-
-func (q *Queries) DeleteProviderBreakerAuditForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteProviderBreakerAuditForWorkspace, workspaceID)
-	return err
-}
-
-const deleteProviderBreakersForWorkspace = `-- name: DeleteProviderBreakersForWorkspace :exec
-
-DELETE FROM provider_breaker WHERE workspace_id = $1
-`
-
-// Workspace deletion is application-owned. These statements form a fixed,
-// bottom-up deletion plan; the legacy foreign keys remain only as a
-// compatibility safety net during the expand phase.
-// Provider breaker state is workspace-owned; remove it explicitly before the
-// workspace row instead of relying on the legacy FK cascade.
-func (q *Queries) DeleteProviderBreakersForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteProviderBreakersForWorkspace, workspaceID)
-	return err
-}
-
 const deleteTaskBatch = `-- name: DeleteTaskBatch :exec
 WITH
 batch AS MATERIALIZED (
@@ -46,9 +22,6 @@ deleted_task_usage AS (
 deleted_task_messages AS (
     DELETE FROM task_message WHERE task_id IN (SELECT id FROM batch)
 ),
-deleted_silence_alert_receipts AS (
-    DELETE FROM silence_alert_receipt WHERE task_id IN (SELECT id FROM batch)
-),
 deleted_task_tokens AS (
     DELETE FROM task_token WHERE task_id IN (SELECT id FROM batch)
 ),
@@ -57,12 +30,6 @@ deleted_task_supplements AS (
 ),
 deleted_task_supplement_capabilities AS (
     DELETE FROM task_supplement_capability WHERE task_id IN (SELECT id FROM batch)
-),
-deleted_task_pr_event_deliveries AS (
-    DELETE FROM task_pr_event_delivery WHERE task_id IN (SELECT id FROM batch)
-),
-deleted_task_pr_event_capabilities AS (
-    DELETE FROM task_pr_event_capability WHERE task_id IN (SELECT id FROM batch)
 ),
 deleted_channel_outbound_cards AS (
     DELETE FROM channel_outbound_card_message WHERE task_id IN (SELECT id FROM batch)
@@ -115,10 +82,6 @@ deleted_notification_preferences AS (
     DELETE FROM notification_preference
     WHERE notification_preference.workspace_id = $1
 ),
-deleted_notification_channel_preferences AS (
-    DELETE FROM notification_channel_preference
-    WHERE notification_channel_preference.workspace_id = $1
-),
 deleted_pins AS (
     DELETE FROM pinned_item WHERE pinned_item.workspace_id = $1
 ),
@@ -138,96 +101,11 @@ detached_client_usage AS (
 deleted_share_links AS (
     DELETE FROM workspace_share_link
     WHERE workspace_share_link.workspace_id = $1
-),
-deleted_browser_leases AS (
-    DELETE FROM browser_lease WHERE workspace_id = $1
-),
-deleted_browser_instances AS (
-    DELETE FROM browser_instance WHERE workspace_id = $1
-),
-deleted_browser_profiles AS (
-    DELETE FROM browser_profile WHERE workspace_id = $1
-),
-deleted_browser_profile_members AS (
-    DELETE FROM browser_profile_member WHERE workspace_id = $1
-),
-deleted_browser_profile_agents AS (
-    DELETE FROM browser_profile_agent WHERE workspace_id = $1
-),
-deleted_merge_queue_intake AS (
-    DELETE FROM merge_queue_intake WHERE workspace_id = $1
-),
-deleted_merge_queue_epoch AS (
-    DELETE FROM merge_queue_epoch WHERE workspace_id = $1
-),
-deleted_merge_queue_association AS (
-    DELETE FROM merge_queue_association WHERE workspace_id = $1
-),
-deleted_merge_queue_wait AS (
-    DELETE FROM merge_queue_wait WHERE workspace_id = $1
-),
-deleted_merge_queue_pr_close AS (
-    DELETE FROM merge_queue_pr_close WHERE workspace_id = $1
-),
-deleted_merge_queue_enqueue_event AS (
-    DELETE FROM merge_queue_enqueue_event WHERE workspace_id = $1
-),
-deleted_merge_queue_state AS (
-    DELETE FROM merge_queue_state WHERE workspace_id = $1
-),
-deleted_merge_queue_evidence AS (
-    DELETE FROM merge_queue_evidence WHERE workspace_id = $1
-),
-deleted_ask_recovery_notice AS (
-    DELETE FROM ask_recovery_notice WHERE workspace_id = $1
-),
-deleted_ask_repair_root AS (
-    DELETE FROM ask_repair_root WHERE workspace_id = $1
-),
-deleted_browser_gateway_credential AS (
-    DELETE FROM browser_gateway_credential WHERE workspace_id = $1
-),
-deleted_issue_handoff_dispatch AS (
-    DELETE FROM issue_handoff_dispatch WHERE workspace_id = $1
-),
-deleted_issue_handoff_operation AS (
-    DELETE FROM issue_handoff_operation WHERE workspace_id = $1
-),
-deleted_issue_step_assignee AS (
-    DELETE FROM issue_step_assignee WHERE workspace_id = $1
-),
-deleted_issue_step_watchdog_action AS (
-    DELETE FROM issue_step_watchdog_action WHERE workspace_id = $1
-),
-deleted_merge_receipt_fact AS (
-    DELETE FROM merge_receipt_fact WHERE workspace_id = $1
-),
-deleted_merge_veto AS (
-    DELETE FROM merge_veto WHERE workspace_id = $1
-),
-deleted_merge_veto_deadline AS (
-    DELETE FROM merge_veto_deadline WHERE workspace_id = $1
-),
-deleted_weekly_run_guard_allowance AS (
-    DELETE FROM weekly_run_guard_allowance WHERE workspace_id = $1
-),
-deleted_weekly_run_guard_refusal AS (
-    DELETE FROM weekly_run_guard_refusal WHERE workspace_id = $1
-),
-deleted_decision_backing_lane AS (
-    DELETE FROM decision_backing_lane WHERE workspace_id = $1
-),
-deleted_guard_decision AS (
-    DELETE FROM guard_decision WHERE workspace_id = $1
 )
 DELETE FROM workspace_invitation
 WHERE workspace_invitation.workspace_id = $1
 `
 
-// CHE-4731 browser lease storage: workspace-owned leaves, no FK (migration 99960).
-// CHE-4737 browser permission grants: workspace-owned leaves, no FK (migration 99964c).
-// CHE-7408 merge-queue storage: workspace-owned leaves, no FK (migration 999q).
-// CHE-7545 workspace-owned leaves with workspace_id and no FK.
 func (q *Queries) DeleteWorkspaceAdministration(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceAdministration, workspaceID)
 	return err
@@ -239,6 +117,16 @@ DELETE FROM agent WHERE agent.workspace_id = $1
 
 func (q *Queries) DeleteWorkspaceAgents(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceAgents, workspaceID)
+	return err
+}
+
+const deleteWorkspaceAppToolCallQuotaPeriods = `-- name: DeleteWorkspaceAppToolCallQuotaPeriods :exec
+DELETE FROM app_tool_call_quota_period
+WHERE app_tool_call_quota_period.workspace_id = $1
+`
+
+func (q *Queries) DeleteWorkspaceAppToolCallQuotaPeriods(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceAppToolCallQuotaPeriods, workspaceID)
 	return err
 }
 
@@ -323,18 +211,6 @@ func (q *Queries) DeleteWorkspaceComments(ctx context.Context, workspaceID pgtyp
 
 const deleteWorkspaceCommunicationRoots = `-- name: DeleteWorkspaceCommunicationRoots :exec
 WITH
-deleted_attention_items AS (
-    DELETE FROM chat_attention_item WHERE workspace_id = $1
-),
-deleted_attention_marks AS (
-    DELETE FROM chat_attention_mark
-    WHERE chain_root_session_id IN (
-        SELECT id FROM chat_session WHERE chat_session.workspace_id = $1
-    )
-),
-deleted_turn_outcomes AS (
-    DELETE FROM chat_turn_outcome WHERE workspace_id = $1
-),
 deleted_sessions AS (
     DELETE FROM chat_session WHERE chat_session.workspace_id = $1
 ),
@@ -351,8 +227,6 @@ deleted_channel_installations AS (
 DELETE FROM lark_installation WHERE lark_installation.workspace_id = $1
 `
 
-// No foreign keys on the attention tables. Items carry workspace_id; marks have none, so
-// their chain root is one of this workspace's sessions.
 func (q *Queries) DeleteWorkspaceCommunicationRoots(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceCommunicationRoots, workspaceID)
 	return err
@@ -371,37 +245,53 @@ func (q *Queries) DeleteWorkspaceConnections(ctx context.Context, workspaceID pg
 	return err
 }
 
+const deleteWorkspaceDashboardRangeViews = `-- name: DeleteWorkspaceDashboardRangeViews :exec
+DELETE FROM dashboard_range_view
+WHERE dashboard_range_view.workspace_id = $1
+`
+
+func (q *Queries) DeleteWorkspaceDashboardRangeViews(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceDashboardRangeViews, workspaceID)
+	return err
+}
+
+const deleteWorkspaceEntitlementFeatureAttempts = `-- name: DeleteWorkspaceEntitlementFeatureAttempts :exec
+DELETE FROM entitlement_feature_attempt
+WHERE entitlement_feature_attempt.workspace_id = $1
+`
+
+func (q *Queries) DeleteWorkspaceEntitlementFeatureAttempts(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceEntitlementFeatureAttempts, workspaceID)
+	return err
+}
+
+const deleteWorkspaceEntitlementLimitOverages = `-- name: DeleteWorkspaceEntitlementLimitOverages :exec
+DELETE FROM entitlement_limit_overage
+WHERE entitlement_limit_overage.workspace_id = $1
+`
+
+func (q *Queries) DeleteWorkspaceEntitlementLimitOverages(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceEntitlementLimitOverages, workspaceID)
+	return err
+}
+
 const deleteWorkspaceIssueRoots = `-- name: DeleteWorkspaceIssueRoots :exec
-WITH deleted_wakeup_pr_events AS (
- DELETE FROM issue_wakeup_pr_event WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
-), deleted_ci_advances AS (
- DELETE FROM issue_ci_advance WHERE issue_id IN (SELECT id FROM issue WHERE workspace_id=$1)
-), deleted_workflow_switch_pending AS (
- DELETE FROM issue_workflow_switch_pending WHERE workspace_id=$1
-), deleted_wakeup_receipts AS (
+WITH deleted_wakeup_receipts AS (
  DELETE FROM issue_wakeup_receipt WHERE wakeup_id IN (SELECT id FROM issue_wakeup WHERE workspace_id=$1)
 ), deleted_wakeups AS (
  DELETE FROM issue_wakeup WHERE workspace_id=$1
-), deleted_wakeup_definitions AS (
- DELETE FROM issue_wakeup_definition WHERE workspace_id=$1
-), deleted_dm_progress_follows AS (
- DELETE FROM dm_progress_follow WHERE workspace_id=$1
-), deleted_dm_progress_lanes AS (
- DELETE FROM dm_progress_lane WHERE workspace_id=$1
-), deleted_dm_progress_data_incidents AS (
- DELETE FROM dm_progress_data_incident WHERE workspace_id=$1
-), deleted_wakeup_aggregate_reservations AS (
- DELETE FROM wakeup_aggregate_reservation WHERE workspace_id=$1
-), deleted_wakeup_aggregate_budgets AS (
- DELETE FROM wakeup_aggregate_budget WHERE workspace_id=$1
-), deleted_wakeup_scoped_events AS (
- DELETE FROM wakeup_scoped_event WHERE workspace_id=$1
 ),
 deleted_child_events AS (
  DELETE FROM issue_child_event WHERE workspace_id=$1
 ),
 deleted_unread AS (
  DELETE FROM issue_unread WHERE workspace_id=$1
+),
+deleted_description_collab_state AS (
+ DELETE FROM issue_description_collab_state WHERE workspace_id=$1
+),
+deleted_description_revisions AS (
+ DELETE FROM issue_description_revision WHERE workspace_id=$1
 ),
 deleted_issues AS (
     DELETE FROM issue WHERE issue.workspace_id = $1
@@ -418,15 +308,10 @@ deleted_issue_views AS (
 deleted_issue_view_preferences AS (
     DELETE FROM issue_view_preference
     WHERE issue_view_preference.workspace_id = $1
-),
-deleted_machine_banner_dismissals AS (
-    DELETE FROM machine_banner_dismissal
-    WHERE machine_banner_dismissal.workspace_id = $1
 )
 DELETE FROM quick_action WHERE quick_action.workspace_id = $1
 `
 
-// CHE-9190: members' offline-banner dismissals carry no FK.
 func (q *Queries) DeleteWorkspaceIssueRoots(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceIssueRoots, workspaceID)
 	return err
@@ -480,15 +365,6 @@ deleted_orphan_task_supplements AS (
 deleted_orphan_task_supplement_capabilities AS (
     DELETE FROM task_supplement_capability WHERE workspace_id = $1
 ),
-deleted_chat_task_supplements AS (
-    DELETE FROM chat_task_supplement WHERE workspace_id = $1
-),
-deleted_orphan_task_pr_event_deliveries AS (
-    DELETE FROM task_pr_event_delivery WHERE workspace_id = $1
-),
-deleted_orphan_task_pr_event_capabilities AS (
-    DELETE FROM task_pr_event_capability WHERE workspace_id = $1
-),
 deleted_orphan_task_context_receipts AS (
     DELETE FROM task_context_receipt WHERE workspace_id = $1
 ),
@@ -516,188 +392,29 @@ deleted_draft_restores AS (
     DELETE FROM chat_draft_restore
     WHERE chat_session_id IN (SELECT id FROM ws_sessions)
 ),
-deleted_agent_builder_drafts AS (
-    DELETE FROM agent_builder_draft WHERE workspace_id = $1
-),
 deleted_chat_wakeups AS (
     DELETE FROM chat_wakeup WHERE workspace_id = $1
 ),
-deleted_github_dispatch_halts AS (
-    DELETE FROM github_dispatch_halt WHERE workspace_id = $1
-),
-deleted_github_dispatch_halt_audits AS (
-    DELETE FROM github_dispatch_halt_audit WHERE workspace_id = $1
-),
-deleted_decision_waits AS (
-    DELETE FROM decision_wait WHERE workspace_id = $1
-),
-deleted_config_sync AS (
-    DELETE FROM workspace_config_sync WHERE workspace_id = $1
-),
-deleted_ask_guard_events AS (
-    DELETE FROM ask_guard_event WHERE workspace_id = $1
-),
-deleted_system1_observations AS (
-    DELETE FROM system1_observation WHERE workspace_id = $1
-),
-deleted_system1_labels AS (
-    DELETE FROM system1_label WHERE workspace_id = $1
-),
-deleted_system1_predictions AS (
-    DELETE FROM system1_prediction WHERE workspace_id = $1
-),
-deleted_system1_label_samples AS (
-    DELETE FROM system1_label_sample WHERE workspace_id = $1
-),
-deleted_system1_epochs AS (
-    DELETE FROM system1_epoch WHERE workspace_id = $1
-),
-deleted_ci_watch_configs AS (
-    DELETE FROM ci_watch_config WHERE workspace_id = $1
-),
-deleted_ci_watch_config_audits AS (
-    DELETE FROM ci_watch_config_audit WHERE workspace_id = $1
-),
-deleted_ci_failure_events AS (
-    DELETE FROM ci_failure_event WHERE workspace_id = $1
-),
-deleted_ci_watch_actions AS (
-    DELETE FROM ci_watch_action WHERE workspace_id = $1
-),
-deleted_ci_signature_owners AS (
-    DELETE FROM ci_signature_owner WHERE workspace_id = $1
-),
-deleted_ci_flake_increments AS (
-    DELETE FROM ci_flake_increment WHERE workspace_id = $1
-),
-deleted_ci_watch_events AS (
-    DELETE FROM ci_watch_event WHERE workspace_id = $1
+deleted_agent_builder_drafts AS (
+    DELETE FROM agent_builder_draft WHERE workspace_id = $1
 ),
 deleted_comment_reactions AS (
     DELETE FROM comment_reaction WHERE workspace_id = $1
 ),
-deleted_comment_supersessions AS (
-    DELETE FROM comment_supersession WHERE workspace_id = $1
+deleted_comment_idempotency_receipts AS (
+    DELETE FROM comment_idempotency_receipt WHERE comment_idempotency_receipt.workspace_id = $1
 ),
 deleted_issue_reactions AS (
     DELETE FROM issue_reaction WHERE workspace_id = $1
-),
-deleted_stage_completion_wakes AS (
-    DELETE FROM stage_completion_wake WHERE workspace_id = $1
-),
-deleted_stage_generations AS (
-    DELETE FROM stage_generation WHERE workspace_id = $1
-),
-deleted_recovery_claims AS (
-    DELETE FROM recovery_claim WHERE workspace_id = $1
-),
-deleted_run_budget_notices AS (
-    DELETE FROM run_budget_notice WHERE workspace_id = $1
-),
-deleted_run_budget_refusals AS (
-    DELETE FROM run_budget_refusal WHERE workspace_id = $1
-),
-deleted_issue_run_budget_entries AS (
-    DELETE FROM issue_run_budget_entry WHERE workspace_id = $1
-),
-deleted_run_capability_grants AS (
-    DELETE FROM run_capability_grant WHERE workspace_id = $1
-),
-deleted_read_snapshot_approvals AS (
-    DELETE FROM read_snapshot_approval WHERE workspace_id = $1
-),
-deleted_protected_path_policies AS (
-    DELETE FROM protected_path_policy WHERE workspace_id = $1
-),
-deleted_task_elevations AS (
-    DELETE FROM task_elevation WHERE workspace_id = $1
-),
-deleted_elevated_ops AS (
-    DELETE FROM elevated_op WHERE workspace_id = $1
-),
-deleted_issue_taints AS (
-    DELETE FROM issue_taint WHERE workspace_id = $1
-),
-deleted_issue_taint_clears AS (
-    DELETE FROM issue_taint_clear WHERE workspace_id = $1
-),
-deleted_issue_run_taints AS (
-    DELETE FROM issue_run_taint WHERE workspace_id = $1
-),
-deleted_issue_checkpoints AS (
-    DELETE FROM issue_checkpoint WHERE workspace_id = $1
-),
-deleted_governed_vote_records AS (
-    DELETE FROM governed_vote_record WHERE workspace_id = $1
-),
-deleted_governed_pass_receipts AS (
-    DELETE FROM governed_pass_receipt WHERE workspace_id = $1
-),
-deleted_run_gate_events AS (
-    DELETE FROM run_gate_event WHERE workspace_id = $1
-),
-deleted_github_workflow_runs AS (
-    DELETE FROM github_workflow_run WHERE workspace_id = $1
-),
-deleted_github_workflow_jobs AS (
-    DELETE FROM github_workflow_job WHERE workspace_id = $1
-),
-deleted_governance_receipts AS (
-    DELETE FROM governance_receipt WHERE workspace_id = $1
-),
-deleted_governance_budget_outbox AS (
-    DELETE FROM governance_budget_outbox WHERE workspace_id = $1
-),
-deleted_governance_budget_journal AS (
-    DELETE FROM governance_budget_journal WHERE workspace_id = $1
-),
-deleted_governance_budget_reservations AS (
-    DELETE FROM governance_budget_reservation WHERE workspace_id = $1
-),
-deleted_governance_budget_roots AS (
-    DELETE FROM governance_budget_root WHERE workspace_id = $1
-),
-deleted_governance_budget_windows AS (
-    DELETE FROM governance_budget_window WHERE workspace_id = $1
-),
-deleted_governance_concurrency_holds AS (
-    DELETE FROM governance_concurrency_hold WHERE workspace_id = $1
-),
-deleted_governance_concurrency_guards AS (
-    DELETE FROM governance_concurrency_guard WHERE workspace_id = $1
-),
-deleted_governance_jev_credentials AS (
-    DELETE FROM governance_jev_credential WHERE workspace_id = $1
-),
-deleted_governance_config_audit AS (
-    DELETE FROM governance_workspace_config_audit WHERE workspace_id = $1
-),
-deleted_governance_configs AS (
-    DELETE FROM governance_workspace_config WHERE workspace_id = $1
-),
-deleted_governance_evaluation_sources AS (
-    DELETE FROM governance_evaluation_source WHERE workspace_id = $1
-),
-deleted_governance_evaluations AS (
-    DELETE FROM governance_evaluation WHERE workspace_id = $1
-),
-deleted_governance_attempts AS (
-    DELETE FROM governance_attempt WHERE workspace_id = $1
-),
-deleted_governance_case_transitions AS (
-    DELETE FROM governance_case_transition WHERE workspace_id = $1
-),
-deleted_governance_cases AS (
-    DELETE FROM governance_case WHERE workspace_id = $1
-),
-deleted_provenance_export_logs AS (
-    DELETE FROM provenance_export_log WHERE workspace_id = $1
 ),
 deleted_activity AS (
     DELETE FROM activity_log WHERE workspace_id = $1
 ),
 deleted_inbox AS (
     DELETE FROM inbox_item WHERE workspace_id = $1
+),
+deleted_issue_blockers AS (
+ DELETE FROM issue_blocker WHERE workspace_id=$1
 ),
 deleted_issue_dependencies AS (
     DELETE FROM issue_dependency
@@ -739,15 +456,9 @@ deleted_issue_pr_automation AS (
 deleted_issue_pr_exclusions AS (
     DELETE FROM issue_pull_request_exclusion WHERE workspace_id = $1
 ),
-deleted_issue_review_admissions AS (
-    DELETE FROM issue_review_admission WHERE workspace_id = $1
-),
 deleted_agent_invocation_targets AS (
     DELETE FROM agent_invocation_target
     WHERE agent_id IN (SELECT id FROM ws_agents)
-),
-deleted_agent_presets AS (
-    DELETE FROM agent_preset WHERE workspace_id = $1
 ),
 deleted_agent_skills AS (
     DELETE FROM agent_skill
@@ -769,10 +480,6 @@ deleted_squad_members AS (
 deleted_project_resources AS (
     DELETE FROM project_resource WHERE workspace_id = $1
 ),
-deleted_github_route_grants AS (
-    DELETE FROM github_route_grant
-    WHERE project_id IN (SELECT id FROM project WHERE workspace_id = $1)
-),
 deleted_autopilot_collaborators AS (
     DELETE FROM autopilot_collaborator
     WHERE autopilot_id IN (SELECT id FROM ws_autopilots)
@@ -783,16 +490,6 @@ deleted_autopilot_subscribers AS (
 ),
 deleted_webhook_deliveries AS (
     DELETE FROM webhook_delivery WHERE workspace_id = $1
-),
-deleted_workflow_webhook_nonces AS (
-    DELETE FROM workflow_webhook_nonce
-    WHERE endpoint_id IN (SELECT id FROM workflow_webhook_endpoint WHERE workspace_id = $1)
-),
-deleted_workflow_webhook_events AS (
-    DELETE FROM workflow_webhook_event WHERE workspace_id = $1
-),
-deleted_workflow_webhook_endpoints AS (
-    DELETE FROM workflow_webhook_endpoint WHERE workspace_id = $1
 ),
 deleted_github_check_runs AS (
     DELETE FROM github_pull_request_check_run
@@ -850,8 +547,22 @@ deleted_channel_binding_tokens AS (
 deleted_wecom_install_sessions AS (
     DELETE FROM wecom_install_session WHERE workspace_id = $1
 ),
+deleted_weixin_login_sessions AS (
+    DELETE FROM weixin_login_session WHERE workspace_id = $1
+),
+deleted_weixin_account_states AS (
+    DELETE FROM weixin_account_state
+    WHERE installation_id IN (SELECT id FROM ws_channel_installations)
+),
 deleted_workspace_composio_connections AS (
     DELETE FROM workspace_composio_connection WHERE workspace_id = $1
+),
+deleted_remote_app_connections AS (
+    DELETE FROM remote_app_connection
+    WHERE (scope = 'team' AND owner_id = $1) OR workspace_id = $1
+),
+deleted_personal_composio_connections AS (
+    DELETE FROM user_composio_connection WHERE workspace_id = $1
 ),
 deleted_agent_apps AS (
     DELETE FROM agent_app WHERE workspace_id = $1
@@ -923,47 +634,6 @@ WHERE channel_media_pending_object.workspace_id = $1
 // Same no-FK chore as chat_draft_restore above. Matched on workspace_id rather
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
-// CHE-3045 L5b wait episodes: workspace-owned leaf, no FK.
-// CHE-3284 config-sync enrollment: workspace-owned leaf, no FK.
-// CHE-3345 ask guard events: workspace-owned leaf, no FK.
-// CHE-3628 shadow System 1 observations: workspace-owned leaf, no FK.
-// CHE-4470 System 1 labels: workspace-owned leaf, no FK.
-// CHE-4471 System 1 predictions: workspace-owned leaf, no FK.
-// CHE-4473 System 1 served label samples: workspace-owned leaf, no FK.
-// CHE-4474 System 1 epochs: workspace-owned leaf, no FK.
-// CHE-4273 CI failure watcher: workspace-owned leaves, no FK. The two gh_*
-// budget tables are per App installation, have no workspace_id, and stay.
-// CHE-4279 storm-breaker event log: workspace-owned leaf, no FK.
-// CHE-488 durable stage-completion-wake bookkeeping (stage_generation,
-// stage_completion_wake). Deleted before the parent issues below so neither
-// statement depends on FK cascade ordering.
-// CHE-1126 gateway-recovery claim ledger: workspace-owned leaf; the FK cascades
-// too, the explicit delete keeps teardown independent of FK ordering.
-// CHE-2297 run-budget notice claims: workspace-owned leaf, no FK.
-// CHE-2798 run-budget refusals: workspace-owned leaf, no FK.
-// CHE-2297 L2a run-budget ledger: workspace-owned leaf, no FK.
-// CHE-2489 run capability grants: workspace-owned leaf, no FK.
-// CHE-2509 elevated-read snapshot approvals: workspace-owned leaf, no FK.
-// CHE-2490 protected-path policies: workspace-owned leaf, no FK.
-// CHE-2510 elevation state and authorized operations: workspace-owned leaves, no FK.
-// CHE-2514 issue taint and its clear audit: workspace-owned leaves, no FK.
-// CHE-1862 vote-gate ledger: workspace-owned, a leaf with no dependents.
-// CHE-3490 single-use PASS receipts: workspace-owned leaf, no dependents.
-// CHE-1918 run-gate shadow ledger: workspace-owned, a leaf with no dependents
-// and no FK. Outlives issues and receipts; goes with the workspace.
-// CHE-2147 webhook-fed GitHub Actions run/job mirror: workspace-owned leaves
-// with no dependents and no FK.
-// CHE-685 Jev governance routing receipts: workspace-owned observation
-// history, same leaf shape as issue_checkpoint above (no dependents, no FK).
-// CHE-714 Jev provider credentials are workspace-owned encrypted material.
-// Keep the explicit application teardown (rather than an FK cascade) in this
-// transaction so it commits or rolls back with the workspace row.
-// CHE-704 / C01 durable MJ cases and immutable captured evidence. These have
-// no database cascades by design, so every workspace-owned table is removed
-// explicitly before its workspace row.
-// CHE-755 provenance export audit rows: workspace-owned leaf, no dependents.
-// CHE-2031 inbound workflow webhook guard: workspace-owned leaves with no FK.
-// Nonces carry no workspace_id, so they go through their endpoint.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
@@ -1030,20 +700,7 @@ func (q *Queries) DeleteWorkspacePluginData(ctx context.Context, workspaceID pgt
 }
 
 const deleteWorkspacePullRequests = `-- name: DeleteWorkspacePullRequests :exec
-WITH deleted_github_webhook_dispatches AS (
-    DELETE FROM github_webhook_dispatch
-    WHERE github_webhook_dispatch.workspace_id = $1
-), deleted_github_snapshot_approvals AS (
-    DELETE FROM github_snapshot_approval
-    WHERE github_snapshot_approval.workspace_id = $1
-), deleted_github_webhook_revisions AS (
-    DELETE FROM github_webhook_revision
-    WHERE github_webhook_revision.workspace_id = $1
-), deleted_issue_pr_events AS (
-    -- Runs after DeleteWorkspaceIssueRoots: a capture that share-locked an issue
-    -- has committed by then, so this sweep sees its events (CHE-2298 a1).
-    DELETE FROM issue_pr_event WHERE issue_pr_event.workspace_id = $1
-), deleted_github_prs AS (
+WITH deleted_github_prs AS (
     DELETE FROM github_pull_request
     WHERE github_pull_request.workspace_id = $1
 )
@@ -1060,6 +717,9 @@ WITH
 deleted_runtimes AS (
     DELETE FROM agent_runtime WHERE agent_runtime.workspace_id = $1
 ),
+deleted_runtime_rate_limits AS (
+    DELETE FROM runtime_rate_limit WHERE runtime_rate_limit.workspace_id = $1
+),
 deleted_profiles AS (
     DELETE FROM runtime_profile WHERE runtime_profile.workspace_id = $1
 ),
@@ -1068,6 +728,9 @@ deleted_project_members AS (
 ),
 deleted_project_subscribers AS (
     DELETE FROM project_subscriber WHERE project_subscriber.workspace_id = $1
+),
+deleted_project_folders AS (
+    DELETE FROM project_folder WHERE project_folder.workspace_id = $1
 )
 DELETE FROM project WHERE project.workspace_id = $1
 `
@@ -1119,48 +782,12 @@ func (q *Queries) DetachTaskBatchReferences(ctx context.Context, taskIds []pgtyp
 	return err
 }
 
-const listIssueIDsOfTaskBatch = `-- name: ListIssueIDsOfTaskBatch :many
-SELECT t.issue_id AS id
-FROM (
-    SELECT p.issue_id FROM agent_task_queue p
-    WHERE p.id = ANY($1::uuid[])
-    UNION
-    SELECT c.issue_id FROM agent_task_queue c
-    WHERE c.parent_task_id = ANY($1::uuid[])
-) t
-WHERE t.issue_id IS NOT NULL
-ORDER BY t.issue_id
-`
-
-// Issues the deletion of a task batch touches: the issue of each task and the
-// issue of each child that names a task as parent. Nulling parent_task_id re-runs
-// the taint inheritance trigger on each child, whose issue-taint trigger locks the
-// child's issue FOR NO KEY UPDATE. Ascending, so callers can lock in this order.
-func (q *Queries) ListIssueIDsOfTaskBatch(ctx context.Context, taskIds []pgtype.UUID) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listIssueIDsOfTaskBatch, taskIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listTaskIDsByAgentFirstPage = `-- name: ListTaskIDsByAgentFirstPage :many
 SELECT id FROM agent_task_queue
 WHERE agent_id = $1
 ORDER BY id
 LIMIT $2
+FOR UPDATE
 `
 
 type ListTaskIDsByAgentFirstPageParams struct {
@@ -1170,7 +797,7 @@ type ListTaskIDsByAgentFirstPageParams struct {
 
 // First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 // a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
-// the single-key / keyset rationale.
+// the single-key / keyset / FOR UPDATE rationale.
 func (q *Queries) ListTaskIDsByAgentFirstPage(ctx context.Context, arg ListTaskIDsByAgentFirstPageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByAgentFirstPage, arg.AgentID, arg.Limit)
 	if err != nil {
@@ -1196,6 +823,7 @@ SELECT id FROM agent_task_queue
 WHERE agent_id = $1 AND id > $2
 ORDER BY id
 LIMIT $3
+FOR UPDATE
 `
 
 type ListTaskIDsByAgentPageParams struct {
@@ -1222,9 +850,11 @@ type ListTaskIDsByAgentPageParams struct {
 // the agent's entire task set in front of every page, so a busy agent costs
 // roughly O(N² / page) for the sweep.
 //
-// The page takes no row lock. Locking the run rows before the issues they touch
-// inverts the order of AuthorizeElevatedOp (issue, then run), so the sweep locks
-// the issues of the page first and then the rows, through LockTaskBatch.
+// FOR UPDATE is load-bearing for correctness, not throughput. It locks the rows
+// this page is about to delete, and under READ COMMITTED PostgreSQL re-checks the
+// WHERE clause after acquiring each lock: a task a concurrent committed UPDATE
+// has already moved to another owner no longer matches and is skipped, and one we
+// did lock cannot be moved away before we delete it.
 func (q *Queries) ListTaskIDsByAgentPage(ctx context.Context, arg ListTaskIDsByAgentPageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByAgentPage, arg.AgentID, arg.ID, arg.Limit)
 	if err != nil {
@@ -1250,6 +880,7 @@ SELECT id FROM agent_task_queue
 WHERE issue_id = $1
 ORDER BY id
 LIMIT $2
+FOR UPDATE
 `
 
 type ListTaskIDsByIssueFirstPageParams struct {
@@ -1259,7 +890,7 @@ type ListTaskIDsByIssueFirstPageParams struct {
 
 // First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 // a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
-// the single-key / keyset rationale.
+// the single-key / keyset / FOR UPDATE rationale.
 func (q *Queries) ListTaskIDsByIssueFirstPage(ctx context.Context, arg ListTaskIDsByIssueFirstPageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByIssueFirstPage, arg.IssueID, arg.Limit)
 	if err != nil {
@@ -1285,6 +916,7 @@ SELECT id FROM agent_task_queue
 WHERE issue_id = $1 AND id > $2
 ORDER BY id
 LIMIT $3
+FOR UPDATE
 `
 
 type ListTaskIDsByIssuePageParams struct {
@@ -1294,7 +926,7 @@ type ListTaskIDsByIssuePageParams struct {
 }
 
 // Uses idx_agent_task_queue_issue_id_keyset (migration 279). See
-// ListTaskIDsByAgentPage for the single-key / keyset rationale.
+// ListTaskIDsByAgentPage for the single-key / keyset / FOR UPDATE rationale.
 func (q *Queries) ListTaskIDsByIssuePage(ctx context.Context, arg ListTaskIDsByIssuePageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByIssuePage, arg.IssueID, arg.ID, arg.Limit)
 	if err != nil {
@@ -1320,6 +952,7 @@ SELECT id FROM agent_task_queue
 WHERE runtime_id = $1
 ORDER BY id
 LIMIT $2
+FOR UPDATE
 `
 
 type ListTaskIDsByRuntimeFirstPageParams struct {
@@ -1329,7 +962,7 @@ type ListTaskIDsByRuntimeFirstPageParams struct {
 
 // First page of the same walk; see ListWorkspaceAgentIDFirstPage for why this is
 // a separate query rather than a zero-uuid cursor, and ListTaskIDsByAgentPage for
-// the single-key / keyset rationale.
+// the single-key / keyset / FOR UPDATE rationale.
 func (q *Queries) ListTaskIDsByRuntimeFirstPage(ctx context.Context, arg ListTaskIDsByRuntimeFirstPageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByRuntimeFirstPage, arg.RuntimeID, arg.Limit)
 	if err != nil {
@@ -1355,6 +988,7 @@ SELECT id FROM agent_task_queue
 WHERE runtime_id = $1 AND id > $2
 ORDER BY id
 LIMIT $3
+FOR UPDATE
 `
 
 type ListTaskIDsByRuntimePageParams struct {
@@ -1365,7 +999,7 @@ type ListTaskIDsByRuntimePageParams struct {
 
 // Uses idx_agent_task_queue_runtime_id (migration 273, (runtime_id, id)); before
 // it every runtime_id index was partial, so this path had none at all. See
-// ListTaskIDsByAgentPage for the single-key / keyset rationale.
+// ListTaskIDsByAgentPage for the single-key / keyset / FOR UPDATE rationale.
 func (q *Queries) ListTaskIDsByRuntimePage(ctx context.Context, arg ListTaskIDsByRuntimePageParams) ([]pgtype.UUID, error) {
 	rows, err := q.db.Query(ctx, listTaskIDsByRuntimePage, arg.RuntimeID, arg.ID, arg.Limit)
 	if err != nil {
@@ -1599,80 +1233,6 @@ func (q *Queries) ListWorkspaceRuntimeIDPage(ctx context.Context, arg ListWorksp
 	return items, nil
 }
 
-const lockIssuesByID = `-- name: LockIssuesByID :exec
-SELECT 1 FROM issue i
-WHERE i.id = ANY($1::uuid[])
-ORDER BY i.id
-FOR NO KEY UPDATE OF i
-`
-
-// AuthorizeElevatedOp takes the issue lock first and then waits on the run row, so
-// teardown takes the issue locks before any run row it deletes or updates, or
-// Postgres aborts one side (40P01). Ascending id, so two teardowns cannot cross.
-func (q *Queries) LockIssuesByID(ctx context.Context, issueIds []pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, lockIssuesByID, issueIds)
-	return err
-}
-
-const lockIssuesOfWorkspaceCommentTasks = `-- name: LockIssuesOfWorkspaceCommentTasks :exec
-SELECT 1 FROM issue i
-WHERE i.id IN (
-    SELECT t.issue_id FROM agent_task_queue t
-    JOIN comment c ON c.id = t.trigger_comment_id
-    WHERE c.workspace_id = $1 AND t.issue_id IS NOT NULL
-)
-ORDER BY i.id
-FOR NO KEY UPDATE OF i
-`
-
-// Runs before DeleteWorkspaceComments. A run can name one of the workspace's
-// comments from an issue of a neighbour workspace, and nulling that trigger
-// locks the run's issue. Take those issues first, in ascending id order.
-func (q *Queries) LockIssuesOfWorkspaceCommentTasks(ctx context.Context, workspaceID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, lockIssuesOfWorkspaceCommentTasks, workspaceID)
-	return err
-}
-
-const lockTaskBatch = `-- name: LockTaskBatch :many
-SELECT q.id FROM agent_task_queue q
-WHERE q.id = ANY($1::uuid[])
-  AND (q.agent_id = $2 OR q.issue_id = $2 OR q.runtime_id = $2)
-ORDER BY q.id
-FOR UPDATE OF q
-`
-
-type LockTaskBatchParams struct {
-	TaskIds []pgtype.UUID `json:"task_ids"`
-	OwnerID pgtype.UUID   `json:"owner_id"`
-}
-
-// Locks the rows of one task page, after the issues of the page are locked. Under
-// READ COMMITTED PostgreSQL re-checks the WHERE clause after acquiring each lock:
-// a task a concurrent committed UPDATE has already moved to another owner no
-// longer matches and is skipped, and a row that is gone is not returned. A task
-// we did lock cannot be moved away before we delete it. The owner id is that of
-// the agent, issue or runtime the page was listed for; the three id spaces are
-// disjoint.
-func (q *Queries) LockTaskBatch(ctx context.Context, arg LockTaskBatchParams) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, lockTaskBatch, arg.TaskIds, arg.OwnerID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var id pgtype.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		items = append(items, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const lockTaskUsageRollupForWorkspaceDelete = `-- name: LockTaskUsageRollupForWorkspaceDelete :exec
 SELECT pg_advisory_xact_lock(4246)
 `
@@ -1764,9 +1324,13 @@ func (q *Queries) PrepareWorkspaceDeletionLinks(ctx context.Context, workspaceID
 }
 
 const setWorkspaceTeardownMode = `-- name: SetWorkspaceTeardownMode :exec
+
 SELECT set_config('multica.workspace_teardown', 'on', true)
 `
 
+// Workspace deletion is application-owned. These statements form a fixed,
+// bottom-up deletion plan; the legacy foreign keys remain only as a
+// compatibility safety net during the expand phase.
 // The setting is transaction-local. Migration 242 makes only the three DELETE
 // dirty triggers skip their per-row work while this flag is on.
 func (q *Queries) SetWorkspaceTeardownMode(ctx context.Context) error {

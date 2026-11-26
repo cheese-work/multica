@@ -7,7 +7,6 @@ import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { Label } from "@multica/ui/components/ui/label";
-import { Switch } from "@multica/ui/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -44,22 +43,9 @@ import {
   useHasOnboarded,
 } from "@multica/core/paths";
 import { setCurrentWorkspace } from "@multica/core/platform";
-import {
-  AUTO_COMPACT_MAX_PCT,
-  AUTO_COMPACT_MAX_TOKENS_1M,
-  AUTO_COMPACT_MAX_TOKENS_200K,
-  AUTO_COMPACT_MIN_PCT,
-  AUTO_COMPACT_MIN_TOKENS,
-  isValidAutoCompactPct,
-  readAutoCompact,
-  resolveAutoCompact,
-} from "@multica/core/workspace/auto-compact";
 import type { Workspace } from "@multica/core/types";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { useNavigation } from "../../navigation";
-import { AgentDecisionsRow } from "./agent-decisions-row";
-import { AutoCompactTokensRow } from "./auto-compact-tokens-row";
-import { DelegatedWritesSection } from "./delegated-writes-section";
 import { DeleteWorkspaceDialog } from "./delete-workspace-dialog";
 import { PrivateProjectsSection } from "./private-projects-section";
 import { useT } from "../../i18n";
@@ -72,20 +58,14 @@ import {
   SettingsTab,
   type SettingsSaveStatus,
 } from "./settings-layout";
-import { IdleGuardRows } from "./idle-guard-rows";
-import { WorkspaceSchedulingRow } from "./workspace-scheduling-row";
-import { RuntimeProfileRow } from "./runtime-profile-row";
 import { useAutoSave } from "./use-auto-save";
-import { useSettingsDraft } from "./use-settings-draft";
-import { useWorkspaceSettingsDraftStore } from "@multica/core/settings/draft-stores";
+import { useEditedValue } from "./use-edited-value";
 
 interface WorkspaceDetailsDraft {
   name: string;
   description: string;
   context: string;
 }
-
-const sameText = (left: string, right: string) => left === right;
 
 function workspaceDetailsEqual(
   left: WorkspaceDetailsDraft,
@@ -161,49 +141,12 @@ export function WorkspaceTab() {
     navigation.push(resolvePostAuthDestination(remaining, hasOnboarded));
   };
 
-  // CHE-1612: settings.compact_prompt saves through its own request field,
-  // so this form never sends (and never drops) the rest of the settings.
-  const savedFields = useMemo(
-    () => ({
-      name: workspace?.name ?? "",
-      description: workspace?.description ?? "",
-      context: workspace?.context ?? "",
-      compactPrompt:
-        typeof workspace?.settings?.compact_prompt === "string"
-          ? workspace.settings.compact_prompt
-          : "",
-    }),
-    [
-      workspace?.name,
-      workspace?.description,
-      workspace?.context,
-      workspace?.settings?.compact_prompt,
-    ],
-  );
-  // Unsent edits are kept per workspace and persisted, so they survive a
-  // remount or reload. An untouched field follows what is saved elsewhere (the
-  // CLI); an edited one is never overwritten until its save lands.
-  const [fields, setFields, confirmFields] = useSettingsDraft(
-    useWorkspaceSettingsDraftStore,
-    workspace?.id ?? "",
-    savedFields,
-  );
-  const { name, description, context, compactPrompt } = fields;
-  const savedCompactPrompt = savedFields.compactPrompt;
-  const setName = (name: string) => setFields({ name });
-  const setDescription = (description: string) => setFields({ description });
-  const setContext = (context: string) => setFields({ context });
-  const setCompactPrompt = (compactPrompt: string) => setFields({ compactPrompt });
-  // CHE-1806: settings.auto_compact also saves through its own request field.
-  // A null draft follows the saved value; an invalid draft is never sent.
-  const autoCompact = readAutoCompact(workspace?.settings);
-  const resolvedCompact = resolveAutoCompact(workspace?.settings, undefined);
-  const [thresholdDraft, setThresholdDraft] = useState<string | null>(null);
-  const thresholdText = thresholdDraft ?? String(autoCompact.threshold_pct);
-  const thresholdValue = Number(thresholdText);
-  const thresholdInvalid =
-    thresholdDraft !== null &&
-    (thresholdText.trim() === "" || !isValidAutoCompactPct(thresholdValue));
+  const nameField = useEditedValue(workspace?.name ?? "", workspace?.id);
+  const descriptionField = useEditedValue(workspace?.description ?? "", workspace?.id);
+  const contextField = useEditedValue(workspace?.context ?? "", workspace?.id);
+  const name = nameField.value;
+  const description = descriptionField.value;
+  const context = contextField.value;
   const [prefixDraft, setPrefixDraft] = useState<string | null>(null);
   const [prefixSaveStatus, setPrefixSaveStatus] =
     useState<SettingsSaveStatus>("idle");
@@ -227,10 +170,7 @@ export function WorkspaceTab() {
   const isSoleOwner = isOwner && ownerCount <= 1;
   const isSoleMember = members.length <= 1;
 
-  // The persisted fields are keyed by workspace id, so switching workspaces
-  // swaps them; only the local threshold and prefix drafts need a reset.
   useEffect(() => {
-    setThresholdDraft(null);
     setPrefixDraft(null);
   }, [workspace?.id]);
 
@@ -260,19 +200,26 @@ export function WorkspaceTab() {
   const saveDetails = useCallback(
     async (next: WorkspaceDetailsDraft) => {
       if (!workspace) return;
-      const updated = await api.updateWorkspace(workspace.id, next);
+      // Send only what was edited here, so the rest keeps changes made elsewhere.
+      const changes: Partial<WorkspaceDetailsDraft> = {};
+      if (nameField.edited) changes.name = next.name;
+      if (descriptionField.edited) changes.description = next.description;
+      if (contextField.edited) changes.context = next.context;
+      if (Object.keys(changes).length === 0) return;
+      const updated = await api.updateWorkspace(workspace.id, changes);
       qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
         old?.map((ws) => (ws.id === updated.id ? updated : ws)),
       );
+      nameField.markSaved(next.name);
+      descriptionField.markSaved(next.description);
+      contextField.markSaved(next.context);
     },
-    [qc, workspace],
+    [contextField, descriptionField, nameField, qc, workspace],
   );
   const detailsAutoSave = useAutoSave({
     value: detailsDraft,
     savedValue: savedDetails,
     onSave: saveDetails,
-    onSuccess: confirmFields,
-    onIdle: confirmFields,
     onError: (error) =>
       toast.error(
         error instanceof Error
@@ -281,66 +228,6 @@ export function WorkspaceTab() {
       ),
     enabled: !!workspace && canManageWorkspace && !!name.trim(),
     isEqual: workspaceDetailsEqual,
-  });
-
-  const saveCompactPrompt = useCallback(
-    async (next: string) => {
-      if (!workspace) return;
-      const updated = await api.updateWorkspace(workspace.id, {
-        compact_prompt: next.trim() ? next : null,
-      });
-      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
-        old?.map((ws) => (ws.id === updated.id ? updated : ws)),
-      );
-    },
-    [qc, workspace],
-  );
-  const compactPromptAutoSave = useAutoSave({
-    value: compactPrompt,
-    savedValue: savedCompactPrompt,
-    onSave: saveCompactPrompt,
-    onSuccess: (compactPrompt) => confirmFields({ compactPrompt }),
-    onIdle: (compactPrompt) => confirmFields({ compactPrompt }),
-    onError: (error) =>
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : t(($) => $.workspace.toast_save_failed),
-      ),
-    enabled: !!workspace && canManageWorkspace,
-    isEqual: sameText,
-  });
-
-  const saveAutoCompact = useCallback(
-    async (next: {
-      enabled?: boolean;
-      threshold_pct?: number;
-      threshold_tokens_200k?: number;
-      threshold_tokens_1m?: number;
-    }) => {
-      if (!workspace) return;
-      const updated = await api.updateWorkspace(workspace.id, {
-        auto_compact: next,
-      });
-      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
-        old?.map((ws) => (ws.id === updated.id ? updated : ws)),
-      );
-    },
-    [qc, workspace],
-  );
-  const thresholdAutoSave = useAutoSave({
-    value: thresholdInvalid ? autoCompact.threshold_pct : thresholdValue,
-    savedValue: autoCompact.threshold_pct,
-    onSave: (next: number) => saveAutoCompact({ threshold_pct: next }),
-    onSuccess: () => setThresholdDraft(null),
-    onError: (error) =>
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : t(($) => $.workspace.toast_save_failed),
-      ),
-    enabled: !!workspace && canManageWorkspace,
-    isEqual: (left, right) => left === right,
   });
 
   const performPrefixSave = async (nextPrefix: string) => {
@@ -417,18 +304,12 @@ export function WorkspaceTab() {
       {value || <span className="text-faint-foreground">—</span>}
     </p>
   );
-  const autoSaveStatus =
-    detailsAutoSave.status !== "idle"
-      ? detailsAutoSave.status
-      : compactPromptAutoSave.status !== "idle"
-        ? compactPromptAutoSave.status
-        : thresholdAutoSave.status;
   const saveStatus =
     prefixSaveStatus === "saving" || prefixSaveStatus === "error"
       ? prefixSaveStatus
-      : autoSaveStatus === "idle"
+      : detailsAutoSave.status === "idle"
         ? prefixSaveStatus
-        : autoSaveStatus;
+        : detailsAutoSave.status;
 
   return (
     <SettingsTab title={t(($) => $.page.tabs.general)} scope="workspace">
@@ -460,6 +341,7 @@ export function WorkspaceTab() {
                 name={workspace.name}
                 size={64}
                 disabled={!canManageWorkspace}
+                textIconEnabled
                 ariaLabel={t(($) => $.workspace.change_logo_aria)}
                 onUploaded={async (url) => {
                   try {
@@ -497,7 +379,7 @@ export function WorkspaceTab() {
                 autoComplete="organization"
                 aria-label={t(($) => $.workspace.name_label)}
                 value={name}
-                onChange={(event) => setName(event.target.value)}
+                onChange={(event) => nameField.edit(event.target.value)}
                 onBlur={detailsAutoSave.flush}
                 disabled={!canManageWorkspace}
               />
@@ -518,7 +400,7 @@ export function WorkspaceTab() {
                 autoComplete="off"
                 aria-label={t(($) => $.workspace.description_label)}
                 value={description}
-                onChange={(event) => setDescription(event.target.value)}
+                onChange={(event) => descriptionField.edit(event.target.value)}
                 onBlur={detailsAutoSave.flush}
                 rows={3}
                 disabled={!canManageWorkspace}
@@ -543,7 +425,7 @@ export function WorkspaceTab() {
                 autoComplete="off"
                 aria-label={t(($) => $.workspace.context_label)}
                 value={context}
-                onChange={(event) => setContext(event.target.value)}
+                onChange={(event) => contextField.edit(event.target.value)}
                 onBlur={detailsAutoSave.flush}
                 rows={4}
                 disabled={!canManageWorkspace}
@@ -552,129 +434,6 @@ export function WorkspaceTab() {
               />
             )}
           </SettingsRow>
-
-          <SettingsRow
-            anchor="compact-prompt"
-            label={t(($) => $.workspace.compact_prompt_label)}
-            description={t(($) => $.workspace.compact_prompt_hint)}
-            size={readOnly ? undefined : "text"}
-            align="start"
-          >
-            {readOnly ? (
-              readOnlyText(savedCompactPrompt)
-            ) : (
-              <Textarea
-                name="workspace-compact-prompt"
-                autoComplete="off"
-                aria-label={t(($) => $.workspace.compact_prompt_label)}
-                value={compactPrompt}
-                onChange={(event) => setCompactPrompt(event.target.value)}
-                onBlur={compactPromptAutoSave.flush}
-                rows={4}
-                disabled={!canManageWorkspace}
-                className="resize-y"
-                placeholder={t(($) => $.workspace.compact_prompt_placeholder)}
-              />
-            )}
-            <p className="mt-1 text-caption text-muted-foreground sm:text-right">
-              {savedCompactPrompt.trim()
-                ? t(($) => $.workspace.compact_prompt_source_workspace)
-                : t(($) => $.workspace.compact_prompt_source_default)}
-            </p>
-          </SettingsRow>
-
-          <SettingsRow
-            anchor="auto-compact"
-            label={t(($) => $.workspace.auto_compact_label)}
-            description={t(($) => $.workspace.auto_compact_hint)}
-          >
-            {readOnly ? (
-              <p className="text-body text-foreground">
-                {!autoCompact.enabled
-                  ? t(($) => $.workspace.auto_compact_readonly_off)
-                  : resolvedCompact.threshold_pct === null
-                    ? t(($) => $.workspace.auto_compact_readonly_on_tokens, {
-                        small: resolvedCompact.tokens_200k,
-                        large: resolvedCompact.tokens_1m,
-                      })
-                    : t(($) => $.workspace.auto_compact_readonly_on, {
-                        threshold: resolvedCompact.threshold_pct,
-                      })}
-              </p>
-            ) : (
-              <Switch
-                checked={autoCompact.enabled}
-                disabled={!canManageWorkspace}
-                onCheckedChange={(enabled) => {
-                  saveAutoCompact({ enabled }).catch((error: unknown) =>
-                    toast.error(
-                      error instanceof Error
-                        ? error.message
-                        : t(($) => $.workspace.toast_save_failed),
-                    ),
-                  );
-                }}
-                aria-label={t(($) => $.workspace.auto_compact_label)}
-              />
-            )}
-          </SettingsRow>
-
-          {readOnly ? null : (
-            <>
-              <AutoCompactTokensRow
-                key={`200k-${workspace.id}`}
-                label={t(($) => $.workspace.auto_compact_tokens_200k_label)}
-                invalidText={t(($) => $.workspace.auto_compact_tokens_200k_invalid)}
-                name="workspace-auto-compact-tokens-200k"
-                saved={resolvedCompact.tokens_200k}
-                min={AUTO_COMPACT_MIN_TOKENS}
-                max={AUTO_COMPACT_MAX_TOKENS_200K}
-                disabled={!canManageWorkspace}
-                onSave={(next) => saveAutoCompact({ threshold_tokens_200k: next })}
-              />
-              <AutoCompactTokensRow
-                key={`1m-${workspace.id}`}
-                label={t(($) => $.workspace.auto_compact_tokens_1m_label)}
-                invalidText={t(($) => $.workspace.auto_compact_tokens_1m_invalid)}
-                name="workspace-auto-compact-tokens-1m"
-                saved={resolvedCompact.tokens_1m}
-                min={AUTO_COMPACT_MIN_TOKENS}
-                max={AUTO_COMPACT_MAX_TOKENS_1M}
-                disabled={!canManageWorkspace}
-                onSave={(next) => saveAutoCompact({ threshold_tokens_1m: next })}
-              />
-            <SettingsRow
-              label={t(($) => $.workspace.auto_compact_threshold_label)}
-              size="code"
-            >
-              <Input
-                type="number"
-                inputMode="numeric"
-                min={AUTO_COMPACT_MIN_PCT}
-                max={AUTO_COMPACT_MAX_PCT}
-                step={1}
-                name="workspace-auto-compact-threshold"
-                aria-label={t(($) => $.workspace.auto_compact_threshold_label)}
-                aria-invalid={thresholdInvalid || undefined}
-                value={thresholdText}
-                onChange={(event) => setThresholdDraft(event.target.value)}
-                onBlur={thresholdAutoSave.flush}
-                disabled={!canManageWorkspace}
-              />
-              {thresholdInvalid ? (
-                <p className="mt-1 text-caption text-destructive">
-                  {t(($) => $.workspace.auto_compact_threshold_invalid)}
-                </p>
-              ) : null}
-            </SettingsRow>
-            </>
-          )}
-
-          <RuntimeProfileRow workspace={workspace} canEdit={canManageWorkspace && !readOnly} />
-
-          {isOwner ? <AgentDecisionsRow wsId={workspace.id} /> : null}
-          <IdleGuardRows workspace={workspace} canEdit={isOwner} />
-          <WorkspaceSchedulingRow workspace={workspace} canManage={canManageWorkspace} />
 
           <SettingsRow
             anchor="slug"
@@ -725,10 +484,6 @@ export function WorkspaceTab() {
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
-
-      {membersFetched && (
-        <DelegatedWritesSection wsId={workspace.id} canEdit={canManageWorkspace} />
-      )}
 
       {membersFetched && isOwner ? <PrivateProjectsSection /> : null}
 

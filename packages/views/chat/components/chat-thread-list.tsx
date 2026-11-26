@@ -1,32 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { GroupedVirtuoso } from "react-virtuoso";
-import { toast } from "sonner";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlarmClock,
   Archive,
   ArchiveRestore,
-  CheckIcon,
+  ChevronLeft,
+  ChevronRight,
   Clock,
-  Eye,
-  EyeOff,
   Link2,
-  ListChecks,
   Loader2,
-  MinusIcon,
-  MoreHorizontal,
   Pencil,
   Pin,
   PinOff,
   Square,
   Trash2,
-  X,
 } from "@multica/ui/icons";
-import { Button } from "@multica/ui/components/ui/button";
-import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { cn } from "@multica/ui/lib/utils";
 import { copyText } from "@multica/ui/lib/clipboard";
+import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { useWorkspacePresenceMap } from "@multica/core/agents";
@@ -34,52 +27,47 @@ import { api } from "@multica/core/api";
 import {
   pendingChatTasksOptions,
   chatKeys,
-  filterChatSessions,
-  openDecisionRequestsOptions,
-  sessionActivityTime,
-  sortArchivedChatSessions,
+  myChatWakeupsOptions,
   sortChatSessions,
 } from "@multica/core/chat/queries";
 import {
-  useBatchChatSessions,
   useDeleteChatSession,
-  useMarkChatSessionRead,
+  useSetChatSessionArchived,
   useSetChatSessionPinned,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
 import type { Agent, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { DeferredTooltip } from "../../common/deferred-tooltip";
 import {
   RowActionsMenu,
-  RowContextMenu,
+  RowActionsPointMenu,
   handleRowActivationKey,
   type RowActionItem,
 } from "../../common/row-actions-menu";
+import { CLOSED_ROW_MENU, shouldOpenRowMenu, type RowMenuState } from "../../common/point-menu";
 import { resolveClickIntent, useOptionalNavigation } from "../../navigation";
 import { createLogger } from "@multica/core/logger";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useLocale, useT } from "../../i18n";
-import { useChatSessionActions } from "./use-chat-session-actions";
-import { handleRowShortcut } from "./use-row-shortcuts";
+import { SessionHistoryList } from "./session-history-list";
 import { SessionRenameInput } from "./session-rename-input";
-import { SwipeRow, type SwipeAction } from "./swipe-row";
-import { formatChatClock } from "./format-chat-time";
-import { groupByDay, type DayGroupKey } from "../lib/group-by-day";
-import { NeedsYouList } from "./needs-you-list";
-import { useAttentionRefresh } from "./use-attention-refresh";
-import { ChatBulkBar } from "./chat-bulk-bar";
-import { useChatSelection, type BulkAction, type GroupState } from "./use-chat-selection";
-import { ChatFilterChips, type ChatFilterCounts } from "./chat-filter-chips";
-import { ListEmpty, ListError, ListLoading, ListOffline } from "./chat-thread-list-states";
-import { useOnline } from "../../settings/components/use-online";
-import { VIRTUOSO_SEED_COUNT } from "../../common/virtuoso-seed";
-import { findScrollParent, useScrollPointerShield } from "./use-scroll-pointer-shield";
-
-// Row height is fixed (`h-14`), so Virtuoso starts from the real value.
-const ROW_HEIGHT_PX = 56;
 
 const apiLogger = createLogger("chat.api");
+
+// IM-style timestamp: today → clock, this year → M/D, else full date.
+function formatChatTime(dateStr: string, locale: string): string {
+  const d = new Date(dateStr);
+  const now = new Date();
+  if (d.toDateString() === now.toDateString()) {
+    return d.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
+  }
+  if (d.getFullYear() === now.getFullYear()) {
+    return d.toLocaleDateString(locale, { month: "numeric", day: "numeric" });
+  }
+  return d.toLocaleDateString(locale);
+}
 
 // Collapse a (possibly markdown / multi-line) message into a one-line preview.
 function toPreview(content: string): string {
@@ -88,25 +76,6 @@ function toPreview(content: string): string {
     .replace(/[#*`>~]/g, "")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-interface ChatThreadListProps {
-  sessions: ChatSession[];
-  agents: Agent[];
-  activeSessionId: string | null;
-  onSelectSession: (session: ChatSession) => void;
-  // Archiving is owned by the parent so the selection advance stays layout-
-  // aware (desktop advances to the next chat; mobile drops back to the list)
-  // and routes through the shared controller — see ChatPage.handleArchive.
-  onArchive: (session: ChatSession) => void;
-  /** First load of the list. Only shown while there are no rows to show. */
-  loadState?: "loading" | "error";
-  onRetry?: () => void;
-  /**
-   * Called after the list enters multi-select with this row (`X`, the menu
-   * item or a long-press); the list owns the selection itself.
-   */
-  onEnterSelectMode?: (session: ChatSession) => void;
 }
 
 /**
@@ -131,10 +100,19 @@ export function ChatThreadList({
   activeSessionId,
   onSelectSession,
   onArchive,
-  loadState,
-  onRetry,
-  onEnterSelectMode,
-}: ChatThreadListProps) {
+  onPrefetchSession,
+}: {
+  sessions: ChatSession[];
+  agents: Agent[];
+  activeSessionId: string | null;
+  onSelectSession: (session: ChatSession) => void;
+  // Archiving is owned by the parent so the selection advance stays layout-
+  // aware (desktop advances to the next chat; mobile drops back to the list)
+  // and routes through the shared controller — see ChatPage.handleArchive.
+  onArchive: (session: ChatSession) => void;
+  /** Warm a session's messages and context on pointer hover or keyboard focus. */
+  onPrefetchSession?: (sessionId: string) => void;
+}) {
   const { t } = useT("chat");
   const { t: tLayout } = useT("layout");
   const locale = useLocale();
@@ -152,73 +130,50 @@ export function ChatThreadList({
   const getShareableUrl = navigation?.getShareableUrl;
   const agentById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents]);
 
-  // One flat cache; the chip decides the slice. Every non-archived chip keeps
-  // pinned-first order, Archived sorts by activity only.
-  // A continued DM lives on in its successor's transcript, so only the newest
-  // DM of a chain gets a row. A successor missing from the cache leaves its
-  // source listed rather than lost.
-  const rows = useMemo(() => {
-    const ids = new Set(sessions.map((s) => s.id));
-    return sessions.filter((s) => !s.continued_into_session_id || !ids.has(s.continued_into_session_id));
-  }, [sessions]);
-
-  const listView = useChatStore((s) => s.listView);
-  const setListView = useChatStore((s) => s.setListView);
-  const decisionsQuery = useQuery(openDecisionRequestsOptions(wsId));
-  const decisionRequests = Array.isArray(decisionsQuery.data) ? decisionsQuery.data : undefined;
-  const decisionSessionIds = useMemo(
-    () => new Set((decisionRequests ?? []).map((r) => r.chat_session_id)),
-    [decisionRequests],
+  // Split the flat cache locally: active chats fill the default history view,
+  // archived chats fill the "Archived" view. Both sorted pinned-first (then by
+  // activity) so the list stays ordered even after an optimistic pin/archive or
+  // a WS patch mutates the flat cache in place.
+  const historySessions = useMemo(
+    () => sortChatSessions(sessions.filter((s) => s.status !== "archived")),
+    [sessions],
   );
-  const visibleSessions = useMemo(() => {
-    const picked = filterChatSessions(rows, listView, decisionSessionIds);
-    return [
-      ...sortChatSessions(picked.filter((s) => s.status !== "archived")),
-      ...sortArchivedChatSessions(picked.filter((s) => s.status === "archived")),
-    ];
-  }, [rows, listView, decisionSessionIds]);
-  const counts = useMemo<ChatFilterCounts>(() => {
-    if (loadState === "loading" && rows.length === 0) return {};
-    const n = (view: Parameters<typeof filterChatSessions>[1]) =>
-      filterChatSessions(rows, view, decisionSessionIds).length;
-    return {
-      ...(decisionRequests ? { decisions: n("decisions") } : {}),
-      waiting: n("waiting"),
-      unseen: n("unseen"),
-      archived: n("archived"),
-    };
-  }, [rows, decisionSessionIds, decisionRequests, loadState]);
-  const hasUnclassified = rows.some((s) => (s.attention_unclassified_keys?.length ?? 0) > 0);
-  useAttentionRefresh(sessions);
-  const online = useOnline();
-  const isMobile = useIsMobile();
-  const batch = useBatchChatSessions();
-  const visibleIds = useMemo(() => visibleSessions.map((s) => s.id), [visibleSessions]);
-  const selection = useChatSelection(visibleIds);
-  const selecting = selection.active && listView !== "waiting";
-  const exitSelection = selection.exit;
+  const archivedSessions = useMemo(
+    () => sortChatSessions(sessions.filter((s) => s.status === "archived")),
+    [sessions],
+  );
+
+  // Which view is showing. Falls back to history when the archived list drains
+  // (last chat unarchived / deleted) so we never strand the user on an empty
+  // archive.
+  const [view, setView] = useState<"history" | "archived">("history");
   useEffect(() => {
-    if (selection.active && listView === "waiting") exitSelection();
-  }, [selection.active, listView, exitSelection]);
-  const enterSelect = (session: ChatSession) => {
-    selection.enter(session.id);
-    onEnterSelectMode?.(session);
-  };
+    if (view === "archived" && archivedSessions.length === 0) setView("history");
+  }, [view, archivedSessions.length]);
 
   const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const [confirmingStopId, setConfirmingStopId] = useState<string | null>(null);
   const [stoppingTaskId, setStoppingTaskId] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
-  const deleteSession = useDeleteChatSession();
   const updateSession = useUpdateChatSession();
+  // One right-click menu for every row; it keeps the session it opened on
+  // through its close animation.
+  const [contextMenu, setContextMenu] = useState<RowMenuState & { sessionId: string | null }>({
+    ...CLOSED_ROW_MENU,
+    sessionId: null,
+  });
+  const deleteSession = useDeleteChatSession();
   const setPinned = useSetChatSessionPinned();
-  const markRead = useMarkChatSessionRead();
-  const [moreMenuId, setMoreMenuId] = useState<string | null>(null);
-  const sessionActions = useChatSessionActions();
+  const setArchived = useSetChatSessionArchived();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const queryClient = useQueryClient();
 
   const { data: pending } = useQuery(pendingChatTasksOptions(wsId));
+  const { data: myWakeups } = useQuery(myChatWakeupsOptions(wsId));
+  const waitingSessionIds = useMemo(
+    () => new Set((myWakeups ?? []).filter((w) => w.status === "active").map((w) => w.chat_session_id)),
+    [myWakeups],
+  );
   const pendingTaskBySessionId = useMemo(
     () => new Map((pending?.tasks ?? []).map((task) => [task.chat_session_id, task])),
     [pending],
@@ -281,47 +236,92 @@ export function ChatThreadList({
     });
   };
 
-  const handleBulk = async (action: BulkAction, ids: string[]) => {
-    // Hold auto mark-read first, as the single "unseen" action does.
-    if (action === "unseen" && activeSessionId && ids.includes(activeSessionId)) {
-      useChatStore.getState().suppressAutoRead(activeSessionId);
-    }
-    let failed: string[];
-    try {
-      ({ failed } = await batch.mutateAsync({ action, sessionIds: ids }));
-    } catch {
-      failed = ids;
-    }
-    if (failed.length > 0) toast.error(t(($) => $.list.bulk.failed, { count: failed.length }));
-    const done = ids.filter((id) => !failed.includes(id));
-    if (done.length === 0) return;
-    if (activeSessionId && done.includes(activeSessionId) && (action === "unseen" || action === "archive")) {
-      setActiveSession(null);
-    }
-    if (action === "archive") {
-      toast(t(($) => $.list.bulk.archived_toast, { count: done.length }), {
-        duration: 5000,
-        action: {
-          label: t(($) => $.list.undo),
-          onClick: () => void batch.mutateAsync({ action: "unarchive", sessionIds: done }),
-        },
-      });
-    }
-    selection.exit();
+  // One list drives every action surface — the compact menu without hover,
+  // the hover strip with it, and the right-click menu — so they cannot drift.
+  // The archived view is the only place hard-delete lives; the history view
+  // offers the reversible archive instead.
+  const rowActionsFor = (session: ChatSession): RowActionItem[] =>
+    view === "archived"
+      ? [
+          {
+            key: "unarchive",
+            icon: <ArchiveRestore className="size-3.5" />,
+            label: t(($) => $.list.unarchive),
+            onSelect: () =>
+              setArchived.mutate({ sessionId: session.id, archived: false }),
+          },
+          {
+            key: "delete",
+            icon: <Trash2 className="size-3.5" />,
+            label: t(($) => $.session_history.row_delete_aria),
+            danger: true,
+            onSelect: () => setConfirmingDeleteId(session.id),
+          },
+        ]
+      : [
+          {
+            key: "pin",
+            icon: session.pinned ? (
+              <PinOff className="size-3.5" />
+            ) : (
+              <Pin className="size-3.5 -rotate-45" />
+            ),
+            label: session.pinned
+              ? t(($) => $.list.unpin)
+              : t(($) => $.list.pin),
+            onSelect: () =>
+              setPinned.mutate({ sessionId: session.id, pinned: !session.pinned }),
+          },
+          pendingTaskBySessionId.has(session.id)
+            ? {
+                key: "stop",
+                icon: <Square className="size-3 fill-current" />,
+                label: t(($) => $.session_history.row_stop_aria),
+                danger: true,
+                onSelect: () => setConfirmingStopId(session.id),
+              }
+            : {
+                key: "archive",
+                icon: <Archive className="size-3.5" />,
+                label: t(($) => $.list.archive),
+                onSelect: () => onArchive(session),
+              },
+        ];
+
+  // Menu-only entries: the touch and right-click menus have room for them,
+  // the hover strip keeps its two quick actions.
+  const menuActionsFor = (session: ChatSession): RowActionItem[] => {
+    if (view === "archived") return [];
+    const href = sessionHref(session.id);
+    return [
+      {
+        key: "rename",
+        icon: <Pencil className="size-3.5" />,
+        label: t(($) => $.header.rename),
+        onSelect: () => setRenamingId(session.id),
+      },
+      ...(href && getShareableUrl
+        ? [
+            {
+              key: "copy-link",
+              icon: <Link2 className="size-3.5" />,
+              label: tLayout(($) => $.rail.copy_link),
+              onSelect: () => {
+                void copyText(getShareableUrl(href)).then((ok) => {
+                  if (ok) toast.success(tLayout(($) => $.rail.link_copied));
+                });
+              },
+            },
+          ]
+        : []),
+    ];
   };
 
-  const handleRenameSubmit = (session: ChatSession, raw: string) => {
+  const commitRename = (session: ChatSession, value: string) => {
     setRenamingId(null);
-    const title = raw.trim();
-    if (!title || title === session.title) return;
-    if (title.length > 200) {
-      toast.error(t(($) => $.input.rename_title_too_long_toast));
-      return;
-    }
-    updateSession.mutate(
-      { sessionId: session.id, title },
-      { onError: () => toast.error(t(($) => $.input.rename_failed_toast)) },
-    );
+    const title = value.trim();
+    if (!title || title === (session.title ?? "")) return;
+    updateSession.mutate({ sessionId: session.id, title });
   };
 
   const renderRow = (session: ChatSession) => {
@@ -340,14 +340,12 @@ export function ChatThreadList({
     const isConfirmingDelete = confirmingDeleteId === session.id;
     const isConfirmingStop = confirmingStopId === session.id && !!pendingTask;
     const isConfirmingAction = isConfirmingDelete || isConfirmingStop;
+    const isRenaming = renamingId === session.id;
     const titleText = session.title?.trim() || t(($) => $.window.untitled);
     const last = session.last_message ?? null;
-    const timeText = formatChatClock(sessionActivityTime(session), locale);
-    const unseen = !isCurrent && (session.has_unread || (session.unread_count ?? 0) > 0);
-    // The active chip already says "Decisions" / "Unseen"; only day-grouped
-    // views need the tag.
-    const showDecisionTag =
-      decisionSessionIds.has(session.id) && listView !== "decisions" && listView !== "unseen";
+    const timeText = last
+      ? formatChatTime(last.created_at, locale)
+      : formatChatTime(session.updated_at, locale);
 
     // The second line: typing/waiting → failed → preview.
     let previewNode: React.ReactNode;
@@ -369,6 +367,12 @@ export function ChatThreadList({
       );
     } else if (last?.failure_reason) {
       previewNode = <span className="block truncate text-destructive">{t(($) => $.list.failed)}</span>;
+    } else if (last?.message_kind === "wakeup") {
+      previewNode = (
+        <span className="block truncate italic text-muted-foreground">
+          {t(($) => $.list.wakeup_preview)}
+        </span>
+      );
     } else if (last?.message_kind === "no_response") {
       // A no_response turn stores a non-empty English fallback as its content,
       // so the preview is never blank even on older clients; new clients show a
@@ -380,7 +384,7 @@ export function ChatThreadList({
       );
     } else if (last) {
       previewNode = (
-        <span className={cn("block truncate", unseen ? "font-semibold text-foreground" : "text-muted-foreground")}>
+        <span className={cn("block truncate", unread > 0 ? "text-foreground" : "text-muted-foreground")}>
           {last.role === "user" ? t(($) => $.list.you_prefix) : ""}
           {toPreview(last.content)}
         </span>
@@ -389,172 +393,23 @@ export function ChatThreadList({
       previewNode = <span className="block truncate text-muted-foreground">{t(($) => $.list.no_messages)}</span>;
     }
 
-    // One list drives every action surface (⋯ menu, right-click menu, row
-    // shortcuts), so they cannot drift. The archived view is the only place
-    // hard-delete lives; the history view offers the reversible archive.
-    const renameItem: RowActionItem = {
-      key: "rename",
-      icon: <Pencil className="size-3.5" />,
-      label: t(($) => $.list.rename),
-      shortcut: "R",
-      onSelect: () => setRenamingId(session.id),
-    };
-    const selectItem: RowActionItem[] = [
-          {
-            key: "select",
-            icon: <ListChecks className="size-3.5" />,
-            label: t(($) => $.list.select),
-            shortcut: "X",
-            onSelect: () => enterSelect(session),
-          },
-        ];
-    const rowActions: RowActionItem[] =
-      session.status === "archived"
-        ? [
-            {
-              key: "unarchive",
-              icon: <ArchiveRestore className="size-3.5" />,
-              label: t(($) => $.list.unarchive),
-              shortcut: "E",
-              onSelect: () =>
-                void sessionActions.unarchive(session),
-            },
-            {
-              key: "delete",
-              icon: <Trash2 className="size-3.5" />,
-              label: t(($) => $.session_history.row_delete_aria),
-              danger: true,
-              onSelect: () => setConfirmingDeleteId(session.id),
-            },
-          ]
-        : [
-            {
-              key: "unseen",
-              icon: <EyeOff className="size-3.5" />,
-              label: t(($) => $.list.unseen),
-              shortcut: "U",
-              onSelect: () =>
-                void sessionActions.markUnseen(session, {
-                  onMarked: () => {
-                    if (isCurrent) setActiveSession(null);
-                  },
-                }),
-            },
-            {
-              key: "pin",
-              icon: session.pinned ? (
-                <PinOff className="size-3.5" />
-              ) : (
-                <Pin className="size-3.5 -rotate-45" />
-              ),
-              label: session.pinned
-                ? t(($) => $.list.unpin)
-                : t(($) => $.list.pin),
-              shortcut: "P",
-              onSelect: () =>
-                setPinned.mutate({ sessionId: session.id, pinned: !session.pinned }),
-            },
-            isRunning
-              ? {
-                  key: "stop",
-                  icon: <Square className="size-3 fill-current" />,
-                  label: t(($) => $.session_history.row_stop_aria),
-                  danger: true,
-                  onSelect: () => setConfirmingStopId(session.id),
-                }
-              : {
-                  key: "archive",
-                  icon: <Archive className="size-3.5" />,
-                  label: t(($) => $.list.archive),
-                  shortcut: "E",
-                  onSelect: () => onArchive(session),
-                },
-          ];
-    const href = sessionHref(session.id);
-    const copyLinkItem: RowActionItem[] =
-      session.status !== "archived" && href && getShareableUrl
-        ? [
-            {
-              key: "copy-link",
-              icon: <Link2 className="size-3.5" />,
-              label: tLayout(($) => $.rail.copy_link),
-              onSelect: () => {
-                void copyText(getShareableUrl(href)).then((ok) => {
-                  if (ok) toast.success(tLayout(($) => $.rail.link_copied));
-                });
-              },
-            },
-          ]
-        : [];
-    const menuGroups = [rowActions, [renameItem, ...copyLinkItem, ...selectItem]];
-    const shortcutItems = menuGroups.flat();
-    const isRenaming = renamingId === session.id;
-    const isPicked = selecting && selection.selected.has(session.id);
-
-    // Swipe left: the row's own pin / archive (or stop, or unarchive) + More.
-    // A full swipe archives, never on a running or already-archived DM.
-    const swipeKeys = session.status === "archived" ? ["unarchive"] : ["pin", "archive", "stop"];
-    const toneByKey: Record<string, SwipeAction["tone"]> = {
-      pin: "info",
-      archive: "warning",
-      stop: "warning",
-      unarchive: "success",
-    };
-    const leftActions: SwipeAction[] = [
-      ...rowActions
-        .filter((a) => swipeKeys.includes(a.key))
-        .map((a) => ({ key: a.key, label: a.label, icon: a.icon, onSelect: a.onSelect, tone: toneByKey[a.key] })),
-      {
-        key: "more",
-        label: t(($) => $.list.more),
-        icon: <MoreHorizontal className="size-4" />,
-        // Let the tray close first so the menu anchors to the visible ⋯.
-        onSelect: () => setMoreMenuId(session.id),
-      },
-    ];
-    const isUnseen = session.has_unread || (session.unread_count ?? 0) > 0;
-    const rightAction: SwipeAction | undefined =
-      session.status === "archived"
-        ? undefined
-        : isUnseen
-          ? {
-              key: "seen",
-              label: t(($) => $.list.mark_seen),
-              icon: <Eye className="size-4" />,
-              tone: "info",
-              onSelect: () => markRead.mutate(session.id),
-            }
-          : {
-              key: "unseen",
-              label: t(($) => $.list.unseen),
-              icon: <EyeOff className="size-4" />,
-              tone: "info",
-              onSelect: () => void sessionActions.markUnseen(session),
-            };
+    const rowActions = rowActionsFor(session);
+    const menuActions = menuActionsFor(session);
 
     return (
-      <SwipeRow
+      <div
         key={session.id}
-        leftActions={selecting ? [] : leftActions}
-        rightAction={selecting ? undefined : rightAction}
-        onFullSwipeLeft={
-          !selecting && session.status !== "archived" && !isRunning && !isConfirmingAction
-            ? () => onArchive(session)
-            : undefined
-        }
-        onLongPress={selecting ? undefined : () => enterSelect(session)}
-      >
-      <RowContextMenu
-        groups={isConfirmingAction || isRenaming || selecting ? [] : menuGroups}
-        data-testid="chat-thread-row"
+        data-chat-thread-row={session.id}
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
+        onPointerEnter={() => {
+          if (!isConfirmingAction) onPrefetchSession?.(session.id);
+        }}
+        onFocus={() => {
+          if (!isConfirmingAction) onPrefetchSession?.(session.id);
+        }}
         onClick={(e) => {
           if (isConfirmingAction || isRenaming || e.defaultPrevented) return;
-          if (selecting) {
-            selection.toggle(session.id);
-            return;
-          }
           // Plain click keeps the master-detail selection. On web, a modifier
           // click opens the session as its own browser tab. Desktop tabs
           // dedupe chat by pathname (a session is view state, not a subject —
@@ -586,31 +441,21 @@ export function ChatThreadList({
         }}
         onKeyDown={(e) => {
           if (isConfirmingAction || isRenaming) return;
-          if (selecting) {
-            if (e.key === "Escape") selection.exit();
-            else handleRowActivationKey(e, () => selection.toggle(session.id));
-            return;
-          }
           handleRowActivationKey(e, () => onSelectSession(session));
-          // A portal (the open ⋯ menu) still bubbles React events to the row;
-          // only keys pressed inside the row's own DOM are row shortcuts.
-          if (e.currentTarget.contains(e.target as Node)) handleRowShortcut(e, shortcutItems);
+        }}
+        onContextMenu={(e) => {
+          if (isConfirmingAction || isRenaming || !shouldOpenRowMenu(e)) return;
+          e.preventDefault();
+          setContextMenu({ open: true, point: { x: e.clientX, y: e.clientY }, sessionId: session.id });
         }}
         className={cn(
           // Fixed height so nothing (hover actions, confirm prompts) can change
           // the row size and make the list jump. Content is vertically centered.
-          "group/row relative flex h-14 min-w-0 cursor-default items-center gap-3 rounded-md px-2 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-ring",
-          isCurrent || isPicked ? "bg-accent" : "hover:bg-accent/50",
+          "group/row relative flex h-14 min-w-0 cursor-default items-center gap-3 rounded-md px-2 outline-none transition-colors focus-visible:ring-1 focus-visible:ring-ring",
+          isCurrent ? "bg-accent" : "hover:bg-accent/50",
           isConfirmingAction && "bg-destructive/5 hover:bg-destructive/5",
         )}
       >
-        {selecting && (
-          <SelectCheckbox
-            state={isPicked ? "all" : "none"}
-            label={t(($) => $.list.bulk.row_aria, { title: titleText })}
-            onToggle={() => selection.toggle(session.id)}
-          />
-        )}
         {/* Thin ring keeps photo + fallback avatars reading as the same circle
             (the fallback's faint bg otherwise looks smaller). */}
         {agent ? (
@@ -622,26 +467,32 @@ export function ChatThreadList({
         <div className="min-w-0 flex-1">
           {/* Line 1: name + time (time stays put; hover actions overlay below) */}
           <div className="flex items-center gap-1.5">
-            {session.pinned && session.status !== "archived" && (
+            {session.pinned && (
               <Pin
                 aria-label={t(($) => $.list.pinned)}
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"
               />
             )}
+            {waitingSessionIds.has(session.id) && (
+              <AlarmClock
+                aria-label={t(($) => $.list.wakeup_active)}
+                className="size-3 shrink-0 text-brand"
+              />
+            )}
             {isRenaming ? (
               <div className="min-w-0 flex-1">
                 <SessionRenameInput
-                  initialValue={session.title?.trim() ?? ""}
-                  onSubmit={(value) => handleRenameSubmit(session, value)}
+                  initialValue={session.title ?? ""}
+                  onSubmit={(value) => commitRename(session, value)}
                   onCancel={() => setRenamingId(null)}
                 />
               </div>
             ) : (
-              <span title={titleText} className={cn("min-w-0 flex-1 truncate text-body", unseen ? "font-bold text-foreground" : "font-medium")}>
+              <span className={cn("min-w-0 flex-1 truncate text-body", unread > 0 ? "font-semibold text-foreground" : "font-medium")}>
                 {titleText}
               </span>
             )}
-            <span className={cn("ml-auto shrink-0 text-micro", unseen ? "font-semibold text-brand" : "text-muted-foreground")}>{timeText}</span>
+            <span className="ml-auto shrink-0 text-micro text-muted-foreground">{timeText}</span>
           </div>
 
           {/* Line 2: preview + unread badge, or an inline confirm prompt */}
@@ -675,22 +526,6 @@ export function ChatThreadList({
               ) : (
                 <>
                   <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden text-caption">
-                    {unseen && (
-                      <span
-                        data-testid="chat-unseen-dot"
-                        role="img"
-                        aria-label={t(($) => $.list.unseen_dot)}
-                        className="size-[7px] shrink-0 rounded-full bg-brand"
-                      />
-                    )}
-                    {showDecisionTag && (
-                      <span
-                        data-testid="chat-decision-tag"
-                        className="shrink-0 rounded-xs bg-brand/15 px-1.5 text-caption font-semibold text-brand"
-                      >
-                        {t(($) => $.list.tag_decision)}
-                      </span>
-                    )}
                     {agentName && (
                       <>
                         <span className="max-w-[40%] shrink-0 truncate font-medium text-muted-foreground">
@@ -718,221 +553,162 @@ export function ChatThreadList({
             </div>
         </div>
 
-        {/* One ⋯ menu. Where the pointer can hover it shows on row hover or
-            keyboard focus; right-click opens the same menu. */}
-        {!isConfirmingAction && !selecting && (
+        {/* Compact action menu — the touch equivalent of the hover strip
+            below, which a pointer without hover can never reach. It takes real
+            layout space (rather than overlaying the preview) and gives way to
+            the hover strip on a hover-capable pointer. */}
+        {!isConfirmingAction && !isRenaming && (
           <RowActionsMenu
             label={t(($) => $.list.row_actions_aria)}
-            groups={menuGroups}
-            large
-            revealOnHover
-            open={moreMenuId === session.id}
-            onOpenChange={(next) => setMoreMenuId(next ? session.id : null)}
+            groups={[rowActions, menuActions]}
           />
         )}
-      </RowContextMenu>
-      </SwipeRow>
+
+        {/* Hover actions — absolutely positioned so showing/hiding them never
+            changes the row height (which was making the list jump). Keyboard
+            focus reveals them too, so they are reachable without a mouse. */}
+        {!isConfirmingAction && !isRenaming && (
+          <div className="absolute inset-y-0 right-1 hidden items-center gap-0.5 rounded-md bg-gradient-to-l from-accent from-40% to-transparent pl-10 pr-1 [@media(hover:hover)]:group-hover/row:flex [@media(hover:hover)]:group-focus-within/row:flex">
+            {rowActions.map((action) => (
+              <RowAction
+                key={action.key}
+                icon={action.icon}
+                label={action.label}
+                danger={action.danger}
+                onClick={action.onSelect}
+              />
+            ))}
+          </div>
+        )}
+      </div>
     );
   };
 
-  // Pinned rows get their own header in Main / All; everything else sits under
-  // its day. The Pinned chip is all pinned rows, so a header there says nothing.
-  const sections = useMemo(() => {
-    const label: Record<DayGroupKey | "pinned", string> = {
-      pinned: t(($) => $.list.group.pinned),
-      today: `${t(($) => $.list.group.today)} · ${new Date().toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "numeric" })}`,
-      yesterday: t(($) => $.list.group.yesterday),
-      thisWeek: t(($) => $.list.group.this_week),
-      older: t(($) => $.list.group.older),
-    };
-    const splitPinned = listView === "main" || listView === "all";
-    const pinned = splitPinned ? visibleSessions.filter((s) => s.pinned && s.status !== "archived") : [];
-    const rest = pinned.length > 0 ? visibleSessions.filter((s) => !pinned.includes(s)) : visibleSessions;
-    return [
-      { key: "pinned" as const, sessions: pinned },
-      ...groupByDay(rest, new Date(), Intl.DateTimeFormat().resolvedOptions().timeZone),
-    ]
-      .filter((g) => g.sessions.length > 0)
-      .map((g) => ({ ...g, label: label[g.key] }));
-  }, [visibleSessions, listView, locale, t]);
-  const visibleInOrder = useMemo(() => sections.flatMap((g) => g.sessions), [sections]);
-  // computeItemKey is called with the flat index, group headers included
-  // (itemContent gets the item index only), so keys follow that layout.
-  const flatKeys = useMemo(
-    () => sections.flatMap((g) => [`group:${g.key}`, ...g.sessions.map((s) => s.id)]),
-    [sections],
+  const contextMenuSession = contextMenu.sessionId
+    ? sessions.find((s) => s.id === contextMenu.sessionId)
+    : undefined;
+  const rowContextMenu = (
+    <RowActionsPointMenu
+      menu={contextMenuSession ? contextMenu : CLOSED_ROW_MENU}
+      onOpenChange={(open) => {
+        if (!open) setContextMenu((current) => ({ ...current, open: false }));
+      }}
+      groups={
+        contextMenuSession
+          ? [rowActionsFor(contextMenuSession), menuActionsFor(contextMenuSession)]
+          : []
+      }
+    />
   );
 
-  // Virtuoso needs the real scroll container (the page owns it); until the
-  // wrapper has found it, a bounded slice of real rows keeps the first frame
-  // populated. The same slice is what renders where nothing scrolls (tests).
-  const [scrollEl, setScrollEl] = useState<HTMLElement | null>(null);
-  const attachBody = useCallback((el: HTMLDivElement | null) => {
-    setScrollEl(el ? findScrollParent(el) : null);
-  }, []);
-  // Rows slide under a still cursor while scrolling; keep that from opening
-  // avatar hover cards (and their queries).
-  useScrollPointerShield(scrollEl);
-
-  const renderGroupHeader = (g: (typeof sections)[number]) => (
-    <div
-      data-testid="chat-day-header"
-      data-group={g.key}
-      style={{ position: "sticky", top: 0 }}
-      className="z-10 flex items-center gap-2 bg-background px-2 pb-1 pt-2.5 text-caption font-semibold text-muted-foreground"
-    >
-      {/* Slot for the group checkbox (select mode). */}
-      <span data-slot="group-select" className="empty:hidden">
-        {selecting && (
-          <SelectCheckbox
-            className="-my-3 -ml-2.5"
-            state={selection.groupState(g.sessions.map((s) => s.id))}
-            label={t(($) => $.list.bulk.group_aria, { label: g.label })}
-            onToggle={() => selection.toggleGroup(g.sessions.map((s) => s.id))}
+  // Archived view: a back header, then the archived rows. Delete lives only
+  // here (via each row's hover actions).
+  if (view === "archived") {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <button
+          type="button"
+          onClick={() => setView("history")}
+          className="flex w-full shrink-0 items-center gap-1.5 rounded-md px-2 py-2 text-left text-caption font-medium text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <ChevronLeft className="size-4 shrink-0" />
+          <span className="truncate">{t(($) => $.list.archived_title)}</span>
+          <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
+            {archivedSessions.length}
+          </span>
+        </button>
+        <div className="min-h-0 flex-1">
+          <SessionHistoryList
+            key="archived"
+            sessions={archivedSessions}
+            renderRow={renderRow}
+            animateExit
           />
-        )}
-      </span>
-      <span className="min-w-0 flex-1 truncate">{g.label}</span>
-      <span className="shrink-0 tabular-nums">{g.sessions.length}</span>
-    </div>
-  );
-
-  let body: React.ReactNode;
-  if (rows.length === 0 && loadState === "loading") body = <ListLoading />;
-  else if (rows.length === 0 && loadState === "error") body = <ListError onRetry={onRetry} />;
-  else if (listView === "waiting" && (visibleSessions.length > 0 || hasUnclassified))
-    body = <NeedsYouList sessions={rows} agents={agents} refresh={false} />;
-  else if (visibleSessions.length === 0)
-    body = <ListEmpty kind={rows.length === 0 ? "none" : listView === "waiting" ? "waiting" : "view"} />;
-  else if (scrollEl) {
-    // ponytail: Tab reaches mounted rows only; the row shortcuts and the bulk
-    // bar walk the data, so they cover off-screen rows.
-    body = (
-      <div className="contents" data-testid={`chat-thread-group-${listView}`}>
-        <GroupedVirtuoso
-          customScrollParent={scrollEl}
-          groupCounts={sections.map((g) => g.sessions.length)}
-          groupContent={(i) => renderGroupHeader(sections[i]!)}
-          itemContent={(i) => <MemoRow render={renderRow} session={visibleInOrder[i]!} />}
-          computeItemKey={(i) => flatKeys[i] ?? i}
-          initialItemCount={Math.min(visibleInOrder.length, VIRTUOSO_SEED_COUNT)}
-          defaultItemHeight={ROW_HEIGHT_PX}
-          increaseViewportBy={{ top: 400, bottom: 400 }}
-        />
+        </div>
+        {rowContextMenu}
       </div>
     );
-  } else {
-    let left = VIRTUOSO_SEED_COUNT;
-    body = (
-      <div className="contents" data-testid={`chat-thread-group-${listView}`}>
-        {sections.map((g) => {
-          const shown = g.sessions.slice(0, Math.max(left, 0));
-          left -= shown.length;
-          return shown.length === 0 ? null : (
-            <section key={g.key}>
-              {renderGroupHeader(g)}
-              {shown.map((s) => (
-                <MemoRow key={s.id} render={renderRow} session={s} />
-              ))}
-            </section>
-          );
-        })}
-      </div>
+  }
+
+  // History (default) view: active rows + a footer entry into the archive.
+  const archivedEntry = archivedSessions.length > 0 && (
+    <button
+      type="button"
+      onClick={() => setView("archived")}
+      className="mt-1 flex h-10 w-full items-center gap-2 rounded-md px-2 text-left text-caption text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+    >
+      <span className="flex size-9 shrink-0 items-center justify-center">
+        <Archive className="size-4" />
+      </span>
+      <span className="min-w-0 flex-1 truncate font-medium">{t(($) => $.list.archived_title)}</span>
+      <span className="shrink-0 tabular-nums text-muted-foreground">{archivedSessions.length}</span>
+      <ChevronRight className="size-4 shrink-0 text-faint-foreground" />
+    </button>
+  );
+
+  if (historySessions.length === 0) {
+    return (
+      <>
+        <div className="px-3 py-1.5 text-caption text-muted-foreground">
+          {t(($) => $.window.no_previous)}
+        </div>
+        {archivedEntry}
+      </>
     );
   }
 
   return (
     <>
-      {selecting && (
-        <div className="flex items-center gap-1 px-2 py-1.5">
-          <span className="min-w-0 flex-1 truncate text-label font-semibold">
-            {t(($) => $.list.bulk.selected, { count: selection.selected.size })}
-          </span>
-          <Button type="button" variant="ghost" size="sm" onClick={selection.selectAll}>
-            {t(($) => $.list.bulk.select_all)}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={t(($) => $.list.bulk.cancel)}
-            onClick={selection.exit}
-          >
-            <X />
-          </Button>
-        </div>
-      )}
-      <ChatFilterChips value={listView} counts={counts} onChange={setListView} />
-      {!online && <ListOffline />}
-      <div ref={attachBody}>{body}</div>
-      {selecting && (
-        <div className="sticky bottom-0 z-20">
-          <ChatBulkBar
-            sessions={visibleSessions.filter((s) => selection.selected.has(s.id))}
-            compact={isMobile}
-            onAction={handleBulk}
-          />
-        </div>
-      )}
+      <SessionHistoryList
+        key="history"
+        sessions={historySessions}
+        renderRow={renderRow}
+        footer={archivedEntry}
+        animateExit
+      />
+      {rowContextMenu}
     </>
   );
 }
 
-/** Round checkbox look at 22 px inside a 44×44 hit area. `mixed` = some of a group. */
-/**
- * Virtuoso re-calls `itemContent` on every scroll step, and `renderRow` is a
- * closure over the whole list's state. `renderRow` changes identity only when
- * the list itself re-renders, so keying on it keeps mounted rows untouched
- * while scrolling (the cost was re-rendering ~25 rows per wheel step) and
- * still refreshes every row whenever any list state changes.
- */
-function MemoRow({
-  render,
-  session,
-}: {
-  render: (session: ChatSession) => React.ReactNode;
-  session: ChatSession;
-}) {
-  return useMemo(() => render(session), [render, session]);
-}
-
-function SelectCheckbox({
-  state,
+function RowAction({
+  icon,
   label,
-  onToggle,
-  className,
+  onClick,
+  danger,
 }: {
-  state: GroupState;
+  icon: React.ReactNode;
   label: string;
-  onToggle: () => void;
-  className?: string;
+  onClick: () => void;
+  danger?: boolean;
 }) {
   return (
-    // ui-pattern-ref: allow tri-state role="checkbox" control with mixed state; Button has no checkbox semantics
-    <button
-      type="button"
-      role="checkbox"
-      aria-checked={state === "all" ? true : state === "some" ? "mixed" : false}
-      aria-label={label}
-      onClick={(e) => {
-        e.stopPropagation();
-        onToggle();
-      }}
-      className={cn(
-        "flex size-11 shrink-0 items-center justify-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        className,
-      )}
-    >
-      <span
-        className={cn(
-          "flex size-5.5 items-center justify-center rounded-xs border border-input text-primary-foreground",
-          state !== "none" && "border-primary bg-primary",
-        )}
-      >
-        {state === "all" && <CheckIcon className="size-3.5" />}
-        {state === "some" && <MinusIcon className="size-3.5" />}
-      </span>
-    </button>
+    <DeferredTooltip
+      content={label}
+      trigger={
+        <button
+          type="button"
+          aria-label={label}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+          }}
+          onClick={(e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            onClick();
+          }}
+          className={cn(
+            "inline-flex size-7 items-center justify-center rounded-xs text-muted-foreground transition-colors focus-visible:outline-none",
+            danger
+              ? "hover:bg-destructive/10 hover:text-destructive focus-visible:bg-destructive/10 focus-visible:text-destructive"
+              : "hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:text-foreground",
+          )}
+        >
+          {icon}
+        </button>
+      }
+    />
   );
 }
 

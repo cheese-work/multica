@@ -2,7 +2,7 @@
 
 import { AppLink } from "../../navigation";
 import { yieldsToTextMenu } from "../../common/point-menu";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useWorkspacePaths, issueRouteRef } from "@multica/core/paths";
 import { IssueChip, useChipIssue } from "./issue-chip";
 import { IssueHoverCard } from "./issue-hover-card";
 import { useT } from "../../i18n";
@@ -91,7 +91,7 @@ function IssueMentionLink({ issueId, fallbackLabel, stableWidth }: IssueMentionC
       : null;
   return (
     <AppLink
-      href={p.issueDetail(issueId)}
+      href={p.issueDetail(issueRouteRef({ id: issueId, identifier: issue?.identifier }))}
       newTabTitle={fallbackLabel}
       className="issue-mention align-middle"
       onContextMenu={

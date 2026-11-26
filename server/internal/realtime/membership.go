@@ -131,22 +131,28 @@ func memberRemovalCandidate(raw []byte) bool {
 }
 
 func (h *Hub) stopClient(client *Client, notice []byte, deadline time.Time) {
-	client.stopped.Store(true)
+	firstStop := !client.stopped.Swap(true)
+	// Write the removal notice before removeClient closes client.send: closing
+	// send wakes writePump, which acquires writeMu and calls defer conn.Close()
+	// on return, racing with both TryLock() and WriteMessage() here.
+	if client.conn != nil {
+		if firstStop && len(notice) != 0 && time.Now().Before(deadline) && client.writeMu.TryLock() {
+			client.conn.SetWriteDeadline(deadline)
+			_ = client.conn.WriteMessage(websocket.TextMessage, notice)
+			_ = client.conn.WriteMessage(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			)
+			client.writeMu.Unlock()
+		}
+		client.conn.Close()
+	}
 	h.removeClient(client)
 	client.closeSend() // a writer may stop before registration completes
 	for range client.send {
 		// Discard queued content, including frames whose writer is doing a
 		// membership lookup concurrently. The writer also checks stopped.
 	}
-	if client.conn == nil {
-		return
-	}
-	if len(notice) != 0 && time.Now().Before(deadline) && client.writeMu.TryLock() {
-		_ = client.conn.SetWriteDeadline(deadline)
-		_ = client.conn.WriteMessage(websocket.TextMessage, notice)
-		client.writeMu.Unlock()
-	}
-	client.conn.Close()
 }
 
 // Capture the bounded batch BEFORE querying membership. A successful lookup
@@ -179,7 +185,7 @@ drain:
 	defer c.writeMu.Unlock()
 	// One deadline bounds the whole batch instead of allowing each frame a
 	// fresh timeout. A revocation can still interrupt it via conn.Close.
-	_ = c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+	c.conn.SetWriteDeadline(time.Now().Add(writeWait))
 	for _, frame := range batch {
 		if c.stopped.Load() {
 			return false

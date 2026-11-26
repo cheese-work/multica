@@ -1,14 +1,17 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest";
+import { QueryClient } from "@tanstack/react-query";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { setApiInstance } from "../api";
+import type { ApiClient } from "../api/client";
 import type { TaskMessagePayload } from "../types/events";
-import type { ChatSession } from "../types/chat";
+import type { ChatMessage, ChatSession } from "../types/chat";
 import {
-  chatSessionUsageOptions,
+  chatKeys,
   countUnreadChatSessions,
-  filterChatSessions,
   isTaskMessageTaskId,
   mergeTaskMessagesBySeq,
+  prefetchChatSession,
   sortChatSessions,
   taskMessagesOptions,
   unionTaskMessagesBySeq,
@@ -139,39 +142,11 @@ describe("sortChatSessions", () => {
     expect(sorted.map((s) => s.id)).toEqual(["a", "b"]);
   });
 
-  it("lists an idle fork of an old DM by its creation time, like the server", () => {
-    // A fork copies the source's old messages, so its last message is old; the
-    // server ranks by GREATEST(last activity, created_at) (chat.sql).
-    const idleFork = session({
-      id: "idle-fork",
-      created_at: "2026-06-03T00:00:00Z",
-      updated_at: "2026-06-03T00:00:00Z",
-      forked_from_session_id: "11111111-1111-4111-8111-111111111111",
-      last_message: { content: "copied", role: "assistant", created_at: "2026-01-02T00:00:00Z" },
-    });
-    const otherRecent = session({
-      id: "other-recent-dm",
-      updated_at: "2026-06-02T00:00:00Z",
-      last_message: { content: "x", role: "assistant", created_at: "2026-06-02T00:00:00Z" },
-    });
-
-    expect(sortChatSessions([otherRecent, idleFork]).map((s) => s.id)).toEqual(["idle-fork", "other-recent-dm"]);
-  });
-
   it("does not mutate the input array", () => {
     const input = [session({ id: "1" }), session({ id: "2", pinned: true })];
     const snapshot = input.map((s) => s.id);
     sortChatSessions(input);
     expect(input.map((s) => s.id)).toEqual(snapshot);
-  });
-
-  it("does not bump a lifecycle-only DM whose metadata was touched", () => {
-    const notesOnly = session({ id: "notes", updated_at: "2026-06-03T00:00:00Z" });
-    const conversation = session({
-      id: "conversation",
-      last_message: { content: "Reply", role: "assistant", created_at: "2026-06-02T00:00:00Z" },
-    });
-    expect(sortChatSessions([notesOnly, conversation]).map((row) => row.id)).toEqual(["conversation", "notes"]);
   });
 
   it("preserves server order and session identities when activity times tie", () => {
@@ -231,50 +206,71 @@ describe("countUnreadChatSessions", () => {
   });
 });
 
-describe("chatSessionUsageOptions", () => {
-  it("is keyed per workspace and session and stays idle without a session", () => {
-    expect(chatSessionUsageOptions("ws-1", "s-1").queryKey).toEqual(["chat", "ws-1", "usage", "s-1"]);
-    expect(chatSessionUsageOptions("ws-1", "s-1").enabled).toBe(true);
-    expect(chatSessionUsageOptions("ws-1", null).enabled).toBe(false);
+describe("prefetchChatSession", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
-});
 
-describe("filterChatSessions (DM list chips)", () => {
-  const base = { workspace_id: "w", agent_id: "a", creator_id: "u", title: "t", created_at: "", updated_at: "" };
-  const mk = (id: string, o: Partial<ChatSession> = {}): ChatSession =>
-    ({ ...base, id, status: "active", has_unread: false, pinned: false, ...o }) as ChatSession;
-  const sessions = [
-    mk("active"),
-    mk("archived", { status: "archived", pinned: true, has_unread: true, stale_level: "red" }),
-    mk("pinned", { pinned: true }),
-    mk("unseen", { has_unread: true, unread_count: 2 }),
-    mk("needs-you", { stale_level: "yellow" }),
-    mk("quiet", { stale_level: "none" }),
-    mk("decision"),
-  ];
-  const ids = (view: Parameters<typeof filterChatSessions>[1]) =>
-    filterChatSessions(sessions, view, new Set(["decision", "archived"])).map((s) => s.id);
+  const makeMessage = (over: Partial<ChatMessage> & Pick<ChatMessage, "id">): ChatMessage => ({
+    chat_session_id: "s-1",
+    role: "assistant",
+    content: "reply",
+    task_id: null,
+    created_at: "2026-01-01T00:00:00Z",
+    ...over,
+  });
 
-  it("Hộp chính is every DM that is not archived", () => {
-    expect(ids("main")).toEqual(["active", "pinned", "unseen", "needs-you", "quiet", "decision"]);
+  it("warms messages, pending task, wakeups, and up to two tail assistant timelines", async () => {
+    const t1 = "11111111-1111-4111-8111-111111111111";
+    const t2 = "22222222-2222-4222-8222-222222222222";
+    const t3 = "33333333-3333-4333-8333-333333333333";
+
+    const listMessages = vi.fn(async () => ({
+      messages: [
+        makeMessage({ id: "m1", role: "assistant", task_id: t1 }),
+        makeMessage({ id: "m2", role: "user", task_id: t1 }),
+        makeMessage({ id: "m3", role: "assistant", task_id: t2 }),
+        makeMessage({ id: "m4", role: "assistant", task_id: "optimistic-1" }),
+        makeMessage({ id: "m5", role: "assistant", task_id: t3 }),
+      ],
+      limit: 50,
+      has_more: false,
+      next_cursor: null,
+    }));
+    const getPending = vi.fn(async (_sessionId: string) => ({}));
+    const listWakeups = vi.fn(async (_sessionId: string) => []);
+    const listTaskMessages = vi.fn(async (_taskId: string) => []);
+    setApiInstance({
+      listChatMessagesPage: listMessages,
+      getPendingChatTask: getPending,
+      listChatSessionWakeups: listWakeups,
+      listTaskMessages,
+    } as unknown as ApiClient);
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await prefetchChatSession(qc, "s-1");
+
+    expect(listMessages).toHaveBeenCalledTimes(1);
+    expect(getPending).toHaveBeenCalledWith("s-1");
+    expect(listWakeups).toHaveBeenCalledWith("s-1");
+    // Only the newest two valid UUID assistant task timelines are warmed.
+    expect(listTaskMessages.mock.calls.map(([id]) => id)).toEqual([t3, t2]);
+    expect(qc.getQueryData(chatKeys.pendingTask("s-1"))).toEqual({});
+    expect(qc.getQueryData(chatKeys.wakeups("s-1"))).toEqual([]);
+
+    // Second call hits the Infinity-staleTime cache without refetching.
+    await prefetchChatSession(qc, "s-1");
+    expect(listMessages).toHaveBeenCalledTimes(1);
+    expect(getPending).toHaveBeenCalledTimes(1);
+    expect(listWakeups).toHaveBeenCalledTimes(1);
+    expect(listTaskMessages).toHaveBeenCalledTimes(2);
   });
-  it("Tất cả is Hộp chính plus Lưu trữ", () => {
-    expect(ids("all")).toHaveLength(7);
-  });
-  it("Lưu trữ is archived only", () => {
-    expect(ids("archived")).toEqual(["archived"]);
-  });
-  it("Quyết định is non-archived DMs with an open decision", () => {
-    expect(ids("decisions")).toEqual(["decision"]);
-  });
-  it("Chờ bạn is non-archived DMs whose attention level is red, yellow or fresh", () => {
-    expect(ids("waiting")).toEqual(["needs-you"]);
-  });
-  it("Chưa xem is non-archived DMs with unread replies", () => {
-    expect(ids("unseen")).toEqual(["unseen"]);
-  });
-  it("Ghim and không ghim split the non-archived DMs", () => {
-    expect(ids("pinned")).toEqual(["pinned"]);
-    expect(ids("unpinned")).toEqual(["active", "unseen", "needs-you", "quiet", "decision"]);
+
+  it("is a no-op for an empty session id", async () => {
+    const listMessages = vi.fn();
+    setApiInstance({ listChatMessagesPage: listMessages } as unknown as ApiClient);
+    const qc = new QueryClient();
+    await prefetchChatSession(qc, "");
+    expect(listMessages).not.toHaveBeenCalled();
   });
 });

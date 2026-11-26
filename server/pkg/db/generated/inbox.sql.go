@@ -11,26 +11,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const advanceChatSessionReadTo = `-- name: AdvanceChatSessionReadTo :exec
-UPDATE chat_session cs SET last_read_at = GREATEST(cs.last_read_at, m.created_at)
-FROM chat_message m
-WHERE cs.id = $1 AND m.id = $2 AND m.chat_session_id = cs.id
-`
-
-type AdvanceChatSessionReadToParams struct {
-	SessionID pgtype.UUID `json:"session_id"`
-	MessageID pgtype.UUID `json:"message_id"`
-}
-
-// Moves the DM read cursor up to a message (never back), so marking its inbox
-// record read leaves the DM with no unread replies up to that message.
-func (q *Queries) AdvanceChatSessionReadTo(ctx context.Context, arg AdvanceChatSessionReadToParams) error {
-	_, err := q.db.Exec(ctx, advanceChatSessionReadTo, arg.SessionID, arg.MessageID)
-	return err
-}
-
 const archiveAllInbox = `-- name: ArchiveAllInbox :execrows
-UPDATE inbox_item SET archived = true
+UPDATE inbox_item SET archived = true, returned_at = NULL
 WHERE workspace_id = $1 AND recipient_type = 'member' AND recipient_id = $2 AND archived = false
   AND (snoozed_until IS NULL OR snoozed_until <= now())
 `
@@ -40,6 +22,8 @@ type ArchiveAllInboxParams struct {
 	RecipientID pgtype.UUID `json:"recipient_id"`
 }
 
+// Every archive clears returned_at: a row restored later earns its rank anew
+// (UnarchiveInboxItem), so old return times never outrank the inbox again.
 func (q *Queries) ArchiveAllInbox(ctx context.Context, arg ArchiveAllInboxParams) (int64, error) {
 	result, err := q.db.Exec(ctx, archiveAllInbox, arg.WorkspaceID, arg.RecipientID)
 	if err != nil {
@@ -65,7 +49,7 @@ WITH newest_groups AS (
     FROM newest_groups
     WHERE read = true
 )
-UPDATE inbox_item i SET archived = true
+UPDATE inbox_item i SET archived = true, returned_at = NULL
 FROM read_groups selected
 WHERE i.workspace_id = $1
   AND i.recipient_type = 'member'
@@ -93,7 +77,7 @@ func (q *Queries) ArchiveAllReadInbox(ctx context.Context, arg ArchiveAllReadInb
 }
 
 const archiveCompletedInbox = `-- name: ArchiveCompletedInbox :execrows
-UPDATE inbox_item i SET archived = true, snoozed_until = NULL, snoozed_at = NULL
+UPDATE inbox_item i SET archived = true, snoozed_until = NULL, snoozed_at = NULL, returned_at = NULL
 WHERE i.workspace_id = $1 AND i.recipient_type = 'member' AND i.recipient_id = $2 AND i.archived = false
   AND i.issue_id IN (
     SELECT id FROM issue
@@ -118,7 +102,7 @@ func (q *Queries) ArchiveCompletedInbox(ctx context.Context, arg ArchiveComplete
 }
 
 const archiveInboxByIssue = `-- name: ArchiveInboxByIssue :execrows
-UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL
+UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL, returned_at = NULL
 WHERE workspace_id = $1 AND recipient_type = $2 AND recipient_id = $3 AND issue_id = $4 AND archived = false
 `
 
@@ -143,7 +127,7 @@ func (q *Queries) ArchiveInboxByIssue(ctx context.Context, arg ArchiveInboxByIss
 }
 
 const archiveInboxByIssueAndType = `-- name: ArchiveInboxByIssueAndType :many
-UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL
+UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL, returned_at = NULL
 WHERE workspace_id = $1 AND issue_id = $2 AND type = $3 AND archived = false
 RETURNING recipient_type, recipient_id
 `
@@ -180,9 +164,9 @@ func (q *Queries) ArchiveInboxByIssueAndType(ctx context.Context, arg ArchiveInb
 }
 
 const archiveInboxItem = `-- name: ArchiveInboxItem :one
-UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL
+UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL, returned_at = NULL
 WHERE id = $1
-RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at, section, snoozed_until, snoozed_at
+RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, section, snoozed_until, snoozed_at, returned_at
 `
 
 // Archiving ends a snooze (MUL-9333), on every archive path below: a row
@@ -206,29 +190,133 @@ func (q *Queries) ArchiveInboxItem(ctx context.Context, id pgtype.UUID) (InboxIt
 		&i.ActorType,
 		&i.ActorID,
 		&i.Details,
-		&i.ChatSessionID,
-		&i.ChatMessageID,
-		&i.DedupeKey,
-		&i.UpdatedAt,
 		&i.Section,
 		&i.SnoozedUntil,
 		&i.SnoozedAt,
+		&i.ReturnedAt,
 	)
 	return i, err
 }
 
-const chatSessionHasCurrentChannelBinding = `-- name: ChatSessionHasCurrentChannelBinding :one
-SELECT EXISTS (
-    SELECT 1 FROM channel_chat_session_binding
-    WHERE chat_session_id = $1 AND retired_at IS NULL
-) AS bound
+const archiveInboxOverflow = `-- name: ArchiveInboxOverflow :execrows
+WITH boundary AS MATERIALIZED (
+    SELECT GREATEST(b.created_at, b.returned_at) AS shown_at, b.id
+    FROM inbox_item b
+    LEFT JOIN issue b_iss ON b_iss.id = b.issue_id
+    WHERE b.workspace_id = $1 AND b.recipient_type = $2
+      AND b.recipient_id = $3
+      AND b.archived = false
+      AND (b.snoozed_until IS NULL OR b.snoozed_until <= now())
+      AND ($4::uuid[] IS NULL
+           OR NOT (COALESCE(b_iss.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($4::uuid[])))
+    ORDER BY GREATEST(b.created_at, b.returned_at) DESC, b.id DESC
+    OFFSET $5::int - 1
+    LIMIT 1
+), overflow AS (
+    SELECT o.id FROM inbox_item o
+    CROSS JOIN boundary
+    LEFT JOIN issue o_iss ON o_iss.id = o.issue_id
+    WHERE o.workspace_id = $1 AND o.recipient_type = $2
+      AND o.recipient_id = $3
+      AND o.archived = false
+      AND (o.snoozed_until IS NULL OR o.snoozed_until <= now())
+      AND ($4::uuid[] IS NULL
+           OR NOT (COALESCE(o_iss.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($4::uuid[])))
+      AND (GREATEST(o.created_at, o.returned_at), o.id) < (boundary.shown_at, boundary.id)
+      -- An issue back from a snooze whose newest row does not carry the
+      -- return yet (written by an older server, or not normalized) ranks too
+      -- low here; never archive that row on its stale rank.
+      AND NOT (o.issue_id IS NOT NULL AND o.snoozed_until IS NOT NULL
+               AND (o.returned_at IS NULL OR o.returned_at < o.snoozed_until)
+               AND NOT EXISTS (
+                   SELECT 1 FROM inbox_item newer
+                   WHERE newer.workspace_id = o.workspace_id AND newer.recipient_type = o.recipient_type
+                     AND newer.recipient_id = o.recipient_id AND newer.issue_id = o.issue_id
+                     AND newer.archived = false
+                     AND (newer.created_at, newer.id) > (o.created_at, o.id)
+               ))
+    ORDER BY GREATEST(o.created_at, o.returned_at), o.id
+    LIMIT $6::int
+    FOR UPDATE OF o SKIP LOCKED
+)
+UPDATE inbox_item AS item SET archived = true, snoozed_until = NULL, snoozed_at = NULL, returned_at = NULL
+WHERE item.id = ANY (ARRAY(SELECT overflow.id FROM overflow))
 `
 
-func (q *Queries) ChatSessionHasCurrentChannelBinding(ctx context.Context, chatSessionID pgtype.UUID) (bool, error) {
-	row := q.db.QueryRow(ctx, chatSessionHasCurrentChannelBinding, chatSessionID)
-	var bound bool
-	err := row.Scan(&bound)
-	return bound, err
+type ArchiveInboxOverflowParams struct {
+	WorkspaceID      pgtype.UUID   `json:"workspace_id"`
+	RecipientType    string        `json:"recipient_type"`
+	RecipientID      pgtype.UUID   `json:"recipient_id"`
+	HiddenProjectIds []pgtype.UUID `json:"hidden_project_ids"`
+	Keep             int32         `json:"keep"`
+	BatchSize        int32         `json:"batch_size"`
+}
+
+// Archives up to batch_size of the recipient's shown rows ranked below the
+// newest `keep`, oldest first, in ListInboxItems' order. The boundary is read
+// in the same statement, so every batch sees the inbox as it is now. Rows are
+// archived one by one: unlike the issue-level archive actions, newer rows on
+// the same issue stay. Snoozed rows, and rows in projects the recipient can
+// no longer see, neither count nor get archived: a snooze is never ended
+// behind the user's back, and hidden rows never push out visible ones. SKIP LOCKED keeps a trim from waiting on, or
+// deadlocking with, the user's own inbox writes; InboxOverflows tells the
+// caller whether skipped rows remain.
+// MATERIALIZED: the boundary is read once per statement, not once per row.
+// ANY(ARRAY(...)) keeps the update on primary-key lookups; a join against the
+// CTE lets the planner pick a scan of the whole table.
+func (q *Queries) ArchiveInboxOverflow(ctx context.Context, arg ArchiveInboxOverflowParams) (int64, error) {
+	result, err := q.db.Exec(ctx, archiveInboxOverflow,
+		arg.WorkspaceID,
+		arg.RecipientType,
+		arg.RecipientID,
+		arg.HiddenProjectIds,
+		arg.Keep,
+		arg.BatchSize,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const backfillInboxSnoozeReturns = `-- name: BackfillInboxSnoozeReturns :execrows
+WITH candidates AS (
+    SELECT s.id
+    FROM inbox_item s
+    WHERE ($1::uuid IS NULL OR s.workspace_id = $1::uuid)
+      AND s.archived = false AND s.issue_id IS NOT NULL
+      AND s.snoozed_until IS NOT NULL AND s.returned_at IS NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM inbox_item newer
+          WHERE newer.workspace_id = s.workspace_id AND newer.recipient_type = s.recipient_type
+            AND newer.recipient_id = s.recipient_id AND newer.issue_id = s.issue_id
+            AND newer.archived = false
+            AND (newer.created_at, newer.id) > (s.created_at, s.id)
+      )
+    LIMIT $2::int
+    FOR UPDATE OF s SKIP LOCKED
+)
+UPDATE inbox_item AS item SET returned_at = item.snoozed_until
+WHERE item.id = ANY (ARRAY(SELECT candidates.id FROM candidates))
+`
+
+type BackfillInboxSnoozeReturnsParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	BatchSize   int32       `json:"batch_size"`
+}
+
+// Gives up to batch_size snoozed issues their return rank where a writer that
+// predates returned_at left it out: the issue's newest active row ranks by
+// when the snooze ends. Snoozes set before the column existed, and by an
+// older server during the rollout. Skips rows another write holds and
+// touches only rows still without a rank, so it can run again at any time.
+// workspace_id narrows it for tests; production passes NULL.
+func (q *Queries) BackfillInboxSnoozeReturns(ctx context.Context, arg BackfillInboxSnoozeReturnsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, backfillInboxSnoozeReturns, arg.WorkspaceID, arg.BatchSize)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const countUnreadInbox = `-- name: CountUnreadInbox :one
@@ -238,14 +326,12 @@ WHERE i.workspace_id = $1
   AND i.recipient_id = $3
   AND i.read = false
   AND i.archived = false
-  AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
   AND (i.snoozed_until IS NULL OR i.snoozed_until <= now())
   -- MUL-8472: private projects the caller cannot see.
-  AND ($4::uuid[] IS NULL OR i.issue_id IS NULL OR NOT EXISTS (
-      SELECT 1 FROM issue hidden_issue
-      WHERE hidden_issue.id = i.issue_id
-        AND hidden_issue.project_id = ANY($4::uuid[])
-  ))
+  -- A row without an issue counts as outside any project (see ListInboxItems).
+  AND ($4::uuid[] IS NULL OR NOT (COALESCE(
+      (SELECT hidden_issue.project_id FROM issue hidden_issue WHERE hidden_issue.id = i.issue_id),
+      '00000000-0000-0000-0000-000000000000'::uuid) = ANY($4::uuid[])))
 `
 
 type CountUnreadInboxParams struct {
@@ -274,10 +360,10 @@ FROM (
         i.workspace_id, i.read
     FROM inbox_item i
     JOIN member m ON m.workspace_id = i.workspace_id AND m.user_id = i.recipient_id
+        AND m.role IN ('owner', 'admin', 'member', 'guest')
     WHERE i.recipient_type = 'member'
       AND i.recipient_id = $1
       AND i.archived = false
-      AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
       -- MUL-9333: a snoozed issue does not count until it comes back.
       AND (i.snoozed_until IS NULL OR i.snoozed_until <= now())
       -- MUL-8472: issues in private projects the recipient is not a member
@@ -292,6 +378,13 @@ FROM (
                 WHERE pm.project_id = private_project.id AND pm.user_id = i.recipient_id
             )
       )
+      -- MUL-9420: a guest counts only issues in its own projects, so nothing
+      -- outside a project and nothing in a project it is not a member of.
+      AND (m.role <> 'guest' OR EXISTS (
+          SELECT 1 FROM issue guest_issue
+          JOIN project_member gpm ON gpm.project_id = guest_issue.project_id AND gpm.user_id = i.recipient_id
+          WHERE guest_issue.id = i.issue_id
+      ))
     ORDER BY i.workspace_id, COALESCE(i.issue_id, i.id), i.created_at DESC
 ) newest
 WHERE newest.read = false
@@ -312,8 +405,8 @@ type CountUnreadInboxByWorkspaceRow struct {
 // the switcher dot for a workspace whose inbox the user sees as empty
 // (MUL-3695). Items without an issue group on their own id. The
 // member join keeps counts scoped to workspaces the user still belongs to,
-// so a stale item left behind in a workspace the user has since left cannot
-// light the dot.
+// so a stale item left behind in a workspace the user has since left, or holds
+// a role this build does not know in, cannot light the dot.
 func (q *Queries) CountUnreadInboxByWorkspace(ctx context.Context, recipientID pgtype.UUID) ([]CountUnreadInboxByWorkspaceRow, error) {
 	rows, err := q.db.Query(ctx, countUnreadInboxByWorkspace, recipientID)
 	if err != nil {
@@ -339,11 +432,10 @@ INSERT INTO inbox_item (
     workspace_id, recipient_type, recipient_id,
     type, severity, issue_id, title, body,
     actor_type, actor_id, details, id,
-    snoozed_until, snoozed_at, chat_session_id, chat_message_id, dedupe_key
+    snoozed_until, snoozed_at, returned_at
 )
 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12::uuid, gen_random_uuid()),
-       snoozed.snoozed_until, snoozed.snoozed_at,
-       $13::uuid, $14::uuid, $15::text
+       snoozed.snoozed_until, snoozed.snoozed_at, snoozed.snoozed_until
 FROM (SELECT 1) AS one
 LEFT JOIN LATERAL (
     SELECT s.snoozed_until, s.snoozed_at
@@ -355,6 +447,7 @@ LEFT JOIN LATERAL (
 ) AS snoozed ON true
 WHERE (($2::text = 'member' AND EXISTS (
     SELECT 1 FROM member WHERE workspace_id = $1 AND user_id = $3
+      AND role IN ('owner', 'admin', 'member', 'guest')
 )) OR ($2::text = 'agent' AND EXISTS (
     SELECT 1 FROM agent WHERE workspace_id = $1 AND id = $3
 )))
@@ -368,14 +461,7 @@ AND NOT ($2::text = 'member' AND EXISTS (
           WHERE pm.project_id = private_project.id AND pm.user_id = $3
       )
 ))
-ON CONFLICT (recipient_id, dedupe_key) WHERE dedupe_key IS NOT NULL AND read = false
-DO UPDATE SET
-    title = EXCLUDED.title,
-    body = EXCLUDED.body,
-    details = EXCLUDED.details,
-    archived = false,
-    updated_at = now()
-RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at, section, snoozed_until, snoozed_at
+RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, section, snoozed_until, snoozed_at, returned_at
 `
 
 type CreateInboxItemParams struct {
@@ -391,9 +477,6 @@ type CreateInboxItemParams struct {
 	ActorID       pgtype.UUID `json:"actor_id"`
 	Details       []byte      `json:"details"`
 	ID            pgtype.UUID `json:"id"`
-	ChatSessionID pgtype.UUID `json:"chat_session_id"`
-	ChatMessageID pgtype.UUID `json:"chat_message_id"`
-	DedupeKey     pgtype.Text `json:"dedupe_key"`
 }
 
 // A missing recipient is a quiet skip (pgx.ErrNoRows), not a delivery failure.
@@ -402,11 +485,13 @@ type CreateInboxItemParams struct {
 // MUL-9333: a row written on an issue the recipient has snoozed joins the
 // snooze, so it stays out of the inbox with the rest of the issue.
 // inbox.Deliver ends the snooze instead when the row is one that
-// wakes it.
+// wakes it. A joining row is the issue's newest, so it carries the issue's
+// return rank (returned_at, the snooze end); inbox.Deliver clears it from the
+// row that held it (HandInboxReturnToRow).
+// A role this build does not know is no membership (see
+// GetMemberByUserAndWorkspace), so it is sent nothing.
 // MUL-8472: a member outside a private project gets no notification about its
 // issues, whatever their workspace role. Only project members do.
-// A row with a dedupe_key is one unread record per (recipient, key): a later
-// insert updates it in place and revives it from the archive (CHE-5901).
 func (q *Queries) CreateInboxItem(ctx context.Context, arg CreateInboxItemParams) (InboxItem, error) {
 	row := q.db.QueryRow(ctx, createInboxItem,
 		arg.WorkspaceID,
@@ -421,9 +506,6 @@ func (q *Queries) CreateInboxItem(ctx context.Context, arg CreateInboxItemParams
 		arg.ActorID,
 		arg.Details,
 		arg.ID,
-		arg.ChatSessionID,
-		arg.ChatMessageID,
-		arg.DedupeKey,
 	)
 	var i InboxItem
 	err := row.Scan(
@@ -442,20 +524,17 @@ func (q *Queries) CreateInboxItem(ctx context.Context, arg CreateInboxItemParams
 		&i.ActorType,
 		&i.ActorID,
 		&i.Details,
-		&i.ChatSessionID,
-		&i.ChatMessageID,
-		&i.DedupeKey,
-		&i.UpdatedAt,
 		&i.Section,
 		&i.SnoozedUntil,
 		&i.SnoozedAt,
+		&i.ReturnedAt,
 	)
 	return i, err
 }
 
 const deleteInboxGroup = `-- name: DeleteInboxGroup :execrows
 WITH target AS (
-    SELECT selected.id, selected.workspace_id, selected.recipient_type, selected.recipient_id, selected.type, selected.severity, selected.issue_id, selected.title, selected.body, selected.read, selected.archived, selected.created_at, selected.actor_type, selected.actor_id, selected.details, selected.chat_session_id, selected.chat_message_id, selected.dedupe_key, selected.updated_at, selected.section, selected.snoozed_until, selected.snoozed_at FROM inbox_item selected
+    SELECT selected.id, selected.workspace_id, selected.recipient_type, selected.recipient_id, selected.type, selected.severity, selected.issue_id, selected.title, selected.body, selected.read, selected.archived, selected.created_at, selected.actor_type, selected.actor_id, selected.details, selected.section, selected.snoozed_until, selected.snoozed_at, selected.returned_at FROM inbox_item selected
     WHERE selected.id = $1 AND selected.workspace_id = $2
       AND selected.recipient_type = 'member' AND selected.recipient_id = $3
 )
@@ -484,30 +563,8 @@ func (q *Queries) DeleteInboxGroup(ctx context.Context, arg DeleteInboxGroupPara
 	return result.RowsAffected(), nil
 }
 
-const getDMChannelSwitches = `-- name: GetDMChannelSwitches :one
-SELECT dm_channel_enabled($1::uuid, $2::uuid, 'in_app') AS in_app,
-       dm_channel_enabled($1::uuid, $2::uuid, 'push') AS push
-`
-
-type GetDMChannelSwitchesParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	UserID      pgtype.UUID `json:"user_id"`
-}
-
-type GetDMChannelSwitchesRow struct {
-	InApp bool `json:"in_app"`
-	Push  bool `json:"push"`
-}
-
-func (q *Queries) GetDMChannelSwitches(ctx context.Context, arg GetDMChannelSwitchesParams) (GetDMChannelSwitchesRow, error) {
-	row := q.db.QueryRow(ctx, getDMChannelSwitches, arg.WorkspaceID, arg.UserID)
-	var i GetDMChannelSwitchesRow
-	err := row.Scan(&i.InApp, &i.Push)
-	return i, err
-}
-
 const getInboxItemInWorkspace = `-- name: GetInboxItemInWorkspace :one
-SELECT id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at, section, snoozed_until, snoozed_at FROM inbox_item
+SELECT id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, section, snoozed_until, snoozed_at, returned_at FROM inbox_item
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -535,15 +592,126 @@ func (q *Queries) GetInboxItemInWorkspace(ctx context.Context, arg GetInboxItemI
 		&i.ActorType,
 		&i.ActorID,
 		&i.Details,
-		&i.ChatSessionID,
-		&i.ChatMessageID,
-		&i.DedupeKey,
-		&i.UpdatedAt,
 		&i.Section,
 		&i.SnoozedUntil,
 		&i.SnoozedAt,
+		&i.ReturnedAt,
 	)
 	return i, err
+}
+
+const handInboxReturnToRow = `-- name: HandInboxReturnToRow :exec
+UPDATE inbox_item AS item SET returned_at = NULL
+FROM inbox_item AS kept
+WHERE kept.id = $5
+  AND item.workspace_id = $1 AND item.recipient_type = $2 AND item.recipient_id = $3 AND item.issue_id = $4
+  AND item.archived = false AND item.returned_at IS NOT NULL
+  AND (item.created_at, item.id) < (kept.created_at, kept.id)
+`
+
+type HandInboxReturnToRowParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	RecipientType string      `json:"recipient_type"`
+	RecipientID   pgtype.UUID `json:"recipient_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	KeepID        pgtype.UUID `json:"keep_id"`
+}
+
+// Clears the issue's return rank from the active rows older than keep_id, the
+// row that now carries it (see CreateInboxItem). Only older rows: two joining
+// rows handing over concurrently, in either order, leave the rank on the newer.
+func (q *Queries) HandInboxReturnToRow(ctx context.Context, arg HandInboxReturnToRowParams) error {
+	_, err := q.db.Exec(ctx, handInboxReturnToRow,
+		arg.WorkspaceID,
+		arg.RecipientType,
+		arg.RecipientID,
+		arg.IssueID,
+		arg.KeepID,
+	)
+	return err
+}
+
+const inboxOverflows = `-- name: InboxOverflows :one
+SELECT count(*) > 0 FROM (
+    SELECT 1 FROM inbox_item i
+    LEFT JOIN issue iss ON iss.id = i.issue_id
+    WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3
+      AND i.archived = false
+      AND (i.snoozed_until IS NULL OR i.snoozed_until <= now())
+      AND ($4::uuid[] IS NULL
+           OR NOT (COALESCE(iss.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($4::uuid[])))
+    ORDER BY GREATEST(i.created_at, i.returned_at) DESC, i.id DESC
+    OFFSET $5::int
+    LIMIT 1
+) beyond
+`
+
+type InboxOverflowsParams struct {
+	WorkspaceID      pgtype.UUID   `json:"workspace_id"`
+	RecipientType    string        `json:"recipient_type"`
+	RecipientID      pgtype.UUID   `json:"recipient_id"`
+	HiddenProjectIds []pgtype.UUID `json:"hidden_project_ids"`
+	Keep             int32         `json:"keep"`
+}
+
+// Whether the recipient's inbox shows more than `keep` rows, by the rules
+// ListInboxItems shows them: active, not snoozed, outside the projects the
+// recipient cannot see (hidden_project_ids), ranked by when they arrived or
+// came back.
+func (q *Queries) InboxOverflows(ctx context.Context, arg InboxOverflowsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, inboxOverflows,
+		arg.WorkspaceID,
+		arg.RecipientType,
+		arg.RecipientID,
+		arg.HiddenProjectIds,
+		arg.Keep,
+	)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
+const inboxReturnsSettled = `-- name: InboxReturnsSettled :one
+WITH marked AS MATERIALIZED (
+    SELECT g.issue_id, max(g.returned_at) AS returned_at
+    FROM inbox_item g
+    WHERE g.workspace_id = $1 AND g.recipient_type = $2 AND g.recipient_id = $3
+      AND g.archived = false AND g.issue_id IS NOT NULL
+      AND (g.returned_at IS NOT NULL OR g.snoozed_until IS NOT NULL)
+    GROUP BY g.issue_id
+), wanted AS MATERIALIZED (
+    SELECT DISTINCT ON (r.issue_id) r.issue_id, r.id,
+           GREATEST(marked.returned_at, r.snoozed_until) AS returned_at
+    FROM inbox_item r
+    JOIN marked ON marked.issue_id = r.issue_id
+    WHERE r.workspace_id = $1 AND r.recipient_type = $2 AND r.recipient_id = $3
+      AND r.archived = false
+    ORDER BY r.issue_id, r.created_at DESC, r.id DESC
+)
+SELECT count(*) = 0 FROM (
+    SELECT 1 FROM inbox_item item
+    JOIN wanted ON wanted.issue_id = item.issue_id
+    WHERE item.workspace_id = $1 AND item.recipient_type = $2 AND item.recipient_id = $3
+      AND item.archived = false
+      AND item.returned_at IS DISTINCT FROM (CASE WHEN item.id = wanted.id THEN wanted.returned_at END)
+    LIMIT 1
+) unsettled
+`
+
+type InboxReturnsSettledParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	RecipientType string      `json:"recipient_type"`
+	RecipientID   pgtype.UUID `json:"recipient_id"`
+}
+
+// Whether NormalizeInboxReturns has nothing left to fix for the recipient,
+// rows another write holds included. The inbox limit archives only then, so
+// an unsettled duplicate rank never widens the set of rows it keeps.
+func (q *Queries) InboxReturnsSettled(ctx context.Context, arg InboxReturnsSettledParams) (bool, error) {
+	row := q.db.QueryRow(ctx, inboxReturnsSettled, arg.WorkspaceID, arg.RecipientType, arg.RecipientID)
+	var column_1 bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const listArchivedInboxItems = `-- name: ListArchivedInboxItems :many
@@ -557,13 +725,12 @@ WITH eligible_archived AS MATERIALIZED (
       AND i.recipient_type = $2
       AND i.recipient_id = $3
       AND i.archived = true
-      AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
       -- MUL-8472: private projects the caller cannot see.
-      AND ($4::uuid[] IS NULL OR i.issue_id IS NULL OR NOT EXISTS (
-          SELECT 1 FROM issue hidden_issue
-          WHERE hidden_issue.id = i.issue_id
-            AND hidden_issue.project_id = ANY($4::uuid[])
-      ))
+      -- A row without an issue counts as outside any project, which a guest's
+      -- hidden set holds (projectaccess.NoProject), as ListInboxItems does.
+      AND ($4::uuid[] IS NULL OR NOT (COALESCE(
+          (SELECT hidden_issue.project_id FROM issue hidden_issue WHERE hidden_issue.id = i.issue_id),
+          '00000000-0000-0000-0000-000000000000'::uuid) = ANY($4::uuid[])))
       AND (i.issue_id IS NULL OR NOT EXISTS (
           SELECT 1
           FROM inbox_item active
@@ -598,7 +765,8 @@ WITH eligible_archived AS MATERIALIZED (
     UNION
     SELECT id FROM comment_anchors
 )
-SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.chat_session_id, i.chat_message_id, i.dedupe_key, i.updated_at, i.section, i.snoozed_until, i.snoozed_at,
+SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.section, i.snoozed_until, i.snoozed_at, i.returned_at,
+       iss.number AS issue_number,
        iss.status AS issue_status,
        iss.priority AS issue_priority,
        iss.project_id AS issue_project_id,
@@ -637,13 +805,11 @@ type ListArchivedInboxItemsRow struct {
 	ActorType         pgtype.Text        `json:"actor_type"`
 	ActorID           pgtype.UUID        `json:"actor_id"`
 	Details           []byte             `json:"details"`
-	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
-	ChatMessageID     pgtype.UUID        `json:"chat_message_id"`
-	DedupeKey         pgtype.Text        `json:"dedupe_key"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	Section           pgtype.Text        `json:"section"`
 	SnoozedUntil      pgtype.Timestamptz `json:"snoozed_until"`
 	SnoozedAt         pgtype.Timestamptz `json:"snoozed_at"`
+	ReturnedAt        pgtype.Timestamptz `json:"returned_at"`
+	IssueNumber       pgtype.Int4        `json:"issue_number"`
 	IssueStatus       pgtype.Text        `json:"issue_status"`
 	IssuePriority     pgtype.Text        `json:"issue_priority"`
 	IssueProjectID    pgtype.UUID        `json:"issue_project_id"`
@@ -704,13 +870,11 @@ func (q *Queries) ListArchivedInboxItems(ctx context.Context, arg ListArchivedIn
 			&i.ActorType,
 			&i.ActorID,
 			&i.Details,
-			&i.ChatSessionID,
-			&i.ChatMessageID,
-			&i.DedupeKey,
-			&i.UpdatedAt,
 			&i.Section,
 			&i.SnoozedUntil,
 			&i.SnoozedAt,
+			&i.ReturnedAt,
+			&i.IssueNumber,
 			&i.IssueStatus,
 			&i.IssuePriority,
 			&i.IssueProjectID,
@@ -730,7 +894,8 @@ func (q *Queries) ListArchivedInboxItems(ctx context.Context, arg ListArchivedIn
 }
 
 const listInboxItems = `-- name: ListInboxItems :many
-SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.chat_session_id, i.chat_message_id, i.dedupe_key, i.updated_at, i.section, i.snoozed_until, i.snoozed_at,
+SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, i.section, i.snoozed_until, i.snoozed_at, i.returned_at,
+       iss.number AS issue_number,
        iss.status AS issue_status,
        iss.priority AS issue_priority,
        iss.project_id AS issue_project_id,
@@ -743,14 +908,13 @@ SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severit
 FROM inbox_item i
 LEFT JOIN issue iss ON iss.id = i.issue_id
 WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
-  -- DM records vanish once the recipient can no longer read the DM (CHE-1793).
-  AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
   -- MUL-9333: a snoozed issue stays out of the inbox until its time. A row
   -- whose time has passed is listed again and keeps snoozed_until, which is
   -- how the client tells an issue that came back on its own.
   AND (i.snoozed_until IS NULL OR i.snoozed_until <= now())
-  AND ($4::uuid[] IS NULL OR iss.project_id IS NULL OR NOT (iss.project_id = ANY($4::uuid[])))
-ORDER BY COALESCE(i.updated_at, i.created_at) DESC
+  AND ($4::uuid[] IS NULL OR NOT (COALESCE(iss.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($4::uuid[])))
+ORDER BY GREATEST(i.created_at, i.returned_at) DESC, i.id DESC
+LIMIT $5
 `
 
 type ListInboxItemsParams struct {
@@ -758,6 +922,7 @@ type ListInboxItemsParams struct {
 	RecipientType    string        `json:"recipient_type"`
 	RecipientID      pgtype.UUID   `json:"recipient_id"`
 	HiddenProjectIds []pgtype.UUID `json:"hidden_project_ids"`
+	RowLimit         int32         `json:"row_limit"`
 }
 
 type ListInboxItemsRow struct {
@@ -776,13 +941,11 @@ type ListInboxItemsRow struct {
 	ActorType         pgtype.Text        `json:"actor_type"`
 	ActorID           pgtype.UUID        `json:"actor_id"`
 	Details           []byte             `json:"details"`
-	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
-	ChatMessageID     pgtype.UUID        `json:"chat_message_id"`
-	DedupeKey         pgtype.Text        `json:"dedupe_key"`
-	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 	Section           pgtype.Text        `json:"section"`
 	SnoozedUntil      pgtype.Timestamptz `json:"snoozed_until"`
 	SnoozedAt         pgtype.Timestamptz `json:"snoozed_at"`
+	ReturnedAt        pgtype.Timestamptz `json:"returned_at"`
+	IssueNumber       pgtype.Int4        `json:"issue_number"`
 	IssueStatus       pgtype.Text        `json:"issue_status"`
 	IssuePriority     pgtype.Text        `json:"issue_priority"`
 	IssueProjectID    pgtype.UUID        `json:"issue_project_id"`
@@ -795,13 +958,17 @@ type ListInboxItemsRow struct {
 // The issue projections feed the inbox filters. Keep this column list
 // identical to ListArchivedInboxItems: the handler converts one row type into
 // the other.
-// A coalesced DM record moves to the top when a new reply updates it.
+// Newest first by when the row arrived or came back (returned_at), the order
+// idx_inbox_active_shown keeps. The
+// inbox keeps only its newest rows (inbox.ActiveLimit); inbox.Trimmer archives
+// the rest, and the limit bounds the response until it has.
 func (q *Queries) ListInboxItems(ctx context.Context, arg ListInboxItemsParams) ([]ListInboxItemsRow, error) {
 	rows, err := q.db.Query(ctx, listInboxItems,
 		arg.WorkspaceID,
 		arg.RecipientType,
 		arg.RecipientID,
 		arg.HiddenProjectIds,
+		arg.RowLimit,
 	)
 	if err != nil {
 		return nil, err
@@ -826,13 +993,11 @@ func (q *Queries) ListInboxItems(ctx context.Context, arg ListInboxItemsParams) 
 			&i.ActorType,
 			&i.ActorID,
 			&i.Details,
-			&i.ChatSessionID,
-			&i.ChatMessageID,
-			&i.DedupeKey,
-			&i.UpdatedAt,
 			&i.Section,
 			&i.SnoozedUntil,
 			&i.SnoozedAt,
+			&i.ReturnedAt,
+			&i.IssueNumber,
 			&i.IssueStatus,
 			&i.IssuePriority,
 			&i.IssueProjectID,
@@ -856,7 +1021,10 @@ SELECT g.issue_id::uuid AS issue_id,
        newest.id AS item_id,
        g.snoozed_until::timestamptz AS snoozed_until,
        g.snoozed_at::timestamptz AS snoozed_at,
-       g.updates::bigint AS updates
+       g.updates::bigint AS updates,
+       iss.number AS issue_number,
+       iss.title AS issue_title,
+       iss.status AS issue_status
 FROM (
     SELECT i.issue_id,
            max(i.snoozed_until) AS snoozed_until,
@@ -873,7 +1041,7 @@ FROM (
       AND ($3::uuid[] IS NULL OR NOT EXISTS (
           SELECT 1 FROM issue hidden_issue
           WHERE hidden_issue.id = i.issue_id
-            AND hidden_issue.project_id = ANY($3::uuid[])
+            AND COALESCE(hidden_issue.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($3::uuid[])
       ))
     GROUP BY i.issue_id
 ) g
@@ -888,6 +1056,7 @@ JOIN LATERAL (
     ORDER BY n.created_at DESC, n.id DESC
     LIMIT 1
 ) newest ON true
+LEFT JOIN issue iss ON iss.id = g.issue_id
 ORDER BY g.snoozed_until ASC, g.issue_id
 `
 
@@ -903,11 +1072,16 @@ type ListSnoozedInboxRow struct {
 	SnoozedUntil pgtype.Timestamptz `json:"snoozed_until"`
 	SnoozedAt    pgtype.Timestamptz `json:"snoozed_at"`
 	Updates      int64              `json:"updates"`
+	IssueNumber  pgtype.Int4        `json:"issue_number"`
+	IssueTitle   pgtype.Text        `json:"issue_title"`
+	IssueStatus  pgtype.Text        `json:"issue_status"`
 }
 
 // The recipient's snoozed issues, soonest back first (MUL-9333). `updates` is
 // how many rows arrived while snoozed; `item_id` is the issue's newest row,
-// the one the snooze endpoints take.
+// the one the snooze endpoints take. `issue_number` builds the identifier the
+// row links to; `issue_title` and `issue_status` let the row render without
+// fetching each issue (MUL-10056).
 func (q *Queries) ListSnoozedInbox(ctx context.Context, arg ListSnoozedInboxParams) ([]ListSnoozedInboxRow, error) {
 	rows, err := q.db.Query(ctx, listSnoozedInbox, arg.WorkspaceID, arg.RecipientID, arg.HiddenProjectIds)
 	if err != nil {
@@ -923,6 +1097,9 @@ func (q *Queries) ListSnoozedInbox(ctx context.Context, arg ListSnoozedInboxPara
 			&i.SnoozedUntil,
 			&i.SnoozedAt,
 			&i.Updates,
+			&i.IssueNumber,
+			&i.IssueTitle,
+			&i.IssueStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -934,20 +1111,10 @@ func (q *Queries) ListSnoozedInbox(ctx context.Context, arg ListSnoozedInboxPara
 	return items, nil
 }
 
-const markAllInboxRead = `-- name: MarkAllInboxRead :one
-WITH marked AS (
-    UPDATE inbox_item i SET read = true
-    WHERE i.workspace_id = $1 AND i.recipient_type = 'member' AND i.recipient_id = $2 AND i.archived = false AND i.read = false
-      AND (i.snoozed_until IS NULL OR i.snoozed_until <= now())
-    RETURNING i.type, i.chat_session_id, i.chat_message_id
-), advanced AS (
-    UPDATE chat_session cs SET last_read_at = GREATEST(cs.last_read_at, m.created_at)
-    FROM marked
-    JOIN chat_message m ON m.id = marked.chat_message_id
-    WHERE marked.type = 'dm_reply' AND cs.id = marked.chat_session_id AND cs.creator_id = $2
-    RETURNING cs.id
-)
-SELECT count(*)::bigint FROM marked
+const markAllInboxRead = `-- name: MarkAllInboxRead :execrows
+UPDATE inbox_item SET read = true
+WHERE workspace_id = $1 AND recipient_type = 'member' AND recipient_id = $2 AND archived = false AND read = false
+  AND (snoozed_until IS NULL OR snoozed_until <= now())
 `
 
 type MarkAllInboxReadParams struct {
@@ -955,72 +1122,14 @@ type MarkAllInboxReadParams struct {
 	RecipientID pgtype.UUID `json:"recipient_id"`
 }
 
-// Reading a DM reply record reads the DM (CHE-1793), so the cursor of every DM
-// whose record flips here advances in the same statement.
 // The batch actions act on what the inbox lists, so they skip snoozed issues
 // (MUL-9333).
 func (q *Queries) MarkAllInboxRead(ctx context.Context, arg MarkAllInboxReadParams) (int64, error) {
-	row := q.db.QueryRow(ctx, markAllInboxRead, arg.WorkspaceID, arg.RecipientID)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
-const markDMRepliesRead = `-- name: MarkDMRepliesRead :many
-UPDATE inbox_item SET read = true
-WHERE chat_session_id = $1 AND recipient_id = $2 AND type = 'dm_reply' AND read = false
-RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at, section, snoozed_until, snoozed_at
-`
-
-type MarkDMRepliesReadParams struct {
-	ChatSessionID pgtype.UUID `json:"chat_session_id"`
-	RecipientID   pgtype.UUID `json:"recipient_id"`
-}
-
-// Reads every unread dm_reply record of one DM for its creator. Decision
-// records linked to the same DM are left alone; they close when the decision
-// is resolved.
-func (q *Queries) MarkDMRepliesRead(ctx context.Context, arg MarkDMRepliesReadParams) ([]InboxItem, error) {
-	rows, err := q.db.Query(ctx, markDMRepliesRead, arg.ChatSessionID, arg.RecipientID)
+	result, err := q.db.Exec(ctx, markAllInboxRead, arg.WorkspaceID, arg.RecipientID)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	defer rows.Close()
-	items := []InboxItem{}
-	for rows.Next() {
-		var i InboxItem
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.RecipientType,
-			&i.RecipientID,
-			&i.Type,
-			&i.Severity,
-			&i.IssueID,
-			&i.Title,
-			&i.Body,
-			&i.Read,
-			&i.Archived,
-			&i.CreatedAt,
-			&i.ActorType,
-			&i.ActorID,
-			&i.Details,
-			&i.ChatSessionID,
-			&i.ChatMessageID,
-			&i.DedupeKey,
-			&i.UpdatedAt,
-			&i.Section,
-			&i.SnoozedUntil,
-			&i.SnoozedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+	return result.RowsAffected(), nil
 }
 
 const markInboxRead = `-- name: MarkInboxRead :one
@@ -1037,11 +1146,17 @@ WITH target AS (
       AND s.issue_id = target.issue_id
       AND s.archived = false AND s.read = false
       AND s.id <> $1
+    RETURNING s.id
 )
 UPDATE inbox_item AS item SET read = true
 WHERE item.id = $1
-RETURNING item.id, item.workspace_id, item.recipient_type, item.recipient_id, item.type, item.severity, item.issue_id, item.title, item.body, item.read, item.archived, item.created_at, item.actor_type, item.actor_id, item.details, item.chat_session_id, item.chat_message_id, item.dedupe_key, item.updated_at, item.section, item.snoozed_until, item.snoozed_at
+RETURNING item.id, item.workspace_id, item.recipient_type, item.recipient_id, item.type, item.severity, item.issue_id, item.title, item.body, item.read, item.archived, item.created_at, item.actor_type, item.actor_id, item.details, item.section, item.snoozed_until, item.snoozed_at, item.returned_at, (SELECT count(*) FROM siblings)::bigint AS siblings_read
 `
+
+type MarkInboxReadRow struct {
+	InboxItem    InboxItem `json:"inbox_item"`
+	SiblingsRead int64     `json:"siblings_read"`
+}
 
 // Opening a row in the inbox opens its issue, so it reads every active unread
 // row on that issue, not just the one shown (MUL-8618). The inbox renders one
@@ -1051,89 +1166,33 @@ RETURNING item.id, item.workspace_id, item.recipient_type, item.recipient_id, it
 // opened outside the inbox. The item itself is read whether or not it is
 // archived; its siblings only while active, as in MarkInboxReadByIssue, which
 // keeps the probe on the partial index idx_inbox_active_by_issue. Items without
-// an issue are their own group.
-func (q *Queries) MarkInboxRead(ctx context.Context, id pgtype.UUID) (InboxItem, error) {
+// an issue are their own group. siblings_read is how many other rows it read.
+func (q *Queries) MarkInboxRead(ctx context.Context, id pgtype.UUID) (MarkInboxReadRow, error) {
 	row := q.db.QueryRow(ctx, markInboxRead, id)
-	var i InboxItem
+	var i MarkInboxReadRow
 	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.RecipientType,
-		&i.RecipientID,
-		&i.Type,
-		&i.Severity,
-		&i.IssueID,
-		&i.Title,
-		&i.Body,
-		&i.Read,
-		&i.Archived,
-		&i.CreatedAt,
-		&i.ActorType,
-		&i.ActorID,
-		&i.Details,
-		&i.ChatSessionID,
-		&i.ChatMessageID,
-		&i.DedupeKey,
-		&i.UpdatedAt,
-		&i.Section,
-		&i.SnoozedUntil,
-		&i.SnoozedAt,
+		&i.InboxItem.ID,
+		&i.InboxItem.WorkspaceID,
+		&i.InboxItem.RecipientType,
+		&i.InboxItem.RecipientID,
+		&i.InboxItem.Type,
+		&i.InboxItem.Severity,
+		&i.InboxItem.IssueID,
+		&i.InboxItem.Title,
+		&i.InboxItem.Body,
+		&i.InboxItem.Read,
+		&i.InboxItem.Archived,
+		&i.InboxItem.CreatedAt,
+		&i.InboxItem.ActorType,
+		&i.InboxItem.ActorID,
+		&i.InboxItem.Details,
+		&i.InboxItem.Section,
+		&i.InboxItem.SnoozedUntil,
+		&i.InboxItem.SnoozedAt,
+		&i.InboxItem.ReturnedAt,
+		&i.SiblingsRead,
 	)
 	return i, err
-}
-
-const markInboxReadByDecisionRequest = `-- name: MarkInboxReadByDecisionRequest :many
-UPDATE inbox_item SET read = true
-WHERE workspace_id = $1 AND details->>'decision_request_id' = $2::text AND read = false
-RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at, section, snoozed_until, snoozed_at
-`
-
-type MarkInboxReadByDecisionRequestParams struct {
-	WorkspaceID       pgtype.UUID `json:"workspace_id"`
-	DecisionRequestID string      `json:"decision_request_id"`
-}
-
-func (q *Queries) MarkInboxReadByDecisionRequest(ctx context.Context, arg MarkInboxReadByDecisionRequestParams) ([]InboxItem, error) {
-	rows, err := q.db.Query(ctx, markInboxReadByDecisionRequest, arg.WorkspaceID, arg.DecisionRequestID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []InboxItem{}
-	for rows.Next() {
-		var i InboxItem
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.RecipientType,
-			&i.RecipientID,
-			&i.Type,
-			&i.Severity,
-			&i.IssueID,
-			&i.Title,
-			&i.Body,
-			&i.Read,
-			&i.Archived,
-			&i.CreatedAt,
-			&i.ActorType,
-			&i.ActorID,
-			&i.Details,
-			&i.ChatSessionID,
-			&i.ChatMessageID,
-			&i.DedupeKey,
-			&i.UpdatedAt,
-			&i.Section,
-			&i.SnoozedUntil,
-			&i.SnoozedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const markInboxReadByIssue = `-- name: MarkInboxReadByIssue :execrows
@@ -1171,7 +1230,7 @@ func (q *Queries) MarkInboxReadByIssue(ctx context.Context, arg MarkInboxReadByI
 const markInboxUnread = `-- name: MarkInboxUnread :one
 UPDATE inbox_item SET read = false
 WHERE id = $1
-RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at, section, snoozed_until, snoozed_at
+RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, section, snoozed_until, snoozed_at, returned_at
 `
 
 // Item-level, unlike MarkInboxRead: the inbox renders one row per issue
@@ -1199,15 +1258,75 @@ func (q *Queries) MarkInboxUnread(ctx context.Context, id pgtype.UUID) (InboxIte
 		&i.ActorType,
 		&i.ActorID,
 		&i.Details,
-		&i.ChatSessionID,
-		&i.ChatMessageID,
-		&i.DedupeKey,
-		&i.UpdatedAt,
 		&i.Section,
 		&i.SnoozedUntil,
 		&i.SnoozedAt,
+		&i.ReturnedAt,
 	)
 	return i, err
+}
+
+const normalizeInboxReturns = `-- name: NormalizeInboxReturns :execrows
+WITH marked AS MATERIALIZED (
+    SELECT g.issue_id, max(g.returned_at) AS returned_at
+    FROM inbox_item g
+    WHERE g.workspace_id = $1 AND g.recipient_type = $2
+      AND g.recipient_id = $3
+      AND g.archived = false AND g.issue_id IS NOT NULL
+      AND (g.returned_at IS NOT NULL OR g.snoozed_until IS NOT NULL)
+    GROUP BY g.issue_id
+), wanted AS MATERIALIZED (
+    SELECT DISTINCT ON (r.issue_id) r.issue_id, r.id,
+           GREATEST(marked.returned_at, r.snoozed_until) AS returned_at
+    FROM inbox_item r
+    JOIN marked ON marked.issue_id = r.issue_id
+    WHERE r.workspace_id = $1 AND r.recipient_type = $2
+      AND r.recipient_id = $3
+      AND r.archived = false
+    ORDER BY r.issue_id, r.created_at DESC, r.id DESC
+), stale AS (
+    SELECT item.id, CASE WHEN item.id = wanted.id THEN wanted.returned_at END AS returned_at
+    FROM inbox_item item
+    JOIN wanted ON wanted.issue_id = item.issue_id
+    WHERE item.workspace_id = $1 AND item.recipient_type = $2
+      AND item.recipient_id = $3
+      AND item.archived = false
+      AND item.returned_at IS DISTINCT FROM (CASE WHEN item.id = wanted.id THEN wanted.returned_at END)
+    ORDER BY item.issue_id, item.id
+    LIMIT $4::int
+    FOR UPDATE OF item SKIP LOCKED
+)
+UPDATE inbox_item AS fixed
+SET returned_at = (SELECT stale.returned_at FROM stale WHERE stale.id = fixed.id)
+WHERE fixed.id = ANY (ARRAY(SELECT stale.id FROM stale))
+`
+
+type NormalizeInboxReturnsParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	RecipientType string      `json:"recipient_type"`
+	RecipientID   pgtype.UUID `json:"recipient_id"`
+	BatchSize     int32       `json:"batch_size"`
+}
+
+// Leaves at most one row per issue ranked by its return (returned_at): the
+// issue's newest active row, carrying the latest return any of its rows had,
+// or its snooze time. Writes keep this true; this repairs what they could not,
+// such as rows an older server wrote during a rollout. Fixes up to batch_size
+// rows, skipping rows another write holds, so it never waits on a lock; the
+// caller runs it again while it returns a full batch.
+// MATERIALIZED: each step runs once; inlined, a planner without statistics
+// re-ran them for every row.
+func (q *Queries) NormalizeInboxReturns(ctx context.Context, arg NormalizeInboxReturnsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, normalizeInboxReturns,
+		arg.WorkspaceID,
+		arg.RecipientType,
+		arg.RecipientID,
+		arg.BatchSize,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const snoozeInboxGroup = `-- name: SnoozeInboxGroup :many
@@ -1229,14 +1348,17 @@ WITH target AS (
 UPDATE inbox_item item
 SET snoozed_until = $1::timestamptz,
     snoozed_at = CASE WHEN item.snoozed_until > now() AND item.snoozed_at IS NOT NULL THEN item.snoozed_at ELSE now() END,
-    read = CASE WHEN item.id = (SELECT id FROM newest) THEN false ELSE item.read END
+    read = CASE WHEN item.id = (SELECT id FROM newest) THEN false ELSE item.read END,
+    -- The issue comes back on top when the snooze ends: the newest row ranks
+    -- by that time for the inbox limit, the others by when they arrived.
+    returned_at = CASE WHEN item.id = (SELECT id FROM newest) THEN $1::timestamptz END
 FROM target
 WHERE item.workspace_id = target.workspace_id
   AND item.recipient_type = target.recipient_type
   AND item.recipient_id = target.recipient_id
   AND item.issue_id = target.issue_id
   AND item.archived = false
-RETURNING item.id, item.workspace_id, item.recipient_type, item.recipient_id, item.type, item.severity, item.issue_id, item.title, item.body, item.read, item.archived, item.created_at, item.actor_type, item.actor_id, item.details, item.chat_session_id, item.chat_message_id, item.dedupe_key, item.updated_at, item.section, item.snoozed_until, item.snoozed_at
+RETURNING item.id, item.workspace_id, item.recipient_type, item.recipient_id, item.type, item.severity, item.issue_id, item.title, item.body, item.read, item.archived, item.created_at, item.actor_type, item.actor_id, item.details, item.section, item.snoozed_until, item.snoozed_at, item.returned_at
 `
 
 type SnoozeInboxGroupParams struct {
@@ -1274,13 +1396,10 @@ func (q *Queries) SnoozeInboxGroup(ctx context.Context, arg SnoozeInboxGroupPara
 			&i.ActorType,
 			&i.ActorID,
 			&i.Details,
-			&i.ChatSessionID,
-			&i.ChatMessageID,
-			&i.DedupeKey,
-			&i.UpdatedAt,
 			&i.Section,
 			&i.SnoozedUntil,
 			&i.SnoozedAt,
+			&i.ReturnedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1321,14 +1440,18 @@ func (q *Queries) UnarchiveInboxByIssue(ctx context.Context, arg UnarchiveInboxB
 }
 
 const unarchiveInboxItem = `-- name: UnarchiveInboxItem :one
-UPDATE inbox_item SET archived = false
+UPDATE inbox_item SET archived = false, returned_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at, section, snoozed_until, snoozed_at
+RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, section, snoozed_until, snoozed_at, returned_at
 `
 
 // Deliberately does not touch `read`: unarchiving restores an item to the main
 // inbox in the exact read/unread state it was archived in, so restoring an
 // unread item legitimately raises the unread badge again (MUL-3736).
+// returned_at ranks the row as just back for the inbox limit, so a restored
+// old notification is not trimmed straight back into the archive. Only the
+// restored row: its issue's older rows, restored by UnarchiveInboxByIssue,
+// keep their rank so a busy issue does not outrank the whole inbox.
 func (q *Queries) UnarchiveInboxItem(ctx context.Context, id pgtype.UUID) (InboxItem, error) {
 	row := q.db.QueryRow(ctx, unarchiveInboxItem, id)
 	var i InboxItem
@@ -1348,22 +1471,27 @@ func (q *Queries) UnarchiveInboxItem(ctx context.Context, id pgtype.UUID) (Inbox
 		&i.ActorType,
 		&i.ActorID,
 		&i.Details,
-		&i.ChatSessionID,
-		&i.ChatMessageID,
-		&i.DedupeKey,
-		&i.UpdatedAt,
 		&i.Section,
 		&i.SnoozedUntil,
 		&i.SnoozedAt,
+		&i.ReturnedAt,
 	)
 	return i, err
 }
 
 const unsnoozeInboxGroup = `-- name: UnsnoozeInboxGroup :many
-UPDATE inbox_item SET snoozed_until = NULL, snoozed_at = NULL
-WHERE workspace_id = $1 AND recipient_type = $2 AND recipient_id = $3 AND issue_id = $4
-  AND archived = false AND snoozed_until IS NOT NULL
-RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at, section, snoozed_until, snoozed_at
+WITH newest AS (
+    SELECT n.id FROM inbox_item n
+    WHERE n.workspace_id = $1 AND n.recipient_type = $2 AND n.recipient_id = $3 AND n.issue_id = $4
+      AND n.archived = false
+    ORDER BY n.created_at DESC, n.id DESC
+    LIMIT 1
+)
+UPDATE inbox_item AS item SET snoozed_until = NULL, snoozed_at = NULL,
+    returned_at = CASE WHEN item.id = (SELECT id FROM newest) THEN LEAST(item.snoozed_until, now()) END
+WHERE item.workspace_id = $1 AND item.recipient_type = $2 AND item.recipient_id = $3 AND item.issue_id = $4
+  AND item.archived = false AND item.snoozed_until IS NOT NULL
+RETURNING item.id, item.workspace_id, item.recipient_type, item.recipient_id, item.type, item.severity, item.issue_id, item.title, item.body, item.read, item.archived, item.created_at, item.actor_type, item.actor_id, item.details, item.section, item.snoozed_until, item.snoozed_at, item.returned_at
 `
 
 type UnsnoozeInboxGroupParams struct {
@@ -1374,7 +1502,9 @@ type UnsnoozeInboxGroupParams struct {
 }
 
 // Ends a snooze on one issue: back in the inbox now. Also clears the time a
-// snooze that already ran out left on the rows.
+// snooze that already ran out left on the rows. The issue's newest row ranks
+// as back now for the inbox limit, or when the snooze ran out if it already
+// had; the others rank by when they arrived.
 func (q *Queries) UnsnoozeInboxGroup(ctx context.Context, arg UnsnoozeInboxGroupParams) ([]InboxItem, error) {
 	rows, err := q.db.Query(ctx, unsnoozeInboxGroup,
 		arg.WorkspaceID,
@@ -1405,13 +1535,10 @@ func (q *Queries) UnsnoozeInboxGroup(ctx context.Context, arg UnsnoozeInboxGroup
 			&i.ActorType,
 			&i.ActorID,
 			&i.Details,
-			&i.ChatSessionID,
-			&i.ChatMessageID,
-			&i.DedupeKey,
-			&i.UpdatedAt,
 			&i.Section,
 			&i.SnoozedUntil,
 			&i.SnoozedAt,
+			&i.ReturnedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1421,80 +1548,4 @@ func (q *Queries) UnsnoozeInboxGroup(ctx context.Context, arg UnsnoozeInboxGroup
 		return nil, err
 	}
 	return items, nil
-}
-
-const upsertDMReplyInboxItem = `-- name: UpsertDMReplyInboxItem :one
-INSERT INTO inbox_item (
-    id, workspace_id, recipient_type, recipient_id, type, severity, title,
-    actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at
-) VALUES (
-    $1, $2, 'member', $3, 'dm_reply', 'info', $4,
-    'agent', $5, '{"reply_count": 1}'::jsonb, $6, $7, $8, now()
-)
-ON CONFLICT (recipient_id, dedupe_key) WHERE dedupe_key IS NOT NULL AND read = false
-DO UPDATE SET
-    title = EXCLUDED.title,
-    actor_id = EXCLUDED.actor_id,
-    chat_message_id = EXCLUDED.chat_message_id,
-    archived = false,
-    updated_at = now(),
-    details = jsonb_set(
-        inbox_item.details, '{reply_count}',
-        to_jsonb(COALESCE((inbox_item.details->>'reply_count')::int, 1) + 1))
-RETURNING id, workspace_id, recipient_type, recipient_id, type, severity, issue_id, title, body, read, archived, created_at, actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at, section, snoozed_until, snoozed_at
-`
-
-type UpsertDMReplyInboxItemParams struct {
-	ID            pgtype.UUID `json:"id"`
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-	RecipientID   pgtype.UUID `json:"recipient_id"`
-	Title         string      `json:"title"`
-	AgentID       pgtype.UUID `json:"agent_id"`
-	ChatSessionID pgtype.UUID `json:"chat_session_id"`
-	ChatMessageID pgtype.UUID `json:"chat_message_id"`
-	DedupeKey     pgtype.Text `json:"dedupe_key"`
-}
-
-// One unread record per (recipient, DM): the partial unique index on
-// (recipient_id, dedupe_key) WHERE unread turns a later reply into an update
-// that bumps reply_count, moves the row to the top and revives it from the
-// archive. Once the record is read the next reply inserts a fresh one. The body
-// stays NULL on purpose: a notification never carries message text.
-func (q *Queries) UpsertDMReplyInboxItem(ctx context.Context, arg UpsertDMReplyInboxItemParams) (InboxItem, error) {
-	row := q.db.QueryRow(ctx, upsertDMReplyInboxItem,
-		arg.ID,
-		arg.WorkspaceID,
-		arg.RecipientID,
-		arg.Title,
-		arg.AgentID,
-		arg.ChatSessionID,
-		arg.ChatMessageID,
-		arg.DedupeKey,
-	)
-	var i InboxItem
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.RecipientType,
-		&i.RecipientID,
-		&i.Type,
-		&i.Severity,
-		&i.IssueID,
-		&i.Title,
-		&i.Body,
-		&i.Read,
-		&i.Archived,
-		&i.CreatedAt,
-		&i.ActorType,
-		&i.ActorID,
-		&i.Details,
-		&i.ChatSessionID,
-		&i.ChatMessageID,
-		&i.DedupeKey,
-		&i.UpdatedAt,
-		&i.Section,
-		&i.SnoozedUntil,
-		&i.SnoozedAt,
-	)
-	return i, err
 }

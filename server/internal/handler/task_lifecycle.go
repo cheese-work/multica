@@ -151,10 +151,6 @@ type RerunIssueRequest struct {
 	// assignee — so clicking retry on row that belonged to a now-displaced
 	// agent re-fires that same agent, not the new assignee.
 	TaskID string `json:"task_id,omitempty"`
-	// Reason is an optional caller-supplied explanation for the rerun (CLI
-	// `--reason`), carried into the log line so an authorized force can be
-	// audited after the fact. It is not persisted on the task row.
-	Reason string `json:"reason,omitempty"`
 }
 
 // RerunIssue preserves the issue-scoped API used by installed clients. A
@@ -184,7 +180,7 @@ func (h *Handler) RerunIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		sourceTaskID = parsed
 	}
-	h.rerunIssue(w, r, issue, sourceTaskID, false, req.Reason)
+	h.rerunIssue(w, r, issue, sourceTaskID, false)
 }
 
 // RerunTaskByUser repeats an issue-linked run without requiring its issue ID.
@@ -207,6 +203,11 @@ func (h *Handler) RerunTaskByUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "task not found")
 		return
 	}
+	// A run in a private project the caller cannot see is a missing run
+	// (MUL-8472), before its issue's own lookup can answer for it.
+	if !h.requireTaskVisible(w, r, uuidToString(workspaceID), source, http.StatusNotFound, "task not found") {
+		return
+	}
 	if !source.IssueID.Valid {
 		writeError(w, http.StatusBadRequest, "only issue-linked runs can be rerun with this endpoint")
 		return
@@ -216,8 +217,7 @@ func (h *Handler) RerunTaskByUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Fresh  bool   `json:"fresh"`
-		Reason string `json:"reason"`
+		Fresh bool `json:"fresh"`
 	}
 	if r.ContentLength != 0 {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
@@ -225,10 +225,10 @@ func (h *Handler) RerunTaskByUser(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	h.rerunIssue(w, r, issue, source.ID, req.Fresh, req.Reason)
+	h.rerunIssue(w, r, issue, source.ID, req.Fresh)
 }
 
-func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Issue, sourceTaskID pgtype.UUID, fresh bool, reason string) {
+func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Issue, sourceTaskID pgtype.UUID, fresh bool) {
 	// A manual rerun is a direct human action: attribute the new run to the
 	// rerunning member (MUL-4302 §5). Resolve the actor the same way assign/promote
 	// does; an agent A2A actor is not a human and threads an invalid actor.
@@ -250,56 +250,12 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 	}
 
 	task, err := h.TaskService.RerunIssue(r.Context(), issue.ID, sourceTaskID, pgtype.UUID{}, actorUserID, fresh, canInvoke)
-	if writeProjectAdmissionError(w, err) {
-		return
-	}
 	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 		return
 	}
-	if errors.Is(err, service.ErrRerunProviderHeld) {
-		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonProviderHold)
-		return
-	}
-	if errors.Is(err, service.ErrAgentPaused) {
-		h.writeDispatchBlocked(w, http.StatusConflict, ReasonAgentPaused)
-		return
-	}
 	if errors.Is(err, service.ErrIssueInTriage) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonIssueInTriage)
-		return
-	}
-	if errors.Is(err, service.ErrIntakeHold) {
-		h.writeDispatchBlocked(w, http.StatusConflict, ReasonIntakeHold)
-		return
-	}
-	if errors.Is(err, service.ErrStageQueueFull) {
-		h.writeDispatchBlocked(w, http.StatusConflict, ReasonStageQueueFull)
-		return
-	}
-	if errors.Is(err, service.ErrAdmissionDeferred) {
-		h.writeDispatchBlocked(w, http.StatusConflict, ReasonAdmissionDeferred)
-		return
-	}
-	if errors.Is(err, service.ErrRunBudgetExhausted) {
-		h.writeRunBudgetExhausted(w, r, issue)
-		return
-	}
-	if errors.Is(err, service.ErrReviewHeadAnswered) {
-		h.writeDispatchBlocked(w, http.StatusConflict, ReasonReviewHeadAnswered)
-		return
-	}
-	if errors.Is(err, service.ErrRecoveryCaused) {
-		writeError(w, http.StatusForbidden, errRecoveryCaused)
-		return
-	}
-	if errors.Is(err, service.ErrRecoveryNotAdmitted) {
-		writeError(w, http.StatusConflict, "recovery rerun not admitted: this failed run already has a recovery claim or the retry budget is spent")
-		return
-	}
-	var notConfirmed *service.StopNotConfirmedError
-	if errors.As(err, &notConfirmed) {
-		writeError(w, http.StatusConflict, notConfirmed.Error())
 		return
 	}
 	if errors.Is(err, service.ErrProjectAccessDenied) {
@@ -310,34 +266,14 @@ func (h *Handler) rerunIssue(w http.ResponseWriter, r *http.Request, issue db.Is
 	// source is ineligible. It falls through to the 400 below with the
 	// sentinel's own sentence, like the sibling "does not belong to this issue".
 	if err != nil {
-		writeRerunIssueError(w, uuidToString(issue.ID), err)
+		slog.Warn("issue rerun failed", "issue_id", uuidToString(issue.ID), "error", err)
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	slog.Info("issue rerun accepted", "issue_id", uuidToString(issue.ID), "task_id", uuidToString(task.ID), "reason", reason)
+	h.archiveActorInboxOnAgentTrigger(r.Context(), workspaceID, uuidToString(issue.ID), actorType, actorID)
 	resp := taskToResponse(*task, uuidToString(issue.WorkspaceID))
 	h.hydrateTaskAttributions(r.Context(), []*TaskAttribution{resp.Attribution})
 	writeJSON(w, http.StatusAccepted, resp)
-}
-
-// writeRerunIssueError classifies a non-permission error from
-// TaskService.RerunIssue and writes the corresponding HTTP response.
-// ErrDuplicatePendingTask is the same benign coalesce outcome C1
-// (issue_trigger.go, CHE-486) and C2 (comment.go, CHE-524) already classify
-// at their own admission boundaries: a concurrent rerun of this authorized
-// force already covers the target, not a genuine failure. TaskService.RerunIssue
-// returns it bare (unreconciled) when the zero-arg assignee-rerun path — which
-// carries no sourceTaskID, so the service's lineage reconciliation never runs
-// for it — exhausts its bounded reclaim loop under sustained pending-slot
-// contention. Route it through the same debug-level, non-warning treatment
-// instead of surfacing it as a 400 with the raw sentinel text.
-func writeRerunIssueError(w http.ResponseWriter, issueID string, err error) {
-	if errors.Is(err, service.ErrDuplicatePendingTask) {
-		slog.Debug("issue rerun coalesced: duplicate pending task", "issue_id", issueID)
-		writeError(w, http.StatusConflict, "a rerun for this issue and agent is already in progress")
-		return
-	}
-	slog.Warn("issue rerun failed", "issue_id", issueID, "error", err)
-	writeError(w, http.StatusBadRequest, err.Error())
 }
 
 // RetrySourceContextQuickCreate manually re-enqueues a failed issue-less
@@ -364,16 +300,19 @@ func (h *Handler) RetrySourceContextQuickCreate(w http.ResponseWriter, r *http.R
 	canInvoke := func(agent db.Agent) bool {
 		return h.canInvokeAgent(r.Context(), agent, "member", userID, userID, uuidToString(workspaceID))
 	}
-	task, err := h.TaskService.RetrySourceContextQuickCreate(r.Context(), workspaceID, requesterID, taskID, canInvoke)
-	if writeIssueLimitReached(w, err) {
-		return
+	var task *db.AgentTaskQueue
+	hidden, err := h.taskInHiddenProject(r, workspaceID, taskID)
+	if err == nil {
+		if hidden {
+			// The requester may have lost access to the project the context
+			// was captured from since (MUL-8472); the run is gone for them.
+			err = service.ErrSourceContextRetryUnavailable
+		} else {
+			task, err = h.TaskService.RetrySourceContextQuickCreate(r.Context(), workspaceID, requesterID, taskID, canInvoke)
+		}
 	}
 	if errors.Is(err, service.ErrRerunInvokeNotAllowed) {
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
-		return
-	}
-	if errors.Is(err, service.ErrSourceContextRetryProviderHeld) {
-		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonProviderHold)
 		return
 	}
 	if errors.Is(err, service.ErrSourceContextRetryUnavailable) {

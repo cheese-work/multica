@@ -1,6 +1,7 @@
 "use client";
 
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence } from "motion/react";
 import { toast } from "sonner";
 import { useQuery } from "@tanstack/react-query";
 import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
@@ -19,30 +20,29 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import {
   ChevronRight,
-  ChevronDown,
   Brain,
   AlertCircle,
   AlertTriangle,
   ArrowUpRight,
-  Copy,
   RotateCw,
 } from "@multica/ui/icons";
+import { CopyCheckIcon } from "@multica/ui/components/common/copy-check-icon";
+import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
+import { useReducedMotion } from "@multica/core/appearance";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { RichContent } from "../../rich-content";
-import { MediaSourceProvider } from "../../media/media-context";
 import { RichContentScrollRootProvider } from "../../rich-content/scroll-root";
-import { NextSelfMention, useMentionsViewer } from "../../rich-content/next-self-mention";
 import { copyText } from "@multica/ui/lib/clipboard";
-import { AttachmentList } from "../../issues/components/attachment-list";
-import { PreviewSequenceProvider, collectPreviewSequence } from "../../editor/preview-sequence-context";
+import { AttachmentList } from "../../issues/components/comment-card";
+import { PreviewSequenceProvider, collectPreviewSequence } from "../../editor";
 import type { AgentAvailability } from "@multica/core/agents";
 import { resolveFailureReasonKey } from "@multica/core/agents";
 import type {
   ChatMessage,
   ChatPendingTask,
   ChatQuickAction,
-  ChatSession,
+  ChatWakeup,
   TaskMessagePayload,
 } from "@multica/core/types";
 import type { ChatTimelineItem } from "@multica/core/chat";
@@ -53,35 +53,21 @@ import { TaskStatusPill } from "./task-status-pill";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { FOLLOW_EDGE_THRESHOLD } from "../../common/task-transcript/transcript-follow";
 import { LIVE_END_ROW_ATTR, useStickToBottom } from "./stick-to-bottom";
-import { chatAnchorKey, parseChatAnchor, serializeChatAnchor, type ChatAnchor } from "./chat-anchor";
-import { useBindViewStateWriter, useRestoredViewState } from "../../platform";
 import { JumpToLiveEndButton, useJumpToLiveEnd } from "./jump-to-live-end";
-import { formatElapsedMs } from "../lib/format";
+import { formatElapsedMs, formatMessageTime } from "../lib/format";
 import {
   canonicalAnswerText,
   extractCopyText,
   splitTimeline,
 } from "../lib/copy-text";
 import { stripChatQuickActionsProtocol } from "../lib/quick-actions";
-import { dayKey, formatDayLabel, formatMessageDateTime, formatMessageTime, formatTimeWithZone } from "./message-time";
-import { useT } from "../../i18n";
-import { AnnotatableAnswer } from "./annotatable-answer";
-import { useChatAnnotationScope } from "./chat-annotation-context";
-import { useWorkspacePaths } from "@multica/core/paths";
-import { AppLink } from "../../navigation";
-import { DecisionAnswerContent, noteAfterOption } from "./decision-answer-content";
-import { DecisionDmCard } from "./decision-dm-card";
-import { DecisionRequestCard } from "./decision-request-card";
-import { DecisionWithdrawalCard } from "./decision-withdrawal-card";
-import { WakeupEventRow, WakeupReplyRail } from "./wakeup-event-row";
-import { stripWakeupHeader } from "@multica/core/chat/wakeup";
-import { ContinuationBlock } from "./continuation-block";
-import { ChatSupplementStatus } from "./chat-supplement-status";
-import { useChatFirstItemIndex } from "./use-chat-first-item-index";
-import { predecessorChain } from "../lib/predecessor-chain";
-import { openAsksBefore, type OpenAsk } from "../lib/open-asks";
+import { useLocale, useT } from "../../i18n";
+import { isAnnotatableChatMessage, type ChatAnnotations } from "./use-chat-annotations";
+import { ChatWakeupCards, ChatWakeupDivider, useWakeupsBySourceTask } from "./chat-wakeups";
 
 // ─── Public component ────────────────────────────────────────────────────
+
+export type ChatMessageEnterTransition = "next" | "prev" | "fade";
 
 interface ChatMessageListProps {
   /** Pause bottom-stick effects while a closing floating window fades out. */
@@ -92,24 +78,16 @@ interface ChatMessageListProps {
    * (stick-to-bottom.ts). Omit to pay the settle on every mount.
    */
   revealKey?: string | null;
+  /**
+   * Subtle reveal transition played once the list has landed at the live end
+   * (`hasReachedLiveEnd`): directional glide for archive-advance (`"next"` /
+   * `"prev"`), or gentle opacity fade for direct session switches (`"fade"`).
+   * Skipped entirely under reduced motion (Appearance switch or system setting).
+   */
+  enterTransition?: ChatMessageEnterTransition | null;
   /** The list became visible to the reader — on reveal, and on each reactivation after it. */
   onRevealed?: () => void;
   messages: ChatMessage[];
-  continuedFromSessionId?: string | null;
-  continuedIntoSessionId?: string | null;
-  /** This session's id, to find the fork children that name it as their source. */
-  sessionId?: string | null;
-  forkedFromSessionId?: string | null;
-  /** Last message copied from the source DM; the "Forked from" divider sits below it. */
-  forkLastMessageId?: string | null;
-  forkMessageCount?: number | null;
-  /** Puts a predecessor DM's message into the composer as a quote. Without it, earlier DMs have no quote action. */
-  onQuoteMessage?: (content: string) => void;
-  /**
-   * Session list cache (includes archived), the title source for fork links.
-   * Leave undefined while it is loading so a source isn't mistaken for deleted.
-   */
-  sessions?: ChatSession[];
   /**
    * Server-authoritative pending-task snapshot. `null` / undefined means
    * no in-flight task — list renders without StatusPill.
@@ -117,6 +95,7 @@ interface ChatMessageListProps {
   pendingTask: ChatPendingTask | null | undefined;
   /** Resolved presence; pass `undefined` while loading to keep the pill copy neutral. */
   availability: AgentAvailability | undefined;
+  firstItemIndex?: number;
   hasOlderMessages?: boolean;
   isFetchingOlderMessages?: boolean;
   onLoadOlderMessages?: () => void;
@@ -138,23 +117,11 @@ interface ChatMessageListProps {
    * that reply until chat:quick_actions resolves it.
    */
   quickActionsPendingMessageId?: string | null;
-  /**
-   * Message to bring into view and flash (a DM decision card's jump link).
-   * Older pages are requested until it is loaded or nothing older is left.
-   */
-  jumpToMessageId?: string | null;
-  /** Fires once per target: "landed" after the scroll, "missing" if it cannot be found. */
-  onJumpSettled?: (outcome: "landed" | "missing") => void;
+  /** Lets the reader annotate settled assistant replies into the next message. */
+  annotations?: Pick<ChatAnnotations, "cardRef" | "captureProps" | "popup" | "revealSourceRef">;
+  /** The conversation's wakeups: dividers for wakeup turns, cards under the replies that made them. */
+  wakeups?: ChatWakeup[];
 }
-
-/** How long a jumped-to message keeps its highlight. */
-const FLASH_MS = 1500;
-/** How long the jump keeps re-aiming while Virtuoso measures rows. */
-const JUMP_AIM_MS = 1000;
-/** How long a restored list keeps its saved position as the target while Virtuoso lands it. */
-const RESTORE_SETTLE_MS = 1000;
-/** Min gap between persisted scroll-anchor writes; the in-memory anchor stays per-frame (CHE-3234). */
-const ANCHOR_PERSIST_MS = 500;
 
 // ─── Virtuoso chrome ─────────────────────────────────────────────────────
 //
@@ -170,22 +137,10 @@ const ANCHOR_PERSIST_MS = 500;
 
 interface ChatListContext {
   isFetchingOlderMessages: boolean;
-  continuedFromSessionId?: string | null;
-  /** Earlier DMs of the continuation chain, oldest first; empty while the session list is unknown. */
-  predecessors: ChatSession[];
-  /** The agent's summary of the earlier DM, shown inside the continuation block instead of as a row. */
-  continuationSummary?: ChatMessage;
-  onQuoteMessage?: (content: string) => void;
-  continuedIntoSessionId?: string | null;
-  showForkHint: boolean;
   showStatusPill: boolean;
   pendingTask: ChatPendingTask | null | undefined;
   liveTaskMessages: readonly TaskMessagePayload[] | undefined;
   availability: AgentAvailability | undefined;
-  /** Agent behind each fired-wakeup task, so its running pill joins the rail. */
-  wakeupAgentByTask: ReadonlyMap<string, string>;
-  /** The live assistant row is showing, so it owns the reply avatar. */
-  hasLive: boolean;
 }
 
 /**
@@ -196,49 +151,24 @@ interface ChatListContext {
  * Mermaid diagram or HTML iframe mounted across task completion.
  */
 type ChatRenderItem =
-  | {
-      key: string;
-      kind: "message";
-      message: ChatMessage;
-      taskId: string | null;
-      /** First message of its (local) calendar day — gets a day separator. */
-      dayStart: boolean;
-      /** A reply carried over from the earlier DM's last turn; its tool steps stay there. */
-      carriedReply: boolean;
-      /** compaction_summary only: the open asks of the last assistant message before it (CHE-4438). */
-      openAsks?: OpenAsk[];
-    }
+  | { key: string; kind: "message"; message: ChatMessage; taskId: string | null }
   | { key: string; kind: "live"; taskId: string };
 
 /**
- * Row key for a persisted message. The assistant reply carrying a task_id keys
- * on the task so it can inherit the live row; everything else keys on its own
- * id. A compact turn persists a compaction summary under the same task_id as
- * its reply, so the summary never claims the task key, and `claimed` makes any
- * other repeat fall back to its own id: duplicate keys orphan Virtuoso's rows.
+ * Row key for a persisted message. Assistant turns carrying a task_id key on
+ * the task so they can inherit the live row; everything else keys on its own
+ * id.
  */
-function messageRowKey(message: ChatMessage, claimed: Set<string>): string {
-  if (message.role !== "assistant" || !message.task_id || message.message_kind === "compaction_summary") {
-    return message.id;
-  }
-  const key = `task:${message.task_id}`;
-  if (claimed.has(key)) return message.id;
-  claimed.add(key);
-  return key;
+function messageRowKey(message: ChatMessage): string {
+  return message.role === "assistant" && message.task_id
+    ? `task:${message.task_id}`
+    : message.id;
 }
 
 function ChatListHeader({ context }: { context?: ChatListContext }) {
   const { t } = useT("chat");
   return (
     <div className={cn(CHAT_COLUMN, "pt-4")}>
-      {context && (context.continuedFromSessionId || context.continuationSummary || context.predecessors.length > 0) && (
-        <ContinuationBlock
-          continuedFromSessionId={context.continuedFromSessionId}
-          summary={context.continuationSummary}
-          predecessors={context.predecessors}
-          onQuoteMessage={context.onQuoteMessage}
-        />
-      )}
       {context?.isFetchingOlderMessages && (
         <div className="text-center text-caption text-muted-foreground">
           {t(($) => $.message_list.loading_older)}
@@ -256,131 +186,17 @@ function ChatListHeader({ context }: { context?: ChatListContext }) {
 // constant bottom inset: without it the last row's own py-2 was the only gap
 // between the final reply (and its follow-up pills) and the composer.
 function ChatListFooter({ context }: { context?: ChatListContext }) {
-  const { t } = useT("chat");
   return (
     <div className={cn(CHAT_COLUMN, "pb-4 space-y-4")}>
-      {context?.continuedIntoSessionId && (
-        <ContinuationAnnouncement sessionId={context.continuedIntoSessionId} />
-      )}
-      {context?.showForkHint && (
-        <p className="text-caption text-muted-foreground">{t(($) => $.message_list.fork_hint)}</p>
-      )}
       {context?.showStatusPill && context.pendingTask ? (
-        <WithWakeupRail agentId={context.wakeupAgentByTask.get(context.pendingTask.task_id ?? "")} avatar={!context.hasLive}>
-          <TaskStatusPill
-            pendingTask={context.pendingTask}
-            taskMessages={context.liveTaskMessages ?? []}
-            availability={context.availability}
-          />
-        </WithWakeupRail>
+        <TaskStatusPill
+          pendingTask={context.pendingTask}
+          taskMessages={context.liveTaskMessages ?? []}
+          availability={context.availability}
+        />
       ) : null}
     </div>
   );
-}
-
-function WithWakeupRail({ agentId, avatar = true, children }: { agentId?: string; avatar?: boolean; children: ReactNode }) {
-  return agentId ? <WakeupReplyRail agentId={agentId} avatar={avatar}>{children}</WakeupReplyRail> : <>{children}</>;
-}
-
-function ContinuationAnnouncement({ sessionId }: { sessionId: string }) {
-  const { t } = useT("chat");
-  const wsPaths = useWorkspacePaths();
-  const href = `${wsPaths.chat()}?session=${encodeURIComponent(sessionId)}`;
-  return (
-    <p className="text-caption text-muted-foreground py-2">
-      <AppLink href={href} className="underline underline-offset-2 hover:text-foreground">
-        {t(($) => $.message_list.continued_in)}
-      </AppLink>
-    </p>
-  );
-}
-
-function chatSessionHref(wsPaths: ReturnType<typeof useWorkspacePaths>, sessionId: string) {
-  return `${wsPaths.chat()}?session=${encodeURIComponent(sessionId)}`;
-}
-
-// Dimmed divider drawn inside the row of the last copied message. `source`
-// undefined = session list not loaded yet; null = loaded but the source isn't
-// in it (deleted / no access), so there is nothing to link to.
-function ForkDivider({
-  sourceId,
-  source,
-  copiedCount,
-}: {
-  sourceId: string;
-  source: ChatSession | null | undefined;
-  copiedCount?: number | null;
-}) {
-  const { t } = useT("chat");
-  const wsPaths = useWorkspacePaths();
-  const sourceTitle = source === null
-    ? t(($) => $.message_list.forked_from_deleted)
-    : `${t(($) => $.message_list.forked_from)} ${source?.title.trim() || t(($) => $.message_list.original_dm)}`;
-  const copied = typeof copiedCount === "number"
-    ? t(($) => $.message_list.copied_count, { count: copiedCount })
-    : null;
-  return (
-    <div className="mt-4 flex items-center gap-3 text-caption text-muted-foreground">
-      {/* Only the rule is the separator: a separator's children are
-          presentational, which would hide the source link. */}
-      <span
-        role="separator"
-        aria-label={copied ? `${sourceTitle} · ${copied}` : sourceTitle}
-        className="h-px min-w-4 flex-1 bg-border"
-      />
-      <span className="max-w-full text-center">
-        {source === null ? (
-          sourceTitle
-        ) : (
-          <>
-            {t(($) => $.message_list.forked_from)}{" "}
-            <AppLink href={chatSessionHref(wsPaths, sourceId)} className="underline underline-offset-2 hover:text-foreground">
-              {source?.title.trim() || t(($) => $.message_list.original_dm)}
-            </AppLink>
-          </>
-        )}
-        {copied && ` · ${copied}`}
-      </span>
-      <span className="h-px min-w-4 flex-1 bg-border" aria-hidden />
-    </div>
-  );
-}
-
-function ForkedIntoAnnouncement({ child }: { child: ChatSession }) {
-  const { t } = useT("chat");
-  const wsPaths = useWorkspacePaths();
-  return (
-    <p className="text-caption text-muted-foreground py-2">
-      {t(($) => $.message_list.forked_into)}{" "}
-      <AppLink href={chatSessionHref(wsPaths, child.id)} className="underline underline-offset-2 hover:text-foreground">
-        {child.title.trim() || t(($) => $.message_list.new_dm)}
-      </AppLink>
-    </p>
-  );
-}
-
-/**
- * Groups fork children under the source message they copied up to, oldest
- * first. A child whose source message is not in `messages` (older page, or a
- * fork made before the pointer existed) goes under the last message created at
- * or before it, or in `before` — rendered above the first message — when it
- * predates them all.
- */
-function forkChildrenByMessage(messages: ChatMessage[], children: ChatSession[]) {
-  const after = new Map<string, ChatSession[]>();
-  const before: ChatSession[] = [];
-  if (messages.length === 0) return { before, after };
-  const loaded = new Set(messages.map((m) => m.id));
-  const sorted = [...children].sort((a, b) => a.created_at.localeCompare(b.created_at));
-  for (const child of sorted) {
-    const pointed = child.fork_source_message_id;
-    const anchor = pointed && loaded.has(pointed)
-      ? pointed
-      : messages.findLast((m) => m.created_at <= child.created_at)?.id;
-    if (anchor) after.set(anchor, [...(after.get(anchor) ?? []), child]);
-    else before.push(child);
-  }
-  return { before, after };
 }
 
 const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
@@ -388,94 +204,15 @@ const LIST_COMPONENTS: Components<ChatRenderItem, ChatListContext> = {
   Footer: ChatListFooter,
 };
 
-// Box of a node: an element's own box, a text node's line boxes (measured with
-// a Range, so no marker element is added to the message).
-function rectOf(node: Node): DOMRect {
-  if (node.nodeType === Node.ELEMENT_NODE) return (node as Element).getBoundingClientRect();
-  const range = document.createRange();
-  range.selectNodeContents(node);
-  return range.getBoundingClientRect();
-}
-
-// First child (element or visible text) whose box still reaches below the
-// viewport top: the content the reader is looking at inside its parent. Text
-// nodes count: a paragraph's plain text must win over a later `<strong>`.
-function firstReaching(parent: Node, viewportTop: number): Node | undefined {
-  for (const child of parent.childNodes) {
-    const isText = child.nodeType === Node.TEXT_NODE;
-    if (!isText && child.nodeType !== Node.ELEMENT_NODE) continue;
-    if (isText && !child.textContent?.trim()) continue;
-    if (rectOf(child).bottom > viewportTop) return child;
-  }
-  return undefined;
-}
-
-// Index of the first character at or after `from` whose line reaches below
-// `edge`, or -1. The box of [0, n) only grows with n, so it is bisected.
-function charReaching(node: Text, from: number, edge: number): number {
-  const prefix = document.createRange();
-  prefix.setStart(node, 0);
-  let lo = from + 1;
-  let hi = node.data.length;
-  prefix.setEnd(node, hi);
-  if (hi < lo || prefix.getBoundingClientRect().bottom <= edge) return -1;
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    prefix.setEnd(node, mid);
-    if (prefix.getBoundingClientRect().bottom > edge) hi = mid;
-    else lo = mid + 1;
-  }
-  return lo - 1;
-}
-
-// The visible character the reader is on: the first non-blank character at or
-// below the viewport top (the last visible line when none starts there), as a
-// live Range. It follows text inserted before it, and reflow inside the node
-// moves it where the node's own box would not.
-function firstVisibleChar(node: Text, viewportTop: number): Range | undefined {
-  const text = node.data;
-  let at = charReaching(node, 0, viewportTop);
-  if (at < 0) return undefined;
-  const probe = document.createRange();
-  probe.setStart(node, at);
-  probe.setEnd(node, at + 1);
-  const line = probe.getBoundingClientRect();
-  if (line.top < viewportTop) {
-    const next = charReaching(node, at + 1, line.bottom + 0.5);
-    if (next >= 0) at = next;
-  }
-  while (at < text.length && !text[at]!.trim()) at++;
-  if (at >= text.length) return undefined;
-  const char = document.createRange();
-  char.setStart(node, at);
-  char.setEnd(node, at + 1);
-  return char;
-}
-
-// Box of the reading point. A character Range that was replaced under us (the
-// node's data was rewritten, the character is gone) has no position: undefined.
-function pointRect(point: Node, char: Range | undefined): DOMRect | undefined {
-  if (!point.isConnected) return undefined;
-  if (!char) return rectOf(point);
-  if (char.collapsed || char.startContainer !== point) return undefined;
-  return char.getBoundingClientRect();
-}
-
 export function ChatMessageList({
   active = true,
   revealKey = null,
+  enterTransition = null,
   onRevealed,
   messages,
-  continuedFromSessionId,
-  continuedIntoSessionId,
-  sessionId,
-  forkedFromSessionId,
-  forkLastMessageId,
-  forkMessageCount,
-  onQuoteMessage,
-  sessions,
   pendingTask,
   availability,
+  firstItemIndex = 0,
   hasOlderMessages = false,
   isFetchingOlderMessages = false,
   onLoadOlderMessages,
@@ -484,16 +221,9 @@ export function ChatMessageList({
   quickActionsDisabled = false,
   onRegenerateQuickActions,
   quickActionsPendingMessageId = null,
-  jumpToMessageId: requestedJumpId = null,
-  onJumpSettled: onRequestedJumpSettled,
+  annotations,
+  wakeups,
 }: ChatMessageListProps) {
-  // An annotation edit whose source row is not rendered asks for the same jump.
-  const { revealMessageId, onRevealMissing } = useChatAnnotationScope();
-  const jumpToMessageId = requestedJumpId ?? revealMessageId ?? null;
-  const onJumpSettled = useCallback((outcome: "landed" | "missing") => {
-    if (requestedJumpId) onRequestedJumpSettled?.(outcome);
-    else if (outcome === "missing") onRevealMissing?.();
-  }, [requestedJumpId, onRequestedJumpSettled, onRevealMissing]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
   const setScrollContainerRef = useCallback((node: HTMLDivElement | null) => {
@@ -516,137 +246,23 @@ export function ChatMessageList({
   useEffect(() => {
     if (active && hasReachedLiveEnd) onRevealed?.();
   }, [active, hasReachedLiveEnd, onRevealed]);
-  // WebKit has no native scroll anchoring and Virtuoso's rows opt out of it, so
-  // a row that starts above the viewport and grows late (image, embed, expanded
-  // block) pushes the reader's message down. The reader's reading anchor is the
-  // message row at the viewport top, narrowed to the deepest element or text still
-  // reaching below that edge (the visible content point inside a tall message),
-  // and where it sits from the edge; after any resize batch it is put back
-  // there. It is a measured position, not a sum of deltas: growth below the
-  // anchor never moves it, growth above it moves it back once, even when it
-  // happens inside the same message. The first observation of a row is only a
-  // baseline; the live-end follow owns its own pin (CHE-4638).
-  const isFollowingRef = useRef(isFollowing);
-  isFollowingRef.current = isFollowing;
-  const readingAnchor = useRef<{
-    id: string;
-    top: number;
-    point: Node;
-    char: Range | undefined;
-    pointTop: number;
-  } | null>(null);
-  // A restored list holds its saved position (a fixed target) until the reader
-  // moves or the list has had RESTORE_SETTLE_MS to land; before then a scroll
-  // event is Virtuoso landing it, not the reader. Other lists anchor on input.
-  const restoreUntil = useRef(0);
-  const readerMoved = useRef(false);
-  const restoreTarget = useRef<{ id: string; top: number } | null>(null);
-  const captureAnchor = useCallback(() => {
-    const scroller = scrollRef.current;
-    if (!scroller) return;
-    const viewportTop = scroller.getBoundingClientRect().top;
-    for (const row of scroller.querySelectorAll("[data-message-id]")) {
-      const { top, bottom } = row.getBoundingClientRect();
-      if (bottom <= viewportTop) continue;
-      let point: Node = row;
-      for (let next = firstReaching(point, viewportTop); next; next = firstReaching(point, viewportTop)) {
-        point = next;
-      }
-      const char = point.nodeType === Node.TEXT_NODE ? firstVisibleChar(point as Text, viewportTop) : undefined;
-      readingAnchor.current = {
-        id: row.getAttribute("data-message-id")!,
-        top: top - viewportTop,
-        point,
-        char,
-        pointTop: (char ? char.getBoundingClientRect() : rectOf(point)).top - viewportTop,
-      };
-      return;
-    }
-  }, []);
-  // The saved row is where Virtuoso starts rendering (overscan included), not
-  // what the reader sees. Once it sits at its saved offset the list has landed:
-  // anchor the row at the viewport top from then on.
-  const landRestore = useCallback(() => {
-    const scroller = scrollRef.current;
-    const target = restoreTarget.current;
-    if (!scroller || !target) return;
-    const row = scroller.querySelector(`[data-message-id="${CSS.escape(target.id)}"]`);
-    if (!row) return;
-    const top = row.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
-    if (Math.abs(top - target.top) > 2) return;
-    restoreTarget.current = null;
-    captureAnchor();
-  }, [captureAnchor]);
-  const holdAnchor = useCallback(() => {
-    const scroller = scrollRef.current;
-    const anchor = readingAnchor.current;
-    if (!scroller || !anchor) return;
-    // The content point can be re-rendered away; the row is then the anchor.
-    const pointBox = pointRect(anchor.point, anchor.char);
-    const row = pointBox
-      ? undefined
-      : scroller.querySelector(`[data-message-id="${CSS.escape(anchor.id)}"]`);
-    if (!pointBox && !row) return;
-    const delta =
-      (pointBox ?? row!.getBoundingClientRect()).top -
-      scroller.getBoundingClientRect().top -
-      (pointBox ? anchor.pointTop : anchor.top);
-    if (Math.abs(delta) >= 1) scroller.scrollTop += delta;
-  }, []);
-  useEffect(() => {
-    if (!scrollContainerEl) return;
-    const mark = () => {
-      readerMoved.current = true;
-      restoreTarget.current = null;
-      captureAnchor();
-    };
-    const onScroll = () => {
-      landRestore();
-      const restored = restoreUntil.current > 0;
-      if (readerMoved.current || (restored && Date.now() >= restoreUntil.current)) captureAnchor();
-    };
-    const events = ["wheel", "touchstart", "keydown"] as const;
-    for (const e of events) scrollContainerEl.addEventListener(e, mark, { passive: true });
-    scrollContainerEl.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      for (const e of events) scrollContainerEl.removeEventListener(e, mark);
-      scrollContainerEl.removeEventListener("scroll", onScroll);
-    };
-  }, [scrollContainerEl, captureAnchor, landRestore]);
-  const rowHeights = useRef(new WeakMap<Element, number>());
-  const rowObserver = useRef<ResizeObserver | null>(null);
-  const observeRow = useCallback(
-    (node: HTMLDivElement | null) => {
-      if (!node || typeof ResizeObserver === "undefined") return;
-      rowObserver.current ??= new ResizeObserver((entries) => {
-        let resized = false;
-        for (const { target, borderBoxSize } of entries) {
-          // A row Virtuoso unmounted reports 0 on its way out; not a resize.
-          if (!target.isConnected) continue;
-          const height = borderBoxSize?.[0]?.blockSize ?? target.getBoundingClientRect().height;
-          const prev = rowHeights.current.get(target);
-          rowHeights.current.set(target, height);
-          if (prev !== undefined && prev !== height) resized = true;
-        }
-        landRestore();
-        if (resized && !isFollowingRef.current()) holdAnchor();
-      });
-      rowObserver.current.observe(node);
-    },
-    [holdAnchor, landRestore],
-  );
-  useEffect(
-    () => () => {
-      rowObserver.current?.disconnect();
-      rowObserver.current = null;
-    },
-    [],
-  );
   // Soft edge fade hinting more content above/below. Kept small so it barely
   // grazes full-bleed previews (image / HTML) at the edges.
   const fadeStyle = useScrollFade(scrollRef, 16);
+  const reduceMotion = useReducedMotion();
+  const playedTransition = hasReachedLiveEnd && !reduceMotion ? enterTransition : null;
+  const enterClass =
+    playedTransition === "next"
+      ? "animate-chat-enter-next"
+      : playedTransition === "prev"
+        ? "animate-chat-enter-prev"
+        : playedTransition === "fade"
+          ? "animate-chat-enter-fade"
+          : undefined;
 
   const pendingTaskId = pendingTask?.task_id ?? null;
+  const wakeupsBySourceTask = useWakeupsBySourceTask(wakeups);
+  const wakeupById = useMemo(() => new Map((wakeups ?? []).map((w) => [w.id, w])), [wakeups]);
 
   // The session's newest assistant turn — the only one whose quick actions can
   // be refreshed (regeneration resumes the newest provider state). Computed off
@@ -698,136 +314,34 @@ export function ChatMessageList({
   // swap, not a remount. The onboarding kickoff is a server-authored carrier
   // for Mika's first task, not something the member typed, so it never becomes
   // a visible bubble.
-  //
-  // A rolled-over DM opens with the agent's summary and, when the old run was
-  // still going, that run's final reply (CHE-2119). The summary moves into the
-  // continuation block; the reply (carried_from_session_id) keeps only its
-  // text, because the tool steps belong to the earlier DM.
-  const continuationSummary = useMemo(
-    () => (hasOlderMessages ? undefined : messages.find((m) => m.message_kind === "continuation_summary")),
-    [messages, hasOlderMessages],
-  );
   const renderItems: ChatRenderItem[] = useMemo(() => {
-    const claimedKeys = new Set<string>();
     const items: ChatRenderItem[] = messages
-      .filter(
-        (message) =>
-          message.message_kind !== "onboarding_kickoff" &&
-          message !== continuationSummary &&
-          // The quote card replaces the plain "Decision recorded" line; one
-          // without a card (legacy row) still renders as text.
-          !(message.message_kind === "decision_reference" && message.decision_ref),
-      )
-      .map((message, i, visible) => ({
-        key: messageRowKey(message, claimedKeys),
+      .filter((message) => message.message_kind !== "onboarding_kickoff")
+      .map((message) => ({
+        key: messageRowKey(message),
         kind: "message" as const,
         message,
         taskId: message.task_id ?? null,
-        dayStart: i === 0 || dayKey(message.created_at) !== dayKey(visible[i - 1]!.created_at),
-        carriedReply: !!message.carried_from_session_id,
-        ...(message.message_kind === "compaction_summary"
-          ? { openAsks: openAsksBefore(messages, messages.indexOf(message)) }
-          : {}),
       }));
     if (hasLive && pendingTaskId) {
       items.push({ key: `task:${pendingTaskId}`, kind: "live", taskId: pendingTaskId });
     }
     return items;
-  }, [messages, hasLive, pendingTaskId, continuationSummary]);
+  }, [messages, hasLive, pendingTaskId]);
 
-  const jumpToLoadedMessage = useCallback(
-    (id: string) => {
-      const index = renderItems.findIndex((item) => item.kind === "message" && item.message.id === id);
-      if (index >= 0) virtuosoRef.current?.scrollToIndex({ index, align: "center", behavior: "auto" });
-    },
-    [renderItems],
-  );
-
-  // Jump to a message: scroll once it is loaded, ask for older pages until it
-  // is, and settle "missing" when none are left. The target is settled once so
-  // a re-render (or the caller clearing it) never re-scrolls or re-flashes.
-  const [flashId, setFlashId] = useState<string | null>(null);
-  // Set once a jump has landed: the list is shown where it landed rather than
-  // staying hidden until the newest message is in view.
-  const [jumped, setJumped] = useState(false);
-  const settledJumpRef = useRef<string | null>(null);
+  const revealSourceRef = annotations?.revealSourceRef;
   useEffect(() => {
-    if (!jumpToMessageId) {
-      settledJumpRef.current = null;
-      return;
-    }
-    // Virtuoso mounts only once the scroll container exists.
-    if (settledJumpRef.current === jumpToMessageId || !scrollContainerEl) return;
-    const index = renderItems.findIndex(
-      (item) => item.kind === "message" && item.message.id === jumpToMessageId,
-    );
-    if (index >= 0) {
-      settledJumpRef.current = jumpToMessageId;
-      const reduceMotion =
-        typeof window.matchMedia === "function" &&
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      // The live-end follow would pull the list straight back to the newest
-      // message; and while the list is still hidden waiting for that, the jump
-      // is the first thing the reader should see, so it lands without animation.
+    if (!revealSourceRef) return;
+    revealSourceRef.current = (messageId) => {
+      const index = renderItems.findIndex((item) => item.kind === "message" && item.message.id === messageId);
+      if (index < 0) return false;
       disengage();
-      virtuosoRef.current?.scrollToIndex({
-        index,
-        align: "center",
-        behavior: reduceMotion || !hasReachedLiveEnd ? "auto" : "smooth",
-      });
-      setJumped(true);
-      setFlashId(jumpToMessageId);
-      onJumpSettled?.("landed");
-    } else if (hasOlderMessages) {
-      if (!isFetchingOlderMessages) onLoadOlderMessages?.();
-    } else {
-      settledJumpRef.current = jumpToMessageId;
-      onJumpSettled?.("missing");
-    }
-  }, [jumpToMessageId, scrollContainerEl, renderItems, hasOlderMessages, isFetchingOlderMessages, onLoadOlderMessages, onJumpSettled, disengage, hasReachedLiveEnd]);
-  useEffect(() => {
-    if (!flashId) return;
-    const timer = setTimeout(() => setFlashId(null), FLASH_MS);
-    return () => clearTimeout(timer);
-  }, [flashId]);
-  // Virtuoso re-positions as it measures rows, and the open-at-newest scroll
-  // can land after the jump. Re-aim until the target sits inside the viewport,
-  // for a short window, and give up the moment the reader scrolls.
-  useEffect(() => {
-    if (!flashId || !scrollContainerEl) return;
-    const target = renderItems.findIndex(
-      (item) => item.kind === "message" && item.message.id === flashId,
-    );
-    if (target < 0) return;
-    let frame = 0;
-    let cancelled = false;
-    const stop = () => {
-      cancelled = true;
-      cancelAnimationFrame(frame);
+      virtuosoRef.current?.scrollToIndex({ index, align: "center" });
+      return true;
     };
-    const deadline = performance.now() + JUMP_AIM_MS;
-    const aim = () => {
-      if (cancelled || performance.now() > deadline) return;
-      const row = scrollContainerEl.querySelector(`[data-message-id="${CSS.escape(flashId)}"]`);
-      const view = scrollContainerEl.getBoundingClientRect();
-      const rect = row?.getBoundingClientRect();
-      const inView = !!rect && rect.height > 0 && rect.top >= view.top && rect.bottom <= view.bottom;
-      if (!inView) virtuosoRef.current?.scrollToIndex({ index: target, align: "center", behavior: "auto" });
-      frame = requestAnimationFrame(aim);
-    };
-    frame = requestAnimationFrame(aim);
-    scrollContainerEl.addEventListener("wheel", stop, { passive: true });
-    scrollContainerEl.addEventListener("touchstart", stop, { passive: true });
-    return () => {
-      stop();
-      scrollContainerEl.removeEventListener("wheel", stop);
-      scrollContainerEl.removeEventListener("touchstart", stop);
-    };
-  // renderItems is read once at landing; later rows must not restart the aim.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flashId, scrollContainerEl]);
+    return () => { revealSourceRef.current = null; };
+  }, [revealSourceRef, renderItems, disengage]);
 
-  const firstItemIndex = useChatFirstItemIndex(renderItems.map((item) => item.key));
   const firstIndex = renderItems.length > 0 ? firstItemIndex : 0;
   const tailItem = renderItems[renderItems.length - 1];
   const liveEndKey = tailItem?.key ?? null;
@@ -840,216 +354,13 @@ export function ChatMessageList({
     tailKey,
     tailIsReply: tailItem?.kind === "live" || tailItem?.message.role === "assistant",
   });
-  const firstItem = renderItems[0];
-  const firstMessageId = firstItem?.kind === "message" ? firstItem.message.id : null;
-
-  // Reading-position restore. The saved anchor is read once, at mount: it is the
-  // position this list was left at, and the list is remounted per session. It
-  // only applies when the reader was NOT at the live end and the anchor message
-  // is loaded; every other case opens at the newest message as before.
-  const anchorKey = sessionId ? chatAnchorKey(sessionId) : null;
-  const savedAnchorRaw = useRestoredViewState(anchorKey ?? "");
-  const bindViewStateWriter = useBindViewStateWriter();
-  const [restore] = useState(() => {
-    const saved = anchorKey ? parseChatAnchor(savedAnchorRaw) : null;
-    if (!saved || saved.atLiveEnd) return null;
-    const index = renderItems.findIndex(
-      (item) => item.kind === "message" && item.message.id === saved.itemId,
-    );
-    return index >= 0 ? { index, itemId: saved.itemId, offsetInItemPx: saved.offsetInItemPx } : null;
-  });
-  const restoring = restore !== null;
-  // The restored list is shown where it opened, and must not be pulled to the
-  // newest message until the reader scrolls back down to it.
-  const disengageRef = useRef(disengage);
-  disengageRef.current = disengage;
-  useEffect(() => {
-    if (restoring) disengageRef.current();
-  }, [restoring, scrollContainerEl]);
-  // A restored reader may be still after Back: the saved position is the reading
-  // anchor from the first frame, so growth above is corrected without input (CHE-4638).
-  if (restore && restoreUntil.current === 0) {
-    restoreUntil.current = Date.now() + RESTORE_SETTLE_MS;
-    restoreTarget.current = { id: restore.itemId, top: -restore.offsetInItemPx };
-  }
-
-  // Until the list has landed, the range Virtuoso reports is not the reader's
-  // position (it is on its way to the newest message), so nothing is recorded.
-  const anchorReady = restoring || jumped || hasReachedLiveEnd;
-  const atBottomRef = useRef(!restoring);
-  const lastAnchorRef = useRef<ChatAnchor | null>(null);
-  // The in-memory anchor is current on every call; the persisted copy goes to the
-  // platform (desktop: tab store → JSON of all tabs) at most once per
-  // ANCHOR_PERSIST_MS — leading edge, then a trailing write — and is flushed on
-  // unmount and pagehide so the last position is never lost (CHE-3234).
-  // Each pending write carries a writer pinned to the tab and route it was
-  // scrolled on, so a flush after the view left (tab switch, navigation) still
-  // lands on the right entry.
-  const pendingAnchorWrite = useRef<{
-    key: string;
-    value: string;
-    write: (key: string, value: string | undefined) => void;
-  } | null>(null);
-  const lastAnchorWriteAt = useRef(0);
-  const anchorWriteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const bindViewStateWriterRef = useRef(bindViewStateWriter);
-  bindViewStateWriterRef.current = bindViewStateWriter;
-  const flushAnchor = useCallback(() => {
-    if (anchorWriteTimer.current) clearTimeout(anchorWriteTimer.current);
-    anchorWriteTimer.current = null;
-    const pending = pendingAnchorWrite.current;
-    if (!pending) return;
-    pendingAnchorWrite.current = null;
-    lastAnchorWriteAt.current = Date.now();
-    pending.write(pending.key, pending.value);
-  }, []);
-  const saveAnchor = useCallback(
-    (anchor: ChatAnchor, write = bindViewStateWriterRef.current()) => {
-      lastAnchorRef.current = anchor;
-      if (!anchorKey) return;
-      pendingAnchorWrite.current = {
-        key: anchorKey,
-        value: serializeChatAnchor(anchor),
-        write,
-      };
-      const wait = ANCHOR_PERSIST_MS - (Date.now() - lastAnchorWriteAt.current);
-      if (wait <= 0) flushAnchor();
-      else anchorWriteTimer.current ??= setTimeout(flushAnchor, wait);
-    },
-    [anchorKey, flushAnchor],
-  );
-  // Runs the measurement a queued scroll frame would have run. Set by the scroll
-  // effect below; a layout effect so unmount drains it while the rows are attached.
-  const drainScrollFrameRef = useRef<() => void>(() => {});
-  useLayoutEffect(() => {
-    const flushNow = () => {
-      drainScrollFrameRef.current();
-      flushAnchor();
-    };
-    window.addEventListener("pagehide", flushNow);
-    return () => {
-      window.removeEventListener("pagehide", flushNow);
-      flushNow();
-    };
-  }, [flushAnchor]);
-  const measureOffset = useCallback(
-    (messageId: string) => {
-      const row = scrollContainerEl?.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
-      return row && scrollContainerEl
-        ? Math.max(0, Math.round(scrollContainerEl.getBoundingClientRect().top - row.getBoundingClientRect().top))
-        : 0;
-    },
-    [scrollContainerEl],
-  );
-  const onRangeChanged = useCallback(
-    ({ startIndex }: { startIndex: number }) => {
-      if (!anchorReady || !scrollContainerEl) return;
-      const item = renderItems[startIndex - firstIndex];
-      if (item?.kind !== "message") return;
-      saveAnchor({ itemId: item.message.id, offsetInItemPx: measureOffset(item.message.id), atLiveEnd: atBottomRef.current });
-    },
-    [anchorReady, scrollContainerEl, renderItems, firstIndex, saveAnchor, measureOffset],
-  );
-  // Scrolling inside a tall reply moves the offset without changing the range
-  // endpoints, so Virtuoso reports nothing. Re-measure the recorded item.
-  useEffect(() => {
-    if (!anchorReady || !scrollContainerEl) return;
-    // Measure once per frame, not once per scroll event.
-    let frame = 0;
-    // Bound when the frame is queued: a frame drained after navigation already
-    // moved the tab's route must still file under the route it was scrolled on.
-    let frameWriter = bindViewStateWriterRef.current();
-    const measure = () => {
-      frame = 0;
-      const last = lastAnchorRef.current;
-      if (last) saveAnchor({ ...last, offsetInItemPx: measureOffset(last.itemId) }, frameWriter);
-    };
-    const onScroll = () => {
-      if (frame) return;
-      frameWriter = bindViewStateWriterRef.current();
-      frame = requestAnimationFrame(measure);
-    };
-    // A queued frame holds the reader's final offset: run it now rather than drop it.
-    const drain = () => {
-      if (!frame) return;
-      cancelAnimationFrame(frame);
-      measure();
-    };
-    drainScrollFrameRef.current = drain;
-    scrollContainerEl.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      scrollContainerEl.removeEventListener("scroll", onScroll);
-      drain();
-      if (drainScrollFrameRef.current === drain) drainScrollFrameRef.current = () => {};
-    };
-  }, [anchorReady, scrollContainerEl, saveAnchor, measureOffset]);
-  const onAtBottomStateChange = useCallback(
-    (atBottom: boolean) => {
-      atBottomRef.current = atBottom;
-      if (!anchorReady || !lastAnchorRef.current) return;
-      saveAnchor({ ...lastAnchorRef.current, atLiveEnd: atBottom });
-      flushAnchor(); // a rare transition, not scroll spam: persist now
-    },
-    [anchorReady, saveAnchor, flushAnchor],
-  );
-
-  const forkSource = forkedFromSessionId && sessions
-    ? sessions.find((s) => s.id === forkedFromSessionId) ?? null
-    : undefined;
-  const { before: forksBeforeFirst, after: forksByMessageId } = useMemo(
-    () => forkChildrenByMessage(
-      messages.filter((m) => m.message_kind !== "onboarding_kickoff"),
-      sessionId && sessions ? sessions.filter((s) => s.forked_from_session_id === sessionId) : [],
-    ),
-    [messages, sessionId, sessions],
-  );
-  // Idle hint until a user message follows the fork point. A fork point that
-  // is not loaded sits above everything loaded, so all loaded rows follow it.
-  const forkPointIndex = forkLastMessageId ? messages.findIndex((m) => m.id === forkLastMessageId) : -1;
-  const showForkHint = !!forkLastMessageId
-    && !messages.slice(forkPointIndex + 1).some((m) => m.role === "user");
-
-  // Earlier DMs sit above the oldest loaded message, like the link to them.
-  const predecessors = useMemo(
-    () => (!hasOlderMessages && continuedFromSessionId && sessions
-      ? predecessorChain(sessions, continuedFromSessionId)
-      : []),
-    [hasOlderMessages, sessions, continuedFromSessionId],
-  );
-
-  // Per row, from the data: Virtuoso mounts only the visible window.
-  const mentionsViewer = useMentionsViewer();
-  const selfMentionFlags = useMemo(
-    () => renderItems.map((item) => item.kind === "message" && mentionsViewer(item.message.content)),
-    [renderItems, mentionsViewer],
-  );
-  const jumpToSelfMention = useCallback(
-    (index: number) => virtuosoRef.current?.scrollToIndex({ index, align: "start", offset: -16 }),
-    [],
-  );
-
-  const wakeupAgentByTask = useMemo(() => {
-    const byTask = new Map<string, string>();
-    for (const m of messages) {
-      if (m.scheduled_wakeup && m.task_id) byTask.set(m.task_id, m.scheduled_wakeup.agent_id);
-    }
-    return byTask;
-  }, [messages]);
 
   const listContext: ChatListContext = {
     isFetchingOlderMessages,
-    continuedFromSessionId: hasOlderMessages ? null : continuedFromSessionId,
-    predecessors,
-    continuationSummary,
-    onQuoteMessage,
-    continuedIntoSessionId,
-    showForkHint,
     showStatusPill,
     pendingTask,
     liveTaskMessages,
     availability,
-    wakeupAgentByTask,
-    hasLive,
   };
 
   // Every previewable file in this session, in message order, so opening one
@@ -1072,14 +383,16 @@ export function ChatMessageList({
   );
 
   return (
-    <MediaSourceProvider source={sessionId ? { type: "chats", id: sessionId } : null}>
     <PreviewSequenceProvider items={previewSequence}>
     {/* Positioning box for the floating "Jump to latest" button, so it stays
      *  pinned above the composer instead of scrolling with the rows. */}
-    <div className="relative flex min-h-0 flex-1 flex-col">
+    <div ref={annotations?.cardRef} {...annotations?.captureProps} className="relative flex min-h-0 flex-1 flex-col">
+    {annotations?.popup}
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
     <div
       ref={setScrollContainerRef}
       data-tab-scroll-root
+      data-chat-enter-transition={playedTransition ?? undefined}
       style={fadeStyle}
       // The gutter lives on the scroll container, so it applies once to the
       // whole list — rows, header, footer — and the scrollbar still rides the
@@ -1088,7 +401,7 @@ export function ChatMessageList({
       // container paints nothing for that whole window anyway — the rows are
       // not measured yet — so this costs no visible time and spares the
       // reader a frame of the wrong messages (see stick-to-bottom.ts).
-      className={cn("flex-1 overflow-y-auto", CHAT_GUTTER, !hasReachedLiveEnd && !jumped && !restoring && "invisible")}
+      className={cn("flex-1 overflow-y-auto", CHAT_GUTTER, !hasReachedLiveEnd && "invisible", enterClass)}
     >
       {/* Already inside the gutter + column, so this pre-mount frame renders the
        *  skeleton BODY rather than <ChatMessageSkeleton>, which brings its own
@@ -1116,13 +429,7 @@ export function ChatMessageList({
         // the top, while fetched ones sometimes catch a growth tick and land at
         // the bottom. `align: "end"` bottom-aligns even a last message taller
         // than the viewport, so switching sessions always shows the latest reply.
-        initialTopMostItemIndex={
-          restore
-            ? { index: restore.index, align: "start", offset: restore.offsetInItemPx }
-            : { index: "LAST", align: "end" }
-        }
-        rangeChanged={onRangeChanged}
-        atBottomStateChange={onAtBottomStateChange}
+        initialTopMostItemIndex={{ index: "LAST", align: "end" }}
         increaseViewportBy={{ top: 400, bottom: 600 }}
         atBottomThreshold={FOLLOW_EDGE_THRESHOLD}
         // Follow rapid streamed output only while Virtuoso says the reader is
@@ -1148,71 +455,47 @@ export function ChatMessageList({
         components={LIST_COMPONENTS}
         itemContent={(_, item) => (
           <div
-            ref={observeRow}
-            className={cn(
-              CHAT_COLUMN,
-              "py-2 transition-colors duration-700",
-              item.kind === "message" && item.message.id === flashId && "bg-primary/10",
-            )}
-            {...(item.kind === "message" ? { "data-message-id": item.message.id } : {})}
-            {...(item.kind === "message" && item.message.id === flashId ? { "data-flash": "" } : {})}
+            className={cn(CHAT_COLUMN, "py-2")}
             data-mc="chat-message"
             data-role={item.kind === "live" ? "assistant" : item.message.role}
             {...(item.key === liveEndKey ? { [LIVE_END_ROW_ATTR]: "" } : {})}
           >
-            {item.kind === "message" && item.message.id === firstMessageId && forksBeforeFirst.map((child) => (
-              <ForkedIntoAnnouncement key={child.id} child={child} />
-            ))}
-            {item.kind === "message" && item.dayStart && (
-              <div data-day-separator="" className="mb-3 flex justify-center">
-                <span className="rounded-full bg-muted px-2.5 py-0.5 text-caption text-muted-foreground">
-                  {formatDayLabel(item.message.created_at)}
-                </span>
-              </div>
-            )}
             <MessageBubble
               item={item}
               isPending={!!pendingTaskId && item.taskId === pendingTaskId}
-              wakeupAgentId={item.taskId ? wakeupAgentByTask.get(item.taskId) : undefined}
               transformContent={transformContent}
-              onJumpToMessage={jumpToLoadedMessage}
               onQuickAction={onQuickAction}
               quickActionsDisabled={quickActionsDisabled}
               onRegenerateQuickActions={onRegenerateQuickActions}
               latestAssistantMessageId={latestAssistantMessageId}
               quickActionsPendingMessageId={quickActionsPendingMessageId}
               starterCardsMessageId={starterCardsMessageId}
+              annotatable={!!annotations}
+              wakeup={item.kind === "message" && item.message.wakeup_id
+                ? wakeupById.get(item.message.wakeup_id)
+                : undefined}
+              createdWakeups={item.taskId ? wakeupsBySourceTask.get(item.taskId) : undefined}
             />
-            {forkedFromSessionId && item.kind === "message" && item.message.id === forkLastMessageId && (
-              <ForkDivider sourceId={forkedFromSessionId} source={forkSource} copiedCount={forkMessageCount} />
-            )}
-            {item.kind === "message" && forksByMessageId.get(item.message.id)?.map((child) => (
-              <ForkedIntoAnnouncement key={child.id} child={child} />
-            ))}
           </div>
         )}
       />
       </RichContentScrollRootProvider>
       )}
     </div>
-    <NextSelfMention
-      scrollEl={scrollContainerEl}
-      enabled={active}
-      flags={selfMentionFlags}
-      firstItemIndex={firstIndex}
-      onJump={jumpToSelfMention}
-      positionClassName="absolute bottom-4 right-6 z-20"
-    />
-    {jumpToLiveEnd.visible && (
-      <JumpToLiveEndButton
-        hasNewReply={jumpToLiveEnd.hasNewReply}
-        onClick={jumpToLiveEnd.jump}
-        className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2"
-      />
-    )}
+    </div>
+    <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
+      <AnimatePresence initial={false}>
+        {jumpToLiveEnd.visible && (
+          <JumpToLiveEndButton
+            key="jump-to-live-end"
+            hasNewReply={jumpToLiveEnd.hasNewReply}
+            onClick={jumpToLiveEnd.jump}
+          />
+        )}
+      </AnimatePresence>
+    </div>
     </div>
     </PreviewSequenceProvider>
-    </MediaSourceProvider>
   );
 }
 
@@ -1263,34 +546,39 @@ function ChatSkeletonBody() {
 const MessageBubble = memo(function MessageBubble({
   item,
   isPending,
-  wakeupAgentId,
   transformContent,
-  onJumpToMessage,
   onQuickAction,
   quickActionsDisabled,
   onRegenerateQuickActions,
   latestAssistantMessageId,
   quickActionsPendingMessageId,
   starterCardsMessageId,
+  annotatable,
+  wakeup,
+  createdWakeups,
 }: {
   item: ChatRenderItem;
   isPending: boolean;
-  wakeupAgentId?: string;
   transformContent?: (content: string) => string;
-  onJumpToMessage: (id: string) => void;
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
   onRegenerateQuickActions?: (message: ChatMessage) => void | Promise<unknown>;
   latestAssistantMessageId: string | null;
   quickActionsPendingMessageId: string | null;
   starterCardsMessageId: string | null;
+  annotatable: boolean;
+  /** The wakeup behind a wakeup turn's input row. */
+  wakeup?: ChatWakeup;
+  /** Wakeups this row's turn created. */
+  createdWakeups?: ChatWakeup[];
 }) {
   // The live row and the persisted assistant row both land here under one key,
   // and both render <AssistantMessage> — same component type, same position —
-  // so React reconciles rather than remounts at task completion.
+  // so React reconciles rather than remounts at task completion. The wakeup
+  // cards follow it as a sibling in both forms for the same reason.
   if (item.kind === "live") {
     return (
-      <WithWakeupRail agentId={wakeupAgentId}>
+      <>
         <AssistantMessage
           taskId={item.taskId}
           isPending={isPending}
@@ -1298,51 +586,22 @@ const MessageBubble = memo(function MessageBubble({
           onQuickAction={onQuickAction}
           quickActionsDisabled={quickActionsDisabled}
         />
-      </WithWakeupRail>
+        {createdWakeups && <ChatWakeupCards wakeups={createdWakeups} />}
+      </>
     );
   }
 
   const { message } = item;
 
-  if (message.decision_requests?.length) {
-    return <div className="space-y-3">{message.decision_requests.map((card) => <DecisionWithdrawalCard key={card.id} card={card} />)}</div>;
-  }
-
-  if (message.decision_request) {
-    return <DecisionRequestCard card={message.decision_request} />;
-  }
-
-  if (message.message_kind === "continuation_summary") {
-    return <ContinuationSummary message={message} />;
-  }
-
-  // The agent-facing summary of a compaction: folded, with the open asks of the
-  // message before it repeated underneath (CHE-4438).
-  if (message.message_kind === "compaction_summary") {
-    return <CompactionSummary message={message} openAsks={item.openAsks ?? []} onJump={onJumpToMessage} />;
-  }
-
-  // The server-authored reason for an automatic compaction (or its failure):
-  // a muted note, not a reply from the agent.
-  if (message.message_kind === "compact_notice") {
-    return <CompactNotice message={message} />;
-  }
-
-  // A fired wakeup is a system event, not something the member typed.
-  if (message.scheduled_wakeup) {
-    return <WakeupEventRow wakeup={message.scheduled_wakeup} />;
+  // A wakeup turn's input is the runtime's, not something the person wrote.
+  if (message.message_kind === "wakeup") {
+    return <ChatWakeupDivider message={message} wakeup={wakeup} />;
   }
 
   if (message.role === "user") {
-    // Without structured wakeup data (malformed or older server) the model-facing
-    // header is still dropped; the instruction shows as an ordinary bubble.
-    const userContent = stripWakeupHeader(message.content);
-    const chosenOption = message.decision_quotes?.find((quote) => quote.option_label)?.option_label;
-    const asChoice = chosenOption !== undefined && noteAfterOption(userContent, chosenOption) !== undefined;
     return (
-      <div className="flex flex-col items-end">
+      <div className="flex justify-end">
         <div
-          data-testid="chat-user-message"
           data-mc="chat-bubble"
           className="rounded-2xl bg-muted px-3.5 py-2 text-body max-w-[80%] break-words"
         >
@@ -1351,36 +610,26 @@ const MessageBubble = memo(function MessageBubble({
            * Issue/Comment — a Mermaid fence a user pastes is a diagram here
            * too. `compact` trims the leading/trailing block margins so a
            * single-line bubble stays as tight as the plain-text version. */}
-          {asChoice ? (
-            <DecisionAnswerContent content={userContent} optionLabel={chosenOption} />
-          ) : (
-            <RichContent
-              content={userContent}
-              attachments={message.attachments}
-              density="compact"
-              phase="settled"
-            />
-          )}
+          <RichContent
+            content={message.content}
+            attachments={message.attachments}
+            density="compact"
+            phase="settled"
+          />
           <AttachmentList
             attachments={message.attachments}
-            content={userContent}
+            content={message.content}
             className="mt-1.5"
           />
         </div>
-        <MessageTime iso={message.created_at} className="mt-0.5 block text-right" />
-        {message.supplement ? <ChatSupplementStatus supplement={message.supplement} /> : null}
-        {message.decision_quotes?.map((card) => (
-          <DecisionDmCard key={card.answer_id} card={card} />
-        ))}
       </div>
     );
   }
 
   return (
-    <WithWakeupRail agentId={wakeupAgentId}>
+    <>
       <AssistantMessage
         taskId={message.task_id ?? null}
-        hideSteps={item.carriedReply}
         message={message}
         isPending={isPending}
         transformContent={transformContent}
@@ -1390,99 +639,12 @@ const MessageBubble = memo(function MessageBubble({
         canRegenerateQuickActions={message.id === latestAssistantMessageId}
         quickActionsPending={quickActionsPendingMessageId === message.id}
         showStarterCards={message.id === starterCardsMessageId}
+        sourceId={annotatable && isAnnotatableChatMessage(message) ? message.id : undefined}
       />
-    </WithWakeupRail>
+      {createdWakeups && <ChatWakeupCards wakeups={createdWakeups} />}
+    </>
   );
 });
-
-/**
- * The compaction point: a full-width divider (old session above, new below),
- * then the server's muted note. The token count comes from the notice text
- * ("... at 213k tokens ..."); without it the divider shows the time only.
- */
-function CompactNotice({ message }: { message: ChatMessage }) {
-  const { t } = useT("chat");
-  // The same kind carries preset replies and failure notes; only a compaction gets the divider.
-  const compacted = /^(?:Auto-)?[Cc]ompacted/.test(message.content);
-  const time = formatTimeWithZone(message.created_at);
-  const tokens = /\bat (\d+k) tokens/.exec(message.content)?.[1];
-  const label = tokens
-    ? t(($) => $.message_list.compaction_divider, { time, tokens })
-    : t(($) => $.message_list.compaction_divider_no_tokens, { time });
-  return (
-    <div className="space-y-1">
-      {compacted && (
-        <div role="separator" className="flex w-full items-center gap-3 text-caption text-muted-foreground">
-          <span className="h-px flex-1 bg-border" />
-          <span>{label}</span>
-          <span className="h-px flex-1 bg-border" />
-        </div>
-      )}
-      <p role="note" className="text-caption text-muted-foreground">
-        {message.content}
-      </p>
-    </div>
-  );
-}
-
-function CompactionSummary({
-  message,
-  openAsks,
-  onJump,
-}: {
-  message: ChatMessage;
-  openAsks: OpenAsk[];
-  onJump: (id: string) => void;
-}) {
-  const { t } = useT("chat");
-  const [open, setOpen] = useState(false);
-  const words = message.content.trim().split(/\s+/).filter(Boolean).length;
-  const toggle = t(($) => (open ? $.message_list.compaction_summary_hide : $.message_list.compaction_summary_show));
-  return (
-    <div className="space-y-1">
-      <Collapsible open={open} onOpenChange={setOpen}>
-        <CollapsibleTrigger className="flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground transition-colors">
-          {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-          {t(($) => $.message_list.compaction_summary, { count: words })} · {toggle}
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <AnnotatableAnswer messageId={message.id}>
-            <RichContent content={message.content} attachments={message.attachments} density="compact" />
-          </AnnotatableAnswer>
-        </CollapsibleContent>
-      </Collapsible>
-      {/* Slot: CHE-4447 adds "Decisions in this DM" here, under the folded summary. */}
-      {openAsks.map((ask) => (
-        <button
-          key={`${ask.messageId}:${ask.ask}`}
-          type="button"
-          onClick={() => onJump(ask.messageId)}
-          className="block text-left text-body underline-offset-2 hover:underline"
-        >
-          {t(($) => $.message_list.compaction_open_question, { ask: ask.ask })}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function ContinuationSummary({ message }: { message: ChatMessage }) {
-  const { t } = useT("chat");
-  const [open, setOpen] = useState(false);
-  return (
-    <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground transition-colors">
-        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
-        {t(($) => $.message_list.continuation_summary)}
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <AnnotatableAnswer messageId={message.id}>
-          <RichContent content={message.content} attachments={message.attachments} density="compact" />
-        </AnnotatableAnswer>
-      </CollapsibleContent>
-    </Collapsible>
-  );
-}
 
 /**
  * Assistant turn body — renders BOTH the in-flight (live) and the persisted
@@ -1503,7 +665,6 @@ function ContinuationSummary({ message }: { message: ChatMessage }) {
  */
 function AssistantMessage({
   taskId,
-  hideSteps = false,
   message,
   isPending,
   transformContent,
@@ -1513,10 +674,9 @@ function AssistantMessage({
   canRegenerateQuickActions = false,
   quickActionsPending = false,
   showStarterCards = false,
+  sourceId,
 }: {
   taskId: string | null;
-  /** Show only the reply text: the run's steps live in another DM. */
-  hideSteps?: boolean;
   message?: ChatMessage;
   isPending: boolean;
   transformContent?: (content: string) => string;
@@ -1527,8 +687,10 @@ function AssistantMessage({
   quickActionsPending?: boolean;
   /** This turn is Mika's onboarding opening — render starter cards, not chips. */
   showStarterCards?: boolean;
+  /** Annotation source id for the settled answer text. */
+  sourceId?: string;
 }) {
-  const canFetchTaskMessages = isTaskMessageTaskId(taskId) && !hideSteps;
+  const canFetchTaskMessages = isTaskMessageTaskId(taskId);
 
   // Use the shared taskMessagesOptions so this cache entry is the same one
   // seeded by useRealtimeSync during task execution — zero refetch when the
@@ -1542,8 +704,8 @@ function AssistantMessage({
   // array reference when a duplicate event arrives, so this recomputes only
   // when a genuinely new message lands.
   const timeline: ChatTimelineItem[] = useMemo(
-    () => transformTimeline(buildTimeline(hideSteps ? [] : taskMessages ?? []), transformContent),
-    [taskMessages, transformContent, hideSteps],
+    () => transformTimeline(buildTimeline(taskMessages ?? []), transformContent),
+    [taskMessages, transformContent],
   );
 
   // Content is settled once the persisted message exists; until then text is
@@ -1561,6 +723,7 @@ function AssistantMessage({
         rawError={message.content}
         timeline={timeline}
         elapsedMs={message.elapsed_ms}
+        createdAt={message.created_at}
       />
     );
   }
@@ -1587,13 +750,13 @@ function AssistantMessage({
           phase={phase}
           isStreaming={!message}
           settledContent={canonicalAnswer}
-          annotateMessageId={message?.id}
+          sourceId={sourceId}
         />
       )}
       {isNoResponse ? (
         <NoResponseNotice />
       ) : message && timeline.length === 0 ? (
-        <AnnotatableAnswer messageId={message.id}>
+        <div data-comment-content={sourceId}>
           <RichContent
             content={settledContent ?? message.content}
             attachments={message.attachments}
@@ -1601,7 +764,7 @@ function AssistantMessage({
             phase="settled"
             className="leading-relaxed"
           />
-        </AnnotatableAnswer>
+        </div>
       ) : null}
       {message && (
         <>
@@ -1781,7 +944,7 @@ function QuickActions({
 }
 
 // Light inline prefix label for the follow-up pill row — the row sits below
-// the reply footer ("Replied in Xs · Copy") behind a faint top border, so
+// the reply footer ("Replied in Xs · time · Copy") behind a faint top border, so
 // the pills read as a labelled next-steps strip, not part of the reply body.
 // shrink-0 keeps the label whole at the row start when narrow widths wrap
 // the pills.
@@ -1827,8 +990,8 @@ function NoResponseNotice() {
   );
 }
 
-// Inline footer row beneath the assistant reply: "Replied in 38s · [Copy]".
-// Action icons live here (not as a hover-floating overlay) so they're
+// Inline footer row beneath the assistant reply: "Replied in 38s · 2:32 PM ·
+// [Copy]". Action icons live here (not as a hover-floating overlay) so they're
 // discoverable on first read and don't shift content. Buttons stay quiet
 // (muted) until hover. Copy is suppressed during streaming because the
 // final text is still being appended.
@@ -1843,39 +1006,29 @@ function MessageFooter({
   isPending: boolean;
   transformContent?: (content: string) => string;
 }) {
+  const locale = useLocale();
   // A no_response turn has nothing to copy, and its caption uses a neutral
   // "Finished in Xs" instead of "Replied in Xs" (MUL-4351).
   const isNoResponse = message.message_kind === "no_response";
   const copyContent = extractCopyText(message, timeline, transformContent);
   const showCopy = !isPending && !isNoResponse && copyContent.trim().length > 0;
+  const timeLabel = formatMessageTime(message.created_at, locale);
+  if (message.elapsed_ms == null && !showCopy && !timeLabel) return null;
   return (
     <div className="flex items-center gap-1.5">
-      {message.elapsed_ms != null && (
+      {message.elapsed_ms != null ? (
         <ElapsedCaption
           variant={isNoResponse ? "finished" : "replied"}
           elapsedMs={message.elapsed_ms}
+          timeLabel={timeLabel || undefined}
         />
-      )}
-      <MessageTime iso={message.created_at} />
+      ) : timeLabel ? (
+        <div className="text-caption text-muted-foreground">{timeLabel}</div>
+      ) : null}
       {showCopy && (
         <MessageCopyButton content={copyContent} />
       )}
     </div>
-  );
-}
-
-// Send time in the browser's locale/zone; the full date + time is the native
-// hover title.
-function MessageTime({ iso, className }: { iso: string; className?: string }) {
-  return (
-    <time
-      data-message-time=""
-      dateTime={iso}
-      title={formatMessageDateTime(iso)}
-      className={cn("text-caption text-muted-foreground", className)}
-    >
-      {formatMessageTime(iso)}
-    </time>
   );
 }
 
@@ -1885,8 +1038,20 @@ function MessageCopyButton({
   content: string;
 }) {
   const { t } = useT("chat");
+  const [copied, setCopied] = useState(false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
+
   const handleCopy = async () => {
     if (await copyText(content)) {
+      setCopied(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => setCopied(false), 2000);
       toast.success(t(($) => $.message_list.copied_toast));
     } else {
       toast.error(t(($) => $.message_list.copy_failed_toast));
@@ -1900,13 +1065,12 @@ function MessageCopyButton({
             variant="ghost"
             size="icon-xs"
             className="text-faint-foreground hover:text-foreground"
-            data-testid="assistant-message-copy"
             onClick={handleCopy}
             aria-label={t(($) => $.message_list.copy_action)}
           />
         }
       >
-        <Copy />
+        <CopyCheckIcon copied={copied} />
       </TooltipTrigger>
       <TooltipContent side="top">
         {t(($) => $.message_list.copy_action)}
@@ -1915,18 +1079,21 @@ function MessageCopyButton({
   );
 }
 
-// Persisted "Replied in 38s" / "Failed after 12s" line under the assistant
-// bubble. Reads `elapsed_ms` straight off the chat_message — server computes
-// it once at task completion, so this caption is identical across reloads
-// and devices. Skipped silently when null (legacy messages predating
-// migration 063 + user messages).
+// Persisted "Replied in 38s · 2:32 PM" / "Failed after 12s · 2:32 PM" line
+// under the assistant bubble. Reads `elapsed_ms` straight off the chat_message
+// — server computes it once at task completion, so this caption is identical
+// across reloads and devices; `timeLabel` is the pre-formatted wall-clock time
+// derived from `created_at`. Skipped silently when null (legacy messages
+// predating migration 063 + user messages).
 function ElapsedCaption({
   variant,
   elapsedMs,
+  timeLabel,
   className,
 }: {
   variant: "replied" | "failed" | "finished";
   elapsedMs: number;
+  timeLabel?: string;
   className?: string;
 }) {
   const { t } = useT("chat");
@@ -1939,7 +1106,7 @@ function ElapsedCaption({
         : t(($) => $.message_list.failed_after, { elapsed });
   return (
     <div className={cn("text-caption text-muted-foreground", className)}>
-      {text}
+      {timeLabel ? `${text} · ${timeLabel}` : text}
     </div>
   );
 }
@@ -1949,13 +1116,17 @@ function FailureBubble({
   rawError,
   timeline,
   elapsedMs,
+  createdAt,
 }: {
   reason: string;
   rawError: string;
   timeline: ChatTimelineItem[];
   elapsedMs?: number | null;
+  createdAt?: string;
 }) {
   const { t } = useT("chat");
+  const locale = useLocale();
+  const timeLabel = createdAt ? formatMessageTime(createdAt, locale) : "";
   const [open, setOpen] = useState(false);
   // Chat gets its own friendly, reassuring copy per failure reason — plain
   // language + a "try again" nudge — instead of the terse developer labels
@@ -1988,6 +1159,7 @@ function FailureBubble({
     skill_bundle_unavailable: t(($) => $.message_list.failure.skill_bundle_unavailable),
     runtime_cli_timeout: t(($) => $.message_list.failure.runtime_cli_timeout),
     environment_prepare_failed: t(($) => $.message_list.failure.environment_prepare_failed),
+    local_directory_missing: t(($) => $.message_list.failure.local_directory_missing),
     "agent_error.provider_network": t(($) => $.message_list.failure.provider_network),
     "agent_error.provider_auth_or_access": t(($) => $.message_list.failure.provider_auth_or_access),
     "agent_error.model_not_found_or_unavailable": t(
@@ -2024,11 +1196,12 @@ function FailureBubble({
           {rawError.trim() && (
             <Collapsible open={open} onOpenChange={setOpen}>
               <CollapsibleTrigger className="mt-0.5 flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground transition-colors">
-                {open ? (
-                  <ChevronDown className="size-3" />
-                ) : (
-                  <ChevronRight className="size-3" />
-                )}
+                <ChevronRight
+                  className={cn(
+                    "size-3 shrink-0 transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
+                    open && "rotate-90",
+                  )}
+                />
                 <span>{t(($) => $.message_list.show_details)}</span>
               </CollapsibleTrigger>
               <CollapsibleContent>
@@ -2041,9 +1214,13 @@ function FailureBubble({
         </div>
       </div>
       {timeline.length > 0 && <TimelineView items={timeline} />}
-      {elapsedMs != null && (
-        <ElapsedCaption variant="failed" elapsedMs={elapsedMs} />
-      )}
+      {elapsedMs != null || timeLabel ? (
+        elapsedMs != null ? (
+          <ElapsedCaption variant="failed" elapsedMs={elapsedMs} timeLabel={timeLabel || undefined} />
+        ) : (
+          <div className="text-caption text-muted-foreground">{timeLabel}</div>
+        )
+      ) : null}
     </div>
   );
 }
@@ -2067,15 +1244,14 @@ function TimelineView({
   attachments,
   phase = "settled",
   settledContent,
-  annotateMessageId,
+  sourceId,
 }: {
   items: ChatTimelineItem[];
   isStreaming?: boolean;
   attachments?: import("@multica/core/types").Attachment[];
   phase?: "streaming" | "settled";
   settledContent?: string;
-  /** Persisted message whose settled answer readers can annotate. */
-  annotateMessageId?: string;
+  sourceId?: string;
 }) {
   if (phase === "settled" && settledContent !== undefined) {
     const { preface, middle } = splitTimeline(items);
@@ -2092,7 +1268,7 @@ function TimelineView({
             stepCount={middle.length}
           />
         )}
-        <AnnotatableAnswer key="answer" messageId={annotateMessageId}>
+        <div key="answer" data-comment-content={sourceId}>
           <RichContent
             content={settledContent}
             attachments={attachments}
@@ -2100,7 +1276,7 @@ function TimelineView({
             phase="settled"
             className="leading-relaxed"
           />
-        </AnnotatableAnswer>
+        </div>
       </>
     );
   }
@@ -2129,7 +1305,8 @@ function TimelineView({
         />
       )}
       {final.length > 0 && (
-        <AnnotatableAnswer key="answer">
+        // Same element type as the settled answer so the handoff keeps it mounted.
+        <div key="answer">
           <RichContent
             content={final.map((t) => t.content ?? "").join("")}
             attachments={attachments}
@@ -2137,7 +1314,7 @@ function TimelineView({
             phase={phase}
             className="leading-relaxed"
           />
-        </AnnotatableAnswer>
+        </div>
       )}
     </>
   );
@@ -2173,7 +1350,12 @@ function OuterProcessFold({
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="flex items-center gap-1 text-caption text-muted-foreground hover:text-foreground transition-colors">
-        {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+        <ChevronRight
+          className={cn(
+            "size-3 shrink-0 transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
+            open && "rotate-90",
+          )}
+        />
         <span>{t(($) => $.message_list.process_steps, { count: displayedStepCount })}</span>
       </CollapsibleTrigger>
       <CollapsibleContent>
@@ -2249,20 +1431,23 @@ function ToolCallRow({ item }: { item: ChatTimelineItem }) {
   });
   const hasInput = item.input && Object.keys(item.input).length > 0;
   const command = useMemo(() => readCommandInput(item.input), [item.input]);
+  const tooltip = [item.tool, summary].filter(Boolean).join(" · ");
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded-xs px-1 -mx-1 py-0.5 text-caption hover:bg-accent/30 transition-colors">
-        <ChevronRight
-          className={cn(
-            "h-3 w-3 shrink-0 text-muted-foreground transition-transform",
-            open && "rotate-90",
-            !hasInput && "invisible",
-          )}
-        />
-        <span className="font-medium text-foreground shrink-0">{item.tool}</span>
-        {summary && <span className="truncate text-muted-foreground">{summary}</span>}
-      </CollapsibleTrigger>
+      <TruncatedTooltip content={tooltip}>
+        <CollapsibleTrigger className="flex w-full items-center gap-1.5 rounded-xs px-1 -mx-1 py-0.5 text-caption hover:bg-accent/30 transition-colors">
+          <ChevronRight
+            className={cn(
+              "h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
+              open && "rotate-90",
+              !hasInput && "invisible",
+            )}
+          />
+          <span className="max-w-[60%] shrink-0 truncate font-medium text-foreground">{item.tool}</span>
+          {summary && <span className="truncate text-muted-foreground">{summary}</span>}
+        </CollapsibleTrigger>
+      </TruncatedTooltip>
       {hasInput && (
         <CollapsibleContent>
           {command ? (
@@ -2299,7 +1484,10 @@ function ToolResultRow({ item }: { item: ChatTimelineItem }) {
     <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="flex w-full items-start gap-1.5 rounded-xs px-1 -mx-1 py-0.5 text-caption hover:bg-accent/30 transition-colors">
         <ChevronRight
-          className={cn("h-3 w-3 shrink-0 text-muted-foreground transition-transform mt-0.5", open && "rotate-90")}
+          className={cn(
+            "h-3 w-3 shrink-0 text-muted-foreground transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none mt-0.5",
+            open && "rotate-90",
+          )}
         />
         <span className="text-muted-foreground truncate">
           {labelPrefix}{preview}

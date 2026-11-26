@@ -27,13 +27,12 @@
 // real `git describe` invocation against a throwaway repo.
 
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, realpathSync, rmSync } from "node:fs";
+import { realpathSync, rmSync, statSync } from "node:fs";
 import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const desktopRoot = resolve(here, "..");
-const repoRoot = resolve(desktopRoot, "../..");
 const bundleCliScript = resolve(here, "bundle-cli.mjs");
 const bundleVoiceEngineScript = resolve(here, "bundle-voice-engine.mjs");
 
@@ -155,30 +154,8 @@ export const DESCRIBE_ARGS = [
 // Exported (with an optional cwd) so tests can exercise the real describe
 // invocation against a throwaway repo, not just normalizeGitVersion in
 // isolation — the gap that let the Windows quoting regression through CI.
-export function deriveVersion(cwd = repoRoot) {
+export function deriveVersion(cwd) {
   return normalizeGitVersion(git(DESCRIBE_ARGS, cwd));
-}
-
-// Version stamped into the bundled `multica` CLI (main.version): the daemon
-// advertises it, so it must be `<UPSTREAM_VERSION>-YYYYMMDD-hhmm` in ICT
-// (UTC+7) like scripts/daemon-artifact-version.sh (CHE-1910). Reimplemented
-// here, not shelled out, so Windows packaging needs no bash. Null when the
-// upstream version or commit time is unreadable; the caller decides.
-export function deriveCliVersion(cwd = repoRoot) {
-  let upstream;
-  try {
-    upstream = readFileSync(resolve(cwd, "UPSTREAM_VERSION"), "utf-8").trim();
-  } catch {
-    return null;
-  }
-  const committedAt = new Date(git(["show", "-s", "--format=%cI", "HEAD"], cwd));
-  if (!/^\d+\.\d+\.\d+$/.test(upstream) || Number.isNaN(committedAt.getTime())) {
-    return null;
-  }
-  const ict = new Date(committedAt.getTime() + 7 * 3600 * 1000)
-    .toISOString()
-    .replace(/[-:]/g, "");
-  return `${upstream}-${ict.slice(0, 8)}-${ict.slice(9, 13)}`;
 }
 
 function uniqueOrdered(values) {
@@ -467,6 +444,17 @@ function main() {
         cwd: desktopRoot,
       },
     );
+
+    const binary = target.platform === "win" ? "multica.exe" : "multica";
+    const stagedCli = resolve(desktopRoot, "resources", "bin", binary);
+    const artifact = statSync(stagedCli, { throwIfNoEntry: false });
+    if (!artifact?.isFile() || artifact.size === 0) {
+      console.error(
+        `[package] Packaging ${formatTarget(target)} requires a bundled CLI at ${stagedCli}. ` +
+          "Install Go or provide a prebuilt CLI for the target.",
+      );
+      process.exit(1);
+    }
 
     console.log(`[package] bundling voice engine → ${formatTarget(target)}`);
     execFileSync(

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -32,7 +31,7 @@ func TestClaudeHandleAssistantText(t *testing.T) {
 		}),
 	}
 
-	turn := b.handleAssistant(msg, ch, make(map[string]TokenUsage), make(map[string]struct{}), make(map[string]claudeCacheSplit))
+	turn := b.handleAssistant(msg, ch, make(map[string]TokenUsage), make(map[string]struct{}))
 	output, tools := turn.text, turn.toolUses
 
 	if output != "Hello world" {
@@ -142,7 +141,7 @@ func TestClaudeHandleAssistantToolUse(t *testing.T) {
 		}),
 	}
 
-	turn := b.handleAssistant(msg, ch, make(map[string]TokenUsage), make(map[string]struct{}), make(map[string]claudeCacheSplit))
+	turn := b.handleAssistant(msg, ch, make(map[string]TokenUsage), make(map[string]struct{}))
 	output, tools := turn.text, turn.toolUses
 
 	if output != "" {
@@ -353,7 +352,7 @@ func TestClaudeHandleAssistantInvalidJSON(t *testing.T) {
 	}
 
 	// Should not panic
-	turn := b.handleAssistant(msg, ch, make(map[string]TokenUsage), make(map[string]struct{}), make(map[string]claudeCacheSplit))
+	turn := b.handleAssistant(msg, ch, make(map[string]TokenUsage), make(map[string]struct{}))
 	output, tools := turn.text, turn.toolUses
 
 	if output != "" {
@@ -398,6 +397,7 @@ func TestBuildClaudeArgsInheritsMCPByDefault(t *testing.T) {
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
+		"--include-partial-messages",
 		"--permission-mode", "bypassPermissions",
 		"--disallowedTools", "AskUserQuestion",
 	}
@@ -630,8 +630,7 @@ func TestBuildClaudeArgsFiltersBlockedCustomArgs(t *testing.T) {
 func TestBuildClaudeInputEncodesUserMessage(t *testing.T) {
 	t.Parallel()
 
-	promptUUID := "b60ccafe-dc53-4479-a651-11063fa3ed32"
-	data, err := buildClaudeInput("say pong", promptUUID)
+	data, err := buildClaudeInput("", "say pong")
 	if err != nil {
 		t.Fatalf("buildClaudeInput: %v", err)
 	}
@@ -645,9 +644,6 @@ func TestBuildClaudeInputEncodesUserMessage(t *testing.T) {
 	}
 	if payload["type"] != "user" {
 		t.Fatalf("expected type user, got %v", payload["type"])
-	}
-	if payload["uuid"] != promptUUID {
-		t.Fatalf("expected prompt uuid %q, got %v", promptUUID, payload["uuid"])
 	}
 
 	message, ok := payload["message"].(map[string]any)
@@ -1398,50 +1394,58 @@ func TestBuildClaudeArgsManagedSkillSettingsWins(t *testing.T) {
 	}
 }
 
-func TestBuildClaudeArgs_AppendSystemPromptFile(t *testing.T) {
-	base := buildClaudeArgs(ExecOptions{}, slog.Default())
-	for _, a := range base {
-		if a == "--append-system-prompt-file" {
-			t.Fatalf("flag present without opt-in: %v", base)
-		}
+func TestClaudeExecuteReportsRateLimits(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
 	}
-	args := buildClaudeArgs(ExecOptions{AppendSystemPromptFile: "/tmp/brief.md"}, slog.Default())
-	idx := -1
-	for i, a := range args {
-		if a == "--append-system-prompt-file" {
-			idx = i
-		}
-	}
-	if idx < 0 || idx+1 >= len(args) || args[idx+1] != "/tmp/brief.md" {
-		t.Fatalf("want --append-system-prompt-file /tmp/brief.md in %v", args)
-	}
-	// The opt-out path must stay byte-identical to today's launch.
-	without := buildClaudeArgs(ExecOptions{AppendSystemPromptFile: ""}, slog.Default())
-	if strings.Join(without, "\x00") != strings.Join(base, "\x00") {
-		t.Fatalf("personal args drifted: %v vs %v", without, base)
-	}
-}
 
-// Golden captured from origin/main 86b9d79 (before the runtime-profile
-// change). Pins the `personal` launch args; passes on base and head.
-func TestBuildClaudeArgs_PersonalGolden(t *testing.T) {
-	rich := ExecOptions{
-		Model: "claude-x", MaxTurns: 7, SystemPrompt: "sys", ResumeSessionID: "sess-1",
-		McpConfig:          json.RawMessage(`{"mcpServers":{}}`),
-		ClaudeSettingsPath: "/tmp/s.json",
-		CustomArgs:         []string{"--foo", "bar"},
+	fakePath := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\n" +
+		"IFS= read -r _\n" +
+		"printf '%s\\n' '{\"type\":\"system\",\"session_id\":\"sess-rate-limits\"}'\n" +
+		"printf '%s\\n' '{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\",\"unifiedWindows\":{\"five_hour\":{\"utilization\":0.25,\"resetsAt\":1795327200},\"seven_day\":{\"utilization\":0.5,\"resetsAt\":1795568400}}},\"session_id\":\"sess-rate-limits\"}'\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"sess-rate-limits\",\"result\":\"done\"}'\n"
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	backend, err := New("claude", Config{
+		ExecutablePath: fakePath,
+		Env:            map[string]string{"IS_SANDBOX": "1"},
+		Logger:         slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("new claude backend: %v", err)
 	}
-	cases := []struct {
-		name string
-		opts ExecOptions
-		want []string
-	}{
-		{"rich", rich, []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools", "AskUserQuestion", "--strict-mcp-config", "--model", "claude-x", "--max-turns", "7", "--resume", "sess-1", "--foo", "bar", "--settings", "/tmp/s.json"}},
-		{"empty", ExecOptions{}, []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools", "AskUserQuestion"}},
+
+	snapshots := make(chan RateLimitSnapshot, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
+		Timeout:      5 * time.Second,
+		OnRateLimits: func(s RateLimitSnapshot) { snapshots <- s },
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
 	}
-	for _, c := range cases {
-		if got := buildClaudeArgs(c.opts, slog.New(slog.NewTextHandler(io.Discard, nil))); !slices.Equal(got, c.want) {
-			t.Errorf("%s: personal args drifted from origin/main golden\n got: %q\nwant: %q", c.name, got, c.want)
+	go func() {
+		for range session.Messages {
 		}
+	}()
+	select {
+	case <-session.Result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	select {
+	case snap := <-snapshots:
+		if snap.Status != RateLimitStatusAllowed || len(snap.Windows) != 2 {
+			t.Fatalf("snapshot = %+v", snap)
+		}
+		if snap.Windows[0].Kind != RateLimitWindowSession || *snap.Windows[0].UsedPercent != 25 {
+			t.Fatalf("session window = %+v", snap.Windows[0])
+		}
+	default:
+		t.Fatal("rate_limit_event did not reach OnRateLimits")
 	}
 }

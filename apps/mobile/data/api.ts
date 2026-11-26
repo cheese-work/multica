@@ -14,16 +14,12 @@
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
 import type {
-  ChatAttentionView,
-  CommentPreview,
   Agent,
   AgentTask,
   Attachment,
   ChatMessage,
   ChatPendingTask,
-  ChatSupplement,
   ChatSession,
-  ChatSessionUsage,
   Comment,
   CreateIssueRequest,
   CreateLabelRequest,
@@ -63,14 +59,9 @@ import type {
   User,
   Workspace,
   WorkspaceSubscriptionSummary,
-  WorkflowHandoffPreview,
-  ListIssueWorkflowsResponse,
 } from "@multica/core/types";
 import {
   AppConfigSchema,
-  ChatAttentionEnvelopeSchema,
-  CommentPreviewSchema,
-  EMPTY_CHAT_ATTENTION_VIEW,
   EMPTY_APP_CONFIG,
   EMPTY_REFRESH_SESSION_RESPONSE,
   RefreshSessionResponseSchema,
@@ -80,9 +71,7 @@ import {
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
-  ListIssueWorkflowsResponseSchema,
   TimelineEntriesSchema,
-  WorkflowHandoffPreviewSchema,
   WorkspaceSubscriptionSummarySchema,
 } from "@multica/core/api/schemas";
 import type {
@@ -98,23 +87,19 @@ import {
   ChatMessageListSchema,
   CommentSchema,
   ChatPendingTaskSchema,
-  ChatSupplementSchema,
-  ResendChatSupplementResponseSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
-  ChatSessionUsageSchema,
   EMPTY_ACTIVE_TASKS_RESPONSE,
   EMPTY_AGENT_LIST,
   EMPTY_AGENT_TASK_LIST,
   EMPTY_ATTACHMENT_LIST,
   EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CHAT_PENDING_TASK,
-  EMPTY_CHAT_SESSION,
   EMPTY_CHAT_SESSION_LIST,
-  EMPTY_CHAT_SESSION_USAGE,
   EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
   EMPTY_INBOX_UNREAD_SUMMARY,
+  EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
@@ -150,7 +135,7 @@ import {
 } from "./schemas";
 import type { ZodType } from "zod";
 import { getCurrentSlug } from "./workspace-store";
-import { parseOrThrow, parseWithFallback } from "@/lib/parse-response";
+import { parseWithFallback } from "@/lib/parse-response";
 import { createRequestId } from "@/lib/request-id";
 import { buildCommentUpdateBody } from "./revision";
 
@@ -506,25 +491,12 @@ class ApiClient {
   async listWorkspaces(opts?: {
     signal?: AbortSignal;
   }): Promise<Workspace[]> {
-    return (await this.listWorkspacesChecked(opts)).workspaces;
-  }
-
-  /** `validated` is false when the response did not match the schema and the
-   *  empty fallback was returned instead. Only a validated list may be taken
-   *  as the user's real workspaces (draft cleanup relies on it). */
-  async listWorkspacesChecked(opts?: {
-    signal?: AbortSignal;
-  }): Promise<{ workspaces: Workspace[]; validated: boolean }> {
     const raw = await this.fetch<unknown>("/api/workspaces", {
       signal: opts?.signal,
     });
-    const workspaces = parseWithFallback(
-      raw,
-      WorkspaceListSchema,
-      EMPTY_WORKSPACE_LIST,
-      { endpoint: "listWorkspaces" },
-    );
-    return { workspaces, validated: Array.isArray(raw) && workspaces !== EMPTY_WORKSPACE_LIST };
+    return parseWithFallback(raw, WorkspaceListSchema, EMPTY_WORKSPACE_LIST, {
+      endpoint: "listWorkspaces",
+    });
   }
 
   // --- Inbox ---
@@ -600,7 +572,12 @@ class ApiClient {
   ): Promise<MemberWithUser[]> {
     const raw = await this.fetch<unknown>(
       `/api/workspaces/${workspaceId}/members`,
-      { signal: opts?.signal },
+      {
+        signal: opts?.signal,
+        // Without it the server leaves guests out of the list, and useIsGuest
+        // could not recognize a guest. Mirrors protocol.AppCapabilityWorkspaceGuestsV1.
+        headers: { "X-Client-Capabilities": "workspace-guests-v1" },
+      },
     );
     return parseWithFallback(raw, MemberListSchema, EMPTY_MEMBER_LIST, {
       endpoint: "listMembers",
@@ -712,45 +689,12 @@ class ApiClient {
     id: string,
     opts?: { signal?: AbortSignal },
   ): Promise<Issue> {
-    // No fallback: an empty issue made the screen say "not found" for data it could not read.
-    const raw = await this.fetch<unknown>(`/api/issues/${id}`, { signal: opts?.signal });
-    return parseOrThrow<Issue>(raw, IssueSchema, { endpoint: "getIssue" });
-  }
-
-  /**
-   * Where a comment lives plus a one-line preview, for comment-ID chips.
-   * `null` means "render the id as plain text": the server answers 404 for an
-   * unknown, deleted or unreadable comment (no leak), and a malformed body
-   * must not become a half-filled chip.
-   */
-  async getCommentPreview(
-    id: string,
-    opts?: { signal?: AbortSignal },
-  ): Promise<CommentPreview | null> {
-    let raw: unknown;
-    try {
-      raw = await this.fetch<unknown>(`/api/comments/${id}/preview`, opts);
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 404) return null;
-      throw e;
-    }
-    const parsed = CommentPreviewSchema.safeParse(raw);
-    return parsed.success ? (parsed.data as CommentPreview) : null;
-  }
-
-  /**
-   * What moving the issue to `status` would do under its project's workflow:
-   * who it goes to and the previous agent's active runs. Writes nothing.
-   * Fails closed on a malformed body — the caller shows an error instead of
-   * applying a move nobody could confirm.
-   */
-  async previewWorkflowHandoff(issueId: string, status: string): Promise<WorkflowHandoffPreview> {
-    const raw = await this.fetch<unknown>(
-      `/api/issues/${issueId}/workflow-handoff?${new URLSearchParams({ status }).toString()}`,
+    return this.fetchValidated(
+      `/api/issues/${id}`,
+      IssueSchema,
+      EMPTY_ISSUE_FALLBACK,
+      { ...opts, endpoint: "getIssue" },
     );
-    const parsed = WorkflowHandoffPreviewSchema.safeParse(raw);
-    if (!parsed.success) throw new Error("workflow handoff preview is malformed");
-    return parsed.data as WorkflowHandoffPreview;
   }
 
   // Write endpoint — mirrors POST /api/issues
@@ -850,9 +794,6 @@ class ApiClient {
           type: opts?.type ?? "comment",
           ...(opts?.parentId ? { parent_id: opts.parentId } : {}),
           ...(opts?.attachmentIds ? { attachment_ids: opts.attachmentIds } : {}),
-          // Mobile has no steer receipt for issue comments, so it never takes
-          // the server's default of folding into a running turn (CHE-5286).
-          steer: false,
         }),
       },
       { endpoint: "createComment" },
@@ -1048,28 +989,6 @@ class ApiClient {
     );
   }
 
-  /**
-   * Workspace workflows, for the statuses an issue offers under its project's
-   * or its own workflow (CHE-2822). An empty fallback reads as "unknown": the
-   * status picker then offers the whole catalog and the server still judges.
-   */
-  async listIssueWorkflows(opts?: { signal?: AbortSignal }): Promise<ListIssueWorkflowsResponse> {
-    return this.fetchValidated(
-      "/api/issue-workflows",
-      ListIssueWorkflowsResponseSchema,
-      { workflows: [], total: 0 },
-      { ...opts, endpoint: "GET /api/issue-workflows" },
-    ) as Promise<ListIssueWorkflowsResponse>;
-  }
-
-  /** Sets (or, with null, clears) the workflow an issue follows instead of its project's. */
-  async setIssueWorkflow(id: string, workflowId: string | null): Promise<void> {
-    await this.fetch<unknown>(`/api/issues/${id}/workflow`, {
-      method: "PUT",
-      body: JSON.stringify({ workflow_id: workflowId }),
-    });
-  }
-
   // --- Projects ---
   async listProjects(opts?: {
     signal?: AbortSignal;
@@ -1198,10 +1117,9 @@ class ApiClient {
   // list in /Users/qingnaiyuan/.claude/plans/plan-velvety-puddle.md.
 
   async listChatSessions(
-    opts?: { status?: "active" | "archived" | "all"; signal?: AbortSignal },
+    opts?: { signal?: AbortSignal },
   ): Promise<ChatSession[]> {
-    const query = opts?.status ? `?status=${opts.status}` : "";
-    const raw = await this.fetch<unknown>(`/api/chat/sessions${query}`, {
+    const raw = await this.fetch<unknown>("/api/chat/sessions", {
       signal: opts?.signal,
     });
     return parseWithFallback(
@@ -1210,47 +1128,6 @@ class ApiClient {
       EMPTY_CHAT_SESSION_LIST,
       { endpoint: "GET /api/chat/sessions" },
     );
-  }
-
-  async getChatSessionUsage(
-    id: string,
-    opts?: { signal?: AbortSignal },
-  ): Promise<ChatSessionUsage> {
-    const raw = await this.fetch<unknown>(`/api/chat/sessions/${id}/usage`, {
-      signal: opts?.signal,
-    });
-    return parseWithFallback(
-      raw,
-      ChatSessionUsageSchema,
-      EMPTY_CHAT_SESSION_USAGE,
-      { endpoint: "GET /api/chat/sessions/:id/usage" },
-    );
-  }
-
-  async setChatSessionPinned(
-    id: string,
-    pinned: boolean,
-  ): Promise<ChatSession> {
-    const raw = await this.fetch<unknown>(`/api/chat/sessions/${id}/pin`, {
-      method: "PATCH",
-      body: JSON.stringify({ pinned }),
-    });
-    return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
-      endpoint: "PATCH /api/chat/sessions/:id/pin",
-    });
-  }
-
-  async setChatSessionArchived(
-    id: string,
-    archived: boolean,
-  ): Promise<ChatSession> {
-    const raw = await this.fetch<unknown>(`/api/chat/sessions/${id}/archive`, {
-      method: "PATCH",
-      body: JSON.stringify({ archived }),
-    });
-    return parseWithFallback(raw, ChatSessionSchema, EMPTY_CHAT_SESSION, {
-      endpoint: "PATCH /api/chat/sessions/:id/archive",
-    });
   }
 
   async createChatSession(
@@ -1296,7 +1173,7 @@ class ApiClient {
   async sendChatMessage(
     sessionId: string,
     content: string,
-    opts?: { attachmentIds?: string[]; clientMessageId?: string; askIds?: string[] },
+    opts?: { attachmentIds?: string[]; queue?: boolean },
   ): Promise<SendChatMessageResponse> {
     // Strict parse — we need task_id + created_at to anchor the optimistic
     // StatusPill. Fallback would silently break the elapsed-time timer.
@@ -1306,19 +1183,18 @@ class ApiClient {
     // attachments after the message row is inserted (see
     // server/internal/handler/chat.go:410-456).
     //
-    // `client_message_id` makes a retry idempotent (A22): the server stores
-    // one message per (session, id). `ask_ids` answers displayed asks.
-    const body: {
-      content: string;
-      attachment_ids?: string[];
-      client_message_id?: string;
-      ask_ids?: string[];
-    } = { content };
+    // `steer` asks the server to add this message to the running reply. The
+    // server decides eligibility (plain text, direct chat, a started reply on
+    // a capable daemon) and queues otherwise; older servers ignore the field
+    // and queue. `queue: true` is the explicit next-turn send. Same contract
+    // as web's `packages/core/api/client.ts`.
+    const body: { content: string; steer: boolean; attachment_ids?: string[] } = {
+      content,
+      steer: opts?.queue !== true,
+    };
     if (opts?.attachmentIds && opts.attachmentIds.length > 0) {
       body.attachment_ids = opts.attachmentIds;
     }
-    if (opts?.clientMessageId) body.client_message_id = opts.clientMessageId;
-    if (opts?.askIds && opts.askIds.length > 0) body.ask_ids = opts.askIds;
     const raw = await this.fetch<unknown>(
       `/api/chat/sessions/${sessionId}/messages`,
       {
@@ -1350,78 +1226,6 @@ class ApiClient {
       EMPTY_CHAT_PENDING_TASK,
       { endpoint: "GET /api/chat/sessions/:id/pending-task" },
     );
-  }
-
-  /** Adds a queued DM follow-up to the running task instead of cancelling it. */
-  async steerChatTask(sessionId: string, taskId: string): Promise<ChatSupplement> {
-    const raw = await this.fetch<unknown>(
-      `/api/chat/sessions/${sessionId}/tasks/${taskId}/steer`,
-      { method: "POST" },
-    );
-    const parsed = ChatSupplementSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new ApiError("Steer response invalid", 0, raw);
-    }
-    return parsed.data;
-  }
-
-  /** Sends a never-received or unconfirmed follow-up as a new run. An
-   *  `uncertain` receipt needs `confirmPossibleDuplicate`. */
-  async resendChatSupplement(
-    sessionId: string,
-    messageId: string,
-    opts: { confirmPossibleDuplicate?: boolean } = {},
-  ): Promise<{ task_id: string; supplement: ChatSupplement }> {
-    const raw = await this.fetch<unknown>(
-      `/api/chat/sessions/${sessionId}/messages/${messageId}/supplement/resend`,
-      {
-        method: "POST",
-        body: JSON.stringify({
-          confirm_possible_duplicate: opts.confirmPossibleDuplicate === true,
-        }),
-      },
-    );
-    const parsed = ResendChatSupplementResponseSchema.safeParse(raw);
-    if (!parsed.success) {
-      throw new ApiError("Resend response invalid", 0, raw);
-    }
-    return parsed.data;
-  }
-
-  // DM attention actions (plan r4 T3, T5). Each call sends the exact subject
-  // keys the row displayed; the server acts on those keys only.
-  async chatAttentionXong(sessionId: string, subjectKeys: string[]): Promise<ChatAttentionView> {
-    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/xong`, {
-      method: "POST",
-      body: JSON.stringify({ subject_keys: subjectKeys }),
-    });
-    return parseWithFallback(
-      raw,
-      ChatAttentionEnvelopeSchema,
-      { attention: EMPTY_CHAT_ATTENTION_VIEW },
-      { endpoint: "POST /api/chat/sessions/:id/attention/xong" },
-    ).attention;
-  }
-
-  async chatAttentionLater(
-    sessionId: string,
-    subjectKeys: string[],
-    options: { durationSeconds?: number; requestId: string },
-  ): Promise<ChatAttentionView> {
-    const raw = await this.fetch<unknown>(`/api/chat/sessions/${sessionId}/attention/later`, {
-      method: "POST",
-      body: JSON.stringify({
-        subject_keys: subjectKeys,
-        ...(options.durationSeconds !== undefined ? { duration_seconds: options.durationSeconds } : {}),
-        request_id: options.requestId,
-      }),
-    });
-    return parseWithFallback(
-      raw,
-      ChatAttentionEnvelopeSchema,
-      { attention: EMPTY_CHAT_ATTENTION_VIEW },
-      { endpoint: "POST /api/chat/sessions/:id/attention/later" },
-    ).attention;
   }
 
   async markChatSessionRead(sessionId: string): Promise<void> {

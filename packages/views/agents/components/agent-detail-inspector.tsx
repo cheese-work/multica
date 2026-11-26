@@ -13,6 +13,9 @@ import {
   AGENT_MAX_CONCURRENT_TASKS_MIN,
   EMPTY_AGENT_PROFILE_DRAFT,
   useAgentProfileDraftStore,
+  agentDescriptionLength,
+  isAgentDescriptionWithinLimit,
+  type AgentProfileDraft,
 } from "@multica/core/agents";
 import { usePersistedDraft } from "@multica/core/drafts";
 import { useConfigStore } from "@multica/core/config";
@@ -29,6 +32,7 @@ import {
   type SettingsSaveStatus,
 } from "../../settings/components/settings-layout";
 import { useAutoSave } from "../../settings/components/use-auto-save";
+import { useEditedValue } from "../../settings/components/use-edited-value";
 import { useT } from "../../i18n";
 import { CharCounter } from "./char-counter";
 import { ConversationStartersEditor } from "./conversation-starters-editor";
@@ -103,20 +107,18 @@ export function AgentDetailInspector({
     agent.id,
     EMPTY_AGENT_PROFILE_DRAFT,
   );
-  const [name, setNameState] = useState(profile.name ?? agent.name);
-  const [description, setDescriptionState] = useState(
-    profile.description ?? agent.description ?? "",
-  );
+  // Name and description follow the saved value until the user edits them, so
+  // a form left open neither shows nor writes back a value changed elsewhere.
+  const name = profile.name ?? agent.name;
+  const description = profile.description ?? agent.description ?? "";
   const [starters, setStartersState] = useState<AgentConversationStarter[]>(
     profile.starters ?? agent.conversation_starters ?? [],
   );
   // A field edited back to the saved value is no draft.
   const setName = (next: string) => {
-    setNameState(next);
     setProfile({ name: next === agent.name ? null : next });
   };
   const setDescription = (next: string) => {
-    setDescriptionState(next);
     setProfile({ description: next === (agent.description ?? "") ? null : next });
   };
   const setStarters = (next: AgentConversationStarter[]) => {
@@ -125,12 +127,38 @@ export function AgentDetailInspector({
       starters: startersEqual(next, agent.conversation_starters ?? []) ? null : next,
     });
   };
+  // Values the server accepted. A draft ends only once its own save succeeded
+  // and the saved value has caught up: an optimistic value that is rolled back
+  // must not take the typed text with it.
+  const [confirmed, setConfirmed] = useState<Partial<ProfileDraft>>({});
+  useEffect(() => {
+    const done: Partial<AgentProfileDraft> = {};
+    if (
+      confirmed.name !== undefined &&
+      profile.name?.trim() === confirmed.name &&
+      agent.name === confirmed.name
+    ) {
+      done.name = null;
+    }
+    if (
+      confirmed.description !== undefined &&
+      profile.description === confirmed.description &&
+      (agent.description ?? "") === confirmed.description
+    ) {
+      done.description = null;
+    }
+    if (Object.keys(done).length === 0) return;
+    setProfile(done);
+    setConfirmed((current) => ({
+      name: "name" in done ? undefined : current.name,
+      description: "description" in done ? undefined : current.description,
+    }));
+  }, [agent.description, agent.name, confirmed, profile.description, profile.name, setProfile]);
 
   useEffect(() => {
     const saved = useAgentProfileDraftStore.getState().getDraft(agent.id);
-    setNameState(saved?.name ?? agent.name);
-    setDescriptionState(saved?.description ?? agent.description ?? "");
     setStartersState(saved?.starters ?? agent.conversation_starters ?? []);
+    setConfirmed({});
     // Reset only when moving to another agent. Cache updates from this form
     // must not erase a newer local draft while an autosave is in flight.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -149,17 +177,16 @@ export function AgentDetailInspector({
   );
   const saveProfile = useCallback(
     async (next: ProfileDraft) => {
-      await update({ name: next.name, description: next.description });
-      // Confirmed by the server (the parent rolls back and throws on failure).
-      // Drop only what was sent: a newer edit typed meanwhile stays a draft.
-      const current = useAgentProfileDraftStore.getState().getDraft(agent.id);
-      if (!current) return;
-      const sent: Partial<typeof current> = {};
-      if (current.name?.trim() === next.name) sent.name = null;
-      if (current.description === next.description) sent.description = null;
-      if (Object.keys(sent).length) setProfile(sent);
+      // Send only what was edited here, so the rest keeps changes made elsewhere.
+      const edited = useAgentProfileDraftStore.getState().getDraft(agent.id);
+      const changes: Partial<ProfileDraft> = {};
+      if (edited?.name != null) changes.name = next.name;
+      if (edited?.description != null) changes.description = next.description;
+      if (Object.keys(changes).length === 0) return;
+      await update(changes);
+      setConfirmed((current) => ({ ...current, ...changes }));
     },
-    [agent.id, setProfile, update],
+    [agent.id, update],
   );
   const profileAutoSave = useAutoSave({
     value: profileDraft,
@@ -168,7 +195,7 @@ export function AgentDetailInspector({
     enabled:
       canEdit &&
       profileDraft.name.length > 0 &&
-      profileDraft.description.length <= AGENT_DESCRIPTION_MAX_LENGTH,
+      isAgentDescriptionWithinLimit(profileDraft.description),
     isEqual: profileDraftsEqual,
   });
 
@@ -285,12 +312,14 @@ export function AgentDetailInspector({
                     onBlur={profileAutoSave.flush}
                     disabled={!canEdit}
                     rows={5}
-                    maxLength={AGENT_DESCRIPTION_MAX_LENGTH}
+                    // No maxLength: it counts UTF-16 units and would disagree
+                    // with the counter on emoji. Past the limit the counter
+                    // turns red and autosave holds off.
                     className="resize-y"
                     placeholder={t(($) => $.inspector.description_placeholder)}
                   />
                   <CharCounter
-                    length={[...description].length}
+                    length={agentDescriptionLength(description)}
                     max={AGENT_DESCRIPTION_MAX_LENGTH}
                   />
                 </div>

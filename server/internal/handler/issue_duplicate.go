@@ -165,6 +165,7 @@ func liveDuplicateMark(status string, id pgtype.UUID) *string {
 // ListIssueDuplicates returns both sides of an issue's duplicate relation: the
 // original it duplicates, if any, and the issues marked as its duplicates.
 func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
+	r = h.withBlockerViewer(r)
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
 		return
@@ -174,8 +175,7 @@ func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
-	readFilter := h.newReadFilter(r)
-	fill := h.newStatusCategoryFiller(r.Context(), issue.WorkspaceID, hidden)
+	fill := h.newStatusCategoryFiller(r.Context(), issue.WorkspaceID, hidden, nil)
 
 	var duplicateOf *IssueResponse
 	if issue.Status == issuestatus.Cancelled && issue.DuplicateOfIssueID.Valid {
@@ -187,7 +187,6 @@ func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
 		case err == nil && !hidden.CanSeeProject(original.ProjectID):
 		case err == nil:
 			resp := issueToResponse(original, prefix)
-			readFilter.stubDescription(h, original, &resp)
 			fill(&resp)
 			duplicateOf = &resp
 		case !isNotFound(err):
@@ -210,7 +209,6 @@ func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
 	duplicates := make([]IssueResponse, 0, len(rows))
 	for _, row := range rows {
 		resp := issueToResponse(row, prefix)
-		readFilter.stubDescription(h, row, &resp)
 		fill(&resp)
 		duplicates = append(duplicates, resp)
 	}

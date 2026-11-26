@@ -1,46 +1,4 @@
 {
-  "plan_revision": {
-    "added": "Ajouté : ",
-    "removed": "Supprimé : ",
-    "revision": "Révision {{number}}",
-    "readonly": "Lecture seule",
-    "issue": "Tâche source",
-    "diff": "Diff",
-    "split": "Côte à côte",
-    "unify": "Unifié",
-    "compare": "Comparer avec",
-    "choose_base": "Choisir une révision de référence",
-    "change": "Modification {{current}} / {{total}}",
-    "previous": "Modification précédente",
-    "next": "Modification suivante",
-    "download": "Télécharger",
-    "close": "Fermer",
-    "more": "Plus d’options",
-    "base": "Référence",
-    "current": "Actuel",
-    "loading_revisions": "Chargement des révisions…",
-    "revisions_error": "Impossible de charger les révisions",
-    "no_earlier": "Aucune révision antérieure",
-    "loading": "Chargement du document…",
-    "current_error": "Impossible de charger le document",
-    "loading_diff": "Chargement de la comparaison…",
-    "comparison_error": "Impossible de charger la comparaison",
-    "too_large": "Cette comparaison est trop volumineuse. Téléchargez les fichiers pour les comparer localement.",
-    "identical": "Aucune modification entre ces révisions",
-    "empty": "Ce document est vide",
-    "unchanged": "{{count}} lignes inchangées",
-    "retry": "Réessayer"
-  },
-  "media": {
-    "title": "Média",
-    "more": "Plus",
-    "open_in_new_window": "Ouvrir dans une nouvelle fenêtre",
-    "open_failed": "Impossible d’ouvrir la page du média",
-    "loading": "Chargement du média…",
-    "load_failed": "Impossible de charger le média",
-    "offline": "Hors ligne — affichage de la dernière copie chargée.",
-    "retry": "Réessayer"
-  },
   "bubble_menu": {
     "bold": "Gras",
     "italic": "Italique",
@@ -59,7 +17,7 @@
     },
     "heading_dropdown": {
       "text": "Texte",
-      "normal_text": "Texte normal",
+      "normal_text": "Texte",
       "heading_1": "Titre 1",
       "heading_2": "Titre 2",
       "heading_3": "Titre 3"
@@ -86,7 +44,7 @@
     "image_copied": "Image copiée",
     "copy_image_failed": "Impossible de copier l'image",
     "canvas_label": "Zone d'image. Faites glisser pour déplacer, faites défiler pour zoomer, double-cliquez pour basculer en taille réelle.",
-    "unavailable": "Cette image n'est plus disponible — elle a été ignorée."
+    "unavailable": "Cette image n'est plus disponible et a été ignorée."
   },
   "canvas": {
     "zoom_in": "Zoom avant",
@@ -146,8 +104,10 @@
     "copy_failed": "Échec de la copie"
   },
   "mention": {
-    "group_users": "Utilisateurs",
+    "group_users": "Membres",
     "group_issues": "Tâches",
+    "group_projects": "Projets",
+    "group_docs": "Documents",
     "all_members": "Tous les membres",
     "agent_badge": "Agent",
     "squad_badge": "Squad",
@@ -159,32 +119,16 @@
     "group_cancelled": "Annulés"
   },
   "slash_command": {
-    "client_command": "Multica",
-    "runs_the_agent": "lance l’agent",
-    "focus_hint": "[focus]",
-    "title_hint": "[titre]",
-    "message_hint": "[message]",
     "no_skills_configured": "Aucun skill configuré",
     "no_results": "Aucun skill correspondant",
     "commands": {
-      "note": "Ajouter une note — ne déclenchera aucun agent",
-      "compact": "Résumer cette conversation et continuer dans une nouvelle",
-      "rename": "Renommer cette conversation sans lancer l’agent",
-      "fork": "Copier cette conversation dans une nouvelle ; le message facultatif y est envoyé",
-      "preset": "Choisir le preset utilisé par ce DM",
-      "statistic": "Afficher l’utilisation et le coût de cette conversation",
-      "archive": "Archiver cette conversation sans lancer l’agent",
-      "pin": "Épingler ou détacher cette conversation",
-      "unseen": "Marquer ce DM comme non vu et le quitter",
-      "unarchive": "Désarchiver cette conversation. Rien n’est envoyé à l’agent."
+      "note": "Ajouter une note — ne déclenchera aucun agent"
     }
   },
   "code_block": {
     "html_preview": "Aperçu HTML",
     "close_preview": "Fermer",
     "copy_code": "Copier le code",
-    "show_preview": "Afficher l'aperçu",
-    "show_source": "Afficher la source",
     "fullscreen": "Plein écran"
   },
   "dynamic_block": {
@@ -198,7 +142,10 @@
     "error_mermaid": "Impossible de dessiner ce diagramme",
     "error_at_line": "{{message}} (ligne {{line}})",
     "view_source": "Voir la source",
-    "copy_error": "Copier l’erreur"
+    "copy_error": "Copier l’erreur",
+    "title": "Titre",
+    "rename": "Renommer",
+    "add_title": "Ajouter un titre"
   },
   "file_card": {
     "uploading": "Envoi de {{filename}}"
@@ -287,7 +234,30 @@
       "start": "Commencer à dicter"
     }
   },
-  "next_self_mention": {
-    "label": "Ma prochaine mention"
+  "block_menu": {
+    "label": "Insérer un bloc",
+    "blocks": {
+      "paragraph": "Texte",
+      "heading1": "Titre 1",
+      "heading2": "Titre 2",
+      "heading3": "Titre 3",
+      "bulletList": "Liste à puces",
+      "orderedList": "Liste numérotée",
+      "taskList": "Liste de tâches",
+      "blockquote": "Citation",
+      "codeBlock": "Bloc de code",
+      "mermaid": "Diagramme Mermaid",
+      "table": "Tableau",
+      "divider": "Séparateur",
+      "image": "Image",
+      "file": "Fichier"
+    }
+  },
+  "block_handle": {
+    "add": "Ajouter en dessous",
+    "options": "Glisser pour déplacer, cliquer pour les options",
+    "turn_into": "Transformer en",
+    "duplicate": "Dupliquer",
+    "delete": "Supprimer"
   }
 }

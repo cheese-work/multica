@@ -3,6 +3,7 @@
 -- identical to ListArchivedInboxItems: the handler converts one row type into
 -- the other.
 SELECT i.*,
+       iss.number AS issue_number,
        iss.status AS issue_status,
        iss.priority AS issue_priority,
        iss.project_id AS issue_project_id,
@@ -15,15 +16,17 @@ SELECT i.*,
 FROM inbox_item i
 LEFT JOIN issue iss ON iss.id = i.issue_id
 WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
-  -- DM records vanish once the recipient can no longer read the DM (CHE-1793).
-  AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
   -- MUL-9333: a snoozed issue stays out of the inbox until its time. A row
   -- whose time has passed is listed again and keeps snoozed_until, which is
   -- how the client tells an issue that came back on its own.
   AND (i.snoozed_until IS NULL OR i.snoozed_until <= now())
-  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR iss.project_id IS NULL OR NOT (iss.project_id = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
--- A coalesced DM record moves to the top when a new reply updates it.
-ORDER BY COALESCE(i.updated_at, i.created_at) DESC;
+  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR NOT (COALESCE(iss.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
+-- Newest first by when the row arrived or came back (returned_at), the order
+-- idx_inbox_active_shown keeps. The
+-- inbox keeps only its newest rows (inbox.ActiveLimit); inbox.Trimmer archives
+-- the rest, and the limit bounds the response until it has.
+ORDER BY GREATEST(i.created_at, i.returned_at) DESC, i.id DESC
+LIMIT sqlc.arg('row_limit');
 
 -- name: ListArchivedInboxItems :many
 -- Archived counterpart of ListInboxItems, backing the inbox's "Archived"
@@ -57,13 +60,12 @@ WITH eligible_archived AS MATERIALIZED (
       AND i.recipient_type = $2
       AND i.recipient_id = $3
       AND i.archived = true
-      AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
       -- MUL-8472: private projects the caller cannot see.
-      AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR i.issue_id IS NULL OR NOT EXISTS (
-          SELECT 1 FROM issue hidden_issue
-          WHERE hidden_issue.id = i.issue_id
-            AND hidden_issue.project_id = ANY(sqlc.narg('hidden_project_ids')::uuid[])
-      ))
+      -- A row without an issue counts as outside any project, which a guest's
+      -- hidden set holds (projectaccess.NoProject), as ListInboxItems does.
+      AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR NOT (COALESCE(
+          (SELECT hidden_issue.project_id FROM issue hidden_issue WHERE hidden_issue.id = i.issue_id),
+          '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
       AND (i.issue_id IS NULL OR NOT EXISTS (
           SELECT 1
           FROM inbox_item active
@@ -99,6 +101,7 @@ WITH eligible_archived AS MATERIALIZED (
     SELECT id FROM comment_anchors
 )
 SELECT i.*,
+       iss.number AS issue_number,
        iss.status AS issue_status,
        iss.priority AS issue_priority,
        iss.project_id AS issue_project_id,
@@ -124,16 +127,17 @@ WHERE id = $1 AND workspace_id = $2;
 -- MUL-9333: a row written on an issue the recipient has snoozed joins the
 -- snooze, so it stays out of the inbox with the rest of the issue.
 -- inbox.Deliver ends the snooze instead when the row is one that
--- wakes it.
+-- wakes it. A joining row is the issue's newest, so it carries the issue's
+-- return rank (returned_at, the snooze end); inbox.Deliver clears it from the
+-- row that held it (HandInboxReturnToRow).
 INSERT INTO inbox_item (
     workspace_id, recipient_type, recipient_id,
     type, severity, issue_id, title, body,
     actor_type, actor_id, details, id,
-    snoozed_until, snoozed_at, chat_session_id, chat_message_id, dedupe_key
+    snoozed_until, snoozed_at, returned_at
 )
 SELECT $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE(sqlc.narg('id')::uuid, gen_random_uuid()),
-       snoozed.snoozed_until, snoozed.snoozed_at,
-       sqlc.narg('chat_session_id')::uuid, sqlc.narg('chat_message_id')::uuid, sqlc.narg('dedupe_key')::text
+       snoozed.snoozed_until, snoozed.snoozed_at, snoozed.snoozed_until
 FROM (SELECT 1) AS one
 LEFT JOIN LATERAL (
     SELECT s.snoozed_until, s.snoozed_at
@@ -143,8 +147,11 @@ LEFT JOIN LATERAL (
     ORDER BY s.snoozed_until DESC
     LIMIT 1
 ) AS snoozed ON true
+-- A role this build does not know is no membership (see
+-- GetMemberByUserAndWorkspace), so it is sent nothing.
 WHERE (($2::text = 'member' AND EXISTS (
     SELECT 1 FROM member WHERE workspace_id = $1 AND user_id = $3
+      AND role IN ('owner', 'admin', 'member', 'guest')
 )) OR ($2::text = 'agent' AND EXISTS (
     SELECT 1 FROM agent WHERE workspace_id = $1 AND id = $3
 )))
@@ -160,15 +167,6 @@ AND NOT ($2::text = 'member' AND EXISTS (
           WHERE pm.project_id = private_project.id AND pm.user_id = $3
       )
 ))
--- A row with a dedupe_key is one unread record per (recipient, key): a later
--- insert updates it in place and revives it from the archive (CHE-5901).
-ON CONFLICT (recipient_id, dedupe_key) WHERE dedupe_key IS NOT NULL AND read = false
-DO UPDATE SET
-    title = EXCLUDED.title,
-    body = EXCLUDED.body,
-    details = EXCLUDED.details,
-    archived = false,
-    updated_at = now()
 RETURNING *;
 
 -- name: MarkInboxRead :one
@@ -180,7 +178,7 @@ RETURNING *;
 -- opened outside the inbox. The item itself is read whether or not it is
 -- archived; its siblings only while active, as in MarkInboxReadByIssue, which
 -- keeps the probe on the partial index idx_inbox_active_by_issue. Items without
--- an issue are their own group.
+-- an issue are their own group. siblings_read is how many other rows it read.
 WITH target AS (
     SELECT t.workspace_id, t.recipient_type, t.recipient_id, t.issue_id
     FROM inbox_item t
@@ -194,10 +192,11 @@ WITH target AS (
       AND s.issue_id = target.issue_id
       AND s.archived = false AND s.read = false
       AND s.id <> $1
+    RETURNING s.id
 )
 UPDATE inbox_item AS item SET read = true
 WHERE item.id = $1
-RETURNING item.*;
+RETURNING sqlc.embed(item), (SELECT count(*) FROM siblings)::bigint AS siblings_read;
 
 -- name: MarkInboxUnread :one
 -- Item-level, unlike MarkInboxRead: the inbox renders one row per issue
@@ -213,7 +212,7 @@ RETURNING *;
 -- name: ArchiveInboxItem :one
 -- Archiving ends a snooze (MUL-9333), on every archive path below: a row
 -- restored later must not come back still hidden.
-UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL
+UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL, returned_at = NULL
 WHERE id = $1
 RETURNING *;
 
@@ -234,14 +233,18 @@ WHERE item.workspace_id = target.workspace_id
   AND (item.id = target.id OR item.issue_id = target.issue_id);
 
 -- name: ArchiveInboxByIssue :execrows
-UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL
+UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL, returned_at = NULL
 WHERE workspace_id = $1 AND recipient_type = $2 AND recipient_id = $3 AND issue_id = $4 AND archived = false;
 
 -- name: UnarchiveInboxItem :one
 -- Deliberately does not touch `read`: unarchiving restores an item to the main
 -- inbox in the exact read/unread state it was archived in, so restoring an
 -- unread item legitimately raises the unread badge again (MUL-3736).
-UPDATE inbox_item SET archived = false
+-- returned_at ranks the row as just back for the inbox limit, so a restored
+-- old notification is not trimmed straight back into the archive. Only the
+-- restored row: its issue's older rows, restored by UnarchiveInboxByIssue,
+-- keep their rank so a busy issue does not outrank the whole inbox.
+UPDATE inbox_item SET archived = false, returned_at = now()
 WHERE id = $1
 RETURNING *;
 
@@ -253,7 +256,7 @@ UPDATE inbox_item SET archived = false
 WHERE workspace_id = $1 AND recipient_type = $2 AND recipient_id = $3 AND issue_id = $4 AND archived = true;
 
 -- name: ArchiveInboxByIssueAndType :many
-UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL
+UPDATE inbox_item SET archived = true, snoozed_until = NULL, snoozed_at = NULL, returned_at = NULL
 WHERE workspace_id = $1 AND issue_id = $2 AND type = $3 AND archived = false
 RETURNING recipient_type, recipient_id;
 
@@ -264,14 +267,12 @@ WHERE i.workspace_id = sqlc.arg('workspace_id')
   AND i.recipient_id = sqlc.arg('recipient_id')
   AND i.read = false
   AND i.archived = false
-  AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
   AND (i.snoozed_until IS NULL OR i.snoozed_until <= now())
   -- MUL-8472: private projects the caller cannot see.
-  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR i.issue_id IS NULL OR NOT EXISTS (
-      SELECT 1 FROM issue hidden_issue
-      WHERE hidden_issue.id = i.issue_id
-        AND hidden_issue.project_id = ANY(sqlc.narg('hidden_project_ids')::uuid[])
-  ));
+  -- A row without an issue counts as outside any project (see ListInboxItems).
+  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR NOT (COALESCE(
+      (SELECT hidden_issue.project_id FROM issue hidden_issue WHERE hidden_issue.id = i.issue_id),
+      '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])));
 
 -- name: CountUnreadInboxByWorkspace :many
 -- Per-workspace unread inbox counts for a recipient member, matching the
@@ -283,18 +284,18 @@ WHERE i.workspace_id = sqlc.arg('workspace_id')
 -- the switcher dot for a workspace whose inbox the user sees as empty
 -- (MUL-3695). Items without an issue group on their own id. The
 -- member join keeps counts scoped to workspaces the user still belongs to,
--- so a stale item left behind in a workspace the user has since left cannot
--- light the dot.
+-- so a stale item left behind in a workspace the user has since left, or holds
+-- a role this build does not know in, cannot light the dot.
 SELECT newest.workspace_id, count(*) AS count
 FROM (
     SELECT DISTINCT ON (i.workspace_id, COALESCE(i.issue_id, i.id))
         i.workspace_id, i.read
     FROM inbox_item i
     JOIN member m ON m.workspace_id = i.workspace_id AND m.user_id = i.recipient_id
+        AND m.role IN ('owner', 'admin', 'member', 'guest')
     WHERE i.recipient_type = 'member'
       AND i.recipient_id = $1
       AND i.archived = false
-      AND inbox_item_visible(i.type, i.chat_session_id, i.workspace_id, i.recipient_id)
       -- MUL-9333: a snoozed issue does not count until it comes back.
       AND (i.snoozed_until IS NULL OR i.snoozed_until <= now())
       -- MUL-8472: issues in private projects the recipient is not a member
@@ -309,29 +310,24 @@ FROM (
                 WHERE pm.project_id = private_project.id AND pm.user_id = i.recipient_id
             )
       )
+      -- MUL-9420: a guest counts only issues in its own projects, so nothing
+      -- outside a project and nothing in a project it is not a member of.
+      AND (m.role <> 'guest' OR EXISTS (
+          SELECT 1 FROM issue guest_issue
+          JOIN project_member gpm ON gpm.project_id = guest_issue.project_id AND gpm.user_id = i.recipient_id
+          WHERE guest_issue.id = i.issue_id
+      ))
     ORDER BY i.workspace_id, COALESCE(i.issue_id, i.id), i.created_at DESC
 ) newest
 WHERE newest.read = false
 GROUP BY newest.workspace_id;
 
--- name: MarkAllInboxRead :one
--- Reading a DM reply record reads the DM (CHE-1793), so the cursor of every DM
--- whose record flips here advances in the same statement.
+-- name: MarkAllInboxRead :execrows
 -- The batch actions act on what the inbox lists, so they skip snoozed issues
 -- (MUL-9333).
-WITH marked AS (
-    UPDATE inbox_item i SET read = true
-    WHERE i.workspace_id = $1 AND i.recipient_type = 'member' AND i.recipient_id = $2 AND i.archived = false AND i.read = false
-      AND (i.snoozed_until IS NULL OR i.snoozed_until <= now())
-    RETURNING i.type, i.chat_session_id, i.chat_message_id
-), advanced AS (
-    UPDATE chat_session cs SET last_read_at = GREATEST(cs.last_read_at, m.created_at)
-    FROM marked
-    JOIN chat_message m ON m.id = marked.chat_message_id
-    WHERE marked.type = 'dm_reply' AND cs.id = marked.chat_session_id AND cs.creator_id = $2
-    RETURNING cs.id
-)
-SELECT count(*)::bigint FROM marked;
+UPDATE inbox_item SET read = true
+WHERE workspace_id = $1 AND recipient_type = 'member' AND recipient_id = $2 AND archived = false AND read = false
+  AND (snoozed_until IS NULL OR snoozed_until <= now());
 
 -- name: MarkInboxReadByIssue :execrows
 -- Reading an issue outside the inbox (its page, a side peek, the Unread view)
@@ -351,7 +347,9 @@ WHERE workspace_id = $1 AND recipient_type = 'member' AND recipient_id = $2
   AND (snoozed_until IS NULL OR snoozed_until <= now());
 
 -- name: ArchiveAllInbox :execrows
-UPDATE inbox_item SET archived = true
+-- Every archive clears returned_at: a row restored later earns its rank anew
+-- (UnarchiveInboxItem), so old return times never outrank the inbox again.
+UPDATE inbox_item SET archived = true, returned_at = NULL
 WHERE workspace_id = $1 AND recipient_type = 'member' AND recipient_id = $2 AND archived = false
   AND (snoozed_until IS NULL OR snoozed_until <= now());
 
@@ -377,7 +375,7 @@ WITH newest_groups AS (
     FROM newest_groups
     WHERE read = true
 )
-UPDATE inbox_item i SET archived = true
+UPDATE inbox_item i SET archived = true, returned_at = NULL
 FROM read_groups selected
 WHERE i.workspace_id = $1
   AND i.recipient_type = 'member'
@@ -387,68 +385,13 @@ WHERE i.workspace_id = $1
 
 -- name: ArchiveCompletedInbox :execrows
 -- Snoozed issues included: a done issue leaves the inbox either way.
-UPDATE inbox_item i SET archived = true, snoozed_until = NULL, snoozed_at = NULL
+UPDATE inbox_item i SET archived = true, snoozed_until = NULL, snoozed_at = NULL, returned_at = NULL
 WHERE i.workspace_id = $1 AND i.recipient_type = 'member' AND i.recipient_id = $2 AND i.archived = false
   AND i.issue_id IN (
     SELECT id FROM issue
     WHERE workspace_id = $1
       AND status = ANY(sqlc.arg('terminal_status_keys')::text[])
   );
-
--- name: UpsertDMReplyInboxItem :one
--- One unread record per (recipient, DM): the partial unique index on
--- (recipient_id, dedupe_key) WHERE unread turns a later reply into an update
--- that bumps reply_count, moves the row to the top and revives it from the
--- archive. Once the record is read the next reply inserts a fresh one. The body
--- stays NULL on purpose: a notification never carries message text.
-INSERT INTO inbox_item (
-    id, workspace_id, recipient_type, recipient_id, type, severity, title,
-    actor_type, actor_id, details, chat_session_id, chat_message_id, dedupe_key, updated_at
-) VALUES (
-    @id, @workspace_id, 'member', @recipient_id, 'dm_reply', 'info', @title,
-    'agent', @agent_id, '{"reply_count": 1}'::jsonb, @chat_session_id, @chat_message_id, @dedupe_key, now()
-)
-ON CONFLICT (recipient_id, dedupe_key) WHERE dedupe_key IS NOT NULL AND read = false
-DO UPDATE SET
-    title = EXCLUDED.title,
-    actor_id = EXCLUDED.actor_id,
-    chat_message_id = EXCLUDED.chat_message_id,
-    archived = false,
-    updated_at = now(),
-    details = jsonb_set(
-        inbox_item.details, '{reply_count}',
-        to_jsonb(COALESCE((inbox_item.details->>'reply_count')::int, 1) + 1))
-RETURNING *;
-
--- name: MarkDMRepliesRead :many
--- Reads every unread dm_reply record of one DM for its creator. Decision
--- records linked to the same DM are left alone; they close when the decision
--- is resolved.
-UPDATE inbox_item SET read = true
-WHERE chat_session_id = $1 AND recipient_id = $2 AND type = 'dm_reply' AND read = false
-RETURNING *;
-
--- name: MarkInboxReadByDecisionRequest :many
-UPDATE inbox_item SET read = true
-WHERE workspace_id = $1 AND details->>'decision_request_id' = sqlc.arg('decision_request_id')::text AND read = false
-RETURNING *;
-
--- name: AdvanceChatSessionReadTo :exec
--- Moves the DM read cursor up to a message (never back), so marking its inbox
--- record read leaves the DM with no unread replies up to that message.
-UPDATE chat_session cs SET last_read_at = GREATEST(cs.last_read_at, m.created_at)
-FROM chat_message m
-WHERE cs.id = sqlc.arg('session_id') AND m.id = sqlc.arg('message_id') AND m.chat_session_id = cs.id;
-
--- name: GetDMChannelSwitches :one
-SELECT dm_channel_enabled(@workspace_id::uuid, @user_id::uuid, 'in_app') AS in_app,
-       dm_channel_enabled(@workspace_id::uuid, @user_id::uuid, 'push') AS push;
-
--- name: ChatSessionHasCurrentChannelBinding :one
-SELECT EXISTS (
-    SELECT 1 FROM channel_chat_session_binding
-    WHERE chat_session_id = $1 AND retired_at IS NULL
-) AS bound;
 
 -- name: SnoozeInboxGroup :many
 -- Snooze is issue-level, like archive (MUL-9333): every active row the
@@ -474,7 +417,10 @@ WITH target AS (
 UPDATE inbox_item item
 SET snoozed_until = sqlc.arg('snoozed_until')::timestamptz,
     snoozed_at = CASE WHEN item.snoozed_until > now() AND item.snoozed_at IS NOT NULL THEN item.snoozed_at ELSE now() END,
-    read = CASE WHEN item.id = (SELECT id FROM newest) THEN false ELSE item.read END
+    read = CASE WHEN item.id = (SELECT id FROM newest) THEN false ELSE item.read END,
+    -- The issue comes back on top when the snooze ends: the newest row ranks
+    -- by that time for the inbox limit, the others by when they arrived.
+    returned_at = CASE WHEN item.id = (SELECT id FROM newest) THEN sqlc.arg('snoozed_until')::timestamptz END
 FROM target
 WHERE item.workspace_id = target.workspace_id
   AND item.recipient_type = target.recipient_type
@@ -485,21 +431,36 @@ RETURNING item.*;
 
 -- name: UnsnoozeInboxGroup :many
 -- Ends a snooze on one issue: back in the inbox now. Also clears the time a
--- snooze that already ran out left on the rows.
-UPDATE inbox_item SET snoozed_until = NULL, snoozed_at = NULL
-WHERE workspace_id = $1 AND recipient_type = $2 AND recipient_id = $3 AND issue_id = $4
-  AND archived = false AND snoozed_until IS NOT NULL
-RETURNING *;
+-- snooze that already ran out left on the rows. The issue's newest row ranks
+-- as back now for the inbox limit, or when the snooze ran out if it already
+-- had; the others rank by when they arrived.
+WITH newest AS (
+    SELECT n.id FROM inbox_item n
+    WHERE n.workspace_id = $1 AND n.recipient_type = $2 AND n.recipient_id = $3 AND n.issue_id = $4
+      AND n.archived = false
+    ORDER BY n.created_at DESC, n.id DESC
+    LIMIT 1
+)
+UPDATE inbox_item AS item SET snoozed_until = NULL, snoozed_at = NULL,
+    returned_at = CASE WHEN item.id = (SELECT id FROM newest) THEN LEAST(item.snoozed_until, now()) END
+WHERE item.workspace_id = $1 AND item.recipient_type = $2 AND item.recipient_id = $3 AND item.issue_id = $4
+  AND item.archived = false AND item.snoozed_until IS NOT NULL
+RETURNING item.*;
 
 -- name: ListSnoozedInbox :many
 -- The recipient's snoozed issues, soonest back first (MUL-9333). `updates` is
 -- how many rows arrived while snoozed; `item_id` is the issue's newest row,
--- the one the snooze endpoints take.
+-- the one the snooze endpoints take. `issue_number` builds the identifier the
+-- row links to; `issue_title` and `issue_status` let the row render without
+-- fetching each issue (MUL-10056).
 SELECT g.issue_id::uuid AS issue_id,
        newest.id AS item_id,
        g.snoozed_until::timestamptz AS snoozed_until,
        g.snoozed_at::timestamptz AS snoozed_at,
-       g.updates::bigint AS updates
+       g.updates::bigint AS updates,
+       iss.number AS issue_number,
+       iss.title AS issue_title,
+       iss.status AS issue_status
 FROM (
     SELECT i.issue_id,
            max(i.snoozed_until) AS snoozed_until,
@@ -516,7 +477,7 @@ FROM (
       AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR NOT EXISTS (
           SELECT 1 FROM issue hidden_issue
           WHERE hidden_issue.id = i.issue_id
-            AND hidden_issue.project_id = ANY(sqlc.narg('hidden_project_ids')::uuid[])
+            AND COALESCE(hidden_issue.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])
       ))
     GROUP BY i.issue_id
 ) g
@@ -531,4 +492,187 @@ JOIN LATERAL (
     ORDER BY n.created_at DESC, n.id DESC
     LIMIT 1
 ) newest ON true
+LEFT JOIN issue iss ON iss.id = g.issue_id
 ORDER BY g.snoozed_until ASC, g.issue_id;
+
+-- name: InboxOverflows :one
+-- Whether the recipient's inbox shows more than `keep` rows, by the rules
+-- ListInboxItems shows them: active, not snoozed, outside the projects the
+-- recipient cannot see (hidden_project_ids), ranked by when they arrived or
+-- came back.
+SELECT count(*) > 0 FROM (
+    SELECT 1 FROM inbox_item i
+    LEFT JOIN issue iss ON iss.id = i.issue_id
+    WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3
+      AND i.archived = false
+      AND (i.snoozed_until IS NULL OR i.snoozed_until <= now())
+      AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL
+           OR NOT (COALESCE(iss.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
+    ORDER BY GREATEST(i.created_at, i.returned_at) DESC, i.id DESC
+    OFFSET sqlc.arg('keep')::int
+    LIMIT 1
+) beyond;
+
+-- name: ArchiveInboxOverflow :execrows
+-- Archives up to batch_size of the recipient's shown rows ranked below the
+-- newest `keep`, oldest first, in ListInboxItems' order. The boundary is read
+-- in the same statement, so every batch sees the inbox as it is now. Rows are
+-- archived one by one: unlike the issue-level archive actions, newer rows on
+-- the same issue stay. Snoozed rows, and rows in projects the recipient can
+-- no longer see, neither count nor get archived: a snooze is never ended
+-- behind the user's back, and hidden rows never push out visible ones. SKIP LOCKED keeps a trim from waiting on, or
+-- deadlocking with, the user's own inbox writes; InboxOverflows tells the
+-- caller whether skipped rows remain.
+-- MATERIALIZED: the boundary is read once per statement, not once per row.
+WITH boundary AS MATERIALIZED (
+    SELECT GREATEST(b.created_at, b.returned_at) AS shown_at, b.id
+    FROM inbox_item b
+    LEFT JOIN issue b_iss ON b_iss.id = b.issue_id
+    WHERE b.workspace_id = sqlc.arg('workspace_id') AND b.recipient_type = sqlc.arg('recipient_type')
+      AND b.recipient_id = sqlc.arg('recipient_id')
+      AND b.archived = false
+      AND (b.snoozed_until IS NULL OR b.snoozed_until <= now())
+      AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL
+           OR NOT (COALESCE(b_iss.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
+    ORDER BY GREATEST(b.created_at, b.returned_at) DESC, b.id DESC
+    OFFSET sqlc.arg('keep')::int - 1
+    LIMIT 1
+), overflow AS (
+    SELECT o.id FROM inbox_item o
+    CROSS JOIN boundary
+    LEFT JOIN issue o_iss ON o_iss.id = o.issue_id
+    WHERE o.workspace_id = sqlc.arg('workspace_id') AND o.recipient_type = sqlc.arg('recipient_type')
+      AND o.recipient_id = sqlc.arg('recipient_id')
+      AND o.archived = false
+      AND (o.snoozed_until IS NULL OR o.snoozed_until <= now())
+      AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL
+           OR NOT (COALESCE(o_iss.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
+      AND (GREATEST(o.created_at, o.returned_at), o.id) < (boundary.shown_at, boundary.id)
+      -- An issue back from a snooze whose newest row does not carry the
+      -- return yet (written by an older server, or not normalized) ranks too
+      -- low here; never archive that row on its stale rank.
+      AND NOT (o.issue_id IS NOT NULL AND o.snoozed_until IS NOT NULL
+               AND (o.returned_at IS NULL OR o.returned_at < o.snoozed_until)
+               AND NOT EXISTS (
+                   SELECT 1 FROM inbox_item newer
+                   WHERE newer.workspace_id = o.workspace_id AND newer.recipient_type = o.recipient_type
+                     AND newer.recipient_id = o.recipient_id AND newer.issue_id = o.issue_id
+                     AND newer.archived = false
+                     AND (newer.created_at, newer.id) > (o.created_at, o.id)
+               ))
+    ORDER BY GREATEST(o.created_at, o.returned_at), o.id
+    LIMIT sqlc.arg('batch_size')::int
+    FOR UPDATE OF o SKIP LOCKED
+)
+-- ANY(ARRAY(...)) keeps the update on primary-key lookups; a join against the
+-- CTE lets the planner pick a scan of the whole table.
+UPDATE inbox_item AS item SET archived = true, snoozed_until = NULL, snoozed_at = NULL, returned_at = NULL
+WHERE item.id = ANY (ARRAY(SELECT overflow.id FROM overflow));
+
+-- name: NormalizeInboxReturns :execrows
+-- Leaves at most one row per issue ranked by its return (returned_at): the
+-- issue's newest active row, carrying the latest return any of its rows had,
+-- or its snooze time. Writes keep this true; this repairs what they could not,
+-- such as rows an older server wrote during a rollout. Fixes up to batch_size
+-- rows, skipping rows another write holds, so it never waits on a lock; the
+-- caller runs it again while it returns a full batch.
+-- MATERIALIZED: each step runs once; inlined, a planner without statistics
+-- re-ran them for every row.
+WITH marked AS MATERIALIZED (
+    SELECT g.issue_id, max(g.returned_at) AS returned_at
+    FROM inbox_item g
+    WHERE g.workspace_id = sqlc.arg('workspace_id') AND g.recipient_type = sqlc.arg('recipient_type')
+      AND g.recipient_id = sqlc.arg('recipient_id')
+      AND g.archived = false AND g.issue_id IS NOT NULL
+      AND (g.returned_at IS NOT NULL OR g.snoozed_until IS NOT NULL)
+    GROUP BY g.issue_id
+), wanted AS MATERIALIZED (
+    SELECT DISTINCT ON (r.issue_id) r.issue_id, r.id,
+           GREATEST(marked.returned_at, r.snoozed_until) AS returned_at
+    FROM inbox_item r
+    JOIN marked ON marked.issue_id = r.issue_id
+    WHERE r.workspace_id = sqlc.arg('workspace_id') AND r.recipient_type = sqlc.arg('recipient_type')
+      AND r.recipient_id = sqlc.arg('recipient_id')
+      AND r.archived = false
+    ORDER BY r.issue_id, r.created_at DESC, r.id DESC
+), stale AS (
+    SELECT item.id, CASE WHEN item.id = wanted.id THEN wanted.returned_at END AS returned_at
+    FROM inbox_item item
+    JOIN wanted ON wanted.issue_id = item.issue_id
+    WHERE item.workspace_id = sqlc.arg('workspace_id') AND item.recipient_type = sqlc.arg('recipient_type')
+      AND item.recipient_id = sqlc.arg('recipient_id')
+      AND item.archived = false
+      AND item.returned_at IS DISTINCT FROM (CASE WHEN item.id = wanted.id THEN wanted.returned_at END)
+    ORDER BY item.issue_id, item.id
+    LIMIT sqlc.arg('batch_size')::int
+    FOR UPDATE OF item SKIP LOCKED
+)
+UPDATE inbox_item AS fixed
+SET returned_at = (SELECT stale.returned_at FROM stale WHERE stale.id = fixed.id)
+WHERE fixed.id = ANY (ARRAY(SELECT stale.id FROM stale));
+
+-- name: HandInboxReturnToRow :exec
+-- Clears the issue's return rank from the active rows older than keep_id, the
+-- row that now carries it (see CreateInboxItem). Only older rows: two joining
+-- rows handing over concurrently, in either order, leave the rank on the newer.
+UPDATE inbox_item AS item SET returned_at = NULL
+FROM inbox_item AS kept
+WHERE kept.id = sqlc.arg('keep_id')
+  AND item.workspace_id = $1 AND item.recipient_type = $2 AND item.recipient_id = $3 AND item.issue_id = $4
+  AND item.archived = false AND item.returned_at IS NOT NULL
+  AND (item.created_at, item.id) < (kept.created_at, kept.id);
+
+-- name: InboxReturnsSettled :one
+-- Whether NormalizeInboxReturns has nothing left to fix for the recipient,
+-- rows another write holds included. The inbox limit archives only then, so
+-- an unsettled duplicate rank never widens the set of rows it keeps.
+WITH marked AS MATERIALIZED (
+    SELECT g.issue_id, max(g.returned_at) AS returned_at
+    FROM inbox_item g
+    WHERE g.workspace_id = $1 AND g.recipient_type = $2 AND g.recipient_id = $3
+      AND g.archived = false AND g.issue_id IS NOT NULL
+      AND (g.returned_at IS NOT NULL OR g.snoozed_until IS NOT NULL)
+    GROUP BY g.issue_id
+), wanted AS MATERIALIZED (
+    SELECT DISTINCT ON (r.issue_id) r.issue_id, r.id,
+           GREATEST(marked.returned_at, r.snoozed_until) AS returned_at
+    FROM inbox_item r
+    JOIN marked ON marked.issue_id = r.issue_id
+    WHERE r.workspace_id = $1 AND r.recipient_type = $2 AND r.recipient_id = $3
+      AND r.archived = false
+    ORDER BY r.issue_id, r.created_at DESC, r.id DESC
+)
+SELECT count(*) = 0 FROM (
+    SELECT 1 FROM inbox_item item
+    JOIN wanted ON wanted.issue_id = item.issue_id
+    WHERE item.workspace_id = $1 AND item.recipient_type = $2 AND item.recipient_id = $3
+      AND item.archived = false
+      AND item.returned_at IS DISTINCT FROM (CASE WHEN item.id = wanted.id THEN wanted.returned_at END)
+    LIMIT 1
+) unsettled;
+
+-- name: BackfillInboxSnoozeReturns :execrows
+-- Gives up to batch_size snoozed issues their return rank where a writer that
+-- predates returned_at left it out: the issue's newest active row ranks by
+-- when the snooze ends. Snoozes set before the column existed, and by an
+-- older server during the rollout. Skips rows another write holds and
+-- touches only rows still without a rank, so it can run again at any time.
+-- workspace_id narrows it for tests; production passes NULL.
+WITH candidates AS (
+    SELECT s.id
+    FROM inbox_item s
+    WHERE (sqlc.narg('workspace_id')::uuid IS NULL OR s.workspace_id = sqlc.narg('workspace_id')::uuid)
+      AND s.archived = false AND s.issue_id IS NOT NULL
+      AND s.snoozed_until IS NOT NULL AND s.returned_at IS NULL
+      AND NOT EXISTS (
+          SELECT 1 FROM inbox_item newer
+          WHERE newer.workspace_id = s.workspace_id AND newer.recipient_type = s.recipient_type
+            AND newer.recipient_id = s.recipient_id AND newer.issue_id = s.issue_id
+            AND newer.archived = false
+            AND (newer.created_at, newer.id) > (s.created_at, s.id)
+      )
+    LIMIT sqlc.arg('batch_size')::int
+    FOR UPDATE OF s SKIP LOCKED
+)
+UPDATE inbox_item AS item SET returned_at = item.snoozed_until
+WHERE item.id = ANY (ARRAY(SELECT candidates.id FROM candidates));

@@ -133,9 +133,7 @@ func TestDeletingOriginalClearsDuplicateMarks(t *testing.T) {
 // must not write the mark back. UpdateIssue computes its next values in a CTE,
 // so without the row lock there it resumes with the values it read before the
 // wait — an unrelated priority or status edit would restore a mark the other
-// transaction had just removed. The write also takes the issue row lock before
-// UpdateIssue to recheck its workflow, so it may wait there instead. A person's status move first takes the run budget
-// lock to write the window it ends, and may wait there.
+// transaction had just removed.
 func TestConcurrentWriteDoesNotRestoreClearedMark(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -203,8 +201,7 @@ func concurrentWriteAfterPointerCleared(t *testing.T, deleteOriginal bool) {
 			SELECT 1 FROM pg_stat_activity
 			WHERE datname = current_database()
 			  AND wait_event_type = 'Lock'
-			  AND (query LIKE '-- name: UpdateIssue :one%' OR query LIKE '-- name: LockIssueForDescriptionUpdate :one%'
-			       OR query LIKE '-- name: LockIssueRunBudget :one%'))`).Scan(&blocked); err != nil {
+			  AND query LIKE '-- name: LockIssueForDescriptionUpdate :one%')`).Scan(&blocked); err != nil {
 			t.Fatal(err)
 		}
 		if blocked {
