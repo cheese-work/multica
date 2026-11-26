@@ -21,6 +21,7 @@ const denylist = {
     { id: "person-name", pattern: "Cheese|Jev|Hermes", wholeWord: true },
   ],
 };
+denylist.patterns.find((p) => p.id === "person-name").as = { Hermes: "runtime-name" }; // CHE-10231
 
 const scratch = mkdtempSync(join(tmpdir(), "identity-literals-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
@@ -102,7 +103,24 @@ test("a new pattern id in a baselined file fails", () => {
   const root = repo({ "server/internal/a/a.go": 'var a = "c00"\nvar b = "Hermes"\n' });
   const result = run(root, { "server/internal/a/a.go": { "host-token": 1 } });
   assert.equal(result.status, 1, result.out);
+  assert.match(result.stderr, /runtime-name/);
+});
+
+// CHE-10231: a raised runtime-name allowance (upstream "Hermes" mentions) never lends allowance to a person name.
+test("a raised runtime-name allowance does not hide a new person name in the same file", () => {
+  const file = "apps/web/features/landing/i18n/en.ts";
+  const baseline = { [file]: { "runtime-name": 3 } };
+  assert.equal(run(repo({ [file]: 'export const a = ["Hermes", "Hermes", "Hermes"];\n' }), baseline).status, 0);
+  const result = run(repo({ [file]: 'export const a = ["Hermes", "Hermes", "Hermes", "Jev"];\n' }), baseline);
+  assert.equal(result.status, 1, result.out);
   assert.match(result.stderr, /person-name/);
+});
+
+test("a runtime-name mention above its allowance still fails", () => {
+  const file = "apps/web/features/landing/i18n/en.ts";
+  const result = run(repo({ [file]: 'export const a = ["Hermes", "Hermes"];\n' }), { [file]: { "runtime-name": 1 } });
+  assert.equal(result.status, 1, result.out);
+  assert.match(result.stderr, /runtime-name/);
 });
 
 test("a lower count passes and prints the baseline line to remove", () => {
@@ -217,7 +235,7 @@ test("--print-baseline prints counts that then pass", () => {
   const printed = run(root, {}, ["--print-baseline"]);
   assert.equal(printed.status, 0, printed.out);
   const baseline = JSON.parse(printed.stdout);
-  assert.deepEqual(baseline, { "packages/b.ts": { "person-name": 1 }, "server/a.go": { "host-token": 2, "person-name": 1 } });
+  assert.deepEqual(baseline, { "packages/b.ts": { "runtime-name": 1 }, "server/a.go": { "host-token": 2, "person-name": 1 } });
   assert.equal(run(root, baseline).status, 0);
 });
 
@@ -238,6 +256,7 @@ test("the committed denylist and baseline parse and have unique pattern ids", ()
   const list = JSON.parse(readFileSync(new URL("denylist.json", base), "utf8"));
   const ids = list.patterns.map((p) => p.id);
   assert.equal(new Set(ids).size, ids.length);
+  ids.push(...list.patterns.flatMap((p) => Object.values(p.as ?? {})));
   assert.ok(ids.includes("workspace-uuid") && ids.includes("host-token") && ids.includes("person-name"));
   assert.ok(list.fix.includes("workspace setting"));
   const baseline = JSON.parse(readFileSync(new URL("baseline.json", base), "utf8"));

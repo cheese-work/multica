@@ -14,6 +14,7 @@
     },
     {
       "id": "person-name",
+      "as": { "Hermes": "runtime-name" },
       "pattern": "Cheese|Jev|Hermes",
       "wholeWord": true
     }

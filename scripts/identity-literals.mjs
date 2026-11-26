@@ -114,7 +114,8 @@ function readBlobs(cwd, sha, paths) {
   return blobs;
 }
 
-// Every denylisted literal in the scoped files of a tree: [{file, line, id}].
+// Every denylisted literal in the scoped files of a tree: [{file, line, id}]. A pattern `as` map files a
+// matched text under another id (CHE-10231: upstream runtime names count apart from person names).
 export function scanTree({ tree, denylist, cwd = process.cwd() }) {
   const sha = resolveTree(tree, cwd);
   const files = new Set();
@@ -131,7 +132,7 @@ export function scanTree({ tree, denylist, cwd = process.cwd() }) {
     for (const pattern of denylist.patterns) {
       const regex = matcher(pattern);
       for (const literal of literals) {
-        for (const _ of literal.text.matchAll(regex)) hits.push({ file, line: literal.line, id: pattern.id });
+        for (const match of literal.text.matchAll(regex)) hits.push({ file, line: literal.line, id: pattern.as?.[match[0]] ?? pattern.id });
       }
     }
   }
