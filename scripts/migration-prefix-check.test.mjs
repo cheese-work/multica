@@ -137,7 +137,7 @@ function cappedRoutes({ headTree, headTruncated = false, headSha = "capsha" }) {
   const filler = Array.from({ length: 100 }, () => ({ status: "modified", filename: "README.md" }));
   const routes = {
     "pulls/10/files?per_page=100&page=1": [fileEntry(691)],
-    "git/trees/main?recursive=1": { truncated: false, tree: [{ type: "blob", path: pair(690, "main")[0] }] },
+    "git/trees/main?recursive=1": { truncated: false, tree: pair(690, "main").map((path) => ({ type: "blob", path })) },
     "pulls?state=open&per_page=100&page=1": [{ number: 424, draft: true, head: { sha: headSha } }],
     [`git/trees/${headSha}?recursive=1`]: { truncated: headTruncated, tree: headTree.map((path) => ({ type: "blob", path })) },
   };

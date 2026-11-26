@@ -41,6 +41,8 @@ export function checkMigrationPrefixes({ files, main, pulls }) {
   return { collisions, commands, nextFree: firstFree };
 }
 
+class FileLimitError extends Error {}
+
 export function addedMigrations(files) {
   return files.filter((file) => ["added", "copied", "renamed"].includes(file.status) && MIGRATION.test(file.filename))
     .map((file) => file.filename);
@@ -64,7 +66,7 @@ export async function collectMigrations({ repository, number, token, expectedHea
       const batch = await request(`${endpoint}${endpoint.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
       if (!Array.isArray(batch)) throw new Error(`Invalid GitHub list: ${endpoint}`);
       entries.push(...batch);
-      if (entries.length >= limit) throw new Error(`GitHub ${endpoint} reached its ${limit}-file limit; cannot verify all migrations`);
+      if (entries.length >= limit) throw new FileLimitError(`GitHub ${endpoint} reached its ${limit}-file limit; cannot verify all migrations`);
       if (batch.length < 100) return entries;
     }
   }
@@ -78,15 +80,32 @@ export async function collectMigrations({ repository, number, token, expectedHea
   if (expectedHead && openPulls.find((pull) => pull.number === number)?.head?.sha !== expectedHead) {
     throw new Error("PR head changed or closed; rerun the check on the current head");
   }
+  const mainPaths = new Set(tree.tree.filter((entry) => entry.type === "blob").map((entry) => entry.path));
+  // CHE-10381: GitHub caps the PR files list at 3000. For another open PR over the cap, read its
+  // migrations from its head git tree, new versus the main tree. Never skip the PR.
+  async function headTreeMigrations(pull) {
+    if (!pull.head?.sha) throw new Error(`PR #${pull.number} has no head commit; cannot verify all migrations`);
+    const head = await request(`git/trees/${pull.head.sha}?recursive=1`);
+    if (head.truncated !== false || !Array.isArray(head.tree)) throw new Error(`Incomplete head tree of PR #${pull.number}; cannot verify all migrations`);
+    return head.tree.filter((entry) => entry.type === "blob" && !mainPaths.has(entry.path)).map((entry) => entry.path)
+      .filter((path) => MIGRATION.test(path));
+  }
   const pending = openPulls.filter((pull) => pull.number !== number);
   const pulls = [];
   await Promise.all(Array.from({ length: Math.min(8, pending.length) }, async () => {
     for (let pull = pending.shift(); pull; pull = pending.shift()) {
-      pulls.push({ number: pull.number, files: addedMigrations(await pages(`pulls/${pull.number}/files`, 3000)) });
+      let added;
+      try {
+        added = addedMigrations(await pages(`pulls/${pull.number}/files`, 3000));
+      } catch (error) {
+        if (!(error instanceof FileLimitError)) throw error;
+        added = await headTreeMigrations(pull);
+      }
+      pulls.push({ number: pull.number, files: added });
     }
   }));
   pulls.sort((left, right) => left.number - right.number);
-  return { files, main: tree.tree.filter((entry) => entry.type === "blob").map((entry) => entry.path), pulls };
+  return { files, main: [...mainPaths], pulls };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
