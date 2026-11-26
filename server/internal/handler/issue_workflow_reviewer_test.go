@@ -379,7 +379,7 @@ func linkCommitPR(t *testing.T, issueID string, number int, commits []reviewinde
 	t.Helper()
 	var prID string
 	dbfx.QueryRow(t, `INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at)
-		VALUES ($1, 1, 'multica-ai', 'multica-dotfiles', $2, 'che-9319 pr', 'open', 'https://example.test/pr', now(), now())
+		VALUES ($1, 1, 'multica-ai', 'multica-fixture', $2, 'che-9319 pr', 'open', 'https://example.test/pr', now(), now())
 		RETURNING id::text`, testWorkspaceID, number).Scan(&prID)
 	dbfx.Cleanup(t, `DELETE FROM github_pull_request WHERE id = $1::uuid`, prID)
 	dbfx.Cleanup(t, `DELETE FROM issue_pull_request WHERE pull_request_id = $1::uuid`, prID)
