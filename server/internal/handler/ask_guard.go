@@ -58,16 +58,32 @@ func validateAskGuardSetting(value any) error {
 	return nil
 }
 
+// discoveryBriefWorkflow is the workflow of a Discovery plan child, the only issue
+// that may send the brief card (Plan step 13, CHE-6107 A5).
+const discoveryBriefWorkflow = "Plan (gstack)"
+
 const reversibleAskFix = "Standing Delivery Authorization (CHE-584) lets agents decide and execute reversible work without asking: do it and record it. Ask a person only for spend, deploy, publish, irreversible or product_direction, or use an approval-gated action request"
 
 // refuseReversibleAsk (CHE-5754) refuses a plain agent question whose class is
 // reversible: the ask is for work Standing Delivery Authorization already
 // allows. Action, proposal and batch requests are the approval-gated path
-// (CHE-5167) and stay open, as does the typed discovery_brief subject (CHE-10271). The reversible_ask_guard setting decides: off allows,
+// (CHE-5167) and stay open, as does the typed discovery_brief subject on an issue
+// that follows the Plan (gstack) workflow (CHE-10271). The reversible_ask_guard setting decides: off allows,
 // warn logs, block refuses. Set it to off to revert; no data changes.
 func (handler *Handler) refuseReversibleAsk(ctx context.Context, issue db.Issue, input decisionRequestInput) error {
-	if input.EscalationClass != "reversible" || input.Action != nil || input.Proposal != nil || input.Batch != nil || input.Kind == decisiontx.KindAction || input.Parsed != nil && input.Parsed.Subject == decisiontx.SubjectDiscoveryBrief {
+	if input.EscalationClass != "reversible" || input.Action != nil || input.Proposal != nil || input.Batch != nil || input.Kind == decisiontx.KindAction {
 		return nil
+	}
+	if input.Parsed != nil && input.Parsed.Subject == decisiontx.SubjectDiscoveryBrief {
+		// The subject is a caller-supplied label. It exempts the ask only on an
+		// issue the server can verify follows the Discovery plan workflow.
+		def, err := handler.issueWorkflowDef(ctx, issue)
+		if err != nil {
+			return err
+		}
+		if def != nil && def.Name == discoveryBriefWorkflow {
+			return nil
+		}
 	}
 	workspace, err := handler.Queries.GetWorkspace(ctx, issue.WorkspaceID)
 	if err != nil {
