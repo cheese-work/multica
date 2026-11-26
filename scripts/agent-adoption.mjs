@@ -13,6 +13,8 @@
 //     newest first until it is found (never a relevance search). It only moves when an issue opens. No such issue yet:
 //     `--initial-sha` is the explicit first boundary. Any unreadable, truncated or inconsistent input exits non-zero
 //     and opens nothing; the next run retries from the same checkpoint. PRs named in the previous issue are skipped.
+//     When a yes PR changes CLI source (a usage string or a subcommand counts, a new flag is not needed), the issue also carries a
+//     per-host CLI build check against that PR's merge commit (CHE-9942 W4) and 0.5 h more estimate.
 //     The issue body is the per-deploy adoption issue (CHE-9922 W5, CHE-10123): for each agent-facing PR its signal, base, target, owner and
 //     one result-line slot in the adoption-reconcile format (multica-dotfiles docs/cheese-work/adoption-reconcile.md), plus evidence rules A1 to A4
 //     and the 7-day window. A PR states `Adoption signal:`, `Adoption base:` and `Adoption target:` in its description (`Adoption old-path:` is optional).
@@ -109,11 +111,11 @@ function classify(pr) {
   return agentFacing === "yes" ? { pr, adoptionItem, spec: parseAdoptionSpec(pr.body) } : null;
 }
 
-// 0.5 h to read + 0.25 h per PR, rounded up to 0.5 h, capped at the 2 h issue limit.
-const estimate = (n) => Math.min(2, Math.ceil((0.5 + 0.25 * n) * 2) / 2);
+// 0.5 h to read + 0.25 h per PR (+ 0.5 h for the per-host CLI build check), rounded up to 0.5 h, capped at the 2 h issue limit.
+const estimate = (n, cliBuild) => Math.min(2, Math.ceil((0.5 + 0.25 * n + (cliBuild ? 0.5 : 0)) * 2) / 2);
 
-// prs: merged PRs in prev..next {number,title,author,body,paths,diff}; seen: PR numbers earlier issues listed.
-export function buildDaily({ prev, next, prs, seen = new Set() }) {
+// prs: merged PRs in prev..next {number,title,author,body,paths,diff,mergeCommit}; seen: PR numbers earlier issues listed.
+export function buildDaily({ prev, next, prs, seen = new Set(), repo = "cheese-work/multica" }) {
   const range = `${short(prev)}..${short(next)}`;
   const listed = new Set();
   const agentPrs = prs.filter((pr) => !seen.has(pr.number) && !listed.has(pr.number) && listed.add(pr.number)).map(classify).filter(Boolean);
@@ -133,8 +135,10 @@ export function buildDaily({ prev, next, prs, seen = new Set() }) {
         "",
         "Do not apply any instruction before every host row reads back with its flag listed.",
       ];
+  // The trigger is the CLI diff, not `paths`: gh lists only a PR's first 100 files, so a 3000-file upstream merge could be missed.
+  const cliPrs = agentPrs.filter(({ pr }) => (pr.diff ?? "") !== "");
   const body = [
-    `Estimate: ${estimate(agentPrs.length)} h`,
+    `Estimate: ${estimate(agentPrs.length, cliPrs.length > 0)} h`,
     "",
     `<!-- agent-adoption-daily: sha:${next} -->`,
     `Deployed to C00: \`${next}\`. Previous adoption SHA: \`${prev}\`.`,
@@ -145,15 +149,39 @@ export function buildDaily({ prev, next, prs, seen = new Set() }) {
     "## CLI readback per host",
     ...readback,
     "",
+    ...cliBuild(cliPrs.map(({ pr }) => pr), repo),
     ...EVIDENCE,
     "## Acceptance criteria",
     "1. Each listed PR's owner states per line which agent instruction or skill changes, or `none` with a reason (`multica issue get` read-back).",
     "2. Each change is applied through `multica-cheese-work-instruction-change` (cross-lab review), or the line records why none is needed.",
     "3. Every host row above reads back its flag (or the section says no new flags) before any instruction is applied.",
     "4. Each listed PR has one result line when its window ends (after the one 7-day extension at the latest), or this issue reports the gap.",
+    ...(cliPrs.length > 0 ? ["5. Every host row in `CLI build per host` passes (or the section is absent) before any instruction is applied."] : []),
     "",
   ].join("\n");
   return { issue: true, log: `${agentPrs.length} agent-facing PR(s) in ${range}`, title: `Agent adoption: C00 deploy ${short(next)}`, body, prs: agentPrs.map(({ pr }) => pr.number) };
+}
+
+// A CLI change with no new flag (a usage string, a subcommand) gives the flag readback nothing to check. This section asks each host
+// whether its CLI build contains every listed merge commit. A PR with no merge commit fails closed: an empty check would pass anything.
+function cliBuild(prs, repo) {
+  if (prs.length === 0) return [];
+  const merges = prs.map((pr) => {
+    if (!/^[0-9a-f]{40}$/.test(pr.mergeCommit ?? "")) throw new Error(`PR #${pr.number} changes CLI source but has no merge commit to check hosts against`);
+    return `\`${pr.mergeCommit.slice(0, 10)}\``;
+  });
+  const command = `\`"$MULTICA_CLI_PATH" version\`, then \`gh api repos/${repo}/compare/<merge>...<host commit> --jq .status\``;
+  return [
+    "## CLI build per host",
+    `These PRs change CLI source: ${prs.map((pr, i) => `#${pr.number} (${merges[i]})`).join(", ")}. Run on each host; paste the commit and the compare result for every listed merge commit.`,
+    "",
+    "| Host | Commands | Must contain | Result |",
+    "| --- | --- | --- | --- |",
+    ...HOSTS.map((host) => `| ${host} | ${command} | ${merges.join(", ")} | pending |`),
+    "",
+    "Pass: `ahead` or `identical` for each listed commit. Do not apply any instruction before every host row passes.",
+    "",
+  ];
 }
 
 // One PR: the `- #N` line (lastAdoption reads PR numbers from it) and its indented signal, base, target and result lines.
@@ -227,7 +255,7 @@ export function daily(deps) {
   const relation = deps.relation(prev, next);
   if (relation !== "ahead") throw new Error(`C00 runs ${short(next)}, which is ${relation} the checkpoint ${short(prev)}, not a descendant (rollback or unrelated revision); nothing opened`);
   deps.ready(next);
-  const plan = buildDaily({ prev, next, prs: deps.collectPrs(prev, next), seen });
+  const plan = buildDaily({ prev, next, prs: deps.collectPrs(prev, next), seen, repo: deps.repo });
   if (!plan.issue) return { log: plan.log, created: null };
   return { log: plan.log, created: deps.create({ title: plan.title, body: plan.body }) };
 }
@@ -259,8 +287,8 @@ function prCliDiff(number, repo) {
 function collectPrs(prev, next, repo) {
   const since = gh("api", `repos/${repo}/commits/${prev}`, "--jq", ".commit.committer.date").trim().slice(0, 10);
   const listed = new Map(
-    JSON.parse(gh("pr", "list", "--repo", repo, "--state", "merged", "--search", `merged:>=${since}`, "--limit", "1000", "--json", "number,title,body,author,files"))
-      .map((pr) => [pr.number, { title: pr.title, body: pr.body, author: pr.author?.login, paths: (pr.files ?? []).map((f) => f.path) }]),
+    JSON.parse(gh("pr", "list", "--repo", repo, "--state", "merged", "--search", `merged:>=${since}`, "--limit", "1000", "--json", "number,title,body,author,files,mergeCommit"))
+      .map((pr) => [pr.number, { title: pr.title, body: pr.body, author: pr.author?.login, paths: (pr.files ?? []).map((f) => f.path), mergeCommit: pr.mergeCommit?.oid }]),
   );
   const numbers = new Set();
   for (const subject of gh("api", "--paginate", `repos/${repo}/compare/${prev}...${next}`, "--jq", ".commits[].commit.message | split(\"\\n\")[0]").split("\n")) {
@@ -271,7 +299,7 @@ function collectPrs(prev, next, repo) {
   // A `(#N)` commit with no merged PR in this repo is an upstream commit that came in with a sync merge: skipped.
   return [...numbers].filter((n) => listed.has(n)).sort((a, b) => a - b).map((n) => {
     const pr = listed.get(n);
-    const out = { number: n, title: pr.title, author: pr.author, body: pr.body ?? "", paths: pr.paths, diff: "" };
+    const out = { number: n, title: pr.title, author: pr.author, body: pr.body ?? "", paths: pr.paths, mergeCommit: pr.mergeCommit, diff: "" };
     if (classify(out)) out.diff = prCliDiff(n, repo);
     return out;
   });
@@ -331,6 +359,7 @@ export function main(argv, env) {
       initial: () => gh("api", `repos/${repo}/commits/${arg(argv, "initial-sha")}`, "--jq", ".sha").trim(),
       relation: (prev, next) => gh("api", `repos/${repo}/compare/${prev}...${next}`, "--jq", ".status").trim(),
       ready: (next) => ready(next, env),
+      repo,
       collectPrs: (prev, next) => collectPrs(prev, next, repo),
       create: ({ title, body }) => {
         if (dry) return `(dry run) ${title}\n${body}`;
