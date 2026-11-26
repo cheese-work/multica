@@ -136,6 +136,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"chat_task_supplement":               workspaceDelete,
 	"chat_turn_outcome":                  workspaceDelete, // workspace_id; removed by workspace id, even after its root session was hard-deleted.
 	"chat_wakeup":                        workspaceDelete,
+	"chat_wakeup_fork_conversion":        workspaceDeleteKeep, // CHE-10195 audit record of migration 99zzz00, no workspace_id.
+	"chat_wakeup_fork_saved":             workspaceDeleteKeep, // CHE-10195 recovery copy of fork rows, emptied by the 99zzz00 down; has workspace_id, no FK.
+	"chat_wakeup_fork_saved_input":       workspaceDeleteKeep, // CHE-10195 prior message_kind of wakeup input rows, no workspace_id.
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
 	"comment_reaction":                   workspaceDelete,

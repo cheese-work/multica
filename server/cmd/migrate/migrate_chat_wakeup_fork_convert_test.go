@@ -874,3 +874,177 @@ func TestChatWakeupForkConvertDueScan(t *testing.T) {
 		t.Errorf("the watch past its deadline must be active and expired (n=%d, %v)", expired, err)
 	}
 }
+
+// runMigrateDown runs `migrate down --to <to>` from the built binary: every
+// migration newer than `to` is rolled back, `to` stays applied.
+func runMigrateDown(t *testing.T, dbName, to string) (string, error) {
+	t.Helper()
+	config, err := pgxpool.ParseConfig(testDatabaseURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=disable", config.ConnConfig.User, config.ConnConfig.Password, config.ConnConfig.Host, config.ConnConfig.Port, dbName)
+	cmd := exec.Command(migrateBinary(t), "down", "--to", to)
+	cmd.Env = append(os.Environ(), "DATABASE_URL="+u)
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// forkStateSnapshot reads everything X changes and its down must restore:
+// the fork table's rows (text form, ordered by id), its columns, constraints
+// and indexes, and message_kind of every chat_message.
+func forkStateSnapshot(t *testing.T, pool *pgxpool.Pool) (rows, shape, kinds []string) {
+	t.Helper()
+	ctx := context.Background()
+	read := func(q string) []string {
+		t.Helper()
+		rs, err := pool.Query(ctx, q)
+		if err != nil {
+			t.Fatalf("snapshot %q: %v", q, err)
+		}
+		defer rs.Close()
+		var out []string
+		for rs.Next() {
+			var s string
+			if err := rs.Scan(&s); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, s)
+		}
+		if err := rs.Err(); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	rows = read(`SELECT t::text FROM chat_wakeup t ORDER BY t.id`)
+	shape = append(shape, read(`SELECT column_name||' '||data_type||' '||is_nullable||' '||coalesce(column_default,'')
+		FROM information_schema.columns WHERE table_schema='public' AND table_name='chat_wakeup' ORDER BY ordinal_position`)...)
+	shape = append(shape, read(`SELECT contype::text||' '||regexp_replace(pg_get_constraintdef(oid), '\s+', ' ', 'g')
+		FROM pg_constraint WHERE conrelid = 'chat_wakeup'::regclass ORDER BY 1`)...)
+	shape = append(shape, read(`SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND tablename='chat_wakeup' ORDER BY indexdef`)...)
+	kinds = read(`SELECT id::text||' '||message_kind FROM chat_message ORDER BY id`)
+	return
+}
+
+// Up, then down, then compare with the pre-up state: the fork table returns
+// with every row (the orphan included), its schema and the message kinds.
+func TestChatWakeupForkConvertDownRestoresForkTable(t *testing.T) {
+	pool, name := upgradeFixture(t, true)
+	ctx := context.Background()
+	seed, _ := forkSeedSet()
+	wantRows, wantShape, wantKinds := forkStateSnapshot(t, pool)
+	if len(wantRows) != len(seed) {
+		t.Fatalf("pre-up fork rows = %d, want %d", len(wantRows), len(seed))
+	}
+	var orphans int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM chat_wakeup w WHERE NOT EXISTS (SELECT 1 FROM chat_session s WHERE s.id = w.chat_session_id)`).Scan(&orphans); err != nil {
+		t.Fatal(err)
+	}
+	if orphans == 0 {
+		t.Fatal("seed has no row without a chat_session; the orphan case is untested")
+	}
+	var preDigest string
+	if err := pool.QueryRow(ctx, `SELECT md5(coalesce(string_agg(t::text, E'\n' ORDER BY t.id), '')) FROM chat_wakeup t`).Scan(&preDigest); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateUpOK(t, name)
+	if n := tableCount(t, pool, "chat_wakeup_fork_saved"); n != len(seed) {
+		t.Fatalf("saved fork rows after up = %d, want %d (orphans included)", n, len(seed))
+	}
+
+	// the version just before X: down rolls back X and everything newer
+	to := strings.TrimSuffix(filepath.Base(wakeupUpFiles(t, chatWakeupXStem)[len(wakeupUpFiles(t, chatWakeupXStem))-1]), ".up.sql")
+	out, err := runMigrateDown(t, name, to)
+	if err != nil {
+		t.Fatalf("migrate down --to %s: %v\n%s", to, err, tail(out, 4000))
+	}
+	var applied int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version LIKE '99zzz%'`).Scan(&applied); err != nil {
+		t.Fatal(err)
+	}
+	if applied != 0 {
+		t.Fatalf("%d 99zzz ledger rows left after down", applied)
+	}
+
+	gotRows, gotShape, gotKinds := forkStateSnapshot(t, pool)
+	if !reflect.DeepEqual(gotRows, wantRows) {
+		t.Fatalf("fork rows after down differ from pre-up:\n got %d rows\nwant %d rows\nfirst got:  %v\nfirst want: %v", len(gotRows), len(wantRows), gotRows[:min(2, len(gotRows))], wantRows[:min(2, len(wantRows))])
+	}
+	if !reflect.DeepEqual(gotShape, wantShape) {
+		t.Fatalf("fork table shape after down differs:\n got: %s\nwant: %s", strings.Join(gotShape, "\n  "), strings.Join(wantShape, "\n  "))
+	}
+	if !reflect.DeepEqual(gotKinds, wantKinds) {
+		t.Fatalf("chat_message kinds after down differ from pre-up")
+	}
+	var wakeupID int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM information_schema.columns WHERE table_name='chat_message' AND column_name='wakeup_id'`).Scan(&wakeupID); err != nil {
+		t.Fatal(err)
+	}
+	if wakeupID != 0 {
+		t.Fatal("chat_message.wakeup_id survived the down")
+	}
+	// audit record stays; the digest it holds is the pre-up digest and the saved copy is spent
+	var recDigest string
+	if err := pool.QueryRow(ctx, `SELECT fork_digest FROM chat_wakeup_fork_conversion`).Scan(&recDigest); err != nil {
+		t.Fatal(err)
+	}
+	if recDigest != preDigest {
+		t.Fatalf("recorded digest %s != pre-up digest %s", recDigest, preDigest)
+	}
+	if n := tableCount(t, pool, "chat_wakeup_fork_saved"); n != 0 {
+		t.Fatalf("saved rows after down = %d, want 0", n)
+	}
+	if n := tableCount(t, pool, "chat_wakeup_fork_saved_input"); n != 0 {
+		t.Fatalf("saved input rows after down = %d, want 0", n)
+	}
+
+	// up again from the restored state converts the same rows
+	migrateUpOK(t, name)
+	_, want := forkSeedSet()
+	active, terminal, dropped := seedCounts(seed)
+	if n := tableCount(t, pool, "chat_wakeup"); n != active+terminal || n != len(want) {
+		t.Fatalf("second up: chat_wakeup rows = %d, want %d", n, active+terminal)
+	}
+	var records int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM chat_wakeup_fork_conversion WHERE fork_rows = $1 AND fork_digest = $2`, len(seed), preDigest).Scan(&records); err != nil {
+		t.Fatal(err)
+	}
+	if records != 2 {
+		t.Fatalf("conversion records with the pre-up digest = %d, want 2 (dropped=%d)", records, dropped)
+	}
+}
+
+// A down refuses to drop live upstream rows, and a second down has nothing
+// to restore: neither case may leave a half-built fork table.
+func TestChatWakeupForkConvertDownRefusals(t *testing.T) {
+	pool, name := upgradeFixture(t, true)
+	ctx := context.Background()
+	migrateUpOK(t, name)
+	to := strings.TrimSuffix(filepath.Base(wakeupUpFiles(t, chatWakeupXStem)[len(wakeupUpFiles(t, chatWakeupXStem))-1]), ".up.sql")
+
+	// 99zzz15's down runs first and drops chat_wakeup; run X's own down on a
+	// table that still holds rows by recreating the situation by hand.
+	down, err := os.ReadFile(filepath.Join("..", "..", "migrations", chatWakeupXStem+".down.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(down)); err == nil || !strings.Contains(err.Error(), "refusing to drop them") {
+		t.Fatalf("down over a populated upstream table: err = %v, want refusal", err)
+	}
+	if n := tableCount(t, pool, "chat_wakeup"); n <= 0 {
+		t.Fatalf("refused down changed chat_wakeup: rows = %d", n)
+	}
+	if n := tableCount(t, pool, "chat_wakeup_fork_saved"); n <= 0 {
+		t.Fatalf("refused down consumed the saved rows: %d", n)
+	}
+
+	if out, err := runMigrateDown(t, name, to); err != nil {
+		t.Fatalf("down: %v\n%s", err, tail(out, 3000))
+	}
+	// the ledger no longer lists X, so the runner does not run it twice; the
+	// file itself refuses a second run over the restored fork table.
+	if _, err := pool.Exec(ctx, string(down)); err == nil || !strings.Contains(err.Error(), "already has the fork shape") {
+		t.Fatalf("second down: err = %v, want refusal", err)
+	}
+}
