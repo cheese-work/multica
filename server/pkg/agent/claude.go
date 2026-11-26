@@ -323,15 +323,17 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		scanner := newAgentStreamScanner(stdout)
 		var fallbackWatch *claudeFallbackWatch
 		// A result frame without model evidence books its usage to a fallback
-		// model. Once the runtime announced a main-thread change, the requested
-		// model is no evidence of what served: use the model of the last
-		// main-thread response instead, or none (CHE-10140). A run served by two
-		// models books its whole total to the later one; that is the evidence
-		// the result frame leaves.
+		// model. Once the runtime announced a main-thread change, neither the
+		// requested model nor a response from before the change is evidence of
+		// what served: only a main-thread response after the change is, and
+		// without one the attribution stays unknown (CHE-10140). A run served by
+		// two models books its whole total to the later one; that is the
+		// evidence the result frame leaves.
 		mainThreadChanged := false
+		var postChangeModel string
 		usageFallbackModel := func() string {
 			if mainThreadChanged {
-				return contextModel
+				return postChangeModel
 			}
 			return opts.Model
 		}
@@ -360,6 +362,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				toolUseCount += turn.toolUses
 				if turn.callModel != "" {
 					contextModel, contextTokens = turn.callModel, turn.callTokens
+					if mainThreadChanged {
+						postChangeModel = turn.callModel
+					}
 				}
 				if !turn.understood {
 					unreadableAssistantCount++
@@ -381,6 +386,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					fallbackWatch = next
 					if change.Input["scope"] == "session" {
 						mainThreadChanged = true
+						postChangeModel = ""
 					}
 					sendReliable(runCtx, msgCh, change)
 				}

@@ -246,3 +246,21 @@ func runClaudeFixtureWithModel(t *testing.T, frames, model string) Result {
 		return Result{}
 	}
 }
+
+// A response from before the fallback is no evidence of what served after it.
+func TestClaudeUsageStaysUnknownWhenOnlyPreFallbackResponseExists(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+	frames := `{"type":"assistant","session_id":"s1","message":{"id":"m1","model":"claude-opus-5-5","content":[{"type":"text","text":"before"}],"usage":{"input_tokens":10,"output_tokens":0}}}
+` + incidentRefusalFrame + `
+{"type":"result","subtype":"success","session_id":"s1","result":"ok","usage":{"input_tokens":10,"output_tokens":5}}
+`
+	usage := runClaudeFixtureWithModel(t, frames, "claude-opus-5-5").Usage
+	for model, u := range usage {
+		if u.OutputTokens == 5 {
+			t.Fatalf("result total booked to %s with no post-fallback evidence: %#v", model, usage)
+		}
+	}
+}
