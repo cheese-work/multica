@@ -108,6 +108,9 @@ func (handler *Handler) sweepIncidentWorkspace(ctx context.Context, workspaceID 
 		open[row.Class], issues[row.Class] = incident.Open{LastFailure: last}, row.ID
 	}
 	var failures error
+	if settings.Incident.Mode == "act" {
+		failures = handler.deliverPendingIncidentDMs(ctx, workspaceID, settings)
+	}
 	for _, step := range incident.Plan(runs, open, now) {
 		slog.Info("incident_response step", "mode", settings.Incident.Mode, "workspace_id", uuidToString(workspaceID), "kind", step.Kind, "class", step.Class)
 		if settings.Incident.Mode != "act" {
@@ -165,43 +168,102 @@ func (handler *Handler) openIncident(ctx context.Context, workspaceID pgtype.UUI
 	if err != nil {
 		return fmt.Errorf("incident_response.notify_user_id: %w", err)
 	}
-	var message *db.ChatMessage
-	var session db.GetIncidentDMSessionRow
-	switch session, err = q.GetIncidentDMSession(ctx, db.GetIncidentDMSessionParams{WorkspaceID: workspaceID, CreatorID: notifyUser}); {
-	case errors.Is(err, pgx.ErrNoRows):
-		slog.Warn("incident_response: notify user has no DM to receive the message", "workspace_id", uuidToString(workspaceID))
-	case err != nil:
+	link := fmt.Sprintf("[%s-%d](mention://issue/%s)", handler.getIssuePrefix(ctx, workspaceID), issue.Number, issueID)
+	text := incident.DMText(step.Incident, link)
+	message, session, err := sendIncidentDM(ctx, q, workspaceID, notifyUser, text)
+	if err != nil {
 		return err
-	default:
-		link := fmt.Sprintf("[%s-%d](mention://issue/%s)", handler.getIssuePrefix(ctx, workspaceID), issue.Number, issueID)
-		created, err := q.CreateChatMessage(ctx, db.CreateChatMessageParams{
-			ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: incident.DMText(step.Incident, link),
-			SentVia: pgtype.Text{String: "system", Valid: true},
-		})
-		if err != nil {
-			return fmt.Errorf("incident DM: %w", err)
-		}
-		if err := q.TouchChatSession(ctx, session.ID); err != nil {
+	}
+	if message == nil {
+		// No active DM yet: keep the text on the incident so each sweep retries until it is delivered.
+		if err := writeIssueMetadata(ctx, tx, id, map[string]any{incidentDMTextKey: text}); err != nil {
 			return err
 		}
-		message = &created
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	pctx := context.WithoutCancel(ctx)
 	handler.publish(protocol.EventIssueCreated, uuidToString(workspaceID), "member", cfg.NotifyUserID, map[string]any{"issue": issueToResponse(issue, handler.getIssuePrefix(pctx, workspaceID))})
-	if message != nil {
-		sessionID := uuidToString(session.ID)
-		handler.publishChatFor(protocol.EventChatMessage, uuidToString(workspaceID), "agent", uuidToString(session.AgentID), cfg.NotifyUserID, sessionID, protocol.ChatMessagePayload{
-			MessageKind: message.MessageKind, ChatSessionID: sessionID, MessageID: uuidToString(message.ID),
-			Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt),
-		})
-	}
+	handler.publishIncidentDM(workspaceID, cfg.NotifyUserID, message, session)
 	return nil
 }
 
-// commentIncident adds the newer failures to the open incident, not a new issue.
+const incidentDMTextKey = "incident_dm_text"
+
+// sendIncidentDM writes the DM into the member's newest active DM. It returns a nil message when the member has none.
+func sendIncidentDM(ctx context.Context, q *db.Queries, workspaceID, notifyUser pgtype.UUID, text string) (*db.ChatMessage, db.GetIncidentDMSessionRow, error) {
+	session, err := q.GetIncidentDMSession(ctx, db.GetIncidentDMSessionParams{WorkspaceID: workspaceID, CreatorID: notifyUser})
+	if errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("incident_response: notify user has no DM yet, the message is held for the next sweep", "workspace_id", uuidToString(workspaceID))
+		return nil, session, nil
+	}
+	if err != nil {
+		return nil, session, err
+	}
+	created, err := q.CreateChatMessage(ctx, db.CreateChatMessageParams{
+		ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: text,
+		SentVia: pgtype.Text{String: "system", Valid: true},
+	})
+	if err != nil {
+		return nil, session, fmt.Errorf("incident DM: %w", err)
+	}
+	if err := q.TouchChatSession(ctx, session.ID); err != nil {
+		return nil, session, err
+	}
+	return &created, session, nil
+}
+
+func (handler *Handler) publishIncidentDM(workspaceID pgtype.UUID, notifyUserID string, message *db.ChatMessage, session db.GetIncidentDMSessionRow) {
+	if message == nil {
+		return
+	}
+	sessionID := uuidToString(session.ID)
+	handler.publishChatFor(protocol.EventChatMessage, uuidToString(workspaceID), "agent", uuidToString(session.AgentID), notifyUserID, sessionID, protocol.ChatMessagePayload{
+		MessageKind: message.MessageKind, ChatSessionID: sessionID, MessageID: uuidToString(message.ID),
+		Role: message.Role, Content: message.Content, CreatedAt: timestampToString(message.CreatedAt),
+	})
+}
+
+// deliverPendingIncidentDMs sends the held DM of each incident once the member has an active DM,
+// and clears the held text in the same transaction so a DM is never sent twice.
+func (handler *Handler) deliverPendingIncidentDMs(ctx context.Context, workspaceID pgtype.UUID, settings incidentSettings) error {
+	notifyUser, err := util.ParseUUID(settings.Incident.NotifyUserID)
+	if err != nil {
+		return fmt.Errorf("incident_response.notify_user_id: %w", err)
+	}
+	pending, err := handler.Queries.ListIncidentPendingDMs(ctx, workspaceID)
+	if err != nil {
+		return err
+	}
+	var failures error
+	for _, row := range pending {
+		failures = errors.Join(failures, handler.deliverPendingIncidentDM(ctx, workspaceID, notifyUser, settings.Incident.NotifyUserID, row))
+	}
+	return failures
+}
+
+func (handler *Handler) deliverPendingIncidentDM(ctx context.Context, workspaceID, notifyUser pgtype.UUID, notifyUserID string, row db.ListIncidentPendingDMsRow) error {
+	tx, err := handler.TxStarter.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	message, session, err := sendIncidentDM(ctx, handler.Queries.WithTx(tx), workspaceID, notifyUser, row.DmText)
+	if err != nil || message == nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE issue SET metadata = metadata - $2::text WHERE id = $1`, row.ID, incidentDMTextKey); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	handler.publishIncidentDM(workspaceID, notifyUserID, message, session)
+	return nil
+}
+
+// commentIncident adds// commentIncident adds the newer failures to the open incident, not a new issue.
 func (handler *Handler) commentIncident(ctx context.Context, workspaceID, issueID pgtype.UUID, step incident.Step) error {
 	tx, err := handler.TxStarter.Begin(ctx)
 	if err != nil {

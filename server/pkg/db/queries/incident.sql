@@ -36,3 +36,11 @@ WHERE cs.workspace_id = sqlc.arg('workspace_id')
   AND NOT EXISTS (SELECT 1 FROM channel_chat_session_binding b WHERE b.chat_session_id = cs.id)
 ORDER BY cs.updated_at DESC
 LIMIT 1;
+
+-- name: ListIncidentPendingDMs :many
+-- Incident issues whose one DM has not been delivered yet: the text waits in metadata until the member has an active DM.
+SELECT id, (metadata ->> 'incident_dm_text')::text AS dm_text
+FROM issue
+WHERE workspace_id = sqlc.arg('workspace_id')
+  AND metadata ->> 'incident_dm_text' IS NOT NULL
+ORDER BY created_at;

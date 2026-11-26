@@ -91,6 +91,40 @@ func (q *Queries) ListIncidentFailedRuns(ctx context.Context, arg ListIncidentFa
 	return items, nil
 }
 
+const listIncidentPendingDMs = `-- name: ListIncidentPendingDMs :many
+SELECT id, (metadata ->> 'incident_dm_text')::text AS dm_text
+FROM issue
+WHERE workspace_id = $1
+  AND metadata ->> 'incident_dm_text' IS NOT NULL
+ORDER BY created_at
+`
+
+type ListIncidentPendingDMsRow struct {
+	ID     pgtype.UUID `json:"id"`
+	DmText string      `json:"dm_text"`
+}
+
+// Incident issues whose one DM has not been delivered yet: the text waits in metadata until the member has an active DM.
+func (q *Queries) ListIncidentPendingDMs(ctx context.Context, workspaceID pgtype.UUID) ([]ListIncidentPendingDMsRow, error) {
+	rows, err := q.db.Query(ctx, listIncidentPendingDMs, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIncidentPendingDMsRow{}
+	for rows.Next() {
+		var i ListIncidentPendingDMsRow
+		if err := rows.Scan(&i.ID, &i.DmText); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listIncidentWorkspaces = `-- name: ListIncidentWorkspaces :many
 SELECT id, settings FROM workspace
 WHERE settings -> 'incident_response' ->> 'mode' IN ('shadow', 'act')

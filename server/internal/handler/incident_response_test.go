@@ -11,19 +11,25 @@ import (
 // member one DM and seeds three failed runs of one provider error class on three issues
 // (the 25/11 shape: same class, 3 runs, 2+ issues). Cleanup restores the workspace.
 func incidentSweepFixture(t *testing.T, mode string) (agentID string) {
+	return incidentSweepFixtureDM(t, mode, true)
+}
+
+// incidentSweepFixtureDM is incidentSweepFixture with the member DM optional: withDM false leaves the
+// member with no active DM, the case where the notification has nowhere to go yet.
+func incidentSweepFixtureDM(t *testing.T, mode string, withDM bool) (agentID string) {
 	t.Helper()
 	var previous []byte
 	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&previous)
 	dbfx.Exec(t, `UPDATE workspace SET settings = settings || jsonb_build_object('incident_response',
 		jsonb_build_object('mode', $2::text, 'notify_user_id', $3::text)) WHERE id = $1`, testWorkspaceID, mode, testUserID)
 	agentID = createHandlerTestAgent(t, "incident sweep agent", nil)
-	var sessionID string
-	dbfx.QueryRow(t, `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status)
-		VALUES ($1, $2, $3, 'incident dm', 'active') RETURNING id`, testWorkspaceID, agentID, testUserID).Scan(&sessionID)
+	if withDM {
+		seedIncidentDM(t, agentID)
+	}
 	t.Cleanup(func() {
 		ctx := context.Background()
 		testPool.Exec(ctx, `DELETE FROM issue WHERE workspace_id = $1 AND metadata ->> 'incident_class' IS NOT NULL`, testWorkspaceID)
-		testPool.Exec(ctx, `DELETE FROM chat_session WHERE id = $1`, sessionID)
+		testPool.Exec(ctx, `DELETE FROM chat_session WHERE workspace_id = $1 AND creator_id = $2 AND title = 'incident dm'`, testWorkspaceID, testUserID)
 		testPool.Exec(ctx, `UPDATE workspace SET settings = $2 WHERE id = $1`, testWorkspaceID, previous)
 	})
 	for _, title := range []string{"a", "b", "c"} {
@@ -39,6 +45,14 @@ func incidentSweepFixture(t *testing.T, mode string) (agentID string) {
 	// dbfx.Issue numbers by MAX+1; CreateIssue draws from issue_counter, so sync it.
 	dbfx.Exec(t, `UPDATE workspace SET issue_counter = GREATEST(issue_counter, (SELECT COALESCE(MAX(number), 0) FROM issue WHERE workspace_id = $1)) WHERE id = $1`, testWorkspaceID)
 	return agentID
+}
+
+func seedIncidentDM(t *testing.T, agentID string) string {
+	t.Helper()
+	var sessionID string
+	dbfx.QueryRow(t, `INSERT INTO chat_session (workspace_id, agent_id, creator_id, title, status)
+		VALUES ($1, $2, $3, 'incident dm', 'active') RETURNING id`, testWorkspaceID, agentID, testUserID).Scan(&sessionID)
+	return sessionID
 }
 
 func incidentCounts(t *testing.T) (issues, dms int) {
@@ -119,6 +133,29 @@ func TestValidateIncidentResponseSetting(t *testing.T) {
 	for _, c := range cases {
 		if err := validateIncidentResponseSetting(c.value); (err != nil) != c.wantErr {
 			t.Errorf("%s: err = %v, wantErr %v", c.name, err, c.wantErr)
+		}
+	}
+}
+
+// The member has no active DM when the incident opens: the incident is kept, the DM is held and
+// delivered once by the first sweep after a DM exists.
+func TestSweepIncidentsRetriesDMUntilDelivered(t *testing.T) {
+	agentID := incidentSweepFixtureDM(t, "act", false)
+	for sweep := 1; sweep <= 2; sweep++ {
+		if err := testHandler.SweepIncidents(context.Background()); err != nil {
+			t.Fatalf("sweep %d without DM: %v", sweep, err)
+		}
+		if issues, dms := incidentCounts(t); issues != 1 || dms != 0 {
+			t.Fatalf("sweep %d without DM: %d incident issues and %d DMs, want 1 and 0", sweep, issues, dms)
+		}
+	}
+	seedIncidentDM(t, agentID)
+	for sweep := 3; sweep <= 4; sweep++ {
+		if err := testHandler.SweepIncidents(context.Background()); err != nil {
+			t.Fatalf("sweep %d with DM: %v", sweep, err)
+		}
+		if issues, dms := incidentCounts(t); issues != 1 || dms != 1 {
+			t.Fatalf("sweep %d with DM: %d incident issues and %d DMs, want 1 and 1", sweep, issues, dms)
 		}
 	}
 }
