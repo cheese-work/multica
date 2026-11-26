@@ -6,7 +6,6 @@ import { ArrowRight, ChevronDown, ChevronRight, TriangleAlert } from "@multica/u
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { workflowHandoffPreviewOptions } from "@multica/core/issue-workflows";
-import type { HandoffPreviewBinding, WorkflowHandoffPreview } from "@multica/core/types";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
@@ -24,29 +23,6 @@ import { StatusIcon } from "../issues/components/status-icon";
 import { useStatusLabel } from "../issues/utils/status-label";
 import { useT } from "../i18n";
 import { BriefBlock } from "./handoff-form";
-
-/** What the person confirmed: whether to stop the previous run, and the state they saw. */
-export interface HandoffConfirmOptions {
-  stopPreviousRuns: boolean;
-  /** Present when a handoff was previewed; send it as `handoff_preview` so the
-   *  server refuses a confirmation the issue or workflow has outgrown. */
-  preview?: HandoffPreviewBinding;
-}
-
-/**
- * What a preview showed, as the binding the write is checked against: who the
- * issue was taken from and who it goes to. A preview that found no handoff
- * binds that result — no handler — so a handler that became resolvable since
- * is refused instead of taking the issue unconfirmed.
- */
-export function previewBinding(preview: WorkflowHandoffPreview): HandoffPreviewBinding {
-  return {
-    previous_assignee_type: preview.previous_assignee_type ?? null,
-    previous_assignee_id: preview.previous_assignee_id ?? null,
-    handler_type: preview.handoff ? preview.handler_type ?? null : null,
-    handler_id: preview.handoff ? preview.handler_id ?? null : null,
-  };
-}
 
 const FROM = "⁣from⁣";
 const TO = "⁣to⁣";
@@ -84,19 +60,24 @@ function useDuration() {
  * or the workflow changed), the move applies without asking.
  */
 export function WorkflowHandoffConfirmDialog({
+  open: openProp,
   issue,
   toStatus,
   toProject,
   onCancel,
   onConfirm,
+  onOpenChangeComplete,
 }: {
+  /** Override open state while keeping issue data mounted for exit animation. */
+  open?: boolean;
   /** The issue being moved; null keeps the dialog closed. */
   issue: { id: string; identifier: string } | null;
   /** The status being moved to; ignored with `toProject`. */
   toStatus: string;
   toProject?: { id: string; title: string } | null;
   onCancel: () => void;
-  onConfirm: (options: HandoffConfirmOptions) => void;
+  onConfirm: (options: { stopPreviousRuns: boolean }) => void;
+  onOpenChangeComplete?: (open: boolean) => void;
 }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
@@ -106,21 +87,11 @@ export function WorkflowHandoffConfirmDialog({
   const duration = useDuration();
   const [stop, setStop] = useState(true);
   const [briefOpen, setBriefOpen] = useState(false);
-  const open = issue !== null;
-  const { data: fetched, isPending, isError, isFetching, dataUpdatedAt, refetch } = useQuery({
+  const open = (openProp ?? true) && issue !== null;
+  const { data: preview, isPending, isError } = useQuery({
     ...workflowHandoffPreviewOptions(wsId, issue?.id ?? "", toProject ? "" : toStatus, toProject?.id),
     enabled: open,
   });
-  // The preview cache outlives the dialog by 30 seconds, so opening it again can
-  // find a result from before the workflow or the handler changed. Only a preview
-  // fetched since this opening counts: it alone may apply the move on its own,
-  // fill the dialog or enable the confirm button.
-  const openKey = open ? `${issue?.id}|${toStatus}|${toProject?.id ?? ""}` : "";
-  const [opening, setOpening] = useState({ key: "", at: 0 });
-  if (opening.key !== openKey) setOpening({ key: openKey, at: openKey ? Date.now() : 0 });
-  const fresh = open && opening.key === openKey && !isFetching && !isError && dataUpdatedAt >= opening.at;
-  const preview = fresh ? fetched : undefined;
-  const waiting = isPending || (open && !fresh && !isError);
   const target = toProject ? (preview?.to_status ?? "") : toStatus;
 
   useEffect(() => {
@@ -130,11 +101,11 @@ export function WorkflowHandoffConfirmDialog({
     }
   }, [open, issue?.id, toStatus, toProject?.id]);
 
-  // Nothing to confirm: apply as an ordinary status change, bound to that result.
+  // Nothing to confirm: apply as an ordinary status change.
   useEffect(() => {
-    if (open && preview && !preview.handoff) onConfirm({ stopPreviousRuns: false, preview: previewBinding(preview) });
+    if (open && preview && !preview.handoff) onConfirm({ stopPreviousRuns: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, preview, dataUpdatedAt]);
+  }, [open, preview]);
 
   const status = (key: string) => (
     <span className="inline-flex items-center gap-1">
@@ -188,7 +159,11 @@ export function WorkflowHandoffConfirmDialog({
   }
 
   return (
-    <Dialog open={open && !(preview && !preview.handoff)} onOpenChange={(v) => !v && onCancel()}>
+    <Dialog
+      open={open && !(preview && !preview.handoff)}
+      onOpenChange={(v) => !v && onCancel()}
+      onOpenChangeComplete={onOpenChangeComplete}
+    >
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>
@@ -209,17 +184,12 @@ export function WorkflowHandoffConfirmDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {waiting ? (
+        {isPending ? (
           <div className="flex justify-center py-6">
             <Spinner className="size-4" />
           </div>
         ) : isError ? (
-          <div role="alert" className="flex flex-wrap items-center gap-3">
-            <p className="text-body text-destructive">{t(($) => $.workflows.confirm.error)}</p>
-            <Button variant="outline" size="sm" onClick={() => void refetch()}>
-              {t(($) => $.workflows.editor.retry)}
-            </Button>
-          </div>
+          <p className="text-body text-destructive">{t(($) => $.workflows.confirm.error)}</p>
         ) : (
           <div className="space-y-4">
             {sentence && <div className="text-body leading-7">{sentence}</div>}
@@ -270,13 +240,8 @@ export function WorkflowHandoffConfirmDialog({
             {t(($) => $.workflows.confirm.cancel)}
           </Button>
           <Button
-            disabled={waiting || isError}
-            onClick={() =>
-              onConfirm({
-                stopPreviousRuns: stop && runs.length > 0 && !sameHandler,
-                preview: preview ? previewBinding(preview) : undefined,
-              })
-            }
+            disabled={isPending || isError}
+            onClick={() => onConfirm({ stopPreviousRuns: stop && runs.length > 0 && !sameHandler })}
           >
             {toProject
               ? t(($) => $.workflows.confirm.project_confirm, { project: toProject.title })

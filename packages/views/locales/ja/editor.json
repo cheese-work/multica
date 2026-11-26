@@ -1,46 +1,4 @@
 {
-  "plan_revision": {
-    "added": "追加：",
-    "removed": "削除：",
-    "revision": "リビジョン {{number}}",
-    "readonly": "読み取り専用",
-    "issue": "元のタスク",
-    "diff": "差分",
-    "split": "左右表示",
-    "unify": "統合表示",
-    "compare": "比較対象",
-    "choose_base": "基準のリビジョンを選択",
-    "change": "変更 {{current}} / {{total}}",
-    "previous": "前の変更",
-    "next": "次の変更",
-    "download": "ダウンロード",
-    "close": "閉じる",
-    "more": "その他のオプション",
-    "base": "基準",
-    "current": "現在",
-    "loading_revisions": "リビジョンを読み込み中…",
-    "revisions_error": "リビジョンを読み込めませんでした",
-    "no_earlier": "以前のリビジョンはありません",
-    "loading": "文書を読み込み中…",
-    "current_error": "文書を読み込めませんでした",
-    "loading_diff": "比較を読み込み中…",
-    "comparison_error": "比較を読み込めませんでした",
-    "too_large": "比較対象が大きすぎます。ファイルをダウンロードしてローカルで比較してください。",
-    "identical": "リビジョン間に変更はありません",
-    "empty": "この文書は空です",
-    "unchanged": "変更のない {{count}} 行",
-    "retry": "再試行"
-  },
-  "media": {
-    "title": "メディア",
-    "more": "その他",
-    "open_in_new_window": "新しいウィンドウで開く",
-    "open_failed": "メディアページを開けませんでした",
-    "loading": "メディアを読み込み中…",
-    "load_failed": "メディアを読み込めませんでした",
-    "offline": "オフライン — 最後に読み込んだ内容を表示しています。",
-    "retry": "再試行"
-  },
   "bubble_menu": {
     "bold": "太字",
     "italic": "斜体",
@@ -59,7 +17,7 @@
     },
     "heading_dropdown": {
       "text": "テキスト",
-      "normal_text": "標準テキスト",
+      "normal_text": "テキスト",
       "heading_1": "見出し 1",
       "heading_2": "見出し 2",
       "heading_3": "見出し 3"
@@ -86,7 +44,7 @@
     "image_copied": "画像をコピーしました",
     "copy_image_failed": "画像をコピーできませんでした",
     "canvas_label": "画像キャンバス。ドラッグで移動、スクロールで拡大縮小、ダブルクリックで実際のサイズに切り替えできます。",
-    "unavailable": "この画像は表示できないためスキップしました。"
+    "unavailable": "この画像は利用できなくなったためスキップされました。"
   },
   "canvas": {
     "zoom_in": "拡大",
@@ -142,8 +100,10 @@
     "copy_failed": "コピーできませんでした"
   },
   "mention": {
-    "group_users": "ユーザー",
+    "group_users": "メンバー",
     "group_issues": "タスク",
+    "group_projects": "プロジェクト",
+    "group_docs": "ドキュメント",
     "all_members": "すべてのメンバー",
     "agent_badge": "エージェント",
     "squad_badge": "スクワッド",
@@ -158,8 +118,6 @@
     "html_preview": "HTML プレビュー",
     "close_preview": "閉じる",
     "copy_code": "コードをコピー",
-    "show_preview": "プレビューを表示",
-    "show_source": "ソースを表示",
     "fullscreen": "全画面"
   },
   "dynamic_block": {
@@ -173,7 +131,10 @@
     "error_mermaid": "この図を描画できませんでした",
     "error_at_line": "{{message}}（{{line}} 行目）",
     "view_source": "ソースを表示",
-    "copy_error": "エラーをコピー"
+    "copy_error": "エラーをコピー",
+    "title": "タイトル",
+    "rename": "名前を変更",
+    "add_title": "タイトルを追加"
   },
   "file_card": {
     "uploading": "{{filename}} をアップロード中"
@@ -206,24 +167,10 @@
     "export_source": ".mmd をダウンロード"
   },
   "slash_command": {
-    "client_command": "Multica",
-    "runs_the_agent": "エージェントを実行",
-    "focus_hint": "[focus]",
-    "title_hint": "[タイトル]",
-    "message_hint": "[メッセージ]",
     "no_skills_configured": "設定済みスキルなし",
     "no_results": "一致するスキルなし",
     "commands": {
-      "note": "メモを追加 — エージェントをトリガーしません",
-      "compact": "この DM を要約して新しい DM で続ける",
-      "rename": "エージェントを実行せずにこの DM の名前を変更",
-      "fork": "この DM を新しい DM にコピー（任意のメッセージは新しい DM に送信）",
-      "preset": "このDMで使うプリセットを選ぶ",
-      "statistic": "この DM の使用量とコストを表示",
-      "archive": "エージェントを実行せずにこの DM をアーカイブ",
-      "pin": "この DM をピン留め、または解除",
-      "unseen": "この DM を未読にして閉じる",
-      "unarchive": "この DM のアーカイブを解除。エージェントには何も送信されません。"
+      "note": "メモを追加 — エージェントをトリガーしません"
     }
   },
   "table": {
@@ -283,7 +230,30 @@
       "start": "音声入力を開始"
     }
   },
-  "next_self_mention": {
-    "label": "次の自分へのメンション"
+  "block_menu": {
+    "label": "ブロックを挿入",
+    "blocks": {
+      "paragraph": "テキスト",
+      "heading1": "見出し 1",
+      "heading2": "見出し 2",
+      "heading3": "見出し 3",
+      "bulletList": "箇条書きリスト",
+      "orderedList": "番号付きリスト",
+      "taskList": "チェックリスト",
+      "blockquote": "引用",
+      "codeBlock": "コードブロック",
+      "mermaid": "Mermaid 図",
+      "table": "表",
+      "divider": "区切り線",
+      "image": "画像",
+      "file": "ファイル"
+    }
+  },
+  "block_handle": {
+    "add": "下に追加",
+    "options": "ドラッグで移動、クリックでメニュー",
+    "turn_into": "変換",
+    "duplicate": "複製",
+    "delete": "削除"
   }
 }

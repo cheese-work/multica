@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { render, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "@multica/core/api";
-import { ApiError, type ApiClient } from "@multica/core/api/client";
-import { SchemaValidationError } from "@multica/core/api/schema";
+import { ApiError } from "@multica/core/api/client";
+import type { ApiClient } from "@multica/core/api/client";
+import { inboxKeys } from "@multica/core/inbox/queries";
+import type { InboxItem } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { NavigationProvider } from "../../navigation";
 import type { NavigationAdapter } from "../../navigation";
@@ -224,79 +226,6 @@ describe("IssueDetailRoute with an identifier that names no issue", () => {
   });
 });
 
-describe("IssueDetailRoute when the lookup fails for a reason other than 404", () => {
-  // Regression (CHE-3411): a 5xx opened as "does not exist or has been deleted".
-  it("offers a retry instead of claiming the issue is deleted", async () => {
-    const getIssue = vi
-      .fn()
-      .mockRejectedValue(new ApiError("unavailable", 503, "Service Unavailable"));
-    setApiInstance({ getIssue } as unknown as ApiClient);
-    const qc = new QueryClient({
-      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
-    });
-
-    renderWithI18n(
-      <QueryClientProvider client={qc}>
-        <NavigationProvider
-          value={{
-            push,
-            replace,
-            back: vi.fn(),
-            pathname: "/acme/issues/ZZZ-134",
-            searchParams: new URLSearchParams(),
-            hash: "",
-            getShareableUrl: (p: string) => `https://app.multica.com${p}`,
-          }}
-        >
-          <IssueDetailRoute routeId="ZZZ-134" />
-        </NavigationProvider>
-      </QueryClientProvider>,
-    );
-
-    const retry = await screen.findByRole("button", { name: "Retry" });
-    expect(screen.queryByText(/does not exist or has been deleted/)).not.toBeInTheDocument();
-    fireEvent.click(retry);
-    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
-    qc.clear();
-  });
-});
-
-describe("IssueDetailRoute when the issue fails schema validation", () => {
-  // Upstream wins (v0.10.0): unreadable data is a generic load failure with retry.
-  it("shows the generic load failure and offers a retry", async () => {
-    const getIssue = vi
-      .fn()
-      .mockRejectedValue(new SchemaValidationError("GET /api/issues/:id", ["metadata.decision_park"]));
-    setApiInstance({ getIssue } as unknown as ApiClient);
-    const qc = new QueryClient({
-      defaultOptions: { queries: { staleTime: Infinity, retry: false } },
-    });
-
-    renderWithI18n(
-      <QueryClientProvider client={qc}>
-        <NavigationProvider
-          value={{
-            push,
-            replace,
-            back: vi.fn(),
-            pathname: "/acme/issues/CHE-3680",
-            searchParams: new URLSearchParams(),
-            hash: "",
-            getShareableUrl: (p: string) => `https://app.multica.com${p}`,
-          }}
-        >
-          <IssueDetailRoute routeId="CHE-3680" />
-        </NavigationProvider>
-      </QueryClientProvider>,
-    );
-
-    expect(await screen.findByText("Could not load issue.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
-    qc.clear();
-  });
-});
-
 describe("IssueDetailRoute loading sidebar layout", () => {
   it.each([
     [undefined, true],
@@ -342,5 +271,44 @@ describe("IssueDetailSkeleton embedded layouts", () => {
     expect(view.container.querySelector(".w-80.border-l")).toBeNull();
     view.unmount();
     localStorage.removeItem(storageKey);
+  });
+
+  it("reserves no Inbox bar on the issue page, even for an issue in the Inbox", () => {
+    const getIssue = vi.fn(() => new Promise<never>(() => {}));
+    setApiInstance({ getIssue, getBaseUrl: () => "" } as unknown as ApiClient);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    qc.setQueryData<InboxItem[]>(inboxKeys.list("ws-1"), [
+      {
+        id: "n-42",
+        workspace_id: "ws-1",
+        recipient_type: "member",
+        recipient_id: "member-1",
+        actor_type: "agent",
+        actor_id: "agent-1",
+        type: "new_comment",
+        severity: "info",
+        issue_id: "issue-42",
+        issue_identifier: "MUL-42",
+        title: "Keep Inbox chrome steady",
+        body: null,
+        issue_status: "in_review",
+        issue_priority: "none",
+        read: false,
+        archived: false,
+        created_at: "2026-11-23T00:00:00Z",
+        details: null,
+      },
+    ]);
+
+    const view = renderWithI18n(
+      <QueryClientProvider client={qc}>
+        {wrapper({ children: <IssueDetailRoute routeId="MUL-42" /> })}
+      </QueryClientProvider>,
+    );
+
+    expect(view.container.querySelector("[data-inbox-bar]")).toBeNull();
+
+    view.unmount();
+    qc.clear();
   });
 });

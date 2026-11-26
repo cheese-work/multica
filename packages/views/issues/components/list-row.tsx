@@ -11,20 +11,19 @@ import type { Issue, Project,
 import { formatDateOnly } from "@multica/core/issues/date";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { PropertyIcon } from "../../common/property-icon";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useWorkspacePaths, issueRouteRef } from "@multica/core/paths";
 import { useQuery } from "@tanstack/react-query";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { propertyListOptions } from "@multica/core/properties";
 import { CustomPropertyValueDisplay } from "./pickers/custom-property-picker";
 import { ProjectIcon } from "../../projects/components/project-icon";
-import { WorkflowPill } from "./workflow-pill";
 import { PriorityIcon } from "./priority-icon";
 import { ProgressRing } from "./progress-ring";
 import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { CustomStatusChip } from "./custom-status-chip";
-import { RunBudgetChip } from "./run-budget-chip";
+import { IssueBlockedMarker } from "./issue-blockers";
 import { IssueDuplicateOfMarker } from "./issue-duplicates";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { IssuePullRequestChips, useIssuePullRequestSummaries } from "./pull-request-chips";
@@ -35,9 +34,7 @@ import {
   useIsIssuePeeked,
   useIssuePeekLinkProps,
 } from "../surface/peek-context";
-import { AtSign } from "@multica/ui/icons";
-import { useHasUnreadMention } from "@multica/core/inbox";
-import { useLocale, useT } from "../../i18n";
+import { useLocale } from "../../i18n";
 
 export interface ChildProgress {
   done: number;
@@ -77,17 +74,15 @@ function ListRowContent({
   checkboxProps?: Pick<React.HTMLAttributes<HTMLDivElement>, "onClick" | "onMouseDown" | "onPointerDown">;
 }) {
   const locale = useLocale();
-  const { t } = useT("issues");
   const selection = useIssueSurfaceSelection();
   const peeked = useIsIssuePeeked(issue.id);
-  const peekLinkProps = useIssuePeekLinkProps(issue.id);
+  const peekLinkProps = useIssuePeekLinkProps(issue);
   const selected = selection.selectedIds.has(issue.id);
   const toggle = selection.toggle;
   const p = useWorkspacePaths();
   const storeProperties = useViewStore((s) => s.cardProperties);
   const cardPropertyIds = useViewStore((s) => s.cardPropertyIds);
   const rowWsId = useWorkspaceId();
-  const hasUnreadMention = useHasUnreadMention(rowWsId, issue.id);
   const { data: workspaceProperties = [] } = useQuery(propertyListOptions(rowWsId));
   const cardCustomProperties = cardPropertyIds
     .map((id) => workspaceProperties.find((p) => p.id === id))
@@ -118,7 +113,7 @@ function ListRowContent({
         data-peeked={peeked ? "" : undefined}
         style={containerStyle}
         {...containerProps}
-        className={`group/row flex h-[var(--issue-row-height)] items-center gap-2 px-[var(--issue-row-padding-x,1rem)] text-body transition-colors ${
+        className={`group/row flex h-[var(--issue-row-height)] items-center gap-2 px-[var(--issue-row-padding-x,1rem)] text-body transition-[background-color,color,opacity] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
           selected
             ? "bg-issue-row-selected hover:not-data-[popup-open]:bg-issue-row-selected data-[popup-open]:bg-issue-row-selected"
             : "hover:not-data-[popup-open]:bg-issue-row-hover data-[popup-open]:bg-issue-row-hover"
@@ -131,20 +126,26 @@ function ListRowContent({
           {storeProperties.priority && issue.priority !== "none" && (
             <PriorityIcon
               priority={issue.priority}
-              className={selected ? "hidden" : "group-hover/row:hidden"}
+              className={`transition-opacity duration-100 motion-reduce:transition-none ${
+                selected
+                  ? "opacity-0"
+                  : "group-hover/row:opacity-0 group-focus-within/row:opacity-0"
+              }`}
             />
           )}
           <input
             type="checkbox"
             checked={selected}
             onChange={() => toggle(issue.id)}
-            className={`absolute inset-0 cursor-pointer accent-primary ${
-              selected ? "" : "hidden group-hover/row:block"
+            className={`absolute inset-0 cursor-pointer accent-primary transition-opacity duration-100 motion-reduce:transition-none ${
+              selected
+                ? "opacity-100"
+                : "opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
             }`}
           />
         </div>
         <AppLink
-          href={p.issueDetail(issue.id)}
+          href={p.issueDetail(issueRouteRef(issue))}
           newTabTitle={issue.identifier}
           className={`flex flex-1 items-center gap-2 min-w-0 ${isDragging ? "pointer-events-none" : ""}`}
           {...peekLinkProps}
@@ -156,19 +157,9 @@ function ListRowContent({
 
           <span className="flex min-w-0 flex-1 items-center gap-1.5">
             <span className="truncate">{issue.title}</span>
-            {hasUnreadMention && (
-              <span
-                role="img"
-                aria-label={t(($) => $.list.unread_mention)}
-                data-testid="unread-mention-badge"
-                className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground"
-              >
-                <AtSign className="size-2.5" aria-hidden />
-              </span>
-            )}
             {/* Keep custom names visible when this row appears outside a status section. */}
             <CustomStatusChip status={issue.status} className="shrink-0" />
-            <RunBudgetChip issue={issue} className="shrink-0" />
+            <IssueBlockedMarker issue={issue} />
             <IssueDuplicateOfMarker issue={issue} insideLink />
             {showChildProgress && (
               <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5">
@@ -213,7 +204,6 @@ function ListRowContent({
               </span>
             )}
           </span>
-          <WorkflowPill workflowId={issue.workflow_id} />
           {showProject && (
             <span className="inline-flex shrink-0 items-center gap-1 text-caption text-muted-foreground max-w-[140px]">
               <ProjectIcon project={project} size="sm" />

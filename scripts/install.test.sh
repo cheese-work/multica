@@ -53,7 +53,7 @@ _run_installer() {
   local tmp="$1"
   local out="$tmp/install.out"
   local err="$tmp/install.err"
-  if ! env -u HOMEBREW_NO_AUTO_UPDATE PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
+  if ! PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
     MULTICA_BIN_DIR="$tmp/install-bin" \
     MULTICA_TEST_ARCHIVE="$tmp/multica.tar.gz" \
     bash "$ROOT_DIR/scripts/install.sh" >"$out" 2>"$err"; then
@@ -269,8 +269,6 @@ FRONTEND_PORT=3000
 JWT_SECRET=change-me-in-production
 POSTGRES_PASSWORD=multica
 DATABASE_URL=postgres://multica:multica@localhost:5432/multica?sslmode=disable
-MULTICA_SECRETS_KEY=
-MULTICA_SECRETS_KEY_PREVIOUS=
 ENVFILE
   touch "$server_dir/docker-compose.selfhost.yml"
 
@@ -322,14 +320,67 @@ case "${1:-}" in
   info) exit 0 ;;
   compose)
     shift
+    if [ -n "${MULTICA_TEST_NO_COMPOSE:-}" ]; then
+      echo "docker: 'compose' is not a docker command." >&2
+      exit 1
+    fi
     subcommand=""
     for arg in "$@"; do
       case "$arg" in
-        pull | up | port | version | ps | logs | down) subcommand="$arg"; break ;;
+        pull | up | port | config | version | ps | logs | down) subcommand="$arg"; break ;;
       esac
     done
     case "$subcommand" in
+      up) : >.stub-stack-up ;;
+      config)
+        # `config --quiet` is the installer's validation step. An old Compose
+        # rejects the file's top-level `name:` here (#1401).
+        for arg in "$@"; do
+          if [ "$arg" = "--quiet" ]; then
+            if [ -n "${MULTICA_TEST_COMPOSE_REJECTS_NAME:-}" ]; then
+              echo "(root) Additional property name is not allowed" >&2
+              exit 1
+            fi
+            exit 0
+          fi
+        done
+        # Opt-in, so the port matrix above never probes real host ports.
+        [ -n "${MULTICA_TEST_COMPOSE_CONFIG:-}" ] || exit 1
+        cat <<JSON
+{
+  "services": {
+    "backend": {
+      "ports": [
+        {
+          "mode": "ingress",
+          "host_ip": "127.0.0.1",
+          "target": 8080,
+          "published": "$(_published_backend_port)",
+          "protocol": "tcp"
+        }
+      ]
+    },
+    "frontend": {
+      "ports": [
+        {
+          "mode": "ingress",
+          "host_ip": "127.0.0.1",
+          "target": 3000,
+          "published": "$(_published_frontend_port)",
+          "protocol": "tcp"
+        }
+      ]
+    }
+  }
+}
+JSON
+        ;;
       port)
+        # Nothing is published until `up`, unless the test models this
+        # installation's own stack already running (an upgrade re-run).
+        if [ ! -f .stub-stack-up ] && [ -z "${MULTICA_TEST_STACK_RUNNING:-}" ]; then
+          exit 1
+        fi
         service=""
         for arg in "$@"; do
           case "$arg" in
@@ -342,7 +393,13 @@ case "${1:-}" in
           *) exit 1 ;;
         esac
         ;;
-      version) echo "2.30.0" ;;
+      version)
+        if [ -n "${MULTICA_TEST_COMPOSE_REJECTS_NAME:-}" ]; then
+          echo "Docker Compose version v2.2.3"
+        else
+          echo "2.30.0"
+        fi
+        ;;
     esac
     exit 0
     ;;
@@ -384,15 +441,7 @@ exit 0
 STUB
   chmod +x "$stub_bin/curl"
 
-  # openssl: `rand -base64 32` answers a 44-char base64 value with "/" and "="
-  # (the characters that break a "/"-delimited sed); `rand -hex` answers hex.
-  cat >"$stub_bin/openssl" <<'STUB'
-#!/usr/bin/env bash
-case "$*" in
-  *-base64*) printf 'ab/cdefghijklmnopqrstuvwxyz0123456789ABCDEF=\n' ;;
-  *) head -c 32 /dev/zero | od -An -tx1 | tr -d " \n" ;;
-esac
-STUB
+  printf '#!/usr/bin/env bash\nhead -c 32 /dev/zero | od -An -tx1 | tr -d " \\n"\n' >"$stub_bin/openssl"
   chmod +x "$stub_bin/openssl"
 }
 
@@ -482,32 +531,6 @@ empty env-file BACKEND_PORT falls through|s/^PORT=8080/PORT=9100/;s/^# BACKEND_P
   done <<<"$cases"
 }
 
-test_with_server_generates_secrets_key_once() {
-  local tmp line
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-
-  _setup_server_sandbox "$tmp"
-  _run_with_server "$tmp" || return 1
-  line="$(grep -E '^MULTICA_SECRETS_KEY=' "$tmp/server/.env")"
-  if ! [[ "$line" =~ ^MULTICA_SECRETS_KEY=[A-Za-z0-9+/]{43}=$ ]]; then
-    echo "fresh .env must carry a 44-char base64 MULTICA_SECRETS_KEY, got: $line" >&2
-    return 1
-  fi
-  if grep -q '^MULTICA_SECRETS_KEY_PREVIOUS=.' "$tmp/server/.env"; then
-    echo "MULTICA_SECRETS_KEY_PREVIOUS must stay empty" >&2
-    return 1
-  fi
-
-  # An existing .env is left alone.
-  printf 'MULTICA_SECRETS_KEY=keep-me\n' >"$tmp/server/.env"
-  _run_with_server "$tmp" || return 1
-  if [ "$(cat "$tmp/server/.env")" != "MULTICA_SECRETS_KEY=keep-me" ]; then
-    echo "existing .env was modified" >&2
-    return 1
-  fi
-}
-
 test_with_server_fails_when_compose_port_is_unavailable() {
   local tmp
   tmp="$(mktemp -d)"
@@ -553,164 +576,6 @@ STUB
   fi
 }
 
-# --- download progress (CHE-3541 step 3) ------------------------------------
-# Sandbox whose archive is ~2.6 MB and whose `curl` hands it over in 512 KiB
-# chunks, 0.4 s apart, so a pty run sees the bar move. FAKE_LENGTH becomes the
-# HEAD Content-Length (unset: none) and FAKE_REDIRECT_LENGTH the redirect's;
-# FAKE_FAIL=1 makes the download exit 22.
-_setup_slow_sandbox() {
-  local tmp="$1"
-  _setup_sandbox "$tmp"
-  head -c 2500000 /dev/urandom >"$tmp/payload/pad.bin"
-  tar -czf "$tmp/multica.tar.gz" -C "$tmp/payload" multica pad.bin
-  cat >"$tmp/stub-bin/curl" <<'STUB'
-#!/usr/bin/env bash
-if [[ "$*" == *"-sIL"* ]]; then
-  printf 'HTTP/2 302\r\ncontent-length: %s\r\n\r\nHTTP/2 200\r\n' "${FAKE_REDIRECT_LENGTH:-0}"
-  if [[ -n "${FAKE_LENGTH:-}" ]]; then printf 'content-length: %s\r\n' "$FAKE_LENGTH"; fi
-  printf '\r\n'
-  exit 0
-fi
-if [[ "$*" == *"-sI"* ]]; then
-  printf 'HTTP/2 302\r\nlocation: https://github.com/multica-ai/multica/releases/tag/v0.3.2\r\n'
-  exit 0
-fi
-out=""
-while [[ $# -gt 0 ]]; do
-  if [[ "$1" == "-o" ]]; then out="$2"; fi
-  shift
-done
-trap "" HUP # closing the pty must not hide a leaked curl
-echo $$ >>"$MULTICA_TEST_CURL_PIDS"
-[[ "${FAKE_FAIL:-}" == 1 ]] && { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
-n=0
-size=$(wc -c <"$MULTICA_TEST_ARCHIVE")
-while ((n * 524288 < size)); do
-  dd if="$MULTICA_TEST_ARCHIVE" bs=524288 skip=$n count=1 2>/dev/null >>"$out"
-  n=$((n + 1))
-  sleep 0.4
-done
-STUB
-  chmod +x "$tmp/stub-bin/curl"
-}
-
-# Run install.sh with stderr on a pty (script(1)); stdout+stderr land in
-# $tmp/tty.out. The shell's pid goes to $tmp/shell.pid. Extra args are env.
-_run_installer_tty() {
-  local tmp="$1"; shift
-  env "$@" PATH="$tmp/stub-bin:$tmp/install-bin:/usr/bin:/bin" \
-    MULTICA_BIN_DIR="$tmp/install-bin" \
-    MULTICA_TEST_ARCHIVE="$tmp/multica.tar.gz" \
-    MULTICA_TEST_CURL_PIDS="$tmp/curl.pids" \
-    script -qec "echo \$\$ >'$tmp/shell.pid'; exec bash '$ROOT_DIR/scripts/install.sh'" /dev/null \
-    >"$tmp/tty.out" 2>&1
-}
-
-test_tty_download_renders_known_size_bar() {
-  local tmp size
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_slow_sandbox "$tmp"
-  size=$(wc -c <"$tmp/multica.tar.gz")
-
-  _run_installer_tty "$tmp" FAKE_LENGTH="$size" || { cat "$tmp/tty.out" >&2; return 1; }
-  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
-  grep -Eq '^\[[#-]{20}\] +[0-9]+%  [0-9.]+ / 2\.[0-9] MB' "$tmp/tty.lines" || {
-    echo "expected a known-size bar line" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  grep -Eq '^\[#{20}\] 100%' "$tmp/tty.lines" || {
-    echo "expected the bar to reach 100%" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  for phase in Extracting Installing Installed; do
-    grep -qx "$phase" "$tmp/tty.lines" || { echo "missing phase line: $phase" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  done
-}
-
-test_tty_download_renders_unknown_size_line() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_slow_sandbox "$tmp"
-
-  _run_installer_tty "$tmp" || { cat "$tmp/tty.out" >&2; return 1; }
-  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
-  grep -Eq '^[0-9.]+ MB  [0-9.]+ MB/s' "$tmp/tty.lines" || {
-    echo "expected an unknown-size line with a rate" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  if grep -q '^\[' "$tmp/tty.lines"; then
-    echo "unknown size must not draw a bar" >&2; return 1
-  fi
-}
-
-test_tty_redirect_length_does_not_leak_into_final_response() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_slow_sandbox "$tmp"
-
-  _run_installer_tty "$tmp" FAKE_REDIRECT_LENGTH=123 || { cat "$tmp/tty.out" >&2; return 1; }
-  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
-  if grep -q '^\[' "$tmp/tty.lines"; then
-    echo "a redirect's Content-Length must not become the bar total" >&2
-    cat "$tmp/tty.lines" >&2; return 1
-  fi
-  grep -Eq '^[0-9.]+ MB  [0-9.]+ MB/s' "$tmp/tty.lines" || {
-    echo "expected unknown-size mode" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-}
-
-test_tty_download_failure_keeps_message_and_exit_code() {
-  local tmp rc=0
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_slow_sandbox "$tmp"
-
-  _run_installer_tty "$tmp" FAKE_FAIL=1 || rc=$?
-  [ "$rc" -eq 1 ] || { echo "expected exit 1, got $rc" >&2; return 1; }
-  grep -q "Failed to download CLI binary." "$tmp/tty.out" || {
-    echo "expected the download failure message" >&2; cat "$tmp/tty.out" >&2; return 1; }
-  grep -q "returned error: 404" "$tmp/tty.out" || {
-    echo "expected curl's own error to be replayed" >&2; cat "$tmp/tty.out" >&2; return 1; }
-}
-
-test_tty_interrupt_leaves_no_download_process() {
-  local tmp pid i rc
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_slow_sandbox "$tmp"
-
-  _run_installer_tty "$tmp" &
-  local runner=$!
-  for i in $(seq 50); do [ -s "$tmp/curl.pids" ] && break; sleep 0.1; done
-  [ -s "$tmp/curl.pids" ] || { echo "download never started" >&2; return 1; }
-  sleep 0.5
-  kill -TERM "$(cat "$tmp/shell.pid")"
-  rc=0
-  wait "$runner" || rc=$?
-  [ "$rc" -eq 143 ] || { echo "expected exit 143 after TERM, got $rc" >&2; return 1; }
-  sleep 0.3
-  while read -r pid; do
-    if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null || true
-      echo "download process $pid survived the interrupt" >&2
-      return 1
-    fi
-  done <"$tmp/curl.pids"
-}
-
-test_non_tty_download_stays_quiet() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_slow_sandbox "$tmp"
-  local size
-  size=$(wc -c <"$tmp/multica.tar.gz")
-
-  FAKE_LENGTH="$size" MULTICA_TEST_CURL_PIDS="$tmp/curl.pids" _run_installer "$tmp" 2>/dev/null || true
-  [ -x "$tmp/install-bin/multica" ] || { echo "install failed" >&2; cat "$tmp/install.err" >&2; return 1; }
-  if grep -q $'\r\|Extracting\|Installing$\|Installed$' "$tmp/install.err" "$tmp/install.out"; then
-    echo "non-TTY output must carry no progress" >&2
-    cat "$tmp/install.err" "$tmp/install.out" >&2
-    return 1
-  fi
-}
-
 test_cli_lookup_failure_does_not_claim_up_to_date() {
   local tmp
   tmp="$(mktemp -d)"
@@ -738,201 +603,6 @@ test_cli_lookup_failure_does_not_claim_up_to_date() {
     echo "installer should still finish successfully with the installed CLI" >&2
     cat "$tmp/install.out" >&2 || true
     return 1
-  fi
-}
-
-# --- Homebrew progress (CHE-3541 step 4) -----------------------------------
-# Fake `brew` whose `install`/`upgrade` "download" into $FAKE_CACHE the way real
-# Homebrew does: 3 x 512 KiB appended to <path>.incomplete, 0.4 s apart, then a
-# rename to <path>. Knobs: FAKE_DEPS (names of dependency downloads, 1 MiB
-# each), FAKE_PRESEED (owned path already cached), FAKE_UNRELATED (a bigger
-# foreign .incomplete grows alongside), FAKE_RETRY (partial file deleted and
-# restarted), FAKE_INSTALL_FAIL, FAKE_LIST_RC (`brew list` exit, default 1).
-# Every call is appended to $FAKE_BREW_LOG.
-_setup_brew_sandbox() {
-  local tmp="$1"
-  _setup_slow_sandbox "$tmp"
-  mkdir -p "$tmp/cache"
-  cat >"$tmp/stub-bin/brew" <<'STUB'
-#!/usr/bin/env bash
-log() { echo "$*" >>"$FAKE_BREW_LOG"; }
-grow() { head -c "$2" /dev/zero >>"$1"; }
-main="$FAKE_CACHE/multica--0.8.0"
-case "${1:-}" in
-  tap) exit 0 ;;
-  update) log "update"; exit 0 ;;
-  list) exit "${FAKE_LIST_RC:-1}" ;;
-  trust) log "$*"; touch "$FAKE_CACHE/.trusted"; exit 0 ;;
-  --cache|deps)
-    # Homebrew 4.6+ refuses to load a formula from a tap nobody trusted yet.
-    if [[ ! -e "$FAKE_CACHE/.trusted" ]]; then
-      echo "Error: Refusing to load formula $2 from untrusted tap multica-ai/tap." >&2; exit 1
-    fi
-    [[ "$1" == deps ]] && { log "deps $2"; for d in ${FAKE_DEPS:-}; do echo "$d"; done; exit 0; }
-    log "$*"; shift
-    for a in "$@"; do echo "$FAKE_CACHE/${a##*/}--0.8.0"; done ;;
-  install|upgrade)
-    log "$1 $2 auto=${HOMEBREW_NO_AUTO_UPDATE:-}"
-    if [[ -n "${FAKE_INSTALL_FAIL:-}" ]]; then echo "simulated brew install failure" >&2; exit 42; fi
-    if [[ -z "${FAKE_PRESEED:-}" ]]; then
-      if [[ -n "${FAKE_UNRELATED:-}" ]]; then
-        ( for i in 1 2 3 4; do grow "$FAKE_CACHE/other--1.0.incomplete" 1048576; sleep 0.4; done ) &
-      fi
-      if [[ -n "${FAKE_RETRY:-}" ]]; then
-        grow "$main.incomplete" 1048576; sleep 0.5; rm -f "$main.incomplete"; sleep 0.5
-      fi
-      for i in 1 2 3; do grow "$main.incomplete" 524288; sleep 0.4; done
-      mv "$main.incomplete" "$main"; sleep 0.5
-      for d in ${FAKE_DEPS:-}; do
-        grow "$FAKE_CACHE/$d--0.8.0.incomplete" 1048576; sleep 0.4
-        mv "$FAKE_CACHE/$d--0.8.0.incomplete" "$FAKE_CACHE/$d--0.8.0"; sleep 0.5
-      done
-      wait
-    fi
-    tar -xzf "$MULTICA_TEST_ARCHIVE" -C "$MULTICA_BIN_DIR" multica ;;
-  *) exit 0 ;;
-esac
-STUB
-  chmod +x "$tmp/stub-bin/brew"
-}
-
-_run_brew_tty() {
-  local tmp="$1"; shift
-  _run_installer_tty "$tmp" FAKE_CACHE="$tmp/cache" FAKE_BREW_LOG="$tmp/brew.log" "$@"
-}
-
-# Fails unless every "N MB" line start in $1 is >= the one before it.
-_mb_never_drops() {
-  grep -Eo '^[0-9.]+ MB' "$1" | awk '{ if ($1 < p) bad = 1; p = $1 } END { exit bad }'
-}
-
-_brew_phases_present() {
-  local phase
-  for phase in "Updating Homebrew" "Downloading and installing via Homebrew" "Installed"; do
-    grep -qx "$phase" "$1" || { echo "missing phase line: $phase" >&2; cat "$1" >&2; return 1; }
-  done
-}
-
-test_tty_brew_install_renders_measured_progress() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_brew_sandbox "$tmp"
-
-  _run_brew_tty "$tmp" || { cat "$tmp/tty.out" >&2; return 1; }
-  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
-  _brew_phases_present "$tmp/tty.lines"
-  grep -Eq '^[0-9.]+ MB  [0-9.]+ MB/s' "$tmp/tty.lines" || {
-    echo "expected MB and rate before exit" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  grep -Eq '^1\.5 MB' "$tmp/tty.lines" || { echo "expected 1.5 MB" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  _mb_never_drops "$tmp/tty.lines" || { echo "done count dropped across the rename" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  grep -q "auto=1" "$tmp/brew.log" || { echo "install must run with HOMEBREW_NO_AUTO_UPDATE=1" >&2; cat "$tmp/brew.log" >&2; return 1; }
-  grep -qx "trust --formula multica-ai/tap/multica" "$tmp/brew.log" || { echo "expected brew trust for the formula" >&2; cat "$tmp/brew.log" >&2; return 1; }
-  grep -qx "update" "$tmp/brew.log" || { echo "expected brew update" >&2; return 1; }
-}
-
-test_tty_brew_ignores_unrelated_incomplete_file() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_brew_sandbox "$tmp"
-
-  _run_brew_tty "$tmp" FAKE_UNRELATED=1 || { cat "$tmp/tty.out" >&2; return 1; }
-  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
-  grep -Eq '^1\.5 MB' "$tmp/tty.lines" || { echo "expected 1.5 MB" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  if grep -Eq '^(1\.[6-9]|[2-9]\.)[0-9]? MB' "$tmp/tty.lines"; then
-    echo "an unrelated .incomplete file was counted" >&2; cat "$tmp/tty.lines" >&2; return 1
-  fi
-}
-
-test_tty_brew_cache_hit_draws_no_line() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_brew_sandbox "$tmp"
-  head -c 1048576 /dev/zero >"$tmp/cache/multica--0.8.0"
-
-  _run_brew_tty "$tmp" FAKE_PRESEED=1 || { cat "$tmp/tty.out" >&2; return 1; }
-  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
-  if grep -Eq '^[0-9.]+ MB' "$tmp/tty.lines"; then
-    echo "all paths cached: no progress line expected" >&2; cat "$tmp/tty.lines" >&2; return 1
-  fi
-  _brew_phases_present "$tmp/tty.lines"
-}
-
-test_tty_brew_retry_never_shows_negative_rate() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_brew_sandbox "$tmp"
-
-  _run_brew_tty "$tmp" FAKE_RETRY=1 || { cat "$tmp/tty.out" >&2; return 1; }
-  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
-  grep -Eq '^1\.5 MB' "$tmp/tty.lines" || { echo "expected 1.5 MB" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  if grep -Eq -- '-[0-9.]+ MB/s' "$tmp/tty.lines"; then
-    echo "negative rate after the partial file restarted" >&2; cat "$tmp/tty.lines" >&2; return 1
-  fi
-}
-
-test_tty_brew_counts_dependency_download() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_brew_sandbox "$tmp"
-
-  _run_brew_tty "$tmp" FAKE_DEPS=depdl || { cat "$tmp/tty.out" >&2; return 1; }
-  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
-  grep -Eq '^2\.5 MB' "$tmp/tty.lines" || { echo "expected 2.5 MB incl. the dependency" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  grep -q "^--cache multica-ai/tap/multica depdl" "$tmp/brew.log" || {
-    echo "expected brew --cache over the formula and its deps" >&2; cat "$tmp/brew.log" >&2; return 1; }
-}
-
-test_tty_brew_upgrade_renders_measured_progress() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_brew_sandbox "$tmp"
-  printf '#!/usr/bin/env bash\necho "multica v0.3.1 (commit: old)"\n' >"$tmp/install-bin/multica"
-  chmod +x "$tmp/install-bin/multica"
-
-  _run_brew_tty "$tmp" FAKE_LIST_RC=0 || { cat "$tmp/tty.out" >&2; return 1; }
-  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
-  _brew_phases_present "$tmp/tty.lines"
-  grep -Eq '^[0-9.]+ MB  [0-9.]+ MB/s' "$tmp/tty.lines" || {
-    echo "expected MB and rate before exit" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  grep -q "^upgrade multica-ai/tap/multica auto=1" "$tmp/brew.log" || { cat "$tmp/brew.log" >&2; return 1; }
-  grep -q "upgraded via Homebrew" "$tmp/tty.out" || { echo "expected the success message" >&2; return 1; }
-}
-
-test_tty_brew_install_failure_falls_back_with_progress() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_brew_sandbox "$tmp"
-
-  _run_brew_tty "$tmp" FAKE_INSTALL_FAIL=1 || { cat "$tmp/tty.out" >&2; return 1; }
-  tr '\r' '\n' <"$tmp/tty.out" >"$tmp/tty.lines"
-  grep -q "Homebrew output (last 80 lines):" "$tmp/tty.out" || { echo "expected the failure dump" >&2; cat "$tmp/tty.out" >&2; return 1; }
-  grep -q "simulated brew install failure" "$tmp/tty.out" || { echo "expected the captured brew output" >&2; return 1; }
-  grep -Eq '^[0-9.]+ MB  [0-9.]+ MB/s' "$tmp/tty.lines" || {
-    echo "fallback download must show the T2 line" >&2; cat "$tmp/tty.lines" >&2; return 1; }
-  [ -x "$tmp/install-bin/multica" ] || { echo "fallback binary missing" >&2; return 1; }
-}
-
-test_non_tty_brew_path_is_unchanged() {
-  local tmp
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "$tmp"' RETURN
-  _setup_brew_sandbox "$tmp"
-
-  FAKE_CACHE="$tmp/cache" FAKE_BREW_LOG="$tmp/brew.log" FAKE_INSTALL_FAIL=1 _run_installer "$tmp"
-  if grep -Eq '^(update|--cache|deps)' "$tmp/brew.log"; then
-    echo "non-TTY must not call update, --cache or deps" >&2; cat "$tmp/brew.log" >&2; return 1
-  fi
-  grep -q "^install multica-ai/tap/multica auto=$" "$tmp/brew.log" || {
-    echo "non-TTY install must not set HOMEBREW_NO_AUTO_UPDATE" >&2; cat "$tmp/brew.log" >&2; return 1; }
-  if grep -q $'\r\|Updating Homebrew\|Installed$' "$tmp/install.err" "$tmp/install.out"; then
-    echo "non-TTY output must carry no progress" >&2; return 1
   fi
 }
 
@@ -978,27 +648,201 @@ STUB
   fi
 }
 
+# ---------------------------------------------------------------------------
+# --with-server: a host port that is already taken must stop the installer
+# before anything is pulled or started, with a fix the user can act on (#883).
+# The port comes from Compose's own resolution, so an ambient override is
+# checked rather than the .env value.
+# ---------------------------------------------------------------------------
+_HELD_PORT=""
+_HELD_PORT_PID=""
+
+# Starts a real listener on 127.0.0.1 and sets _HELD_PORT / _HELD_PORT_PID.
+_hold_port() {
+  local port_file="$1/held-port"
+  rm -f "$port_file"
+  python3 -c '
+import os, socket, sys, time
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+s.listen(16)
+s.settimeout(0.5)
+with open(sys.argv[1] + ".tmp", "w") as f:
+    f.write(str(s.getsockname()[1]))
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+deadline = time.time() + 120
+while time.time() < deadline:
+    try:
+        conn, _ = s.accept()
+        conn.close()
+    except socket.timeout:
+        pass
+' "$port_file" >/dev/null 2>&1 &
+  _HELD_PORT_PID=$!
+  for _ in $(seq 1 50); do
+    [ -s "$port_file" ] && break
+    sleep 0.1
+  done
+  _HELD_PORT="$(cat "$port_file")"
+}
+
+_release_port() {
+  if [ -n "$_HELD_PORT_PID" ]; then
+    kill "$_HELD_PORT_PID" 2>/dev/null || true
+    wait "$_HELD_PORT_PID" 2>/dev/null || true
+    _HELD_PORT_PID=""
+    _HELD_PORT=""
+  fi
+}
+
+# A port nothing listens on: bind an ephemeral one, then let it go.
+_free_port() {
+  python3 -c '
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+'
+}
+
+test_with_server_refuses_ports_already_in_use() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "skipping occupied-port tests: python3 not available" >&2
+    return 0
+  fi
+
+  local tmp held
+  tmp="$(mktemp -d)"
+  trap '_release_port; rm -rf "$tmp"' RETURN
+  _hold_port "$tmp"
+  held="$_HELD_PORT"
+
+  # label | .env mutation (sed) | ambient env | expected setting in the message
+  local cases="env-file PORT|s/^PORT=8080/PORT=$held/||PORT=<free port>
+ambient PORT beats .env||PORT=$held|PORT=<free port>
+env-file BACKEND_PORT|s/^# BACKEND_PORT=8080/BACKEND_PORT=$held/||PORT=<free port>
+env-file FRONTEND_PORT|s/^FRONTEND_PORT=3000/FRONTEND_PORT=$held/||FRONTEND_PORT=<free port>"
+
+  local label mutation ambient setting
+  while IFS='|' read -r label mutation ambient setting; do
+    [ -n "$label" ] || continue
+
+    rm -rf "$tmp/server" "$tmp/stub-bin"
+    _setup_server_sandbox "$tmp"
+    cp "$tmp/server/.env.example" "$tmp/server/.env"
+    if [ -n "$mutation" ]; then
+      sed "$mutation" "$tmp/server/.env" >"$tmp/server/.env.new"
+      mv "$tmp/server/.env.new" "$tmp/server/.env"
+    fi
+
+    local -a extra=(MULTICA_TEST_COMPOSE_CONFIG=1)
+    [ -z "$ambient" ] || extra+=("$ambient")
+    if _run_with_server "$tmp" "${extra[@]}" >/dev/null 2>&1; then
+      echo "[$label] installer must not continue when port $held is already in use" >&2
+      cat "$tmp/install.out" >&2 || true
+      return 1
+    fi
+    if ! grep -q "Port $held is already in use" "$tmp/install.err" ||
+      ! grep -qF "$setting" "$tmp/install.err"; then
+      echo "[$label] expected an actionable occupied-port error naming $held and $setting" >&2
+      cat "$tmp/install.err" >&2 || true
+      return 1
+    fi
+    if [ -f "$tmp/server/.stub-stack-up" ]; then
+      echo "[$label] installer started the stack despite the occupied port" >&2
+      return 1
+    fi
+  done <<<"$cases"
+}
+
+test_with_server_port_preflight_allows_free_and_own_ports() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "skipping occupied-port tests: python3 not available" >&2
+    return 0
+  fi
+
+  local tmp held free
+  tmp="$(mktemp -d)"
+  trap '_release_port; rm -rf "$tmp"' RETURN
+
+  # A free port goes straight through.
+  free="$(_free_port)"
+  _setup_server_sandbox "$tmp"
+  sed "s/^PORT=8080/PORT=$free/" "$tmp/server/.env.example" >"$tmp/server/.env"
+  _run_with_server "$tmp" MULTICA_TEST_COMPOSE_CONFIG=1 || return 1
+  _require_server_ports "$tmp" "free port" "$free" "3000" || return 1
+
+  # Re-running over this installation's own running stack: the port is busy
+  # only because Compose already publishes it for us, which is not a conflict.
+  _hold_port "$tmp"
+  held="$_HELD_PORT"
+  rm -rf "$tmp/server" "$tmp/stub-bin"
+  _setup_server_sandbox "$tmp"
+  sed "s/^PORT=8080/PORT=$held/" "$tmp/server/.env.example" >"$tmp/server/.env"
+  _run_with_server "$tmp" MULTICA_TEST_COMPOSE_CONFIG=1 MULTICA_TEST_STACK_RUNNING=1 || return 1
+  _require_server_ports "$tmp" "own running stack" "$held" "3000" || return 1
+}
+
+# A Compose release too old for the file's top-level `name:` (or no Compose v2
+# plugin at all) must stop the installer before anything is pulled or started,
+# with an error that says what to upgrade, instead of Compose's bare
+# "(root) Additional property name is not allowed" from `up` (#1401).
+_require_compose_preflight_failure() {
+  local tmp="$1" label="$2" expected="$3"
+
+  if grep -q "Pulling official Multica images" "$tmp/install.out" || [ -f "$tmp/server/.stub-stack-up" ]; then
+    echo "[$label] installer pulled or started the stack despite an unusable Docker Compose" >&2
+    cat "$tmp/install.out" >&2 || true
+    return 1
+  fi
+  if ! grep -qF "$expected" "$tmp/install.err"; then
+    echo "[$label] expected the error to contain: $expected" >&2
+    cat "$tmp/install.err" >&2 || true
+    return 1
+  fi
+}
+
+test_with_server_stops_on_compose_too_old_for_name() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  _setup_server_sandbox "$tmp"
+  cp "$tmp/server/.env.example" "$tmp/server/.env"
+  if _run_with_server "$tmp" MULTICA_TEST_COMPOSE_REJECTS_NAME=1 >/dev/null 2>&1; then
+    echo "installer must fail when Docker Compose rejects the self-host compose file" >&2
+    return 1
+  fi
+  _require_compose_preflight_failure "$tmp" "old compose" "Your Docker Compose is too old" || return 1
+  _require_compose_preflight_failure "$tmp" "old compose" "Found: Docker Compose version v2.2.3" || return 1
+  _require_compose_preflight_failure "$tmp" "old compose" "Additional property name is not allowed" || return 1
+}
+
+test_with_server_stops_without_compose_v2() {
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "$tmp"' RETURN
+
+  _setup_server_sandbox "$tmp"
+  cp "$tmp/server/.env.example" "$tmp/server/.env"
+  if _run_with_server "$tmp" MULTICA_TEST_NO_COMPOSE=1 >/dev/null 2>&1; then
+    echo "installer must fail when 'docker compose' is not available" >&2
+    return 1
+  fi
+  _require_compose_preflight_failure "$tmp" "no compose v2" "Docker Compose v2 is required" || return 1
+}
+
 test_brew_install_failure_falls_back_to_release_binary
 test_brew_tap_failure_falls_back_to_release_binary
 test_remote_ssh_install_prints_token_login_hint
 test_local_install_does_not_print_token_login_hint
 test_with_server_uses_compose_published_ports
-test_with_server_generates_secrets_key_once
 test_with_server_fails_when_compose_port_is_unavailable
-test_tty_download_renders_known_size_bar
-test_tty_download_renders_unknown_size_line
-test_tty_redirect_length_does_not_leak_into_final_response
-test_tty_download_failure_keeps_message_and_exit_code
-test_tty_interrupt_leaves_no_download_process
-test_non_tty_download_stays_quiet
-test_tty_brew_install_renders_measured_progress
-test_tty_brew_ignores_unrelated_incomplete_file
-test_tty_brew_cache_hit_draws_no_line
-test_tty_brew_retry_never_shows_negative_rate
-test_tty_brew_counts_dependency_download
-test_tty_brew_upgrade_renders_measured_progress
-test_tty_brew_install_failure_falls_back_with_progress
-test_non_tty_brew_path_is_unchanged
+test_with_server_refuses_ports_already_in_use
+test_with_server_port_preflight_allows_free_and_own_ports
+test_with_server_stops_on_compose_too_old_for_name
+test_with_server_stops_without_compose_v2
 test_with_server_fails_when_checkout_does_not_land
 test_cli_lookup_failure_does_not_claim_up_to_date
 echo "install.sh tests passed"

@@ -6,9 +6,9 @@ import { configStore } from "@multica/core/config";
 import {
   BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG,
   PLUGINS_V1_FLAG,
-  PROJECT_WORKFLOWS_V1_FLAG,
 } from "@multica/core/feature-flags";
 import { renderWithI18n } from "../../test/i18n";
+import { ScrollRestorationProvider } from "../../platform";
 
 // This file tests the settings SHELL — the chrome around the tabs — so every
 // tab panel is stubbed out. Their contents have their own test files. Profile
@@ -49,13 +49,11 @@ vi.mock("./channels-tab", async () => {
 });
 vi.mock("./preferences-tab", stub("PreferencesTab"));
 vi.mock("./tokens-tab", stub("TokensTab"));
-vi.mock("./passkeys-tab", stub("PasskeysTab"));
 vi.mock("./workspace-tab", stub("WorkspaceTab"));
 vi.mock("./members-tab", stub("MembersTab"));
 vi.mock("./code-tab", stub("CodeTab"));
 vi.mock("./notifications-tab", stub("NotificationsTab"));
 vi.mock("./labels-tab", stub("LabelsTab"));
-vi.mock("./issue-statuses-tab", stub("IssueStatusesTab"));
 vi.mock("../../workflows/workflows-tab", stub("WorkflowsTab"));
 vi.mock("./properties-tab", stub("PropertiesTab"));
 vi.mock("./quick-actions-tab", stub("QuickActionsTab"));
@@ -63,19 +61,23 @@ vi.mock("./keyboard-shortcuts-tab", stub("KeyboardShortcutsTab"));
 vi.mock("./plugins-tab", stub("PluginsTab"));
 vi.mock("./mcp-tab", stub("McpTab"));
 vi.mock("./billing-tab", stub("BillingTab"));
-vi.mock("./export-privacy-tab", stub("ExportPrivacyTab"));
+// The search index reads cached notification preferences; the shell has none.
+vi.mock("@tanstack/react-query", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@tanstack/react-query")>()),
+  useQuery: () => ({ data: undefined }),
+}));
 
 const shell = vi.hoisted(() => ({
   appsAvailable: false,
   role: "owner" as "owner" | "admin" | "member",
 }));
-vi.mock("./connected-apps-tab", () => ({
-  ConnectedAppsTab: () => <div>ConnectedAppsTab</div>,
+vi.mock("../../common/use-composio-available", () => ({
   useComposioAvailable: () => shell.appsAvailable,
 }));
 
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme" }),
+  useWorkspacePaths: () => ({ autopilots: () => "/acme/autopilots", apps: () => "/acme/apps" }),
 }));
 vi.mock("@multica/core/workspace/avatar-url", () => ({
   resolvePublicFileUrl: (url: string | null | undefined) => url ?? null,
@@ -230,6 +232,36 @@ describe("SettingsPage header", () => {
   });
 });
 
+describe("SettingsPage scroll restoration", () => {
+  // Every settings page shares the route, so one page's offset must not land
+  // on another when the content remounts.
+  it("gives each page its own saved offset", () => {
+    const get = vi.fn((key: string) =>
+      key === "settings:members:" ? { top: 360, height: 1400 } : undefined,
+    );
+    navigationState.search = "tab=members";
+    const { rerender } = renderWithI18n(
+      <ScrollRestorationProvider adapter={{ get }}>
+        <SettingsPage />
+      </ScrollRestorationProvider>,
+    );
+
+    const members = screen.getByText("MembersTab").closest<HTMLElement>("[data-tab-scroll-root]")!;
+    expect(members.getAttribute("data-tab-scroll-root")).toBe("settings:members:");
+    expect(members.scrollTop).toBe(360);
+
+    navigationState.search = "tab=labels";
+    rerender(
+      <ScrollRestorationProvider adapter={{ get }}>
+        <SettingsPage />
+      </ScrollRestorationProvider>,
+    );
+    const labels = screen.getByText("LabelsTab").closest<HTMLElement>("[data-tab-scroll-root]")!;
+    expect(labels.getAttribute("data-tab-scroll-root")).toBe("settings:labels:");
+    expect(labels.scrollTop).toBe(0);
+  });
+});
+
 describe("SettingsPage Plugin feature flag", () => {
   it("hides Plugins and falls back from a direct tab URL when disabled", () => {
     navigationState.search = "tab=plugins";
@@ -254,27 +286,32 @@ describe("SettingsPage Plugin feature flag", () => {
   });
 });
 
-describe("SettingsPage workflow feature flag", () => {
-  it("mounts workflows in workspace settings without losing wakeups", () => {
+describe("SettingsPage workflows", () => {
+  it("mounts workflows without feature flag configuration", () => {
     navigationState.search = "tab=workflows";
-    configStore.getState().setFeatureFlags({ [PROJECT_WORKFLOWS_V1_FLAG]: true });
 
     renderWithI18n(<SettingsPage />);
 
     expect(screen.getByText("WorkflowsTab")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Workflows" })).toHaveAttribute("aria-current", "page");
-    expect(screen.queryByRole("link", { name: "Issue Statuses" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Wakeups" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Issue statuses" })).not.toBeInTheDocument();
   });
 
-  it("keeps the status catalog when workflows are disabled", () => {
+  it("opens old status catalog links in workflows", () => {
     navigationState.search = "tab=issue-statuses";
 
     renderWithI18n(<SettingsPage />);
 
-    expect(screen.getByText("IssueStatusesTab")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Workflows" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Wakeups" })).toBeInTheDocument();
+    expect(screen.getByText("WorkflowsTab")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Workflows" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("sends old wakeup default links to the issue wakeups list", () => {
+    navigationState.search = "tab=wakeups";
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(replace).toHaveBeenCalledWith("/acme/autopilots?tab=wakeups");
   });
 });
 
@@ -304,40 +341,6 @@ describe("SettingsPage workspace subscription feature flag", () => {
   });
 });
 
-describe("SettingsPage Export Privacy role gate (CHE-771 N1)", () => {
-  it("hides Export Privacy and falls back from its direct URL for a member", () => {
-    shell.role = "member";
-    navigationState.search = "tab=export-privacy";
-
-    renderWithI18n(<SettingsPage />);
-
-    expect(
-      screen.queryByRole("link", { name: "Export Privacy" }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText("ExportPrivacyTab")).not.toBeInTheDocument();
-  });
-
-  it("shows Export Privacy for an admin", () => {
-    shell.role = "admin";
-
-    renderWithI18n(<SettingsPage />);
-
-    expect(
-      screen.getByRole("link", { name: "Export Privacy" }),
-    ).toBeInTheDocument();
-  });
-
-  it("shows Export Privacy for an owner", () => {
-    shell.role = "owner";
-
-    renderWithI18n(<SettingsPage />);
-
-    expect(
-      screen.getByRole("link", { name: "Export Privacy" }),
-    ).toBeInTheDocument();
-  });
-});
-
 describe("SettingsPage information architecture", () => {
   it("lists pages in flat sections under a single level of headings", () => {
     renderWithI18n(<SettingsPage />);
@@ -350,13 +353,12 @@ describe("SettingsPage information architecture", () => {
     ]);
     const personal = within(nav()).getByRole("region", { name: "Personal" });
     expect(within(personal).getByRole("link", { name: "Preferences" })).toBeInTheDocument();
-    expect(within(personal).getByRole("link", { name: "API Tokens" })).toBeInTheDocument();
+    expect(within(personal).getByRole("link", { name: "API tokens" })).toBeInTheDocument();
 
     const workspace = within(nav()).getByRole("region", { name: "Workspace" });
     expect(within(workspace).getByRole("link", { name: "Members" })).toBeInTheDocument();
     const issues = within(nav()).getByRole("region", { name: "Issues & workflow" });
-    // Workflows sit behind the project_workflows flag; the fork keeps Issue Statuses while it is off.
-    expect(within(issues).getByRole("link", { name: "Issue Statuses" })).toBeInTheDocument();
+    expect(within(issues).getByRole("link", { name: "Workflows" })).toBeInTheDocument();
     const connections = within(nav()).getByRole("region", { name: "Connections & extensions" });
     for (const name of ["Code", "Messaging", "MCP servers"]) {
       expect(within(connections).getByRole("link", { name })).toBeInTheDocument();
@@ -367,7 +369,7 @@ describe("SettingsPage information architecture", () => {
     renderWithI18n(<SettingsPage />);
     expect(
       within(nav()).queryByRole("link", {
-        name: /^(Issue|Chat|GitHub|Labs|Integrations|Repositories)$/,
+        name: /^(Issue|Chat|GitHub|Labs|Integrations|Repositories|Wakeups)$/,
       }),
     ).not.toBeInTheDocument();
   });
@@ -392,28 +394,38 @@ describe("SettingsPage information architecture", () => {
     );
   });
 
-  it("lists Connected apps with the workspace connections only when Composio is available", () => {
+  it("keeps accounts out of settings, sending old links to the Apps page's Accounts", () => {
+    shell.appsAvailable = true;
     const first = renderWithI18n(<SettingsPage />);
-    expect(screen.queryByRole("link", { name: "Connected apps" })).toBeNull();
+    expect(within(nav()).queryByRole("link", { name: /Accounts|Connected apps/ })).toBeNull();
     first.unmount();
 
-    shell.appsAvailable = true;
-    navigationState.search = "tab=integrations&connected=notion";
+    navigationState.search = "tab=accounts";
+    const second = renderWithI18n(<SettingsPage />);
+    expect(replace).toHaveBeenLastCalledWith("/acme/apps?tab=accounts");
+    second.unmount();
+
+    navigationState.search = "tab=connected-accounts";
     renderWithI18n(<SettingsPage />);
-    const personal = within(nav()).getByRole("region", { name: /Personal/ });
-    expect(within(personal).queryByRole("link", { name: "Connected apps" })).toBeNull();
-    expect(
-      within(nav()).getByRole("link", { name: "Connected apps" }),
-    ).toHaveAttribute("aria-current", "page");
-    expect(screen.getByText("ConnectedAppsTab")).toBeInTheDocument();
+    expect(replace).toHaveBeenLastCalledWith("/acme/apps?tab=accounts");
   });
 
-  it("lists Passkeys under the personal pages", () => {
-    navigationState.search = "tab=passkeys";
+  it("sends the retired Apps tab and team connect returns to the Apps page", () => {
+    shell.appsAvailable = true;
+    navigationState.search = "tab=apps";
+    const first = renderWithI18n(<SettingsPage />);
+    expect(replace).toHaveBeenLastCalledWith("/acme/apps");
+    first.unmount();
+
+    navigationState.search = "tab=apps&connected=notion&scope=team";
     renderWithI18n(<SettingsPage />);
-    const personal = within(nav()).getByRole("region", { name: /Personal/ });
-    expect(within(personal).getByRole("link", { name: "Passkeys" })).toHaveAttribute("aria-current", "page");
-    expect(screen.getByText("PasskeysTab")).toBeInTheDocument();
+    expect(replace).toHaveBeenLastCalledWith("/acme/apps?connected=notion");
+  });
+
+  it("sends a personal connect return to the Apps page's Accounts", () => {
+    navigationState.search = "tab=apps&connected=notion";
+    renderWithI18n(<SettingsPage />);
+    expect(replace).toHaveBeenLastCalledWith("/acme/apps?tab=accounts&connected=notion");
   });
 
   it("marks pages a member can only view", () => {

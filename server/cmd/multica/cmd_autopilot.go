@@ -131,10 +131,10 @@ func init() {
 	// create
 	autopilotCreateCmd.Flags().String("title", "", "Autopilot title (required)")
 	autopilotCreateCmd.Flags().String("description", "", "Autopilot description (used as the run prompt)")
-	autopilotCreateCmd.Flags().String("agent", "", "Assignee agent (name or ID) — required")
-	autopilotCreateCmd.Flags().String("mode", "", "Execution mode: create_issue, run_only or script (required)")
-	autopilotCreateCmd.Flags().String("script", "", "Allowlisted script name to run (requires --mode script). The description is never executed.")
-	autopilotCreateCmd.Flags().StringArray("arg", nil, "Argument passed to the script (repeatable; requires --script)")
+	autopilotCreateCmd.Flags().String("agent", "", "Assignee agent (name or ID); one of --agent, --squad, --squad-id is required")
+	autopilotCreateCmd.Flags().String("squad", "", "Assignee squad (name or ID)")
+	autopilotCreateCmd.Flags().String("squad-id", "", "Assignee squad ID (canonical UUID)")
+	autopilotCreateCmd.Flags().String("mode", "", "Execution mode: create_issue or run_only (required)")
 	autopilotCreateCmd.Flags().String("project", "", "Project ID (optional)")
 	autopilotCreateCmd.Flags().String("issue-title-template", "", "Template for issue titles (create_issue mode). Only {{date}} (UTC, YYYY-MM-DD) is interpolated; any other {{...}} token is rejected at create-time.")
 	autopilotCreateCmd.Flags().StringArray("subscriber", nil, "Member subscriber to notify for issues this autopilot creates (name or user ID; repeatable)")
@@ -143,13 +143,12 @@ func init() {
 	// update
 	autopilotUpdateCmd.Flags().String("title", "", "New title")
 	autopilotUpdateCmd.Flags().String("description", "", "New description")
-	autopilotUpdateCmd.Flags().String("if-description-sha256", "", "Only write --description if the live description's SHA-256 (hex) equals this value; fails with a conflict otherwise")
 	autopilotUpdateCmd.Flags().String("agent", "", "New assignee agent (name or ID)")
+	autopilotUpdateCmd.Flags().String("squad", "", "New assignee squad (name or ID)")
+	autopilotUpdateCmd.Flags().String("squad-id", "", "New assignee squad ID (canonical UUID)")
 	autopilotUpdateCmd.Flags().String("project", "", "New project ID (use empty string to clear)")
 	autopilotUpdateCmd.Flags().String("status", "", "New status (active, paused)")
-	autopilotUpdateCmd.Flags().String("mode", "", "New execution mode (create_issue, run_only or script)")
-	autopilotUpdateCmd.Flags().String("script", "", "Allowlisted script name to run (requires --mode script). The description is never executed.")
-	autopilotUpdateCmd.Flags().StringArray("arg", nil, "Argument passed to the script (repeatable; requires --script)")
+	autopilotUpdateCmd.Flags().String("mode", "", "New execution mode (create_issue or run_only)")
 	autopilotUpdateCmd.Flags().String("issue-title-template", "", "New issue title template. Only {{date}} (UTC, YYYY-MM-DD) is interpolated; any other {{...}} token is rejected.")
 	autopilotUpdateCmd.Flags().StringArray("subscriber", nil, "Replace subscribers with this member (name or user ID; repeatable)")
 	autopilotUpdateCmd.Flags().Bool("clear-subscribers", false, "Remove all autopilot subscribers")
@@ -171,7 +170,7 @@ func init() {
 	autopilotTriggerAddCmd.Flags().String("cron", "", "Cron expression (required for --kind schedule)")
 	autopilotTriggerAddCmd.Flags().String("timezone", "", "IANA timezone (default UTC; schedule only)")
 	autopilotTriggerAddCmd.Flags().String("label", "", "Optional human-readable label")
-	autopilotTriggerAddCmd.Flags().String("event-filters-file", "", "Read webhook event/action filters from a JSON array file (webhook only)")
+	autopilotTriggerAddCmd.Flags().String("event-filters-file", "", "Read webhook event/action filters, each with optional payload conditions, from a JSON array file (webhook only)")
 	autopilotTriggerAddCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// trigger-list
@@ -187,7 +186,7 @@ func init() {
 	autopilotTriggerUpdateCmd.Flags().String("cron", "", "New cron expression")
 	autopilotTriggerUpdateCmd.Flags().String("timezone", "", "New IANA timezone")
 	autopilotTriggerUpdateCmd.Flags().String("label", "", "New label")
-	autopilotTriggerUpdateCmd.Flags().String("event-filters-file", "", "Replace webhook event/action filters from a JSON array file (webhook only)")
+	autopilotTriggerUpdateCmd.Flags().String("event-filters-file", "", "Replace webhook event/action filters, each with optional payload conditions, from a JSON array file (webhook only)")
 	autopilotTriggerUpdateCmd.Flags().Bool("clear-event-filters", false, "Remove webhook filters and accept all events (webhook only)")
 	autopilotTriggerUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 }
@@ -238,7 +237,7 @@ func runAutopilotList(cmd *cobra.Command, _ []string) error {
 			strVal(a, "status"),
 			displayLastRunStatus(strVal(a, "last_run_status")),
 			strVal(a, "execution_mode"),
-			actors.agent(strVal(a, "assignee_id")),
+			formatAutopilotAssignee(a, actors),
 			relativeTimestamp(strVal(a, "next_run_at")),
 			relativeTimestamp(strVal(a, "last_run_at")),
 		})
@@ -298,7 +297,7 @@ func runAutopilotGet(cmd *cobra.Command, args []string) error {
 		strVal(ap, "title"),
 		strVal(ap, "status"),
 		strVal(ap, "execution_mode"),
-		actors.agent(strVal(ap, "assignee_id")),
+		formatAutopilotAssignee(ap, actors),
 		strVal(ap, "last_run_at"),
 	}}
 	cli.PrintTable(os.Stdout, headers, rows)
@@ -393,32 +392,6 @@ func webhookTokenHint(token string) string {
 	return token[len(token)-4:]
 }
 
-func validAutopilotMode(mode string) bool {
-	return mode == "create_issue" || mode == "run_only" || mode == "script"
-}
-
-// autopilotScriptConfigFromFlags builds the script_config body from --script
-// and --arg. isScriptMode says whether this command sets --mode script. It
-// returns nil for non-script commands, and rejects --script/--arg without
-// --mode script and --mode script without --script.
-func autopilotScriptConfigFromFlags(cmd *cobra.Command, isScriptMode bool) (map[string]any, error) {
-	name, _ := cmd.Flags().GetString("script")
-	args, _ := cmd.Flags().GetStringArray("arg")
-	if !isScriptMode {
-		if cmd.Flags().Changed("script") || len(args) > 0 {
-			return nil, fmt.Errorf("--script and --arg require --mode script")
-		}
-		return nil, nil
-	}
-	if name == "" {
-		return nil, fmt.Errorf("--mode script requires --script <name>")
-	}
-	if args == nil {
-		args = []string{}
-	}
-	return map[string]any{"name": name, "args": args}, nil
-}
-
 func runAutopilotCreate(cmd *cobra.Command, _ []string) error {
 	client, err := newAPIClient(cmd)
 	if err != nil {
@@ -432,37 +405,30 @@ func runAutopilotCreate(cmd *cobra.Command, _ []string) error {
 	if title == "" {
 		return fmt.Errorf("--title is required")
 	}
-	agent, _ := cmd.Flags().GetString("agent")
-	if agent == "" {
-		return fmt.Errorf("--agent is required (agent name or ID)")
-	}
 	mode, _ := cmd.Flags().GetString("mode")
-	scriptCfg, err := autopilotScriptConfigFromFlags(cmd, mode == "script")
-	if err != nil {
-		return err
-	}
 	if mode == "" {
-		return fmt.Errorf("--mode is required (create_issue, run_only or script)")
+		return fmt.Errorf("--mode is required (create_issue or run_only)")
 	}
-	if !validAutopilotMode(mode) {
-		return fmt.Errorf("--mode must be create_issue, run_only or script")
+	if mode != "create_issue" && mode != "run_only" {
+		return fmt.Errorf("--mode must be create_issue or run_only")
 	}
 
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
-	agentID, err := resolveAgent(ctx, client, agent)
+	assigneeType, assigneeID, hasAssignee, err := resolveAutopilotAssigneeFromFlags(ctx, client, cmd, true)
 	if err != nil {
-		return fmt.Errorf("resolve agent: %w", err)
+		return err
+	}
+	if !hasAssignee {
+		return fmt.Errorf("--agent, --squad, or --squad-id is required")
 	}
 
 	body := map[string]any{
 		"title":          title,
-		"assignee_id":    agentID,
+		"assignee_type":  assigneeType,
+		"assignee_id":    assigneeID,
 		"execution_mode": mode,
-	}
-	if scriptCfg != nil {
-		body["script_config"] = scriptCfg
 	}
 	if v, _ := cmd.Flags().GetString("description"); v != "" {
 		body["description"] = v
@@ -504,16 +470,6 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	modeVal, _ := cmd.Flags().GetString("mode")
-	modeChanged := cmd.Flags().Changed("mode")
-	if modeChanged && !validAutopilotMode(modeVal) {
-		return fmt.Errorf("--mode must be create_issue, run_only or script")
-	}
-	scriptCfg, err := autopilotScriptConfigFromFlags(cmd, modeChanged && modeVal == "script")
-	if err != nil {
-		return err
-	}
-
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
@@ -531,30 +487,13 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("description")
 		body["description"] = v
 	}
-	if cmd.Flags().Changed("if-description-sha256") {
-		if !cmd.Flags().Changed("description") {
-			return fmt.Errorf("--if-description-sha256 requires --description")
-		}
-		var config struct {
-			AutopilotDescriptionGuardSupported bool `json:"autopilot_description_guard_supported"`
-		}
-		if err := client.GetJSON(ctx, "/api/config", &config); err != nil {
-			return fmt.Errorf("check description guard support: %w", err)
-		}
-		if !config.AutopilotDescriptionGuardSupported {
-			return errors.New("this server version does not support --if-description-sha256; update the server before using it")
-		}
-		v, _ := cmd.Flags().GetString("if-description-sha256")
-		body["expected_description_sha256"] = v
+	assigneeType, assigneeID, hasAssignee, err := resolveAutopilotAssigneeFromFlags(ctx, client, cmd, false)
+	if err != nil {
+		return err
 	}
-	if cmd.Flags().Changed("agent") {
-		v, _ := cmd.Flags().GetString("agent")
-		agentID, resolveErr := resolveAgent(ctx, client, v)
-		if resolveErr != nil {
-			return fmt.Errorf("resolve agent: %w", resolveErr)
-		}
-		body["assignee_type"] = "agent"
-		body["assignee_id"] = agentID
+	if hasAssignee {
+		body["assignee_type"] = assigneeType
+		body["assignee_id"] = assigneeID
 	}
 	if cmd.Flags().Changed("project") {
 		v, _ := cmd.Flags().GetString("project")
@@ -575,13 +514,11 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 		body["status"] = v
 	}
 	if cmd.Flags().Changed("mode") {
-		body["execution_mode"] = modeVal
-		if scriptCfg != nil {
-			body["script_config"] = scriptCfg
-		} else {
-			// Leaving script mode: the server rejects a stored config on any other mode.
-			body["script_config"] = nil
+		v, _ := cmd.Flags().GetString("mode")
+		if v != "create_issue" && v != "run_only" {
+			return fmt.Errorf("--mode must be create_issue or run_only")
 		}
+		body["execution_mode"] = v
 	}
 	if cmd.Flags().Changed("issue-title-template") {
 		v, _ := cmd.Flags().GetString("issue-title-template")
@@ -603,7 +540,7 @@ func runAutopilotUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use flags like --title, --description, --agent, --status, --mode, --script, or --arg")
+		return fmt.Errorf("no fields to update; use flags like --title, --description, --agent, --status, --mode, etc.")
 	}
 
 	var result map[string]any
@@ -690,10 +627,13 @@ func runAutopilotTrigger(cmd *cobra.Command, args []string) error {
 // autopilotTriggerRequestError turns a failed trigger request into what the
 // user should read.
 //
-// FormatError surfaces the server's 403 message. These two stable codes add
-// guidance about the originating human for a manual trigger (#8078). Branch
-// on the code rather than the English sentence, which changes with copy edits
-// and disappears under translation.
+// FormatError deliberately collapses every 403 into generic "no access" copy so
+// a refusal cannot confirm that a resource exists. For a manual trigger that
+// hides the one refusal a workspace can actually act on — the calling run having
+// no originating human — which is exactly the silence #8078 was about. These two
+// refusals opt out by carrying a stable server code; the branch is on that code,
+// never on the English sentence, which changes with copy edits and disappears
+// under translation.
 func autopilotTriggerRequestError(err error) error {
 	switch cli.ServerErrorCode(err) {
 	case "autopilot_trigger_no_originator":
@@ -708,8 +648,8 @@ func autopilotTriggerRequestError(err error) error {
 // should read, for the same reason autopilotTriggerRequestError exists: an
 // autopilot write is authorized as the human who asked for it, so when YOU are
 // the one running this, "no access" is about them and not about you — and
-// these stable-code branches add that context beyond FormatError's server
-// message (MUL-7108). The branch is never on the English sentence.
+// FormatError's generic 403 copy cannot say which (MUL-7108). The branch is on
+// the server's stable code, never on the English sentence.
 func autopilotWriteRequestError(action string, err error) error {
 	switch cli.ServerErrorCode(err) {
 	case "autopilot_no_originator":
@@ -900,6 +840,10 @@ func runAutopilotTriggerAdd(cmd *cobra.Command, args []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
+	if err := requireWebhookPayloadConditionsSupport(ctx, client, filters); err != nil {
+		return err
+	}
+
 	autopilotRef, err := resolveAutopilotID(ctx, client, args[0])
 	if err != nil {
 		return fmt.Errorf("resolve autopilot: %w", err)
@@ -1026,6 +970,10 @@ func runAutopilotTriggerUpdate(cmd *cobra.Command, args []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
+	if err := requireWebhookPayloadConditionsSupport(ctx, client, filters); err != nil {
+		return err
+	}
+
 	autopilotRef, err := resolveAutopilotID(ctx, client, args[0])
 	if err != nil {
 		return fmt.Errorf("resolve autopilot: %w", err)
@@ -1050,8 +998,36 @@ func runAutopilotTriggerUpdate(cmd *cobra.Command, args []string) error {
 }
 
 type autopilotEventFilter struct {
-	Event   string   `json:"event"`
-	Actions []string `json:"actions,omitempty"`
+	Event      string                      `json:"event"`
+	Actions    []string                    `json:"actions,omitempty"`
+	Conditions []autopilotPayloadCondition `json:"conditions,omitempty"`
+}
+
+type autopilotPayloadCondition struct {
+	Path       string `json:"path"`
+	Op         string `json:"op"`
+	Value      any    `json:"value,omitempty"`
+	Values     []any  `json:"values,omitempty"`
+	IgnoreCase bool   `json:"ignore_case,omitempty"`
+}
+
+func requireWebhookPayloadConditionsSupport(ctx context.Context, client *cli.APIClient, filters []autopilotEventFilter) error {
+	for _, filter := range filters {
+		if len(filter.Conditions) == 0 {
+			continue
+		}
+		var config struct {
+			Supported bool `json:"webhook_payload_conditions_supported"`
+		}
+		if err := client.GetJSON(ctx, "/api/config", &config); err != nil {
+			return fmt.Errorf("check webhook payload condition support: %w", err)
+		}
+		if !config.Supported {
+			return fmt.Errorf("this server version does not support webhook payload conditions; update the server before saving them")
+		}
+		break
+	}
+	return nil
 }
 
 func autopilotEventFiltersInput(cmd *cobra.Command) ([]autopilotEventFilter, error) {
@@ -1153,6 +1129,59 @@ func resolveAutopilotSubscriberInputs(ctx context.Context, client *cli.APIClient
 	return inputs, nil
 }
 
+func resolveAutopilotAssigneeFromFlags(ctx context.Context, client *cli.APIClient, cmd *cobra.Command, required bool) (string, string, bool, error) {
+	agentSet := cmd.Flags().Changed("agent")
+	squadSet := cmd.Flags().Changed("squad")
+	squadIDSet := cmd.Flags().Changed("squad-id")
+
+	setCount := 0
+	for _, set := range []bool{agentSet, squadSet, squadIDSet} {
+		if set {
+			setCount++
+		}
+	}
+	if setCount > 1 {
+		return "", "", false, fmt.Errorf("--agent, --squad, and --squad-id are mutually exclusive")
+	}
+	if setCount == 0 {
+		if required {
+			return "", "", false, fmt.Errorf("--agent, --squad, or --squad-id is required")
+		}
+		return "", "", false, nil
+	}
+
+	if agentSet {
+		ref, _ := cmd.Flags().GetString("agent")
+		if strings.TrimSpace(ref) == "" {
+			return "", "", true, fmt.Errorf("--agent cannot be empty")
+		}
+		agentID, err := resolveAgent(ctx, client, ref)
+		if err != nil {
+			return "", "", true, fmt.Errorf("resolve agent: %w", err)
+		}
+		return "agent", agentID, true, nil
+	}
+
+	if squadIDSet {
+		id, _ := cmd.Flags().GetString("squad-id")
+		id = strings.TrimSpace(id)
+		if !uuidRegexp.MatchString(id) {
+			return "", "", true, fmt.Errorf("--squad-id must be a canonical UUID")
+		}
+		return "squad", id, true, nil
+	}
+
+	ref, _ := cmd.Flags().GetString("squad")
+	if strings.TrimSpace(ref) == "" {
+		return "", "", true, fmt.Errorf("--squad cannot be empty")
+	}
+	squadID, err := resolveSquad(ctx, client, ref)
+	if err != nil {
+		return "", "", true, fmt.Errorf("resolve squad: %w", err)
+	}
+	return "squad", squadID, true, nil
+}
+
 // Helpers
 
 // uuidRegexp matches a canonical UUID (8-4-4-4-12 hex).
@@ -1183,4 +1212,33 @@ func resolveAgent(ctx context.Context, client *cli.APIClient, nameOrID string) (
 
 	_, agentID, err := matchAssignee(nameOrID, assigneeKinds{agent: true}, candidates)
 	return agentID, err
+}
+
+// resolveSquad accepts either a UUID or a squad name (case-insensitive, with
+// exact matches preferred by resolveAssignee) and returns the squad UUID.
+func resolveSquad(ctx context.Context, client *cli.APIClient, nameOrID string) (string, error) {
+	if uuidRegexp.MatchString(nameOrID) {
+		return nameOrID, nil
+	}
+	squadOnly := assigneeKinds{squad: true}
+	kind, id, err := resolveAssignee(ctx, client, nameOrID, squadOnly)
+	if err != nil {
+		return "", err
+	}
+	if kind != "squad" {
+		return "", fmt.Errorf("%q resolved to %s; autopilot assignee must be an agent or squad", nameOrID, kind)
+	}
+	return id, nil
+}
+
+func formatAutopilotAssignee(autopilot map[string]any, actors actorDisplayLookup) string {
+	aID := strVal(autopilot, "assignee_id")
+	if aID == "" {
+		return ""
+	}
+	aType := strVal(autopilot, "assignee_type")
+	if aType == "" {
+		aType = "agent"
+	}
+	return actors.actor(aType, aID)
 }

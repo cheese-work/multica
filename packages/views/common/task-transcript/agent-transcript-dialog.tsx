@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, forwardRef } from "react";
+import { AnimatePresence, motion, useIsPresent } from "motion/react";
+import { prefersReducedMotion, useReducedMotion } from "@multica/core/appearance";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { UI_EASE_IN, UI_EASE_OUT, UI_EASE_OUT_CSS, UI_MOTION_DURATION } from "@multica/ui/lib/motion";
 import { useTraceIssueLabels } from "./use-trace-issue-labels";
 import { Virtuoso, type VirtuosoHandle, type Components } from "react-virtuoso";
 import {
@@ -12,8 +15,6 @@ import {
   XCircle,
   X,
   Loader2,
-  Copy,
-  Check,
   ChevronRight,
   Filter,
   FilePen,
@@ -27,11 +28,12 @@ import {
   Info,
   Coins,
   GitBranch,
-  Clock,
 } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
+import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { Button } from "@multica/ui/components/ui/button";
+import { CopyCheckIcon } from "@multica/ui/components/common/copy-check-icon";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { Dialog, DialogContent, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@multica/ui/components/ui/popover";
@@ -58,7 +60,7 @@ import type { AgentTask, Agent, AgentRuntime } from "@multica/core/types/agent";
 import { resolveWorkdirCopyTarget } from "@multica/core/issues";
 import { runtimeDisplayName, providerDisplayName } from "@multica/core/runtimes";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
-import { redactForType } from "./redact";
+import { redactSecrets } from "./redact";
 import {
   createLiveEndFollow,
   FOLLOW_EDGE_THRESHOLD,
@@ -72,7 +74,6 @@ import {
   isCallStep,
   isGroupRow,
   rowCalls,
-  silentMinutes,
   toolKindTotals,
   type TraceCallStep,
   type TraceGroupRow,
@@ -108,8 +109,6 @@ import {
   summarizeTaskUsage,
 } from "../../runtimes/utils";
 import { formatBytes } from "../format-bytes";
-import { RunInitContextDetails, initContextOf } from "./run-init-context-details";
-import { RunPresetDetails } from "./run-preset-details";
 import "../../editor/styles/code.css";
 import "./task-transcript.css";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
@@ -213,7 +212,6 @@ function StepIcon({ step, className }: { step: TraceStep; className?: string }) 
   if (!isCallStep(step)) {
     if (step.kind === "thinking") return <Brain className={className} />;
     if (step.kind === "error") return <CircleAlert className={className} />;
-    if (step.kind === "silence_warn") return <Clock className={className} />;
     return <Bot className={className} />;
   }
 
@@ -261,11 +259,11 @@ function RunDetailRow({
           <span className="text-muted-foreground">{label}</span>
           <span className="flex min-w-0 items-start gap-1.5">
             <span className={cn(valueClass, "flex-1")}>{value}</span>
-            {copied ? (
-              <Check className="mt-0.5 h-3 w-3 shrink-0 text-success" />
-            ) : (
-              <Copy className="mt-0.5 h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
-            )}
+            <CopyCheckIcon
+              copied={Boolean(copied)}
+              className="mt-0.5 h-3 w-3 shrink-0"
+              copyClassName="opacity-0 group-hover:opacity-100"
+            />
           </span>
         </button>
       </TooltipHint>
@@ -491,8 +489,6 @@ export function AgentTranscriptDialog({
   const filterOptions = useMemo(() => {
     const options = new Map<string, { label: string; step: TraceStep }>();
     for (const step of steps) {
-      // A watchdog marker is not something the agent did, so it is no facet.
-      if (step.kind === "silence_warn") continue;
       const key = stepFilterKey(step);
       if (options.has(key)) continue;
       options.set(key, {
@@ -634,6 +630,30 @@ export function AgentTranscriptDialog({
     return () => { cancelled = true; };
   }, [open, task.agent_id, task.runtime_id]);
 
+  const reduceMotion = useReducedMotion();
+  const isMobile = useIsMobile();
+  // Track rows that arrive live while the transcript is open so only newly
+  // streamed steps fade in (never historical rows mounted during Virtuoso scroll).
+  const knownSeqsRef = useRef<{ taskId: string; seqs: Set<number> } | null>(null);
+  const [enteringSeqs, setEnteringSeqs] = useState<ReadonlySet<number>>(() => new Set());
+  useEffect(() => {
+    if (!knownSeqsRef.current || knownSeqsRef.current.taskId !== task.id) {
+      knownSeqsRef.current = { taskId: task.id, seqs: new Set(displayRows.map((row) => row.seq)) };
+      setEnteringSeqs((prev) => (prev.size === 0 ? prev : new Set()));
+      return;
+    }
+    const added: number[] = [];
+    for (const row of displayRows) {
+      if (!knownSeqsRef.current.seqs.has(row.seq)) {
+        knownSeqsRef.current.seqs.add(row.seq);
+        if (isLive) added.push(row.seq);
+      }
+    }
+    if (added.length > 0) {
+      setEnteringSeqs((prev) => new Set([...prev, ...added]));
+    }
+  }, [task.id, displayRows, isLive]);
+
   // Elapsed time for live tasks
   useEffect(() => {
     if (!isLive || (!task.started_at && !task.dispatched_at)) return;
@@ -713,7 +733,7 @@ export function AgentTranscriptDialog({
       }
       events.push(row.item);
     }
-    const text = events.map((event) => redactForType(event.type, traceEventCopyText(event))).join("\n\n");
+    const text = events.map((event) => redactSecrets(traceEventCopyText(event))).join("\n\n");
     void copyText(text).then((ok) => {
       if (!ok) return;
       showCopied();
@@ -832,6 +852,8 @@ export function AgentTranscriptDialog({
           ? t(($) => $.transcript.trigger_chat)
           : task.kind === "quick_create"
             ? t(($) => $.transcript.trigger_quick_create)
+            : task.kind === "doc_comment" || task.doc_id
+            ? t(($) => $.transcript.trigger_doc_comment)
             : task.kind === "direct"
               ? t(($) => $.transcript.trigger_direct)
               : t(($) => $.transcript.trigger_initial);
@@ -870,7 +892,6 @@ export function AgentTranscriptDialog({
     !!task.branch_name ||
     !!reasonLabel ||
     !!task.error ||
-    !!task.preset_run ||
     !!createdLabel ||
     !!startedLabel ||
     !!completedLabel ||
@@ -1060,8 +1081,6 @@ export function AgentTranscriptDialog({
                           />
                         </>
                       )}
-                      {task.preset_run && <RunPresetDetails run={task.preset_run} />}
-                      <RunInitContextDetails report={initContextOf(task.result)} />
                       {usage && (
                         <>
                           <div className="my-2 h-px bg-border" />
@@ -1233,7 +1252,7 @@ export function AgentTranscriptDialog({
                   : t(($) => $.transcript.sort_chronological)}
               </DropdownMenuItem>
               <DropdownMenuItem onClick={handleCopyAll}>
-                {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+                <CopyCheckIcon copied={copied} />
                 {copyTranscriptLabel}
               </DropdownMenuItem>
             </DropdownMenuContent>
@@ -1288,6 +1307,7 @@ export function AgentTranscriptDialog({
                     formatText={formatText}
                     runStartMs={runStartMs}
                     isLive={isLive}
+                    entering={isLive && enteringSeqs.has(row.seq)}
                     selectedSeq={selectedSeq}
                     expanded={row.kind === "group" && expandedGroups.has(row.seq)}
                     onToggleGroup={handleToggleGroup}
@@ -1297,16 +1317,62 @@ export function AgentTranscriptDialog({
               />
             )}
           </div>
-          {selectedStep && (
-            <StepInspector
-              step={selectedStep}
-              runStartMs={runStartMs}
-              onClose={() => setSelectedSeq(null)}
-            />
-          )}
+          <AnimatePresence initial={false}>
+            {selectedStep && (
+              <StepInspectorDrawer
+                key="step-inspector-drawer"
+                isMobile={isMobile}
+                reduceMotion={reduceMotion}
+              >
+                <StepInspector
+                  step={selectedStep}
+                  runStartMs={runStartMs}
+                  onClose={() => setSelectedSeq(null)}
+                />
+              </StepInspectorDrawer>
+            )}
+          </AnimatePresence>
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function StepInspectorDrawer({
+  isMobile,
+  reduceMotion,
+  children,
+}: {
+  isMobile: boolean;
+  reduceMotion: boolean;
+  children: React.ReactNode;
+}) {
+  const isPresent = useIsPresent();
+  return (
+    <motion.div
+      inert={!isPresent}
+      // Width is always owned by motion: below md the inspector
+      // fills the dialog (its close button must stay in view), so
+      // it only fades; from md up it slides in as a drawer.
+      initial={reduceMotion ? false : { opacity: 0, width: isMobile ? "100%" : 0 }}
+      animate={{
+        opacity: 1,
+        width: isMobile ? "100%" : "auto",
+        transition: { duration: reduceMotion ? 0 : 0.2, ease: UI_EASE_OUT },
+      }}
+      exit={
+        reduceMotion
+          ? { opacity: 0, transition: { duration: 0 } }
+          : {
+              opacity: 0,
+              ...(isMobile ? {} : { width: 0 }),
+              transition: { duration: UI_MOTION_DURATION.fast, ease: UI_EASE_IN },
+            }
+      }
+      className="flex shrink-0 overflow-hidden"
+    >
+      {children}
+    </motion.div>
   );
 }
 
@@ -1427,6 +1493,7 @@ interface TranscriptRowProps {
   row: TraceRow;
   runStartMs?: number;
   isLive: boolean;
+  entering?: boolean;
   selectedSeq: number | null;
   expanded: boolean;
   onToggleGroup: (seq: number) => void;
@@ -1434,11 +1501,27 @@ interface TranscriptRowProps {
 }
 
 function TranscriptRow(props: TranscriptRowProps) {
-  const { row } = props;
-  if (isGroupRow(row)) return <GroupRow {...props} row={row} />;
-  if (!isCallStep(row) && row.kind === "text") return <ProseRow {...props} row={row} />;
-  if (!isCallStep(row) && row.kind === "silence_warn") return <SilenceRow {...props} row={row} />;
-  return <StepRow {...props} row={row} />;
+  const { row, entering } = props;
+  const rowRef = useRef<HTMLDivElement>(null);
+  const animatedRef = useRef(false);
+  useLayoutEffect(() => {
+    if (!entering || animatedRef.current) return;
+    animatedRef.current = true;
+    const el = rowRef.current;
+    if (!el || typeof el.animate !== "function" || prefersReducedMotion()) return;
+    const anim = el.animate(
+      [{ opacity: 0, transform: "translateY(3px)" }, { opacity: 1, transform: "translateY(0)" }],
+      { duration: 140, easing: UI_EASE_OUT_CSS },
+    );
+    return () => { anim.cancel(); };
+  }, [entering]);
+
+  const content = isGroupRow(row)
+    ? <GroupRow {...props} row={row} />
+    : !isCallStep(row) && row.kind === "text"
+      ? <ProseRow {...props} row={row} />
+      : <StepRow {...props} row={row} />;
+  return entering ? <div ref={rowRef}>{content}</div> : content;
 }
 
 /** The offset column: where in the run this happened. */
@@ -1530,43 +1613,6 @@ function ProseRow({ row, runStartMs }: TranscriptRowProps & { row: TraceMessageS
   );
 }
 
-/** The daemon's "no output" marker: a muted line with nothing to open. */
-function SilenceRow({ row, runStartMs }: TranscriptRowProps & { row: TraceMessageStep }) {
-  const { t } = useT("agents");
-  const minutes = silentMinutes(row.item.content);
-  return (
-    <div className="flex items-start gap-2 px-4 py-1.5">
-      <OffsetCell startedAt={row.startedAt} runStartMs={runStartMs} />
-      <span aria-hidden className="mt-0.5 w-0.5 self-stretch rounded-full bg-border" />
-      <StepIcon step={row} className="mt-1 h-3 w-3 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1 text-micro text-muted-foreground">
-        {minutes === undefined
-          ? t(($) => $.transcript.silence_warn_unknown)
-          : t(($) => $.transcript.silence_warn, { minutes })}
-      </span>
-    </div>
-  );
-}
-
-/** The daemon's `tool_stalled` marker on a call. A call that has since
- *  returned shows nothing; a call with no result in a run that is no longer
- *  live ended without one, so it never says "still running". */
-function StalledBadge({ call, isLive }: { call: TraceCallStep; isLive: boolean }) {
-  const { t } = useT("agents");
-  if (!call.stalled || call.result) return null;
-  const minutes = silentMinutes(call.stalled.content);
-  const text = isLive
-    ? minutes === undefined
-      ? t(($) => $.transcript.tool_stalled_unknown)
-      : t(($) => $.transcript.tool_stalled, { minutes })
-    : minutes === undefined
-      ? t(($) => $.transcript.tool_stalled_ended_unknown)
-      : t(($) => $.transcript.tool_stalled_ended, { minutes });
-  return (
-    <span className="shrink-0 rounded-sm bg-warning/10 px-1 text-micro text-warning">{text}</span>
-  );
-}
-
 /** One call, one thinking block, or one error: a line, with its detail one
  *  click away in the inspector. */
 function StepRow({
@@ -1628,7 +1674,7 @@ function StepRow({
       <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
         <span
           className={cn(
-            "shrink-0 text-caption font-medium",
+            "max-w-[60%] shrink-0 truncate text-caption font-medium",
             row.kind === "error" ? "text-destructive" : "text-foreground",
           )}
         >
@@ -1642,7 +1688,6 @@ function StepRow({
         >
           {summary}
         </span>
-        {call && <StalledBadge call={call} isLive={isLive} />}
       </span>
       <DurationCell ms={call?.durationMs} pending={pending} />
     </button>
@@ -1654,7 +1699,6 @@ function GroupRow({
   row,
   formatText,
   runStartMs,
-  isLive,
   selectedSeq,
   expanded,
   onToggleGroup,
@@ -1670,8 +1714,6 @@ function GroupRow({
     [t, formatText],
   );
 
-  const stalledMember = row.steps.find((step) => step.stalled && !step.result);
-
   return (
     <div className={cn(selectedSeq !== null && row.steps.some((s) => s.seq === selectedSeq) && "bg-brand/5")}>
       <button
@@ -1685,12 +1727,12 @@ function GroupRow({
         <ChevronRight
           aria-hidden
           className={cn(
-            "mt-1 h-3 w-3 shrink-0 text-faint-foreground transition-transform",
+            "mt-1 h-3 w-3 shrink-0 text-faint-foreground transition-transform duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
             expanded && "rotate-90",
           )}
         />
         <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-          <span className="shrink-0 text-caption font-medium">{row.tool}</span>
+          <span className="max-w-[60%] shrink-0 truncate text-caption font-medium">{row.tool}</span>
           {/* Name the first thing it touched, not just how many: "Read · 4
               calls" hides the one detail that makes a folded group scannable. */}
           <span className="truncate font-mono text-micro text-muted-foreground">
@@ -1699,7 +1741,6 @@ function GroupRow({
           <span className="shrink-0 text-micro text-faint-foreground">
             {t(($) => $.transcript.group_calls, { count: row.steps.length })}
           </span>
-          {stalledMember && <StalledBadge call={stalledMember} isLive={isLive} />}
         </span>
         <DurationCell ms={row.durationMs} />
       </button>
@@ -1718,7 +1759,6 @@ function GroupRow({
               <span className="truncate font-mono text-muted-foreground">
                 {callSummary(step, summaryLabels) || step.tool}
               </span>
-              <StalledBadge call={step} isLive={isLive} />
               {step.durationMs === undefined ? (
                 <span className="ml-auto shrink-0" />
               ) : (
@@ -1775,6 +1815,7 @@ function StepInspector({
   onClose: () => void;
 }) {
   const { t } = useT("agents");
+  const reduceMotion = useReducedMotion();
   const [copied, showCopied] = useCopyFeedback();
 
   const at = timeMs(step.startedAt);
@@ -1786,12 +1827,12 @@ function StepInspector({
   const handleCopy = useCallback(() => {
     const parts: string[] = [];
     if (call) {
-      if (call.call) parts.push(redactForType(call.call.type, traceEventCopyText(call.call)));
-      if (call.result) parts.push(redactForType(call.result.type, traceEventCopyText(call.result)));
+      if (call.call) parts.push(traceEventCopyText(call.call));
+      if (call.result) parts.push(traceEventCopyText(call.result));
     } else if (message) {
-      parts.push(redactForType(message.item.type, traceEventCopyText(message.item)));
+      parts.push(traceEventCopyText(message.item));
     }
-    void copyText(parts.join("\n\n")).then((ok) => {
+    void copyText(redactSecrets(parts.join("\n\n"))).then((ok) => {
       if (!ok) return;
       showCopied();
     });
@@ -1813,8 +1854,8 @@ function StepInspector({
     <aside className="flex w-full shrink-0 flex-col border-l-0 bg-muted/25 md:w-[26rem] md:border-l">
       <div className="flex items-center gap-2 border-b px-3 py-2">
         <StepIcon step={step} className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="shrink-0 text-label font-semibold">{title}</span>
-        <span className="flex min-w-0 flex-1 items-center gap-1.5 text-micro text-muted-foreground">
+        <span title={title} className="line-clamp-3 min-w-0 wrap-anywhere text-label font-semibold">{title}</span>
+        <span className="flex flex-1 items-center gap-1.5 whitespace-nowrap text-micro text-muted-foreground">
           {offset && <span className="font-mono tabular-nums">{offset}</span>}
           {call?.durationMs !== undefined && (
             <>
@@ -1835,7 +1876,7 @@ function StepInspector({
           tooltipSide="bottom"
           className="shrink-0 text-muted-foreground"
         >
-          {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+          <CopyCheckIcon copied={copied} />
         </IconButton>
         <IconButton
           variant="ghost"
@@ -1849,24 +1890,31 @@ function StepInspector({
         </IconButton>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {call ? (
-          <>
-            {call.call && (
-              <InspectorSection label={t(($) => $.transcript.step_input)}>
-                <StepBody item={call.call} />
-              </InspectorSection>
-            )}
-            {call.result && (
-              <InspectorSection label={t(($) => $.transcript.step_result)}>
-                <StepBody item={call.result} />
-              </InspectorSection>
-            )}
-          </>
-        ) : (
-          <InspectorSection label={title}>
-            <ToolDetailSurface text={redactForType(message?.item.type ?? "text", message?.item.content ?? "")} />
-          </InspectorSection>
-        )}
+        <motion.div
+          key={step.seq}
+          initial={reduceMotion ? false : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ duration: reduceMotion ? 0 : 0.12, ease: UI_EASE_OUT }}
+        >
+          {call ? (
+            <>
+              {call.call && (
+                <InspectorSection label={t(($) => $.transcript.step_input)}>
+                  <StepBody item={call.call} />
+                </InspectorSection>
+              )}
+              {call.result && (
+                <InspectorSection label={t(($) => $.transcript.step_result)}>
+                  <StepBody item={call.result} />
+                </InspectorSection>
+              )}
+            </>
+          ) : (
+            <InspectorSection label={title}>
+              <ToolDetailSurface text={redactSecrets(message?.item.content ?? "")} />
+            </InspectorSection>
+          )}
+        </motion.div>
       </div>
     </aside>
   );
@@ -1916,8 +1964,8 @@ export function StepBody({ item }: { item: TimelineItem }) {
   // Tool input has no server-side budget, so it is clipped for display.
   const clipForDisplay = (text: string) =>
     text.length > DISPLAY_CLIP_CHARS
-      ? `${redactForType(item.type, text.slice(0, DISPLAY_CLIP_CHARS))}\n${t(($) => $.transcript.display_clipped)}`
-      : redactForType(item.type, text);
+      ? `${redactSecrets(text.slice(0, DISPLAY_CLIP_CHARS))}\n${t(($) => $.transcript.display_clipped)}`
+      : redactSecrets(text);
 
   switch (detail.kind) {
     case "diff":
@@ -1938,7 +1986,7 @@ export function StepBody({ item }: { item: TimelineItem }) {
       // clipping it again could only shave a couple of hundred more characters
       // — under a note that already reports the same loss.
       const clipped =
-        item.type === "tool_result" ? redactForType(item.type, detail.text) : clipForDisplay(detail.text);
+        item.type === "tool_result" ? redactSecrets(detail.text) : clipForDisplay(detail.text);
       const path = item.type === "tool_use" ? readPathFromInput(item.input) : undefined;
       return (
         <ToolDetailSurface
@@ -1956,3 +2004,4 @@ function readPathFromInput(input: Record<string, unknown> | undefined): string |
   const path = input.file_path ?? input.path;
   return typeof path === "string" ? path : undefined;
 }
+

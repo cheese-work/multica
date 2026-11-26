@@ -2,28 +2,13 @@
 
 import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { usePresence } from "motion/react";
 import { autoUpdate, computePosition, flip, hide, offset, shift } from "@floating-ui/dom";
-
-/**
- * Touch browsers (iOS) put their own selection menu above the selection, so the
- * selection action goes below it. It flips above only when there is no room below, and only
- * shifts horizontally (shift's default), never vertically, so it cannot cover the selected text.
- */
-const TOUCH_GAP_BELOW = 28;
-const TOUCH_GAP_ABOVE = 88;
-/**
- * Measured on a real iPhone: the end-handle knob hangs ~20px below the selection, and the native
- * menu spans 23..78px above it. Below clears the knob; above (no room below) clears the menu.
- */
-const touchGap = (placement: string) => (placement.startsWith("top") ? TOUCH_GAP_ABOVE : TOUCH_GAP_BELOW);
-function placementFor(marker: boolean, touch: boolean) {
-  if (marker) return "right-start";
-  return touch ? "bottom" : "top";
-}
-const isTouch = () => !!window.matchMedia?.("(pointer: coarse)").matches;
+import { prefersReducedMotion } from "@multica/core/appearance";
+import { UI_EASE_OUT_CSS, UI_MOTION_DURATION } from "@multica/ui/lib/motion";
 
 /** Match the description's EditorBubbleMenu geometry for readonly selections. */
-export function CommentSelectionBubble({ range, source, children, owner, markerRanges, markerZIndex = 20, onPositioned, portalTarget, keepInView = false, keepVisibleWhenDetached = false }: {
+export function CommentSelectionBubble({ range, source, children, owner, markerRanges, markerZIndex = 20, onPositioned, keepVisibleWhenDetached = false }: {
   range: Range;
   source: HTMLElement;
   children: ReactNode;
@@ -32,16 +17,16 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
   markerZIndex?: number;
   /** Called after the popup has a visible, usable position. */
   onPositioned?: () => void;
-  /** Where the overlay lives in the DOM. Defaults to the page body. */
-  portalTarget?: HTMLElement;
-  keepInView?: boolean;
   keepVisibleWhenDetached?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const marker = !!markerRanges;
+  const [isPresent, safeToRemove] = usePresence();
+  const wasVisibleRef = useRef(false);
+
   useEffect(() => {
     const element = ref.current;
-    if (!element) return;
+    if (!element || !isPresent) return;
     let active = true;
     const anchor = {
       contextElement: source,
@@ -52,15 +37,12 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
       const currentRevision = ++revision;
       // Keep an open note recoverable if realtime removes or replaces its source.
       if (keepVisibleWhenDetached && (!source.isConnected || !range.startContainer.isConnected)) return;
-      const touch = isTouch();
-      const viewport = window.visualViewport;
-      element.style.maxHeight = keepInView && viewport ? `${Math.max(0, viewport.height - 16)}px` : "";
       // Keep visibility tied to the real quote, not a zero-width point outside
       // the scroll container. Markers move horizontally but never clamp/flip
       // vertically: doing so piles unrelated annotations at the viewport edge.
       computePosition(anchor, element, {
         strategy: "fixed",
-        placement: placementFor(marker, touch),
+        placement: marker ? "right-start" : "top",
         middleware: markerRanges ? [
           offset(({ rects }) => {
             const sorted = markerRanges.map((item) => ({ item, top: item.getBoundingClientRect().top }))
@@ -76,28 +58,67 @@ export function CommentSelectionBubble({ range, source, children, owner, markerR
             };
           }),
           shift({ padding: 8, mainAxis: false, crossAxis: true }), hide(),
-        ] : [offset(touch ? ({ placement }) => touchGap(placement) : 8), flip({ padding: 8, altBoundary: true }), shift({ padding: 8, altBoundary: true, crossAxis: keepInView }), hide()],
+        ] : [offset(8), flip({ padding: 8, altBoundary: true }), shift({ padding: 8, altBoundary: true }), hide()],
       }).then(({ x, y, middlewareData }) => {
         if (!active || currentRevision !== revision || !element.isConnected) return;
         const rect = range.getBoundingClientRect();
-        element.style.visibility = !source.isConnected || !range.startContainer.isConnected ||
-          (rect.width === 0 && rect.height === 0) || (!keepInView && middlewareData.hide?.referenceHidden) ? "hidden" : "visible";
+        const isVisible = !(!source.isConnected || !range.startContainer.isConnected ||
+          (rect.width === 0 && rect.height === 0) || middlewareData.hide?.referenceHidden);
+        const becameVisible = isVisible && !wasVisibleRef.current;
+        wasVisibleRef.current = isVisible;
+        element.style.visibility = isVisible ? "visible" : "hidden";
         element.style.left = `${x}px`;
         element.style.top = `${y}px`;
-        if (element.style.visibility === "visible") onPositioned?.();
+        if (becameVisible && typeof element.animate === "function" && !prefersReducedMotion()) {
+          const fromTransform = marker ? "translateX(-4px) scale(0.96)" : "translateY(4px) scale(0.96)";
+          element.animate(
+            [
+              { opacity: 0, transform: fromTransform },
+              { opacity: 1, transform: "translate(0, 0) scale(1)" },
+            ],
+            { duration: UI_MOTION_DURATION.fast * 1000, easing: UI_EASE_OUT_CSS },
+          );
+        }
+        if (isVisible) onPositioned?.();
       });
     };
     // Sidebar transitions and font/content reflow can move a Range without
     // resizing its source element or triggering a window resize.
     const cleanup = autoUpdate(anchor, element, update, { animationFrame: true });
     return () => { active = false; cleanup(); };
-  }, [range, source, marker, markerRanges, onPositioned, keepInView, keepVisibleWhenDetached]);
+  }, [range, source, marker, markerRanges, onPositioned, keepVisibleWhenDetached, isPresent]);
+
+  useEffect(() => {
+    if (isPresent) return;
+    const element = ref.current;
+    if (element && wasVisibleRef.current && typeof element.animate === "function" && !prefersReducedMotion()) {
+      const toTransform = marker ? "translateX(-4px) scale(0.96)" : "translateY(4px) scale(0.96)";
+      const anim = element.animate(
+        [
+          { opacity: 1, transform: "translate(0, 0) scale(1)" },
+          { opacity: 0, transform: toTransform },
+        ],
+        { duration: UI_MOTION_DURATION.micro * 1000, easing: "cubic-bezier(0.4, 0, 1, 1)", fill: "forwards" },
+      );
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        safeToRemove();
+      };
+      anim.onfinish = finish;
+      anim.oncancel = finish;
+      return () => { anim.cancel(); };
+    }
+    safeToRemove();
+    return undefined;
+  }, [isPresent, marker, safeToRemove]);
 
   return createPortal(
     <div ref={ref} data-reply-annotation-overlay={owner} data-editor-overlay-owner={owner}
-      style={{ position: "fixed", zIndex: marker ? markerZIndex : 50, visibility: "hidden", width: "max-content", overflowY: keepInView ? "auto" : undefined }}>
+      style={{ position: "fixed", zIndex: marker ? markerZIndex : 50, visibility: "hidden", width: "max-content", pointerEvents: isPresent ? undefined : "none" }}>
       {children}
     </div>,
-    portalTarget ?? document.body,
+    document.body,
   );
 }

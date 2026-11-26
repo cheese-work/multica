@@ -126,7 +126,7 @@ SET properties = properties - $1::text,
     END,
     updated_at = CASE WHEN properties ? $1::text THEN now() ELSE updated_at END
 WHERE id = $2::uuid AND workspace_id = $3::uuid
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via, requester_user_id
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, requester_user_id, description_revision
 `
 
 type DeleteIssuePropertyValueParams struct {
@@ -169,17 +169,14 @@ func (q *Queries) DeleteIssuePropertyValue(ctx context.Context, arg DeleteIssueP
 		&i.LastActivityAt,
 		&i.TriageState,
 		&i.DuplicateOfIssueID,
-		&i.WorkflowID,
-		&i.RequestedByID,
-		&i.MaxRunsOverride,
-		&i.DescriptionExternalRead,
-		&i.CreatedVia,
 		&i.RequesterUserID,
+		&i.DescriptionRevision,
 	)
 	return i, err
 }
 
 const getIssueProperty = `-- name: GetIssueProperty :one
+
 SELECT id, workspace_id, name, type, description, config, position, archived_at, created_at, updated_at, icon FROM issue_property
 WHERE id = $1 AND workspace_id = $2
 `
@@ -189,6 +186,8 @@ type GetIssuePropertyParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
+// usage_count is computed in Go (propertyUsageQuery in
+// internal/handler/property.go): it needs one output column per definition.
 func (q *Queries) GetIssueProperty(ctx context.Context, arg GetIssuePropertyParams) (IssueProperty, error) {
 	row := q.db.QueryRow(ctx, getIssueProperty, arg.ID, arg.WorkspaceID)
 	var i IssueProperty
@@ -209,16 +208,10 @@ func (q *Queries) GetIssueProperty(ctx context.Context, arg GetIssuePropertyPara
 }
 
 const listIssueProperties = `-- name: ListIssueProperties :many
-SELECT p.id, p.workspace_id, p.name, p.type, p.description, p.config, p.position, p.archived_at, p.created_at, p.updated_at, p.icon,
-    (
-        SELECT COUNT(*) FROM issue i
-        WHERE i.workspace_id = p.workspace_id
-          AND i.properties ? p.id::text
-    )::bigint AS usage_count
-FROM issue_property p
-WHERE p.workspace_id = $1::uuid
-  AND ($2::bool OR p.archived_at IS NULL)
-ORDER BY p.position ASC, LOWER(p.name) ASC
+SELECT id, workspace_id, name, type, description, config, position, archived_at, created_at, updated_at, icon FROM issue_property
+WHERE workspace_id = $1::uuid
+  AND ($2::bool OR archived_at IS NULL)
+ORDER BY position ASC, LOWER(name) ASC
 `
 
 type ListIssuePropertiesParams struct {
@@ -226,74 +219,10 @@ type ListIssuePropertiesParams struct {
 	IncludeArchived bool        `json:"include_archived"`
 }
 
-type ListIssuePropertiesRow struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Name        string             `json:"name"`
-	Type        string             `json:"type"`
-	Description string             `json:"description"`
-	Config      []byte             `json:"config"`
-	Position    float64            `json:"position"`
-	ArchivedAt  pgtype.Timestamptz `json:"archived_at"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
-	Icon        string             `json:"icon"`
-	UsageCount  int64              `json:"usage_count"`
-}
-
-// usage_count = number of issues in the workspace that currently carry a
-// value for this property. `properties ? id` is a seq scan today; fine at
-// the 20-definition / small-workspace scale this feature targets.
-func (q *Queries) ListIssueProperties(ctx context.Context, arg ListIssuePropertiesParams) ([]ListIssuePropertiesRow, error) {
+// Definition catalog without usage counts — the hot path every issue surface,
+// the CLI's name resolution, and every realtime refetch hit.
+func (q *Queries) ListIssueProperties(ctx context.Context, arg ListIssuePropertiesParams) ([]IssueProperty, error) {
 	rows, err := q.db.Query(ctx, listIssueProperties, arg.WorkspaceID, arg.IncludeArchived)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListIssuePropertiesRow{}
-	for rows.Next() {
-		var i ListIssuePropertiesRow
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.Name,
-			&i.Type,
-			&i.Description,
-			&i.Config,
-			&i.Position,
-			&i.ArchivedAt,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.Icon,
-			&i.UsageCount,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listIssuePropertyDefinitions = `-- name: ListIssuePropertyDefinitions :many
-SELECT id, workspace_id, name, type, description, config, position, archived_at, created_at, updated_at, icon FROM issue_property p
-WHERE p.workspace_id = $1::uuid
-  AND ($2::bool OR p.archived_at IS NULL)
-ORDER BY p.position ASC, LOWER(p.name) ASC
-`
-
-type ListIssuePropertyDefinitionsParams struct {
-	WorkspaceID     pgtype.UUID `json:"workspace_id"`
-	IncludeArchived bool        `json:"include_archived"`
-}
-
-// Same rows and order as ListIssueProperties, without usage_count. Use it when
-// the caller only needs the definitions: usage_count costs one COUNT(*) over
-// the workspace's issues per definition.
-func (q *Queries) ListIssuePropertyDefinitions(ctx context.Context, arg ListIssuePropertyDefinitionsParams) ([]IssueProperty, error) {
-	rows, err := q.db.Query(ctx, listIssuePropertyDefinitions, arg.WorkspaceID, arg.IncludeArchived)
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +264,7 @@ SET properties = jsonb_set(properties, ARRAY[$1::text], $2::jsonb, true),
     END,
     updated_at = CASE WHEN properties -> $1::text IS DISTINCT FROM $2::jsonb THEN now() ELSE updated_at END
 WHERE id = $3::uuid AND workspace_id = $4::uuid
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via, requester_user_id
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, requester_user_id, description_revision
 `
 
 type SetIssuePropertyValueParams struct {
@@ -387,12 +316,8 @@ func (q *Queries) SetIssuePropertyValue(ctx context.Context, arg SetIssuePropert
 		&i.LastActivityAt,
 		&i.TriageState,
 		&i.DuplicateOfIssueID,
-		&i.WorkflowID,
-		&i.RequestedByID,
-		&i.MaxRunsOverride,
-		&i.DescriptionExternalRead,
-		&i.CreatedVia,
 		&i.RequesterUserID,
+		&i.DescriptionRevision,
 	)
 	return i, err
 }

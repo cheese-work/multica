@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { IssueView } from "@multica/core/api/schemas";
 import { myIssuesViewStore } from "@multica/core/issues/stores/my-issues-view-store";
@@ -11,15 +11,16 @@ import { useIssueViewEditStore } from "@multica/core/issue-views/edit-store";
 import { NavigationProvider, type NavigationAdapter } from "../navigation";
 import { renderWithI18n } from "../test/i18n";
 import type { IssueSurfaceController } from "../issues/surface/use-issue-surface-controller";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from "@multica/ui/components/ui/dropdown-menu";
 import { IssueViewHeader } from "./view-header";
 
 const copyLink = vi.hoisted(() => vi.fn());
 const rename = vi.hoisted(() => vi.fn());
-const create = vi.hoisted(() => vi.fn());
+const setVisibility = vi.hoisted(() => vi.fn());
 const active = vi.hoisted(() => ({ view: null as IssueView | null }));
+const viewer = vi.hoisted(() => ({ guest: false }));
 
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+vi.mock("@multica/core/permissions", () => ({ useIsGuest: () => viewer.guest }));
 vi.mock("@multica/core/paths", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@multica/core/paths")>();
   return { ...actual, useWorkspacePaths: () => actual.paths.workspace("acme") };
@@ -33,9 +34,10 @@ vi.mock("./use-view-actions", () => ({
     canManage: () => true,
     copyLink,
     rename,
+    setVisibility,
     save: vi.fn(),
     remove: vi.fn(),
-    create,
+    create: vi.fn(),
   }),
 }));
 vi.mock("../issues/components/filter-chips-bar", () => ({
@@ -44,20 +46,11 @@ vi.mock("../issues/components/filter-chips-bar", () => ({
 }));
 vi.mock("../issues/components/issues-header", () => ({
   IssueDisplayControls: () => null,
-  IssueFilterMenu: ({
-    trigger,
-    open,
-    leadingSections,
-  }: {
-    trigger: React.ReactNode;
-    open?: boolean;
-    leadingSections?: React.ReactNode;
-  }) => (
-    <DropdownMenu>
-      <DropdownMenuTrigger render={<span>{trigger}</span>} />
-      <DropdownMenuContent>{leadingSections}</DropdownMenuContent>
+  IssueFilterMenu: ({ trigger, open }: { trigger: React.ReactNode; open?: boolean }) => (
+    <>
+      {trigger}
       {open && <div role="menu" aria-label="Filter menu" />}
-    </DropdownMenu>
+    </>
   ),
 }));
 
@@ -98,16 +91,11 @@ function savedView(definition: Partial<Pick<IssueView, "query" | "display">> = {
   } as unknown as IssueView;
 }
 
-function renderHeader(
-  kind: "workspace" | "my",
-  store: string,
-  adapter = adapterFor("/acme/issues"),
-  ctrl = controller,
-) {
+function renderHeader(kind: "workspace" | "my", store: string, adapter = adapterFor("/acme/issues")) {
   return renderWithI18n(
     <NavigationProvider value={adapter}>
       <ViewStoreProvider store={getIssueSurfaceViewStore(store)}>
-        <IssueViewHeader controller={ctrl} base={{ kind }} />
+        <IssueViewHeader controller={controller} base={{ kind }} />
       </ViewStoreProvider>
     </NavigationProvider>,
   );
@@ -116,8 +104,9 @@ function renderHeader(
 beforeEach(() => {
   copyLink.mockClear();
   rename.mockClear();
-  create.mockClear();
+  setVisibility.mockClear();
   active.view = null;
+  viewer.guest = false;
   useIssueViewRenameStore.setState({ target: null });
   useIssueViewEditStore.setState({ viewId: null });
   myIssuesViewStore.setState({ scope: "assigned" });
@@ -134,7 +123,7 @@ describe("IssueViewHeader copy link", () => {
     },
     {
       kind: "my",
-      title: "My Issues",
+      title: "My issues",
       pathname: "/acme/my-issues",
       search: "",
       expected: "/acme/my-issues",
@@ -153,6 +142,35 @@ describe("IssueViewHeader copy link", () => {
     await user.click(screen.getByRole("button", { name: title }));
     await user.click(await screen.findByRole("menuitem", { name: "Copy link" }));
     expect(copyLink).toHaveBeenCalledWith(expected);
+  });
+});
+
+describe("IssueViewHeader new issue button", () => {
+  it("offers a member the new-issue button", () => {
+    renderHeader("my", "header-new-issue-member", adapterFor("/acme/my-issues"));
+    expect(screen.getByRole("button", { name: "New issue" })).toBeInTheDocument();
+  });
+
+  it("hides the new-issue button from a guest (MUL-9420)", () => {
+    viewer.guest = true;
+    renderHeader("my", "header-new-issue-guest", adapterFor("/acme/my-issues"));
+    expect(screen.queryByRole("button", { name: "New issue" })).toBeNull();
+  });
+});
+
+describe("IssueViewHeader visibility", () => {
+  it("keeps the visibility controls in the view's title menu", async () => {
+    active.view = savedView();
+    renderHeader("workspace", "header-visibility");
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Untitled view" }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Visible to\s*Only me/ }));
+    expect(await screen.findByRole("menuitemradio", { name: "Only me" })).toHaveAttribute("aria-checked", "true");
+    // The open submenu marks its parent menu `pointer-events: none` in jsdom.
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Workspace members" }));
+
+    expect(setVisibility).toHaveBeenCalledWith(active.view, "workspace");
   });
 });
 
@@ -223,39 +241,5 @@ describe("IssueViewHeader edit from elsewhere", () => {
 
     expect(screen.queryByRole("menu", { name: "Filter menu" })).toBeNull();
     expect(useIssueViewEditStore.getState().viewId).toBe("view-2");
-  });
-});
-
-describe("IssueViewHeader My Issues relation", () => {
-  it("offers Requested by me after Created by me and selects it", async () => {
-    renderHeader("my", "header-my-relation", adapterFor("/acme/my-issues"));
-
-    const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: /filter/i }));
-    await user.click(await screen.findByRole("menuitem", { name: /Relation to me/ }));
-    const options = await screen.findAllByRole("menuitemradio");
-    expect(options.map((o) => o.textContent)).toEqual([
-      "Assigned to me",
-      "Created by me",
-      "Requested by me",
-      "Any relation",
-    ]);
-
-    screen.getByRole("menuitemradio", { name: "Requested by me" }).focus();
-    await user.keyboard("{Enter}");
-    expect(myIssuesViewStore.getState().scope).toBe("requested");
-  });
-
-  it("saves a view from Requested by me with scope_variant requested", async () => {
-    myIssuesViewStore.setState({ scope: "requested" });
-    renderHeader("my", "header-my-save", adapterFor("/acme/my-issues"), {
-      ...controller,
-      hasActiveFilters: true,
-    } as IssueSurfaceController);
-
-    await userEvent.setup().click(screen.getByRole("button", { name: "Save as view" }));
-    expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ scope: { scope_type: "my" }, scopeVariant: "requested" }),
-    );
   });
 });

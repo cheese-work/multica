@@ -11,56 +11,19 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const clearGitHubPRReview = `-- name: ClearGitHubPRReview :exec
-UPDATE github_pull_request
-SET review_state = '', review_head_sha = '', review_id = 0
-WHERE workspace_id = $1
-  AND installation_id = $2
-  AND repo_owner = $3
-  AND repo_name = $4
-  AND pr_number = $5
-  AND review_id = $6::bigint
-`
-
-type ClearGitHubPRReviewParams struct {
-	WorkspaceID    pgtype.UUID `json:"workspace_id"`
-	InstallationID int64       `json:"installation_id"`
-	RepoOwner      string      `json:"repo_owner"`
-	RepoName       string      `json:"repo_name"`
-	PrNumber       int32       `json:"pr_number"`
-	ReviewID       int64       `json:"review_id"`
-}
-
-// Withdraws the stored review when GitHub dismisses that exact review. A
-// dismissal of any other review leaves it alone. review_at stays as the
-// ordering watermark, so an older review delivered late is still dropped.
-func (q *Queries) ClearGitHubPRReview(ctx context.Context, arg ClearGitHubPRReviewParams) error {
-	_, err := q.db.Exec(ctx, clearGitHubPRReview,
-		arg.WorkspaceID,
-		arg.InstallationID,
-		arg.RepoOwner,
-		arg.RepoName,
-		arg.PrNumber,
-		arg.ReviewID,
-	)
-	return err
-}
-
 const createGitHubInstallation = `-- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
-    workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, account_id
+    workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id
 ) VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6
 )
 ON CONFLICT (workspace_id, installation_id) DO UPDATE SET
     account_login = EXCLUDED.account_login,
-    -- A code-less refresh carries no trusted id; keep the stored one.
-    account_id = COALESCE(EXCLUDED.account_id, github_installation.account_id),
     account_type = EXCLUDED.account_type,
     account_avatar_url = EXCLUDED.account_avatar_url,
     connected_by_id = EXCLUDED.connected_by_id,
     updated_at = now()
-RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id
+RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at
 `
 
 type CreateGitHubInstallationParams struct {
@@ -70,7 +33,6 @@ type CreateGitHubInstallationParams struct {
 	AccountType      string      `json:"account_type"`
 	AccountAvatarUrl pgtype.Text `json:"account_avatar_url"`
 	ConnectedByID    pgtype.UUID `json:"connected_by_id"`
-	AccountID        pgtype.Int8 `json:"account_id"`
 }
 
 func (q *Queries) CreateGitHubInstallation(ctx context.Context, arg CreateGitHubInstallationParams) (GithubInstallation, error) {
@@ -81,7 +43,6 @@ func (q *Queries) CreateGitHubInstallation(ctx context.Context, arg CreateGitHub
 		arg.AccountType,
 		arg.AccountAvatarUrl,
 		arg.ConnectedByID,
-		arg.AccountID,
 	)
 	var i GithubInstallation
 	err := row.Scan(
@@ -94,7 +55,6 @@ func (q *Queries) CreateGitHubInstallation(ctx context.Context, arg CreateGitHub
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.AccountID,
 	)
 	return i, err
 }
@@ -156,7 +116,7 @@ func (q *Queries) DeletePendingGitHubInstallation(ctx context.Context, installat
 }
 
 const findGitHubPullRequestByURL = `-- name: FindGitHubPullRequestByURL :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha, base_ref, default_branch FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at FROM github_pull_request
 WHERE workspace_id = $1
   AND lower(rtrim(html_url, '/')) = lower($2::text)
 ORDER BY pr_updated_at DESC
@@ -202,22 +162,12 @@ func (q *Queries) FindGitHubPullRequestByURL(ctx context.Context, arg FindGitHub
 		&i.ChecksRollupState,
 		&i.SnapshotHeadSha,
 		&i.SnapshotFetchedAt,
-		&i.SnapshotBaseRef,
-		&i.SnapshotRecheckAt,
-		&i.HeadRepoSame,
-		&i.ReviewState,
-		&i.ReviewHeadSha,
-		&i.ReviewID,
-		&i.ReviewAt,
-		&i.MergeCommitSha,
-		&i.BaseRef,
-		&i.DefaultBranch,
 	)
 	return i, err
 }
 
 const getGitHubInstallationByID = `-- name: GetGitHubInstallationByID :one
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
 WHERE id = $1
 `
 
@@ -234,13 +184,12 @@ func (q *Queries) GetGitHubInstallationByID(ctx context.Context, id pgtype.UUID)
 		&i.ConnectedByID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
-		&i.AccountID,
 	)
 	return i, err
 }
 
 const getGitHubPullRequest = `-- name: GetGitHubPullRequest :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha, base_ref, default_branch FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at FROM github_pull_request
 WHERE workspace_id = $1 AND repo_owner = $2 AND repo_name = $3 AND pr_number = $4
 `
 
@@ -288,22 +237,12 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 		&i.ChecksRollupState,
 		&i.SnapshotHeadSha,
 		&i.SnapshotFetchedAt,
-		&i.SnapshotBaseRef,
-		&i.SnapshotRecheckAt,
-		&i.HeadRepoSame,
-		&i.ReviewState,
-		&i.ReviewHeadSha,
-		&i.ReviewID,
-		&i.ReviewAt,
-		&i.MergeCommitSha,
-		&i.BaseRef,
-		&i.DefaultBranch,
 	)
 	return i, err
 }
 
 const getGitHubPullRequestInWorkspace = `-- name: GetGitHubPullRequestInWorkspace :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha, base_ref, default_branch FROM github_pull_request
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at FROM github_pull_request
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -344,16 +283,6 @@ func (q *Queries) GetGitHubPullRequestInWorkspace(ctx context.Context, arg GetGi
 		&i.ChecksRollupState,
 		&i.SnapshotHeadSha,
 		&i.SnapshotFetchedAt,
-		&i.SnapshotBaseRef,
-		&i.SnapshotRecheckAt,
-		&i.HeadRepoSame,
-		&i.ReviewState,
-		&i.ReviewHeadSha,
-		&i.ReviewID,
-		&i.ReviewAt,
-		&i.MergeCommitSha,
-		&i.BaseRef,
-		&i.DefaultBranch,
 	)
 	return i, err
 }
@@ -412,83 +341,31 @@ func (q *Queries) GetPendingGitHubInstallation(ctx context.Context, installation
 	return i, err
 }
 
-const hasAgentVerdictForHead = `-- name: HasAgentVerdictForHead :one
-SELECT EXISTS (
-    SELECT 1 FROM comment
-    WHERE issue_id = $1 AND author_type = 'agent' AND author_id = $2
-      AND deleted_at IS NULL
-      AND content ~ '(?n)^[*_ ]*(Verdict[*_]*:[*_ \t]*(PASS|FAIL|CHANGES REQUESTED|BLOCKED|NOT-RUN)|(BLOCKED|NOT-RUN))\M'
-      AND content ~* ('(?n)^[*_ ]*(Candidate|Head)\M[^\n]*' || left($3::text, 7))
-)
-`
-
-type HasAgentVerdictForHeadParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	AgentID pgtype.UUID `json:"agent_id"`
-	HeadSha string      `json:"head_sha"`
-}
-
-// Whether the agent already commented its verdict on the issue for this PR
-// head: a line that opens with "Verdict:" and PASS, FAIL or CHANGES REQUESTED
-// (or a line that opens with BLOCKED or NOT-RUN), plus a "Candidate:" or
-// "Head:" line that names the head by its first seven characters at least.
-// Anchoring on line starts keeps a status report ("CI PASS on <head>") and a
-// verdict for another head from counting. The markers are upper case on
-// purpose, so prose such as "this may fail" is not a verdict. A comment in
-// another shape does not match, and the run starts as before.
-func (q *Queries) HasAgentVerdictForHead(ctx context.Context, arg HasAgentVerdictForHeadParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasAgentVerdictForHead, arg.IssueID, arg.AgentID, arg.HeadSha)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
-const hasGitHubReviewWakeup = `-- name: HasGitHubReviewWakeup :one
-SELECT EXISTS (
-    SELECT 1 FROM agent_task_queue
-    WHERE issue_id = $1
-      AND context->>'github_review_key' = $2::text
-)
-`
-
-type HasGitHubReviewWakeupParams struct {
-	IssueID   pgtype.UUID `json:"issue_id"`
-	ReviewKey string      `json:"review_key"`
-}
-
-func (q *Queries) HasGitHubReviewWakeup(ctx context.Context, arg HasGitHubReviewWakeupParams) (bool, error) {
-	row := q.db.QueryRow(ctx, hasGitHubReviewWakeup, arg.IssueID, arg.ReviewKey)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
 const linkIssueToPullRequest = `-- name: LinkIssueToPullRequest :execrows
 
 INSERT INTO issue_pull_request (
-    issue_id, pull_request_id, linked_by_type, linked_by_id, link_kind
+    issue_id, pull_request_id, linked_by_type, linked_by_id
 ) VALUES (
-    $1, $2, 'system', NULL, COALESCE($3::text, 'closing')
+    $1, $2, 'system', NULL
 )
-ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
-    link_kind = EXCLUDED.link_kind
-WHERE COALESCE(issue_pull_request.linked_by_type, 'system') <> 'member'
-  AND issue_pull_request.link_kind IS DISTINCT FROM EXCLUDED.link_kind
+ON CONFLICT (issue_id, pull_request_id) DO NOTHING
 `
 
 type LinkIssueToPullRequestParams struct {
 	IssueID       pgtype.UUID `json:"issue_id"`
 	PullRequestID pgtype.UUID `json:"pull_request_id"`
-	LinkKind      pgtype.Text `json:"link_kind"`
 }
 
 // =====================
 // Issue ↔ Pull Request link
 // =====================
-// Automatic link from a PR title, branch, or keyword. Returns 1 when the link
-// is new or its kind changes. Manual links are left untouched.
+// Automatic link from a PR title, branch, or closing keyword. Returns 1 only
+// when the link is new, so the webhook evaluates the merge automation on the
+// link event and not on every redelivery. An existing link (automatic or
+// manual) is left untouched. close_intent is no longer read or written
+// (MUL-7726).
 func (q *Queries) LinkIssueToPullRequest(ctx context.Context, arg LinkIssueToPullRequestParams) (int64, error) {
-	result, err := q.db.Exec(ctx, linkIssueToPullRequest, arg.IssueID, arg.PullRequestID, arg.LinkKind)
+	result, err := q.db.Exec(ctx, linkIssueToPullRequest, arg.IssueID, arg.PullRequestID)
 	if err != nil {
 		return 0, err
 	}
@@ -503,10 +380,8 @@ INSERT INTO issue_pull_request (
 )
 ON CONFLICT (issue_id, pull_request_id) DO UPDATE SET
     linked_by_type = 'member',
-    linked_by_id = EXCLUDED.linked_by_id,
-    link_kind = 'closing'
+    linked_by_id = EXCLUDED.linked_by_id
 WHERE issue_pull_request.linked_by_type IS DISTINCT FROM 'member'
-   OR issue_pull_request.link_kind <> 'closing'
 `
 
 type LinkIssueToPullRequestManuallyParams struct {
@@ -554,33 +429,8 @@ func (q *Queries) ListAutoLinkedIssueIDsForPullRequest(ctx context.Context, pull
 	return items, nil
 }
 
-const listClosingIssueIDsForPullRequest = `-- name: ListClosingIssueIDsForPullRequest :many
-SELECT issue_id FROM issue_pull_request
-WHERE pull_request_id = $1 AND link_kind = 'closing'
-`
-
-func (q *Queries) ListClosingIssueIDsForPullRequest(ctx context.Context, pullRequestID pgtype.UUID) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listClosingIssueIDsForPullRequest, pullRequestID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var issue_id pgtype.UUID
-		if err := rows.Scan(&issue_id); err != nil {
-			return nil, err
-		}
-		items = append(items, issue_id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listGitHubInstallationsByInstallationID = `-- name: ListGitHubInstallationsByInstallationID :many
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
 WHERE installation_id = $1
 ORDER BY created_at ASC, id ASC
 `
@@ -607,48 +457,6 @@ func (q *Queries) ListGitHubInstallationsByInstallationID(ctx context.Context, i
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.AccountID,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listGitHubInstallationsByInstallationIDForShare = `-- name: ListGitHubInstallationsByInstallationIDForShare :many
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
-WHERE installation_id = $1
-ORDER BY created_at ASC, id ASC
-FOR SHARE
-`
-
-// Same rows as ListGitHubInstallationsByInstallationID, share-locked until the
-// transaction ends: a concurrent delete or account change of a binding waits, so
-// a policy check made inside the transaction still holds when it commits.
-func (q *Queries) ListGitHubInstallationsByInstallationIDForShare(ctx context.Context, installationID int64) ([]GithubInstallation, error) {
-	rows, err := q.db.Query(ctx, listGitHubInstallationsByInstallationIDForShare, installationID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GithubInstallation{}
-	for rows.Next() {
-		var i GithubInstallation
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.InstallationID,
-			&i.AccountLogin,
-			&i.AccountType,
-			&i.AccountAvatarUrl,
-			&i.ConnectedByID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.AccountID,
 		); err != nil {
 			return nil, err
 		}
@@ -662,7 +470,7 @@ func (q *Queries) ListGitHubInstallationsByInstallationIDForShare(ctx context.Co
 
 const listGitHubInstallationsByWorkspace = `-- name: ListGitHubInstallationsByWorkspace :many
 
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
+SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at FROM github_installation
 WHERE workspace_id = $1
 ORDER BY created_at ASC
 `
@@ -689,7 +497,6 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.AccountID,
 		); err != nil {
 			return nil, err
 		}
@@ -701,141 +508,45 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 	return items, nil
 }
 
-const listGitHubInstallationsMissingAccountID = `-- name: ListGitHubInstallationsMissingAccountID :many
-SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
-WHERE account_id IS NULL
-ORDER BY created_at ASC, id ASC
+const listGitHubInstallationsWithConnectedBy = `-- name: ListGitHubInstallationsWithConnectedBy :many
+SELECT gi.id, gi.workspace_id, gi.installation_id, gi.account_login, gi.account_type, gi.account_avatar_url, gi.connected_by_id, gi.created_at, gi.updated_at, COALESCE(u.name, '')::text AS connected_by
+FROM github_installation gi
+LEFT JOIN member m ON m.user_id = gi.connected_by_id AND m.workspace_id = gi.workspace_id
+LEFT JOIN "user" u ON u.id = m.user_id
+WHERE gi.workspace_id = $1
+ORDER BY gi.created_at ASC
 `
 
-// Startup backfill input: rows bound before the trusted account_id existed.
-func (q *Queries) ListGitHubInstallationsMissingAccountID(ctx context.Context) ([]GithubInstallation, error) {
-	rows, err := q.db.Query(ctx, listGitHubInstallationsMissingAccountID)
+type ListGitHubInstallationsWithConnectedByRow struct {
+	GithubInstallation GithubInstallation `json:"github_installation"`
+	ConnectedBy        string             `json:"connected_by"`
+}
+
+// Only disclose the connector's display name while they belong to this workspace.
+func (q *Queries) ListGitHubInstallationsWithConnectedBy(ctx context.Context, workspaceID pgtype.UUID) ([]ListGitHubInstallationsWithConnectedByRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubInstallationsWithConnectedBy, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []GithubInstallation{}
+	items := []ListGitHubInstallationsWithConnectedByRow{}
 	for rows.Next() {
-		var i GithubInstallation
+		var i ListGitHubInstallationsWithConnectedByRow
 		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.InstallationID,
-			&i.AccountLogin,
-			&i.AccountType,
-			&i.AccountAvatarUrl,
-			&i.ConnectedByID,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.AccountID,
+			&i.GithubInstallation.ID,
+			&i.GithubInstallation.WorkspaceID,
+			&i.GithubInstallation.InstallationID,
+			&i.GithubInstallation.AccountLogin,
+			&i.GithubInstallation.AccountType,
+			&i.GithubInstallation.AccountAvatarUrl,
+			&i.GithubInstallation.ConnectedByID,
+			&i.GithubInstallation.CreatedAt,
+			&i.GithubInstallation.UpdatedAt,
+			&i.ConnectedBy,
 		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listGitHubPRsWithUnverifiedHead = `-- name: ListGitHubPRsWithUnverifiedHead :many
-SELECT installation_id, repo_owner, repo_name, pr_number
-FROM github_pull_request
-WHERE NOT head_repo_same AND pr_updated_at >= '2026-10-27T12:00:00Z'
-GROUP BY installation_id, repo_owner, repo_name, pr_number
-ORDER BY max(pr_updated_at) DESC, installation_id, repo_owner, repo_name, pr_number
-`
-
-type ListGitHubPRsWithUnverifiedHeadRow struct {
-	InstallationID int64  `json:"installation_id"`
-	RepoOwner      string `json:"repo_owner"`
-	RepoName       string `json:"repo_name"`
-	PrNumber       int32  `json:"pr_number"`
-}
-
-// CHE-2301: PRs stored with head_repo_same=false. The row does not keep the head
-// repository id, so a repair must read GitHub to tell a real fork PR from a
-// same-repository PR that the old fork-flag check rejected. Rows whose PR was
-// last updated before the fork check shipped (CHE-2210, 2026-10-27) hold the
-// column default and were never judged. pr_updated_at only moves on webhook
-// writes; updated_at also moves on snapshot refresh, so it can't tell. One row
-// per PR address (workspaces mirror it), newest first, so a rate limit cuts off
-// the oldest.
-func (q *Queries) ListGitHubPRsWithUnverifiedHead(ctx context.Context) ([]ListGitHubPRsWithUnverifiedHeadRow, error) {
-	rows, err := q.db.Query(ctx, listGitHubPRsWithUnverifiedHead)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ListGitHubPRsWithUnverifiedHeadRow{}
-	for rows.Next() {
-		var i ListGitHubPRsWithUnverifiedHeadRow
-		if err := rows.Scan(
-			&i.InstallationID,
-			&i.RepoOwner,
-			&i.RepoName,
-			&i.PrNumber,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listGitHubReviewAuthorCandidates = `-- name: ListGitHubReviewAuthorCandidates :many
-SELECT DISTINCT candidate.agent_id
-FROM (
-    SELECT task.agent_id
-    FROM agent_task_queue task
-    WHERE $1::text <> ''
-      AND right(replace(task.id::text, '-', ''), 12) = $1::text
-    UNION
-    SELECT task.agent_id
-    FROM issue_pull_request link
-    JOIN github_pull_request linked_pr ON linked_pr.id = link.pull_request_id
-    JOIN agent_task_queue task ON task.issue_id = link.issue_id
-    WHERE link.pull_request_id = $2
-      AND task.branch_name = linked_pr.branch
-      AND task.created_at <= linked_pr.pr_created_at
-) candidate
-JOIN agent author ON author.id = candidate.agent_id
-JOIN github_pull_request pr ON pr.id = $2
-WHERE pr.workspace_id = $3
-  AND author.workspace_id = pr.workspace_id
-LIMIT 2
-`
-
-type ListGitHubReviewAuthorCandidatesParams struct {
-	TaskKey       string      `json:"task_key"`
-	PullRequestID pgtype.UUID `json:"pull_request_id"`
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-}
-
-// Agents that authored the PR: the task whose key ends the head branch, or a
-// task on a linked issue that ran on that branch before the PR was opened. The
-// two matches are separate UNION arms so each can use an index (CHE-6888): as
-// one OR, the task-key expression forced a scan of agent_task_queue. The key arm
-// reads idx_agent_task_queue_task_key; the branch arm starts from the PR's links
-// and reads the linked issue's tasks through idx_agent_task_queue_issue_id.
-// The caller needs exactly one candidate, so LIMIT 2 is enough to see a tie.
-func (q *Queries) ListGitHubReviewAuthorCandidates(ctx context.Context, arg ListGitHubReviewAuthorCandidatesParams) ([]pgtype.UUID, error) {
-	rows, err := q.db.Query(ctx, listGitHubReviewAuthorCandidates, arg.TaskKey, arg.PullRequestID, arg.WorkspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []pgtype.UUID{}
-	for rows.Next() {
-		var agent_id pgtype.UUID
-		if err := rows.Scan(&agent_id); err != nil {
-			return nil, err
-		}
-		items = append(items, agent_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -868,42 +579,6 @@ func (q *Queries) ListIssueIDsForPullRequest(ctx context.Context, pullRequestID 
 	return items, nil
 }
 
-const listIssueOpenPullRequestHeads = `-- name: ListIssueOpenPullRequestHeads :many
-SELECT head_sha FROM (
-    SELECT pr.head_sha AS head_sha
-    FROM github_pull_request pr
-    JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-    WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft')
-    UNION ALL
-    SELECT pr.head_sha AS head_sha
-    FROM vcs_pull_request pr
-    JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
-    WHERE ipr.issue_id = $1 AND pr.state IN ('open', 'draft')
-) open_prs
-`
-
-// Head SHAs of the issue's linked PRs that are still open or draft, GitHub and
-// self-hosted alike. The review-head guard (CHE-4649) acts only on exactly one.
-func (q *Queries) ListIssueOpenPullRequestHeads(ctx context.Context, issueID pgtype.UUID) ([]string, error) {
-	rows, err := q.db.Query(ctx, listIssueOpenPullRequestHeads, issueID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var head_sha string
-		if err := rows.Scan(&head_sha); err != nil {
-			return nil, err
-		}
-		items = append(items, head_sha)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listIssuePullRequestSummaries = `-- name: ListIssuePullRequestSummaries :many
 SELECT
     ipr.issue_id,
@@ -914,7 +589,7 @@ JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 JOIN issue i ON i.id = ipr.issue_id
 WHERE pr.workspace_id = $1
   AND i.workspace_id = $1
-  AND ($2::uuid[] IS NULL OR i.project_id IS NULL OR NOT (i.project_id = ANY($2::uuid[])))
+  AND ($2::uuid[] IS NULL OR NOT (COALESCE(i.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($2::uuid[])))
 UNION ALL
 SELECT
     ipr.issue_id,
@@ -925,7 +600,7 @@ JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 JOIN issue i ON i.id = ipr.issue_id
 WHERE pr.workspace_id = $1
   AND i.workspace_id = $1
-  AND ($2::uuid[] IS NULL OR i.project_id IS NULL OR NOT (i.project_id = ANY($2::uuid[])))
+  AND ($2::uuid[] IS NULL OR NOT (COALESCE(i.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($2::uuid[])))
 ORDER BY pr_created_at DESC
 `
 
@@ -1022,7 +697,6 @@ SELECT
     pr.snapshot_head_sha, pr.snapshot_fetched_at,
     pr.created_at, pr.updated_at,
     COALESCE(ipr.linked_by_type, 'system')::text AS linked_by_type,
-    ipr.link_kind,
     COALESCE(c.total, 0)::bigint   AS checks_total,
     COALESCE(c.passed, 0)::bigint  AS checks_passed,
     COALESCE(c.failed, 0)::bigint  AS checks_failed,
@@ -1065,7 +739,6 @@ type ListPullRequestsByIssueRow struct {
 	CreatedAt           pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt           pgtype.Timestamptz `json:"updated_at"`
 	LinkedByType        string             `json:"linked_by_type"`
-	LinkKind            string             `json:"link_kind"`
 	ChecksTotal         int64              `json:"checks_total"`
 	ChecksPassed        int64              `json:"checks_passed"`
 	ChecksFailed        int64              `json:"checks_failed"`
@@ -1080,8 +753,9 @@ type ListPullRequestsByIssueRow struct {
 // refresh pipeline — NOT the legacy suite-level webhook aggregation, which is
 // removed. The `issue_prs` CTE narrows to this issue's PR ids first so the
 // aggregation only touches check rows for those PRs. Rows for an OLD head are
-// excluded by the snapshot_head_sha filter. Both closing and reference links
-// remain visible; only closing links participate in merge automation.
+// excluded by the snapshot_head_sha filter. Every link row is a delivery PR:
+// the webhook links an identifier it read from the PR title or branch name, and
+// a member can link one by hand (linked_by_type = 'member'). MUL-7429.
 func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UUID) ([]ListPullRequestsByIssueRow, error) {
 	rows, err := q.db.Query(ctx, listPullRequestsByIssue, issueID)
 	if err != nil {
@@ -1121,7 +795,6 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.LinkedByType,
-			&i.LinkKind,
 			&i.ChecksTotal,
 			&i.ChecksPassed,
 			&i.ChecksFailed,
@@ -1136,74 +809,6 @@ func (q *Queries) ListPullRequestsByIssue(ctx context.Context, issueID pgtype.UU
 		return nil, err
 	}
 	return items, nil
-}
-
-const markGitHubReviewWakeup = `-- name: MarkGitHubReviewWakeup :exec
-UPDATE agent_task_queue
-SET context = COALESCE(context, '{}'::jsonb) || jsonb_build_object('github_review_key', $1::text)
-WHERE id = $2 AND issue_id = $3
-`
-
-type MarkGitHubReviewWakeupParams struct {
-	ReviewKey string      `json:"review_key"`
-	TaskID    pgtype.UUID `json:"task_id"`
-	IssueID   pgtype.UUID `json:"issue_id"`
-}
-
-func (q *Queries) MarkGitHubReviewWakeup(ctx context.Context, arg MarkGitHubReviewWakeupParams) error {
-	_, err := q.db.Exec(ctx, markGitHubReviewWakeup, arg.ReviewKey, arg.TaskID, arg.IssueID)
-	return err
-}
-
-const recordGitHubPRReview = `-- name: RecordGitHubPRReview :exec
-UPDATE github_pull_request
-SET review_state = $1::text,
-    review_head_sha = $2::text,
-    review_id = $3::bigint,
-    review_at = $4::timestamptz
-WHERE id = $5 AND (review_at IS NULL OR review_at <= $4::timestamptz)
-`
-
-type RecordGitHubPRReviewParams struct {
-	ReviewState string             `json:"review_state"`
-	HeadSha     string             `json:"head_sha"`
-	ReviewID    int64              `json:"review_id"`
-	SubmittedAt pgtype.Timestamptz `json:"submitted_at"`
-	ID          pgtype.UUID        `json:"id"`
-}
-
-// Keeps the latest approved, changes_requested or commented review of a PR; a
-// review that was submitted before the stored one is dropped.
-func (q *Queries) RecordGitHubPRReview(ctx context.Context, arg RecordGitHubPRReviewParams) error {
-	_, err := q.db.Exec(ctx, recordGitHubPRReview,
-		arg.ReviewState,
-		arg.HeadSha,
-		arg.ReviewID,
-		arg.SubmittedAt,
-		arg.ID,
-	)
-	return err
-}
-
-const setGitHubInstallationAccountIDByInstallationID = `-- name: SetGitHubInstallationAccountIDByInstallationID :execrows
-UPDATE github_installation
-SET account_id = $2
-WHERE installation_id = $1 AND account_id IS NULL
-`
-
-type SetGitHubInstallationAccountIDByInstallationIDParams struct {
-	InstallationID int64       `json:"installation_id"`
-	AccountID      pgtype.Int8 `json:"account_id"`
-}
-
-// Fill only a null id, so a backfill can never overwrite one captured from a
-// verified bind or a signed lifecycle event.
-func (q *Queries) SetGitHubInstallationAccountIDByInstallationID(ctx context.Context, arg SetGitHubInstallationAccountIDByInstallationIDParams) (int64, error) {
-	result, err := q.db.Exec(ctx, setGitHubInstallationAccountIDByInstallationID, arg.InstallationID, arg.AccountID)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
 }
 
 const unlinkIssueFromPullRequest = `-- name: UnlinkIssueFromPullRequest :execrows
@@ -1229,34 +834,27 @@ UPDATE github_installation
 SET account_login = $2,
     account_type = $3,
     account_avatar_url = $4,
-    account_id = COALESCE($5, account_id),
     updated_at = now()
 WHERE installation_id = $1
-  AND workspace_id = ANY($6::uuid[])
-RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id
+RETURNING id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at
 `
 
 type UpdateGitHubInstallationAccountByInstallationIDParams struct {
-	InstallationID   int64         `json:"installation_id"`
-	AccountLogin     string        `json:"account_login"`
-	AccountType      string        `json:"account_type"`
-	AccountAvatarUrl pgtype.Text   `json:"account_avatar_url"`
-	AccountID        pgtype.Int8   `json:"account_id"`
-	WorkspaceIds     []pgtype.UUID `json:"workspace_ids"`
+	InstallationID   int64       `json:"installation_id"`
+	AccountLogin     string      `json:"account_login"`
+	AccountType      string      `json:"account_type"`
+	AccountAvatarUrl pgtype.Text `json:"account_avatar_url"`
 }
 
-// Refresh the GitHub account display metadata on the given workspace bindings
-// of an installation (fired by installation.created/new_permissions_accepted/
-// unsuspend). Callers pass only the bindings the allowlist permits. Leaves
-// workspace_id and connected_by_id untouched.
+// Refresh the GitHub account display metadata across every workspace binding of
+// an installation (fired by installation.created/new_permissions_accepted/
+// unsuspend). Leaves workspace_id and connected_by_id untouched.
 func (q *Queries) UpdateGitHubInstallationAccountByInstallationID(ctx context.Context, arg UpdateGitHubInstallationAccountByInstallationIDParams) ([]GithubInstallation, error) {
 	rows, err := q.db.Query(ctx, updateGitHubInstallationAccountByInstallationID,
 		arg.InstallationID,
 		arg.AccountLogin,
 		arg.AccountType,
 		arg.AccountAvatarUrl,
-		arg.AccountID,
-		arg.WorkspaceIds,
 	)
 	if err != nil {
 		return nil, err
@@ -1275,7 +873,6 @@ func (q *Queries) UpdateGitHubInstallationAccountByInstallationID(ctx context.Co
 			&i.ConnectedByID,
 			&i.CreatedAt,
 			&i.UpdatedAt,
-			&i.AccountID,
 		); err != nil {
 			return nil, err
 		}
@@ -1293,113 +890,38 @@ INSERT INTO github_pull_request (
     workspace_id, installation_id, repo_owner, repo_name, pr_number,
     title, state, html_url, branch, author_login, author_avatar_url,
     merged_at, closed_at, pr_created_at, pr_updated_at,
-    head_sha, mergeable_state, head_repo_same,
-    additions, deletions, changed_files, merge_commit_sha, base_ref, default_branch
+    head_sha, mergeable_state,
+    additions, deletions, changed_files
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $15, $16, $17,
     $18, $19, $9, $10,
-    $11, $20, $21,
-    $12, $13, $14, $22::text,
-    $23::text, $24::text
+    $11, $20,
+    $12, $13, $14
 )
 ON CONFLICT (workspace_id, repo_owner, repo_name, pr_number) DO UPDATE SET
     installation_id = EXCLUDED.installation_id,
     title = EXCLUDED.title,
-    -- ` + "`" + `merged` + "`" + ` is always protected: once stored, only an incoming ` + "`" + `merged` + "`" + `
-    -- overwrites it. ` + "`" + `closed` + "`" + ` is protected UNLESS this delivery is a genuine,
-    -- FRESH reopen: is_reopen=true AND the payload's closed_at is not older
-    -- than the closed_at already stored (NULL closed_at in the payload also
-    -- counts as fresh — that is what a real reopen looks like once GitHub
-    -- clears the field). A stale redelivered "reopened" webhook whose
-    -- closed_at is older than the stored value describes an earlier close and
-    -- is treated the same as a non-reopen delivery: rejected (CHE-374 review
-    -- round 4, item 1).
-    --
-    -- Accepted limitation (CHE-374 review round 5, item 1): a genuine reopen
-    -- payload always carries closed_at=NULL, so the ordering check above
-    -- (which requires both sides non-null) cannot compare two null-bearing
-    -- reopens. A close -> reopen -> close sequence followed by an
-    -- out-of-order redelivery of the FIRST reopen can therefore transiently
-    -- reopen a PR that is genuinely closed again — closed_at cannot order
-    -- two null-bearing events; that is a property of the signal, not this
-    -- expression. A real fix needs a monotonic per-PR transition-ordering
-    -- key (the delivery GUID is freshly minted per redelivery by GitHub, so
-    -- it cannot serve as one) and is deliberately deferred: the next
-    -- authoritative refresh (webhook, snapshot fetch, or TTL sweep)
-    -- self-heals the mirror, so this is scoped out of this delivery rather
-    -- than spending the remaining review ceiling on a narrow race.
-    state = CASE
-        WHEN github_pull_request.state = 'merged'
-             AND EXCLUDED.state <> 'merged'
-        THEN github_pull_request.state
-        WHEN github_pull_request.state = 'closed'
-             AND EXCLUDED.state <> 'merged'
-             AND (
-                 NOT COALESCE($25::boolean, FALSE)
-                 OR (
-                     EXCLUDED.closed_at IS NOT NULL
-                     AND github_pull_request.closed_at IS NOT NULL
-                     AND EXCLUDED.closed_at < github_pull_request.closed_at
-                 )
-             )
-        THEN github_pull_request.state
-        ELSE EXCLUDED.state
-    END,
+    state = EXCLUDED.state,
     html_url = EXCLUDED.html_url,
     branch = EXCLUDED.branch,
-    head_repo_same = EXCLUDED.head_repo_same,
     author_login = EXCLUDED.author_login,
     author_avatar_url = EXCLUDED.author_avatar_url,
-    merged_at = CASE
-        WHEN github_pull_request.state = 'merged'
-             AND EXCLUDED.state <> 'merged'
-        THEN github_pull_request.merged_at
-        WHEN github_pull_request.state = 'closed'
-             AND EXCLUDED.state <> 'merged'
-             AND (
-                 NOT COALESCE($25::boolean, FALSE)
-                 OR (
-                     EXCLUDED.closed_at IS NOT NULL
-                     AND github_pull_request.closed_at IS NOT NULL
-                     AND EXCLUDED.closed_at < github_pull_request.closed_at
-                 )
-             )
-        THEN github_pull_request.merged_at
-        ELSE EXCLUDED.merged_at
-    END,
-    closed_at = CASE
-        WHEN github_pull_request.state = 'closed'
-             AND EXCLUDED.state <> 'merged'
-             AND (
-                 NOT COALESCE($25::boolean, FALSE)
-                 OR (
-                     EXCLUDED.closed_at IS NOT NULL
-                     AND github_pull_request.closed_at IS NOT NULL
-                     AND EXCLUDED.closed_at < github_pull_request.closed_at
-                 )
-             )
-        THEN github_pull_request.closed_at
-        ELSE EXCLUDED.closed_at
-    END,
+    merged_at = EXCLUDED.merged_at,
+    closed_at = EXCLUDED.closed_at,
     pr_updated_at = EXCLUDED.pr_updated_at,
     head_sha = EXCLUDED.head_sha,
     mergeable_state = CASE
-        WHEN COALESCE($26::boolean, FALSE) THEN NULL
+        WHEN COALESCE($21::boolean, FALSE) THEN NULL
         WHEN EXCLUDED.mergeable_state IS NOT NULL THEN EXCLUDED.mergeable_state
         ELSE github_pull_request.mergeable_state
     END,
     additions     = EXCLUDED.additions,
     deletions     = EXCLUDED.deletions,
     changed_files = EXCLUDED.changed_files,
-    -- Only a merged delivery carries the commit; a later one without it keeps it.
-    merge_commit_sha = COALESCE(NULLIF(EXCLUDED.merge_commit_sha, ''), github_pull_request.merge_commit_sha),
-    -- Kept like the commit: a delivery that does not state them never blanks them.
-    base_ref = COALESCE(NULLIF(EXCLUDED.base_ref, ''), github_pull_request.base_ref),
-    default_branch = COALESCE(NULLIF(EXCLUDED.default_branch, ''), github_pull_request.default_branch),
     updated_at = now()
 WHERE EXCLUDED.pr_updated_at >= github_pull_request.pr_updated_at
-RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha, base_ref, default_branch
+RETURNING id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at
 `
 
 type UpsertGitHubPullRequestParams struct {
@@ -1423,11 +945,6 @@ type UpsertGitHubPullRequestParams struct {
 	MergedAt            pgtype.Timestamptz `json:"merged_at"`
 	ClosedAt            pgtype.Timestamptz `json:"closed_at"`
 	MergeableState      pgtype.Text        `json:"mergeable_state"`
-	HeadRepoSame        bool               `json:"head_repo_same"`
-	MergeCommitSha      string             `json:"merge_commit_sha"`
-	BaseRef             string             `json:"base_ref"`
-	DefaultBranch       string             `json:"default_branch"`
-	IsReopen            bool               `json:"is_reopen"`
 	ClearMergeableState pgtype.Bool        `json:"clear_mergeable_state"`
 }
 
@@ -1443,32 +960,6 @@ type UpsertGitHubPullRequestParams struct {
 //     mergeability, and silently clobbering a known clean/dirty would lose
 //     information that GitHub only re-computes lazily.
 //
-// state/merged_at follow the same "don't let a stale payload move things
-// backward" idea: `merged` is terminal, and a redelivered or out-of-order
-// opened/synchronize webhook (GitHub does not guarantee delivery order) must
-// never demote an already-merged PR back to open. `closed` is also protected
-// against a stale non-terminal payload — a redelivered/out-of-order `opened`
-// or `synchronize` webhook must not silently reopen a closed PR. The one
-// state `closed` must still yield to is a GENUINE reopen: GitHub's
-// action=reopened event, which derivePRState maps to state=open. Since the
-// state column alone can't distinguish "stale opened payload" from "genuine
-// reopened action" (both carry EXCLUDED.state='open'), the caller passes
-// is_reopen — true only when the webhook's action field is literally
-// "reopened" — as the discriminator (CHE-374 review round 3, item 1).
-//
-// is_reopen alone is not enough: GitHub does not guarantee delivery order, so
-// a DELAYED redelivery of an earlier "reopened" webhook can arrive after a
-// second close was already recorded (close -> reopen -> close again ->
-// stale redelivery of the FIRST reopen). That stale payload also carries
-// is_reopen=true and, without an ordering check, would wrongly reopen a PR
-// that is genuinely closed again. closed_at is used as the ordering signal
-// (deliberately not pr_updated_at, which is a general activity clock bumped
-// by labels/comments/assignee changes too, not a state-transition clock): a
-// genuine, fresher reopen either clears closed_at (GitHub sets it to null on
-// reopen) or, for a same-delivery replay, carries a closed_at that is not
-// older than what is already stored. A reopen payload whose closed_at is
-// OLDER than the stored closed_at is describing an earlier close than the one
-// currently on file and is rejected as stale (CHE-374 review round 4, item 1).
 // INSERT path always writes the incoming value (NULL acceptable for a new row).
 //
 // GitHub may deliver events out of order. An event older than the stored row
@@ -1496,11 +987,6 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		arg.MergedAt,
 		arg.ClosedAt,
 		arg.MergeableState,
-		arg.HeadRepoSame,
-		arg.MergeCommitSha,
-		arg.BaseRef,
-		arg.DefaultBranch,
-		arg.IsReopen,
 		arg.ClearMergeableState,
 	)
 	var i GithubPullRequest
@@ -1533,16 +1019,6 @@ func (q *Queries) UpsertGitHubPullRequest(ctx context.Context, arg UpsertGitHubP
 		&i.ChecksRollupState,
 		&i.SnapshotHeadSha,
 		&i.SnapshotFetchedAt,
-		&i.SnapshotBaseRef,
-		&i.SnapshotRecheckAt,
-		&i.HeadRepoSame,
-		&i.ReviewState,
-		&i.ReviewHeadSha,
-		&i.ReviewID,
-		&i.ReviewAt,
-		&i.MergeCommitSha,
-		&i.BaseRef,
-		&i.DefaultBranch,
 	)
 	return i, err
 }

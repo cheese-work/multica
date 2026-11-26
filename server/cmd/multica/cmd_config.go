@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/multica-ai/multica/server/internal/cli"
-	"github.com/multica-ai/multica/server/internal/daemon"
 )
 
 var configCmd = &cobra.Command{
@@ -37,10 +36,13 @@ var configSetSupportedKeys = []string{
 	"runtime_name",
 	"workspaces_root",
 	"max_concurrent_tasks",
-	"reserved_chat_slots",
+	"daemon_log_max_size_mb",
+	"daemon_log_max_backups",
+	"daemon_log_max_age_days",
 	"poll_interval",
 	"ws_claim_poll_interval",
 	"heartbeat_interval",
+	"log_level",
 	"agent_timeout",
 	"agent_idle_watchdog",
 	"agent_tool_watchdog",
@@ -56,17 +58,21 @@ var configSetCmd = &cobra.Command{
 	Short: "Set a CLI configuration value",
 	Long: "Supported keys: " +
 		"server_url, app_url, workspace_id, " +
-		"device_name, runtime_name, workspaces_root, max_concurrent_tasks, reserved_chat_slots, poll_interval, ws_claim_poll_interval, " +
+		"device_name, runtime_name, workspaces_root, max_concurrent_tasks, poll_interval, ws_claim_poll_interval, " +
+		"daemon_log_max_size_mb, daemon_log_max_backups, daemon_log_max_age_days, " +
 		"heartbeat_interval, agent_timeout, agent_idle_watchdog, agent_tool_watchdog, " +
 		"codex_semantic_inactivity_timeout, codex_handshake_timeout, " +
-		"disable_auto_update, auto_update_check_interval, disable_auto_reload.\n\n" +
-		"The daemon keys (device_name, runtime_name, workspaces_root, max_concurrent_tasks, reserved_chat_slots, " +
+		"disable_auto_update, auto_update_check_interval, disable_auto_reload, log_level.\n\n" +
+		"The daemon keys (device_name, runtime_name, workspaces_root, max_concurrent_tasks, " +
 		"poll_interval, ws_claim_poll_interval, heartbeat_interval, agent_timeout, agent_idle_watchdog, agent_tool_watchdog, " +
 		"codex_semantic_inactivity_timeout, codex_handshake_timeout, " +
 		"disable_auto_update, auto_update_check_interval, disable_auto_reload) mirror their " +
 		"--flag / env counterparts and are read by `daemon start` when " +
 		"neither the flag nor the env var is set. " +
 		"Precedence: --flag > MULTICA_… env > config.json > built-in default. " +
+		"The daemon_log_max_size_mb, daemon_log_max_backups, and daemon_log_max_age_days keys " +
+		"take positive integers (MB, files, and days). Valid MULTICA_DAEMON_LOG_MAX_* env values " +
+		"override them; invalid env values fall back to config.json, then defaults (20 MB, 5 files, 30 days). " +
 		"Duration keys take a Go duration (e.g. '10s', '500ms', '1m30s'); " +
 		"most keys require a positive value, while agent_timeout, agent_idle_watchdog, " +
 		"and agent_tool_watchdog also accept '0s' to disable their limit. " +
@@ -74,7 +80,8 @@ var configSetCmd = &cobra.Command{
 		"(single-direction: setting one to 'true' turns that behavior off, " +
 		"'false' clears the override so env/default decides). Pass an empty " +
 		"string to clear a persisted " +
-		"value (e.g. `config set poll_interval \"\"`).",
+		"value (e.g. `config set poll_interval \"\"`). " +
+		"log_level controls daemon logs (debug, info, warn, error). LOG_LEVEL overrides it.",
 	Args: exactArgs(2),
 	RunE: runConfigSet,
 }
@@ -106,10 +113,13 @@ func runConfigShow(cmd *cobra.Command, _ []string) error {
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "runtime_name:", valueOrDefault(cfg.RuntimeName, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "workspaces_root:", valueOrDefault(cfg.WorkspacesRoot, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "max_concurrent_tasks:", intOrDefault(cfg.MaxConcurrentTasks, "(not set)"))
-	fmt.Fprintf(os.Stdout, "%-34s %d\n", "reserved_chat_slots:", cfg.ReservedChatSlots)
+	fmt.Fprintf(os.Stdout, "%-34s %s\n", "daemon_log_max_size_mb:", intOrDefault(cfg.DaemonLogMaxSizeMB, "(not set)"))
+	fmt.Fprintf(os.Stdout, "%-34s %s\n", "daemon_log_max_backups:", intOrDefault(cfg.DaemonLogMaxBackups, "(not set)"))
+	fmt.Fprintf(os.Stdout, "%-34s %s\n", "daemon_log_max_age_days:", intOrDefault(cfg.DaemonLogMaxAgeDays, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "poll_interval:", valueOrDefault(cfg.PollInterval, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "ws_claim_poll_interval:", valueOrDefault(cfg.WSClaimPollInterval, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "heartbeat_interval:", valueOrDefault(cfg.HeartbeatInterval, "(not set)"))
+	fmt.Fprintf(os.Stdout, "%-34s %s\n", "log_level:", valueOrDefault(cfg.LogLevel, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "agent_timeout:", agentTimeoutDisplay(cfg.AgentTimeout))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "agent_idle_watchdog:", valueOrDefault(cfg.AgentIdleWatchdog, "(not set)"))
 	fmt.Fprintf(os.Stdout, "%-34s %s\n", "agent_tool_watchdog:", valueOrDefault(cfg.AgentToolWatchdog, "(not set)"))
@@ -163,6 +173,12 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 	switch key {
 	case "server_url":
 		cfg.ServerURL = value
+	case "daemon_log_max_size_mb":
+		return assignDaemonLogInt(&cfg.DaemonLogMaxSizeMB, key, value, maxDaemonLogSizeMB)
+	case "daemon_log_max_backups":
+		return assignDaemonLogInt(&cfg.DaemonLogMaxBackups, key, value, maxDaemonLogBackups)
+	case "daemon_log_max_age_days":
+		return assignDaemonLogInt(&cfg.DaemonLogMaxAgeDays, key, value, maxDaemonLogAgeDays)
 	case "app_url":
 		cfg.AppURL = value
 	case "workspace_id":
@@ -184,9 +200,6 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 		cfg.WorkspacesRoot = root
 	case "max_concurrent_tasks":
 		if value == "" {
-			if err := validateReservedAgainstMax(cfg.ReservedChatSlots, 0); err != nil {
-				return err
-			}
 			cfg.MaxConcurrentTasks = 0
 			return nil
 		}
@@ -197,23 +210,7 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 		if n < 0 {
 			return fmt.Errorf("max_concurrent_tasks must be >= 0 (got %d)", n)
 		}
-		if err := validateReservedAgainstMax(cfg.ReservedChatSlots, n); err != nil {
-			return err
-		}
 		cfg.MaxConcurrentTasks = n
-	case "reserved_chat_slots":
-		if value == "" {
-			cfg.ReservedChatSlots = 0
-			return nil
-		}
-		n, err := strconv.Atoi(value)
-		if err != nil {
-			return fmt.Errorf("reserved_chat_slots must be an integer: %w", err)
-		}
-		if err := validateReservedAgainstMax(n, cfg.MaxConcurrentTasks); err != nil {
-			return err
-		}
-		cfg.ReservedChatSlots = n
 	case "poll_interval":
 		if value == "" {
 			cfg.PollInterval = ""
@@ -236,6 +233,16 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 	case "ws_claim_poll_interval":
 		if err := assignPositiveDuration(&cfg.WSClaimPollInterval, key, value); err != nil {
 			return err
+		}
+	case "log_level":
+		// Accept the same spellings LOG_LEVEL does, stored in canonical form.
+		switch level := strings.ToLower(strings.TrimSpace(value)); level {
+		case "", "debug", "info", "warn", "error":
+			cfg.LogLevel = level
+		case "warning":
+			cfg.LogLevel = "warn"
+		default:
+			return fmt.Errorf("log_level must be debug, info, warn, or error (got %q)", value)
 		}
 	case "heartbeat_interval":
 		if err := assignPositiveDuration(&cfg.HeartbeatInterval, key, value); err != nil {
@@ -290,6 +297,22 @@ func applyConfigSet(cfg *cli.CLIConfig, key, value string) error {
 	default:
 		return fmt.Errorf("unknown config key %q (supported: %s)", key, joinKeys(configSetSupportedKeys))
 	}
+	return nil
+}
+
+func assignDaemonLogInt(dst *int, key, value string, max int64) error {
+	if value == "" {
+		*dst = 0
+		return nil
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || n <= 0 {
+		return fmt.Errorf("%s must be a positive integer; use `config set %s \"\"` to clear it", key, key)
+	}
+	if int64(n) > max {
+		return fmt.Errorf("%s must be at most %d", key, max)
+	}
+	*dst = n
 	return nil
 }
 
@@ -369,20 +392,6 @@ func valueOrDefault(v, fallback string) string {
 		return fallback
 	}
 	return v
-}
-
-// validateReservedAgainstMax checks a reservation against the cap the daemon
-// will run with at start-up. It resolves the persisted max exactly as
-// `multica daemon start` does (the env var, when set, beats the persisted
-// value), so a value accepted here is never refused when the daemon starts.
-// A --max-concurrent-tasks flag given at start is not known here.
-func validateReservedAgainstMax(reserved, persistedMax int) error {
-	override := resolveDaemonIntOverride(0, "MULTICA_DAEMON_MAX_CONCURRENT_TASKS", persistedMax)
-	max, err := daemon.EffectiveMaxConcurrentTasks(override)
-	if err != nil {
-		return err
-	}
-	return daemon.ValidateReservedChatSlots(reserved, max)
 }
 
 func intOrDefault(v int, fallback string) string {

@@ -5,18 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/multica-ai/multica/server/internal/attribution"
 	"log/slog"
 	"sort"
 	"time"
+
+	"github.com/multica-ai/multica/server/internal/attribution"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
-	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
-	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issueposition"
 	"github.com/multica-ai/multica/server/internal/issueproperty"
@@ -44,12 +43,6 @@ type IssueService struct {
 	// Metrics as "PostHog only", so leaving it unset is safe.
 	Metrics     *obsmetrics.BusinessMetrics
 	TaskService *TaskService
-	// Entitlements supplies Cloud's effective issue-count instruction. Nil is
-	// the self-hosted unlimited path.
-	Entitlements entitlement.Provider
-	// SquadDispatcher overrides default squad leader enqueue on issue create,
-	// allowing handler-level access gating.
-	SquadDispatcher func(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) bool
 }
 
 func NewIssueService(q *db.Queries, tx TxStarter, bus *events.Bus, ac analytics.Client, ts *TaskService) *IssueService {
@@ -66,16 +59,11 @@ func NewIssueService(q *db.Queries, tx TxStarter, bus *events.Bus, ac analytics.
 // to IssueService.Create. The handler owns the parsing step that turns its
 // request payload into this struct; the service stays transport-agnostic.
 type IssueCreateParams struct {
-	// ID is an optional caller-chosen issue id (idempotent creators derive it
-	// from their own key). Invalid: a fresh v7 id.
-	ID          pgtype.UUID
-	WorkspaceID pgtype.UUID
-	Title       string
-	Description pgtype.Text
-	Status      string
-	// StatusOmitted marks a creator who picked no status: Status then holds
-	// the caller's placeholder and the workflow's start status wins.
-	StatusOmitted bool
+	BlockedBy     []pgtype.UUID
+	WorkspaceID   pgtype.UUID
+	Title         string
+	Description   pgtype.Text
+	Status        string
 	Priority      string
 	AssigneeType  pgtype.Text
 	AssigneeID    pgtype.UUID
@@ -83,21 +71,9 @@ type IssueCreateParams struct {
 	CreatorID     pgtype.UUID
 	ParentIssueID pgtype.UUID
 	ProjectID     pgtype.UUID
-	// WorkflowID is the issue's workflow override; invalid inherits the project's.
-	WorkflowID pgtype.UUID
-	// WorkflowSource says who chose WorkflowID: issueworkflow.WorkflowSourceCaller
-	// (the request named it), WorkflowSourceTitleType (the workspace's
-	// workflow_by_type map did) or "" (none, or a creator that does not say).
-	// The quick_first draw reads it. Server-set.
-	WorkflowSource string
-	// RequestedByID is the member this issue was created for; the "human by
-	// role" handler hands the issue to them first. Invalid when none.
-	RequestedByID pgtype.UUID
 	StartDate     pgtype.Date
 	DueDate       pgtype.Date
 	OriginType    pgtype.Text
-	// CreatedVia is how the issue was made (dialog, agent, cli); server-set.
-	CreatedVia    pgtype.Text
 	OriginID      pgtype.UUID
 	AttachmentIDs []pgtype.UUID
 	// LabelIDs are the issue-scoped labels to attach to the new issue. They
@@ -111,59 +87,16 @@ type IssueCreateParams struct {
 	// used by the standalone PUT path, then inserts the complete bag atomically.
 	Properties     map[pgtype.UUID]json.RawMessage
 	AllowDuplicate bool
-	// MarkedWriter: the creating task is marked external_read, so the description
-	// stores the mark (CHE-2216 plan 3.7).
-	MarkedWriter bool
 	// PRAutoCompleteDisabled is persisted before the issue becomes visible.
 	PRAutoCompleteDisabled bool
 	// Stage groups this issue into an ordered barrier group under its parent
 	// (NULL = unstaged). See issue_wakeup_system.go for the staged-barrier wake.
 	Stage pgtype.Int4
-	// HandoffResolver, when set, decides the assignee a workflow step hands the
-	// new issue to. The service calls it under the catalog and project locks,
-	// with the step the issue actually lands on, and its answer replaces any
-	// assignee the caller resolved earlier from an unlocked read, and the
-	// assignee the caller named: entering a step that hands off gives the
-	// issue to its handler. A step with no handler leaves a named assignee.
-	HandoffResolver CreateHandoffResolver
-	// AssigneeNamed marks an assignee the caller chose, as opposed to one the
-	// handler read of an unlocked workflow filled in. Only the latter is
-	// cleared before the locked handoff decision.
-	AssigneeNamed bool
-	// EntryGate, when set, checks the entry gates of the step the issue lands
-	// on, under the same locks. Platform spawns leave it nil and are not gated.
-	EntryGate CreateEntryGate
-	// PropertyGate, when set, checks the validated property bag against the
-	// resolved workflow before the issue row exists (a mandatory property a
-	// workflow gate needs). Platform spawns leave it nil and are not gated.
-	PropertyGate CreatePropertyGate
-	// FromMachine marks a create whose creator is a member that signed in
-	// with a machine credential; it is held like an agent's. Server-set.
-	FromMachine bool
 	// SourceContext is set only by the comment-scoped manual create endpoint.
 	// Its immutable snapshot and cloned attachment rows commit in the same
 	// transaction as the new issue.
 	SourceContext *SourceContextCapture
 }
-
-// CreateHandoffResolver resolves, and checks the caller may use, the handler of
-// the workflow step a new issue enters. It returns no assignee when the step
-// resolves to nobody.
-type CreateHandoffResolver func(ctx context.Context, step issueworkflow.Step, project db.Project) (assigneeType pgtype.Text, assigneeID pgtype.UUID, err error)
-
-// CreatePropertyGate refuses a create whose properties the workflow's gates
-// cannot accept. properties is the canonical JSONB bag, keyed by property id.
-// projectID and title are the new issue's, for a gate scoped to a project or a
-// title type.
-type CreatePropertyGate func(ctx context.Context, q *db.Queries, def *issueworkflow.Definition, properties []byte, projectID pgtype.UUID, title string) error
-
-// CreateEntryGate refuses a create the landing step's block entry gates stop.
-// It may return a recorder for the new row (warn gates), which Create runs in
-// the same transaction right after the insert.
-type CreateEntryGate func(ctx context.Context, q *db.Queries, step issueworkflow.Step, hasParent bool) (RecordCreateEntry, error)
-
-// RecordCreateEntry writes what an entry gate leaves on a created issue.
-type RecordCreateEntry func(ctx context.Context, q *db.Queries, issue db.Issue) error
 
 // IssueCreateOpts groups optional knobs for IssueService.Create. Most
 // callers leave it zero-valued.
@@ -258,8 +191,6 @@ func (e *IssuePropertyValidationError) Error() string { return e.Message }
 // it arrived, so retrying against the refreshed catalog is the remedy.
 var ErrIssueStatusUnavailable = errors.New("issue status is no longer available")
 
-var ErrAgentIssueApproval = errors.New("only members can set approved")
-
 var ErrSourceContextAlreadyAttached = errors.New("source context is already attached")
 
 // IssueCreateResult is the typed return from IssueService.Create.
@@ -290,7 +221,7 @@ type IssueCreateResult struct {
 //
 // A healthy create is byte-identical to before this existed — the allocation
 // query is untouched and nothing extra is read on the way through. The collision
-// is the signal: AllocateIssueNumber bumps the counter inside the same
+// is the signal: IncrementIssueCounter bumps the counter inside the same
 // transaction as the INSERT, so the unique violation rolls the increment back
 // too and every later create in that workspace retries the same taken number
 // forever. Moving the counter first is what makes the second attempt land on a
@@ -301,9 +232,10 @@ type IssueCreateResult struct {
 // savepoint has to be established before the statement that might fail, so every
 // successful create would pay for it too.
 func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts IssueCreateOpts) (IssueCreateResult, error) {
-	if p.CreatorType == "agent" && p.Status == "approved" {
-		return IssueCreateResult{}, ErrAgentIssueApproval
-	}
+	// PostgreSQL TEXT rejects NUL, which survives a JSON round trip. Cleaned
+	// here so every create entry stores the same text.
+	p.Title = util.SanitizeTextForPostgres(p.Title)
+	p.Description.String = util.SanitizeTextForPostgres(p.Description.String)
 	res, err := s.createOnce(ctx, p, opts)
 	if err == nil {
 		return res, nil
@@ -351,15 +283,14 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 // Caller-owned validation is limited to transport-shaped checks: title
 // required, RFC3339 date format, assignee pair sanity.
 func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts IssueCreateOpts) (IssueCreateResult, error) {
-	issueCountPolicy := ResolveIssueCountPolicy(ctx, s.Entitlements, p.WorkspaceID)
 	tx, err := s.TxStarter.Begin(ctx)
 	if err != nil {
 		return IssueCreateResult{}, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
-	if p.CreatorType == "agent" {
-		if _, err := qtx.LockWorkspaceForChatSessionCreate(ctx, p.WorkspaceID); err != nil {
+	if len(p.BlockedBy) > 0 || p.Stage.Valid {
+		if err = qtx.LockIssueBlockerGraph(ctx, p.WorkspaceID); err != nil {
 			return IssueCreateResult{}, err
 		}
 	}
@@ -369,78 +300,14 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 		return IssueCreateResult{}, err
 	}
 
-	// Resolve the project the issue lands in once, and validate it, before any
-	// decision depends on it. Both checks scope by WorkspaceID — there is no
-	// path from this service to a row in a foreign workspace. A forged parent or
-	// project ID is rejected before we touch the issue counter.
-	projectID := p.ProjectID
-	var parent db.Issue
-	if p.ParentIssueID.Valid {
-		var err error
-		parent, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
-			ID:          p.ParentIssueID,
-			WorkspaceID: p.WorkspaceID,
-		})
-		if err != nil || !parent.ID.Valid {
-			return IssueCreateResult{}, ErrParentIssueNotFound
-		}
-		// Back-fill project from parent when the caller did not pin
-		// one explicitly. Matches the long-standing HTTP behavior: a
-		// sub-issue inherits its parent's project unless overridden.
-		if !projectID.Valid {
-			projectID = parent.ProjectID
-		}
-	}
-
-	// A create takes the shared status-catalog lock and the project's
-	// key-share lock before it reads the workflow, and holds both through the
-	// insert. A workflow edit holds the catalog exclusively and a workflow
-	// switch holds the project row for update, so neither can commit between
-	// the decision below and the row it decides for, whatever the status.
-	// A custom status takes the catalog lock too, to re-resolve it: the caller
-	// validated it before the transaction opened, early enough for a clean 400
-	// but too early to be safe, because an archive can commit in between.
-	// (MUL-6243, MUL-7420)
-	if projectID.Valid || p.WorkflowID.Valid || !issuestatus.IsBuiltIn(p.Status) {
-		if err := qtx.LockIssueStatusCatalogShared(ctx, p.WorkspaceID); err != nil {
-			return IssueCreateResult{}, err
-		}
-	}
-	if p.CreatorType == "agent" {
-		if err := RequireActiveProject(ctx, qtx, p.WorkspaceID, projectID); err != nil {
-			return IssueCreateResult{}, err
-		}
-	}
-	if projectID.Valid {
-		if _, err := qtx.LockProjectForIssueWrite(ctx, db.LockProjectForIssueWriteParams{ID: projectID, WorkspaceID: p.WorkspaceID}); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return IssueCreateResult{}, ErrProjectNotFound
-			}
-			return IssueCreateResult{}, err
-		}
-	}
-
-	// The source issue is locked after the catalog and project locks, never
-	// before: a workflow switch holds the project row and then remaps the
-	// project's issues, the source issue among them, so the opposite order
-	// deadlocks the two.
 	if p.SourceContext != nil {
-		source, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
+		if _, err := qtx.LockIssueForDescriptionUpdate(ctx, db.LockIssueForDescriptionUpdateParams{
 			ID: p.SourceContext.SourceIssueID, WorkspaceID: p.WorkspaceID,
-		})
-		if err != nil {
+		}); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return IssueCreateResult{}, ErrSourceIssueDeleted
 			}
 			return IssueCreateResult{}, fmt.Errorf("lock source issue: %w", err)
-		}
-		// The project was resolved from the parent before this lock. The locked
-		// row is authoritative: a parent moved since then means the project and
-		// workflow decided above are the former ones. Taking the new project's
-		// lock here would invert the lock order, so the create is refused and
-		// the caller retries against the parent's current project.
-		if !p.ProjectID.Valid && p.ParentIssueID == p.SourceContext.SourceIssueID && source.ProjectID != projectID {
-			return IssueCreateResult{}, ErrSourceContextChanged
 		}
 		locked, err := qtx.LockCommentAncestorPath(ctx, db.LockCommentAncestorPathParams{
 			CommentID: p.SourceContext.AnchorCommentID, WorkspaceID: p.WorkspaceID,
@@ -461,178 +328,73 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 		}
 	}
 
-	// Project workflow (MUL-7420, MUL-8250): an issue created in a project
-	// whose named workflow does not list the requested status starts on todo
-	// instead; outside any project the stored Default limits it the same way.
-	// The HTTP create path already rejects an explicit status outside the
-	// workflow; this keeps the other creators (channels, captured comments)
-	// inside it too, and the project switches that commit after that check.
-	// Resolved before the custom-status guard below so that guard checks the
-	// status actually written.
-	// The project's A/B split picks the workflow here, under the project lock
-	// and before the workflow is read, so everything after it (status, handler,
-	// entry gate) runs on the selected workflow. The number is drawn first
-	// because a root's parity decides: project lock, then counter. A refused
-	// create rolls the number back with the transaction. (CHE-5264)
-	issueNumber, err := AllocateIssueNumber(ctx, qtx, p.WorkspaceID, issueCountPolicy)
-	if err != nil {
-		return IssueCreateResult{}, fmt.Errorf("allocate issue number: %w", err)
-	}
-	var split splitChoice
-	var projectSplitOpen bool
-	if projectID.Valid {
-		project, err := qtx.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{ID: projectID, WorkspaceID: p.WorkspaceID})
-		if err != nil {
-			return IssueCreateResult{}, err
-		}
-		// A sub-issue staying in its parent's archived project continues work
-		// already there; only filing new work into it is refused.
-		if project.ArchivedAt.Valid && projectID != parent.ProjectID {
-			return IssueCreateResult{}, ErrProjectArchived
-		}
-		named := p.AssigneeType
-		namedID := p.AssigneeID
-		if p.HandoffResolver != nil && !p.AssigneeNamed {
-			named, namedID = pgtype.Text{}, pgtype.UUID{}
-		}
-		projectSplit := DecodeWorkflowSplit(project.WorkflowSplit)
-		projectSplitOpen = projectSplit.active(time.Now())
-		split = chooseSplit(projectSplit, time.Now(), p.WorkflowID.Valid, named, namedID, p.ParentIssueID.Valid, parent.WorkflowID, issueNumber)
-	}
-	// A split-picked override needs no caller right and may leave the status
-	// the caller asked for out of arm B; only a caller's override is an error.
-	callerOverride := p.WorkflowID.Valid
-	if split.WorkflowID.Valid {
-		p.WorkflowID = split.WorkflowID
-	}
-	def, workflowProject, err := issueworkflow.ForIssue(ctx, qtx, p.WorkspaceID, p.WorkflowID, projectID)
-	if err != nil {
+	// Project workflow (MUL-7420): an issue created with a status its
+	// workflow does not list — the project's, or the stored Default outside
+	// any project (MUL-8250) — starts on todo instead. The HTTP create path
+	// already rejects an explicit status outside the workflow; this keeps the
+	// other creators (channels, captured comments) inside it too. Resolved
+	// before the custom-status guard below so that guard checks the status
+	// actually written.
+	if def, err := s.createWorkflow(ctx, qtx, p); err != nil {
 		return IssueCreateResult{}, err
-	}
-	// The quick_first draw (CHE-7680) runs on what the route and the split
-	// left: an open project split wins, and a caller's override stays out.
-	var quickAuthor *issueworkflow.StepAssignee
-	var quickEntry *quickEntryDraw
-	if !split.WorkflowID.Valid {
-		workspace, err := qtx.GetWorkspace(ctx, p.WorkspaceID)
-		if err != nil {
-			return IssueCreateResult{}, fmt.Errorf("read quick_first: %w", err)
-		}
-		if qf := issueworkflow.DecodeQuickFirst(workspace.Settings); qf != nil {
-			named := p.AssigneeType
-			namedID := p.AssigneeID
-			if p.HandoffResolver != nil && !p.AssigneeNamed {
-				named, namedID = pgtype.Text{}, pgtype.UUID{}
-			}
-			choice := chooseQuickFirst(qf, time.Now(), quickFirstFacts{
-				Title: p.Title, Source: p.WorkflowSource, CallerFlow: p.WorkflowID.Valid,
-				Status: p.Status, StatusOmitted: p.StatusOmitted,
-				AssigneeType: named.String, AssigneeSet: namedID.Valid,
-				ProjectSplit: projectSplitOpen, Routed: def != nil,
-				HasParent: p.ParentIssueID.Valid, ParentFlow: parent.WorkflowID, Number: issueNumber,
-			})
-			routeID := pgtype.UUID{} // the arm-D route: what the issue follows before the draw
-			if def != nil {
-				routeID = def.ID
-			}
-			if choice.Arm {
-				quickDef, quickProject, err := issueworkflow.ForIssue(ctx, qtx, p.WorkspaceID, qf.WorkflowID, projectID)
-				switch {
-				case errors.Is(err, issueworkflow.ErrOverrideMissing):
-					choice = quickChoice{Reason: quickReasonQuickMissing}
-				case err != nil:
-					return IssueCreateResult{}, err
-				default:
-					p.WorkflowID, callerOverride = qf.WorkflowID, false
-					def, workflowProject = quickDef, quickProject
-					if namedID.Valid && named.String == "agent" {
-						quickAuthor = &issueworkflow.StepAssignee{Type: named.String, ID: namedID}
-					}
-				}
-			}
-			if choice.Drawn {
-				quickEntry = &quickEntryDraw{Arm: map[bool]string{true: "Q", false: "D"}[choice.Arm], Route: routeID}
-			}
-			slog.Info("quick_first", "workspace_id", util.UUIDToString(p.WorkspaceID), "number", issueNumber, "arm_q", choice.Arm, "drawn", choice.Drawn, "reason", choice.Reason)
-		}
-	}
-	if def == nil && !p.WorkflowID.Valid {
-		// No project and no override: only a stored Default limits the status.
-		if outside, err := issueworkflow.OutsideProject(ctx, qtx, p.WorkspaceID); err != nil {
-			return IssueCreateResult{}, err
-		} else if outside != nil && outside.Limits() && !outside.Has(p.Status) {
-			p.Status = issueworkflow.StartStatus
-		}
-	}
-	if def != nil && def.Limits() && (p.StatusOmitted || !def.Has(p.Status)) {
-		// An override is the caller's explicit choice: a status it does not
-		// list is an error, never a silent restart.
-		if callerOverride && !p.StatusOmitted {
-			return IssueCreateResult{}, issueworkflow.CheckStatus(def, p.Status)
-		}
-		p.Status = def.Start()
-	}
-	// The intake hold (CHE-6911 E1): an agent's or a machine credential's create
-	// in a held project lands in backlog or is refused, before the handler and
-	// the entry gate read the step.
-	var holdMarker string
-	if p.CreatorType == "agent" || p.FromMachine {
-		labelIDs := make([]string, len(p.LabelIDs))
-		for i, id := range p.LabelIDs {
-			labelIDs[i] = util.UUIDToString(id)
-		}
-		loaded, err := intakehold.LoadCreate(ctx, tx, intakehold.CreateFacts{
-			WorkspaceID: util.UUIDToString(p.WorkspaceID), ProjectID: util.UUIDToString(projectID), Title: p.Title,
-			HasParent: p.ParentIssueID.Valid, LabelIDs: labelIDs, OriginType: p.OriginType.String, OriginID: util.UUIDToString(p.OriginID),
-		})
-		if err != nil {
-			return IssueCreateResult{}, fmt.Errorf("intake hold: %w", err)
-		}
-		if p.Status, holdMarker, err = intakehold.ForCreate(loaded, p.Status, p.StatusOmitted, p.CreatorType, util.UUIDToString(p.CreatorID)); err != nil {
-			return IssueCreateResult{}, err
-		}
-	}
-	// The handler of the step the issue lands on comes from the workflow as it
-	// stands under the locks. An earlier unlocked read can name the former
-	// workflow's handler, or none, after a switch.
-	if p.HandoffResolver != nil {
-		if !p.AssigneeNamed {
-			p.AssigneeType, p.AssigneeID = pgtype.Text{}, pgtype.UUID{}
-		}
-		if def != nil {
-			if step, ok := def.Step(p.Status); ok && step.HandsOff() {
-				assigneeType, assigneeID, err := p.HandoffResolver(ctx, step, workflowProject)
-				if err != nil {
-					return IssueCreateResult{}, err
-				}
-				if assigneeID.Valid {
-					p.AssigneeType, p.AssigneeID = assigneeType, assigneeID
-				}
-			}
-		}
-	}
-	var recordEntry RecordCreateEntry
-	if p.EntryGate != nil && def != nil {
-		if step, ok := def.Step(p.Status); ok {
-			var err error
-			if recordEntry, err = p.EntryGate(ctx, qtx, step, p.ParentIssueID.Valid); err != nil {
-				return IssueCreateResult{}, err
-			}
-		}
+	} else if def != nil && def.Limits() && !def.Has(p.Status) {
+		p.Status = issueworkflow.StartStatus
 	}
 
-	if p.PropertyGate != nil && def != nil {
-		if err := p.PropertyGate(ctx, qtx, def, properties, projectID, p.Title); err != nil {
-			return IssueCreateResult{}, err
-		}
-	}
-
+	// A create landing on a CUSTOM status takes the shared catalog lock AND
+	// re-resolves the status inside this transaction. The caller validated the
+	// status before the transaction opened, which is early enough to return a
+	// clean 400 but too early to be safe: an archive can commit in between.
+	// Re-checking under the lock is what makes the status provably active at
+	// the moment the row is written. Built-in statuses skip both — they can
+	// never be archived, so the common path is unchanged. (MUL-6243)
 	if !issuestatus.IsBuiltIn(p.Status) {
+		if err := qtx.LockIssueStatusCatalogShared(ctx, p.WorkspaceID); err != nil {
+			return IssueCreateResult{}, err
+		}
 		if _, err := issuestatus.Resolve(ctx, qtx, p.WorkspaceID, p.Status); err != nil {
 			if errors.Is(err, issuestatus.ErrUnknownStatus) {
 				return IssueCreateResult{}, ErrIssueStatusUnavailable
 			}
 			return IssueCreateResult{}, err
+		}
+	}
+
+	// Resolve and validate parent / project before reading from the
+	// duplicate guard so a forged parent or project ID is rejected
+	// before we touch the issue counter. Both checks scope by
+	// WorkspaceID — there is no path from this service to a row in a
+	// foreign workspace.
+	projectID := p.ProjectID
+	var parentProjectID pgtype.UUID
+	if p.ParentIssueID.Valid {
+		parent, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{
+			ID:          p.ParentIssueID,
+			WorkspaceID: p.WorkspaceID,
+		})
+		if err != nil || !parent.ID.Valid {
+			return IssueCreateResult{}, ErrParentIssueNotFound
+		}
+		// Back-fill project from parent when the caller did not pin
+		// one explicitly. Matches the long-standing HTTP behavior: a
+		// sub-issue inherits its parent's project unless overridden.
+		parentProjectID = parent.ProjectID
+		if !projectID.Valid {
+			projectID = parent.ProjectID
+		}
+	}
+	if projectID.Valid {
+		project, err := qtx.GetProjectInWorkspace(ctx, db.GetProjectInWorkspaceParams{
+			ID:          projectID,
+			WorkspaceID: p.WorkspaceID,
+		})
+		if err != nil {
+			return IssueCreateResult{}, ErrProjectNotFound
+		}
+		// A sub-issue staying in its parent's archived project continues work
+		// already there; only filing new work into it is refused.
+		if project.ArchivedAt.Valid && projectID != parentProjectID {
+			return IssueCreateResult{}, ErrProjectArchived
 		}
 	}
 
@@ -654,6 +416,11 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 		return IssueCreateResult{DuplicateIssue: &dup}, ErrActiveDuplicate
 	}
 
+	issueNumber, err := qtx.IncrementIssueCounter(ctx, p.WorkspaceID)
+	if err != nil {
+		return IssueCreateResult{}, fmt.Errorf("allocate issue number: %w", err)
+	}
+
 	// New issues sort to the top of their (workspace, status) column for
 	// manual ordering. Computed inside the tx, after IncrementIssueCounter
 	// has already taken the workspace row lock, so two concurrent creates
@@ -670,10 +437,6 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 
 	var issue db.Issue
 	var assignedTask db.AgentTaskQueue
-	issueID := p.ID
-	if !issueID.Valid {
-		issueID = dbid.NewV7()
-	}
 	if p.OriginType.Valid {
 		var requester pgtype.UUID
 		if p.CreatorType == "agent" && p.OriginID.Valid && (p.OriginType.String == "quick_create" || p.OriginType.String == "agent_create") {
@@ -685,7 +448,7 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 			}
 		}
 		issue, err = qtx.CreateIssueWithOrigin(ctx, db.CreateIssueWithOriginParams{
-			ID:              issueID,
+			ID:              dbid.NewV7(),
 			WorkspaceID:     p.WorkspaceID,
 			Title:           p.Title,
 			Description:     p.Description,
@@ -701,18 +464,15 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 			DueDate:         p.DueDate,
 			Number:          issueNumber,
 			ProjectID:       projectID,
-			WorkflowID:      p.WorkflowID,
-			RequestedByID:   p.RequestedByID,
-			RequesterUserID: requester,
-			CreatedVia:      p.CreatedVia,
 			OriginType:      p.OriginType,
 			OriginID:        p.OriginID,
+			RequesterUserID: requester,
 			Stage:           p.Stage,
 			Properties:      properties,
 		})
 	} else {
 		issue, err = qtx.CreateIssue(ctx, db.CreateIssueParams{
-			ID:            issueID,
+			ID:            dbid.NewV7(),
 			WorkspaceID:   p.WorkspaceID,
 			Title:         p.Title,
 			Description:   p.Description,
@@ -728,9 +488,6 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 			DueDate:       p.DueDate,
 			Number:        issueNumber,
 			ProjectID:     projectID,
-			WorkflowID:    p.WorkflowID,
-			RequestedByID: p.RequestedByID,
-			CreatedVia:    p.CreatedVia,
 			Stage:         p.Stage,
 			Properties:    properties,
 		})
@@ -746,66 +503,17 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 		return IssueCreateResult{}, classifyIssueNumberCollision(fmt.Errorf("create issue: %w", err), issueNumber)
 	}
 
+	for _, blockerID := range p.BlockedBy {
+		if err = AddIssueBlocker(ctx, qtx, p.WorkspaceID, issue.ID, blockerID, p.CreatorType, p.CreatorID); err != nil {
+			return IssueCreateResult{}, err
+		}
+	}
 	if p.PRAutoCompleteDisabled {
 		if err := qtx.SetIssuePRAutoCompleteDisabled(ctx, db.SetIssuePRAutoCompleteDisabledParams{
 			IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, AutoCompleteDisabled: true,
 			UpdatedByType: pgtype.Text{String: p.CreatorType, Valid: true}, UpdatedByID: p.CreatorID,
 		}); err != nil {
 			return IssueCreateResult{}, fmt.Errorf("set issue PR auto-complete: %w", err)
-		}
-	}
-	if quickAuthor != nil {
-		// The author the creator named, kept for the Quick handler (CHE-7677).
-		if err := issueworkflow.SetStepAssignee(ctx, qtx, p.WorkspaceID, issue.ID, issueworkflow.StepKeyAuthor, *quickAuthor, p.CreatorType, p.CreatorID); err != nil {
-			return IssueCreateResult{}, fmt.Errorf("record quick author: %w", err)
-		}
-	}
-	if quickEntry != nil {
-		if err := issueworkflow.RecordQuickEntry(ctx, qtx, p.WorkspaceID, issue.ID, quickEntry.Arm, quickEntry.Route, "", pgtype.UUID{}); err != nil {
-			return IssueCreateResult{}, fmt.Errorf("record quick entry: %w", err)
-		}
-	}
-	if split.Action != "" {
-		details, _ := json.Marshal(map[string]string{"rule": split.Rule})
-		if _, err := qtx.CreateActivity(ctx, db.CreateActivityParams{
-			WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, Action: split.Action, Details: details,
-		}); err != nil {
-			return IssueCreateResult{}, fmt.Errorf("record workflow split: %w", err)
-		}
-	}
-	// An issue created into an author step keeps its first assignee as its
-	// author, so a later capability_routing change does not move it (CHE-7677).
-	if def != nil && issue.AssigneeID.Valid && issue.AssigneeType.Valid {
-		if step, ok := def.Step(issue.Status); ok && step.Handler.Type == issueworkflow.HandlerAuthor {
-			author := issueworkflow.StepAssignee{Type: issue.AssigneeType.String, ID: issue.AssigneeID}
-			if err := issueworkflow.SetStepAssignee(ctx, qtx, issue.WorkspaceID, issue.ID, issueworkflow.AuthorStepKey, author, p.CreatorType, p.CreatorID); err != nil {
-				return IssueCreateResult{}, fmt.Errorf("record author: %w", err)
-			}
-		}
-	}
-	if recordEntry != nil {
-		if err := recordEntry(ctx, qtx, issue); err != nil {
-			return IssueCreateResult{}, fmt.Errorf("record entry gate: %w", err)
-		}
-		// The recorded comment bumped the revision the result must carry.
-		if issue, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: p.WorkspaceID}); err != nil {
-			return IssueCreateResult{}, fmt.Errorf("reload issue: %w", err)
-		}
-	}
-
-	if holdMarker != "" {
-		value, _ := json.Marshal(holdMarker)
-		if _, err := qtx.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{ID: issue.ID, WorkspaceID: p.WorkspaceID, Key: intakehold.SettingKey, Value: value}); err != nil {
-			return IssueCreateResult{}, fmt.Errorf("mark intake hold: %w", err)
-		}
-		if issue, err = qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: issue.ID, WorkspaceID: p.WorkspaceID}); err != nil {
-			return IssueCreateResult{}, fmt.Errorf("reload issue: %w", err)
-		}
-	}
-
-	if p.MarkedWriter && p.Description.Valid {
-		if err := qtx.MarkIssueDescriptionExternalRead(ctx, issue.ID); err != nil {
-			return IssueCreateResult{}, fmt.Errorf("mark description external_read: %w", err)
 		}
 	}
 
@@ -880,10 +588,6 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 		}); err != nil {
 			return IssueCreateResult{}, fmt.Errorf("attach issue label: %w", err)
 		}
-	}
-
-	if err := followNewIssue(ctx, qtx, p, issue); err != nil {
-		return IssueCreateResult{}, fmt.Errorf("follow new issue: %w", err)
 	}
 
 	if !opts.AssignedAgentRunFireAt.IsZero() && s.shouldEnqueueAgentTaskWithQueries(ctx, qtx, issue) {
@@ -1232,6 +936,26 @@ func classifyOrigin(issue db.Issue, opts IssueCreateOpts) (source, taskID, autop
 	}
 }
 
+// createWorkflow resolves the workflow whose statuses a new issue may take:
+// its own project's, its parent's project's when it names none, or the
+// stored Default when neither has a project.
+func (s *IssueService) createWorkflow(ctx context.Context, qtx *db.Queries, p IssueCreateParams) (*issueworkflow.Definition, error) {
+	projectID := p.ProjectID
+	if !projectID.Valid && p.ParentIssueID.Valid {
+		parent, err := qtx.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: p.ParentIssueID, WorkspaceID: p.WorkspaceID})
+		if err != nil {
+			// The parent check below reports a missing parent.
+			return nil, nil
+		}
+		projectID = parent.ProjectID
+	}
+	if !projectID.Valid {
+		return issueworkflow.OutsideProject(ctx, qtx, p.WorkspaceID)
+	}
+	def, _, err := issueworkflow.ForProject(ctx, qtx, p.WorkspaceID, projectID)
+	return def, err
+}
+
 func (s *IssueService) maybeEnqueueOnAssign(ctx context.Context, issue db.Issue, creatorType, actorID string, agentRunFireAt time.Time) pgtype.UUID {
 	if !issue.AssigneeType.Valid || !issue.AssigneeID.Valid {
 		return pgtype.UUID{}
@@ -1289,6 +1013,10 @@ func (s *IssueService) shouldEnqueueAgentTaskWithQueries(ctx context.Context, q 
 	if issue.TriageState.Valid || issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) == "backlog" {
 		return false
 	}
+	blocked, err := q.HasOpenIssueBlockers(ctx, db.HasOpenIssueBlockersParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if err != nil || blocked {
+		return false
+	}
 	return isAgentAssigneeReadyWithQueries(ctx, s.runtimeLookup(q), issue)
 }
 
@@ -1322,6 +1050,10 @@ func (s *IssueService) shouldEnqueueSquadLeaderOnAssign(ctx context.Context, iss
 	if issue.TriageState.Valid || issuestatus.Effective(ctx, s.Queries, issue.WorkspaceID, issue.Status) == "backlog" {
 		return false
 	}
+	blocked, err := s.Queries.HasOpenIssueBlockers(ctx, db.HasOpenIssueBlockersParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
+	if err != nil || blocked {
+		return false
+	}
 	return s.isSquadLeaderReady(ctx, issue)
 }
 
@@ -1344,13 +1076,10 @@ func (s *IssueService) isSquadLeaderReady(ctx context.Context, issue db.Issue) b
 	if err != nil {
 		return false
 	}
-	return !verdict.Blocked()
+	return verdict.Ready()
 }
 
 func (s *IssueService) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, authorType, authorID string) {
-	if s.SquadDispatcher != nil && s.SquadDispatcher(ctx, issue, triggerCommentID, authorType, authorID) {
-		return
-	}
 	squad, err := s.Queries.GetSquadInWorkspace(ctx, db.GetSquadInWorkspaceParams{
 		ID:          issue.AssigneeID,
 		WorkspaceID: issue.WorkspaceID,

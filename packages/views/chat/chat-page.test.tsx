@@ -1,100 +1,129 @@
 // @vitest-environment jsdom
 
-import { StrictMode, useState } from "react";
+import { StrictMode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { useSyncExternalStore } from "react";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { useAppearanceStore } from "@multica/core/appearance";
 import type { Agent } from "@multica/core/types";
-import { useChatStore } from "@multica/core/chat";
-import { useSearchStore } from "@multica/core/command-bar";
-import { chatKeys } from "@multica/core/chat/queries";
-import { setCurrentWorkspace } from "@multica/core/platform";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
 import enChat from "../locales/en/chat.json";
-import enSearch from "../locales/en/search.json";
 import {
   NavigationProvider,
   type NavigationAdapter,
 } from "../navigation";
 
-const TEST_RESOURCES = { en: { common: enCommon, chat: enChat, search: enSearch } };
-const mockSignIn = vi.hoisted(() => vi.fn());
+const TEST_RESOURCES = { en: { common: enCommon, chat: enChat } };
 
-vi.mock("../auth/use-logout", () => ({ useLogout: () => mockSignIn }));
+const lastMessageListProps = vi.hoisted(() => ({
+  current: null as null | { revealKey?: string | null; enterTransition?: string | null },
+}));
+const mockArchiveOutcome = vi.hoisted(() => ({
+  current: { moved: false } as
+    | { moved: false }
+    | { moved: true; targetSessionId: string; direction: "next" | "prev" }
+    | { moved: true; targetSessionId: null; direction: null },
+}));
+const mockHasMessages = vi.hoisted(() => ({ current: false }));
+const mockAdvanceSelectionAfterArchive = vi.hoisted(() =>
+  vi.fn(() => {
+    const outcome = mockArchiveOutcome.current;
+    if (outcome.moved) mockSetActiveSession(outcome.targetSessionId);
+    return outcome;
+  }),
+);
+const mockArchiveSession = vi.hoisted(() => vi.fn());
+const mockSelectSession = vi.hoisted(() => vi.fn());
 
 // These tests target the page-level URL wiring (`?agent=` / `?session=`), so
 // the conversation internals are stubbed and the controller is replaced with
 // a ref-driven fake the tests can steer. The thread-list stub stays
 // interactive: selecting a thread is the user action that must supersede a
 // pending `?agent=` intent.
-vi.mock("./components/chat-message-list", async () => {
-  const { AppLink } = await import("../navigation");
-  return {
-    // Only the divider link is real: AppLink pushes through the adapter, as
-    // the "continued from" link in the transcript does.
-    ChatMessageList: ({
-      continuedIntoSessionId,
-      jumpToMessageId,
-      onJumpSettled,
-    }: {
-      continuedIntoSessionId?: string | null;
-      jumpToMessageId?: string | null;
-      onJumpSettled?: (outcome: "landed" | "missing") => void;
-    }) => (
-      <div>
+vi.mock("./components/chat-message-list", () => ({
+  ChatMessageList: ({
+    revealKey,
+    enterTransition,
+  }: {
+    revealKey?: string | null;
+    enterTransition?: string | null;
+  }) => {
+    lastMessageListProps.current = { revealKey, enterTransition };
+    return (
+      <div
+        data-testid="chat-message-list"
+        data-reveal-key={revealKey ?? ""}
+        data-enter-transition={enterTransition ?? ""}
+      >
         chat-message-list
-        <span data-testid="jump-target">{jumpToMessageId ?? ""}</span>
-        <button type="button" onClick={() => onJumpSettled?.("landed")}>settle-landed</button>
-        <button type="button" onClick={() => onJumpSettled?.("missing")}>settle-missing</button>
-        {continuedIntoSessionId && (
-          <AppLink href={`/acme/chat?session=${continuedIntoSessionId}`}>continued-link</AppLink>
-        )}
       </div>
-    ),
-    ChatMessageSkeleton: () => <div>chat-message-skeleton</div>,
-  };
-});
+    );
+  },
+  ChatMessageSkeleton: () => <div>chat-message-skeleton</div>,
+}));
 vi.mock("./components/chat-input", () => ({
-  ChatInput: ({ disabled, compacting }: { disabled?: boolean; compacting?: boolean }) => (
-    <div data-disabled={String(!!disabled)} data-compacting={String(!!compacting)}>
-      chat-input
-    </div>
-  ),
+  ChatInput: () => <div>chat-input</div>,
 }));
 vi.mock("./components/chat-thread-list", () => ({
   ChatThreadList: ({
+    activeSessionId,
     onSelectSession,
+    onArchive,
   }: {
+    activeSessionId: string | null;
     onSelectSession: (s: { id: string; agent_id: string }) => void;
+    onArchive: (s: { id: string; agent_id: string }) => void;
   }) => (
-    <button
-      type="button"
-      onClick={() => onSelectSession({ id: "session-9", agent_id: "agent-9" })}
-    >
-      select-thread
-    </button>
-  ),
-}));
-vi.mock("./components/chat-session-header", () => ({
-  // The compact back button is the header's `leading` slot.
-  ChatSessionHeader: ({ leading }: { leading?: React.ReactNode }) => (
     <div>
-      chat-session-header
-      {leading}
+      <button
+        type="button"
+        onClick={() => onSelectSession({ id: "session-9", agent_id: "agent-9" })}
+      >
+        select-thread
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onArchive({ id: activeSessionId ?? "session-1", agent_id: "agent-1" })
+        }
+      >
+        archive-active-thread
+      </button>
     </div>
   ),
+}));
+const mockCurrentSession = vi.hoisted(() => ({
+  current: null as { id: string; agent_id: string } | null,
+}));
+
+vi.mock("./components/chat-session-header", () => ({
+  ChatSessionHeader: ({
+    session,
+    onArchive,
+  }: {
+    session: { id: string; agent_id: string };
+    onArchive?: (s: { id: string; agent_id: string }) => void;
+  }) => (
+    <div>
+      <span>chat-session-header</span>
+      {onArchive && (
+        <button type="button" onClick={() => onArchive(session)}>
+          archive-from-header
+        </button>
+      )}
+    </div>
+  ),
+}));
+vi.mock("./components/chat-wakeups", () => ({
+  ChatWakeupStrip: () => null,
+  useChatWakeups: () => [],
 }));
 vi.mock("./components/chat-empty-state", () => ({
   EmptyState: () => <div>chat-empty-state</div>,
 }));
 vi.mock("./components/new-chat-button", () => ({
-  NewChatButton: ({ onStart }: { onStart: (agent: null) => void }) => (
-    <button type="button" onClick={() => onStart(null)}>
-      new-chat
-    </button>
-  ),
+  NewChatButton: () => <div>new-chat-button</div>,
 }));
 vi.mock("./components/offline-banner", () => ({
   OfflineBanner: () => null,
@@ -126,12 +155,7 @@ vi.mock("@multica/ui/hooks/use-mobile", () => ({
 }));
 vi.mock("@multica/core/paths", () => ({
   useRequiredWorkspaceSlug: () => "acme",
-  useCurrentWorkspace: () => ({ settings: {} }),
   useWorkspacePaths: () => ({ chat: () => "/acme/chat" }),
-}));
-vi.mock("@multica/core/hooks", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@multica/core/hooks")>()),
-  useWorkspaceId: () => "ws-1",
 }));
 const platformWorkspace = vi.hoisted(() => ({ slug: "acme" }));
 vi.mock("@multica/core/platform", async (importOriginal) => ({
@@ -139,60 +163,59 @@ vi.mock("@multica/core/platform", async (importOriginal) => ({
   getCurrentSlug: () => platformWorkspace.slug,
 }));
 
+// The store mock is REACTIVE like real Zustand: setActiveSession replaces the
+// snapshot and notifies subscribers, and the controller mock subscribes via
+// useSyncExternalStore. A plain mutable ref would let React bail out of
+// committing the post-effect re-render (no React state changed), leaving the
+// DOM frozen on the first commit — which silently hides exactly the class of
+// bug the StrictMode regression below exists to catch.
+const storeRef = vi.hoisted(() => ({
+  current: { activeSessionId: null as string | null },
+}));
+const storeListeners = vi.hoisted(() => new Set<() => void>());
 const availableAgentsRef = vi.hoisted(() => ({ current: [] as Agent[] }));
 const agentsSettledRef = vi.hoisted(() => ({ current: true }));
-const interactiveLoginRequiredRef = vi.hoisted(() => ({ current: false }));
-const messagesLoadedRef = vi.hoisted(() => ({ current: true }));
 const mockStartNewChat = vi.hoisted(() => vi.fn());
 const mockToastError = vi.hoisted(() => vi.fn());
-// Spy over the REAL store's setter (wired in beforeEach). The page's effects
-// run against a real Zustand store: a hand-rolled store mock cannot reproduce
-// the ordering between a store update, the router publishing a URL, and the
-// effects that reconcile the two (CHE-1755 ENG-11).
-const mockSetActiveSession = vi.hoisted(() => vi.fn());
+const mockSetActiveSession = vi.hoisted(() =>
+  vi.fn((id: string | null) => {
+    storeRef.current = { ...storeRef.current, activeSessionId: id };
+    storeListeners.forEach((l) => l());
+  }),
+);
+const subscribeToStore = vi.hoisted(() => (cb: () => void) => {
+  storeListeners.add(cb);
+  return () => storeListeners.delete(cb);
+});
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: mockToastError },
 }));
 
-vi.mock("@multica/core/chat", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@multica/core/chat")>();
-  const data = new Map<string, string>();
-  actual.registerChatStore(
-    actual.createChatStore({
-      storage: {
-        getItem: (k) => data.get(k) ?? null,
-        setItem: (k, v) => void data.set(k, v),
-        removeItem: (k) => void data.delete(k),
-      },
-    }),
-  );
-  return actual;
-});
+vi.mock("@multica/core/chat", () => ({
+  useChatStore: Object.assign(
+    (selector?: (s: { activeSessionId: string | null }) => unknown) =>
+      selector ? selector(storeRef.current) : storeRef.current,
+    { getState: () => storeRef.current },
+  ),
+}));
 
 vi.mock("./components/use-chat-controller", async () => {
-  const { useChatStore } = await import("@multica/core/chat");
+  const { useSyncExternalStore } = await import("react");
   return {
-    useChatController: () => {
-      const activeSession = useChatStore((state) => state.activeSessionId);
-      return {
+    useChatController: () => ({
       wsId: "ws-1",
       user: { id: "user-1" },
       agents: availableAgentsRef.current,
       availableAgents: availableAgentsRef.current,
       agentsSettled: agentsSettledRef.current,
       sessions: [],
-      interactiveLoginRequired: interactiveLoginRequiredRef.current,
-      activeSessionId: activeSession,
+      activeSessionId: useSyncExternalStore(
+        subscribeToStore,
+        () => storeRef.current,
+      ).activeSessionId,
       selectedAgentId: null,
-      // session-9 is the DM whose transcript ends with a "continued into" link.
-      currentSession: activeSession === "session-9"
-        ? { id: "session-9", continued_into_session_id: "session-10" }
-        : activeSession === "session-compacting"
-          ? { id: "session-compacting", compacting: true }
-          : activeSession === "session-empty"
-            ? { id: "session-empty" }
-            : null,
+      currentSession: mockCurrentSession.current,
       isSessionArchived: false,
       isAgentArchived: false,
       isAgentRuntimeBound: true,
@@ -203,8 +226,8 @@ vi.mock("./components/use-chat-controller", async () => {
       pendingTask: null,
       pendingTaskId: null,
       showSkeleton: false,
-      messagesLoaded: messagesLoadedRef.current,
-      hasMessages: false,
+      hasMessages: mockHasMessages.current,
+      firstItemIndex: 0,
       hasOlderMessages: false,
       isFetchingOlderMessages: false,
       fetchOlderMessages: vi.fn(),
@@ -214,15 +237,14 @@ vi.mock("./components/use-chat-controller", async () => {
       handleSend: vi.fn(),
       handleStop: vi.fn(),
       handleUploadFile: vi.fn(),
-      handleNewChat: () => mockSetActiveSession(null),
+      handleNewChat: vi.fn(),
       handleStartNewChat: mockStartNewChat,
-      // Like the real controller: selecting publishes the session to the store.
-      handleSelectSession: (session: { id: string }) => mockSetActiveSession(session.id),
-      advanceSelectionAfterArchive: vi.fn(),
+      handleSelectSession: mockSelectSession,
+      advanceSelectionAfterArchive: mockAdvanceSelectionAfterArchive,
+      archiveSession: mockArchiveSession,
       setActiveSession: mockSetActiveSession,
       setSelectedAgentId: vi.fn(),
-      };
-    },
+    }),
   };
 });
 
@@ -286,8 +308,6 @@ function renderPage(search: string, { strict = false } = {}) {
   const view = render(makeUi());
   return {
     replace,
-    qc,
-    unmount: view.unmount,
     rerender: (
       { pathname, search }: { pathname?: string; search?: string } = {},
     ) => {
@@ -302,129 +322,26 @@ function renderPage(search: string, { strict = false } = {}) {
   };
 }
 
-// Seed the real store without going through the spied setter.
-const seedSession = (id: string | null) =>
-  useChatStore.setState({ activeSessionId: id });
-const activeSession = () => useChatStore.getState().activeSessionId;
-
 beforeEach(() => {
-  interactiveLoginRequiredRef.current = false;
-  messagesLoadedRef.current = true;
   vi.clearAllMocks();
-  mockSetActiveSession.mockImplementation((id: string | null) =>
-    useChatStore.getState().setActiveSession(id),
-  );
-  seedSession(null);
+  storeRef.current = { activeSessionId: null };
+  storeListeners.clear();
   availableAgentsRef.current = [agent];
   agentsSettledRef.current = true;
   platformWorkspace.slug = "acme";
   layout.width = DESKTOP;
+  lastMessageListProps.current = null;
+  mockArchiveOutcome.current = { moved: false };
+  mockHasMessages.current = false;
+  mockCurrentSession.current = null;
 });
 
 describe("ChatPage URL synchronization", () => {
-  it("hands ?message= to the list for the session it names, then drops it once landed", () => {
-    seedSession("session-9");
-    const { replace } = renderPage("session=session-9&message=msg-7");
-    expect(screen.getByTestId("jump-target")).toHaveTextContent("msg-7");
-    fireEvent.click(screen.getByText("settle-landed"));
-    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
-    expect(mockToastError).not.toHaveBeenCalled();
-  });
-
-  it("refetches the transcript before calling a message gone, then toasts if it is still missing", async () => {
-    seedSession("session-9");
-    const { replace, qc } = renderPage("session=session-9&message=gone");
-    const refetch = vi.spyOn(qc, "refetchQueries");
-    fireEvent.click(screen.getByText("settle-missing"));
-    // A cached transcript can predate the message (a card opened right after
-    // propose): one authoritative refetch comes before the verdict.
-    expect(refetch).toHaveBeenCalledWith({ queryKey: chatKeys.messagesPage("session-9"), exact: true });
-    expect(mockToastError).not.toHaveBeenCalled();
-    expect(replace).not.toHaveBeenCalled();
-    // The list is re-armed with the target once the refetch lands.
-    await waitFor(() => expect(screen.getByTestId("jump-target")).toHaveTextContent("gone"));
-    fireEvent.click(screen.getByText("settle-missing"));
-    expect(refetch).toHaveBeenCalledTimes(1);
-    expect(mockToastError).toHaveBeenCalledWith("Message no longer available");
-    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
-  });
-
-  it("lands on a message that the refetch brought in without a notice", async () => {
-    seedSession("session-9");
-    const { replace } = renderPage("session=session-9&message=msg-7");
-    fireEvent.click(screen.getByText("settle-missing"));
-    await waitFor(() => expect(screen.getByTestId("jump-target")).toHaveTextContent("msg-7"));
-    fireEvent.click(screen.getByText("settle-landed"));
-    expect(mockToastError).not.toHaveBeenCalled();
-    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-9");
-  });
-
-  it("toasts and drops ?message= when the chat has no messages left to show", async () => {
-    seedSession("session-empty");
-    const { replace } = renderPage("session=session-empty&message=gone");
-    expect(screen.getByText("chat-empty-state")).toBeInTheDocument();
-    await waitFor(() => expect(mockToastError).toHaveBeenCalledWith("Message no longer available"));
-    expect(replace).toHaveBeenCalledWith("/acme/chat?session=session-empty");
-  });
-
-  it("settles an empty chat's missing message once under StrictMode", async () => {
-    seedSession("session-empty");
-    renderPage("session=session-empty&message=gone", { strict: true });
-    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(mockToastError).toHaveBeenCalledTimes(1);
-  });
-
-  it("settles the same hit again after the first notice cleared the param", async () => {
-    seedSession("session-empty");
-    const { rerender } = renderPage("session=session-empty&message=gone");
-    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
-    rerender({ search: "session=session-empty" });
-    rerender({ search: "session=session-empty&message=gone" });
-    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(2));
-  });
-
-  it("waits for the transcript to load before calling the message gone", async () => {
-    seedSession("session-empty");
-    messagesLoadedRef.current = false;
-    const { replace, rerender } = renderPage("session=session-empty&message=m-1");
-    expect(mockToastError).not.toHaveBeenCalled();
-    expect(replace).not.toHaveBeenCalled();
-    messagesLoadedRef.current = true;
-    rerender();
-    await waitFor(() => expect(mockToastError).toHaveBeenCalledTimes(1));
-  });
-
-  it("leaves a session with no ?message= alone when it is empty", () => {
-    seedSession("session-empty");
-    const { replace } = renderPage("session=session-empty");
-    expect(mockToastError).not.toHaveBeenCalled();
-    expect(replace).not.toHaveBeenCalled();
-  });
-
-  it("passes no jump target without ?message=", () => {
-    seedSession("session-9");
-    renderPage("session=session-9");
-    expect(screen.getByTestId("jump-target")).toHaveTextContent("");
-  });
-
-
-  it("prompts for interactive re-login without navigating or clearing the session", () => {
-    interactiveLoginRequiredRef.current = true;
-    seedSession("preserved-session");
-    const page = renderPage("?session=preserved-session");
-    expect(screen.getByRole("alert")).toHaveTextContent("Sign in again to use Chat");
-    expect(activeSession()).toBe("preserved-session");
-    expect(page.replace).not.toHaveBeenCalled();
-    expect(mockSignIn).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
-    expect(mockSignIn).toHaveBeenCalledTimes(1);
-  });
   it.each(["/globex/issues", "/acme/issues"])(
     "does not redirect back to chat when the retained page observes %s",
     (pathname) => {
       const { replace, rerender } = renderPage("session=session-1");
-      expect(activeSession()).toBe("session-1");
+      expect(storeRef.current.activeSessionId).toBe("session-1");
       mockSetActiveSession.mockClear();
 
       // App Router can retain the outgoing page after the shared navigation
@@ -448,7 +365,7 @@ describe("ChatPage URL synchronization", () => {
         mockSetActiveSession(sessionId);
       });
 
-      expect(activeSession()).toBe(sessionId);
+      expect(storeRef.current.activeSessionId).toBe(sessionId);
       expect(mockSetActiveSession).toHaveBeenCalledTimes(1);
       expect(replace).not.toHaveBeenCalled();
     },
@@ -467,7 +384,7 @@ describe("ChatPage URL synchronization", () => {
         mockSetActiveSession(sessionId);
       });
 
-      expect(activeSession()).toBe(sessionId);
+      expect(storeRef.current.activeSessionId).toBe(sessionId);
       expect(mockSetActiveSession).toHaveBeenCalledTimes(1);
       expect(replace).not.toHaveBeenCalled();
     },
@@ -485,7 +402,7 @@ describe("ChatPage URL synchronization", () => {
     rerender({ pathname: "/acme/chat" });
 
     expect(mockSetActiveSession).toHaveBeenCalledWith("session-1");
-    expect(activeSession()).toBe("session-1");
+    expect(storeRef.current.activeSessionId).toBe("session-1");
     expect(replace).not.toHaveBeenCalled();
   });
 
@@ -524,31 +441,13 @@ describe("ChatPage URL synchronization", () => {
   );
 });
 
-// CHE-1807: while a DM compacts, the page's composer is disabled and says why.
-describe("ChatPage compacting composer", () => {
-  it("disables the composer for a compacting DM and leaves other DMs alone", () => {
-    seedSession("session-compacting");
-    renderPage("session=session-compacting");
-    expect(screen.getByText("chat-input")).toHaveAttribute("data-disabled", "true");
-    expect(screen.getByText("chat-input")).toHaveAttribute("data-compacting", "true");
-  });
-
-  it("keeps the composer enabled for a DM that is not compacting", () => {
-    seedSession("session-9");
-    renderPage("session=session-9");
-    expect(screen.getByText("chat-input")).toHaveAttribute("data-disabled", "false");
-    expect(screen.getByText("chat-input")).toHaveAttribute("data-compacting", "false");
-  });
-});
-
 describe("ChatPage ?agent= deep link", () => {
   it("starts a new chat with the linked agent and strips the param", () => {
-    const history = createHistory("/acme/chat?agent=agent-1");
-    renderWithHistory(history);
+    const { replace } = renderPage("agent=agent-1");
     expect(mockStartNewChat).toHaveBeenCalledTimes(1);
     expect(mockStartNewChat).toHaveBeenCalledWith(agent);
-    expect(history.url).toBe("/acme/chat?new=1");
-    // The URL opens the conversation pane instead of the neutral prompt.
+    expect(replace).toHaveBeenCalledWith("/acme/chat");
+    // composingNew opened the conversation pane instead of the neutral prompt.
     expect(screen.getByText("chat-input")).toBeInTheDocument();
   });
 
@@ -581,7 +480,7 @@ describe("ChatPage ?agent= deep link", () => {
     agentsSettledRef.current = true;
     rerender();
     expect(mockStartNewChat).toHaveBeenCalledWith(agent);
-    expect(replace).toHaveBeenCalledWith("/acme/chat?new=1");
+    expect(replace).toHaveBeenCalledWith("/acme/chat");
   });
 
   it("toasts and strips the param once the list settles without the agent", () => {
@@ -618,28 +517,11 @@ describe("ChatPage ?agent= deep link", () => {
     // P2): the composingNew reset must read the LIVE store value, or the
     // stale persisted session re-closes the pane the intent just opened —
     // while the consumed-intent guard rightly refuses to fire again.
-    seedSession("old-session");
-    const history = createHistory("/acme/chat?agent=agent-1");
-    renderWithHistory(history, { strict: true });
+    storeRef.current = { activeSessionId: "old-session" };
+    const { replace } = renderPage("agent=agent-1", { strict: true });
     expect(mockStartNewChat).toHaveBeenCalledTimes(1);
-    expect(history.url).toBe("/acme/chat?new=1");
+    expect(replace).toHaveBeenCalledWith("/acme/chat");
     expect(screen.getByText("chat-input")).toBeInTheDocument();
-  });
-});
-
-describe("ChatPage mobile search icon (CHE-5593)", () => {
-  it("opens the palette from the list header on a phone", () => {
-    layout.width = FOLD_INNER_PORTRAIT;
-    useSearchStore.getState().setOpen(false);
-    renderPage("");
-    fireEvent.click(screen.getByRole("button", { name: "Search..." }));
-    expect(useSearchStore.getState().open).toBe(true);
-  });
-
-  it("shows no header search icon on desktop, where the sidebar trigger and ⌘K cover it", () => {
-    layout.width = DESKTOP;
-    renderPage("");
-    expect(screen.queryByRole("button", { name: "Search..." })).toBeNull();
   });
 });
 
@@ -664,7 +546,7 @@ describe("ChatPage responsive layout", () => {
     layout.width = FOLD_INNER_PORTRAIT;
     // The page reconciles the store against `?session=`, so the open thread has
     // to be in the URL too — otherwise the sync effect closes it.
-    seedSession("session-1");
+    storeRef.current = { activeSessionId: "session-1" };
     renderPage("session=session-1");
 
     expect(
@@ -679,7 +561,7 @@ describe("ChatPage responsive layout", () => {
     // there instead (see the sidebar), so the thread list stays on screen next
     // to an open conversation.
     layout.width = width;
-    seedSession("session-1");
+    storeRef.current = { activeSessionId: "session-1" };
     renderPage("session=session-1");
 
     expect(
@@ -689,630 +571,125 @@ describe("ChatPage responsive layout", () => {
   });
 });
 
-// A real history stack behind the adapter, so these tests assert where Back
-// lands rather than which adapter method was called. `/acme/inbox` is the
-// start destination Cheese opened chat from. `writes` records only what the
-// page itself pushed or replaced; a test simulating an AppLink calls
-// `history.push` directly and stays out of it. `defer()` holds back the URL
-// the page can read, like a router that publishes a push after the store has
-// already changed.
-function createHistory(...entries: string[]) {
-  let index = entries.length - 1;
-  let published = entries[index]!;
-  let deferred = false;
-  const listeners = new Set<() => void>();
-  const publish = () => {
-    if (deferred) return;
-    published = entries[index]!;
-    listeners.forEach((l) => l());
-  };
-  return {
-    writes: [] as { kind: "push" | "replace"; url: string }[],
-    get entries() {
-      return entries;
-    },
-    get url() {
-      return entries[index]!;
-    },
-    get publishedUrl() {
-      return published;
-    },
-    subscribe: (cb: () => void) => {
-      listeners.add(cb);
-      return () => listeners.delete(cb);
-    },
-    defer() {
-      deferred = true;
-    },
-    flush() {
-      deferred = false;
-      publish();
-    },
-    push(url: string) {
-      entries = [...entries.slice(0, index + 1), url];
-      index = entries.length - 1;
-      publish();
-    },
-    replace(url: string) {
-      entries = entries.map((e, i) => (i === index ? url : e));
-      publish();
-    },
-    back() {
-      if (index > 0) index -= 1;
-      publish();
-    },
-    forward() {
-      if (index < entries.length - 1) index += 1;
-      publish();
-    },
-    canGoBack: () => index > 0,
-  };
-}
+describe("ChatPage archive and session transitions", () => {
+  it("opens an initial deep-linked session with revealKey and no directional transition", () => {
+    mockHasMessages.current = true;
+    storeRef.current = { activeSessionId: "session-1" };
+    renderPage("session=session-1");
 
-function renderWithHistory(
-  history: ReturnType<typeof createHistory>,
-  { strict = false, navigationApi = true } = {},
-) {
-  let bump: () => void = () => {};
-  function Host() {
-    const [, setTick] = useState(0);
-    bump = () => setTick((n) => n + 1);
-    const url = useSyncExternalStore(history.subscribe, () => history.publishedUrl);
-    const [pathname = "", search = ""] = url.split("?");
-    const navigation: NavigationAdapter = {
-      push: (to) => {
-        history.writes.push({ kind: "push", url: to });
-        history.push(to);
-      },
-      replace: (to) => {
-        history.writes.push({ kind: "replace", url: to });
-        history.replace(to);
-      },
-      back: history.back,
-      // Browsers without the Navigation API cannot answer, so the adapter omits it.
-      canGoBack: navigationApi ? history.canGoBack : undefined,
-      pathname,
-      searchParams: new URLSearchParams(search),
-      hash: "",
-      getShareableUrl: (path) => path,
+    const list = screen.getByTestId("chat-message-list");
+    expect(list).toHaveAttribute("data-reveal-key", "session-1");
+    expect(list).toHaveAttribute("data-enter-transition", "");
+  });
+
+  it("applies the 'next' transition when archiving advances to the following thread", () => {
+    mockHasMessages.current = true;
+    storeRef.current = { activeSessionId: "session-1" };
+    mockArchiveOutcome.current = {
+      moved: true,
+      targetSessionId: "session-2",
+      direction: "next",
     };
-    const page = (
-      <QueryClientProvider client={new QueryClient()}>
-        <I18nProvider locale="en" resources={TEST_RESOURCES}>
-          <NavigationProvider value={navigation}>
-            <ChatPage />
-          </NavigationProvider>
-        </I18nProvider>
-      </QueryClientProvider>
-    );
-    return strict ? <StrictMode>{page}</StrictMode> : page;
-  }
-  const view = render(<Host />);
-  return { ...view, rerenderPage: () => act(() => bump()) };
-}
+    renderPage("session=session-1");
 
-describe("ChatPage back stack", () => {
-  const selectThread = () =>
+    fireEvent.click(screen.getByRole("button", { name: "archive-active-thread" }));
+
+    expect(mockAdvanceSelectionAfterArchive).toHaveBeenCalledTimes(1);
+    expect(mockArchiveSession).toHaveBeenCalledWith("session-1");
+    const list = screen.getByTestId("chat-message-list");
+    expect(list).toHaveAttribute("data-reveal-key", "session-2");
+    expect(list).toHaveAttribute("data-enter-transition", "next");
+  });
+
+  it("applies the 'prev' transition when archiving the last thread falls back upward", () => {
+    mockHasMessages.current = true;
+    storeRef.current = { activeSessionId: "session-3" };
+    mockArchiveOutcome.current = {
+      moved: true,
+      targetSessionId: "session-2",
+      direction: "prev",
+    };
+    renderPage("session=session-3");
+
+    fireEvent.click(screen.getByRole("button", { name: "archive-active-thread" }));
+
+    const list = screen.getByTestId("chat-message-list");
+    expect(list).toHaveAttribute("data-reveal-key", "session-2");
+    expect(list).toHaveAttribute("data-enter-transition", "prev");
+  });
+
+  it("fades in the neutral select prompt when archiving the only thread on desktop", () => {
+    mockHasMessages.current = true;
+    storeRef.current = { activeSessionId: "session-only" };
+    mockArchiveOutcome.current = {
+      moved: true,
+      targetSessionId: null,
+      direction: null,
+    };
+    renderPage("session=session-only");
+
+    fireEvent.click(screen.getByRole("button", { name: "archive-active-thread" }));
+
+    const prompt = screen.getByText("Pick a conversation, or start a new one with +");
+    expect(prompt.parentElement?.className).toContain("animate-chat-enter-fade");
+  });
+
+  describe("under reduced motion", () => {
+    function archiveOnlyThread() {
+      mockHasMessages.current = true;
+      storeRef.current = { activeSessionId: "session-only" };
+      mockArchiveOutcome.current = { moved: true, targetSessionId: null, direction: null };
+      renderPage("session=session-only");
+      fireEvent.click(screen.getByRole("button", { name: "archive-active-thread" }));
+      return screen.getByText("Pick a conversation, or start a new one with +").parentElement!;
+    }
+    afterEach(() => {
+      useAppearanceStore.getState().reset();
+      vi.unstubAllGlobals();
+    });
+
+    it("shows the select prompt at once with the Appearance Reduce motion switch", () => {
+      useAppearanceStore.getState().set({ reduceMotion: true });
+      expect(archiveOnlyThread().className).not.toMatch(/animate-chat-enter/);
+    });
+
+    it("shows the select prompt at once with the system reduced-motion setting", () => {
+      vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+        matches: query === "(prefers-reduced-motion: reduce)",
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      })));
+      expect(archiveOnlyThread().className).not.toMatch(/animate-chat-enter/);
+    });
+  });
+
+  it("applies a gentle fade when selecting another thread directly", () => {
+    mockHasMessages.current = true;
+    storeRef.current = { activeSessionId: "session-1" };
+    mockSelectSession.mockImplementationOnce((s: { id: string }) => {
+      mockSetActiveSession(s.id);
+    });
+    renderPage("session=session-1");
+
     fireEvent.click(screen.getByRole("button", { name: "select-thread" }));
-  const back = () => act(() => history.back());
-  let history: ReturnType<typeof createHistory>;
 
-  it("walks inbox > list > A > linked B back through A, the list and the inbox", () => {
-    history = createHistory("/acme/inbox", "/acme/chat");
-    renderWithHistory(history);
-
-    selectThread();
-    expect(history.url).toBe("/acme/chat?session=session-9");
-    // The "continued from" divider link pushes through AppLink.
-    fireEvent.click(screen.getByRole("link", { name: "continued-link" }));
-    expect(activeSession()).toBe("session-10");
-
-    back();
-    expect(history.url).toBe("/acme/chat?session=session-9");
-    expect(activeSession()).toBe("session-9");
-    back();
-    expect(history.url).toBe("/acme/chat");
-    expect(activeSession()).toBeNull();
-    back();
-    expect(history.url).toBe("/acme/inbox");
+    const list = screen.getByTestId("chat-message-list");
+    expect(list).toHaveAttribute("data-reveal-key", "session-9");
+    expect(list).toHaveAttribute("data-enter-transition", "fade");
   });
 
-  it("pushes a thread selection instead of replacing the list entry", () => {
-    history = createHistory("/acme/inbox", "/acme/chat");
-    renderWithHistory(history);
-
-    selectThread();
-
-    expect(history.entries).toEqual([
-      "/acme/inbox",
-      "/acme/chat",
-      "/acme/chat?session=session-9",
-    ]);
-  });
-
-  it("pushes ?new=1 when a new chat is started from an open session", () => {
-    history = createHistory("/acme/inbox", "/acme/chat?session=session-9");
-    seedSession("session-9");
-    renderWithHistory(history);
-
-    fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
-
-    expect(history.entries).toEqual([
-      "/acme/inbox",
-      "/acme/chat?session=session-9",
-      "/acme/chat?new=1",
-    ]);
-    back();
-    expect(history.url).toBe("/acme/chat?session=session-9");
-    expect(activeSession()).toBe("session-9");
-  });
-
-  it("assigns the server ID of a new chat with replace, not push", () => {
-    history = createHistory("/acme/inbox", "/acme/chat");
-    renderWithHistory(history);
-
-    act(() => mockSetActiveSession("new-session"));
-
-    expect(history.entries).toEqual(["/acme/inbox", "/acme/chat?session=new-session"]);
-  });
-
-  // Corrections from the CHE-1755 /autoplan review (2026-10-16). They assert
-  // history and URL writes, not which call site or store field produced them,
-  // so they hold whichever push/replace mechanism Cheese picks on CHE-1755.
-  // TE2 (CHE-1755 D5): the page asks the store for a push or replace, and one
-  // store -> URL effect writes it. These tests watch the real store's intent.
-  describe("one-shot navIntent", () => {
-    const watchIntents = () => {
-      const seen: unknown[] = [];
-      const unsubscribe = useChatStore.subscribe((state, prev) => {
-        if (state.navIntent !== prev.navIntent) seen.push(state.navIntent);
-      });
-      return { seen, unsubscribe };
-    };
-
-    it("records a push for a thread selection and consumes it once the URL is written", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history, { strict: true });
-      const { seen, unsubscribe } = watchIntents();
-
-      selectThread();
-      unsubscribe();
-
-      expect(seen).toEqual([{ mode: "push", newChat: false }, null]);
-      expect(history.writes).toEqual([
-        { kind: "push", url: "/acme/chat?session=session-9" },
-      ]);
-    });
-
-    it("records a push for a new chat", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history, { strict: true });
-      const { seen, unsubscribe } = watchIntents();
-
-      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
-      unsubscribe();
-
-      expect(seen).toEqual([{ mode: "push", newChat: true }, null]);
-    });
-
-    it("records a replace for a resolved ?agent= intent", () => {
-      availableAgentsRef.current = [agent];
-      history = createHistory("/acme/inbox", "/acme/chat?agent=agent-1");
-      const { seen, unsubscribe } = watchIntents();
-
-      renderWithHistory(history, { strict: true });
-      unsubscribe();
-
-      expect(seen).toEqual([{ mode: "replace", newChat: true }, null]);
-    });
-
-    it("records no intent when the open DM is selected again", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history, { strict: true });
-      selectThread();
-      const { seen, unsubscribe } = watchIntents();
-
-      selectThread();
-      unsubscribe();
-
-      expect(seen).toEqual([]);
-      expect(useChatStore.getState().navIntent).toBeNull();
-    });
-
-    it("writes any store change that carries a push intent as exactly one push", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history, { strict: true });
-
-      // A caller outside the page's handlers, such as a future slash command.
-      act(() => {
-        useChatStore.getState().requestNav({ mode: "push", newChat: false });
-        useChatStore.getState().setActiveSession("session-12");
-      });
-
-      expect(history.writes).toEqual([
-        { kind: "push", url: "/acme/chat?session=session-12" },
-      ]);
-    });
-
-    it("turns the next store-only change after a consumed intent into a replace", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history, { strict: true });
-      selectThread();
-
-      act(() => mockSetActiveSession("session-10"));
-
-      expect(history.writes).toEqual([
-        { kind: "push", url: "/acme/chat?session=session-9" },
-        { kind: "replace", url: "/acme/chat?session=session-10" },
-      ]);
-    });
-
-    it("writes one push under StrictMode when the router publishes after the store changes", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history, { strict: true });
-      history.defer();
-
-      selectThread();
-      expect(activeSession()).toBe("session-9");
-      act(() => history.flush());
-
-      expect(history.writes).toEqual([
-        { kind: "push", url: "/acme/chat?session=session-9" },
-      ]);
-    });
-  });
-
-  it("returns to DM A when back follows an issue link opened from it", () => {
-    history = createHistory("/acme/inbox", "/acme/chat");
-    renderWithHistory(history);
-    selectThread();
-
-    act(() => history.push("/acme/issues/MUL-1"));
-    back();
-
-    expect(history.url).toBe("/acme/chat?session=session-9");
-    expect(activeSession()).toBe("session-9");
-  });
-
-  describe("one URL write per user transition", () => {
-    it("pushes a list > DM selection once and replaces nothing under StrictMode", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history, { strict: true });
-
-      selectThread();
-
-      expect(history.writes).toEqual([
-        { kind: "push", url: "/acme/chat?session=session-9" },
-      ]);
-    });
-
-    it("does not replace the entry a push is about to create when the router publishes late", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history);
-      history.defer();
-
-      selectThread();
-      // Store already says session-9; the router still shows the list.
-      expect(activeSession()).toBe("session-9");
-      act(() => history.flush());
-
-      expect(history.writes).toEqual([
-        { kind: "push", url: "/acme/chat?session=session-9" },
-      ]);
-      expect(history.entries).toEqual([
-        "/acme/inbox",
-        "/acme/chat",
-        "/acme/chat?session=session-9",
-      ]);
-    });
-
-    it("adds no history entry when the open DM is selected again", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history);
-      selectThread();
-      const entries = [...history.entries];
-
-      selectThread();
-
-      expect(history.entries).toEqual(entries);
-      expect(history.writes).toHaveLength(1);
-    });
-
-    it("writes nothing to the URL on browser back and forward", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history);
-      selectThread();
-      fireEvent.click(screen.getByRole("link", { name: "continued-link" }));
-      const writes = [...history.writes];
-
-      back();
-      back();
-
-      expect(history.writes).toEqual(writes);
-      expect(activeSession()).toBeNull();
-    });
-
-    it.each([
-      // Realtime continuation advancing the open session, a stale or deleted
-      // session being cleared: store-only writers, no user transition.
-      ["advances to a continued session", "session-10", "/acme/chat?session=session-10"],
-      ["clears a stale or deleted session", null, "/acme/chat"],
-    ])("writes the URL exactly once when the store %s", (_label, next, url) => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history);
-      selectThread();
-      history.writes.length = 0;
-
-      act(() => mockSetActiveSession(next));
-
-      expect(history.writes).toEqual([{ kind: "replace", url }]);
-      expect(history.url).toBe(url);
-    });
-  });
-
-  describe("router publishes late", () => {
-    it("pushes ?new=1 once and never replaces it with the list when started from a DM", () => {
-      history = createHistory("/acme/inbox", "/acme/chat?session=session-9");
-      seedSession("session-9");
-      renderWithHistory(history, { strict: true });
-      history.defer();
-
-      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
-      act(() => history.flush());
-
-      expect(history.writes).toEqual([{ kind: "push", url: "/acme/chat?new=1" }]);
-      expect(history.entries).toEqual([
-        "/acme/inbox",
-        "/acme/chat?session=session-9",
-        "/acme/chat?new=1",
-      ]);
-    });
-
-    it("pushes ?new=1 once when started from the list", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history, { strict: true });
-      history.defer();
-
-      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
-      act(() => history.flush());
-
-      expect(history.writes).toEqual([{ kind: "push", url: "/acme/chat?new=1" }]);
-    });
-
-    it("replaces ?agent= with ?new=1 once", () => {
-      history = createHistory("/acme/inbox", "/acme/chat?agent=agent-1");
-      history.defer();
-      renderWithHistory(history, { strict: true });
-      act(() => history.flush());
-
-      expect(history.writes).toEqual([{ kind: "replace", url: "/acme/chat?new=1" }]);
-    });
-
-    it("keeps the compose pane tied to the published URL", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history);
-      history.defer();
-
-      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
-      expect(screen.queryByText("chat-input")).not.toBeInTheDocument();
-      act(() => history.flush());
-
-      expect(screen.getByText("chat-input")).toBeInTheDocument();
-    });
-  });
-
-  describe("unsent new chat", () => {
-    it("pushes ?new=1 once when a new chat is started from the list", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history, { strict: true });
-
-      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
-
-      expect(history.writes).toEqual([{ kind: "push", url: "/acme/chat?new=1" }]);
-      back();
-      expect(history.url).toBe("/acme/chat");
-    });
-
-    it("assigns the server ID over ?new=1 with one replace", () => {
-      history = createHistory("/acme/inbox", "/acme/chat?new=1");
-      renderWithHistory(history);
-
-      act(() => mockSetActiveSession("new-session"));
-
-      expect(history.writes).toEqual([
-        { kind: "replace", url: "/acme/chat?session=new-session" },
-      ]);
-      expect(history.entries).toEqual(["/acme/inbox", "/acme/chat?session=new-session"]);
-    });
-
-    it("turns a ?agent= deep link into ?new=1 by replace, with no push", () => {
-      availableAgentsRef.current = [agent];
-      history = createHistory("/acme/inbox", "/acme/chat?agent=agent-1");
-      renderWithHistory(history, { strict: true });
-
-      expect(mockStartNewChat).toHaveBeenCalledTimes(1);
-      expect(history.writes.filter((w) => w.kind === "push")).toEqual([]);
-      expect(history.entries).toEqual(["/acme/inbox", "/acme/chat?new=1"]);
-    });
-  });
-
-  describe("compact back button", () => {
-    beforeEach(() => {
-      layout.width = FOLD_INNER_PORTRAIT;
-    });
-
-    it("steps back to the previous session, then to the list", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history);
-      selectThread();
-      fireEvent.click(screen.getByRole("link", { name: "continued-link" }));
-
-      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-      expect(history.url).toBe("/acme/chat?session=session-9");
-      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-      expect(history.url).toBe("/acme/chat");
-      expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
-    });
-
-    it("walks the repro with the back button, then browser back reaches the inbox", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history);
-      selectThread();
-      fireEvent.click(screen.getByRole("link", { name: "continued-link" }));
-
-      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-      expect(history.url).toBe("/acme/chat?session=session-9");
-      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-      expect(history.url).toBe("/acme/chat");
-      back();
-
-      expect(history.url).toBe("/acme/inbox");
-    });
-
-    it("falls back to the list when the browser cannot report canGoBack", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history, { navigationApi: false });
-      selectThread();
-
-      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-
-      expect(history.url).toBe("/acme/chat");
-      expect(activeSession()).toBeNull();
-      expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
-    });
-
-    it("keeps the compose pane when ?new=1 is opened cold", () => {
-      history = createHistory("/acme/chat?new=1");
-      renderWithHistory(history);
-
-      expect(screen.getByText("chat-input")).toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "select-thread" })).not.toBeInTheDocument();
-    });
-
-    it("keeps the compose pane on a refresh of ?new=1 that has a persisted session", () => {
-      seedSession("persisted-session");
-      history = createHistory("/acme/chat?new=1");
-      renderWithHistory(history);
-
-      expect(activeSession()).toBeNull();
-      expect(history.url).toBe("/acme/chat?new=1");
-      expect(screen.getByText("chat-input")).toBeInTheDocument();
-    });
-
-    it("shows the compose pane again on forward after back from an unsent new chat", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history);
-      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
-      back();
-      const writes = [...history.writes];
-
-      act(() => history.forward());
-
-      expect(history.url).toBe("/acme/chat?new=1");
-      expect(screen.getByText("chat-input")).toBeInTheDocument();
-      expect(history.writes).toEqual(writes);
-    });
-
-    it("lands on the list from a cold ?new=1 with the back button", () => {
-      history = createHistory("/acme/chat?new=1");
-      renderWithHistory(history);
-
-      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-
-      expect(history.entries).toEqual(["/acme/chat"]);
-      expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
-    });
-
-    it("returns to the list on browser back from an unsent new chat", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history);
-      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
-      expect(screen.getByText("chat-input")).toBeInTheDocument();
-
-      back();
-
-      expect(history.url).toBe("/acme/chat");
-      expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
-      expect(screen.queryByText("chat-input")).not.toBeInTheDocument();
-    });
-
-    it("returns to the list on the back button from an unsent new chat", () => {
-      history = createHistory("/acme/inbox", "/acme/chat");
-      renderWithHistory(history);
-      fireEvent.click(screen.getByRole("button", { name: "new-chat" }));
-
-      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-
-      expect(history.url).toBe("/acme/chat");
-      expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
-    });
-
-    it("lands on the list, not outside Multica, after a cold open of a session", () => {
-      history = createHistory("/acme/chat?session=session-10");
-      seedSession("session-10");
-      renderWithHistory(history);
-
-      fireEvent.click(screen.getByRole("button", { name: "Chat" }));
-
-      expect(history.entries).toEqual(["/acme/chat"]);
-      expect(activeSession()).toBeNull();
-    });
-  });
-});
-
-describe("ChatPage deep link vs workspace rehydration", () => {
-  // The [workspaceSlug] layout publishes the workspace in an effect, and the
-  // persisted chat store rehydrates from that workspace's namespace one
-  // microtask later. When the page mounts in the same commit as that effect,
-  // the rehydration lands after the page's own URL -> store sync and replaced
-  // the selection the URL names (CHE-1900: the quick-actions E2E deep link
-  // ended on "Pick a conversation" with `?session=` stripped).
-  const publishWorkspace = async () => {
-    await act(async () => {
-      setCurrentWorkspace("acme", "ws-1");
-      await Promise.resolve();
-    });
-  };
-
-  beforeEach(async () => {
-    setCurrentWorkspace(null, null);
-    // Leaving a workspace rehydrates from the un-namespaced key, which an
-    // earlier test's selection wrote; clear it through the store's own setter.
-    await Promise.resolve();
-    useChatStore.getState().setActiveSession(null);
-  });
-
-  // The pages here outlive the test that rendered them unless unmounted, and a
-  // retained page would keep reacting to the next test's workspace changes.
-  afterEach(cleanup);
-
-  it("keeps the thread the URL names when the rehydration lands after the mount sync", async () => {
-    const { replace } = renderPage("session=session-5");
-    expect(activeSession()).toBe("session-5");
-
-    await publishWorkspace();
-
-    expect(activeSession()).toBe("session-5");
-    expect(replace).not.toHaveBeenCalled();
-  });
-
-  it("applies the URL thread when the workspace only becomes current after the mount", async () => {
-    platformWorkspace.slug = null as unknown as string;
-    const { replace } = renderPage("session=session-5");
-    expect(activeSession()).toBeNull();
-
-    platformWorkspace.slug = "acme";
-    await publishWorkspace();
-
-    expect(activeSession()).toBe("session-5");
-    expect(replace).not.toHaveBeenCalled();
-  });
-
-  it("keeps the DM list chip while Chat is open and resets it to Main on leaving Chat", () => {
-    const { unmount } = renderPage("session=session-5");
-    useChatStore.getState().setListView("unseen");
-    expect(useChatStore.getState().listView).toBe("unseen");
-    unmount();
-    expect(useChatStore.getState().listView).toBe("main");
+  it("returns to the thread list without advancing when archiving in compact layout", () => {
+    layout.width = FOLD_INNER_PORTRAIT;
+    mockHasMessages.current = true;
+    mockCurrentSession.current = { id: "session-1", agent_id: "agent-1" };
+    storeRef.current = { activeSessionId: "session-1" };
+    renderPage("session=session-1");
+
+    fireEvent.click(screen.getByRole("button", { name: "archive-from-header" }));
+
+    expect(mockSetActiveSession).toHaveBeenCalledWith(null);
+    expect(mockArchiveSession).toHaveBeenCalledWith("session-1");
+    expect(mockAdvanceSelectionAfterArchive).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "select-thread" })).toBeInTheDocument();
   });
 });

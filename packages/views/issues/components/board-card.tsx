@@ -18,11 +18,10 @@ import { CalendarClock, CalendarDays } from "@multica/ui/icons";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { CardControl } from "../../common/card-control";
 import { PropertyIcon } from "../../common/property-icon";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useWorkspacePaths, issueRouteRef } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useLocale, useT, useTimeAgo } from "../../i18n";
 import { ProjectIcon } from "../../projects/components/project-icon";
-import { WorkflowPill } from "./workflow-pill";
 import { PriorityIcon } from "./priority-icon";
 import { PriorityPicker, AssigneePicker, StartDatePicker, DueDatePicker } from "./pickers";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
@@ -34,8 +33,7 @@ import { runConfirmIntent } from "../actions/run-confirm-gate";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { CustomStatusChip, useIsCustomStatus } from "./custom-status-chip";
-import { RunBudgetChip } from "./run-budget-chip";
-import { isStoppedByBudget } from "@multica/core/run-budget";
+import { IssueBlockedMarker } from "./issue-blockers";
 import { IssueDuplicateOfMarker } from "./issue-duplicates";
 import { IssuePullRequestChips, useIssuePullRequestSummaries } from "./pull-request-chips";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
@@ -118,13 +116,11 @@ export const BoardCardContent = memo(function BoardCardContent({
     storeProperties.project && cardGrouping !== "project" && project;
   const showChildProgress = storeProperties.childProgress && childProgress;
   const showLabels = storeProperties.labels && labels.length > 0;
-  const showWorkflow = !!issue.workflow_id;
   const pullRequests = useIssuePullRequestSummaries(issue.id, storeProperties.pullRequests);
   const showPullRequests = storeProperties.pullRequests && pullRequests.length > 0;
   // Keeps the chip row from rendering an empty flex container when the status
   // chip is the only thing in it and it decides to render nothing.
   const showCustomStatus = useIsCustomStatus(issue.status);
-  const showBudgetChip = isStoppedByBudget(issue);
 
   const showAssigneeName = showAssigneeSection && hasAssignee && !showStartDate && !showDueDate;
   const showUpdatedHint = showAssigneeName && !showChildProgress;
@@ -217,7 +213,8 @@ export const BoardCardContent = memo(function BoardCardContent({
         <div className="flex items-center gap-1.5 min-w-0">
           {priorityIconNode}
           <p className="text-caption text-muted-foreground truncate">{issue.identifier}</p>
-          <IssueDuplicateOfMarker issue={issue} insideLink />
+          <IssueBlockedMarker issue={issue} />
+            <IssueDuplicateOfMarker issue={issue} insideLink />
         </div>
         <IssueAgentActivityIndicator issueId={issue.id} />
       </div>
@@ -240,17 +237,15 @@ export const BoardCardContent = memo(function BoardCardContent({
       {/* Chip row: status + project + labels + PRs + custom property values.
           The status chip renders only for a CUSTOM status — the column header
           already names the category. (MUL-6243) */}
-      {(showCustomStatus || showBudgetChip || showProject || showWorkflow || showLabels || showPullRequests || cardCustomProperties.length > 0) && (
+      {(showCustomStatus || showProject || showLabels || showPullRequests || cardCustomProperties.length > 0) && (
         <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
           <CustomStatusChip status={issue.status} />
-          <RunBudgetChip issue={issue} />
           {showProject && (
             <span className="inline-flex items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 text-micro text-muted-foreground max-w-[160px]">
               <ProjectIcon project={project} size="sm" />
               <span className="truncate">{project!.title}</span>
             </span>
           )}
-          <WorkflowPill workflowId={issue.workflow_id} />
           {showLabels && labels.slice(0, 2).map((label) => (
             <LabelChip key={label.id} label={label} />
           ))}
@@ -381,7 +376,7 @@ export const DraggableBoardCard = memo(function DraggableBoardCard({
   const p = useWorkspacePaths();
   const peek = useIssuePeekActions();
   const peeked = useIsIssuePeeked(issue.id);
-  const peekLinkProps = useIssuePeekLinkProps(issue.id);
+  const peekLinkProps = useIssuePeekLinkProps(issue);
   const {
     attributes,
     listeners,
@@ -411,7 +406,7 @@ export const DraggableBoardCard = memo(function DraggableBoardCard({
         data-peeked={peeked ? "" : undefined}
         {...attributes}
         {...listeners}
-        className={`group/card ${isDragging ? "opacity-30" : ""}`}
+        className={`group/card transition-opacity duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${isDragging ? "opacity-30" : ""}`}
         onKeyDown={
           peek
             ? (e) => {
@@ -427,7 +422,7 @@ export const DraggableBoardCard = memo(function DraggableBoardCard({
         }
       >
         <AppLink
-          href={p.issueDetail(issue.id)}
+          href={p.issueDetail(issueRouteRef(issue))}
           newTabTitle={issue.identifier}
           className={`group block transition-colors ${isDragging ? "pointer-events-none" : ""}`}
           {...peekLinkProps}

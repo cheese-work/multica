@@ -8,13 +8,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
-
-	"github.com/multica-ai/multica/server/pkg/credentialexec"
-	"github.com/multica-ai/multica/server/pkg/runbinding"
 )
 
 // Backend is the unified interface for executing prompts via coding agents.
@@ -27,18 +25,13 @@ type Backend interface {
 
 // ExecOptions configures a single execution.
 type ExecOptions struct {
-	// OutputOnly (CHE-4101) launches the provider in its no-tool mode for an
-	// output_only background job: no tools, no MCP, no skills, no resume, and
-	// no custom args. Only a provider that passes OutputOnlyIneligibleReason
-	// honours it.
-	OutputOnly bool
+	// SkillInvocation is set only for validated member-authored skill selections.
+	SkillInvocation *SkillInvocation
 	// EnableTaskSupplement installs provider hooks only for runs whose daemon/server
 	// capability handshake enabled additional messages.
 	EnableTaskSupplement bool
 	Cwd                  string
-	// StableCwd, when set, is the cwd the process sees instead of Cwd (Claude only; see wrapStableCwd).
-	StableCwd string
-	Model     string
+	Model                string
 	// PiSkillPaths contains only the SKILL.md files written for this task by
 	// the daemon. Pi loads them explicitly without trusting other project files.
 	PiSkillPaths []string
@@ -86,11 +79,7 @@ type ExecOptions struct {
 	// preserves the legacy behavior for callers that explicitly set
 	// HandshakeTimeout; when both are zero Codex uses separate built-in defaults.
 	ThreadHandshakeTimeout time.Duration
-	// CodexSQLiteInitRetry enables one retry when Codex exits during
-	// initialize with the exact SQLite state-runtime failure for its own
-	// CODEX_HOME (CHE-737). Off by default.
-	CodexSQLiteInitRetry bool
-	ResumeSessionID      string // if non-empty, resume a previous agent session
+	ResumeSessionID        string // if non-empty, resume a previous agent session
 	// ResumeExpected records that this task intended to continue a prior
 	// conversation, independent of ResumeSessionID (which a fallback retry may
 	// clear). When it is true but the backend ends up on a fresh thread — the
@@ -133,9 +122,6 @@ type ExecOptions struct {
 	CustomArgs       []string        // per-agent CLI arguments appended after ExtraArgs
 	QwenpawWorkspace string          // per-task QwenPaw workspace directory (passed as --workspace to qwenpaw acp); empty when not applicable
 	McpConfig        json.RawMessage // if non-nil, MCP server config to pass via --mcp-config
-	// DisableProviderWebTools turns the provider's server-side web tools off for
-	// this run (elevated profile, CHE-2216 plan 3.3). Claude and Codex only.
-	DisableProviderWebTools bool
 	// ThinkingLevel is the runtime-native reasoning/effort value (e.g.
 	// Claude's "low|medium|high|xhigh|max", Codex's "none|minimal|low|
 	// medium|high|xhigh", OpenCode's model variant names). Empty means
@@ -173,15 +159,12 @@ type ExecOptions struct {
 	// through Claude Code's --settings flag. It currently carries restrictive
 	// runtime-skill overrides only; other providers ignore it.
 	ClaudeSettingsPath string
-	// AppendSystemPromptFile (CHE-3706, managed harness profile) is passed as
-	// --append-system-prompt-file so the runtime brief rides the cached system
-	// prompt instead of a workdir CLAUDE.md. Claude only; empty = unchanged.
-	AppendSystemPromptFile string
-	// CursorHookCommand is the argv of the multica hook relay (the daemon's own
-	// binary followed by CursorHookHelperArg). The cursor backend needs it, with
-	// EnableTaskSupplement, to accept additional messages; other providers
-	// ignore it.
-	CursorHookCommand []string
+	// SupplementHookCommand is the argv of the provider's multica hook relay
+	// (the daemon's own binary followed by CursorHookHelperArg or
+	// AntigravityHookHelperArg). The cursor and antigravity backends need it,
+	// with EnableTaskSupplement, to accept additional messages; other
+	// providers ignore it.
+	SupplementHookCommand []string
 	// OnUsage optionally receives the backend's cumulative usage snapshot while
 	// the run is still live, keyed exactly like Result.Usage so a mid-run flush
 	// and the terminal report upsert the same (task, provider, model) rows
@@ -193,6 +176,21 @@ type ExecOptions struct {
 	// can trip its idle watchdog. Take the snapshot and report on your own
 	// goroutine.
 	OnUsage func(map[string]TokenUsage)
+	// OnRateLimits optionally receives the account's subscription rate-limit
+	// snapshot each time the agent CLI reports a change (Claude Code's
+	// rate_limit_event, Codex's account/rateLimits/updated). Every call carries
+	// the full merged view, so the latest call supersedes earlier ones.
+	// Backends whose CLI reports no rate limits never call it.
+	//
+	// Like OnUsage it runs on the backend's protocol reader goroutine and MUST
+	// NOT block.
+	OnRateLimits func(RateLimitSnapshot)
+	// WarmPoolBriefHash optionally fingerprints the workdir runtime brief
+	// (AGENTS.md / CLAUDE.md) for warm session pool invalidation. When the brief
+	// changes between turns (e.g. edited persona, skills, or workspace context),
+	// the pool evicts the stale warm process and spawns fresh so the provider
+	// loads the updated instructions.
+	WarmPoolBriefHash string
 	// piMcpExtensionPath is set by piBackend.Execute after it writes the
 	// temporary MCP extension. The daemon does not fill it.
 	piMcpExtensionPath string
@@ -210,6 +208,11 @@ func runContext(ctx context.Context, timeout time.Duration) (context.Context, co
 	}
 	return context.WithCancel(ctx)
 }
+
+// ErrSupplementTurnEnded is returned (wrapped) by a Session.Supplement whose
+// target turn finished before the provider accepted the message. The daemon
+// reports it as turn_ended rather than as a provider rejection.
+var ErrSupplementTurnEnded = errors.New("turn ended before the message was accepted")
 
 // Session represents a running agent execution.
 type Session struct {
@@ -276,29 +279,7 @@ const (
 	MessageStatus     MessageType = "status"
 	MessageError      MessageType = "error"
 	MessageLog        MessageType = "log"
-	// MessageContextCompacted marks one compaction of the run's context. Its
-	// Input carries trigger, tokens_before and tokens_after (see
-	// NewContextCompactedMessage); the daemon stores it as a run message so
-	// compaction is measurable after the fact (CHE-9299).
-	MessageContextCompacted MessageType = "context_compacted"
 )
-
-// NewContextCompactedMessage builds the run message for one compaction. A
-// zero count means the backend did not report it and is omitted rather than
-// recorded as a misleading 0.
-func NewContextCompactedMessage(trigger string, tokensBefore, tokensAfter int64) Message {
-	in := map[string]any{}
-	if trigger != "" {
-		in["trigger"] = trigger
-	}
-	if tokensBefore > 0 {
-		in["tokens_before"] = tokensBefore
-	}
-	if tokensAfter > 0 {
-		in["tokens_after"] = tokensAfter
-	}
-	return Message{Type: MessageContextCompacted, Input: in}
-}
 
 // Message is a unified event emitted by an agent during execution.
 type Message struct {
@@ -323,11 +304,6 @@ type TokenUsage struct {
 	OutputTokens     int64
 	CacheReadTokens  int64
 	CacheWriteTokens int64
-	// CacheWrite1hTokens is how many of CacheWriteTokens Anthropic wrote with
-	// the 1-hour TTL (billed 2x input, not 1.25x). nil means the run carried
-	// no TTL split, so the price stays at the 5-minute rate; 0 is a real
-	// "all 5-minute". Only the Claude backend fills it.
-	CacheWrite1hTokens *int64
 	// CostUSDTicks is the provider's own statement of what this usage cost,
 	// in ticks of 1e-10 USD. Zero means "not reported" — only a few agents
 	// return it (xAI Grok Build does, via `_meta.usage.costUsdTicks`).
@@ -353,11 +329,9 @@ type Result struct {
 	DurationMs int64
 	SessionID  string
 	Usage      map[string]TokenUsage // keyed by model name
-	// ContextTokens is the prompt size of the run's LAST model call and
-	// ContextWindow the model's context window. Zero means unknown; backends
-	// that cannot report them leave both zero.
-	ContextTokens int64
-	ContextWindow int64
+	// NoToolCallsStarted is set only for a failed prompt whose complete native
+	// turn history was observed without a tool call. Missing evidence is false.
+	NoToolCallsStarted bool
 	// ResumeRejected is positive evidence that this run's requested resume
 	// was permanently refused — the transcript is gone, the session belongs to
 	// another provider account, OR the session still exists but its history
@@ -404,37 +378,18 @@ type Result struct {
 	// its model catalog, and that the process tree was reaped afterwards.
 	// Like codexInitializeRetrySafe it is not part of the public contract.
 	codexStartupRefreshRetrySafe bool
-	// codexStateRuntimeRetrySafe is provider-internal evidence that Codex
-	// exited during initialize because its SQLite state runtime could not be
-	// opened, before semantic activity and after the process tree was reaped.
-	codexStateRuntimeRetrySafe bool
-	// codexZeroToolFalseNegativeRetrySafe is provider-internal evidence that
-	// the turn matched the Codex CLI 0.156.0 multi-agent v2 false-negative
-	// pattern (CHE-775): the model's final message claims no terminal/CLI
-	// access while the turn made zero real (exec_command/patch_apply) tool
-	// calls, whether it called only collaboration.* MCP tools or nothing at
-	// all. Like the other codex*RetrySafe fields it is not part of the
-	// public result contract and only drives Execute's retry loop.
-	codexZeroToolFalseNegativeRetrySafe bool
 }
 
 // Config configures a Backend instance.
 type Config struct {
-	RunBinding                 *runbinding.Spec
-	RequireCredentialIsolation bool
-	CredentialBoundary         *credentialexec.Boundary
-	ExecutablePath             string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, codearts, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, muse, dim, zeroclaw)
-	CLIVersion                 string            // detected version paired with ExecutablePath; vendor-specific usage semantics also require BuiltinRuntime
-	Env                        map[string]string // extra environment variables
-	Logger                     *slog.Logger
-	TaskID                     string
-	RuntimeID                  string
-	DaemonVersion              string
-	CodexVersion               string
-	// Launch, when set, sees every process this Config starts, just before
-	// Start. Nil keeps the plain launch. Refused together with
-	// CredentialBoundary (ErrLaunchHookCredentialBoundary).
-	Launch LaunchHook
+	ExecutablePath string            // path to CLI binary (claude, codebuddy, codex, copilot, opencode, codearts, openclaw, hermes, pi, cursor, kimi, reasonix, dsh, kiro-cli, agy, qodercli, qoderclicn, traecli, grok, qwen, qwenpaw, mcode, muse, dim, zeroclaw)
+	CLIVersion     string            // detected version paired with ExecutablePath; vendor-specific usage semantics also require BuiltinRuntime
+	Env            map[string]string // extra environment variables
+	Logger         *slog.Logger
+	TaskID         string
+	RuntimeID      string
+	DaemonVersion  string
+	CodexVersion   string
 	// BuiltinRuntime reports that ExecutablePath is the provider's own
 	// discovered binary rather than a custom runtime profile's command. A
 	// custom profile keeps its protocol family as the provider, so the
@@ -459,9 +414,10 @@ type Config struct {
 	// Command boundary applies it to every process the package spawns, task
 	// launches and CLI probes alike. Backends never read it directly.
 	LaunchPrefix []string
-	// Script, when set, selects the model-less script backend: New returns it
-	// for any agentType and never reaches the provider switch.
-	Script *ScriptSpec
+	// WarmPool optionally enables warm provider process reuse across turns of
+	// the same conversation for supported backends (Codex, Claude Code). Nil
+	// disables pooling and preserves one-process-per-turn behavior.
+	WarmPool *WarmSessionPool
 }
 
 // New creates a Backend for the given agent type.
@@ -561,18 +517,6 @@ func ResumeRejectionUndetectable(agentType string) bool {
 }
 
 func New(agentType string, cfg Config) (Backend, error) {
-	if cfg.Launch != nil && (cfg.RequireCredentialIsolation || cfg.CredentialBoundary != nil) {
-		return nil, ErrLaunchHookCredentialBoundary
-	}
-	if cfg.RequireCredentialIsolation || cfg.CredentialBoundary != nil {
-		if !cfg.RequireCredentialIsolation || !cfg.BuiltinRuntime || len(cfg.LaunchPrefix) != 0 || agentType != "claude" && agentType != "codex" {
-			return nil, fmt.Errorf("%w: unsupported credential-exclusive runtime", credentialexec.ErrUnavailable)
-		}
-		if err := cfg.CredentialBoundary.Validate(cfg.TaskID, agentType, cfg.ExecutablePath); err != nil {
-			return nil, err
-		}
-		cfg.Env = cfg.CredentialBoundary.Environment()
-	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -585,10 +529,6 @@ func New(agentType string, cfg Config) (Backend, error) {
 	// would accept a fixed_args `--output-format text` and break its own
 	// stream-json channel.
 	cfg.LaunchPrefix = filterLaunchPrefix(cfg.LaunchPrefix, agentType, cfg.Logger)
-
-	if cfg.Script != nil {
-		return newScriptBackend(cfg), nil
-	}
 
 	switch agentType {
 	case "claude":
@@ -719,24 +659,4 @@ func LaunchHeader(agentType string) string {
 		return desc.LaunchHeader
 	}
 	return ""
-}
-
-// outputOnlyProviders are the providers with a verified no-tool launch mode
-// (CHE-4101). Anything not listed is ineligible: a new provider must be proven
-// to have no file or workspace access before it is added here.
-var outputOnlyProviders = map[string]bool{
-	// Claude Code 2.1.318: `--tools ""` removes every built-in tool,
-	// `--strict-mcp-config` with no `--mcp-config` loads no MCP server, and
-	// `--disable-slash-commands` loads no skill.
-	"claude": true,
-}
-
-// OutputOnlyIneligibleReason returns why provider cannot run an output_only
-// background job, or "" when it can. A provider that can read files or
-// workspace content outside the task context is ineligible.
-func OutputOnlyIneligibleReason(provider string) string {
-	if outputOnlyProviders[provider] {
-		return ""
-	}
-	return fmt.Sprintf("provider %q has no verified no-tool mode and can read files or workspace content outside the task context", provider)
 }

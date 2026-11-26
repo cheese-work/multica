@@ -3,11 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"strconv"
 	"text/tabwriter"
-	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -104,12 +102,27 @@ func runSquadGet(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Name:         %s\n", strVal(squad, "name"))
 	fmt.Printf("Description:  %s\n", strVal(squad, "description"))
 	fmt.Printf("Leader ID:    %s\n", strVal(squad, "leader_id"))
+	fmt.Printf("Handoff mode: %s\n", squadHandoffModeDisplay(squad))
 	fmt.Printf("Created:      %s\n", strVal(squad, "created_at"))
 	if inst := strVal(squad, "instructions"); inst != "" {
 		fmt.Printf("Instructions: %s\n", inst)
 	}
 	return nil
 }
+
+// squadHandoffModeDisplay reads handoff_mode, treating a server that predates
+// the field as the original leader mode.
+func squadHandoffModeDisplay(squad map[string]any) string {
+	if mode := strVal(squad, "handoff_mode"); mode != "" {
+		return mode
+	}
+	return squadHandoffModeLeader
+}
+
+const (
+	squadHandoffModeLeader = "leader"
+	squadHandoffModeDirect = "direct"
+)
 
 // ── Create ──────────────────────────────────────────────────────────────────
 
@@ -168,11 +181,30 @@ func runSquadCreate(cmd *cobra.Command, _ []string) error {
 var squadUpdateCmd = &cobra.Command{
 	Use:   "update <squad-id>",
 	Short: "Update a squad",
-	Args:  exactArgs(1),
-	RunE:  runSquadUpdate,
+	Long: `Update a squad's fields. Only the flags you pass are changed.
+
+--handoff-mode decides who picks the next step after a member finishes:
+  leader  every member reply returns to the leader (default)
+  direct  members hand off to each other by @mention; the leader assigns the
+          first step and gets the issue back when a guard trips (3 rounds
+          between two members, 20 member handoffs per issue per day, a failed
+          member run, or a reply that names no next owner)
+
+Changing the handoff mode requires permission to manage the squad.`,
+	Args: exactArgs(1),
+	RunE: runSquadUpdate,
 }
 
 func runSquadUpdate(cmd *cobra.Command, args []string) error {
+	body := map[string]any{}
+	if cmd.Flags().Changed("handoff-mode") {
+		v, _ := cmd.Flags().GetString("handoff-mode")
+		if v != squadHandoffModeLeader && v != squadHandoffModeDirect {
+			return fmt.Errorf("--handoff-mode must be 'leader' or 'direct'")
+		}
+		body["handoff_mode"] = v
+	}
+
 	client, err := newAPIClient(cmd)
 	if err != nil {
 		return err
@@ -180,34 +212,6 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 	ctx, cancel := cli.APIContext(context.Background())
 	defer cancel()
 
-	// --expected-before-digest present -> conditional compare-and-swap on
-	// exactly `instructions`, single-field body. Absent -> the existing
-	// unconditional update path below, completely unchanged.
-	if err := checkBindingFlags(cmd, "squad.instructions", args[0]); err != nil {
-		return err
-	}
-	if cmd.Flags().Changed("expected-before-digest") {
-		body, err := buildSquadUpdateDigestBody(cmd)
-		if err != nil {
-			return err
-		}
-		body = withBinding(cmd, body, "instructions")
-		if done, err := printHashOnly(cmd, body, "instructions"); done {
-			return err
-		}
-		var result map[string]any
-		if err := client.PutJSON(ctx, "/api/squads/"+args[0], body, &result); err != nil {
-			return digestWriteError("update squad", err, bodyText(body, "instructions"), bodyBefore(body))
-		}
-		return printDigestSwapResult(cmd, "squad", result)
-	}
-
-	instructions, hasInstructions, err := resolveSquadInstructions(cmd)
-	if err != nil {
-		return err
-	}
-
-	body := map[string]any{}
 	if cmd.Flags().Changed("name") {
 		v, _ := cmd.Flags().GetString("name")
 		body["name"] = v
@@ -216,8 +220,9 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetString("description")
 		body["description"] = v
 	}
-	if hasInstructions {
-		body["instructions"] = instructions
+	if cmd.Flags().Changed("instructions") {
+		v, _ := cmd.Flags().GetString("instructions")
+		body["instructions"] = v
 	}
 	if cmd.Flags().Changed("leader") {
 		v, _ := cmd.Flags().GetString("leader")
@@ -233,7 +238,7 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use flags like --name, --description, --instructions, --leader")
+		return fmt.Errorf("no fields to update; use flags like --name, --description, --instructions, --leader, --handoff-mode")
 	}
 
 	var result map[string]any
@@ -249,93 +254,78 @@ func runSquadUpdate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// buildSquadUpdateDigestBody assembles the digest-mode PUT payload: exactly
-// {"instructions": ..., "expected_before_digest": ...} and nothing else,
-// mirroring buildWorkspaceUpdateDigestBody. The server's
-// hermesExceptionOnlyAllowedKeys 400s on any other key, so this must not
-// reuse the general update body builder above, which can accumulate
-// name/description/leader_id/avatar_url.
-func buildSquadUpdateDigestBody(cmd *cobra.Command) (map[string]any, error) {
-	digest, _ := cmd.Flags().GetString("expected-before-digest")
-	if !isWellFormedDigestHex(digest) {
-		return nil, fmt.Errorf("--expected-before-digest must be exactly 64 hex characters (sha256), got %d", len(digest))
-	}
+// ── Briefs ──────────────────────────────────────────────────────────────────
 
-	conflicting := []string{"name", "description", "leader", "avatar-url"}
-	for _, name := range conflicting {
-		if cmd.Flags().Changed(name) {
-			return nil, fmt.Errorf("--expected-before-digest cannot be combined with --%s; digest-mode updates exactly one field (instructions)", name)
-		}
-	}
+var squadBriefsCmd = &cobra.Command{
+	Use:   "briefs <squad-id>",
+	Short: "Show the squad context each agent receives",
+	Long: `Show the squad section Multica appends to each agent's instructions when it
+works on an issue assigned to this squad: the leader briefing for the leader,
+and the member brief for every other agent member. Use --agent to print one.
 
-	if cmd.Flags().Changed("instructions") {
-		return nil, errInlineCandidate("instructions")
-	}
-	instructions, hasInstructions, err := resolveSquadInstructions(cmd)
-	if err != nil {
-		return nil, err
-	}
-	if !hasInstructions {
-		return nil, fmt.Errorf("--expected-before-digest requires the new instructions to be set via --instructions-stdin or --instructions-file")
-	}
-
-	return map[string]any{
-		"instructions":           instructions,
-		"expected_before_digest": digest,
-	}, nil
+Requires permission to manage the squad.`,
+	Args: exactArgs(1),
+	RunE: runSquadBriefs,
 }
 
-// resolveSquadInstructions keeps instruction input byte-for-byte intact.
-// The API body is JSON, so invalid UTF-8 is rejected instead of being silently
-// replaced during JSON encoding.
-func resolveSquadInstructions(cmd *cobra.Command) (string, bool, error) {
-	inline, _ := cmd.Flags().GetString("instructions")
-	fromStdin, _ := cmd.Flags().GetBool("instructions-stdin")
-	filePath, _ := cmd.Flags().GetString("instructions-file")
-	inlineSet := cmd.Flags().Changed("instructions")
-	fileSet := cmd.Flags().Changed("instructions-file")
-
-	sources := 0
-	if inlineSet {
-		sources++
-	}
-	if fromStdin {
-		sources++
-	}
-	if fileSet {
-		sources++
-	}
-	if sources > 1 {
-		return "", false, fmt.Errorf("--instructions, --instructions-stdin, and --instructions-file are mutually exclusive")
-	}
-	if inlineSet {
-		if !utf8.Valid([]byte(inline)) {
-			return "", false, fmt.Errorf("squad instructions must be valid UTF-8")
-		}
-		return inline, true, nil
-	}
-
-	var data []byte
-	var err error
-	switch {
-	case fromStdin:
-		data, err = io.ReadAll(cmd.InOrStdin())
-	case fileSet:
-		if filePath == "" {
-			return "", false, fmt.Errorf("--instructions-file: path must not be empty")
-		}
-		data, err = os.ReadFile(filePath)
-	}
+func runSquadBriefs(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
 	if err != nil {
-		return "", false, fmt.Errorf("read squad instructions: %w", err)
+		return err
 	}
-	if sources == 0 {
-		return "", false, nil
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	var resp struct {
+		HandoffMode string           `json:"handoff_mode"`
+		Briefs      []map[string]any `json:"briefs"`
 	}
-	if !utf8.Valid(data) {
-		return "", false, fmt.Errorf("squad instructions must be valid UTF-8")
+	if err := client.GetJSON(ctx, "/api/squads/"+args[0]+"/briefs", &resp); err != nil {
+		return fmt.Errorf("get squad briefs: %w", err)
 	}
-	return string(data), true, nil
+
+	briefs := resp.Briefs
+	if cmd.Flags().Changed("agent") {
+		v, _ := cmd.Flags().GetString("agent")
+		agentID, err := resolveAgent(ctx, client, v)
+		if err != nil {
+			return fmt.Errorf("resolve agent: %w", err)
+		}
+		briefs = nil
+		for _, b := range resp.Briefs {
+			if strVal(b, "member_id") == agentID {
+				briefs = append(briefs, b)
+			}
+		}
+		if len(briefs) == 0 {
+			return fmt.Errorf("agent %s is not an agent member of this squad", agentID)
+		}
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		if resp.HandoffMode == "" {
+			resp.HandoffMode = squadHandoffModeLeader
+		}
+		return cli.PrintJSON(os.Stdout, map[string]any{"handoff_mode": resp.HandoffMode, "briefs": briefs})
+	}
+
+	if len(briefs) == 0 {
+		fmt.Fprintln(os.Stderr, "No agent members.")
+		return nil
+	}
+	for i, b := range briefs {
+		if i > 0 {
+			fmt.Println()
+		}
+		role := "member"
+		if leader, _ := b["is_leader"].(bool); leader {
+			role = "leader"
+		}
+		fmt.Printf("==> %s (%s)\n", strVal(b, "member_id"), role)
+		fmt.Println(strVal(b, "brief"))
+	}
+	return nil
 }
 
 // ── Delete ──────────────────────────────────────────────────────────────────
@@ -638,15 +628,14 @@ func init() {
 	squadUpdateCmd.Flags().String("name", "", "New name")
 	squadUpdateCmd.Flags().String("description", "", "New description")
 	squadUpdateCmd.Flags().String("instructions", "", "New instructions")
-	squadUpdateCmd.Flags().Bool("instructions-stdin", false, "Read instructions from stdin")
-	squadUpdateCmd.Flags().String("instructions-file", "", "Read instructions from a file")
 	squadUpdateCmd.Flags().String("leader", "", "New leader agent (name or ID)")
 	squadUpdateCmd.Flags().String("avatar-url", "", "New avatar URL")
-	squadUpdateCmd.Flags().String("expected-before-digest", "", "sha256 hex digest of the instructions value the caller believes is currently live; enables a conditional compare-and-swap write instead of an unconditional update. Requires instructions to be set via --instructions-stdin or --instructions-file (inline --instructions is refused so the candidate never appears in arguments), and forbids combining with any other update flag. The digest is over the RAW UTF-8 bytes of the live value (no newline stripping; a card-manifest digest that strips one terminal LF does not match a value ending in LF). A 5xx or dropped connection is reported as AMBIGUOUS and is never retried.")
-	squadUpdateCmd.Flags().String("vote-issue", "", "CHE-1862 vote path: issue UUID that holds the Proposal line and the two PASS votes for this exact change. Requires --expected-before-digest; sends before_sha256/after_sha256 instead of the owner-only digest. Agent callers only.")
-	squadUpdateCmd.Flags().String("decision-id", "", "Refused: this field needs a passkey-approved action, not a decision card. The command stops and names the \"multica config propose\" command to run.")
-	squadUpdateCmd.Flags().Bool("print-hash", false, "Print before_sha256 and after_sha256 for this change and exit without writing. Requires --expected-before-digest.")
+	squadUpdateCmd.Flags().String("handoff-mode", "", "How members hand off: leader or direct")
 	squadUpdateCmd.Flags().String("output", "json", "Output format: table or json")
+
+	// briefs
+	squadBriefsCmd.Flags().String("agent", "", "Only this agent member (name or ID)")
+	squadBriefsCmd.Flags().String("output", "table", "Output format: table or json")
 
 	// delete
 	squadDeleteCmd.Flags().String("output", "table", "Output format: table or json")
@@ -684,6 +673,7 @@ func init() {
 	squadCmd.AddCommand(squadGetCmd)
 	squadCmd.AddCommand(squadCreateCmd)
 	squadCmd.AddCommand(squadUpdateCmd)
+	squadCmd.AddCommand(squadBriefsCmd)
 	squadCmd.AddCommand(squadDeleteCmd)
 	squadCmd.AddCommand(squadMemberCmd)
 	squadCmd.AddCommand(squadActivityCmd)

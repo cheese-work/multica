@@ -1,14 +1,7 @@
-import type { CommentAuthorType, CommentSupersedeLink, CommentSupplementReceipt, Reaction } from "./comment";
+import type { CommentAuthorType, CommentSupplementReceipt, Reaction } from "./comment";
 import type { Attachment } from "./attachment";
-import type { DecisionCommentFields } from "./decision";
 
-export interface AssigneeFrequencyEntry {
-  assignee_type: string;
-  assignee_id: string;
-  frequency: number;
-}
-
-export interface TimelineEntry extends DecisionCommentFields {
+export interface TimelineEntry {
   type: "activity" | "comment";
   id: string;
   actor_type: string;
@@ -34,8 +27,6 @@ export interface TimelineEntry extends DecisionCommentFields {
   resolved_by_type?: CommentAuthorType | null;
   resolved_by_id?: string | null;
   source_task_id?: string | null;
-  superseded_by_id?: string | null;
-  supersedes?: CommentSupersedeLink[];
   /** Every running turn this comment steered, one receipt per run. */
   supplements?: CommentSupplementReceipt[];
   /** Mirrors the first receipt; servers that predate `supplements` send only these. */

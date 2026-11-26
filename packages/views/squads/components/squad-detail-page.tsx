@@ -1,21 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
-import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
+import { useCurrentWorkspace, useWorkspacePaths, issueRouteRef } from "@multica/core/paths";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useModalStore } from "@multica/core/modals";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import { isImeComposing } from "@multica/core/utils";
-import {
-  squadDraftKey,
-  useSquadAddMemberDraft,
-  useSquadFieldDraft,
-  useSquadFieldDraftStore,
-} from "@multica/core/squads";
 import { getShortcut, shortcutMatchesEvent } from "@multica/core/shortcuts";
 import { useLocale, useT, useTimeAgo } from "../../i18n";
 import { agentListOptions, memberListOptions, squadMemberStatusOptions, workspaceKeys } from "@multica/core/workspace/queries";
@@ -53,6 +47,7 @@ import { Button, buttonVariants } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
+import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import {
   DropdownMenu,
@@ -90,9 +85,9 @@ import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/ac
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { AgentPausedBadgeById } from "../../agents/components/agent-scheduling";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { ContentEditor } from "../../editor/content-editor";
+import { TitleEditor } from "../../editor/title-editor";
 import { ReadonlyContent } from "../../editor/readonly-content";
 import { StatusIcon } from "../../issues/components/status-icon";
 import { useStatusLabel } from "../../issues/utils/status-label";
@@ -102,8 +97,9 @@ import {
   PickerEmpty,
 } from "../../issues/components/pickers/property-picker";
 import { toast } from "sonner";
-import type { Issue, Squad, SquadMember, SquadMemberStatus, Agent, MemberWithUser } from "@multica/core/types";
+import type { Issue, Squad, SquadHandoffMode, SquadMember, SquadMemberStatus, Agent, MemberWithUser } from "@multica/core/types";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+import { SquadBriefsSection, SquadHandoffSection } from "./squad-handoff-sections";
 
 const RECENT_WORK_LIMIT = 5;
 
@@ -176,15 +172,25 @@ export function SquadDetailPage() {
 
   const [showAddMember, setShowAddMember] = useState(false);
   const [confirmArchive, setConfirmArchive] = useState(false);
+  // TitleEditor takes its text at mount, so remounting is how a rejected or
+  // emptied name goes back to the saved one.
+  const [nameResetToken, setNameResetToken] = useState(0);
+  // TitleEditor blurs on Escape like it does on Enter; this marks that blur as
+  // a discard so Escape cancels here the same way it does for the description.
+  const discardNameRef = useRef(false);
+
+  // The previewed briefs render the roster and roles, so they follow member edits.
+  const refreshBriefs = () =>
+    queryClient.invalidateQueries({ queryKey: workspaceKeys.squadBriefs(wsId, squadId) });
 
   const updateSquadMut = useMutation({
-    mutationFn: (data: { name?: string; description?: string; instructions?: string; avatar_url?: string; leader_id?: string }) => api.updateSquad(squadId, data),
-    onSuccess: () => {
+    mutationFn: (data: { name?: string; description?: string; instructions?: string; avatar_url?: string; leader_id?: string; handoff_mode?: SquadHandoffMode }) => api.updateSquad(squadId, data),
+    onSuccess: (updated) => {
+      queryClient.setQueryData([...workspaceKeys.squads(wsId), squadId], updated);
       refetchSquad();
       refetchMembers();
       queryClient.invalidateQueries({ queryKey: workspaceKeys.squads(wsId) });
     },
-    // The editors keep their draft on a rejected save; this is the only feedback.
     onError: (err) =>
       toast.error(err instanceof Error && err.message ? err.message : t(($) => $.toasts.update_failed)),
   });
@@ -196,14 +202,14 @@ export function SquadDetailPage() {
         member_id: input.id,
         role: input.role?.trim() || undefined,
       }),
-    onSuccess: () => { refetchMembers(); toast.success(t(($) => $.toasts.member_added)); },
+    onSuccess: () => { refetchMembers(); refreshBriefs(); toast.success(t(($) => $.toasts.member_added)); },
     onError: (err) =>
       toast.error(err instanceof Error && err.message ? err.message : t(($) => $.toasts.member_add_failed)),
   });
 
   const removeMemberMut = useMutation({
     mutationFn: (m: SquadMember) => api.removeSquadMember(squadId, { member_type: m.member_type, member_id: m.member_id }),
-    onSuccess: () => { refetchMembers(); toast.success(t(($) => $.toasts.member_removed)); },
+    onSuccess: () => { refetchMembers(); refreshBriefs(); toast.success(t(($) => $.toasts.member_removed)); },
     onError: (err) =>
       toast.error(err instanceof Error && err.message ? err.message : t(($) => $.toasts.member_remove_failed)),
   });
@@ -215,7 +221,7 @@ export function SquadDetailPage() {
         member_id: input.member.member_id,
         role: input.role,
       }),
-    onSuccess: () => { refetchMembers(); toast.success(t(($) => $.toasts.role_updated)); },
+    onSuccess: () => { refetchMembers(); refreshBriefs(); toast.success(t(($) => $.toasts.role_updated)); },
     onError: (err) =>
       toast.error(err instanceof Error && err.message ? err.message : t(($) => $.toasts.role_update_failed)),
   });
@@ -309,6 +315,19 @@ export function SquadDetailPage() {
     });
   };
 
+  const resetName = () => setNameResetToken((n) => n + 1);
+  const saveName = (next: string) => {
+    const discard = discardNameRef.current;
+    discardNameRef.current = false;
+    const trimmed = next.trim();
+    if (trimmed === squad.name) return;
+    if (!trimmed || discard) {
+      resetName();
+      return;
+    }
+    updateSquadMut.mutate({ name: trimmed }, { onError: resetName });
+  };
+
   return (
     <ObjectPage
       type="squad"
@@ -393,11 +412,19 @@ export function SquadDetailPage() {
           }
           title={
             canManage ? (
-              <SquadNameEditor
-                squadId={squad.id}
-                value={squad.name}
-                onSave={async (next) => { await updateSquadMut.mutateAsync({ name: next.trim() }); }}
-              />
+              <div
+                onKeyDownCapture={(e) => {
+                  if (e.key === "Escape" && !isImeComposing(e)) discardNameRef.current = true;
+                }}
+              >
+                <TitleEditor
+                  key={`name-${squad.id}-${nameResetToken}`}
+                  defaultValue={squad.name}
+                  placeholder={t(($) => $.name_editor.placeholder)}
+                  className={INLINE_FIELD}
+                  onBlur={saveName}
+                />
+              </div>
             ) : (
               squad.name
             )
@@ -405,9 +432,9 @@ export function SquadDetailPage() {
           description={
             canManage ? (
               <SquadDescriptionEditor
-                squadId={squad.id}
+                key={squad.id}
                 value={squad.description ?? ""}
-                onSave={async (next) => { await updateSquadMut.mutateAsync({ description: next }); }}
+                onSave={(next) => updateSquadMut.mutateAsync({ description: next })}
               />
             ) : (
               squad.description || undefined
@@ -436,11 +463,21 @@ export function SquadDetailPage() {
           setLeaderPending={setLeaderMut.isPending}
         />
 
+        <SquadHandoffSection
+          squad={squad}
+          leaderName={getEntityName("agent", squad.leader_id)}
+          canManage={canManage && !archived}
+          pending={updateSquadMut.isPending}
+          onChange={(mode) => updateSquadMut.mutate({ handoff_mode: mode }, { onSuccess: () => toast.success(t(($) => $.handoff.saved)) })}
+        />
+
         <SquadInstructionsSection
           squad={squad}
           canManage={canManage && !archived}
           onSave={async (next) => { await updateSquadMut.mutateAsync({ instructions: next }); toast.success(t(($) => $.toasts.instructions_saved)); }}
         />
+
+        {canManage && <SquadBriefsSection squadId={squad.id} getEntityName={getEntityName} />}
 
         <SquadRecentWorkSection
           issues={recentWork?.issues}
@@ -450,7 +487,6 @@ export function SquadDetailPage() {
 
       {showAddMember && (
         <AddMemberDialog
-          squadId={squadId}
           availableMembers={availableMembers}
           availableAgents={availableAgents}
           onClose={() => setShowAddMember(false)}
@@ -628,7 +664,6 @@ function SquadMembersSection({
                 />
                 <div className="flex min-w-0 flex-1 items-center gap-2">
                   <span className="truncate font-medium">{name}</span>
-                  {m.member_type === "agent" && <AgentPausedBadgeById agentId={m.member_id} />}
                   {leader && (
                     <span className="inline-flex shrink-0 items-center gap-0.5 rounded-sm border px-1 text-caption text-muted-foreground">
                       <Crown className="size-3" />
@@ -640,7 +675,6 @@ function SquadMembersSection({
                   </span>
                   {canManage ? (
                     <RoleEditor
-                      draftKey={squadDraftKey(m.squad_id, "role", `${m.member_type}:${m.member_id}`)}
                       value={m.role ?? ""}
                       onSave={async (next) => { await onUpdateRole(m, next); }}
                     />
@@ -654,7 +688,7 @@ function SquadMembersSection({
                       <>
                         <span className="shrink-0">{t(($) => $.detail.working_on)}</span>
                         <AppLink
-                          href={p.issueDetail(primaryIssue.issue_id)}
+                          href={p.issueDetail(issueRouteRef({ id: primaryIssue.issue_id, identifier: primaryIssue.identifier }))}
                           title={primaryIssue.title}
                           className="shrink-0 font-mono uppercase transition-colors hover:text-foreground"
                         >
@@ -746,7 +780,7 @@ function SquadMembersSection({
 
 // The squad leader's prompt picks these up at task claim time
 // (server/internal/handler/daemon.go).
-export function SquadInstructionsSection({
+function SquadInstructionsSection({
   squad,
   canManage,
   onSave,
@@ -757,33 +791,20 @@ export function SquadInstructionsSection({
 }) {
   const { t } = useT("squads");
   const saved = squad.instructions ?? "";
-  const draftKey = squadDraftKey(squad.id, "instructions");
-  const {
-    text: value,
-    hasDraft: isDirty,
-    setText: setValue,
-    discard,
-    commit: commitDraft,
-  } = useSquadFieldDraft(draftKey, saved);
-  // An unsent draft reopens the editor, so it is visible again after a remount.
-  const [editing, setEditing] = useState(isDirty);
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(saved);
   const [saving, setSaving] = useState(false);
-  // Cancel unmounts an editor that flushes its pending text on unmount; that
-  // flush must not write the discarded text back into the draft.
-  const discardingRef = useRef(false);
+  const isDirty = value !== saved;
 
-  // A debounced editor can land its last update after the save closed the
-  // editor; that text is a draft again, so show it.
   useEffect(() => {
-    if (isDirty) setEditing(true);
-  }, [isDirty]);
+    if (!editing) setValue(saved);
+  }, [saved, editing]);
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      await commitDraft(value, () => onSave(value));
-      // Text typed while the save was pending stays as a draft: keep it open.
-      if (useSquadFieldDraftStore.getState().getDraft(draftKey)?.text == null) setEditing(false);
+      await onSave(value);
+      setEditing(false);
     } catch {
       // toast handled by parent
     } finally {
@@ -796,13 +817,7 @@ export function SquadInstructionsSection({
       title={t(($) => $.detail.instructions)}
       action={
         canManage && !editing ? (
-          <ObjectSectionAction
-            icon={Pencil}
-            onClick={() => {
-              discardingRef.current = false;
-              setEditing(true);
-            }}
-          >
+          <ObjectSectionAction icon={Pencil} onClick={() => setEditing(true)}>
             {t(($) => $.detail.edit)}
           </ObjectSectionAction>
         ) : null
@@ -817,13 +832,9 @@ export function SquadInstructionsSection({
             <ContentEditor
               key={squad.id}
               value={value}
-              onUpdate={(md) => {
-                if (!discardingRef.current) setValue(md);
-              }}
+              onUpdate={setValue}
               placeholder={t(($) => $.instructions_tab.placeholder)}
               debounceMs={150}
-              // Keep the last edit when the route changes inside the debounce window.
-              flushPendingOnUnmount
               disableMentions
               className="min-h-24"
             />
@@ -837,8 +848,7 @@ export function SquadInstructionsSection({
               size="sm"
               disabled={saving}
               onClick={() => {
-                discardingRef.current = true;
-                discard();
+                setValue(saved);
                 setEditing(false);
               }}
             >
@@ -890,7 +900,7 @@ function SquadRecentWorkSection({
           {issues.map((issue) => (
             <AppLink
               key={issue.id}
-              href={p.issueDetail(issue.id)}
+              href={p.issueDetail(issueRouteRef(issue))}
               className="flex h-10 items-center gap-3 px-3 text-body transition-colors hover:bg-accent/50"
             >
               <StatusIcon
@@ -1018,169 +1028,26 @@ function SquadProperties({
   );
 }
 
-// Inline name editor — reveals a Pencil affordance on hover, opens a small
-// popover with a single-line input. Mirrors the NameAndDescription editor
-// in the agent inspector.
-export function SquadNameEditor({
-  squadId,
-  value,
-  onSave,
-}: {
-  squadId: string;
-  value: string;
-  onSave: (next: string) => Promise<void>;
-}) {
-  const { t } = useT("squads");
-  return (
-    <InlineEditPopover
-      draftKey={squadDraftKey(squadId, "name")}
-      value={value}
-      onSave={onSave}
-      title={t(($) => $.name_editor.title)}
-      placeholder={t(($) => $.name_editor.placeholder)}
-      validate={(v) =>
-        v.trim().length > 0 ? null : t(($) => $.name_editor.required)
-      }
-    >
-      {(triggerProps) => (
-        <button
-          type="button"
-          {...triggerProps}
-          className="group -mx-1 inline-flex items-center gap-1.5 self-start rounded-xs px-1 text-left text-title font-semibold leading-tight transition-colors hover:bg-accent/50"
-        >
-          <span>{value}</span>
-          <Pencil className="h-3.5 w-3.5 shrink-0 text-transparent transition-colors group-hover:text-muted-foreground" />
-        </button>
-      )}
-    </InlineEditPopover>
-  );
-}
-
-function InlineEditPopover({
-  draftKey,
-  value,
-  onSave,
-  title,
-  placeholder,
-  validate,
-  children,
-}: {
-  draftKey: string;
-  value: string;
-  onSave: (next: string) => Promise<void>;
-  title: string;
-  placeholder?: string;
-  validate?: (v: string) => string | null;
-  children: (triggerProps: { onClick: (e: React.MouseEvent) => void }) => ReactNode;
-}) {
-  const { t } = useT("squads");
-  const [open, setOpen] = useState(false);
-  const { text: draft, setText: setDraft, discard, commit: commitDraft } = useSquadFieldDraft(draftKey, value);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (open) setError(null);
-  }, [open]);
-
-  const commit = async () => {
-    const err = validate?.(draft) ?? null;
-    if (err) {
-      setError(err);
-      return;
-    }
-    if (draft === value) {
-      setOpen(false);
-      return;
-    }
-    setSaving(true);
-    try {
-      await commitDraft(draft, () => onSave(draft));
-      setOpen(false);
-      toast.success(t(($) => $.name_editor.saved));
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : t(($) => $.name_editor.save_failed));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        render={children({ onClick: () => setOpen(true) }) as React.ReactElement}
-      />
-      <PopoverContent align="start" className="w-72 p-3">
-        <div className="space-y-2">
-          <p className="text-caption font-medium">{title}</p>
-          <Input
-            autoFocus
-            value={draft}
-            onChange={(e) => {
-              setDraft(e.target.value);
-              if (error) setError(null);
-            }}
-            placeholder={placeholder}
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                setOpen(false);
-                return;
-              }
-              if (isImeComposing(e)) return;
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void commit();
-              }
-            }}
-            className="h-8"
-          />
-          {error && <p className="text-caption text-destructive">{error}</p>}
-          <div className="flex items-center justify-end gap-2">
-            <Button variant="ghost" size="sm" onClick={() => { discard(); setOpen(false); }} disabled={saving}>
-              {t(($) => $.name_editor.cancel)}
-            </Button>
-            <Button size="sm" onClick={() => void commit()} disabled={saving || draft === value}>
-              {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t(($) => $.name_editor.save)}
-            </Button>
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-}
-
 // Two-step add-member dialog:
 // 1) pick a target — Members + Agents in one searchable popover, each row
 //    with an avatar so visual recognition matches the issue assignee picker;
 // 2) optionally describe the role they'll play in this squad. Description
 //    lives here (not on the picker) because role is per-squad context that
 //    only makes sense at the moment of joining.
-export function AddMemberDialog({
-  squadId,
+function AddMemberDialog({
   availableMembers,
   availableAgents,
   onClose,
   onSubmit,
 }: {
-  squadId: string;
   availableMembers: MemberWithUser[];
   availableAgents: Agent[];
   onClose: () => void;
   onSubmit: (input: { type: "agent" | "member"; id: string; role?: string }) => Promise<void>;
 }) {
   const { t } = useT("squads");
-  const [draft, patchDraft, discardDraft] = useSquadAddMemberDraft(squadId);
-  const { role } = draft;
-  const setRole = (next: string) => patchDraft({ role: next });
-  // A restored target that was added elsewhere in the meantime is stale.
-  const target =
-    draft.target &&
-    (draft.target.type === "member" ? availableMembers : availableAgents).some(
-      (c) => ("user_id" in c ? c.user_id : c.id) === draft.target?.id,
-    )
-      ? draft.target
-      : null;
-  const setTarget = (next: NonNullable<typeof target>) => patchDraft({ target: next });
+  const [target, setTarget] = useState<{ type: "agent" | "member"; id: string; name: string } | null>(null);
+  const [role, setRole] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerFilter, setPickerFilter] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -1196,7 +1063,6 @@ export function AddMemberDialog({
     setSubmitting(true);
     try {
       await onSubmit({ type: target.type, id: target.id, role });
-      discardDraft();
       onClose();
     } catch {
       setSubmitting(false);
@@ -1307,7 +1173,7 @@ export function AddMemberDialog({
         </div>
 
         <DialogFooter>
-          <Button variant="ghost" onClick={() => { discardDraft(); onClose(); }}>{t(($) => $.add_member_dialog.cancel)}</Button>
+          <Button variant="ghost" onClick={onClose}>{t(($) => $.add_member_dialog.cancel)}</Button>
           <Button onClick={() => void handleSubmit()} disabled={!canSubmit}>
             {submitting ? <Loader2 className="size-3.5 animate-spin" /> : t(($) => $.add_member_dialog.add)}
           </Button>
@@ -1321,20 +1187,20 @@ export function AddMemberDialog({
 // click (or click the placeholder when empty) to swap in an input that
 // commits on blur / Enter and cancels on Escape. Avoids opening a modal
 // for what is usually a one-word change.
-export function RoleEditor({ draftKey, value, onSave }: { draftKey: string; value: string; onSave: (next: string) => Promise<void> }) {
+function RoleEditor({ value, onSave }: { value: string; onSave: (next: string) => Promise<void> }) {
   const { t } = useT("squads");
-  const { text: draft, hasDraft, setText: setDraft, discard } = useSquadFieldDraft(draftKey, value);
-  // An unsent draft reopens the input, so it is visible again after a remount.
-  const [editing, setEditing] = useState(hasDraft);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => { if (!editing) setDraft(value); }, [value, editing]);
 
   const commit = async () => {
     const next = draft.trim();
-    if (next === value.trim()) { discard(); setEditing(false); return; }
+    if (next === value.trim()) { setEditing(false); return; }
     setSaving(true);
     try {
       await onSave(next);
-      discard();
       setEditing(false);
     } catch {
       // toast handled by mutation
@@ -1353,7 +1219,7 @@ export function RoleEditor({ draftKey, value, onSave }: { draftKey: string; valu
         onKeyDown={(e) => {
           if (isImeComposing(e)) return;
           if (e.key === "Enter") void commit();
-          else if (e.key === "Escape") { discard(); setEditing(false); }
+          else if (e.key === "Escape") { setDraft(value); setEditing(false); }
         }}
         disabled={saving}
         placeholder={t(($) => $.role_editor.placeholder)}
@@ -1379,112 +1245,94 @@ export function RoleEditor({ draftKey, value, onSave }: { draftKey: string; valu
   );
 }
 
-// Click-to-edit description editor for the identity block. Mirrors
-// agent-detail-inspector's DescriptionEditor: opens a modal with a textarea
-// (enough room for multi-paragraph descriptions); the inline trigger shows
-// the current value (or a placeholder) with a hover-revealed Pencil.
-export function SquadDescriptionEditor({
-  squadId,
+// Name and description read as plain text and share one hover/focus wash, so
+// clicking either doesn't shift the layout around it.
+const INLINE_FIELD = "rounded-sm px-1 transition-colors hover:bg-accent/50 focus:bg-accent/50";
+
+// Click-to-edit description for the identity block. Same rules as the name:
+// blur or the send shortcut saves, Escape discards. The saved text stays on
+// screen while the request is in flight instead of flashing the old value, and
+// a failed save keeps its text so reopening the editor picks it up to retry.
+function SquadDescriptionEditor({
   value,
   onSave,
 }: {
-  squadId: string;
   value: string;
-  onSave: (next: string) => Promise<void>;
+  onSave: (next: string) => Promise<unknown>;
 }) {
   const { t } = useT("squads");
-  const [open, setOpen] = useState(false);
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="group -mx-1 inline-flex max-w-full items-start gap-1.5 rounded-sm px-1 text-left transition-colors hover:bg-accent/50"
-      >
-        {value ? (
-          <span className="line-clamp-2 text-muted-foreground">{value}</span>
-        ) : (
-          <span className="italic text-muted-foreground">{t(($) => $.description_dialog.placeholder_empty)}</span>
-        )}
-        <Pencil className="mt-1 h-3 w-3 shrink-0 text-transparent transition-colors group-hover:text-muted-foreground" />
-      </button>
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const [pending, setPending] = useState<string | null>(null);
+  const [unsaved, setUnsaved] = useState<string | null>(null);
+  const discardRef = useRef(false);
+  const shown = pending ?? value;
+  const placeholder = t(($) => $.description_editor.placeholder);
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="sm:max-w-lg">
-          {open && (
-            <SquadDescriptionEditorBody
-              draftKey={squadDraftKey(squadId, "description")}
-              initialValue={value}
-              onSave={onSave}
-              onClose={() => setOpen(false)}
-            />
-          )}
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-function SquadDescriptionEditorBody({
-  draftKey,
-  initialValue,
-  onSave,
-  onClose,
-}: {
-  draftKey: string;
-  initialValue: string;
-  onSave: (next: string) => Promise<void>;
-  onClose: () => void;
-}) {
-  const { t } = useT("squads");
-  const { text: draft, setText: setDraft, discard, commit: commitDraft } = useSquadFieldDraft(draftKey, initialValue);
-  const [saving, setSaving] = useState(false);
-  const savingRef = useRef(false);
-  const dirty = draft !== initialValue;
-
-  const commit = async () => {
-    if (savingRef.current) return;
-    if (!dirty) { onClose(); return; }
-    savingRef.current = true;
-    setSaving(true);
-    try {
-      await commitDraft(draft, () => onSave(draft));
-      onClose();
-    } catch {
-      // toast handled by parent's mutation
-    } finally {
-      savingRef.current = false;
-      setSaving(false);
-    }
+  const startEditing = () => {
+    discardRef.current = false;
+    setDraft(unsaved ?? shown);
+    setEditing(true);
   };
 
-  return (
-    <>
-      <DialogHeader>
-        <DialogTitle>{t(($) => $.description_dialog.title)}</DialogTitle>
-      </DialogHeader>
-      <textarea
+  const finish = () => {
+    setEditing(false);
+    if (discardRef.current || draft === shown) {
+      setUnsaved(null);
+      return;
+    }
+    const next = draft;
+    setPending(next);
+    onSave(next)
+      .then(
+        () => setUnsaved(null),
+        // toast handled by the mutation
+        () => setUnsaved(next),
+      )
+      .finally(() => setPending(null));
+  };
+
+  if (editing) {
+    return (
+      <Textarea
         autoFocus
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
-        placeholder={t(($) => $.description_dialog.responsibility_placeholder)}
-        rows={6}
+        onFocus={(e) => {
+          const end = e.currentTarget.value.length;
+          e.currentTarget.setSelectionRange(end, end);
+        }}
+        onBlur={finish}
         onKeyDown={(e) => {
-          if (e.key === "Escape") { onClose(); return; }
+          if (e.key === "Escape") {
+            discardRef.current = true;
+            e.currentTarget.blur();
+            return;
+          }
           if (e.defaultPrevented || e.repeat || isImeComposing(e)) return;
           if (shortcutMatchesEvent(getShortcut("send"), e.nativeEvent)) {
             e.preventDefault();
-            void commit();
+            e.currentTarget.blur();
           }
         }}
-        className="w-full resize-none rounded-md border bg-transparent px-3 py-2 text-body outline-none focus-visible:border-input"
+        aria-label={placeholder}
+        placeholder={placeholder}
+        rows={1}
+        className={cn(
+          INLINE_FIELD,
+          "block min-h-0 resize-none rounded-sm border-0 py-0 text-body text-foreground focus-visible:ring-0 md:text-body dark:bg-accent/50",
+        )}
       />
-      <DialogFooter>
-        <Button variant="ghost" size="sm" onClick={() => { discard(); onClose(); }} disabled={saving}>{t(($) => $.description_dialog.cancel)}</Button>
-        <Button size="sm" onClick={() => void commit()} disabled={saving || !dirty}>
-          {saving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t(($) => $.description_dialog.save)}
-        </Button>
-      </DialogFooter>
-    </>
+    );
+  }
+
+  return (
+    <button type="button" onClick={startEditing} className={cn(INLINE_FIELD, "inline-flex max-w-full text-left")}>
+      {shown ? (
+        <span className="line-clamp-2">{shown}</span>
+      ) : (
+        <span className="italic">{t(($) => $.description_editor.empty)}</span>
+      )}
+    </button>
   );
 }

@@ -435,9 +435,8 @@ export function useResolveComment(issueId: string) {
  * Toggle a reaction on the issue itself. Cache target is the issue detail
  * query — Issue.reactions is an optional array on the Issue object.
  *
- * Mobile reads issue reactions directly off the detail cache (no separate
- * query like web's issueReactionsOptions). Single source of truth, less
- * code, fewer requests.
+ * Mobile reads issue reactions directly off the detail cache, as web does.
+ * Single source of truth, less code, fewer requests.
  */
 export function useToggleIssueReaction(issueId: string) {
   const qc = useQueryClient();
@@ -538,13 +537,6 @@ export function useUpdateIssue(issueId: string) {
     mutationKey: ["updateIssue", issueId] as const,
     mutationFn: (patch: UpdateIssueRequest) => api.updateIssue(issueId, patch),
     onMutate: async (patch) => {
-      // A project workflow can hand the issue off when it enters a status, and
-      // the server applies that to any write that does not say what the person
-      // saw. A status goes out only with the binding the handoff preview and
-      // confirmation produced (`planStatusChange`), never bare.
-      if (patch.status !== undefined && patch.handoff_preview === undefined) {
-        throw new Error("a status change needs the handoff preview it was confirmed against");
-      }
       const key = issueKeys.detail(wsId, issueId);
       await qc.cancelQueries({ queryKey: key });
       const prev = qc.getQueryData<Issue>(key);
@@ -554,8 +546,8 @@ export function useUpdateIssue(issueId: string) {
           description_base: _descriptionBase,
           title_base: _titleBase,
           expected_revision: _expectedRevision,
-          handoff_preview: _handoffPreview,
-          stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
+          blocked_by: _blockedBy,
+          remove_blocked_by: _removeBlockedBy,
           ...optimisticPatch
         } = patch;
         qc.setQueryData<Issue>(key, {

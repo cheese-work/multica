@@ -55,60 +55,6 @@ export interface AgentInvocationTargetInput {
 // the fallback.
 export type RuntimeVisibility = "private" | "public";
 
-/** Why a machine stopped taking new work. Each reason has its own auto-expiry. */
-export type RuntimePauseReason = "maintenance" | "incident" | "suspended" | "scheduled_update";
-
-/** Last update cycle result of a machine; `unknown` is an outcome a newer server added. */
-export type RuntimeUpdateOutcome =
-  | "updated"
-  | "up_to_date"
-  | "failed"
-  | "no_window"
-  | "cancelled"
-  | "skipped_manual_pause"
-  | "skipped_open_cycle"
-  | "unknown";
-
-/** Per-machine update schedule (CHE-5465). Every runtime on the machine carries the same value. */
-export interface RuntimeUpdateSchedule {
-  enabled: boolean;
-  /** Five-field cron, evaluated in `timezone`. */
-  cron: string;
-  /** IANA name; the server default is Asia/Ho_Chi_Minh. */
-  timezone: string;
-  /** Maintenance window length in minutes, 10 to 30. */
-  window_minutes: number;
-  /** Next fire times; only the schedule endpoints fill it. */
-  next_runs?: string[];
-  updated_at?: string | null;
-  updated_by?: string | null;
-}
-
-/** Machine-wide pause (CHE-2430). Every runtime on the same daemon carries the same value. */
-export interface RuntimePause {
-  reason: RuntimePauseReason;
-  paused_by: string | null;
-  paused_at: string;
-  /** When the pause lifts by itself. Empty when the server sent no usable time. */
-  expires_at: string;
-}
-
-/**
- * An off machine that holds queued tasks the viewer is affected by (CHE-2674).
- * `event_id` changes with each new pause or offline period; a dismissed banner
- * shows again when it does.
- */
-export interface AffectedMachine {
-  machine_owner_id: string;
-  daemon_id: string;
-  device_name: string;
-  state: "paused" | "offline";
-  reason: RuntimePauseReason | null;
-  event_id: string;
-  expires_at: string | null;
-  waiting_tasks: number;
-}
-
 export interface RuntimeDevice {
   id: string;
   workspace_id: string;
@@ -140,19 +86,6 @@ export interface RuntimeDevice {
    * a missing value as `null` (built-in).
    */
   profile_id?: string | null;
-  /** Live machine pause, or null/absent when the machine takes work. */
-  pause?: RuntimePause | null;
-  /**
-   * Dispatched, running and waiting tasks across the machine's runtimes.
-   * Null/absent when the runtime has no daemon or the server predates pause.
-   */
-  daemon_running_tasks?: number | null;
-  /** The machine's update schedule, null/absent when none is saved or the server predates it. */
-  update_schedule?: RuntimeUpdateSchedule | null;
-  /** Result of the machine's last update cycle; null until one ran. */
-  last_update_outcome?: RuntimeUpdateOutcome | null;
-  /** When that outcome was written (RFC 3339); null until a cycle ran. */
-  last_update_outcome_at?: string | null;
   /**
    * Runtime-wide cap on tasks running at once across every agent bound to
    * this runtime (GitHub #9626). `null` means no runtime cap; each agent's
@@ -162,32 +95,9 @@ export interface RuntimeDevice {
   last_seen_at: string | null;
   created_at: string;
   updated_at: string;
-  /**
-   * Commit-based update verdict computed by the server (CHE-2641). Older
-   * backends omit all four; treat missing as "no update, no reason".
-   */
-  update_available?: boolean;
-  /** Full commit of the daemon build the server carries. */
-  server_commit?: string;
-  /** Version string of that build. */
-  server_version?: string;
-  /**
-   * Why there is no firm verdict: `unknown_commit` (local build),
-   * `no_build` (server carries none for this platform), `unsupported_os`.
-   * Empty when the verdict is firm.
-   */
-  update_reason?: string;
 }
 
 export type AgentRuntime = RuntimeDevice;
-
-/** Per-machine view of the server's update verdict. */
-export interface RuntimeUpdateInfo {
-  available: boolean;
-  serverCommit: string;
-  serverVersion: string;
-  reason: string;
-}
 
 // Custom runtime profiles (MUL-3284)
 //
@@ -250,6 +160,7 @@ export type RuntimeProfileVisibility = "workspace" | "private";
 export interface RuntimeProfile {
   id: string;
   workspace_id: string;
+  daemon_id?: string | null;
   display_name: string;
   protocol_family: RuntimeProtocolFamily;
   runtime_type?: RuntimeProfileType;
@@ -268,6 +179,7 @@ export interface RuntimeProfile {
 // Optional fields are omitted entirely when unset (never sent as null/empty)
 // so the server applies its own defaults.
 export interface CreateRuntimeProfileRequest {
+  daemon_id?: string;
   display_name: string;
   protocol_family?: RuntimeProtocolFamily;
   runtime_type?: RuntimeProfileType;
@@ -281,6 +193,7 @@ export interface CreateRuntimeProfileRequest {
 // PATCH body — every field optional; `protocol_family` is intentionally
 // absent because it is immutable.
 export interface UpdateRuntimeProfileRequest {
+  daemon_id?: string;
   display_name?: string;
   command_name?: string;
   description?: string | null;
@@ -345,7 +258,6 @@ export type WorkspaceWorkingAgentType = "issue" | "autopilot" | "chat";
 export type WorkspaceWorkingAgentMineRelation =
   | "assigned"
   | "created"
-  | "requested"
   | "involved"
   | "any";
 
@@ -401,59 +313,6 @@ export interface TaskCancellationActor {
   name?: string;
 }
 
-/** A named bundle of model, thinking level, service tier and context args. */
-export interface AgentPreset {
-  name: string;
-  /** null = inherit the agent's own value. */
-  model: string | null;
-  thinking_level: string | null;
-  service_tier: string | null;
-  /** null = inherit, [] = clear. */
-  context_args: string[] | null;
-  is_default: boolean;
-  /** Why the preset cannot run for the agent as it is now; "" when it can. */
-  stale: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface TaskPresetSettings {
-  model: string | null;
-  thinking_level: string | null;
-  service_tier: string | null;
-  context_args: string[];
-}
-
-export interface TaskPresetSkip {
-  level: string;
-  name: string;
-  reason: string;
-}
-
-/** What a run asked for (`claimed`) apart from what the daemon reported (`applied`, null until it does). */
-export interface TaskPresetRun {
-  name: string;
-  source: string;
-  skips: TaskPresetSkip[];
-  claimed: TaskPresetSettings;
-  applied: (TaskPresetSettings & { reported_at: string }) | null;
-}
-
-/** One part of a run's first prompt, as the daemon accounted it (est. tokens = (bytes+3)/4). */
-export interface TaskInitContextPart {
-  part: "instructions" | "tools" | "skills" | "memory" | "project" | "task" | "seed";
-  bytes: number;
-  tokens: number;
-  /** Est. tokens allowed for the part; 0 when no budget is set. */
-  budget: number;
-  notes?: string[];
-}
-
-/** Stored under `AgentTask.result.init_context`; absent on runs from older daemons. */
-export interface TaskInitContext {
-  parts: TaskInitContextPart[];
-}
-
 export interface AgentTask {
   /** Owning issue labels supplied by subtree execution-history reads. */
   issue_identifier?: string;
@@ -505,6 +364,14 @@ export interface AgentTask {
   chat_session_id?: string;
   /** Non-empty when the task was spawned by an autopilot run. */
   autopilot_run_id?: string;
+  /** Non-empty when this task belongs to a squad execution chain (leader or delegated member). */
+  squad_id?: string;
+  /** True when this task runs the agent as a squad leader. */
+  is_leader_task?: boolean;
+  /** Non-empty when an agent was asked for in a doc discussion. */
+  doc_id?: string;
+  /** The doc discussion (its first comment's id) the run answers. */
+  doc_thread_id?: string;
   /** Set when this task was created as an auto-retry of a parent task. */
   parent_task_id?: string;
   /** 1-based attempt counter; >1 means this is a retry. */
@@ -546,7 +413,7 @@ export interface AgentTask {
    * remains quick_create after its result issue is linked, so consumers can
    * distinguish creation work from later direct runs on that issue.
    */
-  kind?: "comment" | "autopilot" | "chat" | "quick_create" | "direct";
+  kind?: "comment" | "autopilot" | "chat" | "quick_create" | "doc_comment" | "direct";
   /**
    * Local working directory pinned for this task by the daemon. Empty until
    * the daemon reports a work_dir (typically once execution starts). This is
@@ -610,8 +477,6 @@ export interface AgentTask {
    * reporting was not free, we just don't know what it cost.
    */
   usage?: TaskUsage[];
-  /** Present only when the claim recorded a preset selection. */
-  preset_run?: TaskPresetRun;
 }
 
 /**
@@ -619,7 +484,7 @@ export interface AgentTask {
  *
  * Field names deliberately match {@link RuntimeUsage} so the same
  * `estimateCost` / `estimateCostBreakdown` / `estimateCacheSavings` helpers in
- * `packages/core/runtimes/pricing.ts` price a run and a runtime-day identically
+ * `packages/views/runtimes/utils.ts` price a run and a runtime-day identically
  * — there is exactly one cost formula in the product.
  *
  * `cost_usd_ticks` is the provider's own price for this slice (1e-10 USD),
@@ -639,8 +504,6 @@ export interface TaskUsage {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
-  /** The 1-hour-TTL part of `cache_write_tokens`; absent = no TTL split reported. */
-  cache_write_1h_tokens?: number;
   cost_usd_ticks?: number;
   credits_micros?: number;
 }
@@ -702,21 +565,9 @@ export interface MikaBootstrapResponse extends Agent {
   onboarding_session?: ChatSession;
 }
 
-/** One background job an agent serves (CHE-5439). `personal` is the viewer's own pick. */
-export interface AgentBackgroundUse {
-  scope: "workspace" | "personal";
-  job: "dm_title" | "quick_actions" | "compact" | "routing";
-}
-
 export interface Agent {
   id: string;
   workspace_id: string;
-  /** Present on a single-agent GET only; omitted when the agent serves no job. */
-  background_use?: AgentBackgroundUse[];
-  /** Set while an owner/admin has paused claims for this agent (CHE-5066). */
-  scheduling_paused_at?: string | null;
-  scheduling_paused_by?: string | null;
-  scheduling_paused_reason?: string | null;
   /**
    * Empty string when the agent is unbound: it kept its configuration, chats and
    * task history when its runtime was deleted, and needs a new runtime before it
@@ -1206,7 +1057,7 @@ export interface IssueUsageSummary {
 // optional because a backend older than the split omits them — `undefined`
 // there means "estimate from the full token counts", which is not the same as
 // a real 0 ("nothing left to estimate"). See estimateCost in
-// packages/core/runtimes/pricing.ts.
+// packages/views/runtimes/utils.ts.
 export interface RuntimeUsage {
   runtime_id: string;
   date: string;
@@ -1221,12 +1072,41 @@ export interface RuntimeUsage {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
-  uncosted_cache_write_1h_tokens?: number;
 }
 
-export interface RuntimeHourlyActivity {
-  hour: number;
-  count: number;
+// Subscription rate limits of the account a runtime's agent CLI runs under
+// (`GET /api/runtimes/:id/rate-limits`, MUL-9427), as the CLI last reported
+// them during a task. Window kinds and statuses fall back to "other" / ""
+// when a newer server sends a value this client does not know.
+export type RuntimeRateLimitWindowKind =
+  | "session"
+  | "weekly"
+  | "weekly_opus"
+  | "weekly_sonnet"
+  | "other";
+
+export type RuntimeRateLimitStatus = "allowed" | "warning" | "rejected" | "";
+
+export interface RuntimeRateLimitWindow {
+  kind: RuntimeRateLimitWindowKind;
+  /** 0-100; can run slightly past 100. Absent when the CLI did not say. */
+  used_percent?: number;
+  /** 0 when unknown. */
+  window_minutes: number;
+  resets_at?: string;
+  status: RuntimeRateLimitStatus;
+}
+
+export interface RuntimeRateLimits {
+  plan_type: string;
+  status: RuntimeRateLimitStatus;
+  windows: RuntimeRateLimitWindow[];
+  credits?: { has_credits: boolean; unlimited: boolean; balance: string };
+  observed_at: string;
+}
+
+export interface RuntimeRateLimitsResponse {
+  rate_limits: RuntimeRateLimits | null;
 }
 
 // One (agent, provider, model) row of the "Cost by agent" tab on the runtime
@@ -1247,7 +1127,6 @@ export interface RuntimeUsageByAgent {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
-  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1266,7 +1145,6 @@ export interface RuntimeUsageByHour {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
-  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1289,7 +1167,6 @@ export interface DashboardUsageDaily {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
-  uncosted_cache_write_1h_tokens?: number;
   task_count: number;
 }
 
@@ -1309,7 +1186,27 @@ export interface DashboardUsageByAgent {
   uncosted_output_tokens?: number;
   uncosted_cache_read_tokens?: number;
   uncosted_cache_write_tokens?: number;
-  uncosted_cache_write_1h_tokens?: number;
+  task_count: number;
+}
+
+// Per-(squad, agent, model) token totals for the workspace dashboard.
+// squad_id is "" for standalone (non-squad-triggered) agent runs.
+export interface DashboardUsageBySquad extends DashboardUsageByAgent {
+  squad_id: string;
+}
+
+// Per-(squad, agent) terminal-task run-time + counts for the workspace dashboard.
+// squad_id is "" for standalone (non-squad-triggered) agent runs.
+export interface DashboardSquadRunTime extends DashboardAgentRunTime {
+  squad_id: string;
+}
+
+// Per-(squad, agent, failure_reason) terminal-task counts for the Errors tab.
+// squad_id is "" for standalone (non-squad-triggered) agent runs.
+export interface DashboardFailureBySquad {
+  squad_id: string;
+  agent_id: string;
+  failure_reason: string;
   task_count: number;
 }
 
@@ -1374,16 +1271,15 @@ export interface DashboardFailureByAgent {
 
 export type RuntimeUpdateStatus =
   | "pending"
+  // The daemon is busy and installs once its last agent task finishes.
+  | "scheduled"
   | "running"
   | "completed"
   | "failed"
-  | "timeout";
-
-export interface RuntimeUpdateProgress {
-  phase: string;
-  bytes_done: number;
-  bytes_total: number;
-}
+  | "timeout"
+  | "cancelled"
+  // The machine did not become idle within 24 hours.
+  | "expired";
 
 export interface RuntimeUpdate {
   id: string;
@@ -1392,8 +1288,10 @@ export interface RuntimeUpdate {
   target_version: string;
   output?: string;
   error?: string;
-  /** Latest download progress the daemon reported; absent before the first report or from an older server. */
-  progress?: RuntimeUpdateProgress;
+  /** Agent tasks the daemon is waiting for while `scheduled`. */
+  active_tasks?: number;
+  /** True until installation starts. */
+  cancellable: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -1613,12 +1511,4 @@ export interface RuntimeLocalSkillImportResult {
   status: "created" | "updated" | "conflict";
   skill?: Skill;
   conflict?: RuntimeLocalSkillImportConflict;
-}
-
-/** What pausing an agent leaves waiting; read before the pause dialog asks. */
-export interface AgentSchedulingImpact {
-  running_tasks: number;
-  queued_tasks: number;
-  open_issues: number;
-  enabled_wakeups: number;
 }

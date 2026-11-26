@@ -3,8 +3,8 @@
 import { useEffect, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { CoreProvider } from "@multica/core/platform";
-import type { WSClient } from "@multica/core/api/ws-client";
 import { installUserTimingCap } from "@multica/core/diagnostics";
+import { registerEE } from "@multica/ee";
 import { createBrowserCookieLocaleAdapter } from "@multica/core/i18n/browser";
 import type { SupportedLocale } from "@multica/core/i18n";
 import packageJson from "../package.json";
@@ -17,24 +17,7 @@ import {
 } from "@/features/auth/auth-cookie";
 import { detectWebOS } from "@/platform/client-os";
 import { useUserLocaleSyncEnabled } from "@/platform/user-locale-sync";
-
-function watchWSLifecycle(client: WSClient) {
-  const onVisible = () => {
-    if (document.visibilityState === "visible") client.probe();
-  };
-  const onOnline = () => client.probe();
-  const onPageShow = (event: PageTransitionEvent) => {
-    if (event.persisted) client.probe();
-  };
-  document.addEventListener("visibilitychange", onVisible);
-  window.addEventListener("online", onOnline);
-  window.addEventListener("pageshow", onPageShow);
-  return () => {
-    document.removeEventListener("visibilitychange", onVisible);
-    window.removeEventListener("online", onOnline);
-    window.removeEventListener("pageshow", onPageShow);
-  };
-}
+import { MotionProvider } from "@multica/views/common/motion-provider";
 
 // Client-only: every reading is a live client measurement the server cannot
 // render, so server HTML would only ever mismatch on hydration.
@@ -73,6 +56,8 @@ function deriveWsUrl(): string | undefined {
 const WEB_VERSION =
   process.env.NEXT_PUBLIC_APP_VERSION || packageJson.version || "dev";
 
+registerEE();
+
 export function WebProviders({
   children,
   locale,
@@ -102,29 +87,30 @@ export function WebProviders({
     if (process.env.NODE_ENV === "development") installUserTimingCap();
   }, []);
   return (
-    <LocaleBundle locale={locale}>
-      {(resources) => (
-        <CoreProvider
-          apiBaseUrl={apiBaseUrl}
-          wsUrl={wsUrl || deriveWsUrl()}
-          cookieAuth={cookieAuth}
-          onLogin={setLoggedInCookie}
-          onLogout={clearLoggedInCookie}
-          identity={identity}
-          locale={locale}
-          resources={resources}
-          localeAdapter={localeAdapter}
-          syncUserLocale={syncUserLocale}
-          onWSClientReady={watchWSLifecycle}
-        >
-          <WebNavigationProvider>
-            <WebScrollRestorationProvider>{children}</WebScrollRestorationProvider>
-            {process.env.NODE_ENV === "development" && devToolbarApiUrl && (
-              <WebDevToolbar apiUrl={devToolbarApiUrl} />
-            )}
-          </WebNavigationProvider>
-        </CoreProvider>
-      )}
-    </LocaleBundle>
+    <MotionProvider>
+      <LocaleBundle locale={locale}>
+        {(resources) => (
+          <CoreProvider
+            apiBaseUrl={apiBaseUrl}
+            wsUrl={wsUrl || deriveWsUrl()}
+            cookieAuth={cookieAuth}
+            onLogin={setLoggedInCookie}
+            onLogout={clearLoggedInCookie}
+            identity={identity}
+            locale={locale}
+            resources={resources}
+            localeAdapter={localeAdapter}
+            syncUserLocale={syncUserLocale}
+          >
+            <WebNavigationProvider>
+              <WebScrollRestorationProvider>{children}</WebScrollRestorationProvider>
+              {process.env.NODE_ENV === "development" && devToolbarApiUrl && (
+                <WebDevToolbar apiUrl={devToolbarApiUrl} />
+              )}
+            </WebNavigationProvider>
+          </CoreProvider>
+        )}
+      </LocaleBundle>
+    </MotionProvider>
   );
 }

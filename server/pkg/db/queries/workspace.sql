@@ -1,24 +1,27 @@
 -- name: ListWorkspaces :many
+-- The role narrows what a guest is shown (workspaceResponseFor). A role this
+-- build does not know is no membership (see GetMemberByUserAndWorkspace).
 SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.created_at, w.updated_at, w.context, w.repos,
-       w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
-       w.export_redaction_mode, w.export_manifest_retention_days,
-       w.decision_passkey_gate, w.policy_revision,
-       w.scheduling_paused_at, w.scheduling_paused_by, m.pinned_at
+       w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed, m.pinned_at,
+       m.role
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
+  AND m.role IN ('owner', 'admin', 'member', 'guest')
 ORDER BY m.pinned_at DESC NULLS LAST, w.created_at ASC;
 
 -- name: ListDaemonWorkspaces :many
 -- Daemons only need the membership set and display name to discover which
 -- workspaces should have local runtimes. Keep this projection intentionally
 -- narrow so the periodic consistency check never reads UI-only JSON/text
--- columns such as settings, repos, or context.
+-- columns such as settings, repos, or context. A role this build does not
+-- know is no membership (see GetMemberByUserAndWorkspace).
 SELECT w.id, w.name
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
+  AND m.role IN ('owner', 'admin', 'member', 'guest')
 ORDER BY w.id ASC;
 
 -- name: GetDaemonWorkspace :one
@@ -32,13 +35,6 @@ WHERE id = $1;
 SELECT * FROM workspace
 WHERE id = $1;
 
--- name: GetWorkspaceForUpdate :one
--- Scheduling pause/resume reads the prior state under this lock, so the caller
--- that flips it is the only one that sees a transition.
-SELECT * FROM workspace
-WHERE id = $1
-FOR UPDATE;
-
 -- name: GetWorkspaceBySlug :one
 SELECT * FROM workspace
 WHERE slug = $1;
@@ -48,36 +44,6 @@ WHERE slug = $1;
 -- (MUL-4302 §3.5), avoiding a full workspace-row fetch.
 SELECT attribution_fail_closed FROM workspace
 WHERE id = $1;
-
--- name: GetWorkspaceExportPrivacy :one
--- CHE-766: lean read of the export privacy policy for the CHE-755 export
--- handler's fail-closed mode check, avoiding a full workspace-row fetch.
-SELECT export_redaction_mode, export_manifest_retention_days FROM workspace
-WHERE id = $1;
-
--- name: GetWorkspaceExportPrivacyForUpdate :one
--- CHE-766: same lean projection as GetWorkspaceExportPrivacy, but FOR UPDATE
--- so UpdateWorkspaceExportPrivacy's read-modify-write is atomic against a
--- second concurrent PATCH: two admins racing a partial update (one setting
--- only redaction_mode, the other only manifest_retention_days) cannot each
--- read the pre-update row and clobber the other's field. Call inside the same
--- transaction as the subsequent UpdateWorkspaceExportPrivacy.
-SELECT export_redaction_mode, export_manifest_retention_days FROM workspace
-WHERE id = $1
-FOR UPDATE;
-
--- name: UpdateWorkspaceExportPrivacy :one
--- CHE-766: dedicated, validated write path for the export privacy policy.
--- Deliberately separate from UpdateWorkspace's generic settings blob: mode
--- and retention_days are security-relevant and must go through the
--- handler's own CHECK-backed validation and owner/admin ACL, never through
--- an unvalidated settings overwrite.
-UPDATE workspace SET
-    export_redaction_mode = $2,
-    export_manifest_retention_days = $3,
-    updated_at = now()
-WHERE id = $1
-RETURNING export_redaction_mode, export_manifest_retention_days;
 
 -- name: CreateWorkspace :one
 INSERT INTO workspace (name, slug, description, context, issue_prefix)
@@ -89,98 +55,13 @@ UPDATE workspace SET
     name = COALESCE(sqlc.narg('name'), name),
     description = COALESCE(sqlc.narg('description'), description),
     context = COALESCE(sqlc.narg('context'), context),
-    -- CHE-1612: compact_prompt patches one settings key; every other key survives.
-    -- CHE-1806: auto_compact patches one settings key the same way, merging the
-    -- named fields into the saved object so an unnamed field keeps its value.
-    -- CHE-2269: github_review_members / github_review_authors replace one settings
-    -- key each; the other survives.
-    -- CHE-3296: idle_started_guard merges named fields into the saved object, so
-    -- the statuses list and any unnamed field keep their value.
-    -- CHE-3706: harness_profile sets or (reset) removes one settings key.
-    -- CHE-6969: auto_close replaces its one settings key.
-    -- CHE-6973: blocked_run_skip replaces its one settings key.
-    -- CHE-6460: decision_ask_park replaces its one settings key.
-    -- CHE-9026: run_guard and run_budget each replace their one settings key.
-    -- CHE-6992: wakeup_live_join replaces its one settings key.
-    -- CHE-7408: merge_queue is an object holding only the merge-queue keys the
-    -- handler validated; it replaces those keys and leaves every other key.
-    settings = (
-        SELECT CASE
-            WHEN sqlc.narg('merge_queue')::jsonb IS NOT NULL THEN w.v || sqlc.narg('merge_queue')::jsonb
-            ELSE w.v
-        END
-        FROM (SELECT CASE
-            WHEN sqlc.narg('harness_profile_reset')::bool THEN h.v - 'harness_profile'
-            WHEN sqlc.narg('harness_profile')::text IS NOT NULL THEN jsonb_set(h.v, '{harness_profile}', to_jsonb(sqlc.narg('harness_profile')::text))
-            ELSE h.v
-        END
-        FROM (SELECT CASE
-            WHEN sqlc.narg('ask_guard_mode')::jsonb IS NOT NULL THEN jsonb_set(d.v, '{ask_guard_mode}', sqlc.narg('ask_guard_mode')::jsonb)
-            ELSE d.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('run_guard')::jsonb IS NOT NULL THEN jsonb_set(x.v, '{run_guard}', sqlc.narg('run_guard')::jsonb)
-            ELSE x.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('run_budget')::jsonb IS NOT NULL THEN jsonb_set(y.v, '{run_budget}', sqlc.narg('run_budget')::jsonb)
-            ELSE y.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('wakeup_live_join')::jsonb IS NOT NULL THEN jsonb_set(l.v, '{wakeup_live_join}', sqlc.narg('wakeup_live_join')::jsonb)
-            ELSE l.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('decision_ask_park')::jsonb IS NOT NULL THEN jsonb_set(k.v, '{decision_ask_park}', sqlc.narg('decision_ask_park')::jsonb)
-            ELSE k.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('blocked_run_skip')::jsonb IS NOT NULL THEN jsonb_set(b.v, '{blocked_run_skip}', sqlc.narg('blocked_run_skip')::jsonb)
-            ELSE b.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('auto_close')::jsonb IS NOT NULL THEN jsonb_set(c.v, '{auto_close}', sqlc.narg('auto_close')::jsonb)
-            ELSE c.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('time_wakeup_skip')::jsonb IS NOT NULL THEN jsonb_set(t.v, '{time_wakeup_skip}', sqlc.narg('time_wakeup_skip')::jsonb)
-            ELSE t.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('idle_started_guard')::jsonb IS NOT NULL THEN jsonb_set(g.v, '{idle_started_guard}', COALESCE(g.v -> 'idle_started_guard', '{}'::jsonb) || sqlc.narg('idle_started_guard')::jsonb)
-            ELSE g.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('github_review_authors')::jsonb IS NOT NULL THEN jsonb_set(m.v, '{github_review_authors}', sqlc.narg('github_review_authors')::jsonb)
-            ELSE m.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('github_review_members')::jsonb IS NOT NULL THEN jsonb_set(a.v, '{github_review_members}', sqlc.narg('github_review_members')::jsonb)
-            ELSE a.v
-        END AS v FROM (SELECT CASE
-            WHEN sqlc.narg('auto_compact_reset')::bool THEN base.v - 'auto_compact'
-            WHEN sqlc.narg('auto_compact')::jsonb IS NOT NULL THEN jsonb_set(base.v, '{auto_compact}', COALESCE(base.v -> 'auto_compact', '{}'::jsonb) || sqlc.narg('auto_compact')::jsonb)
-            ELSE base.v
-        END AS v
-        FROM (SELECT CASE
-            WHEN sqlc.narg('compact_prompt_reset')::bool THEN COALESCE(sqlc.narg('settings')::jsonb, settings) - 'compact_prompt'
-            WHEN sqlc.narg('compact_prompt')::text IS NOT NULL THEN jsonb_set(COALESCE(sqlc.narg('settings')::jsonb, settings), '{compact_prompt}', to_jsonb(sqlc.narg('compact_prompt')::text))
-            ELSE COALESCE(sqlc.narg('settings')::jsonb, settings)
-        END AS v) AS base) AS a) AS m) AS g) AS t) AS c) AS b) AS k) AS l) AS y) AS x) AS d) AS h) AS w
-    ),
+    settings = COALESCE(sqlc.narg('settings'), settings),
     repos = COALESCE(sqlc.narg('repos'), repos),
     issue_prefix = COALESCE(sqlc.narg('issue_prefix'), issue_prefix),
     avatar_url = COALESCE(sqlc.narg('avatar_url'), avatar_url),
     updated_at = now()
 WHERE id = $1
 RETURNING *;
-
--- name: LockWorkspaceSettings :one
--- CHE-1727: a settings write reads, reconciles and writes the blob under this
--- lock, so a concurrent pause flip cannot be overwritten by a stale save.
-SELECT settings FROM workspace
-WHERE id = $1
-FOR UPDATE;
 
 -- name: IncrementIssueCounter :one
 UPDATE workspace SET issue_counter = issue_counter + 1
@@ -241,13 +122,6 @@ SELECT id FROM workspace WHERE id = $1 FOR UPDATE;
 -- implicit FOR KEY SHARE, which would vanish if that FK is dropped.
 SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
 
--- name: LockWorkspaceForJevCredentialWrite :one
--- Credential writes and key rotation must take the workspace row lock in their
--- own transaction. It conflicts with DeleteWorkspace's FOR UPDATE lock: a
--- write that wins commits before teardown and is swept, while a write that
--- loses sees no workspace row after teardown commits and fails closed.
-SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE;
-
 -- name: DeleteWorkspace :exec
 -- The channel_* tables (MUL-3515 §4), resource-label junctions, custom issue
 -- property definitions, and quick actions carry NO FK to workspace, so — unlike the CASCADE-backed
@@ -300,6 +174,9 @@ cleared_outbound_cards AS (
 cleared_chat_submission_receipts AS (
     DELETE FROM chat_submission_receipt WHERE chat_submission_receipt.workspace_id = $1
 ),
+cleared_comment_idempotency_receipts AS (
+    DELETE FROM comment_idempotency_receipt WHERE comment_idempotency_receipt.workspace_id = $1
+),
 cleared_draft_restores AS (
     -- chat_draft_restore is keyed by chat_session_id with no FK (MUL-3515) and has
     -- no reaper, while its chat_session rows cascade away with the workspace. Reach
@@ -345,18 +222,6 @@ cleared_issue_properties AS (
 ),
 cleared_quick_actions AS (
     DELETE FROM quick_action WHERE workspace_id = $1
-),
-cleared_daemon_pauses AS (
-    DELETE FROM daemon_pause WHERE workspace_id = $1
-),
-cleared_ops_snapshots AS (
-    DELETE FROM ops_snapshot WHERE workspace_id = $1
-),
-cleared_ops_snapshots_5m AS (
-    DELETE FROM ops_snapshot_5m WHERE workspace_id = $1
-),
-cleared_agent_task_events AS (
-    DELETE FROM agent_task_event WHERE workspace_id = $1
 ),
 ws_mcp_servers AS (
     SELECT id FROM workspace_mcp_server WHERE workspace_id = $1
@@ -413,25 +278,6 @@ cleared_client_usage_workspace AS (
     UPDATE client_usage_daily SET workspace_id = NULL WHERE workspace_id = $1
 )
 DELETE FROM workspace WHERE workspace.id = $1;
-
--- name: PauseWorkspaceScheduling :one
--- Pause claim for every agent in the workspace. Same contract as
--- PauseAgentScheduling (idempotent, first actor and time win): enqueue and running tasks are untouched.
-UPDATE workspace
-SET scheduling_paused_at = COALESCE(scheduling_paused_at, now()),
-    scheduling_paused_by = COALESCE(scheduling_paused_by, @actor_id)
-WHERE id = @id
-RETURNING *;
-
--- name: ResumeWorkspaceScheduling :one
-UPDATE workspace
-SET scheduling_paused_at = NULL, scheduling_paused_by = NULL
-WHERE id = @id
-RETURNING *;
-
--- name: ListWorkspaceIDsWithLegacyRoutingAgent :many
--- CHE-4116: workspaces still holding the routing setting under its old key.
-SELECT id FROM workspace WHERE settings ? 'routing_agent';
 
 -- name: SetWorkspacePinned :one
 UPDATE member

@@ -1,9 +1,15 @@
-import { infiniteQueryOptions, queryOptions, useQuery, type QueryClient } from "@tanstack/react-query";
+import {
+  infiniteQueryOptions,
+  queryOptions,
+  useQuery,
+  type InfiniteData,
+  type QueryClient,
+} from "@tanstack/react-query";
 import { useEffect, useRef } from "react";
 import { api } from "../api";
-import { ingestChatMessages, ingestChatMessagesPage } from "./message-cache";
 import type { TaskMessagePayload } from "../types/events";
 import type {
+  ChatMessagesPage,
   ChatQuickActionsFailureState,
   ChatQuickActionsPendingState,
   ChatSession,
@@ -33,20 +39,9 @@ export const chatKeys = {
   all: (wsId: string) => ["chat", wsId] as const,
   /** Full sessions list (active + archived); the dropdown splits locally. */
   sessions: (wsId: string) => [...chatKeys.all(wsId), "sessions"] as const,
-  /** Mutation key shared by the pin and archive mutations; search refreshes when they settle. */
-  sessionAction: (wsId: string) => [...chatKeys.all(wsId), "session-action"] as const,
-  openDecisions: (wsId: string) => [...chatKeys.all(wsId), "open-decisions"] as const,
-  issueDecisionCards: (wsId: string, issueId: string) => [...chatKeys.all(wsId), "issue-decision-cards", issueId] as const,
-  issueDecisionCardsAll: (wsId: string) => [...chatKeys.all(wsId), "issue-decision-cards"] as const,
   session: (wsId: string, id: string) => [...chatKeys.all(wsId), "session", id] as const,
-  /** Statistics for one session (`GET /api/chat/sessions/{id}/usage`). */
-  usage: (wsId: string, id: string) => [...chatKeys.all(wsId), "usage", id] as const,
   messagesAll: () => ["chat", "messages"] as const,
   messages: (sessionId: string) => [...chatKeys.messagesAll(), sessionId] as const,
-  /** By-id store: one row per chat message across sessions (B1a.1). */
-  messageEntities: () => ["chat", "message-entities"] as const,
-  /** Ordered message ids of one session; the rows live in `messageEntities`. */
-  messageIds: (sessionId: string) => ["chat", "message-ids", sessionId] as const,
   messagesPageAll: () => ["chat", "messages-page"] as const,
   messagesPage: (sessionId: string) => [...chatKeys.messagesPageAll(), sessionId] as const,
   pendingTaskAll: () => ["chat", "pending-task"] as const,
@@ -63,8 +58,10 @@ export const chatKeys = {
   /** Durable deferred-cancellation draft restores for a session (#5219). */
   draftRestores: (sessionId: string) => [...chatKeys.draftRestoresAll(), sessionId] as const,
   wakeupsAll: () => ["chat", "wakeups"] as const,
-  /** Pending agent-scheduled wakeups for a DM (the "Scheduled" chip). */
+  /** A conversation's wakeups: active ones plus those that ended recently. */
   wakeups: (sessionId: string) => [...chatKeys.wakeupsAll(), sessionId] as const,
+  /** The caller's wakeups across their conversations in this workspace. */
+  myWakeups: (wsId: string) => [...chatKeys.all(wsId), "my-wakeups"] as const,
   /** Aggregate of in-flight chat tasks for the current user — FAB reads this. */
   pendingTasks: (wsId: string) => [...chatKeys.all(wsId), "pending-tasks"] as const,
   /** Per-user pinned agents for the quick-agent bar. */
@@ -87,20 +84,6 @@ export function isTaskMessageTaskId(taskId: string | null | undefined): taskId i
   return typeof taskId === "string" && UUID_PATTERN.test(taskId);
 }
 
-/**
- * Statistics for one session. Always refetched on open: totals move while runs
- * finish, and the dialog is the only reader.
- */
-export function chatSessionUsageOptions(wsId: string, sessionId: string | null) {
-  return queryOptions({
-    queryKey: chatKeys.usage(wsId, sessionId ?? ""),
-    queryFn: () => api.getChatSessionUsage(sessionId as string),
-    enabled: !!sessionId,
-    staleTime: 0,
-    gcTime: 60_000,
-  });
-}
-
 export function chatSessionsOptions(wsId: string) {
   return queryOptions({
     queryKey: chatKeys.sessions(wsId),
@@ -109,48 +92,9 @@ export function chatSessionsOptions(wsId: string) {
   });
 }
 
-export const decisionActionKeys = {
-  /** One decided action's outcome, scoped by its issue so a run or status event can refresh it. */
-  outcome: (wsId: string, issueId: string, actionId: string) => ["decision-action", wsId, "outcome", issueId, actionId] as const,
-  outcomesForIssue: (wsId: string, issueId: string) => ["decision-action", wsId, "outcome", issueId] as const,
-};
-
-export function decisionActionOutcomeOptions(wsId: string, issueId: string, actionId: string) {
-  return queryOptions({
-    queryKey: decisionActionKeys.outcome(wsId, issueId, actionId),
-    queryFn: () => api.getDecisionActionOutcome(actionId),
-    staleTime: Infinity,
-    enabled: !!wsId && !!issueId && !!actionId,
-  });
-}
-
-export function openDecisionRequestsOptions(wsId: string) {
-  return queryOptions({
-    queryKey: chatKeys.openDecisions(wsId),
-    queryFn: () => api.listOpenDecisionRequests(),
-    staleTime: Infinity,
-    enabled: !!wsId,
-  });
-}
-
-export function issueDecisionCardsOptions(wsId: string, issueId: string) {
-  return queryOptions({
-    queryKey: chatKeys.issueDecisionCards(wsId, issueId),
-    queryFn: () => api.listIssueDecisionCards(issueId),
-    staleTime: Infinity,
-    enabled: !!wsId && !!issueId,
-  });
-}
-
-/**
- * Last-activity timestamp used to rank the IM list (newest first). Floored at
- * the session's creation time like the server (chat.sql): a new fork carries
- * old copied messages and must still list as new.
- */
-export function sessionActivityTime(s: ChatSession): number {
-  const activity = new Date(s.last_message?.created_at ?? s.created_at).getTime();
-  const created = new Date(s.created_at).getTime();
-  return Number.isNaN(created) ? activity : Math.max(activity, created);
+/** Last-activity timestamp used to rank the IM list (newest first). */
+function sessionActivityTime(s: ChatSession): number {
+  return new Date(s.last_message?.created_at ?? s.updated_at).getTime();
 }
 
 /**
@@ -161,14 +105,6 @@ export function sessionActivityTime(s: ChatSession): number {
  * keys (Array.prototype.sort is stable), so pinned rows keep their server
  * order when pin timestamps aren't carried in the list payload.
  */
-/**
- * Archived chats order by last activity alone. An archived DM is never pinned,
- * so a stale pin left in a cached row must not lift it above newer ones.
- */
-export function sortArchivedChatSessions(sessions: ChatSession[]): ChatSession[] {
-  return [...sessions].sort((a, b) => sessionActivityTime(b) - sessionActivityTime(a));
-}
-
 export function sortChatSessions(sessions: ChatSession[]): ChatSession[] {
   // Parse dates once per session, rather than on each comparison.
   return sessions
@@ -180,53 +116,6 @@ export function sortChatSessions(sessions: ChatSession[]): ChatSession[] {
       return b.activity - a.activity;
     })
     .map(({ session }) => session);
-}
-
-/** Views behind the DM list filter chips (CHE-5511 slice 1). */
-export type ChatListView =
-  | "all"
-  | "main"
-  | "decisions"
-  | "waiting"
-  | "unseen"
-  | "pinned"
-  | "unpinned"
-  | "archived";
-
-export const DEFAULT_CHAT_LIST_VIEW: ChatListView = "main";
-
-const ATTENTION_LEVELS = new Set(["red", "yellow", "fresh"]);
-
-/**
- * The rows behind each DM list chip. `all` = main + archived; `main` = every
- * DM not archived; every other chip narrows the non-archived set, except
- * `archived`, which is archived only. `decisionSessionIds` are the sessions
- * with an open decision request (the open-decisions query, not the list cache).
- */
-export function filterChatSessions(
-  sessions: readonly ChatSession[],
-  view: ChatListView,
-  decisionSessionIds: ReadonlySet<string> = new Set(),
-): ChatSession[] {
-  const live = (s: ChatSession) => s.status !== "archived";
-  switch (view) {
-    case "all":
-      return [...sessions];
-    case "archived":
-      return sessions.filter((s) => !live(s));
-    case "main":
-      return sessions.filter(live);
-    case "decisions":
-      return sessions.filter((s) => live(s) && decisionSessionIds.has(s.id));
-    case "waiting":
-      return sessions.filter((s) => live(s) && ATTENTION_LEVELS.has(s.stale_level ?? ""));
-    case "unseen":
-      return sessions.filter((s) => live(s) && (s.has_unread || (s.unread_count ?? 0) > 0));
-    case "pinned":
-      return sessions.filter((s) => live(s) && !!s.pinned);
-    case "unpinned":
-      return sessions.filter((s) => live(s) && !s.pinned);
-  }
 }
 
 /**
@@ -263,8 +152,7 @@ export function chatSessionOptions(wsId: string, id: string) {
 export function chatMessagesOptions(sessionId: string) {
   return queryOptions({
     queryKey: chatKeys.messages(sessionId),
-    queryFn: async ({ client, signal }) =>
-      ingestChatMessages(client, sessionId, await api.listChatMessages(sessionId), signal),
+    queryFn: () => api.listChatMessages(sessionId),
     enabled: !!sessionId,
     staleTime: Infinity,
   });
@@ -273,14 +161,8 @@ export function chatMessagesOptions(sessionId: string) {
 export function chatMessagesPageOptions(sessionId: string, limit = 50) {
   return infiniteQueryOptions({
     queryKey: chatKeys.messagesPage(sessionId),
-    queryFn: async ({ pageParam, client, signal }) =>
-      ingestChatMessagesPage(
-        client,
-        sessionId,
-        pageParam,
-        await api.listChatMessagesPage(sessionId, { before: pageParam, limit }),
-        signal,
-      ),
+    queryFn: ({ pageParam }) =>
+      api.listChatMessagesPage(sessionId, { before: pageParam, limit }),
     initialPageParam: null as { created_at: string; id: string } | null,
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? lastPage.next_cursor ?? undefined : undefined,
@@ -323,16 +205,66 @@ export function chatDraftRestoresOptions(sessionId: string) {
   });
 }
 
-/**
- * Pending agent-scheduled wakeups for a DM. A turn that schedules or cancels
- * one ends in chat:done and a fire arrives as chat:message; both invalidate
- * this key, as does a reconnect. A cancel here updates it directly.
- */
+/** Kept fresh by chat:wakeup_changed; the countdowns tick client-side. */
 export function chatWakeupsOptions(sessionId: string) {
   return queryOptions({
     queryKey: chatKeys.wakeups(sessionId),
     queryFn: () => api.listChatSessionWakeups(sessionId),
     enabled: !!sessionId,
+    staleTime: Infinity,
+  });
+}
+
+/**
+ * How many trailing assistant turns' task timelines to warm after prefetching
+ * a session's newest message page. Keeps the visible tail from expanding
+ * asynchronously when `AssistantMessage` upgrades from plain text to its
+ * collapsible `TimelineView`, while capping cache entries for MUL-6396.
+ */
+const PREFETCH_TAIL_TASK_LIMIT = 2;
+
+/**
+ * Warms a chat session's conversation queries in parallel so archiving and
+ * advancing to the next thread — or clicking an adjacent row — renders from
+ * cache without flashing the skeleton or asynchronously popping in bottom
+ * strips (wakeups). All warmed queries use `staleTime: Infinity`, so an
+ * already-warm session costs nothing.
+ */
+export async function prefetchChatSession(
+  qc: QueryClient,
+  sessionId: string,
+): Promise<void> {
+  if (!sessionId) return;
+  await Promise.all([
+    qc.prefetchInfiniteQuery(chatMessagesPageOptions(sessionId)),
+    qc.prefetchQuery(pendingChatTaskOptions(sessionId)),
+    qc.prefetchQuery(chatWakeupsOptions(sessionId)),
+  ]);
+
+  const newestMessages =
+    qc.getQueryData<InfiniteData<ChatMessagesPage>>(chatKeys.messagesPage(sessionId))
+      ?.pages?.[0]?.messages ?? [];
+  const tailTaskIds: string[] = [];
+  const seen = new Set<string>();
+  for (let i = newestMessages.length - 1; i >= 0 && tailTaskIds.length < PREFETCH_TAIL_TASK_LIMIT; i--) {
+    const m = newestMessages[i];
+    if (!m || m.role !== "assistant" || !isTaskMessageTaskId(m.task_id) || seen.has(m.task_id)) {
+      continue;
+    }
+    seen.add(m.task_id);
+    tailTaskIds.push(m.task_id);
+  }
+  if (tailTaskIds.length > 0) {
+    await Promise.all(tailTaskIds.map((taskId) => qc.prefetchQuery(taskMessagesOptions(taskId))));
+  }
+}
+
+export function myChatWakeupsOptions(wsId: string) {
+  return queryOptions({
+    queryKey: chatKeys.myWakeups(wsId),
+    queryFn: () => api.listMyChatWakeups(),
+    enabled: !!wsId,
+    staleTime: Infinity,
   });
 }
 

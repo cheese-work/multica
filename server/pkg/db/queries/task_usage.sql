@@ -7,11 +7,8 @@
 -- when it reports none. It is overwritten like the token counters so a
 -- corrected report replaces the previous figure rather than accumulating.
 -- credits_micros follows the same rule for providers that bill in credits.
--- cache_write_1h_tokens is the 1-hour-TTL part of cache_write_tokens, NULL when
--- the run carried no TTL split; it too is overwritten, so a report without a
--- split resets it rather than keeping a stale one.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, credits_micros, cache_write_1h_tokens, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('credits_micros'), sqlc.narg('cache_write_1h_tokens'), now())
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, credits_micros, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('credits_micros'), now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -20,7 +17,6 @@ DO UPDATE SET
     cache_write_tokens = EXCLUDED.cache_write_tokens,
     cost_usd_ticks = EXCLUDED.cost_usd_ticks,
     credits_micros = EXCLUDED.credits_micros,
-    cache_write_1h_tokens = EXCLUDED.cache_write_1h_tokens,
     updated_at = now();
 
 -- name: GetTaskUsage :many
@@ -49,7 +45,6 @@ SELECT
     tu.output_tokens,
     tu.cache_read_tokens,
     tu.cache_write_tokens,
-    tu.cache_write_1h_tokens,
     tu.cost_usd_ticks,
     tu.credits_micros
 FROM task_usage tu
@@ -60,7 +55,7 @@ ORDER BY tu.task_id, tu.model;
 -- name: ListTaskUsageByIDs :many
 -- Only called with task IDs selected through an authorized issue scope.
 SELECT task_id, provider, model, input_tokens, output_tokens,
-       cache_read_tokens, cache_write_tokens, cache_write_1h_tokens, cost_usd_ticks, credits_micros
+       cache_read_tokens, cache_write_tokens, cost_usd_ticks, credits_micros
 FROM task_usage
 WHERE task_id = ANY(sqlc.arg(task_ids)::uuid[])
 ORDER BY task_id, model;
@@ -78,7 +73,6 @@ SELECT
     tu.output_tokens,
     tu.cache_read_tokens,
     tu.cache_write_tokens,
-    tu.cache_write_1h_tokens,
     tu.cost_usd_ticks,
     tu.credits_micros
 FROM task_usage tu
@@ -158,12 +152,16 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
-    SUM(COALESCE(uncosted_cache_write_1h_tokens, 0))::bigint AS uncosted_cache_write_1h_tokens,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= sqlc.arg('since')::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))
+  AND (
+      sqlc.arg('squad_scope')::text = ''
+      OR (sqlc.arg('squad_scope')::text = 'standalone' AND squad_id IS NULL)
+      OR (sqlc.arg('squad_scope')::text = 'squad' AND squad_id = sqlc.narg('squad_id')::uuid)
+  )
 GROUP BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text), LOWER(provider), model
 ORDER BY DATE(bucket_hour AT TIME ZONE sqlc.arg('tz')::text) DESC, LOWER(provider), model;
 
@@ -195,14 +193,50 @@ SELECT
     SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
     SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
     SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
-    SUM(COALESCE(uncosted_cache_write_1h_tokens, 0))::bigint AS uncosted_cache_write_1h_tokens,
     SUM(task_count)::int             AS task_count
 FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= @since::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))
+  AND (
+      sqlc.arg('squad_scope')::text = ''
+      OR (sqlc.arg('squad_scope')::text = 'standalone' AND squad_id IS NULL)
+      OR (sqlc.arg('squad_scope')::text = 'squad' AND squad_id = sqlc.narg('squad_id')::uuid)
+  )
 GROUP BY agent_id, LOWER(provider), model
 ORDER BY agent_id, LOWER(provider), model;
+
+-- name: ListDashboardUsageBySquad :many
+-- Per-(squad, agent, provider, model) token aggregates from `task_usage_hourly`.
+-- Preserves agent_id so the UI can render both squad-overall totals and inline
+-- member breakdowns from one payload, while keeping provider+model for pricing.
+-- squad_id IS NULL represents standalone (non-squad-triggered) agent runs.
+SELECT
+    squad_id,
+    agent_id,
+    LOWER(provider) AS provider,
+    model,
+    SUM(input_tokens)::bigint        AS input_tokens,
+    SUM(output_tokens)::bigint       AS output_tokens,
+    SUM(cache_read_tokens)::bigint   AS cache_read_tokens,
+    SUM(cache_write_tokens)::bigint  AS cache_write_tokens,
+    SUM(cost_usd_ticks)::bigint                                          AS cost_usd_ticks,
+    SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint           AS uncosted_input_tokens,
+    SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
+    SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
+    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(task_count)::int             AS task_count
+FROM task_usage_hourly
+WHERE workspace_id = $1
+  AND bucket_hour >= @since::timestamptz
+  AND (sqlc.narg('project_id')::uuid IS NULL OR project_id = sqlc.narg('project_id'))
+  AND (
+      sqlc.arg('squad_scope')::text = ''
+      OR (sqlc.arg('squad_scope')::text = 'standalone' AND squad_id IS NULL)
+      OR (sqlc.arg('squad_scope')::text = 'squad' AND squad_id = sqlc.narg('squad_id')::uuid)
+  )
+GROUP BY squad_id, agent_id, LOWER(provider), model
+ORDER BY squad_id NULLS LAST, agent_id, LOWER(provider), model;
 
 -- name: ListDashboardRunTimeDaily :many
 -- Daily per-date run time + task counts for the workspace, optionally
@@ -243,6 +277,11 @@ WHERE a.workspace_id = $1
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= sqlc.arg('since')::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
+  AND (
+      sqlc.arg('squad_scope')::text = ''
+      OR (sqlc.arg('squad_scope')::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR (sqlc.arg('squad_scope')::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = sqlc.narg('squad_id')::uuid)
+  )
 GROUP BY DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text)
 ORDER BY DATE(atq.completed_at AT TIME ZONE sqlc.arg('tz')::text) DESC;
 
@@ -284,7 +323,45 @@ WHERE a.workspace_id = $1
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= @since::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
+  AND (
+      sqlc.arg('squad_scope')::text = ''
+      OR (sqlc.arg('squad_scope')::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR (sqlc.arg('squad_scope')::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = sqlc.narg('squad_id')::uuid)
+  )
 GROUP BY atq.agent_id
+ORDER BY total_seconds DESC;
+
+-- name: ListDashboardSquadRunTime :many
+-- Per-(squad, agent) terminal-task run time and task counts for the workspace.
+-- squad_id IS NULL represents standalone (non-squad-triggered) agent runs.
+SELECT
+    COALESCE(atq.usage_squad_id, atq.squad_id)::uuid AS squad_id,
+    atq.agent_id,
+    COALESCE(
+        SUM(EXTRACT(EPOCH FROM (atq.completed_at - atq.started_at)))::bigint,
+        0
+    )::bigint AS total_seconds,
+    COUNT(*)::int AS task_count,
+    COUNT(*) FILTER (WHERE EXISTS (
+        SELECT 1 FROM task_usage tu WHERE tu.task_id = atq.id
+    ))::int AS metered_task_count,
+    COUNT(*) FILTER (WHERE atq.status = 'failed')::int AS failed_count,
+    COUNT(*) FILTER (WHERE atq.status = 'cancelled')::int AS cancelled_count
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+LEFT JOIN issue i ON i.id = atq.issue_id
+WHERE a.workspace_id = $1
+  AND atq.status IN ('completed', 'failed', 'cancelled')
+  AND atq.started_at IS NOT NULL
+  AND atq.completed_at IS NOT NULL
+  AND atq.completed_at >= @since::timestamptz
+  AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
+  AND (
+      sqlc.arg('squad_scope')::text = ''
+      OR (sqlc.arg('squad_scope')::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR (sqlc.arg('squad_scope')::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = sqlc.narg('squad_id')::uuid)
+  )
+GROUP BY COALESCE(atq.usage_squad_id, atq.squad_id), atq.agent_id
 ORDER BY total_seconds DESC;
 
 -- name: ListDashboardFailuresDaily :many
@@ -325,6 +402,11 @@ WHERE a.workspace_id = $1
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= sqlc.arg('since')::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
+  AND (
+      sqlc.arg('squad_scope')::text = ''
+      OR (sqlc.arg('squad_scope')::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR (sqlc.arg('squad_scope')::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = sqlc.narg('squad_id')::uuid)
+  )
 GROUP BY 1, 2
 ORDER BY 1 DESC, 2;
 
@@ -352,11 +434,38 @@ WHERE a.workspace_id = $1
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= @since::timestamptz
   AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
+  AND (
+      sqlc.arg('squad_scope')::text = ''
+      OR (sqlc.arg('squad_scope')::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR (sqlc.arg('squad_scope')::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = sqlc.narg('squad_id')::uuid)
+  )
 GROUP BY atq.agent_id, 2
 ORDER BY atq.agent_id, 2;
 
--- name: LockTaskUsageReport :exec
--- Serializes usage reports for one task: held to the end of the caller's
--- transaction, taken before any usage row is written, so
--- two reports that order their models differently cannot wait on each other.
-SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('task_id')::uuid::text, 0));
+-- name: ListDashboardFailuresBySquad :many
+-- Per-(squad, agent, failure_reason) terminal-task counts for the Errors tab's
+-- Squad breakdown. squad_id IS NULL represents standalone agent runs.
+SELECT
+    COALESCE(atq.usage_squad_id, atq.squad_id)::uuid AS squad_id,
+    atq.agent_id,
+    CASE
+        WHEN atq.status = 'failed'
+            THEN COALESCE(NULLIF(atq.failure_reason, ''), 'unclassified')
+        ELSE ''
+    END AS failure_reason,
+    COUNT(*)::int AS task_count
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+LEFT JOIN issue i ON i.id = atq.issue_id
+WHERE a.workspace_id = $1
+  AND atq.status IN ('completed', 'failed')
+  AND atq.completed_at IS NOT NULL
+  AND atq.completed_at >= @since::timestamptz
+  AND (sqlc.narg('project_id')::uuid IS NULL OR i.project_id = sqlc.narg('project_id'))
+  AND (
+      sqlc.arg('squad_scope')::text = ''
+      OR (sqlc.arg('squad_scope')::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR (sqlc.arg('squad_scope')::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = sqlc.narg('squad_id')::uuid)
+  )
+GROUP BY COALESCE(atq.usage_squad_id, atq.squad_id), atq.agent_id, 3
+ORDER BY 1 NULLS LAST, atq.agent_id, 3;

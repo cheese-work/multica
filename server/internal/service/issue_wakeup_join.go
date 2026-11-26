@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -147,15 +146,7 @@ func (s *IssueWakeupService) childDoneRunAs(ctx context.Context, issue db.Issue,
 // joinedWakeupNote is what the run is told about a rule that joined it.
 func joinedWakeupNote(w db.IssueWakeup, instruction string, receipts []db.IssueWakeupReceipt) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Wakeup %s fired while this run was waiting to start, so it did not start a run of its own; handle it in this run. Instruction:\n%s\n", util.UUIDToString(w.ID), instruction)
-	writeTriggerFacts(&b, receipts)
-	return b.String()
-}
-
-// writeTriggerFacts appends the receipts' facts to a joined-wakeup note, up to
-// the note's size cap.
-func writeTriggerFacts(b *strings.Builder, receipts []db.IssueWakeupReceipt) {
-	b.WriteString("Trigger facts (read current state before deciding what to do):\n")
+	fmt.Fprintf(&b, "Wakeup %s fired while this run was waiting to start, so it did not start a run of its own; handle it in this run. Instruction:\n%s\nTrigger facts (read current state before deciding what to do):\n", util.UUIDToString(w.ID), instruction)
 	for _, r := range receipts {
 		line := r.EventType + " " + string(canonicalWakeupPayload(r.Payload)) + "\n"
 		if b.Len()+len(line) > maxJoinedWakeupNote {
@@ -164,16 +155,13 @@ func writeTriggerFacts(b *strings.Builder, receipts []db.IssueWakeupReceipt) {
 		}
 		b.WriteString(line)
 	}
+	return b.String()
 }
 
 type joinedWakeup struct {
 	WakeupID string `json:"wakeup_id"`
 	Revision int64  `json:"wakeup_revision"`
 	Note     string `json:"note"`
-	// FireLimit is the once/max_fires limit the firing was joined under (0: none).
-	// A firing that starts later counts against it whatever the rule's
-	// configuration says by then, so an edit cannot rearm the instance.
-	FireLimit int32 `json:"fire_limit,omitempty"`
 }
 
 // JoinWaitingWakeups hands a run being claimed the inputs of the wakeup rules
@@ -224,10 +212,7 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 	if err != nil {
 		return task.Context, err
 	}
-	// The workspace row first, as in dispatch and the pause and resume writers.
-	// The pause is read under its KEY SHARE lock, held to the commit, so a claim
-	// cannot join an input across a pause or a resume (CHE-1727).
-	pauseState, err := q.WorkspaceWakeupsPausedShared(ctx, issue.WorkspaceID)
+	active, err := wakeupIssueActive(ctx, q, issue)
 	if err != nil {
 		return task.Context, err
 	}
@@ -252,12 +237,7 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 		if err != nil {
 			return task.Context, err
 		}
-		entry, ruleChain, err := s.reserveForRun(ctx, q, issue, task, w, pauseState)
-		if errors.Is(err, errMalformedPRWakeupSettings) {
-			changed = changed || had
-			slog.WarnContext(ctx, "PR wakeup join skipped because workspace settings are malformed", "issue_id", util.UUIDToString(issue.ID), "wakeup_id", util.UUIDToString(id), "rule", w.SystemRule.String, "error", err)
-			continue
-		}
+		entry, ruleChain, err := s.reserveForRun(ctx, q, issue, active, task, w)
 		if err != nil {
 			return task.Context, err
 		}
@@ -292,7 +272,7 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 	if err != nil {
 		return task.Context, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err = tx.Commit(ctx); err != nil {
 		return task.Context, err
 	}
 	return updated.Context, nil
@@ -302,42 +282,15 @@ func (s *IssueWakeupService) JoinWaitingWakeups(ctx context.Context, task db.Age
 // returns its entry, or releases what the run held and returns nil when the
 // rule must not reach this run (or, for its own dispatch to decide, the inputs
 // are the agent's own or close a loop).
-func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, w db.IssueWakeup, pauseState db.WorkspaceWakeupsPausedSharedRow) (*joinedWakeup, []string, error) {
-	// A receipt a lock-free producer committed after the resume swept is a
-	// paused-era input; it never joins a run.
-	if err := dropLateIfResumed(ctx, q, w, pauseState); err != nil {
-		return nil, nil, err
-	}
+func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, issue db.Issue, active bool, task db.AgentTaskQueue, w db.IssueWakeup) (*joinedWakeup, []string, error) {
 	pending, err := q.ListPendingWakeupReceipts(ctx, db.ListPendingWakeupReceiptsParams{WakeupID: w.ID, Revision: w.Revision})
 	if err != nil {
 		return nil, nil, err
 	}
 	var receipts []db.IssueWakeupReceipt
-	var held, free, back []pgtype.UUID
-	blocking := anyDeferred(pending) && timeWakeupSkipMode(ctx, q, issue.WorkspaceID) == "block"
-	inItem, err := receiptsInLiveItems(ctx, q, w.ID)
-	if err != nil {
-		return nil, nil, err
-	}
+	var held, free []pgtype.UUID
 	for _, r := range pending {
-		if inItem[r.ID] {
-			// A live-join item holds this input; its ack settles the firing.
-			continue
-		}
-		if blocking && anyDeferred([]db.IssueWakeupReceipt{r}) {
-			// CHE-6968: a deferred fire waits for its own change or expiry; a run
-			// claimed for another reason must not consume it.
-			continue
-		}
 		if len(w.Condition) > 0 && r.EventType != wakeupConditionEventType && r.EventType != wakeupTimeoutEventType && r.EventType != wakeupManualEventType {
-			continue
-		}
-		if pauseState.Paused && r.EventType != wakeupManualEventType {
-			// Nothing but a person's manual trigger fires while paused. What this
-			// run reserved before the pause goes back to pending for the sweep.
-			if r.TaskID == task.ID {
-				back = append(back, r.ID)
-			}
 			continue
 		}
 		switch r.TaskID {
@@ -350,47 +303,23 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 		}
 		receipts = append(receipts, r)
 	}
-	if len(back) > 0 {
-		if err := q.ReleaseWakeupReceipts(ctx, back); err != nil {
-			return nil, nil, err
-		}
-	}
 	release := func() (*joinedWakeup, []string, error) {
 		if len(held) == 0 {
 			return nil, nil, nil
 		}
 		return nil, nil, q.ReleaseWakeupReceipts(ctx, held)
 	}
-	active, err := wakeupIssueActive(ctx, q, issue)
-	if w.SystemRule.Valid {
-		_, isPRWakeup := prWakeupSetting(w.SystemRule.String)
-		if isPRWakeup {
-			active, err = systemWakeupIssueActive(ctx, q, issue, true)
-		}
-	}
-	if err != nil {
-		return nil, nil, err
-	}
 	if len(receipts) == 0 || !active || w.DisabledAt.Valid || w.IssueID != task.IssueID {
 		return release()
 	}
-	if own, err := q.FindPendingWakeupTask(ctx, util.UUIDToString(w.ID)); err == nil || !errors.Is(err, pgx.ErrNoRows) {
-		// The rule's own run takes its inputs. A run that is this one keeps the
-		// inputs it reserved when it queued (a deferred follow-up).
+	if _, err := q.FindPendingWakeupTask(ctx, util.UUIDToString(w.ID)); err == nil || !errors.Is(err, pgx.ErrNoRows) {
+		// The rule's own run takes its inputs.
 		if err != nil {
 			return nil, nil, err
 		}
-		if own.ID == task.ID {
-			return nil, nil, nil
-		}
 		return release()
 	}
-	instruction, ok, err := s.mayJoin(ctx, q, issue, task, w, receipts)
-	if errors.Is(err, errMalformedPRWakeupSettings) {
-		if _, _, releaseErr := release(); releaseErr != nil {
-			return nil, nil, releaseErr
-		}
-	}
+	instruction, ok, err := s.mayJoin(ctx, q, issue, task, w)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -411,31 +340,17 @@ func (s *IssueWakeupService) reserveForRun(ctx context.Context, q *db.Queries, i
 		return release()
 	}
 	if len(free) > 0 {
-		if err := q.ReserveWakeupReceipts(ctx, db.ReserveWakeupReceiptsParams{TaskID: task.ID, Ids: free}); err != nil {
+		if err = q.ReserveWakeupReceipts(ctx, db.ReserveWakeupReceiptsParams{TaskID: task.ID, Ids: free}); err != nil {
 			return nil, nil, err
 		}
 	}
-	var fireLimit int32
-	if w.SystemRule.Valid {
-		config, err := loadBuiltinWakeup(ctx, q, issue, w.SystemRule.String, &w)
-		if err != nil {
-			return nil, nil, err
-		}
-		fireLimit, _ = config.fireLimit()
-	} else if isDefaultDerivedWakeup(w) {
-		config, ok, err := s.customCurrent(ctx, q, issue, w)
-		if err != nil || !ok {
-			return nil, nil, err
-		}
-		fireLimit, _ = config.fireLimit()
-	}
-	return &joinedWakeup{WakeupID: util.UUIDToString(w.ID), Revision: w.Revision, Note: joinedWakeupNote(w, instruction, receipts), FireLimit: fireLimit}, chain, nil
+	return &joinedWakeup{WakeupID: util.UUIDToString(w.ID), Revision: w.Revision, Note: joinedWakeupNote(w, instruction, receipts)}, chain, nil
 }
 
 // mayJoin reports whether the run is one the rule's own run would be: the
 // same agent, run as the same person, who may still use the agent. It returns
 // the instruction the run gets.
-func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, w db.IssueWakeup, receipts []db.IssueWakeupReceipt) (string, bool, error) {
+func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue db.Issue, task db.AgentTaskQueue, w db.IssueWakeup) (string, bool, error) {
 	agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: task.AgentID, WorkspaceID: w.WorkspaceID})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", false, nil
@@ -443,18 +358,9 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 	if err != nil {
 		return "", false, err
 	}
-	carrier := carrierOfOtherRule(task, w)
-	if carrier.isolated {
-		return "", false, nil
-	}
 	if !w.SystemRule.Valid {
 		if w.AgentID != task.AgentID || w.CreatedBy != task.OriginatorUserID || (w.Mode == "once" && w.LastTaskID.Valid) {
 			return "", false, nil
-		}
-		if isDefaultDerivedWakeup(w) {
-			if ok, err := s.customMayJoin(ctx, q, issue, task, w, carrier); err != nil || !ok {
-				return "", false, err
-			}
 		}
 		if err := s.authorize(ctx, q, w.WorkspaceID, w.CreatedBy, agent); err != nil {
 			if errors.Is(err, ErrWakeupForbidden) {
@@ -464,92 +370,36 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		}
 		return w.Instruction, true, nil
 	}
-	config, err := loadBuiltinWakeup(ctx, q, issue, w.SystemRule.String, &w)
-	if errors.Is(err, errWakeupConfigHeld) {
-		logWakeupHeld(ctx, issue, w, err)
+	if !w.Enabled || issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) == "backlog" {
 		return "", false, nil
 	}
-	if err != nil {
+	target, err := resolveWakeTarget(ctx, q, issue)
+	if err != nil || target.Agent.ID != task.AgentID {
 		return "", false, err
-	}
-	if carrier.other && config.defersActiveRun() {
-		return "", false, nil
-	}
-	on := w.Enabled
-	if config != nil {
-		on = config.enabled() && !systemWakeupPaused(w)
-	}
-	// A configuration that changed since the capture left these inputs behind
-	// for the rule's own dispatch to retire.
-	if !on || issuestatus.Effective(ctx, q, issue.WorkspaceID, issue.Status) == "backlog" || !builtinConfigCurrent(w, config) {
-		return "", false, nil
-	}
-	if eligible, err := config.matchesIssue(ctx, q, issue); err != nil || !eligible {
-		return "", false, err
-	}
-	if _, refused := splitDeferredPRFilters(config, w.SystemRule.String, receipts); len(refused) > 0 {
-		// Facts the filters refuse are dropped by the rule's own dispatch.
-		return "", false, nil
-	}
-	if config.expired(w.CreatedAt.Time, time.Now()) {
-		return "", false, nil
-	}
-	if limit, limited := config.fireLimit(); limited {
-		// Inputs other runs already took are firings that count too.
-		others, err := otherCarrierSlots(ctx, q, w, task.ID, false)
-		if err != nil {
-			return "", false, err
-		}
-		if w.FireCount+others >= limit {
-			return "", false, nil
-		}
-	}
-	target, err := builtinTarget(ctx, s, q, issue, config, w)
-	if err != nil || target.Refused != "" || target.Agent.ID != task.AgentID {
-		return "", false, err
-	}
-	if usesPRResolver(config, w) {
-		matched, err := prResolverReceipts(ctx, q, issue, target, receipts)
-		if err != nil || len(matched) != len(receipts) {
-			return "", false, err
-		}
-	}
-	if !config.carrierMatchesTarget(target, task) {
-		return "", false, nil
 	}
 	runAs, err := s.childDoneRunAs(ctx, issue, agent)
 	if err != nil || runAs.UserID != task.OriginatorUserID {
 		return "", false, err
 	}
-	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
-	if err != nil {
-		return "", false, err
+	var settings []byte
+	if ws, err := q.GetWorkspace(ctx, issue.WorkspaceID); err == nil {
+		settings = ws.Settings
 	}
-	if _, isPRWakeup := prWakeupSetting(w.SystemRule.String); isPRWakeup {
-		enabled, err := prRuleEnabled(ws.Settings, w.SystemRule.String, config != nil)
-		if err != nil || !enabled {
-			return "", false, err
-		}
-	}
-	return config.systemInstruction(w, ws.Settings, receipts), true, nil
+	return systemWakeupInstruction(w, settings), true, nil
 }
 
 // takenRun is a run that took some of a rule's inputs along and has started.
 type takenRun struct {
 	task     db.AgentTaskQueue
 	receipts []db.IssueWakeupReceipt
-	// outcome and firingID are set for a live-join item settled by its host
-	// run; outcome is empty for a run that started with the inputs.
-	outcome  string
-	firingID pgtype.UUID
 }
 
 // takenReceipts sorts a rule's pending inputs by the run a claim reserved them
 // for. It returns the free ones (including those of a run that ended without
-// starting, which go back to the rule), how many runs that have not started
-// yet still hold some, and the runs that started with some, whose inputs
+// starting, which go back to the rule), whether a run that has not started
+// yet still holds some, and the runs that started with some, whose inputs
 // the caller consumes as a merged firing.
-func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeupReceipt) ([]db.IssueWakeupReceipt, int, []takenRun, error) {
+func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeupReceipt) ([]db.IssueWakeupReceipt, bool, []takenRun, error) {
 	byRun := map[pgtype.UUID][]db.IssueWakeupReceipt{}
 	var runs []pgtype.UUID
 	for _, r := range receipts {
@@ -561,29 +411,29 @@ func takenReceipts(ctx context.Context, q *db.Queries, receipts []db.IssueWakeup
 		}
 	}
 	if len(runs) == 0 {
-		return receipts, 0, nil, nil
+		return receipts, false, nil, nil
 	}
 	released := map[pgtype.UUID]bool{}
-	holding := 0
+	holding := false
 	var taken []takenRun
 	for _, id := range runs {
 		task, err := q.GetAgentTask(ctx, id)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return nil, 0, nil, err
+			return nil, false, nil, err
 		}
 		switch {
 		case err == nil && (task.StartedAt.Valid || task.Status == "running"):
 			taken = append(taken, takenRun{task: task, receipts: byRun[id]})
 		case err == nil && task.Status != "completed" && task.Status != "failed" && task.Status != "cancelled":
-			holding++
+			holding = true
 		default:
 			ids := make([]pgtype.UUID, 0, len(byRun[id]))
 			for _, r := range byRun[id] {
 				ids = append(ids, r.ID)
 				released[r.ID] = true
 			}
-			if err := q.ReleaseWakeupReceipts(ctx, ids); err != nil {
-				return nil, 0, nil, err
+			if err = q.ReleaseWakeupReceipts(ctx, ids); err != nil {
+				return nil, false, nil, err
 			}
 		}
 	}

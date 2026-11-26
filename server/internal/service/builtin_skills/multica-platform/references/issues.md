@@ -3,18 +3,15 @@
 Product contracts the runtime brief does not fully encode.
 
 - [PR linking](#pr-linking)
-- [`issue get` has no structured ETA](#issue-get-has-no-structured-eta)
+- [Reading a linked PR's real state](#reading-a-linked-prs-real-state)
 - [Custom properties: typed workflow state](#custom-properties-typed-workflow-state)
 - [Status changes have server side effects](#status-changes-have-server-side-effects)
-- [Relations graph](#relations-graph)
 - [Who else is running right now](#who-else-is-running-right-now)
-- [Sub-issues: todo starts work now, backlog parks it](#sub-issues-todo-starts-work-now-backlog-parks-it)
-- [Resolve the thread you answered](#resolve-the-thread-you-answered)
+- [Sub-issues and stages](#sub-issues-and-stages)
 - [Charts and files in a comment](#charts-and-files-in-a-comment)
 - [Incorrect to correct](#incorrect-to-correct)
-- [Comments: update, delete, resolve, search, subscribers](#comments-update-delete-resolve-search-subscribers)
 
-To attach a local file to an existing issue description, use `multica issue update <id> --attachment <local-path>`. The CLI appends the file's Markdown reference to the end of the description; to replace an image, also use `--description-file` to remove the old reference. Do not put local filesystem paths in the description.
+To attach a local file to an existing issue description, use `multica issue update <id> --attachment <local-path>`. The CLI appends the file's Markdown reference to the end of the description; to replace an image, also remove the old reference with `multica issue edit-description <id> --old <old reference> --new ""`. Do not put local filesystem paths in the description.
 
 ## PR linking
 
@@ -67,6 +64,44 @@ In the final issue comment, include the PR URL when a PR exists. If the task did
 not produce a PR because no code changed or the user asked not to create one, say
 that explicitly.
 
+## Reading a linked PR's real state
+
+When a step depends on PR state, query Multica's link table — do not infer it
+from branch names, GitHub search, memory, or stale values left on the issue by
+an earlier run.
+
+```bash
+multica issue pull-requests <issue-id> --output json
+```
+
+Returns `{"pull_requests": [...], ...}`. Each element of `pull_requests` exposes:
+
+- `number`, `html_url`, `title`
+- `link_source` — why the PR is on the issue: `title`, `branch`, `manual`, or
+  `auto` (any other automatic link, such as a closing keyword in the body).
+- `state` — the PR lifecycle as a **single enum**, one of `merged`, `closed`,
+  `draft`, `open`. There is no separate `draft` or `merged` boolean in the
+  response; the server folds them into `state` (merged wins, then closed, then
+  draft, else open).
+- `merged_at` — non-null once merged; a second confirmation of `state: merged`.
+- `provider` — `github`, `forgejo`, `gitea`, or `gitlab`.
+- `mergeable_state` — mirrors GitHub (`clean` / `dirty` surfaced; other values
+  round-trip as unknown; retained for compatibility).
+- GitHub API snapshot fields: `snapshot_available`, `mergeable`,
+  `merge_state_status`, `checks_rollup`, `checks_total`, `checks_passed`,
+  `checks_failed`, `checks_running`, `failed_check_names`,
+  `snapshot_fetched_at`, and `snapshot_stale`. `snapshot_available == true`
+  means the feature is enabled and the snapshot matches the PR's current head.
+  Only then does `checks_rollup == null` mean "no checks"; false means the
+  snapshot feature is disabled, has not fetched yet, or only has an old head.
+- `checks_conclusion` — coarse CI compatibility status: `passed`, `failed`,
+  `pending`, or `null`. GitHub derives it from the current API snapshot;
+  Forgejo/Gitea/GitLab derive it from webhook commit statuses. Backed by the
+  provider-appropriate check counts.
+
+So "is it merged?" is `state == "merged"` (or `merged_at != null`); "is it still
+a draft?" is `state == "draft"`; coarse CI status is `checks_conclusion`.
+
 If the command returns no linked PRs after a PR was opened, check the syntax
 first: the key must be in the PR title or branch, or right after a closing
 keyword in the body — a bare body mention does not count. When the syntax is the
@@ -86,40 +121,19 @@ comment rather than repeating the edit.
 
 ## Listing and ordering issues
 
-`issue list` reads one page at a time, server maximum 100 issues per `--limit`
-(default 50). Advance `--offset` by the number actually returned in that same
-response, not by the requested `--limit` — a final partial page returns fewer
-rows than asked for. `--output json` wraps the page as `{"issues": [...],
-"total": N, "limit": N, "offset": N, "has_more": bool}`; check `has_more`
-rather than comparing returned-count to `--limit` to decide whether to fetch
-another page. If the server cannot count matching issues, it returns
-`failed to count issues` as an error; do not treat that failure as an empty or
-complete list. Older servers can substitute the page length for a failed count,
-so that value alone is not proof that all matching issues have been read.
-
-`--fields <name,name,...>` (JSON output only) trims each issue to the named
-top-level fields. Filtering is client-side after the full response is fetched,
-so it shrinks CLI output and agent context cost, not network or server cost.
-Use it when scanning many issues for a few fields (e.g. `--fields
-id,title,status,priority`). No effect on `--output table`.
+`issue list` reads one page at a time, with a server maximum of 100 issues.
+Advance `--offset` by the number of issues actually returned. If the server
+cannot count matching issues, it returns `failed to count issues` as an error;
+do not treat that failure as an empty or complete list. Older servers can
+substitute the page length for a failed count, so that value alone is not proof
+that all matching issues have been read.
 
 `issue reorder` reads the issue's project-scoped status column before writing
-its new position; when a legacy total is unavailable or no larger than its
+its new position. When a legacy total is unavailable or no larger than its
 page, it reads through an empty page. A failed request, malformed page, or
-duplicate issue stops the operation before any position write — protection
-against truncated or repeated pages, not a snapshot across concurrent edits.
-There is no CLI bulk-export or `--all` mode.
-
-## `issue get` has no structured ETA
-
-`multica issue get <issue-id>` never returns a structured ETA — the issue model
-has only `start_date` and `due_date`, and the CLI does not invent one by
-parsing `due_date` or the description. In `--output table` the `ETA` column
-always reads `unknown`, distinct from the separate `DUE DATE` column. In JSON
-the issue object is unchanged; a sibling `status_read` object is added —
-`{"eta": "unknown", "eta_source": "none recorded", "observed_at": <RFC3339>}` —
-marking it a client-side projection, not a server-sent `eta`. Do not read
-`due_date` as if it were an ETA.
+duplicate issue stops the operation before any position write. This protects
+against truncated or repeated pages, but does not promise a snapshot across
+concurrent edits. There is no CLI bulk-export or `--all` mode.
 
 ### Saved views
 
@@ -189,7 +203,7 @@ multica issue property unset <issue-id> --name Environment
 - A validation error lists the legal options — fix the value and retry.
 - `actor` / `multi_actor` properties (Reviewer, Escalation contact, ...) hold
   workspace members only. `--value` takes a member name, email, UUID, short id,
-  or explicit `member:<uuid>`; `multi_actor` takes a comma-separated list
+  or an explicit `member:<uuid>`; `multi_actor` takes a comma-separated list
   (duplicates dropped, order kept, max 20).
 - `multi_text` / `multi_url` properties hold free-form lists: `--value` is a
   comma-separated list of strings / http(s) URLs (empty entries skipped,
@@ -199,8 +213,8 @@ multica issue property unset <issue-id> --name Environment
   The array form is always safe; use it whenever any entry has a comma or the
   input starts with `[`, for example `--value '["[draft] spec"]'`. The same
   forms work during creation: `--property 'Aliases=["Smith, John","[draft] spec"]'`.
-- Definitions may carry an optional catalog icon; it changes neither the
-  property's type nor its value validation.
+- Definitions may include an optional catalog icon for visual identification;
+  it does not change the property's type or value validation.
 - Agents cannot create or edit property definitions (owner/admin humans only).
   If a needed property does not exist, propose it in a comment instead.
 - Where state belongs: workflow state a human should see and filter by goes in
@@ -257,20 +271,20 @@ A status change is not cosmetic — the server enqueues or skips agent work base
 on it. These are the contracts, not advice.
 
 The rules below name fixed built-in status keys, not category-wide behaviors.
-Custom statuses carry lifecycle semantics only — unstarted, started, done
-(successful terminal), closed (cancelled terminal) — and do not inherit Backlog
-parking, In Review completion, Blocked failure, or In Progress recovery. Use
-the built-in key when its behavior is needed; built-in definitions cannot be
-edited or archived.
+Custom statuses have only lifecycle semantics: unstarted, started, done
+(successful terminal), or closed (cancelled terminal). They do not inherit
+Backlog parking, In Review completion, Blocked failure, or In Progress recovery.
+Use the built-in key when its special behavior is needed. Built-in definitions
+cannot be edited or archived.
 
-Archive a custom status only after moving every issue off it, completed and
-canceled included. An occupied status returns HTTP 409 with code
-`issue_status_in_use` and `issue_count`, and stays active; use Settings > View
-issues to move them, then retry. When replacing a terminal status preserve the
-lifecycle meaning (`done` to `done`, `closed` to `closed`) — never reopen or
-cancel completed work just to retire a status. Archival moves nothing
-automatically; historical issues on archived statuses stay readable via an
-explicit status filter.
+Archive a custom status only after moving every issue off it, including
+completed/canceled issues. An occupied status returns HTTP 409 with code
+`issue_status_in_use` and `issue_count`; it remains active. Use Settings >
+View issues to inspect and move its issues, then retry. For terminal-status
+replacement, preserve the lifecycle meaning (`done` to `done`, `closed` to
+`closed`); do not reopen or cancel completed work just to retire a status.
+Archival does not move issues automatically. Historical issues on previously
+archived statuses remain readable via an explicit status filter.
 
 - **`backlog`** parks an agent-assigned issue: the assignee is set but no task
   fires. Moving `backlog → todo` (or any non-done/non-cancelled status) enqueues
@@ -291,12 +305,15 @@ explicit status filter.
   planning, and review all count as the work exactly when they are what the
   issue asks for (a review-the-PR issue is being worked the moment reviewing
   starts). Questions, discussion, or acknowledgements never move the status.
-  Squad leaders: dispatching members is not delivery — a dispatch turn leaves
-  the parent `in_progress`, moving to `in_review` only when a later re-trigger
-  confirms the overall goal is met.
+  Squad leaders: dispatching members is not delivery — a dispatch turn
+  leaves the parent `in_progress`, and it moves to `in_review` only when a
+  later re-trigger confirms the overall goal is met.
+  An issue whose run carries a `[Project workflow]` block is the exception:
+  that block's statuses and commands are the whole status contract, and
+  none of the moves above apply to it.
 - **`in_review`** is an accepted issue status. Some workflows use it while a PR
   is open and awaiting review; moving to it is an explicit mutation.
-- **`done`** on a child issue can wake its parent's assignee (see Stages).
+- **`done`** on a child issue can wake its parent's assignee (see Stages in `references/sub-issues.md`).
 - **`cancelled`** is a terminal, user-driven decision to close the issue. Like
   `done` it enqueues no new agent work, but it does **not** stop tasks already in
   flight — a run in progress keeps going. To stop a running task, cancel the
@@ -315,34 +332,11 @@ explicit status filter.
   duplicate and `duplicate_added` on the original; removing the mark logs
   `duplicate_unmarked` / `duplicate_removed` (`multica issue timeline --action`).
 - **Failed issue-triggered tasks** may roll an issue from `in_progress` back to
-  `todo` when no active task / retry remains — the main server-owned status
-  write on the agent-run path.
+  `todo` when no active task / retry remains — that is the main server-owned
+  status write on the agent-run path.
 - **Project workflows** can limit which statuses an issue takes and turn a
   status change into a handoff to another agent. When the per-turn prompt
   carries a `[Project workflow]` block, read `references/projects.md`.
-
-## Claim ownership without duplicating a run
-
-Assigning an active issue to an agent normally starts a run. When the work is
-already underway and the write only records ownership or progress, pass
-`--no-start` on every command in that flow:
-
-```bash
-multica issue assign <issue-id> --to-id <agent-id> --no-start
-multica issue update <issue-id> --assignee-id <agent-id> --no-start
-multica issue status <issue-id> in_progress --no-start
-```
-
-Before self-assigning, check the target issue's comment history for an existing
-claim. The server also suppresses a trusted self-assignment when the exact
-`(issue, agent)` pair already has a non-terminal task, but deliberately keeps
-same-agent handoffs to a fresh issue starting runs — cross-issue serial chains
-and triage batches rely on that.
-## Relations graph
-
-`multica issue relations <id> [--depth 1|2]` prints the issue's sidebar graph as
-JSON: nodes and typed edges in both directions, including issues that wait on
-or mention it. At most 40 nodes; `omitted_count` says how many were left out.
 
 ## Who else is running right now
 
@@ -358,119 +352,40 @@ The default endpoint still returns only the current issue. The subtree scope
 is separate from the active-only family coordination read below.
 
 Nothing about concurrent runs is pushed into your prompt: the answer changes
-mid-turn and most turns never need it. Ask the server on the turns that do —
-before opening a PR against code a sibling issue also touches:
+while a turn is running, and most turns never need it. Ask the server on the
+turns that do — before opening a PR against code a sibling issue also touches:
 
 ```bash
 multica issue runs <issue-id> --active --output json     # in-flight runs on this issue
 multica issue runs <issue-id> --siblings --output json   # ...and across the sub-issue family
 ```
 
-`--active` drops execution history and returns only `queued` / `dispatched` /
-`running` / `waiting_local_directory` runs. `--siblings` widens the read to the
-issue's family — its parent (or itself, when it has none) plus every child of
-that parent — labelling each row with the issue it belongs to. That is how you
-find an agent already working a sibling sub-issue before opening a second PR
-against the same code. The family read returns a compact row (task, issue,
-agent, status, started), not the full execution-log record; for a run's detail
-follow the task id with `multica issue run-messages`.
+`--active` drops the execution history and returns only `queued` / `dispatched`
+/ `running` / `waiting_local_directory` runs. `--siblings` widens the same read
+to the issue's family — its parent (or itself, when it has no parent) plus every
+child of that parent — and labels each row with the issue it belongs to, which
+is how you find another agent already working on a sibling sub-issue before you
+open a second PR against the same code.
+
+The family read returns a compact row — task, issue, agent, status, started —
+not the full execution-log record. If you need a run's detail, follow the task
+id with `multica issue run-messages`.
 
 Rows come back running-first, newest-first within a status, and the family read
 is capped at 20. When the cap truncates the answer the CLI prints a warning on
 stderr — read it. Without that warning a short list means "nobody else is
 there"; with it, the list proves nothing about the runs it did not return.
 
-The CLI also prints an `Observed at <RFC3339 timestamp>` note to stderr on every
-read: "who's running right now" is a moving target, and that is when your read
-happened, not a server-recorded field. `--active` is read-only — always a `GET`,
-never a write — so asking never enqueues or affects a run.
-
 Both are advisory reads. Nothing here reserves an issue or serialises anything:
-a run you see may finish a second later, and one you don't see may start one.
-Coordinate through the issue's comments — the reads tell you whom to coordinate
-with.
+a run you see may finish a second later, and one you don't see may start a
+second later. Coordinate through the issue's comments — the reads tell you whom
+to coordinate with.
 
-## Sub-issues: todo starts work now, backlog parks it
+## Sub-issues and stages
 
-On an agent-assigned issue, create status decides whether the assignee fires
-immediately. A non-backlog status (e.g. `todo`) enqueues the agent at create
-time; `backlog` sets the assignee without triggering.
-
-Parallel children — all start now:
-
-```bash
-multica issue create --title "..." --parent <issue-id> --assignee <agent> --status todo
-```
-
-Strictly serial children — park later steps, promote one at a time:
-
-```bash
-multica issue create --title "Step 2: ..." --parent <issue-id> --assignee <agent> --status backlog
-multica issue status <child-id> todo   # promote when the previous step is truly done
-```
-
-Creating every serial step as `todo` enqueues the whole chain at once.
-
-### Stages: order sub-issues into barrier groups
-
-`--stage <N>` (N >= 1) groups sub-issues under the same parent into ordered
-stages. The platform's sub-issue wakeup **wakes the parent assignee when a stage
-closes while a later stage is waiting** — every sub-issue up to that stage has
-reached a terminal status (`done`/`cancelled`) — and **once more when every
-sub-issue, staged or not, is closed**. A completion that closes nothing is
-silent. A sibling set with **no** stages wakes the parent once, when the *last*
-sub-issue finishes. A parent in `backlog` is not woken; it catches up once it
-leaves backlog. A member assignee gets an inbox notification instead of a run.
-
-Advancement is agent-driven: the server only detects the closed barrier and
-wakes the parent assignee, who then decides whether to promote the next stage's
-`backlog` sub-issues to `todo`.
-
-```bash
-# Stage 1 runs now; later stages parked until promoted
-multica issue create --title "Research A" --parent <id> --assignee <agent> --stage 1 --status todo
-multica issue create --title "Research B" --parent <id> --assignee <agent> --stage 1 --status todo
-multica issue create --title "Build"      --parent <id> --assignee <agent> --stage 2 --status backlog
-multica issue create --title "Ship"       --parent <id> --assignee <agent> --stage 3 --status backlog
-```
-
-When both Stage 1 sub-issues finish you (the parent assignee) are woken by the
-sub-issue wakeup; its `[WAKEUP]` block lists every stage and names the next one.
-Inspect the layout, then promote the next stage:
-
-```bash
-multica issue children <parent-id>             # sub-issues grouped by stage
-multica issue status <stage-2-child-id> todo   # promote when its deps are met
-```
-
-`issue children --output json` reports per-stage `done` counts, including custom
-statuses in terminal categories. When reading issue JSON, `status` is the exact
-key; `status_category` retains the seven-value API enum for installed clients:
-`backlog` / `todo` mean unstarted, `in_progress` / `in_review` / `blocked` mean
-started, `done` means successful terminal, and `cancelled` means cancelled
-terminal (the internal closed category). These values encode lifecycle, not
-built-in automation behavior. Check `status_category` for `done` / `cancelled`
-(or use the stage counts), not just the concrete `status` key, to recognize
-terminal children.
-
-Read each sub-issue's description before promoting and only promote items whose
-stated dependencies are met; if a description conflicts with the parent's
-breakdown, leave it `backlog` and comment to confirm first.
-
-## Resolve the thread you answered
-
-An answered thread left open keeps reading as pending work. When your reply
-settles the thread, post it with `--resolve-thread`:
-
-```bash
-multica issue comment add <issue-id> --parent <comment-id> --content-file ./reply.md --resolve-thread
-```
-
-- It needs `--parent`: it resolves the thread that reply belongs to.
-- Leave it off while the thread still waits on someone: a question to the
-  asker, a pending review, follow-up work.
-- The comment is posted first. If resolving then fails, the CLI says so; run
-  `multica issue comment resolve <comment-id>` and do not repost.
+Whether to split an issue at all, `todo` vs `backlog` children, serial chains,
+stages and their parent wakeups live in `references/sub-issues.md`. Read it
+before creating a sub-issue.
 
 ## Charts and files in a comment
 
@@ -520,57 +435,64 @@ Body-only "Part of MUL-123"         # incorrect — passing mention, won't link
 MUL-123: fix login redirect        # correct — links the PR
 ```
 
-Serial / phased sub-issues (don't start the whole chain at once):
-
-```bash
-# incorrect — all fire immediately, no ordering
-multica issue create --title "Step 2" --parent <issue-id> --assignee <agent> --status todo
-multica issue create --title "Step 3" --parent <issue-id> --assignee <agent> --status todo
-
-# correct — stage them; Stage 1 runs, later stages park and are promoted as
-# each stage's barrier closes
-multica issue create --title "Step 1" --parent <issue-id> --assignee <agent> --stage 1 --status todo
-multica issue create --title "Step 2" --parent <issue-id> --assignee <agent> --stage 2 --status backlog
-multica issue create --title "Step 3" --parent <issue-id> --assignee <agent> --stage 3 --status backlog
-```
-
-## Comments: update, delete, resolve, search, subscribers
-
-```bash
-multica issue comment update <comment-id> --expected-revision <n> --content-file ./body.md
-multica issue comment delete <comment-id>
-multica issue comment resolve <comment-id> [--known-as-of <RFC3339Nano>]
-multica issue comment unresolve <comment-id>
-multica issue search "<query>" [--include-closed] [--limit 20] --output json
-multica issue subscriber list <issue-id>
-multica issue subscriber add <issue-id> [--user <name> | --user-id <uuid>]
-multica issue subscriber remove <issue-id> [--user <name> | --user-id <uuid>]
-```
-
-- **Update** needs the comment's current `revision` from `comment list`. If
-  another editor got there first the write is rejected: read the latest body
-  and merge into it; do not just resend with the newer revision. A changed
-  body is a new trigger: runs the old body started that are still in flight
-  are cancelled and every agent the new body mentions is queued again.
-  Attachments stay as they are.
-- **Delete** keeps replies: a comment that has replies stays as an empty
-  placeholder so they keep their place.
-- **Resolve** folds a whole thread away. Pass `--known-as-of` (the newest
-  `created_at` you loaded) so the server rejects the resolve with a
-  `thread_changed` conflict if a reply landed since, instead of folding an
-  unread reply away. `unresolve` reopens it.
-- **Search** matches titles, descriptions and comment bodies, so a conclusion
-  that only lives in a thread is findable. `match_source` is a display hint,
-  not a filter. A bare number or identifier-shaped query matches by number and
-  ranks first, whatever the prefix, so an id pasted from another tracker can
-  top the results with an unrelated local issue. Closed issues are excluded
-  unless `--include-closed`.
-- **Subscribers** default to the caller. `--user` is a fuzzy name match;
-  prefer `--user-id`, which cannot match the wrong person.
-
 ## Issue wakeups
 
-`multica issue wakeup` persists event/time work. See [wakeups.md](wakeups.md)
-for commands, conditions, and lifecycle behavior.
+Use `multica issue wakeup` to arrange a future ordinary run, then finish the
+current run. A wakeup persists on the issue; it is not a sleeping process.
 
-DM progress follows: [chat.md](chat.md#dm-progress-follows). Per-issue token usage: [workspace.md](workspace.md#per-issue-token-usage).
+- `wakeup events` lists supported business facts. These work with plugins disabled.
+- `wakeup create <issue> --agent-id <target> --kind event --event task.completed,task.failed,task.cancelled --task-id <run> --instruction-file ./instruction.md` wakes once. Omit `--agent-id` only when acting as the authenticated agent. A specific run must belong to this issue; if already terminal, registration captures its matching state immediately.
+- For a continuing subscription use `--mode continuous`. For task events, use `--filter-agent-id` to match that agent's future runs; this does not replay historical runs. For comment/issue/reaction/attachment changes, use `--filter-actor-type member|agent --filter-actor-id <user-or-agent-id>` to match the actual author/editor. Mutation-only `--filter-agent-id` remains a legacy alias for actor=agent; do not combine it with actor flags.
+- A condition lets the platform check a stored fact itself and wake the target only when it holds. Pass exactly one `--until-*` flag and no `--event`, `--task-id` or actor/agent filter; the rule stays `kind=event`. The platform checks about every 30 seconds, so a condition that already holds fires on the next check, except `--until-pr checks`, which ignores results that finished before registration. A condition wakes once by default. With `--mode continuous` it fires again only after the predicate turns false or the facts behind it change (a new check result or PR head, another linked PR merging, a resolved conflict coming back, the number of sub-issues changing).
+
+```bash
+multica issue wakeup create <issue> --until-status in_review --instruction-file ./instruction.md
+multica issue wakeup create <issue> --until-pr checks --expires-in 2h --on-timeout wake --instruction-file ./instruction.md
+multica issue wakeup create <issue> --until-pr merged --instruction-file ./instruction.md
+multica issue wakeup create <issue> --until-pr conflicts --mode continuous --instruction-file ./instruction.md
+multica issue wakeup create <issue> --until-children-done --instruction-file ./instruction.md
+multica issue wakeup create <issue> --until-children-done --stage 2 --instruction-file ./instruction.md
+multica issue wakeup create <issue> --until-issue <other-issue-id> --until-issue-state done --instruction-file ./instruction.md
+```
+
+- `--until-status KEY` — this issue's status is that key (built-in or one of the workspace's statuses).
+- `--until-pr checks` — a linked pull request's checks finished, passing or failing, on its current head. `--until-pr merged` — a linked pull request merged. `--until-pr conflicts` — an open linked GitHub pull request has merge conflicts on its current head, for example after another PR merged into its base; with `--mode continuous` it fires again each time a resolved conflict comes back or a new head is still conflicting. With several linked pull requests, any one satisfies it. These conditions inspect only PRs linked directly to this issue; they do not inherit a parent issue's PRs. Checks and conflicts also require server-side GitHub snapshots; conflicts are not detected on Forgejo, Gitea or GitLab pull requests. A missing link or snapshot is recorded in the rule's `last_error` and retried automatically rather than rejecting the rule.
+- `--until-children-done` — every sub-issue, staged or not, is closed (`done` or `cancelled`). With `--stage N` it waits only for staged sub-issues up to stage N, and stage N must have at least one. A parent with no sub-issues never fires. The parent's assignee already gets the sub-issue wakeup described under Stages in `references/sub-issues.md`; do not add this condition for the same wake.
+- `--until-issue ISSUE` — another issue in this workspace (identifier or UUID) reaches `--until-issue-state`: `done` (default), `ended` (done or cancelled), `in_review`, or `blocked`. This is how to wait on another issue; `--event` rules only see events on the issue they are registered on. Register it on the issue whose run should wake: a squad leader waiting on a sub-issue registers it on the squad's issue, so the run keeps the squad context.
+- The same form also accepts `--until-assignee member|agent|squad:ID`, `--until-label LABEL_ID`, and `--until-property PROPERTY_ID=VALUE` (VALUE may be JSON). `multica issue wakeup create --help` lists them.
+- `wakeup create <issue> --kind at --after 10m --instruction-file ./instruction.md` schedules one run. Alternatively use `--at <RFC3339>`.
+- `wakeup create <issue> --kind every --every 1h --instruction-file ./instruction.md` schedules a repeating check. Or use `--kind cron --cron '0 * * * *' --timezone Asia/Shanghai`.
+- `--max-fires N` (1–1000) caps how many runs a repeating rule starts: every, cron, or `--mode continuous`. A once rule rejects it. Continuous event rules, conditions included, default to 20. The run that reaches the cap is still created, then the rule pauses with `paused_reason=max_fires`. Turning the rule back on clears the pause and restarts the count.
+- `wakeup checkin <issue> <wakeup-id> --note "..."` ends a scheduled check (every or cron) that found nothing worth a reply. Only the running run that rule started may call it, and that run's `[WAKEUP]` block gives the exact command. The note (1–500 characters) is kept on the run and shows in the rule's run history and the issue timeline. The run then ends without a comment. When something changed, needs attention, or the check is done, post a comment instead.
+- `wakeup list <issue>` / `wakeup get <issue> <id>` show the saved configuration, next time and latest run. `wakeup runs <issue> <id>` lists the rule's latest ten runs with their triggers, check-in notes and whether each commented. Only promise that a reminder is arranged after creation succeeds.
+- `wakeup trigger <issue> <id>` queues one run now, as if the rule fired. It is refused on a closed issue, or while the rule is turned off or paused for a loop or burst. `wakeup delete <issue> <id>` removes the rule and its pending inputs and withdraws its runs that have not started.
+- `wakeup update <issue> <id>` uses the same flags as create and replaces the whole configuration, explicitly re-enabling it. Supply all intended fields. Old unclaimed work is withdrawn.
+- `wakeup disable <issue> <id>` stops future triggers and withdraws unclaimed work. Users can also turn it off in the issue sidebar. Closing/cancelling/completing the issue disables its wakeups; reopening does not restore them.
+- `--parent <comment-id>` keeps result delivery in the original thread.
+- Give waits an end: `--expires-in 72h` (restarts if the rule is re-enabled) or `--expires-at <RFC3339>`. With `--on-timeout wake`, an event rule runs the target once with a `wakeup.timeout` fact when the deadline passes first; the default `end` stops quietly. Recurring checks should carry an end date.
+- Members create the same rules from the issue sidebar. The parent's stage wake (see Stages in `references/sub-issues.md`) appears there as a system rule; a member may turn it off for one issue or set its instruction, which your `[WAKEUP]` block then carries.
+
+Read current state with issue get, comment list, and run inspection before
+judging business completion. Wait for a linked pull request with `--until-pr`
+(`checks`, `merged` or `conflicts`) rather than polling it from a timer. There is no separate
+CI event; when the woken run needs check details or logs, use the existing
+GitHub tools. A failed run does not imply its business goal is complete.
+Automatic retry chains are not followed by event filters; subscribe to a new run
+if needed. Once the goal is met, disable any continuous configuration. Every
+wakeup runs under ordinary execution and comment delivery rules; the one
+exception is a scheduled check that ends with `wakeup checkin`.
+
+Self-trigger protection excludes the registering run and runs started by the
+same rule when their source identity is available. Your own comments and issue
+changes never wake you, and a condition your own unfinished run satisfies does
+not wake you when you or the platform set the rule up. A wakeup that fires
+while a run of yours for the same person is waiting to start on the issue
+joins that run instead of starting another: its instruction and facts appear
+in that run's `[WAKEUP — joined this run]` block, so handle them there.
+
+Event rules, conditions included, also have runaway protection. A rule pauses
+with `paused_reason=loop` when its trigger chain passes through it a third time
+without a person in between, and with `rate` when it has already started 12 runs
+in the past hour. A paused rule stays off until someone turns it back on. Still
+avoid mutually triggering continuous comment subscriptions; when waiting for a
+person's reply, filter that member explicitly.

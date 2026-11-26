@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { collectTextMatches, useInPageFind } from "./use-in-page-find";
 
@@ -119,267 +119,105 @@ describe("useInPageFind without the CSS Custom Highlight API", () => {
     expect(result.current.matchCount).toBe(0);
     expect(result.current.activeIndex).toBe(-1);
   });
-
-  it("reveals and scrolls a new query in the same source document", async () => {
-    container.innerHTML = '<div id="comment-long"><p data-comment-content>first match then a distant second match</p></div>';
-    Object.defineProperty(container, "clientHeight", { configurable: true, value: 400 });
-    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 400));
-    Range.prototype.getClientRects = function () {
-      return [new DOMRect(0, this.startOffset === 0 ? 600 : 1200, 100, 20)] as unknown as DOMRectList;
-    };
-    const revealDocument = vi.fn();
-    const documents = [{ id: "comment-long", text: "first match then a distant second match" }];
-    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0, documents, revealDocument }));
-    act(() => { result.current.openFind(); result.current.setQuery("first"); });
-    await flushFrames();
-    expect(result.current.activeIndex).toBe(0);
-    expect(container.scrollTop).toBeGreaterThan(0);
-    container.scrollTop = 0;
-    revealDocument.mockClear();
-
-    act(() => result.current.setQuery("second"));
-    await flushFrames();
-    expect(result.current.matchCount).toBe(1);
-    expect(result.current.activeIndex).toBe(0);
-    expect(result.current.activeDocumentId).toBe("comment-long");
-    expect(container.scrollTop).toBeGreaterThan(0);
-    expect(revealDocument).toHaveBeenCalledWith("comment-long");
-  });
-
-  it("re-scrolls the active match when layout shifts after the first scroll", async () => {
-    container.innerHTML = '<div id="comment-long"><p data-comment-content>one distant match</p></div>';
-    Object.defineProperty(container, "clientHeight", { configurable: true, value: 400 });
-    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 400));
-    let documentY = 1200;
-    Range.prototype.getClientRects = function () {
-      return [new DOMRect(0, documentY - container.scrollTop, 100, 20)] as unknown as DOMRectList;
-    };
-    const documents = [{ id: "comment-long", text: "one distant match" }];
-    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0, documents, revealDocument: vi.fn() }));
-    act(() => { result.current.openFind(); result.current.setQuery("distant"); });
-    await flushFrames();
-    expect(container.scrollTop).toBeGreaterThan(0);
-
-    // A table or fold lays out below the first scroll and pushes the match away.
-    documentY = 7200;
-    await flushFrames(4);
-    const top = documentY - container.scrollTop;
-    expect(top).toBeGreaterThanOrEqual(0);
-    expect(top + 20).toBeLessThanOrEqual(400);
-  });
-
-  // A settled-layout re-scroll must stop with the match it was started for.
-  // Drives a scroll (which starts the settle window), ends the match via
-  // `endMatch`, then shifts layout again and asserts nothing scrolls the view.
-  async function expectNoSettleScrollAfter(
-    endMatch: (result: { current: ReturnType<typeof useInPageFind> }) => void,
-  ): Promise<void> {
-    container.innerHTML = '<div id="comment-long"><p data-comment-content>one distant match</p></div>';
-    Object.defineProperty(container, "clientHeight", { configurable: true, value: 400 });
-    vi.spyOn(container, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 600, 400));
-    let documentY = 1200;
-    Range.prototype.getClientRects = function () {
-      return [new DOMRect(0, documentY - container.scrollTop, 100, 20)] as unknown as DOMRectList;
-    };
-    const documents = [{ id: "comment-long", text: "one distant match" }];
-    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0, documents, revealDocument: vi.fn() }));
-    act(() => { result.current.openFind(); result.current.setQuery("distant"); });
-    await flushFrames();
-    expect(container.scrollTop).toBeGreaterThan(0);
-
-    act(() => endMatch(result));
-    await flushFrames(1);
-    // The host restores its own scroll position after find ends.
-    container.scrollTop = 0;
-    documentY = 7200;
-    await flushFrames(4);
-    expect(container.scrollTop).toBe(0);
-  }
-
-  it("stops the settle re-scroll when find closes", async () => {
-    await expectNoSettleScrollAfter((result) => result.current.closeFind());
-  });
-
-  it("stops the settle re-scroll when the query is cleared", async () => {
-    await expectNoSettleScrollAfter((result) => result.current.setQuery(""));
-  });
-
-  it("does not reveal an unchanged match after a timeline refresh", async () => {
-    const revealDocument = vi.fn();
-    const documents = [{ id: "first", text: "needle needle" }];
-    const { result, rerender } = renderHook(({ entries }) => useInPageFind({
-      container, contentKey: 0, documents: entries, revealDocument,
-    }), { initialProps: { entries: documents } });
-    act(() => { result.current.openFind(); result.current.setQuery("needle"); });
-    await waitFor(() => expect(result.current.matchCount).toBe(2));
-    revealDocument.mockClear();
-    rerender({ entries: [...documents.map(entry => ({ ...entry })), { id: "new", text: "unrelated" }] });
-    await flushFrames();
-    expect(revealDocument).not.toHaveBeenCalled();
-    act(() => result.current.goNext());
-    expect(revealDocument).toHaveBeenCalledWith("first");
-  });
-
-  it("counts off-screen source occurrences, wraps navigation and updates after edits", async () => {
-    const revealDocument = vi.fn();
-    const documents = [
-      { id: "first", text: "Needle needle" },
-      { id: "offscreen", text: "A hidden needle" },
-    ];
-    const walker = vi.spyOn(document, "createTreeWalker");
-    const { result, rerender } = renderHook(({ entries }) => useInPageFind({
-      container, contentKey: 0, documents: entries, revealDocument,
-    }), { initialProps: { entries: documents } });
-    act(() => { result.current.openFind(); result.current.setQuery("needle"); });
-    await waitFor(() => expect(result.current.matchCount).toBe(3));
-    expect(result.current.activeDocumentId).toBe("first");
-    expect(walker).not.toHaveBeenCalled();
-
-    act(() => result.current.goPrev());
-    expect(result.current.activeIndex).toBe(2);
-    expect(result.current.activeDocumentId).toBe("offscreen");
-    expect(revealDocument).toHaveBeenLastCalledWith("offscreen");
-    act(() => result.current.goNext());
-    expect(result.current.activeIndex).toBe(0);
-
-    rerender({ entries: [{ id: "offscreen", text: "One needle" }] });
-    await waitFor(() => expect(result.current.matchCount).toBe(1));
-    expect(result.current.activeDocumentId).toBe("offscreen");
-    act(() => result.current.setQuery("absent"));
-    await waitFor(() => expect(result.current.matchCount).toBe(0));
-    expect(result.current.activeDocumentId).toBeNull();
-    walker.mockRestore();
-  });
 });
 
-// 01-DESIGN "Find and target reveal lifecycle": the readiness predicate is
-// the ONLY allowed signal that pre-reveal/stale-generation DOM is safe to
-// walk. These tests exercise the gate independently of any particular host
-// (issue-detail.tsx wires `isReady` to useIssueDisclosureReveal's committed
-// token; here it's a plain flag the test flips directly).
-describe("useInPageFind readiness gate (reveal-before-DOM-walk)", () => {
+// The virtualized timeline: units are counted from their text, and only the
+// ones in the DOM are painted. Stepping to an unmounted one asks the host to
+// mount it.
+describe("useInPageFind with virtual content", () => {
   let container: HTMLElement;
+  let virtualRoot: HTMLElement;
 
   beforeEach(() => {
-    (Range.prototype as { getClientRects: () => DOMRectList }).getClientRects =
-      () =>
-        [
-          { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 },
-        ] as unknown as DOMRectList;
     container = document.createElement("div");
-    container.innerHTML = "<p>needle here</p>";
+    container.innerHTML = [
+      "<h1>Find before</h1>",
+      '<div id="timeline"><span>find in an activity line</span><p data-find-unit="mounted">find twice: find</p></div>',
+      "<footer>find after</footer>",
+    ].join("");
     document.body.appendChild(container);
+    virtualRoot = container.querySelector<HTMLElement>("#timeline")!;
   });
 
   afterEach(() => {
-    delete (Range.prototype as { getClientRects?: unknown }).getClientRects;
     container.remove();
   });
 
   async function flushFrames(count = 3): Promise<void> {
     for (let i = 0; i < count; i++) {
-      await act(
-        () =>
-          new Promise<void>((resolve) => requestAnimationFrame(() => resolve())),
-      );
+      await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
     }
   }
 
-  it("rejects every collector call while not ready — no match reported for pre-reveal DOM", async () => {
-    const ready = false;
+  it("counts units from data in reading order and mounts the one stepped to", async () => {
+    const units = [
+      { key: "unmounted", text: "find me once" },
+      { key: "mounted", text: "find twice: find" },
+    ];
+    const getUnits = () => units;
+    const reveal = vi.fn((unit: { key: string }, done: () => void) => {
+      const el = document.createElement("p");
+      el.setAttribute("data-find-unit", unit.key);
+      el.textContent = "find me once";
+      virtualRoot.prepend(el);
+      done();
+      return () => {};
+    });
     const { result } = renderHook(() =>
-      useInPageFind({ container, contentKey: 0, isReady: () => ready }),
+      useInPageFind({
+        container,
+        contentKey: 0,
+        virtual: { root: () => virtualRoot, units: getUnits, reveal },
+      }),
     );
 
     act(() => {
       result.current.openFind();
-      result.current.setQuery("needle");
+      result.current.setQuery("find");
     });
     await flushFrames();
 
-    // The DOM already has "needle" in it, but readiness has not committed —
-    // the collector must reject the call rather than report a false match.
-    expect(result.current.matchCount).toBe(0);
-    expect(result.current.activeIndex).toBe(-1);
-  });
-
-  it("re-arms and collects once readiness flips to true", async () => {
-    let ready = false;
-    const { result, rerender } = renderHook(() =>
-      useInPageFind({ container, contentKey: 0, isReady: () => ready }),
-    );
-
-    act(() => {
-      result.current.openFind();
-      result.current.setQuery("needle");
-    });
-    await flushFrames();
-    expect(result.current.matchCount).toBe(0);
-
-    // The host's reveal generation commits — flip the predicate and force a
-    // fresh render so the hook sees a new `isReady` closure identity.
-    ready = true;
-    rerender();
-    await flushFrames();
-
-    expect(result.current.matchCount).toBe(1);
+    // Heading, both units' occurrences, footer. The activity line inside the
+    // timeline is not a unit, so it is not counted.
+    expect(result.current.matchCount).toBe(5);
     expect(result.current.activeIndex).toBe(0);
+    expect(reveal).not.toHaveBeenCalled();
+
+    act(() => result.current.goNext());
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(reveal.mock.calls[0]![0]).toMatchObject({ key: "unmounted" });
+    await flushFrames();
+    expect(result.current.matchCount).toBe(5);
+    expect(result.current.activeIndex).toBe(1);
+
+    // Already mounted: no reveal.
+    act(() => result.current.goNext());
+    expect(result.current.activeIndex).toBe(2);
+    expect(reveal).toHaveBeenCalledTimes(1);
   });
 
-  it("does not fabricate a match from a MutationObserver callback firing before the generation commits", async () => {
-    const ready = false;
+  it("mounts an unmounted first match once typing pauses, not per keystroke", async () => {
+    const units = [{ key: "unmounted", text: "only here: needle" }];
+    const getUnits = () => units;
+    const reveal = vi.fn(() => () => {});
     const { result } = renderHook(() =>
-      useInPageFind({ container, contentKey: 0, isReady: () => ready }),
+      useInPageFind({
+        container,
+        contentKey: 0,
+        virtual: { root: () => virtualRoot, units: getUnits, reveal },
+      }),
     );
 
-    act(() => {
-      result.current.openFind();
-      result.current.setQuery("needle");
-    });
-    await flushFrames();
-    expect(result.current.matchCount).toBe(0);
-
-    // Simulate async DOM churn (e.g. markdown settling) while still
-    // pre-reveal: the MutationObserver-driven recompute must also reject.
-    act(() => {
-      container.innerHTML = "<p>needle here</p><p>needle twice</p>";
-    });
-    await flushFrames();
-    expect(result.current.matchCount).toBe(0);
-  });
-
-  it("drops held ranges when readiness drops while still open, never leaving a stale match count", async () => {
-    let ready = true;
-    const { result, rerender } = renderHook(() =>
-      useInPageFind({ container, contentKey: 0, isReady: () => ready }),
-    );
-
-    act(() => {
-      result.current.openFind();
-      result.current.setQuery("needle");
-    });
+    act(() => result.current.openFind());
+    for (const query of ["ne", "nee", "need", "needl", "needle"]) {
+      act(() => result.current.setQuery(query));
+      await flushFrames(1);
+    }
     await flushFrames();
     expect(result.current.matchCount).toBe(1);
+    expect(reveal).not.toHaveBeenCalled();
 
-    // The reveal generation invalidates mid-session (e.g. issue switch while
-    // find stayed open) — matches must be cleared immediately, not left
-    // pointing at DOM that is about to be replaced.
-    ready = false;
-    rerender();
-
-    expect(result.current.matchCount).toBe(0);
-    expect(result.current.activeIndex).toBe(-1);
-  });
-
-  it("defaults to always-ready when no predicate is supplied, preserving prior behavior", async () => {
-    const { result } = renderHook(() => useInPageFind({ container, contentKey: 0 }));
-
-    act(() => {
-      result.current.openFind();
-      result.current.setQuery("needle");
-    });
-    await flushFrames();
-
-    expect(result.current.matchCount).toBe(1);
+    await act(() => new Promise<void>((resolve) => setTimeout(resolve, 200)));
+    expect(reveal).toHaveBeenCalledTimes(1);
   });
 });

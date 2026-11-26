@@ -5,15 +5,12 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
-	"github.com/multica-ai/multica/server/internal/dispatch"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -64,21 +61,12 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// X-Actor-Source is server-set only — any value supplied by
 			// the client is untrusted and discarded before the auth
-			// branches run. Each successful auth path re-stamps it. This
+			// branches run. Only the mat_ branch below re-sets it. This
 			// is what prevents a client from sending a normal mul_ PAT
 			// plus a forged `X-Actor-Source: member` (or anything else)
 			// to convince a downstream handler that its request came
 			// from a non-task-token path.
 			r.Header.Del("X-Actor-Source")
-			// X-Session-ID is the signed `sid` claim of a JWT login, set
-			// below; a passkey assertion binds a card answer to it.
-			r.Header.Del("X-Session-ID")
-			r.Header.Del(auth.SessionGenerationHeader)
-			r.Header.Del("X-Task-Token-Purpose")
-			r.Header.Del("X-Governance-Case-ID")
-			r.Header.Del("X-Governance-Attempt-ID")
-			r.Header.Del("X-Governance-Attempt-Fence")
-			r.Header.Del("X-Governance-Evidence-Epoch")
 
 			// Agent identity is server-set for exactly the same reason,
 			// and the rest of the codebase already assumes it (see
@@ -98,7 +86,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			tokenString, fromCookie := extractToken(r)
 			if tokenString == "" {
 				slog.Debug("auth: no token found", "path", r.URL.Path)
-				writeAuthenticationError(w, r, `{"error":"missing authorization"}`)
+				http.Error(w, `{"error":"missing authorization"}`, http.StatusUnauthorized)
 				return
 			}
 
@@ -121,24 +109,14 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// `actorSourceFromRequest`. MUL-2600.
 			if strings.HasPrefix(tokenString, "mat_") {
 				if queries == nil {
-					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 					return
 				}
 				hash := auth.HashToken(tokenString)
 				tt, err := queries.GetTaskTokenByHash(r.Context(), hash)
 				if err != nil {
 					slog.Warn("auth: invalid task token", "path", r.URL.Path, "error", err)
-					writeInvalidTaskToken(w, r)
-					return
-				}
-				switch tt.Purpose {
-				case "agent_task":
-					if tt.GovernanceCaseID.Valid || tt.GovernanceAttemptID.Valid || tt.GovernanceAttemptFence.Valid || tt.GovernanceEvidenceEpoch.Valid {
-						writeInvalidTaskToken(w, r)
-						return
-					}
-				default:
-					writeInvalidTaskToken(w, r)
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 					return
 				}
 				userID := uuidToString(tt.UserID)
@@ -157,24 +135,13 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				r.Header.Set("X-User-ID", userID)
 				r.Header.Set("X-Agent-ID", uuidToString(tt.AgentID))
 				r.Header.Set("X-Task-ID", uuidToString(tt.TaskID))
-				r.Header.Set("X-Workspace-ID", uuidToString(tt.WorkspaceID))
-				r.Header.Set("X-Task-Token-Purpose", tt.Purpose)
+				r.Header.Set("X-Workspace-ID", boundWorkspaceID)
 				// X-Actor-Source flags the auth path so resolveActor and
 				// any owner-only handler can deny without re-querying the
-				// token table.
+				// token table. The value "task_token" is the only signal
+				// this header is allowed to carry — strip anything else a
+				// client tried to send.
 				r.Header.Set("X-Actor-Source", "task_token")
-				// The mark comes from the stored task, never a header. If it
-				// cannot be read the request is refused: a recovery run must
-				// not pass as an ordinary one.
-				recovery, err := queries.IsBudgetRecoveryTask(r.Context(), tt.TaskID)
-				if err != nil {
-					slog.Warn("auth: read task kind", "path", r.URL.Path, "error", err)
-					writeError(w, http.StatusInternalServerError, "failed to authenticate")
-					return
-				}
-				if recovery {
-					r = r.WithContext(dispatch.WithBudgetRecoveryCaller(r.Context()))
-				}
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -202,14 +169,14 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			if strings.HasPrefix(tokenString, auth.CloudPATPrefix) {
 				if cloudPAT == nil {
 					slog.Warn("auth: mcn_ token presented but cloud verifier not configured", "path", r.URL.Path)
-					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 					return
 				}
 				identity, err := cloudPAT.Verify(r.Context(), tokenString, ownerLookupFor(queries))
 				if err != nil {
 					if errors.Is(err, auth.ErrCloudPATInvalid) {
 						slog.Warn("auth: cloud rejected mcn_ token", "path", r.URL.Path, "error", err)
-						writeAuthenticationError(w, r, `{"error":"invalid token"}`)
+						http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 						return
 					}
 					// Cloud unreachable / 5xx / decode error. We surface
@@ -252,28 +219,18 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 						return
 					}
 					r.Header.Set("X-User-ID", userID)
-					r.Header.Set("X-Actor-Source", "pat")
-					next.ServeHTTP(w, r)
+					next.ServeHTTP(w, r.WithContext(withPersonalAccessToken(r.Context())))
 					return
 				}
 
 				if queries == nil {
-					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 					return
 				}
-				fence := patCache.Begin() // before the read: a revoke in between must win
 				pat, err := queries.GetPersonalAccessTokenByHash(r.Context(), hash)
 				if err != nil {
 					slog.Warn("auth: invalid PAT", "path", r.URL.Path, "error", err)
-					writeAuthenticationError(w, r, `{"error":"invalid token"}`)
-					return
-				}
-
-				// A scoped PAT is a restricted credential: it reaches only the
-				// routes its scope names and is never cached, so a cache hit
-				// can never widen it to the owner's full access.
-				if len(pat.Scopes) > 0 && !scopedPATMayCall(r, pat.Scopes) {
-					writeError(w, http.StatusForbidden, "this token is restricted to its scope")
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 					return
 				}
 
@@ -282,7 +239,6 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					return
 				}
 				r.Header.Set("X-User-ID", userID)
-				r.Header.Set("X-Actor-Source", "pat")
 
 				// Clamp cache TTL to the token's remaining lifetime so a
 				// PAT expiring in <AuthCacheTTL can't continue passing
@@ -291,16 +247,14 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				if pat.ExpiresAt.Valid {
 					expiresAt = pat.ExpiresAt.Time
 				}
-				if len(pat.Scopes) == 0 {
-					patCache.SetIfNotInvalidated(r.Context(), fence, hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
-				}
+				patCache.Set(r.Context(), hash, userID, auth.TTLForExpiry(time.Now(), expiresAt))
 
 				// Cache miss = TTL expired (or first use after revoke /
 				// process restart). Refresh last_used_at; subsequent hits
 				// within the TTL window skip this write entirely.
 				go queries.UpdatePersonalAccessTokenLastUsed(context.Background(), pat.ID)
 
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(withPersonalAccessToken(r.Context())))
 				return
 			}
 
@@ -313,21 +267,21 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			})
 			if err != nil || !token.Valid {
 				slog.Warn("auth: invalid token", "path", r.URL.Path, "error", err)
-				writeAuthenticationError(w, r, `{"error":"invalid token"}`)
+				http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
 				return
 			}
 
 			claims, ok := token.Claims.(jwt.MapClaims)
 			if !ok {
 				slog.Warn("auth: invalid claims", "path", r.URL.Path)
-				writeAuthenticationError(w, r, `{"error":"invalid claims"}`)
+				http.Error(w, `{"error":"invalid claims"}`, http.StatusUnauthorized)
 				return
 			}
 
 			sub, ok := claims["sub"].(string)
 			if !ok || strings.TrimSpace(sub) == "" {
 				slog.Warn("auth: invalid claims", "path", r.URL.Path)
-				writeAuthenticationError(w, r, `{"error":"invalid claims"}`)
+				http.Error(w, `{"error":"invalid claims"}`, http.StatusUnauthorized)
 				return
 			}
 			email, _ := claims["email"].(string)
@@ -335,35 +289,15 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				return
 			}
 			r.Header.Set("X-User-ID", sub)
-			// The generation this JWT was signed with, for handlers that
-			// must recheck it inside their own transaction.
-			r.Header.Set(auth.SessionGenerationHeader, strconv.Itoa(int(auth.SessionGeneration(claims))))
-			r.Header.Set("X-Actor-Source", "cli_jwt")
-			if method, ok := claims["amr"].(string); ok && method == "interactive" {
-				r.Header.Set("X-Actor-Source", "interactive_jwt")
-			}
-			if sid, ok := claims["sid"].(string); ok {
-				r.Header.Set("X-Session-ID", sid)
-			}
 			if email != "" {
 				r.Header.Set("X-User-Email", email)
-			}
-
-			// Revocation: a bumped user.session_generation kills every JWT
-			// minted before it. Nil queries exists only in JWT-only unit tests;
-			// production always wires a database.
-			if queries != nil && !checkSessionGeneration(w, r, claims, queries, !requiresFreshGeneration(r.URL.Path)) {
-				return
 			}
 
 			// Sliding session: a browser that keeps using the app keeps its
 			// cookie, instead of being logged out on the anniversary of its
 			// login. No-op until the session drops below half its TTL
 			// (MUL-7436).
-			r, ok = renewCookieSession(w, r, claims, fromCookie, cfSigner, queries)
-			if !ok {
-				return
-			}
+			r = renewCookieSession(w, r, claims, fromCookie, cfSigner)
 
 			next.ServeHTTP(w, r)
 		})
@@ -385,29 +319,4 @@ func extractToken(r *http.Request) (token string, fromCookie bool) {
 	}
 
 	return "", false
-}
-
-// scopedPATMayCall reports whether a scoped PAT may call this route. Each scope
-// opens only its own routes: decisions:feed the answer feed and its ack,
-// decisions:ci_request the CI decision-card create, decisions:read the state
-// read of one decision. Nothing else.
-func scopedPATMayCall(r *http.Request, scopes []string) bool {
-	path := r.URL.Path
-	switch r.Method {
-	case http.MethodGet:
-		if rest, found := strings.CutPrefix(path, "/api/decisions/"); found {
-			if id, state := strings.CutSuffix(rest, "/state"); state && id != "" && !strings.Contains(id, "/") && id != "feed" {
-				return slices.Contains(scopes, "decisions:read")
-			}
-		}
-		return path == "/api/decisions/feed" && slices.Contains(scopes, "decisions:feed")
-	case http.MethodPost:
-		if path == "/api/decisions/ci" {
-			return slices.Contains(scopes, "decisions:ci_request")
-		}
-		rest, found := strings.CutPrefix(path, "/api/decisions/feed/")
-		id, ack := strings.CutSuffix(rest, "/ack")
-		return found && ack && id != "" && !strings.Contains(id, "/") && slices.Contains(scopes, "decisions:feed")
-	}
-	return false
 }

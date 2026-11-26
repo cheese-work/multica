@@ -1,20 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import {
-  Archive,
-  ArchiveRestore,
-  Info,
-  Minimize2,
-  MoreHorizontal,
-  Pencil,
-  EyeOff,
-  Pin,
-  PinOff,
-  Settings2,
-  Trash2,
-  UserRound,
-} from "@multica/ui/icons";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Archive, ArchiveRestore, MoreHorizontal, Pencil, Settings2, Trash2 } from "@multica/ui/icons";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import {
   DropdownMenu,
@@ -40,19 +27,14 @@ import {
   useSetChatSessionArchived,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
-import { getChatSessionMenuItems } from "@multica/core/chat/commands";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { isImeComposing } from "@multica/core/utils";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { AppLink } from "../../navigation";
 import { BreadcrumbHeader } from "../../layout/breadcrumb-header";
 import { useNavigation } from "../../navigation";
 import { useT } from "../../i18n";
-import { ChatContextMeter } from "./chat-context-meter";
-import { ChatPresetPicker } from "./chat-preset-picker";
-import { OpenDecisionsBadge } from "./open-decisions-badge";
-import { ScheduledWakeupsChip } from "./scheduled-wakeups-chip";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
+import { ChatWakeupHeaderButton, useChatWakeups } from "./chat-wakeups";
 
 /**
  * Per-session header for the conversation pane, read as a breadcrumb: the
@@ -63,15 +45,6 @@ export function ChatSessionHeader({
   session,
   agent,
   onArchive,
-  onUnarchive,
-  onTogglePin,
-  onMarkUnseen,
-  onOpenStatistics,
-  renameRequest = 0,
-  autoCompactThresholdTokens = null,
-  lastTurnTokens,
-  onCompact,
-  onSetPreset,
   leading,
 }: {
   session: ChatSession;
@@ -80,23 +53,6 @@ export function ChatSessionHeader({
   // next chat on desktop, back to the list on mobile), so the parent owns it —
   // see ChatPage.handleArchive. Falls back to a plain status flip if unwired.
   onArchive?: (session: ChatSession) => void;
-  /** Unarchive through the shared guard. Falls back to a plain status flip if unwired. */
-  onUnarchive?: (session: ChatSession) => void;
-  /** Pins or unpins an active DM. Omit to hide the Pin item. */
-  onTogglePin?: (session: ChatSession) => void;
-  /** Marks an active DM unseen and leaves it. Omit to hide the item. */
-  onMarkUnseen?: (session: ChatSession) => void;
-  /** Opens the Statistics dialog. Omit to hide the Statistics item. */
-  onOpenStatistics?: () => void;
-  renameRequest?: number;
-  /** Prompt size at which this DM auto-compacts, or null when auto-compact is off. */
-  autoCompactThresholdTokens?: number | null;
-  /** Prompt growth of the last turn, when known. */
-  lastTurnTokens?: number | null;
-  /** Sends /compact. Omit to hide the "Compact now" item. */
-  onCompact?: () => void;
-  /** Sends `/preset <reset|base|name>`. Omit to hide the preset picker. */
-  onSetPreset?: (name: string) => void;
   /**
    * Far-left control: the nav toggle while the list is collapsed, or the way
    * back to the list at compact widths. Nothing renders there without one.
@@ -111,11 +67,9 @@ export function ChatSessionHeader({
   const deleteSession = useDeleteChatSession();
   const setArchived = useSetChatSessionArchived();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
+  const wakeups = useChatWakeups(session.id);
 
   const isArchived = session.status === "archived";
-  const menuItems = getChatSessionMenuItems({ archived: isArchived });
-  const mainMenuItems = menuItems.filter((item) => item.section === "main");
-  const trailingMenuItems = menuItems.filter((item) => item.section === "trailing");
 
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -126,9 +80,18 @@ export function ChatSessionHeader({
   // that intent so the final composed value is committed, not the draft.
   const commitAfterCompositionRef = useRef(false);
   const blurCommitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handledRenameRequest = useRef(renameRequest);
 
   const title = session.title?.trim() || t(($) => $.window.untitled);
+
+  useEffect(() => {
+    clearPendingBlurCommit();
+    isComposingRef.current = false;
+    commitAfterCompositionRef.current = false;
+    setEditing(false);
+    setConfirmDelete(false);
+    setDraft(session.title ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset transient header UI only when switching sessions
+  }, [session.id]);
 
   useEffect(() => {
     if (editing) {
@@ -146,25 +109,19 @@ export function ChatSessionHeader({
     [],
   );
 
-  const clearPendingBlurCommit = useCallback(() => {
+  const clearPendingBlurCommit = () => {
     if (blurCommitTimeoutRef.current === null) return;
     clearTimeout(blurCommitTimeoutRef.current);
     blurCommitTimeoutRef.current = null;
-  }, []);
+  };
 
-  const startRename = useCallback(() => {
+  const startRename = () => {
     clearPendingBlurCommit();
     isComposingRef.current = false;
     commitAfterCompositionRef.current = false;
     setDraft(session.title ?? "");
     setEditing(true);
-  }, [clearPendingBlurCommit, session.title]);
-
-  useEffect(() => {
-    if (renameRequest === handledRenameRequest.current) return;
-    handledRenameRequest.current = renameRequest;
-    startRename();
-  }, [renameRequest, startRename]);
+  };
 
   const commitRename = (raw = draft) => {
     clearPendingBlurCommit();
@@ -186,10 +143,7 @@ export function ChatSessionHeader({
     onArchive
       ? onArchive(session)
       : setArchived.mutate({ sessionId: session.id, archived: true });
-  const doUnarchive = () =>
-    onUnarchive
-      ? onUnarchive(session)
-      : setArchived.mutate({ sessionId: session.id, archived: false });
+  const doUnarchive = () => setArchived.mutate({ sessionId: session.id, archived: false });
 
   const leaf = editing ? (
     <input
@@ -248,7 +202,7 @@ export function ChatSessionHeader({
       className="min-w-0 max-w-96 flex-1 rounded-sm bg-background px-1 py-0.5 text-body font-medium outline-none ring-1 ring-border focus-visible:ring-brand"
     />
   ) : (
-    <TooltipHint label={title}>
+    <TooltipHint label={t(($) => $.header.rename)}>
       <button
         type="button"
         onClick={startRename}
@@ -287,165 +241,55 @@ export function ChatSessionHeader({
         }
         leaf={leaf}
         actions={
-          <>
-            <OpenDecisionsBadge />
-            {isArchived ? null : (
-              <ScheduledWakeupsChip sessionId={session.id} agentName={agent?.name} />
-            )}
-
-            {isArchived ? null : (
-              <ChatContextMeter
-                tokens={session.context_tokens}
-                window={session.context_window}
-                thresholdTokens={autoCompactThresholdTokens}
-                lastTurnTokens={lastTurnTokens}
-              />
-            )}
-
-            {isArchived || !agent || !onSetPreset ? null : (
-              <ChatPresetPicker
-                agentId={agent.id}
-                current={session.preset_name ?? null}
-                onSelect={onSetPreset}
-              />
-            )}
-
-            <DropdownMenu>
-              <DropdownMenuTrigger
-                render={
-                  <IconButton
-                    label={tCommon(($) => $.more_actions)}
-                    tooltipSide="bottom"
-                    className="text-muted-foreground"
-                  />
-                }
-              >
-                <MoreHorizontal className="h-4 w-4" />
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-auto">
-                {mainMenuItems.map((item) => {
-                  if (item.id === "statistic") {
-                    return onOpenStatistics ? (
-                      <DropdownMenuItem
-                        key={item.id}
-                        data-testid="chat-more-menu-statistics"
-                        onClick={onOpenStatistics}
-                      >
-                        <Info className="h-4 w-4" />
-                        {t(($) => $.header.statistics)}
-                      </DropdownMenuItem>
-                    ) : null;
-                  }
-                  if (item.id === "pin") {
-                    return onTogglePin ? (
-                      <DropdownMenuItem
-                        key={item.id}
-                        data-testid="chat-more-menu-pin"
-                        onClick={() => onTogglePin(session)}
-                      >
-                        {session.pinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4 -rotate-45" />}
-                        {session.pinned ? t(($) => $.header.unpin) : t(($) => $.header.pin)}
-                      </DropdownMenuItem>
-                    ) : null;
-                  }
-                  if (item.id === "unseen") {
-                    return onMarkUnseen ? (
-                      <DropdownMenuItem
-                        key={item.id}
-                        data-testid="chat-more-menu-unseen"
-                        onClick={() => onMarkUnseen(session)}
-                      >
-                        <EyeOff className="h-4 w-4" />
-                        {t(($) => $.header.unseen)}
-                      </DropdownMenuItem>
-                    ) : null;
-                  }
-                  if (item.id === "rename") {
-                    return (
-                      <DropdownMenuItem
-                        key={item.id}
-                        data-testid="chat-more-menu-rename"
-                        onClick={startRename}
-                      >
-                        <Pencil className="h-4 w-4" />
-                        {t(($) => $.header.rename)}
-                      </DropdownMenuItem>
-                    );
-                  }
-                  return null;
-                })}
-                {agent && (
-                  <DropdownMenuItem
-                    data-testid="chat-more-menu-view-profile"
-                    render={<AppLink href={wsPaths.agentDetail(agent.id)} />}
-                  >
-                    <UserRound className="h-4 w-4" />
-                    {t(($) => $.header.view_profile)}
+          <div className="flex items-center gap-0.5">
+          <ChatWakeupHeaderButton sessionId={session.id} wakeups={wakeups} />
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              render={
+                <IconButton
+                  label={tCommon(($) => $.more_actions)}
+                  tooltipSide="bottom"
+                  className="text-muted-foreground"
+                />
+              }
+            >
+              <MoreHorizontal className="h-4 w-4" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-auto">
+              <DropdownMenuItem onClick={startRename}>
+                <Pencil className="h-4 w-4" />
+                {t(($) => $.header.rename)}
+              </DropdownMenuItem>
+              {agent && (
+                <DropdownMenuItem
+                  onClick={() => push(`${wsPaths.agentDetail(agent.id)}?view=general`)}
+                >
+                  <Settings2 className="h-4 w-4" />
+                  {t(($) => $.header.agent_settings)}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              {isArchived ? (
+                <>
+                  <DropdownMenuItem onClick={doUnarchive}>
+                    <ArchiveRestore className="h-4 w-4" />
+                    {t(($) => $.header.unarchive)}
                   </DropdownMenuItem>
-                )}
-                {agent && (
-                  <DropdownMenuItem
-                    data-testid="chat-more-menu-agent-settings"
-                    onClick={() => push(`${wsPaths.agentDetail(agent.id)}?view=general`)}
-                  >
-                    <Settings2 className="h-4 w-4" />
-                    {t(($) => $.header.agent_settings)}
+                  {/* Hard delete is offered only once a chat is archived. */}
+                  <DropdownMenuItem variant="destructive" onClick={() => setConfirmDelete(true)}>
+                    <Trash2 className="h-4 w-4" />
+                    {t(($) => $.header.delete)}
                   </DropdownMenuItem>
-                )}
-                {onCompact && !isArchived ? (
-                  <DropdownMenuItem
-                    data-testid="chat-more-menu-compact"
-                    disabled={session.compacting === true}
-                    onClick={onCompact}
-                  >
-                    <Minimize2 className="h-4 w-4" />
-                    {t(($) => $.header.compact_now)}
-                  </DropdownMenuItem>
-                ) : null}
-                <DropdownMenuSeparator />
-                {trailingMenuItems.map((item) => {
-                  if (item.id === "unarchive") {
-                    return (
-                      <DropdownMenuItem
-                        key={item.id}
-                        data-testid="chat-more-menu-archive"
-                        onClick={doUnarchive}
-                      >
-                        <ArchiveRestore className="h-4 w-4" />
-                        {t(($) => $.header.unarchive)}
-                      </DropdownMenuItem>
-                    );
-                  }
-                  if (item.id === "delete") {
-                    return (
-                      <DropdownMenuItem
-                        key={item.id}
-                        data-testid="chat-more-menu-delete"
-                        variant={item.destructive ? "destructive" : undefined}
-                        onClick={() => setConfirmDelete(true)}
-                      >
-                        <Trash2 className="h-4 w-4" />
-                        {t(($) => $.header.delete)}
-                      </DropdownMenuItem>
-                    );
-                  }
-                  if (item.id === "archive") {
-                    return (
-                      <DropdownMenuItem
-                        key={item.id}
-                        data-testid="chat-more-menu-archive"
-                        onClick={doArchive}
-                      >
-                        <Archive className="h-4 w-4" />
-                        {t(($) => $.header.archive)}
-                      </DropdownMenuItem>
-                    );
-                  }
-                  return null;
-                })}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </>
+                </>
+              ) : (
+                <DropdownMenuItem onClick={doArchive}>
+                  <Archive className="h-4 w-4" />
+                  {t(($) => $.header.archive)}
+                </DropdownMenuItem>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+          </div>
         }
       />
 

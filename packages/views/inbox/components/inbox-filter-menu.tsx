@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { AtSign, Filter, RotateCcw, Search } from "@multica/ui/icons";
+import { useEffect, useMemo, useState, type ReactNode, type RefObject } from "react";
+import { Filter, RotateCcw, Search } from "@multica/ui/icons";
 import { PRIORITY_DISPLAY_ORDER } from "@multica/core/issues/config";
 import { DUE_DATE_FILTERS, FILTER_NONE_VALUE } from "@multica/core/issues/stores/filter-tree";
 import {
@@ -15,6 +15,7 @@ import {
   inboxFacetCounts,
   inboxFilterCount,
   inboxFilterValues,
+  type InboxFilterKey,
   type InboxFilterSupport,
   type InboxListDimension,
   useInboxFilters,
@@ -61,13 +62,12 @@ import {
   INBOX_TYPE_ICONS,
   useInboxFilterChips,
   useInboxFilterLabels,
-  type InboxMenuKey as InboxFilterKey,
 } from "./inbox-filter-options";
 
 const EMPTY_ISSUE_IDS: ReadonlySet<string> = new Set();
 const NO_COUNTS = new Map<string, number>();
 
-const NOTIFICATION_KEYS: readonly InboxFilterKey[] = ["unread", "mentions", "type", "actor", "received"];
+const NOTIFICATION_KEYS: readonly InboxFilterKey[] = ["unread", "type", "actor", "received"];
 const ISSUE_KEYS: readonly InboxFilterKey[] = [
   "status",
   "priority",
@@ -111,6 +111,15 @@ function ValueItem({
   );
 }
 
+/** Opens the filter from another control, such as an item of a section's ⋯ menu. */
+export interface InboxFilterMenuOpener {
+  /** Open from this control; opening from the menu's own trigger leaves it false. */
+  open: boolean;
+  onClose: () => void;
+  /** The control the menu hangs from and hands focus back to while opened from it. */
+  anchor: RefObject<HTMLElement | null>;
+}
+
 /**
  * The inbox filter, shaped like the issue filter: search, the dimensions in
  * use pinned on top, then notification and issue fields, "is" / "is not" per
@@ -127,6 +136,7 @@ export function InboxFilterMenu({
   activeIssueIds = EMPTY_ISSUE_IDS,
   archived = false,
   sectionTrigger,
+  opener,
 }: {
   wsId: string;
   items: InboxItem[];
@@ -140,6 +150,11 @@ export function InboxFilterMenu({
    * styled by the section, its menu opening to the right.
    */
   sectionTrigger?: { className: string; activeClassName: string };
+  /**
+   * Opens the menu from elsewhere. The trigger then shows only while filters
+   * are set, so a filtered list still says so at a glance.
+   */
+  opener?: InboxFilterMenuOpener;
 }) {
   const { t } = useT("inbox");
   const { t: tIssues } = useT("issues");
@@ -149,13 +164,18 @@ export function InboxFilterMenu({
   const store = useInboxFilterStore.getState();
   const clearPriorityFilters = useInboxFilterStore((state) => state.clearPriorityFilters);
   const clearIssueFieldFilters = useInboxFilterStore((state) => state.clearIssueFieldFilters);
-  const [open, setOpen] = useState(false);
+  const [ownOpen, setOwnOpen] = useState(false);
+  const open = ownOpen || (opener?.open ?? false);
+  // Kept from the moment the menu opens: the opener closes first, the menu's
+  // close and focus return after.
+  const [fromOpener, setFromOpener] = useState(false);
   // The body is built only while the menu is open or closing: the trigger
   // also sits in the always-mounted Work panel, which re-renders often.
   const [bodyMounted, setBodyMounted] = useState(false);
   const [search, setSearch] = useState("");
   const [activeAtOpen, setActiveAtOpen] = useState<ReadonlySet<InboxFilterKey> | null>(null);
   const query = search.trim().toLowerCase();
+  const [wasOpen, setWasOpen] = useState(false);
   const { getActorName, getActorInitials, getActorAvatarUrl } = useActorName();
 
   const effectiveFilters = useMemo(
@@ -165,6 +185,13 @@ export function InboxFilterMenu({
   const facetsQuery = useQuery({ ...archivedInboxFacetsOptions(wsId, effectiveFilters), enabled: archived && open });
   const facets = archived ? facetsQuery.data : undefined;
   const activeCount = inboxFilterCount(effectiveFilters);
+  if (open !== wasOpen) {
+    setWasOpen(open);
+    if (open) setBodyMounted(true);
+    if (open) setFromOpener(!ownOpen);
+    setActiveAtOpen(open ? new Set(activeInboxFilterKeys(effectiveFilters)) : null);
+    if (!open) setSearch("");
+  }
   const chips = useInboxFilterChips(wsId, effectiveFilters);
   const chipByKey = new Map(chips.map((chip) => [chip.key, chip]));
 
@@ -177,8 +204,6 @@ export function InboxFilterMenu({
       case "priority":
         return priorityFilterSupport === "supported";
       case "agent":
-      case "mentions":
-        // The archive is filtered server-side, which has no agent or mention dimension.
         return !archived;
       case "actor":
         return actorOptions.length > 0;
@@ -222,7 +247,6 @@ export function InboxFilterMenu({
     assignees: archived ? toMap(facets?.assignees) : localCounts?.assignees ?? NO_COUNTS,
     labels: archived ? toMap(facets?.labels) : localCounts?.labels ?? NO_COUNTS,
     unread: archived ? facets?.unreadCount ?? 0 : localCounts?.unread ?? 0,
-    mentions: localCounts?.mentions ?? 0,
   };
 
   const inboxStatusKeys = useMemo(
@@ -293,16 +317,6 @@ export function InboxFilterMenu({
             icon={<span className="flex size-3.5 items-center justify-center"><span className="size-1.5 rounded-full bg-brand" /></span>}
             label={labels.unread}
             count={counts.unread}
-          />
-        );
-      case "mentions":
-        return (
-          <ValueItem
-            checked={effectiveFilters.mentionsOnly}
-            onToggle={() => store.toggleMentionsOnly(wsId)}
-            icon={<AtSign className="size-3.5 text-muted-foreground" />}
-            label={t(($) => $.filters.mentions_only)}
-            count={counts.mentions}
           />
         );
       case "type":
@@ -512,13 +526,6 @@ export function InboxFilterMenu({
         checked: effectiveFilters.unreadOnly, onToggle: () => store.toggleUnreadOnly(wsId),
       });
     }
-    if (available("mentions")) {
-      valueHits.push({
-        key: "mentions", value: "mentions", label: t(($) => $.filters.mentions_only),
-        icon: <AtSign className="size-3.5 text-muted-foreground" />,
-        checked: effectiveFilters.mentionsOnly, onToggle: () => store.toggleMentionsOnly(wsId),
-      });
-    }
     if (available("type")) {
       for (const type of INBOX_TYPE_GROUPS) {
         const Icon = INBOX_TYPE_ICONS[type];
@@ -628,13 +635,13 @@ export function InboxFilterMenu({
         if (!next) setBodyMounted(false);
       }}
       onOpenChange={(next) => {
-        setOpen(next);
-        if (next) setBodyMounted(true);
-        setActiveAtOpen(next ? new Set(activeInboxFilterKeys(effectiveFilters)) : null);
-        if (!next) setSearch("");
+        setOwnOpen(next);
+        if (!next) opener?.onClose();
       }}
     >
       {sectionTrigger ? (
+        // Hidden rather than unmounted: without a mounted trigger, opening a
+        // submenu closes the whole menu.
         <DropdownMenuTrigger
           render={
             <button
@@ -645,6 +652,9 @@ export function InboxFilterMenu({
                 "data-popup-open:bg-surface-selected data-popup-open:opacity-100",
                 activeCount > 0 ? sectionTrigger.activeClassName : "data-popup-open:text-foreground",
               )}
+              // Kept while the menu is open, so clearing the last filter
+              // inside it does not pull the trigger out from under it.
+              hidden={!!opener && activeCount === 0 && !(open && activeAtOpen !== null && activeAtOpen.size > 0)}
             />
           }
         >
@@ -679,6 +689,9 @@ export function InboxFilterMenu({
         side={sectionTrigger ? "right" : undefined}
         align={sectionTrigger ? "start" : "end"}
         sideOffset={sectionTrigger ? 8 : undefined}
+        anchor={fromOpener ? opener?.anchor : undefined}
+        // Back to the opener, also when the trigger hides as the last filter clears.
+        finalFocus={fromOpener || activeCount === 0 ? opener?.anchor : undefined}
         className="w-auto min-w-64 p-0"
       >
         <div data-filter-search className="flex items-center gap-1.5 border-b border-foreground/5 px-2.5 py-2">

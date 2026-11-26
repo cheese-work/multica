@@ -11,51 +11,11 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const claimIssueCIAdvance = `-- name: ClaimIssueCIAdvance :execrows
-INSERT INTO issue_ci_advance (issue_id, head_sha)
-VALUES ($1::uuid, $2::text)
-ON CONFLICT (issue_id, head_sha) DO NOTHING
-`
-
-type ClaimIssueCIAdvanceParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	HeadSha string      `json:"head_sha"`
-}
-
-// One green head advances an issue once. Zero rows means this head already did.
-func (q *Queries) ClaimIssueCIAdvance(ctx context.Context, arg ClaimIssueCIAdvanceParams) (int64, error) {
-	result, err := q.db.Exec(ctx, claimIssueCIAdvance, arg.IssueID, arg.HeadSha)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
-const countIssuesOverridingToIssueWorkflow = `-- name: CountIssuesOverridingToIssueWorkflow :one
-SELECT COUNT(*)::bigint FROM issue
-WHERE workspace_id = $1::uuid
-  AND workflow_id = $2::uuid
-`
-
-type CountIssuesOverridingToIssueWorkflowParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	WorkflowID  pgtype.UUID `json:"workflow_id"`
-}
-
-// Direct references that block deleting a workflow.
-func (q *Queries) CountIssuesOverridingToIssueWorkflow(ctx context.Context, arg CountIssuesOverridingToIssueWorkflowParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countIssuesOverridingToIssueWorkflow, arg.WorkspaceID, arg.WorkflowID)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
 const countProjectIssuesByStatus = `-- name: CountProjectIssuesByStatus :many
 SELECT status, COUNT(*)::bigint AS issue_count
 FROM issue
 WHERE workspace_id = $1::uuid
   AND project_id = ANY($2::uuid[])
-  AND workflow_id IS NULL
 GROUP BY status
 ORDER BY status
 `
@@ -72,8 +32,6 @@ type CountProjectIssuesByStatusRow struct {
 
 // Status census for a workflow switch or step removal, including terminal
 // issues: every issue of the project must end on a status its workflow lists.
-// Issues with their own workflow override follow that workflow, not the
-// project's, so neither the census nor the remap below counts or moves them.
 func (q *Queries) CountProjectIssuesByStatus(ctx context.Context, arg CountProjectIssuesByStatusParams) ([]CountProjectIssuesByStatusRow, error) {
 	rows, err := q.db.Query(ctx, countProjectIssuesByStatus, arg.WorkspaceID, arg.ProjectIds)
 	if err != nil {
@@ -94,7 +52,7 @@ func (q *Queries) CountProjectIssuesByStatus(ctx context.Context, arg CountProje
 	return items, nil
 }
 
-const createDefaultIssueWorkflowCols = `-- name: CreateDefaultIssueWorkflowCols :many
+const createDefaultIssueWorkflow = `-- name: CreateDefaultIssueWorkflow :many
 INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, is_default)
 VALUES (
     $1::uuid,
@@ -105,44 +63,24 @@ VALUES (
     true
 )
 ON CONFLICT (workspace_id) WHERE is_default DO NOTHING
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id
 `
 
-type CreateDefaultIssueWorkflowColsParams struct {
+type CreateDefaultIssueWorkflowParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 	Steps       []byte      `json:"steps"`
 }
 
-type CreateDefaultIssueWorkflowColsRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Name               string             `json:"name"`
-	Description        string             `json:"description"`
-	InitialStatusKey   string             `json:"initial_status_key"`
-	Steps              []byte             `json:"steps"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	IsDefault          bool               `json:"is_default"`
-	OwnerID            pgtype.UUID        `json:"owner_id"`
-	MaxRunsPerIssue    pgtype.Int4        `json:"max_runs_per_issue"`
-	IncludeChildPrs    bool               `json:"include_child_prs"`
-	RunBudgetSince     pgtype.Timestamptz `json:"run_budget_since"`
-	StartStatusKey     pgtype.Text        `json:"start_status_key"`
-	LintOverrideReason pgtype.Text        `json:"lint_override_reason"`
-	LintOverriddenAt   pgtype.Timestamptz `json:"lint_overridden_at"`
-	LintFindings       []byte             `json:"lint_findings"`
-}
-
 // Returns no row when another request created the Default first.
-func (q *Queries) CreateDefaultIssueWorkflowCols(ctx context.Context, arg CreateDefaultIssueWorkflowColsParams) ([]CreateDefaultIssueWorkflowColsRow, error) {
-	rows, err := q.db.Query(ctx, createDefaultIssueWorkflowCols, arg.WorkspaceID, arg.Steps)
+func (q *Queries) CreateDefaultIssueWorkflow(ctx context.Context, arg CreateDefaultIssueWorkflowParams) ([]IssueWorkflow, error) {
+	rows, err := q.db.Query(ctx, createDefaultIssueWorkflow, arg.WorkspaceID, arg.Steps)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []CreateDefaultIssueWorkflowColsRow{}
+	items := []IssueWorkflow{}
 	for rows.Next() {
-		var i CreateDefaultIssueWorkflowColsRow
+		var i IssueWorkflow
 		if err := rows.Scan(
 			&i.ID,
 			&i.WorkspaceID,
@@ -154,13 +92,6 @@ func (q *Queries) CreateDefaultIssueWorkflowCols(ctx context.Context, arg Create
 			&i.UpdatedAt,
 			&i.IsDefault,
 			&i.OwnerID,
-			&i.MaxRunsPerIssue,
-			&i.IncludeChildPrs,
-			&i.RunBudgetSince,
-			&i.StartStatusKey,
-			&i.LintOverrideReason,
-			&i.LintOverriddenAt,
-			&i.LintFindings,
 		); err != nil {
 			return nil, err
 		}
@@ -172,64 +103,38 @@ func (q *Queries) CreateDefaultIssueWorkflowCols(ctx context.Context, arg Create
 	return items, nil
 }
 
-const createIssueWorkflowCols = `-- name: CreateIssueWorkflowCols :one
-INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id, max_runs_per_issue, include_child_prs)
+const createIssueWorkflow = `-- name: CreateIssueWorkflow :one
+INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id)
 VALUES (
     $1::uuid,
     $2::text,
     $3::text,
     $4::text,
     $5::jsonb,
-    $6::uuid,
-    NULLIF($7::int, 0),
-    COALESCE($8::boolean, true)
+    $6::uuid
 )
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id
 `
 
-type CreateIssueWorkflowColsParams struct {
+type CreateIssueWorkflowParams struct {
 	WorkspaceID      pgtype.UUID `json:"workspace_id"`
 	Name             string      `json:"name"`
 	Description      string      `json:"description"`
 	InitialStatusKey string      `json:"initial_status_key"`
 	Steps            []byte      `json:"steps"`
 	OwnerID          pgtype.UUID `json:"owner_id"`
-	MaxRunsPerIssue  pgtype.Int4 `json:"max_runs_per_issue"`
-	IncludeChildPrs  pgtype.Bool `json:"include_child_prs"`
 }
 
-type CreateIssueWorkflowColsRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Name               string             `json:"name"`
-	Description        string             `json:"description"`
-	InitialStatusKey   string             `json:"initial_status_key"`
-	Steps              []byte             `json:"steps"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	IsDefault          bool               `json:"is_default"`
-	OwnerID            pgtype.UUID        `json:"owner_id"`
-	MaxRunsPerIssue    pgtype.Int4        `json:"max_runs_per_issue"`
-	IncludeChildPrs    bool               `json:"include_child_prs"`
-	RunBudgetSince     pgtype.Timestamptz `json:"run_budget_since"`
-	StartStatusKey     pgtype.Text        `json:"start_status_key"`
-	LintOverrideReason pgtype.Text        `json:"lint_override_reason"`
-	LintOverriddenAt   pgtype.Timestamptz `json:"lint_overridden_at"`
-	LintFindings       []byte             `json:"lint_findings"`
-}
-
-func (q *Queries) CreateIssueWorkflowCols(ctx context.Context, arg CreateIssueWorkflowColsParams) (CreateIssueWorkflowColsRow, error) {
-	row := q.db.QueryRow(ctx, createIssueWorkflowCols,
+func (q *Queries) CreateIssueWorkflow(ctx context.Context, arg CreateIssueWorkflowParams) (IssueWorkflow, error) {
+	row := q.db.QueryRow(ctx, createIssueWorkflow,
 		arg.WorkspaceID,
 		arg.Name,
 		arg.Description,
 		arg.InitialStatusKey,
 		arg.Steps,
 		arg.OwnerID,
-		arg.MaxRunsPerIssue,
-		arg.IncludeChildPrs,
 	)
-	var i CreateIssueWorkflowColsRow
+	var i IssueWorkflow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -241,13 +146,6 @@ func (q *Queries) CreateIssueWorkflowCols(ctx context.Context, arg CreateIssueWo
 		&i.UpdatedAt,
 		&i.IsDefault,
 		&i.OwnerID,
-		&i.MaxRunsPerIssue,
-		&i.IncludeChildPrs,
-		&i.RunBudgetSince,
-		&i.StartStatusKey,
-		&i.LintOverrideReason,
-		&i.LintOverriddenAt,
-		&i.LintFindings,
 	)
 	return i, err
 }
@@ -272,64 +170,6 @@ func (q *Queries) DeleteIssueWorkflow(ctx context.Context, arg DeleteIssueWorkfl
 	return result.RowsAffected(), nil
 }
 
-const deleteIssueWorkflowLintOverridesForWorkspace = `-- name: DeleteIssueWorkflowLintOverridesForWorkspace :exec
-DELETE FROM issue_workflow_lint_override WHERE workspace_id = $1::uuid
-`
-
-// Workspace teardown only; the log outlives a deleted workflow.
-func (q *Queries) DeleteIssueWorkflowLintOverridesForWorkspace(ctx context.Context, workspaceID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteIssueWorkflowLintOverridesForWorkspace, workspaceID)
-	return err
-}
-
-const deleteIssueWorkflowSwitchPending = `-- name: DeleteIssueWorkflowSwitchPending :one
-DELETE FROM issue_workflow_switch_pending
-WHERE issue_id = $1::uuid
-RETURNING issue_id, workspace_id, workflow_id, reason, created_at
-`
-
-// Consumes an issue's pending workflow switch. No row means another event
-// already applied it, so the caller writes nothing.
-func (q *Queries) DeleteIssueWorkflowSwitchPending(ctx context.Context, issueID pgtype.UUID) (IssueWorkflowSwitchPending, error) {
-	row := q.db.QueryRow(ctx, deleteIssueWorkflowSwitchPending, issueID)
-	var i IssueWorkflowSwitchPending
-	err := row.Scan(
-		&i.IssueID,
-		&i.WorkspaceID,
-		&i.WorkflowID,
-		&i.Reason,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
-const deleteIssueWorkflowSwitchPendingRequest = `-- name: DeleteIssueWorkflowSwitchPendingRequest :one
-DELETE FROM issue_workflow_switch_pending
-WHERE issue_id = $1::uuid AND created_at = $2::timestamptz
-RETURNING issue_id, workspace_id, workflow_id, reason, created_at
-`
-
-type DeleteIssueWorkflowSwitchPendingRequestParams struct {
-	IssueID   pgtype.UUID        `json:"issue_id"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-}
-
-// Consumes one request, not the issue's row: created_at is set again on every
-// upsert, so it names the request a refusal was made for. No row means a newer
-// request replaced it or another event settled it; the caller writes nothing.
-func (q *Queries) DeleteIssueWorkflowSwitchPendingRequest(ctx context.Context, arg DeleteIssueWorkflowSwitchPendingRequestParams) (IssueWorkflowSwitchPending, error) {
-	row := q.db.QueryRow(ctx, deleteIssueWorkflowSwitchPendingRequest, arg.IssueID, arg.CreatedAt)
-	var i IssueWorkflowSwitchPending
-	err := row.Scan(
-		&i.IssueID,
-		&i.WorkspaceID,
-		&i.WorkflowID,
-		&i.Reason,
-		&i.CreatedAt,
-	)
-	return i, err
-}
-
 const deleteIssueWorkflowsForWorkspace = `-- name: DeleteIssueWorkflowsForWorkspace :exec
 DELETE FROM issue_workflow WHERE workspace_id = $1::uuid
 `
@@ -340,35 +180,15 @@ func (q *Queries) DeleteIssueWorkflowsForWorkspace(ctx context.Context, workspac
 	return err
 }
 
-const getDefaultIssueWorkflowCols = `-- name: GetDefaultIssueWorkflowCols :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
+const getDefaultIssueWorkflow = `-- name: GetDefaultIssueWorkflow :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id FROM issue_workflow
 WHERE workspace_id = $1::uuid
   AND is_default
 `
 
-type GetDefaultIssueWorkflowColsRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Name               string             `json:"name"`
-	Description        string             `json:"description"`
-	InitialStatusKey   string             `json:"initial_status_key"`
-	Steps              []byte             `json:"steps"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	IsDefault          bool               `json:"is_default"`
-	OwnerID            pgtype.UUID        `json:"owner_id"`
-	MaxRunsPerIssue    pgtype.Int4        `json:"max_runs_per_issue"`
-	IncludeChildPrs    bool               `json:"include_child_prs"`
-	RunBudgetSince     pgtype.Timestamptz `json:"run_budget_since"`
-	StartStatusKey     pgtype.Text        `json:"start_status_key"`
-	LintOverrideReason pgtype.Text        `json:"lint_override_reason"`
-	LintOverriddenAt   pgtype.Timestamptz `json:"lint_overridden_at"`
-	LintFindings       []byte             `json:"lint_findings"`
-}
-
-func (q *Queries) GetDefaultIssueWorkflowCols(ctx context.Context, workspaceID pgtype.UUID) (GetDefaultIssueWorkflowColsRow, error) {
-	row := q.db.QueryRow(ctx, getDefaultIssueWorkflowCols, workspaceID)
-	var i GetDefaultIssueWorkflowColsRow
+func (q *Queries) GetDefaultIssueWorkflow(ctx context.Context, workspaceID pgtype.UUID) (IssueWorkflow, error) {
+	row := q.db.QueryRow(ctx, getDefaultIssueWorkflow, workspaceID)
+	var i IssueWorkflow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -380,51 +200,24 @@ func (q *Queries) GetDefaultIssueWorkflowCols(ctx context.Context, workspaceID p
 		&i.UpdatedAt,
 		&i.IsDefault,
 		&i.OwnerID,
-		&i.MaxRunsPerIssue,
-		&i.IncludeChildPrs,
-		&i.RunBudgetSince,
-		&i.StartStatusKey,
-		&i.LintOverrideReason,
-		&i.LintOverriddenAt,
-		&i.LintFindings,
 	)
 	return i, err
 }
 
-const getIssueWorkflowCols = `-- name: GetIssueWorkflowCols :one
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
+const getIssueWorkflow = `-- name: GetIssueWorkflow :one
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id FROM issue_workflow
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
 `
 
-type GetIssueWorkflowColsParams struct {
+type GetIssueWorkflowParams struct {
 	ID          pgtype.UUID `json:"id"`
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-type GetIssueWorkflowColsRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Name               string             `json:"name"`
-	Description        string             `json:"description"`
-	InitialStatusKey   string             `json:"initial_status_key"`
-	Steps              []byte             `json:"steps"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	IsDefault          bool               `json:"is_default"`
-	OwnerID            pgtype.UUID        `json:"owner_id"`
-	MaxRunsPerIssue    pgtype.Int4        `json:"max_runs_per_issue"`
-	IncludeChildPrs    bool               `json:"include_child_prs"`
-	RunBudgetSince     pgtype.Timestamptz `json:"run_budget_since"`
-	StartStatusKey     pgtype.Text        `json:"start_status_key"`
-	LintOverrideReason pgtype.Text        `json:"lint_override_reason"`
-	LintOverriddenAt   pgtype.Timestamptz `json:"lint_overridden_at"`
-	LintFindings       []byte             `json:"lint_findings"`
-}
-
-func (q *Queries) GetIssueWorkflowCols(ctx context.Context, arg GetIssueWorkflowColsParams) (GetIssueWorkflowColsRow, error) {
-	row := q.db.QueryRow(ctx, getIssueWorkflowCols, arg.ID, arg.WorkspaceID)
-	var i GetIssueWorkflowColsRow
+func (q *Queries) GetIssueWorkflow(ctx context.Context, arg GetIssueWorkflowParams) (IssueWorkflow, error) {
+	row := q.db.QueryRow(ctx, getIssueWorkflow, arg.ID, arg.WorkspaceID)
+	var i IssueWorkflow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -436,144 +229,8 @@ func (q *Queries) GetIssueWorkflowCols(ctx context.Context, arg GetIssueWorkflow
 		&i.UpdatedAt,
 		&i.IsDefault,
 		&i.OwnerID,
-		&i.MaxRunsPerIssue,
-		&i.IncludeChildPrs,
-		&i.RunBudgetSince,
-		&i.StartStatusKey,
-		&i.LintOverrideReason,
-		&i.LintOverriddenAt,
-		&i.LintFindings,
 	)
 	return i, err
-}
-
-const hasIssueWorkflowSwitchPending = `-- name: HasIssueWorkflowSwitchPending :one
-SELECT EXISTS (SELECT 1 FROM issue_workflow_switch_pending WHERE issue_id = $1::uuid)
-`
-
-func (q *Queries) HasIssueWorkflowSwitchPending(ctx context.Context, issueID pgtype.UUID) (bool, error) {
-	row := q.db.QueryRow(ctx, hasIssueWorkflowSwitchPending, issueID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
-const hasLiveTaskForIssue = `-- name: HasLiveTaskForIssue :one
-SELECT EXISTS (
-    SELECT 1 FROM agent_task_queue
-    WHERE issue_id = $1::uuid
-      AND status IN ('queued', 'dispatched', 'waiting_local_directory', 'running', 'deferred')
-)
-`
-
-// Any task that can still run or retry. A deferred task is included: its retry
-// keeps the old workflow step, so a switch under it would pass the stale-step
-// check. HasActiveTaskForIssue covers only the first four states.
-func (q *Queries) HasLiveTaskForIssue(ctx context.Context, issueID pgtype.UUID) (bool, error) {
-	row := q.db.QueryRow(ctx, hasLiveTaskForIssue, issueID)
-	var exists bool
-	err := row.Scan(&exists)
-	return exists, err
-}
-
-const insertIssueWorkflowLintOverride = `-- name: InsertIssueWorkflowLintOverride :exec
-INSERT INTO issue_workflow_lint_override (workspace_id, workflow_id, version, reason, actor_id)
-VALUES ($1::uuid, $2::uuid, $3::timestamptz,
-        $4::text, $5::uuid)
-`
-
-type InsertIssueWorkflowLintOverrideParams struct {
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	WorkflowID  pgtype.UUID        `json:"workflow_id"`
-	Version     pgtype.Timestamptz `json:"version"`
-	Reason      string             `json:"reason"`
-	ActorID     pgtype.UUID        `json:"actor_id"`
-}
-
-func (q *Queries) InsertIssueWorkflowLintOverride(ctx context.Context, arg InsertIssueWorkflowLintOverrideParams) error {
-	_, err := q.db.Exec(ctx, insertIssueWorkflowLintOverride,
-		arg.WorkspaceID,
-		arg.WorkflowID,
-		arg.Version,
-		arg.Reason,
-		arg.ActorID,
-	)
-	return err
-}
-
-const listInheritedRunsOverridesForProject = `-- name: ListInheritedRunsOverridesForProject :many
-SELECT DISTINCT COALESCE(max_runs_override, 0)::int AS runs_override FROM issue
-WHERE workspace_id = $1::uuid
-  AND project_id = $2::uuid
-  AND workflow_id IS NULL
-ORDER BY 1
-`
-
-type ListInheritedRunsOverridesForProjectParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	ProjectID   pgtype.UUID `json:"project_id"`
-}
-
-// The distinct run overrides (0 for none) among a project's issues that follow
-// its workflow. Each one prices its issues' cap under a workflow switch.
-func (q *Queries) ListInheritedRunsOverridesForProject(ctx context.Context, arg ListInheritedRunsOverridesForProjectParams) ([]int32, error) {
-	rows, err := q.db.Query(ctx, listInheritedRunsOverridesForProject, arg.WorkspaceID, arg.ProjectID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []int32{}
-	for rows.Next() {
-		var runs_override int32
-		if err := rows.Scan(&runs_override); err != nil {
-			return nil, err
-		}
-		items = append(items, runs_override)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listIssueWorkflowLintOverrides = `-- name: ListIssueWorkflowLintOverrides :many
-SELECT id, workspace_id, workflow_id, version, reason, actor_id, created_at FROM issue_workflow_lint_override
-WHERE workflow_id = $1::uuid
-  AND workspace_id = $2::uuid
-ORDER BY version DESC
-`
-
-type ListIssueWorkflowLintOverridesParams struct {
-	WorkflowID  pgtype.UUID `json:"workflow_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) ListIssueWorkflowLintOverrides(ctx context.Context, arg ListIssueWorkflowLintOverridesParams) ([]IssueWorkflowLintOverride, error) {
-	rows, err := q.db.Query(ctx, listIssueWorkflowLintOverrides, arg.WorkflowID, arg.WorkspaceID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []IssueWorkflowLintOverride{}
-	for rows.Next() {
-		var i IssueWorkflowLintOverride
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.WorkflowID,
-			&i.Version,
-			&i.Reason,
-			&i.ActorID,
-			&i.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const listIssueWorkflowNamesUsingStatusKey = `-- name: ListIssueWorkflowNamesUsingStatusKey :many
@@ -611,46 +268,26 @@ func (q *Queries) ListIssueWorkflowNamesUsingStatusKey(ctx context.Context, arg 
 	return items, nil
 }
 
-const listIssueWorkflowsCols = `-- name: ListIssueWorkflowsCols :many
+const listIssueWorkflows = `-- name: ListIssueWorkflows :many
 
-SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings FROM issue_workflow
+SELECT id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id FROM issue_workflow
 WHERE workspace_id = $1::uuid
 ORDER BY is_default DESC, lower(name), created_at, id
 `
-
-type ListIssueWorkflowsColsRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Name               string             `json:"name"`
-	Description        string             `json:"description"`
-	InitialStatusKey   string             `json:"initial_status_key"`
-	Steps              []byte             `json:"steps"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	IsDefault          bool               `json:"is_default"`
-	OwnerID            pgtype.UUID        `json:"owner_id"`
-	MaxRunsPerIssue    pgtype.Int4        `json:"max_runs_per_issue"`
-	IncludeChildPrs    bool               `json:"include_child_prs"`
-	RunBudgetSince     pgtype.Timestamptz `json:"run_budget_since"`
-	StartStatusKey     pgtype.Text        `json:"start_status_key"`
-	LintOverrideReason pgtype.Text        `json:"lint_override_reason"`
-	LintOverriddenAt   pgtype.Timestamptz `json:"lint_overridden_at"`
-	LintFindings       []byte             `json:"lint_findings"`
-}
 
 // Project workflows (MUL-7420). A workflow selects and orders statuses from
 // the workspace's issue_status catalog. Projects opt in through
 // project.workflow_id; a project without one uses the workspace's Default
 // workflow row. Each step also stores who an issue entering it is handed to.
-func (q *Queries) ListIssueWorkflowsCols(ctx context.Context, workspaceID pgtype.UUID) ([]ListIssueWorkflowsColsRow, error) {
-	rows, err := q.db.Query(ctx, listIssueWorkflowsCols, workspaceID)
+func (q *Queries) ListIssueWorkflows(ctx context.Context, workspaceID pgtype.UUID) ([]IssueWorkflow, error) {
+	rows, err := q.db.Query(ctx, listIssueWorkflows, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListIssueWorkflowsColsRow{}
+	items := []IssueWorkflow{}
 	for rows.Next() {
-		var i ListIssueWorkflowsColsRow
+		var i IssueWorkflow
 		if err := rows.Scan(
 			&i.ID,
 			&i.WorkspaceID,
@@ -662,13 +299,6 @@ func (q *Queries) ListIssueWorkflowsCols(ctx context.Context, workspaceID pgtype
 			&i.UpdatedAt,
 			&i.IsDefault,
 			&i.OwnerID,
-			&i.MaxRunsPerIssue,
-			&i.IncludeChildPrs,
-			&i.RunBudgetSince,
-			&i.StartStatusKey,
-			&i.LintOverrideReason,
-			&i.LintOverriddenAt,
-			&i.LintFindings,
 		); err != nil {
 			return nil, err
 		}
@@ -707,41 +337,8 @@ func (q *Queries) ListNamedIssueWorkflowSteps(ctx context.Context, workspaceID p
 	return items, nil
 }
 
-const listOverrideIssueStatusesForWorkflow = `-- name: ListOverrideIssueStatusesForWorkflow :many
-SELECT DISTINCT status FROM issue
-WHERE workspace_id = $1::uuid
-  AND workflow_id = $2::uuid
-`
-
-type ListOverrideIssueStatusesForWorkflowParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	WorkflowID  pgtype.UUID `json:"workflow_id"`
-}
-
-// Statuses held by issues that follow this workflow by override, for an edit
-// that would drop one of them.
-func (q *Queries) ListOverrideIssueStatusesForWorkflow(ctx context.Context, arg ListOverrideIssueStatusesForWorkflowParams) ([]string, error) {
-	rows, err := q.db.Query(ctx, listOverrideIssueStatusesForWorkflow, arg.WorkspaceID, arg.WorkflowID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []string{}
-	for rows.Next() {
-		var status string
-		if err := rows.Scan(&status); err != nil {
-			return nil, err
-		}
-		items = append(items, status)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const listProjectsUsingDefaultIssueWorkflow = `-- name: ListProjectsUsingDefaultIssueWorkflow :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
 WHERE workspace_id = $1::uuid
   AND workflow_id IS NULL
 ORDER BY created_at, id
@@ -771,14 +368,13 @@ func (q *Queries) ListProjectsUsingDefaultIssueWorkflow(ctx context.Context, wor
 			&i.StartDate,
 			&i.DueDate,
 			&i.WorkflowID,
-			&i.DecisionDelegates,
-			&i.WorkflowSplit,
 			&i.CreatorType,
 			&i.CreatorID,
 			&i.Visibility,
 			&i.ArchivedAt,
 			&i.ArchivedByType,
 			&i.ArchivedByID,
+			&i.FolderID,
 		); err != nil {
 			return nil, err
 		}
@@ -791,7 +387,7 @@ func (q *Queries) ListProjectsUsingDefaultIssueWorkflow(ctx context.Context, wor
 }
 
 const listProjectsUsingIssueWorkflow = `-- name: ListProjectsUsingIssueWorkflow :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
 WHERE workspace_id = $1::uuid
   AND workflow_id = $2::uuid
 ORDER BY created_at, id
@@ -826,14 +422,13 @@ func (q *Queries) ListProjectsUsingIssueWorkflow(ctx context.Context, arg ListPr
 			&i.StartDate,
 			&i.DueDate,
 			&i.WorkflowID,
-			&i.DecisionDelegates,
-			&i.WorkflowSplit,
 			&i.CreatorType,
 			&i.CreatorID,
 			&i.Visibility,
 			&i.ArchivedAt,
 			&i.ArchivedByType,
 			&i.ArchivedByID,
+			&i.FolderID,
 		); err != nil {
 			return nil, err
 		}
@@ -845,52 +440,8 @@ func (q *Queries) ListProjectsUsingIssueWorkflow(ctx context.Context, arg ListPr
 	return items, nil
 }
 
-const lockIssueWorkflowSwitchPendingRequest = `-- name: LockIssueWorkflowSwitchPendingRequest :one
-SELECT issue_id FROM issue_workflow_switch_pending
-WHERE issue_id = $1::uuid AND created_at = $2::timestamptz
-FOR UPDATE
-`
-
-type LockIssueWorkflowSwitchPendingRequestParams struct {
-	IssueID   pgtype.UUID        `json:"issue_id"`
-	CreatedAt pgtype.Timestamptz `json:"created_at"`
-}
-
-// Locks the one request a refusal was made for, until the caller's transaction
-// ends. An upsert of a newer request waits for it, so the refusal's writes
-// cannot land after a replacement. No row means it was replaced or settled.
-func (q *Queries) LockIssueWorkflowSwitchPendingRequest(ctx context.Context, arg LockIssueWorkflowSwitchPendingRequestParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, lockIssueWorkflowSwitchPendingRequest, arg.IssueID, arg.CreatedAt)
-	var issue_id pgtype.UUID
-	err := row.Scan(&issue_id)
-	return issue_id, err
-}
-
-const lockProjectForIssueWrite = `-- name: LockProjectForIssueWrite :one
-SELECT id FROM project
-WHERE id = $1::uuid
-  AND workspace_id = $2::uuid
-FOR KEY SHARE
-`
-
-type LockProjectForIssueWriteParams struct {
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-// Held by an issue write that applies the project's workflow. A workflow
-// switch takes the row FOR UPDATE, which conflicts with this lock, so the write
-// either sees the switch or finishes before it starts. KEY SHARE leaves project
-// renames and other row updates unblocked.
-func (q *Queries) LockProjectForIssueWrite(ctx context.Context, arg LockProjectForIssueWriteParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, lockProjectForIssueWrite, arg.ID, arg.WorkspaceID)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
-}
-
 const lockProjectForWorkflowChange = `-- name: LockProjectForWorkflowChange :one
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
 WHERE id = $1::uuid
   AND workspace_id = $2::uuid
 FOR UPDATE
@@ -920,53 +471,15 @@ func (q *Queries) LockProjectForWorkflowChange(ctx context.Context, arg LockProj
 		&i.StartDate,
 		&i.DueDate,
 		&i.WorkflowID,
-		&i.DecisionDelegates,
-		&i.WorkflowSplit,
 		&i.CreatorType,
 		&i.CreatorID,
 		&i.Visibility,
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
-}
-
-const minInheritedRunsOverrideForProject = `-- name: MinInheritedRunsOverrideForProject :one
-SELECT COALESCE(MIN(COALESCE(max_runs_override, 0)), 0)::int FROM issue
-WHERE workspace_id = $1::uuid
-  AND project_id = $2::uuid
-  AND workflow_id IS NULL
-`
-
-type MinInheritedRunsOverrideForProjectParams struct {
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	ProjectID   pgtype.UUID `json:"project_id"`
-}
-
-// The smallest run override among a project's issues that follow its workflow
-// (0 when one has none, or there are none). A workflow switch widens the budget
-// of the issue with the smallest override first.
-func (q *Queries) MinInheritedRunsOverrideForProject(ctx context.Context, arg MinInheritedRunsOverrideForProjectParams) (int32, error) {
-	row := q.db.QueryRow(ctx, minInheritedRunsOverrideForProject, arg.WorkspaceID, arg.ProjectID)
-	var column_1 int32
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
-const releaseIssueCIAdvance = `-- name: ReleaseIssueCIAdvance :exec
-DELETE FROM issue_ci_advance
-WHERE issue_id = $1::uuid AND head_sha = $2::text
-`
-
-type ReleaseIssueCIAdvanceParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	HeadSha string      `json:"head_sha"`
-}
-
-func (q *Queries) ReleaseIssueCIAdvance(ctx context.Context, arg ReleaseIssueCIAdvanceParams) error {
-	_, err := q.db.Exec(ctx, releaseIssueCIAdvance, arg.IssueID, arg.HeadSha)
-	return err
 }
 
 const remapProjectIssueStatus = `-- name: RemapProjectIssueStatus :many
@@ -986,8 +499,7 @@ WHERE i.workspace_id = $2::uuid
   AND i.project_id = ANY($3::uuid[])
   AND i.status = $4::text
   AND i.status <> $1::text
-  AND i.workflow_id IS NULL
-RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read, i.created_via, i.requester_user_id
+RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.requester_user_id, i.description_revision
 `
 
 type RemapProjectIssueStatusParams struct {
@@ -1048,12 +560,8 @@ func (q *Queries) RemapProjectIssueStatus(ctx context.Context, arg RemapProjectI
 			&i.LastActivityAt,
 			&i.TriageState,
 			&i.DuplicateOfIssueID,
-			&i.WorkflowID,
-			&i.RequestedByID,
-			&i.MaxRunsOverride,
-			&i.DescriptionExternalRead,
-			&i.CreatedVia,
 			&i.RequesterUserID,
+			&i.DescriptionRevision,
 		); err != nil {
 			return nil, err
 		}
@@ -1089,75 +597,13 @@ func (q *Queries) RemoveStatusFromDefaultIssueWorkflow(ctx context.Context, arg 
 	return err
 }
 
-const setIssueWorkflow = `-- name: SetIssueWorkflow :one
-UPDATE issue SET
-    workflow_id = $1::uuid,
-    revision = revision + 1,
-    updated_at = now()
-WHERE id = $2::uuid
-  AND workspace_id = $3::uuid
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via, requester_user_id
-`
-
-type SetIssueWorkflowParams struct {
-	WorkflowID  pgtype.UUID `json:"workflow_id"`
-	ID          pgtype.UUID `json:"id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-// Sets or clears (NULL) one issue's workflow override. Administrative like a
-// project workflow switch: no status, assignee or run changes.
-func (q *Queries) SetIssueWorkflow(ctx context.Context, arg SetIssueWorkflowParams) (Issue, error) {
-	row := q.db.QueryRow(ctx, setIssueWorkflow, arg.WorkflowID, arg.ID, arg.WorkspaceID)
-	var i Issue
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.Title,
-		&i.Description,
-		&i.Status,
-		&i.Priority,
-		&i.AssigneeType,
-		&i.AssigneeID,
-		&i.CreatorType,
-		&i.CreatorID,
-		&i.ParentIssueID,
-		&i.AcceptanceCriteria,
-		&i.ContextRefs,
-		&i.Position,
-		&i.DueDate,
-		&i.CreatedAt,
-		&i.UpdatedAt,
-		&i.Number,
-		&i.ProjectID,
-		&i.OriginType,
-		&i.OriginID,
-		&i.FirstExecutedAt,
-		&i.StartDate,
-		&i.Metadata,
-		&i.Stage,
-		&i.Properties,
-		&i.Revision,
-		&i.LastActivityAt,
-		&i.TriageState,
-		&i.DuplicateOfIssueID,
-		&i.WorkflowID,
-		&i.RequestedByID,
-		&i.MaxRunsOverride,
-		&i.DescriptionExternalRead,
-		&i.CreatedVia,
-		&i.RequesterUserID,
-	)
-	return i, err
-}
-
 const setProjectWorkflow = `-- name: SetProjectWorkflow :one
 UPDATE project SET
     workflow_id = $1::uuid,
     updated_at = now()
 WHERE id = $2::uuid
   AND workspace_id = $3::uuid
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type SetProjectWorkflowParams struct {
@@ -1184,110 +630,80 @@ func (q *Queries) SetProjectWorkflow(ctx context.Context, arg SetProjectWorkflow
 		&i.StartDate,
 		&i.DueDate,
 		&i.WorkflowID,
-		&i.DecisionDelegates,
-		&i.WorkflowSplit,
 		&i.CreatorType,
 		&i.CreatorID,
 		&i.Visibility,
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }
 
-const updateIssueWorkflowCols = `-- name: UpdateIssueWorkflowCols :one
+const transferSquadWorkflowStepsToLeader = `-- name: TransferSquadWorkflowStepsToLeader :execrows
+UPDATE issue_workflow SET
+    steps = (
+        SELECT jsonb_agg(
+            CASE WHEN step->'handler' @> jsonb_build_object('type', 'squad', 'id', $1::text)
+                THEN jsonb_set(step, '{handler}', jsonb_build_object('type', 'agent', 'id', $2::text))
+                ELSE step
+            END ORDER BY ord)
+        FROM jsonb_array_elements(steps) WITH ORDINALITY AS s(step, ord)
+    ),
+    updated_at = now()
+WHERE workspace_id = $3::uuid
+  AND steps @> jsonb_build_array(jsonb_build_object('handler', jsonb_build_object('type', 'squad', 'id', $1::text)))
+`
+
+type TransferSquadWorkflowStepsToLeaderParams struct {
+	SquadID     string      `json:"squad_id"`
+	LeaderID    string      `json:"leader_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Mirrors TransferSquadAssignees for workflow steps: an archived squad cannot
+// be assigned, so a step still handing off to it would refuse every issue
+// that enters it. The leader agent takes the step over.
+func (q *Queries) TransferSquadWorkflowStepsToLeader(ctx context.Context, arg TransferSquadWorkflowStepsToLeaderParams) (int64, error) {
+	result, err := q.db.Exec(ctx, transferSquadWorkflowStepsToLeader, arg.SquadID, arg.LeaderID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateIssueWorkflow = `-- name: UpdateIssueWorkflow :one
 UPDATE issue_workflow SET
     name = $1::text,
     description = $2::text,
     initial_status_key = $3::text,
     steps = $4::jsonb,
-    -- A rule left out of the write keeps its value; a max of 0 clears it back
-    -- to the platform default.
-    max_runs_per_issue = CASE
-        WHEN $5::int IS NULL THEN max_runs_per_issue
-        ELSE NULLIF($5::int, 0)
-    END,
-    include_child_prs = COALESCE($6::boolean, include_child_prs),
-    -- A start status left out of the write keeps its value; '' clears it back
-    -- to todo.
-    start_status_key = CASE
-        WHEN $7::text IS NULL THEN start_status_key
-        ELSE NULLIF($7::text, '')
-    END,
-    -- A save that was linted records its override (null when it passed clean);
-    -- any other write keeps the last one.
-    lint_override_reason = CASE
-        WHEN $8::boolean THEN $9::text
-        ELSE lint_override_reason
-    END,
-    lint_overridden_at = CASE
-        WHEN NOT $8::boolean THEN lint_overridden_at
-        WHEN $9::text IS NULL THEN NULL
-        ELSE now()
-    END,
-    -- The findings of the last linted save, read back with the workflow.
-    lint_findings = CASE
-        WHEN $8::boolean THEN $10::jsonb
-        ELSE lint_findings
-    END,
     updated_at = now()
-WHERE id = $11::uuid
-  AND workspace_id = $12::uuid
-RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id, max_runs_per_issue, include_child_prs, run_budget_since, start_status_key, lint_override_reason, lint_overridden_at, lint_findings
+WHERE id = $5::uuid
+  AND workspace_id = $6::uuid
+RETURNING id, workspace_id, name, description, initial_status_key, steps, created_at, updated_at, is_default, owner_id
 `
 
-type UpdateIssueWorkflowColsParams struct {
-	Name               string      `json:"name"`
-	Description        string      `json:"description"`
-	InitialStatusKey   string      `json:"initial_status_key"`
-	Steps              []byte      `json:"steps"`
-	MaxRunsPerIssue    pgtype.Int4 `json:"max_runs_per_issue"`
-	IncludeChildPrs    pgtype.Bool `json:"include_child_prs"`
-	StartStatusKey     pgtype.Text `json:"start_status_key"`
-	LintChecked        bool        `json:"lint_checked"`
-	LintOverrideReason pgtype.Text `json:"lint_override_reason"`
-	LintFindings       []byte      `json:"lint_findings"`
-	ID                 pgtype.UUID `json:"id"`
-	WorkspaceID        pgtype.UUID `json:"workspace_id"`
+type UpdateIssueWorkflowParams struct {
+	Name             string      `json:"name"`
+	Description      string      `json:"description"`
+	InitialStatusKey string      `json:"initial_status_key"`
+	Steps            []byte      `json:"steps"`
+	ID               pgtype.UUID `json:"id"`
+	WorkspaceID      pgtype.UUID `json:"workspace_id"`
 }
 
-type UpdateIssueWorkflowColsRow struct {
-	ID                 pgtype.UUID        `json:"id"`
-	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
-	Name               string             `json:"name"`
-	Description        string             `json:"description"`
-	InitialStatusKey   string             `json:"initial_status_key"`
-	Steps              []byte             `json:"steps"`
-	CreatedAt          pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
-	IsDefault          bool               `json:"is_default"`
-	OwnerID            pgtype.UUID        `json:"owner_id"`
-	MaxRunsPerIssue    pgtype.Int4        `json:"max_runs_per_issue"`
-	IncludeChildPrs    bool               `json:"include_child_prs"`
-	RunBudgetSince     pgtype.Timestamptz `json:"run_budget_since"`
-	StartStatusKey     pgtype.Text        `json:"start_status_key"`
-	LintOverrideReason pgtype.Text        `json:"lint_override_reason"`
-	LintOverriddenAt   pgtype.Timestamptz `json:"lint_overridden_at"`
-	LintFindings       []byte             `json:"lint_findings"`
-}
-
-func (q *Queries) UpdateIssueWorkflowCols(ctx context.Context, arg UpdateIssueWorkflowColsParams) (UpdateIssueWorkflowColsRow, error) {
-	row := q.db.QueryRow(ctx, updateIssueWorkflowCols,
+func (q *Queries) UpdateIssueWorkflow(ctx context.Context, arg UpdateIssueWorkflowParams) (IssueWorkflow, error) {
+	row := q.db.QueryRow(ctx, updateIssueWorkflow,
 		arg.Name,
 		arg.Description,
 		arg.InitialStatusKey,
 		arg.Steps,
-		arg.MaxRunsPerIssue,
-		arg.IncludeChildPrs,
-		arg.StartStatusKey,
-		arg.LintChecked,
-		arg.LintOverrideReason,
-		arg.LintFindings,
 		arg.ID,
 		arg.WorkspaceID,
 	)
-	var i UpdateIssueWorkflowColsRow
+	var i IssueWorkflow
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
@@ -1299,38 +715,6 @@ func (q *Queries) UpdateIssueWorkflowCols(ctx context.Context, arg UpdateIssueWo
 		&i.UpdatedAt,
 		&i.IsDefault,
 		&i.OwnerID,
-		&i.MaxRunsPerIssue,
-		&i.IncludeChildPrs,
-		&i.RunBudgetSince,
-		&i.StartStatusKey,
-		&i.LintOverrideReason,
-		&i.LintOverriddenAt,
-		&i.LintFindings,
 	)
 	return i, err
-}
-
-const upsertIssueWorkflowSwitchPending = `-- name: UpsertIssueWorkflowSwitchPending :exec
-INSERT INTO issue_workflow_switch_pending (issue_id, workspace_id, workflow_id, reason)
-VALUES ($1::uuid, $2::uuid, $3::uuid, $4::text)
-ON CONFLICT (issue_id) DO UPDATE
-SET workflow_id = EXCLUDED.workflow_id, reason = EXCLUDED.reason, created_at = now()
-`
-
-type UpsertIssueWorkflowSwitchPendingParams struct {
-	IssueID     pgtype.UUID `json:"issue_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-	WorkflowID  pgtype.UUID `json:"workflow_id"`
-	Reason      string      `json:"reason"`
-}
-
-// Parks a workflow switch: one row per issue, the newest request wins.
-func (q *Queries) UpsertIssueWorkflowSwitchPending(ctx context.Context, arg UpsertIssueWorkflowSwitchPendingParams) error {
-	_, err := q.db.Exec(ctx, upsertIssueWorkflowSwitchPending,
-		arg.IssueID,
-		arg.WorkspaceID,
-		arg.WorkflowID,
-		arg.Reason,
-	)
-	return err
 }

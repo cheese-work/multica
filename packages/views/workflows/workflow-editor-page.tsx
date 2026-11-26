@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   DndContext,
@@ -33,12 +33,7 @@ import {
 } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { ApiError, clientErrorMessage } from "@multica/core/api";
-import { usePersistedDraft } from "@multica/core/drafts";
 import { useWorkspaceId } from "@multica/core/hooks";
-import {
-  EMPTY_WORKFLOW_EDITOR_DRAFT,
-  useWorkflowEditorDraftStore,
-} from "@multica/core/issue-workflows/draft-stores";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import { statusColumnKeys } from "@multica/core/issues";
@@ -50,13 +45,12 @@ import {
   useIssueWorkflows,
   useUpdateIssueWorkflow,
   workflowMiddleKeys,
-  MAX_EDGES_PER_STEP,
-  validateWorkflowGraph,
   workflowNextStatus,
 } from "@multica/core/issue-workflows";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { projectListOptions } from "@multica/core/projects/queries";
 import type {
+  IssueStatusEntry,
   IssueWorkflow,
   IssueWorkflowMappingPlan,
   IssueWorkflowStep,
@@ -83,10 +77,7 @@ import { useT } from "../i18n";
 import { BriefPreviewDialog, HandoffFields, savedHandoff } from "./handoff-form";
 import { stepHandlerActor, useStepHandlerLabel } from "./step-handler";
 import { WORKFLOW_TEMPLATES, type WorkflowTemplateId } from "./templates";
-import { WorkflowEdgeEditor } from "./workflow-edge-editor";
-import { WorkflowGraph } from "./workflow-graph";
 import { WorkflowMappingDialog } from "./workflow-mapping-dialog";
-import { WorkflowBudgetRequestBanner } from "./workflow-budget-request-banner";
 
 /**
  * The name and description edit in place. A hover or focus background tells
@@ -102,7 +93,7 @@ const NEW_WORKFLOW_MIDDLE = ["in_progress", "in_review"];
 type DraftColumn = { id: string; status_key: string } | { id: string; new_name: string; category?: "unstarted" | "started" };
 
 /** What entering a column does, keyed in the draft by column id. */
-type Handoff = Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key" | "advance_on_ci_green" | "keep_other_assignee" | "edges">;
+type Handoff = Pick<IssueWorkflowStep, "handler" | "instructions" | "next_status_key" | "back_status_key">;
 
 const NO_HANDOFF: Handoff = { handler: { type: "none" }, instructions: "" };
 
@@ -113,20 +104,6 @@ interface Draft {
   blocked: boolean;
   middle: DraftColumn[];
   handoffs: Record<string, Handoff>;
-  /** The run cap as typed; empty keeps the platform default. */
-  maxRuns: string;
-  /** Whether PR guards also read the PRs of sub-issues; on unless the server says off. */
-  includeChildPrs: boolean;
-}
-
-/** The platform's run cap for a workflow that sets none (server DefaultMaxRunsPerIssue). */
-const DEFAULT_MAX_RUNS = 15;
-const MAX_RUNS_LIMIT = 1000;
-
-/** True when the typed cap is empty (platform default) or a whole number in 1..1000. */
-function validMaxRuns(value: string): boolean {
-  const v = value.trim();
-  return v === "" || (/^\d+$/.test(v) && Number(v) >= 1 && Number(v) <= MAX_RUNS_LIMIT);
 }
 
 /**
@@ -138,22 +115,14 @@ function columnKey(column: DraftColumn): string {
 }
 
 function hasHandoff(h: Handoff | undefined): h is Handoff {
-  return !!h && (h.handler.type !== "none" || !!h.next_status_key || !!h.back_status_key || !!h.advance_on_ci_green || !!h.keep_other_assignee || !!h.edges?.length);
+  return !!h && (h.handler.type !== "none" || !!h.next_status_key || !!h.back_status_key);
 }
 
-function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps" | "max_runs_per_issue" | "include_child_prs">): Draft {
+function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps">): Draft {
   const keys = workflow.steps.map((s) => s.status_key);
   const handoffs: Record<string, Handoff> = {};
   for (const s of workflow.steps) {
-    const h = {
-      handler: s.handler,
-      instructions: s.instructions,
-      next_status_key: s.next_status_key,
-      back_status_key: s.back_status_key,
-      advance_on_ci_green: s.advance_on_ci_green,
-      keep_other_assignee: s.keep_other_assignee,
-      edges: s.edges,
-    };
+    const h = { handler: s.handler, instructions: s.instructions, next_status_key: s.next_status_key, back_status_key: s.back_status_key };
     if (hasHandoff(h)) handoffs[s.status_key] = h;
   }
   return {
@@ -163,8 +132,6 @@ function draftFrom(workflow: Pick<IssueWorkflow, "name" | "description" | "steps
     blocked: keys.includes("blocked"),
     middle: workflowMiddleKeys(workflow).map((key) => ({ id: key, status_key: key })),
     handoffs,
-    maxRuns: workflow.max_runs_per_issue ? String(workflow.max_runs_per_issue) : "",
-    includeChildPrs: workflow.include_child_prs !== false,
   };
 }
 
@@ -185,9 +152,20 @@ function sameDraft(a: Draft, b: Draft): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-function isChangedElsewhere(err: unknown): boolean {
-  if (!(err instanceof ApiError) || err.status !== 409 || !err.body || typeof err.body !== "object") return false;
-  return (err.body as { code?: unknown }).code === "workflow_changed_elsewhere";
+/** Points columns that would create a status at the one the catalog already has by that name. */
+function withExistingStatuses(draft: Draft, statuses: readonly IssueStatusEntry[]): Draft {
+  const used = new Set(draft.middle.flatMap((c) => ("status_key" in c ? [c.status_key] : [])));
+  let changed = false;
+  const middle = draft.middle.map((column): DraftColumn => {
+    if ("status_key" in column) return column;
+    const name = column.new_name.toLowerCase();
+    const existing = statuses.find((e) => e.name.toLowerCase() === name);
+    if (!existing || isFixedWorkflowStatus(existing.key) || used.has(existing.key)) return column;
+    used.add(existing.key);
+    changed = true;
+    return { id: column.id, status_key: existing.key };
+  });
+  return changed ? { ...draft, middle } : draft;
 }
 
 function mappingPlanFrom(err: unknown): IssueWorkflowMappingPlan | null {
@@ -235,7 +213,7 @@ export function WorkflowEditorPage({
   const wsId = useWorkspaceId();
   const catalog = useIssueStatuses(wsId);
   const labelOf = useStatusLabel(wsId);
-  const { workflows, isLoaded, isError: loadFailed, retry: retryLoad } = useIssueWorkflows(wsId);
+  const { workflows, isLoaded } = useIssueWorkflows(wsId);
   const { data: projects = [] } = useQuery(projectListOptions(wsId));
   const createWorkflow = useCreateIssueWorkflow();
   const updateWorkflow = useUpdateIssueWorkflow();
@@ -245,7 +223,7 @@ export function WorkflowEditorPage({
   const isDefault = !!saved?.is_default;
   const baseline = useMemo<Draft>(() => {
     if (saved) return draftFrom(saved);
-    if (seed) return { ...draftFrom(seed), name: t(($) => $.workflows.editor.copy_name, { name: seed.name }), maxRuns: "", includeChildPrs: true };
+    if (seed) return { ...draftFrom(seed), name: t(($) => $.workflows.editor.copy_name, { name: seed.name }) };
     const tpl = template ? WORKFLOW_TEMPLATES.find((x) => x.id === template) : undefined;
     if (tpl) {
       const statusName = (name: string) =>
@@ -256,8 +234,6 @@ export function WorkflowEditorPage({
         backlog: true,
         blocked: true,
         handoffs: {},
-        maxRuns: "",
-        includeChildPrs: true,
         middle: tpl.columns.map((column): DraftColumn => {
           if ("status" in column) return { id: column.status, status_key: column.status };
           const name = statusName(column.name);
@@ -275,120 +251,22 @@ export function WorkflowEditorPage({
       blocked: true,
       middle: NEW_WORKFLOW_MIDDLE.map((key) => ({ id: key, status_key: key })),
       handoffs: {},
-      maxRuns: "",
-      includeChildPrs: true,
     };
-    // Re-seed when the target changes or the saved row is refreshed. The version
-    // is in the key because updated_at has one-second resolution: two saves in a
-    // second share it and differ only in version.
+    // Re-seed only when the target changes or the saved row is refreshed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [saved?.version, saved?.updated_at, workflowId, seed?.id, template, catalog.activeStatuses.length]);
+  }, [saved?.updated_at, workflowId, seed?.id, template]);
 
   const [draft, setDraft] = useState<Draft>(baseline);
   const [mappingPlan, setMappingPlan] = useState<IssueWorkflowMappingPlan | null>(null);
   const [newName, setNewName] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
-  // The saved workflow refreshes under the editor: updated_at moves, the status
-  // catalog grows, another admin saves. A clean editor follows it. An editor with
-  // unsaved edits keeps them. When the refresh changed the workflow's content,
-  // saving would overwrite that change, so the editor says so and holds Save until
-  // the editor picks a version.
-  const [changedElsewhere, setChangedElsewhere] = useState(false);
-  // Read by the refresh effect and by every save entrypoint, which must see the
-  // conflict the moment it is set rather than on the next render.
-  const conflictRef = useRef(false);
-  conflictRef.current = changedElsewhere;
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
-  const targetKey = `${workflowId ?? ""}|${seed?.id ?? ""}|${template ?? ""}`;
-  // The version of the saved workflow that the baseline, and so the draft's
-  // unedited parts, came from. A save names this one and no other, so the token
-  // and the steps it travels with always belong to the same accepted revision.
-  const acceptedVersion = useRef<string | undefined>(saved?.version || undefined);
-  // The version this editor's own last successful save produced. Its refresh is
-  // not another admin's change, so it raises no alert.
-  const ownSavedVersion = useRef<string | undefined>(undefined);
-  const latestVersion = saved?.version || undefined;
-  const synced = useRef({ targetKey, baseline });
-  useEffect(() => {
-    const previous = synced.current;
-    synced.current = { targetKey, baseline };
-    if (previous.targetKey !== targetKey) {
-      setDraft(baseline);
-      setChangedElsewhere(false);
-      acceptedVersion.current = latestVersion;
-      ownSavedVersion.current = undefined;
-      return;
-    }
-    if (previous.baseline === baseline) return;
-    const current = draftRef.current;
-    if (sameDraft(current, previous.baseline) || sameDraft(current, baseline)) {
-      setDraft(baseline);
-      setChangedElsewhere(false);
-      acceptedVersion.current = latestVersion;
-      return;
-    }
-    if (workflowId && latestVersion && latestVersion === ownSavedVersion.current) {
-      // This editor's own save arrived and the draft carries edits made after
-      // it was sent: they sit on the saved content.
-      acceptedVersion.current = latestVersion;
-      return;
-    }
-    if (workflowId && !sameDraft(previous.baseline, baseline)) {
-      setChangedElsewhere(true);
-      return;
-    }
-    // The refresh changed nothing the editor shows, so the edits sit on the same
-    // content as the new version: follow its token. While a conflict is open the
-    // content the edits sit on is the version the editor started from, not this
-    // one; only the explicit choices move the token then.
-    if (!conflictRef.current) acceptedVersion.current = latestVersion;
-  }, [baseline, targetKey, workflowId, latestVersion]);
-
-  // Unsaved edits survive a route change, reload or remount, per editor target.
-  // They are put back once the row is ready; if the saved version moved on since
-  // they were made, they are flagged like any edit another admin overtook.
-  const [held, holdDraft, dropDraft] = usePersistedDraft(
-    useWorkflowEditorDraftStore,
-    targetKey,
-    EMPTY_WORKFLOW_EDITOR_DRAFT,
+  useEffect(() => setDraft(baseline), [baseline]);
+  // The catalog can load or change under an open draft; that must not re-seed it.
+  useEffect(
+    () => setDraft((d) => withExistingStatuses(d, catalog.activeStatuses)),
+    [baseline, catalog.activeStatuses],
   );
-  const heldRef = useRef(held);
-  heldRef.current = held;
-  const holding = useRef(false);
-  const restored = useRef(false);
-  const created = useRef(false);
-  const edited = !sameDraft(draft, baseline);
-  useEffect(() => {
-    if (created.current) return;
-    if (edited) {
-      holding.current = true;
-      // The version the edits sit on, not the newest one: a restore must still
-      // see a save another admin made while these edits were open.
-      holdDraft({ draft, baseVersion: acceptedVersion.current ?? "" });
-    } else if (holding.current) {
-      holding.current = false;
-      dropDraft();
-    }
-  }, [edited, draft, latestVersion, changedElsewhere, holdDraft, dropDraft]);
-  const rowLoaded = !workflowId || !!saved;
-  useEffect(() => {
-    if (restored.current || !rowLoaded) return;
-    restored.current = true;
-    const { draft: back, baseVersion } = heldRef.current;
-    if (!back) return;
-    holding.current = true;
-    // A draft held before these fields existed has no budget: keep the saved one.
-    setDraft({ ...back, maxRuns: back.maxRuns ?? baseline.maxRuns, includeChildPrs: back.includeChildPrs ?? baseline.includeChildPrs });
-    if (workflowId && baseVersion !== (latestVersion ?? "")) {
-      // The edits sit on the older version: keep naming it, so the stored base
-      // survives further reloads and a save cannot pass for the newer one.
-      if (baseVersion) acceptedVersion.current = baseVersion;
-      setChangedElsewhere(true);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rowLoaded]);
 
   const dirty = !workflowId || !sameDraft(draft, baseline);
   const pending = createWorkflow.isPending || updateWorkflow.isPending;
@@ -396,16 +274,7 @@ export function WorkflowEditorPage({
   const missingStatuses = canCreateStatus
     ? []
     : draft.middle.flatMap((c) => ("new_name" in c ? [c.new_name] : []));
-  // An existing workflow is edited and saved only from its loaded row.
-  const rowReady = !workflowId || !!saved;
-  // The graph and exits form edit steps that exist before the save; a column
-  // the save creates has no status key to point an exit at.
-  const graphSteps = useMemo<IssueWorkflowStep[]>(
-    () => draftColumns(draft).flatMap((c) => ("status_key" in c ? [{ status_key: c.status_key, ...(draft.handoffs[c.id] ?? NO_HANDOFF) }] : [])),
-    [draft],
-  );
-  const graphIssues = useMemo(() => validateWorkflowGraph(graphSteps), [graphSteps]);
-  const canSave = canEdit && rowReady && dirty && !changedElsewhere && draft.name.trim().length > 0 && validMaxRuns(draft.maxRuns) && !pending && missingStatuses.length === 0 && graphIssues.length === 0;
+  const canSave = canEdit && dirty && draft.name.trim().length > 0 && !pending && missingStatuses.length === 0;
   const usedBy = saved
     ? projects.filter((p) => (saved.is_default ? !p.workflow_id : saved.project_ids.includes(p.id)))
     : [];
@@ -432,17 +301,6 @@ export function WorkflowEditorPage({
       : null;
   const patchHandoff = (id: string, patch: Partial<Handoff>) =>
     setDraft((d) => ({ ...d, handoffs: { ...d.handoffs, [id]: { ...(d.handoffs[id] ?? NO_HANDOFF), ...patch } } }));
-  const onGraphChange = (next: IssueWorkflowStep[]) =>
-    setDraft((d) => {
-      const before = new Map(graphSteps.map((s) => [s.status_key, s]));
-      const handoffs = { ...d.handoffs };
-      for (const s of next) {
-        if (s === before.get(s.status_key)) continue;
-        const { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, keep_other_assignee, edges } = s;
-        handoffs[s.status_key] = { handler, instructions, next_status_key, back_status_key, advance_on_ci_green, keep_other_assignee, edges };
-      }
-      return { ...d, handoffs };
-    });
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
@@ -463,14 +321,6 @@ export function WorkflowEditorPage({
   };
 
   const save = async (mapping?: Record<string, string>) => {
-    // Never write an existing workflow from defaults the row has not replaced.
-    if (workflowId && !saved) return;
-    // An unresolved conflict holds every save, including the mapping dialog's:
-    // the draft sits on a version another admin has since replaced.
-    if (workflowId && conflictRef.current) {
-      toast.error(t(($) => $.workflows.editor.changed_elsewhere));
-      return;
-    }
     const listed = new Set(targetKeys);
     const steps: IssueWorkflowStepInput[] = columns.map((c) => {
       const raw = draft.handoffs[c.id];
@@ -480,9 +330,6 @@ export function WorkflowEditorPage({
             ...(h.handler.type !== "none" ? { handler: h.handler, instructions: h.instructions } : {}),
             ...(h.next_status_key && listed.has(h.next_status_key) ? { next_status_key: h.next_status_key } : {}),
             ...(h.back_status_key && listed.has(h.back_status_key) ? { back_status_key: h.back_status_key } : {}),
-            ...(h.advance_on_ci_green ? { advance_on_ci_green: true } : {}),
-            ...(h.keep_other_assignee ? { keep_other_assignee: true } : {}),
-            ...(h.edges?.length ? { edges: h.edges } : {}),
           }
         : {};
       return "status_key" in c
@@ -494,54 +341,21 @@ export function WorkflowEditorPage({
       description: draft.description.trim(),
       steps,
       ...(mapping ? { status_mapping: mapping } : {}),
-      // Only a changed budget field is sent: the server takes a budget change
-      // from an interactive session alone, so an untouched field must stay out of the write.
-      ...(draft.maxRuns !== baseline.maxRuns ? { max_runs_per_issue: Number(draft.maxRuns.trim() || 0) } : {}),
-      ...(draft.includeChildPrs !== baseline.includeChildPrs ? { include_child_prs: draft.includeChildPrs } : {}),
-      // Save against the version the editor started from, so a save that
-      // arrives after another admin's cannot replace it.
-      ...(workflowId && acceptedVersion.current ? { expected_version: acceptedVersion.current } : {}),
     };
     try {
       if (workflowId) {
-        const submitted = draft;
-        const startedOn = targetKey;
-        const response = await updateWorkflow.mutateAsync({ id: workflowId, ...body });
+        await updateWorkflow.mutateAsync({ id: workflowId, ...body });
         toast.success(t(($) => $.workflows.editor.saved));
-        // A late response for another target changes nothing here.
-        if (synced.current.targetKey === startedOn) {
-          if (response?.version) {
-            ownSavedVersion.current = response.version;
-            acceptedVersion.current = response.version;
-          }
-          // Adopt the saved revision only when nothing was typed since the save
-          // began. Edits made while it was in flight stay, on top of the revision
-          // the server accepted.
-          if (response?.steps && sameDraft(draftRef.current, submitted)) {
-            setDraft(draftFrom(response));
-            setChangedElsewhere(false);
-          }
-        }
       } else {
-        const createdWorkflow = await createWorkflow.mutateAsync({ ...body, name: draft.name.trim() });
+        const created = await createWorkflow.mutateAsync({ ...body, name: draft.name.trim() });
         toast.success(t(($) => $.workflows.editor.created));
-        // The editor closes on create; the effect must not write the draft back.
-        created.current = true;
-        dropDraft();
-        onOpen({ id: createdWorkflow.id });
+        onOpen({ id: created.id });
       }
       setMappingPlan(null);
     } catch (err) {
       const plan = mappingPlanFrom(err);
       if (plan) {
         setMappingPlan(plan);
-        return;
-      }
-      if (workflowId && isChangedElsewhere(err)) {
-        // The mutation refreshes the workflow list. The edits stay, and the
-        // editor chooses between them and the other admin's version.
-        setMappingPlan(null);
-        setChangedElsewhere(true);
         return;
       }
       toast.error(clientErrorMessage(err) ?? t(($) => $.workflows.editor.error));
@@ -558,24 +372,6 @@ export function WorkflowEditorPage({
       toast.error(clientErrorMessage(err) ?? t(($) => $.workflows.settings.delete_error));
     }
   };
-
-  if (workflowId && !saved && !isLoaded) {
-    return (
-      <div className="space-y-4" aria-busy={!loadFailed}>
-        <Breadcrumb onBack={onBack} current="" />
-        {loadFailed ? (
-          <div role="alert" className="flex flex-wrap items-center gap-3 text-body text-muted-foreground">
-            <span>{t(($) => $.workflows.editor.load_error)}</span>
-            <Button variant="outline" size="sm" onClick={retryLoad}>
-              {t(($) => $.workflows.editor.retry)}
-            </Button>
-          </div>
-        ) : (
-          <Spinner className="size-4" />
-        )}
-      </div>
-    );
-  }
 
   if (workflowId && isLoaded && !saved) {
     return (
@@ -601,7 +397,7 @@ export function WorkflowEditorPage({
   ];
   const current = listed.find((c) => c.id === selectedId) ?? listed[1]!;
   const nextOf = (column: DraftColumn, h: Handoff | undefined) =>
-    h?.next_status_key ?? workflowNextStatus(draftFlow, columnKey(column));
+    h?.next_status_key ?? workflowNextStatus(draftFlow, columnKey(column), catalog.categoryOf);
   const card = (column: DraftColumn) => {
     const key = "status_key" in column ? column.status_key : null;
     const optional = key === "backlog" || key === "blocked";
@@ -636,24 +432,7 @@ export function WorkflowEditorPage({
     setSelected(key);
   };
   const removeColumn = (column: DraftColumn) => {
-    // Exits into the removed column go with it, legacy next/back included, and
-    // a timeout that fell back to it is left for the form to flag.
-    const key = columnKey(column);
-    setDraft((d) => ({
-      ...d,
-      middle: d.middle.filter((c) => c.id !== column.id),
-      handoffs: Object.fromEntries(
-        Object.entries(d.handoffs).map(([id, h]) => [
-          id,
-          {
-            ...h,
-            next_status_key: h.next_status_key === key ? undefined : h.next_status_key,
-            back_status_key: h.back_status_key === key ? undefined : h.back_status_key,
-            ...(h.edges && { edges: h.edges.filter((e) => e.to !== key).map((e) => (e.on_timeout === key ? { ...e, on_timeout: undefined } : e)) }),
-          },
-        ]),
-      ),
-    }));
+    setDraft((d) => ({ ...d, middle: d.middle.filter((c) => c.id !== column.id) }));
     setSelected("todo");
   };
 
@@ -661,7 +440,6 @@ export function WorkflowEditorPage({
     <div className="space-y-6">
       <div className="space-y-3">
         <Breadcrumb onBack={onBack} current={title} />
-        {workflowId && <WorkflowBudgetRequestBanner workflowId={workflowId} />}
         <div className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
             <input
@@ -695,37 +473,6 @@ export function WorkflowEditorPage({
                     : t(($) => $.workflows.editor.unused_note)}
               </span>
             </p>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              <label htmlFor="workflow-max-runs" className="text-caption font-medium">
-                {t(($) => $.workflows.editor.max_runs)}
-              </label>
-              <Input
-                id="workflow-max-runs"
-                inputMode="numeric"
-                maxLength={4}
-                value={draft.maxRuns}
-                readOnly={!canEdit}
-                aria-invalid={!validMaxRuns(draft.maxRuns)}
-                placeholder={String(DEFAULT_MAX_RUNS)}
-                onChange={(e) => setDraft((d) => ({ ...d, maxRuns: e.target.value }))}
-                className="h-8 w-24"
-              />
-              {!validMaxRuns(draft.maxRuns) && (
-                <p role="alert" className="text-caption text-destructive">
-                  {t(($) => $.workflows.editor.max_runs_invalid, { max: MAX_RUNS_LIMIT, default: DEFAULT_MAX_RUNS })}
-                </p>
-              )}
-              <label htmlFor="workflow-child-prs" className="ml-2 text-caption font-medium">
-                {t(($) => $.workflows.editor.include_child_prs)}
-              </label>
-              <Switch
-                id="workflow-child-prs"
-                size="sm"
-                checked={draft.includeChildPrs}
-                disabled={!canEdit}
-                onCheckedChange={(checked) => setDraft((d) => ({ ...d, includeChildPrs: checked }))}
-              />
-            </div>
           </div>
           {(canEdit || canDuplicate) && (
             <div className="flex shrink-0 items-center gap-2">
@@ -773,56 +520,7 @@ export function WorkflowEditorPage({
             </div>
           )}
         </div>
-        {changedElsewhere && canEdit && (
-          <div
-            role="alert"
-            className="flex flex-wrap items-center gap-3 rounded-md border bg-muted/50 px-3 py-2 text-body"
-          >
-            <span className="min-w-0 flex-1">{t(($) => $.workflows.editor.changed_elsewhere)}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setDraft(baseline);
-                acceptedVersion.current = latestVersion;
-                // A mapping plan was computed for the draft being dropped.
-                setMappingPlan(null);
-                setChangedElsewhere(false);
-              }}
-            >
-              {t(($) => $.workflows.editor.load_latest)}
-            </Button>
-            <Button
-              size="sm"
-              onClick={() => {
-                // Explicit choice: these edits replace the version now showing.
-                acceptedVersion.current = latestVersion;
-                setChangedElsewhere(false);
-              }}
-            >
-              {t(($) => $.workflows.editor.keep_edits)}
-            </Button>
-          </div>
-        )}
       </div>
-
-      <WorkflowGraph
-        workflow={{ steps: graphSteps }}
-        project={null}
-        currentStatus={selectedId}
-        onChange={canEdit ? onGraphChange : undefined}
-        onSelectStep={setSelected}
-      />
-      <WorkflowEdgeEditor steps={graphSteps} stepKey={graphSteps.some((s) => s.status_key === selectedId) ? selectedId : null} canEdit={canEdit} onChange={onGraphChange} />
-      {graphIssues.length > 0 && (
-        <ul role="alert" className="space-y-1 text-caption text-destructive">
-          {graphIssues.map((i) => (
-            <li key={`${i.code}:${i.from}:${i.index ?? ""}`}>
-              {t(($) => $.workflows.flow.edit.issues[i.code], { from: labelOf(i.from), max: MAX_EDGES_PER_STEP })}
-            </li>
-          ))}
-        </ul>
-      )}
 
       <div className="grid items-start gap-5 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
         <div className="min-w-0">
@@ -914,7 +612,7 @@ export function WorkflowEditorPage({
           off={isOff(current)}
           handoff={draft.handoffs[current.id]}
           flow={flow}
-          defaultNextLabel={columnLabel(workflowNextStatus(draftFlow, columnKey(current)))}
+          defaultNextLabel={columnLabel(workflowNextStatus(draftFlow, columnKey(current), catalog.categoryOf))}
           canEdit={canEdit}
           statusOptions={middleIds.has(current.id) ? addable : null}
           onReplaceStatus={(key) => replaceStatus(current, key)}

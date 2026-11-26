@@ -1,15 +1,12 @@
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
-import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAnnotationNoteDraftStore, useCommentDraftStore } from "@multica/core/issues/stores";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useCommentDraftStore } from "@multica/core/issues/stores";
 import type { TimelineEntry } from "@multica/core/types";
 import { renderWithI18n } from "../../test/i18n";
 import { useCommentAnnotations } from "./use-comment-annotations";
 import { Profiler, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { toast } from "sonner";
-
-// The composer is lazy-loaded; warm its module so the first render does not wait on a cold transform.
-beforeAll(() => import("./annotation-composer"), 30_000);
 
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
 
@@ -79,17 +76,6 @@ function DescriptionFixture({ issueId = "issue", loaded = true }: {
   </div></QueryClientProvider>;
 }
 
-function ThreadRowFixture({ sourceId, sourceKey = "initial" }: { sourceId?: string; sourceKey?: string }) {
-  const annotation = useCommentAnnotations({
-    draftKey: key, sources: [{ id: "root", name: "Root" }, { id: "reply", name: "Reply" }], enabled: true,
-  });
-  return <div ref={annotation.cardRef} {...annotation.captureProps}>
-    {annotation.popup}
-    {sourceId ? <div key={sourceKey} data-comment-content={sourceId} tabIndex={0}>Selected text</div>
-      : <button onClick={() => annotation.editAnnotation("reply-note", true)}>Edit from footer</button>}
-  </div>;
-}
-
 function selectText(container: HTMLElement, input: "mouse" | "keyboard" = "mouse", selector = "[data-comment-content]") {
   const source = container.querySelector<HTMLElement>(selector)!;
   if (input === "mouse") {
@@ -118,7 +104,6 @@ function selectText(container: HTMLElement, input: "mouse" | "keyboard" = "mouse
 beforeEach(() => {
   previewCommentTriggers.mockClear();
   useCommentDraftStore.setState({ drafts: {} });
-  useAnnotationNoteDraftStore.setState({ drafts: {} });
   // jsdom has no layout; give Floating UI a viewport for its real hide middleware.
   Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
   Object.defineProperty(document.documentElement, "clientHeight", { configurable: true, value: 768 });
@@ -128,58 +113,6 @@ beforeEach(() => {
 });
 
 describe("selection to reply", () => {
-  it.each([true, false])("keeps one editor when a reply marker replaces the footer editor (pointer: %s)", async (pointer) => {
-    useCommentDraftStore.getState().addAnnotation(key, {
-      id: "reply-note", sourceCommentId: "reply", sourceActorName: "Reply", quote: "Selected text",
-      start: 0, prefix: "", suffix: "", note: "Original reply note",
-    });
-    renderWithI18n(<div data-issue-timeline-scroll>
-      <ThreadRowFixture sourceId="reply" />
-      <ThreadRowFixture />
-    </div>);
-    const marker = await screen.findByTestId("annotation-marker");
-    fireEvent.click(screen.getByRole("button", { name: "Edit from footer" }));
-    const footerEditor = await screen.findByRole("textbox", { name: "Comment" });
-    fireEvent.change(footerEditor, { target: { value: "Unsaved stale edit" } });
-    if (pointer) fireEvent.pointerDown(marker);
-    fireEvent.click(marker);
-    await waitFor(() => expect(screen.getAllByTestId("annotation-note")).toHaveLength(1));
-    expect(footerEditor).not.toBeInTheDocument();
-    expect(marker).toHaveAttribute("aria-expanded", "true");
-    fireEvent.change(await screen.findByRole("textbox", { name: "Comment" }), { target: { value: "Updated reply note" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
-    expect(useCommentDraftStore.getState().getAnnotations(key)[0]?.note).toBe("Updated reply note");
-
-    fireEvent.click(marker);
-    const markerEditor = await screen.findByRole("textbox", { name: "Comment" });
-    fireEvent.click(screen.getByRole("button", { name: "Edit from footer" }));
-    await waitFor(() => expect(screen.getAllByTestId("annotation-note")).toHaveLength(1));
-    expect(markerEditor).not.toBeInTheDocument();
-    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Updated reply note");
-  });
-
-  it("edits a reply annotation from a separate footer row and survives source remounts", async () => {
-    useCommentDraftStore.getState().addAnnotation(key, {
-      id: "reply-note", sourceCommentId: "reply", sourceActorName: "Reply", quote: "Selected text",
-      start: 0, prefix: "", suffix: "", note: "Original reply note",
-    });
-    const rows = (sourceKey: string) => <div data-issue-timeline-scroll>
-      <ThreadRowFixture sourceId="root" />
-      <ThreadRowFixture sourceId="reply" sourceKey={sourceKey} />
-      <ThreadRowFixture />
-    </div>;
-    const { rerender } = renderWithI18n(rows("initial"));
-    expect(await screen.findAllByTestId("annotation-marker")).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: "Edit from footer" }));
-    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Original reply note");
-    rerender(rows("remounted"));
-    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Original reply note");
-    fireEvent.change(screen.getByRole("textbox", { name: "Comment" }), { target: { value: "Updated reply note" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
-    expect(useCommentDraftStore.getState().getAnnotations(key)[0]?.note).toBe("Updated reply note");
-    expect(await screen.findAllByTestId("annotation-marker")).toHaveLength(1);
-  });
-
   it("keeps owned portal controls open and lets their first Escape close only the nested control", async () => {
     const { container } = renderWithI18n(<Fixture />);
     selectText(container);
@@ -331,20 +264,7 @@ describe("selection to reply", () => {
     expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Please explain");
   });
 
-  it("restores an unconfirmed note after the hook unmounts and remounts", async () => {
-    const first = renderWithI18n(<Fixture />);
-    selectText(first.container);
-    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
-    fireEvent.change(await screen.findByRole("textbox", { name: "Comment" }), { target: { value: "Survives remount" } });
-    first.unmount();
-
-    const second = renderWithI18n(<Fixture />);
-    selectText(second.container);
-    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
-    expect(await screen.findByRole("textbox", { name: "Comment" })).toHaveValue("Survives remount");
-  });
-
-  it.each([false, true])("keeps dismissed drafts, confirms changes and cancels explicit edits (description: %s)", async (description) => {
+  it.each([false, true])("confirms changes and cancels unsaved edits (description: %s)", async (description) => {
     const draftKey = description ? "new:issue" as const : key;
     const { container } = renderWithI18n(description ? <DescriptionFixture /> : <Fixture />);
     selectText(container);
@@ -361,7 +281,7 @@ describe("selection to reply", () => {
     selectText(container);
     fireEvent.click(await screen.findByRole("button", { name: description ? "Add to comment" : "Add to reply" }));
     const reopened = await screen.findByRole("textbox", { name: "Comment" });
-    expect(reopened).toHaveValue("Unsaved note");
+    expect(reopened).toHaveValue("");
     fireEvent.change(reopened, { target: { value: "A real note" } });
     expect(useCommentDraftStore.getState().getAnnotations(draftKey)).toHaveLength(0);
     expect(screen.queryByRole("button", { name: "Edit annotation 1" })).not.toBeInTheDocument();
@@ -460,32 +380,48 @@ describe("selection to reply", () => {
     expect(event.defaultPrevented).toBe(false);
   });
 
-  it("opens the action when a drag starts in the gutter and ends in the text", async () => {
-    const { container } = renderWithI18n(<Fixture />);
-    const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
-    const gutter = source.parentElement!;
-    fireEvent.pointerDown(gutter, { pointerType: "mouse", button: 0 });
-    const range = document.createRange();
-    range.selectNodeContents(source);
-    act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
-    fireEvent.pointerUp(source);
-    expect(await screen.findByRole("button", { name: "Add to reply" })).toBeInTheDocument();
+  it("preserves an in-progress annotation note across unmount and remount without stealing focus", async () => {
+    vi.spyOn(window, "matchMedia").mockReturnValue({ matches: true } as MediaQueryList);
+    const first = renderWithI18n(<Fixture child />);
+    selectText(first.container, "mouse", '[data-comment-content="child"]');
+    fireEvent.click(await screen.findByRole("button", { name: "Add to reply" }));
+    const input = await screen.findByRole("textbox", { name: "Comment" });
+    fireEvent.change(input, { target: { value: "In-progress draft note" } });
+    expect(useCommentDraftStore.getState().getAnnotations(key)).toHaveLength(0);
+
+    // Simulate Virtuoso unmounting the thread card on scroll-out.
+    first.unmount();
+    expect(useCommentDraftStore.getState().getPendingAnnotation(key)?.annotation.note).toBe("In-progress draft note");
+
+    // Remounting the card restores the open popup with the typed draft intact.
+    renderWithI18n(<Fixture child />);
+    const restored = await screen.findByRole("textbox", { name: "Comment" });
+    expect(restored).toHaveValue("In-progress draft note");
+    expect(restored).not.toHaveFocus();
+
+    // Explicit dismiss clears the persisted pending draft so it does not reopen.
+    fireEvent.pointerDown(document.body);
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "Comment" })).not.toBeInTheDocument());
+    expect(useCommentDraftStore.getState().drafts[key]).toBeUndefined();
   });
 
-  it.each([
-    { key: "End", shiftKey: true },
-    { key: "Home", shiftKey: true },
-    { key: "PageDown", shiftKey: true },
-    { key: "a", ctrlKey: true },
-    { key: "a", metaKey: true },
-  ])("opens the action after the keyboard selection %o", async (keys) => {
-    const { container } = renderWithI18n(<Fixture />);
-    const source = container.querySelector<HTMLElement>("[data-comment-content]")!;
-    source.focus();
-    const range = document.createRange();
-    range.selectNodeContents(source);
-    act(() => { window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range); });
-    fireEvent.keyUp(source, keys);
-    expect(await screen.findByRole("button", { name: "Add to reply" })).toBeInTheDocument();
+  it("preserves unsaved edits to an existing annotation across unmount and remount", async () => {
+    useCommentDraftStore.getState().addAnnotation(key, {
+      id: "saved-1", sourceCommentId: "root", sourceActorName: "agent",
+      quote: "Selected text", start: 0, prefix: "", suffix: "", note: "Original note",
+    });
+    const first = renderWithI18n(<Fixture />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit annotation 1" }));
+    const edit = await screen.findByRole("textbox", { name: "Comment" });
+    fireEvent.change(edit, { target: { value: "Half-finished revision" } });
+    expect(useCommentDraftStore.getState().getAnnotations(key)[0]?.note).toBe("Original note");
+
+    first.unmount();
+    renderWithI18n(<Fixture />);
+    const restored = await screen.findByRole("textbox", { name: "Comment" });
+    expect(restored).toHaveValue("Half-finished revision");
+    fireEvent.click(screen.getByRole("button", { name: "Save annotation" }));
+    expect(useCommentDraftStore.getState().getAnnotations(key)[0]?.note).toBe("Half-finished revision");
+    expect(useCommentDraftStore.getState().getPendingAnnotation(key)).toBeUndefined();
   });
 });

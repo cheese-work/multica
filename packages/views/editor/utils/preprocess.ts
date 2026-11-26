@@ -1,11 +1,10 @@
-import {
-  preprocessLinks,
-  preprocessMentionShortcodes,
-  preprocessFileCards,
-  preprocessIssueIdentifiers,
-  preprocessCommentIds,
-} from "@multica/ui/markdown";
-import { stripChannelMediaMarkers } from "@multica/core/types";
+// Submodule imports, not the `@multica/ui/markdown` barrel: the collaboration
+// server runs this in Node, and the barrel pulls in React renderers and CSS.
+import { preprocessLinks } from "@multica/ui/markdown/linkify";
+import { preprocessMentionShortcodes } from "@multica/ui/markdown/mentions";
+import { preprocessFileCards } from "@multica/ui/markdown/file-cards";
+import { preprocessIssueIdentifiers } from "@multica/ui/markdown/issue-identifiers";
+import { stripChannelMediaMarkers } from "@multica/core/types/attachment-url";
 
 /**
  * Preprocess a markdown string before loading into Tiptap via contentType: 'markdown'.
@@ -41,12 +40,7 @@ import { stripChannelMediaMarkers } from "@multica/core/types";
  */
 export function preprocessMarkdown(
   markdown: string,
-  opts: {
-    cdnDomain: string;
-    autolinkIssueIdentifiers?: boolean;
-    /** Leave an issue key that ends the text plain (still-streaming content). */
-    deferTrailingIssueIdentifier?: boolean;
-  },
+  opts: { cdnDomain: string; autolinkIssueIdentifiers?: boolean },
 ): string {
   if (!markdown) return "";
   const { cdnDomain } = opts;
@@ -57,11 +51,7 @@ export function preprocessMarkdown(
   const visibleMarkdown = stripChannelMediaMarkers(markdown);
   const step1 = preprocessMentionShortcodes(visibleMarkdown);
   const step2 = opts?.autolinkIssueIdentifiers
-    ? preprocessCommentIds(
-        preprocessIssueIdentifiers(step1, {
-          deferTrailing: opts.deferTrailingIssueIdentifier,
-        }),
-      )
+    ? preprocessIssueIdentifiers(step1)
     : step1;
   const step3 = preprocessLinks(step2);
   const step4 = preprocessFileCards(step3, cdnDomain);

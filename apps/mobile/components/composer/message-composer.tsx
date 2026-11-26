@@ -33,13 +33,12 @@
  *     `onClearReplyTarget` from its store; chat doesn't.
  *   - Stop visual / animation — chat passes a `renderStop()` slot when
  *     `isSending` is true.
+ *   - What a send during a run means — chat opts in with
+ *     `allowSubmitWhileSending` and adds a `queueAction`; the composer only
+ *     reports which action submitted.
  *
- * Drafts: text (comment mode), mention chips and attachments live in
- * `useComposerDraftsStore` under `draftKey`, so they survive this component
- * unmounting (route change, scroll out of a list) and an app cold start. The
- * mention store is the live copy the picker route writes to; it is loaded from
- * the draft on mount and emptied on unmount so comment-A's `@张三` never leaks
- * into comment-B's composer.
+ * Cleanup: mention draft store cleared on unmount so navigating away
+ * from comment-A's draft doesn't leak `@张三` into comment-B's composer.
  */
 import {
   useCallback,
@@ -57,9 +56,9 @@ import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { api, MAX_FILE_SIZE } from "@/data/api";
-import { useComposerDraftsStore } from "@/data/stores/composer-drafts-store";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
+import { composerActions } from "@/lib/composer-actions";
 import { stripMarkdown } from "@/lib/strip-markdown";
 import { THEME } from "@/lib/theme";
 import { continuousCorners } from "@/lib/radius";
@@ -71,7 +70,7 @@ import {
   type MentionChip,
 } from "@/components/issue/composer-attachment-row";
 import { useT } from "@/lib/i18n";
-import { mergeRestoredText } from "@/lib/merge-restored-text";
+import { isStorageLimitReached } from "@/lib/upload-error";
 
 export interface MessageComposerReplyTarget {
   actorName: string;
@@ -79,10 +78,6 @@ export interface MessageComposerReplyTarget {
 }
 
 interface Props {
-  /** Key of this composer's draft, e.g. `comment:<issueId>` or
-   *  `chat:<sessionId>`. */
-  draftKey: string;
-
   /** Submit callback. Composer awaits this; on rejection it restores text,
    *  attachments, and mentions so the user can retry without losing
    *  context. Resolved promise → text + chips cleared, composer collapses
@@ -91,6 +86,8 @@ interface Props {
     content: string;
     attachmentIds: string[];
     mentions: MentionChip[];
+    /** True when submitted through `queueAction` instead of Send. */
+    queue: boolean;
   }) => Promise<void>;
 
   /** Push target for the `@` button. The picker route reads /
@@ -113,13 +110,6 @@ interface Props {
   value?: string;
   onChangeText?: (next: string) => void;
 
-  /** Fired with the submitted text just before the input empties, so the
-   *  parent can keep it on disk until the send settles. The returned handle
-   *  is passed back to `onSubmitSettled`. */
-  onSubmitStart?: (text: string) => string;
-  /** Fired when the send resolves (`ok`) or rejects. */
-  onSubmitSettled?: (handle: string, ok: boolean) => void;
-
   /** Optional reply chip (comment only). */
   replyTarget?: MessageComposerReplyTarget | null;
   onClearReplyTarget?: () => void;
@@ -134,6 +124,13 @@ interface Props {
    *  this to show a Stop affordance while the agent is running. */
   isSending?: boolean;
   renderStop?: () => ReactNode;
+  /** While `isSending`, still accept typed content. Send takes the action
+   *  slot whenever there is content to send; Stop stays reachable for an
+   *  empty composer or an upload in flight (same slot rule as web chat). */
+  allowSubmitWhileSending?: boolean;
+  /** Secondary submit shown beside Send while `isSending` with content.
+   *  Chat uses it for "queue for the next turn". */
+  queueAction?: { accessibilityLabel: string };
 
   /** Hard-disable. Used when chat has no usable agent. The pill shows
    *  `disabledReason` instead of `pillLabel`, and the pill is
@@ -149,8 +146,6 @@ interface Props {
    *  composer keeps the default `true`. */
   manageKeyboard?: boolean;
 }
-
-const NO_ATTACHMENTS: ComposerAttachmentItem[] = [];
 
 function makeLocalId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -176,7 +171,6 @@ function serializeMentions(chips: MentionChip[]): string {
 }
 
 export function MessageComposer({
-  draftKey,
   onSubmit,
   mentionPickerPath,
   uploadContext,
@@ -185,13 +179,13 @@ export function MessageComposer({
   pillIcon = "chatbubble-ellipses-outline",
   value: controlledValue,
   onChangeText: controlledOnChange,
-  onSubmitStart,
-  onSubmitSettled,
   replyTarget = null,
   onClearReplyTarget,
   expandTrigger,
   isSending = false,
   renderStop,
+  allowSubmitWhileSending = false,
+  queueAction,
   disabled = false,
   disabledReason,
   manageKeyboard = true,
@@ -204,90 +198,38 @@ export function MessageComposer({
   const insets = useSafeAreaInsets();
   const inputRef = useRef<TextInput>(null);
   const [expanded, setExpanded] = useState(false);
+  const [internalText, setInternalText] = useState("");
+  const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
 
-  const draft = useComposerDraftsStore((s) => s.drafts[draftKey]);
-  const draftsHydrated = useComposerDraftsStore((s) => s.hydrated);
-  const attachments = draft?.attachments ?? NO_ATTACHMENTS;
-  // `forScope` pins the write to the workspace the caller started in: an
-  // upload or restore that settles after a workspace switch is dropped.
-  const setAttachments = useCallback(
-    (
-      next:
-        | ComposerAttachmentItem[]
-        | ((prev: ComposerAttachmentItem[]) => ComposerAttachmentItem[]),
-      forKey: string = draftKey,
-      forScope?: string | null,
-    ) =>
-      useComposerDraftsStore
-        .getState()
-        .patchAttachments(
-          forKey,
-          typeof next === "function" ? next : () => next,
-          forScope,
-        ),
-    [draftKey],
-  );
-  // A saved draft keeps the composer open instead of hiding behind the pill.
-  const isExpanded = expanded || (draft !== undefined && !disabled);
-  const keyRef = useRef(draftKey);
-  useEffect(() => {
-    keyRef.current = draftKey;
-  }, [draftKey]);
-
   // Hybrid controlled / uncontrolled pattern (React-canonical). Chat
-  // passes `value`/`onChangeText` (its own draft store owns the text);
-  // comment omits both and the text lives in the composer draft.
+  // passes `value`/`onChangeText` for cross-session draft persistence;
+  // comment omits both and the composer manages local state.
   const isControlled =
     controlledValue !== undefined && controlledOnChange !== undefined;
-  const text = isControlled ? controlledValue : (draft?.text ?? "");
+  const text = isControlled ? controlledValue : internalText;
   const setText = useCallback(
-    (next: string, forScope?: string | null) => {
+    (next: string) => {
       if (isControlled) {
         controlledOnChange(next);
       } else {
-        useComposerDraftsStore
-          .getState()
-          .patch(draftKey, { text: next }, forScope);
+        setInternalText(next);
       }
     },
-    [isControlled, controlledOnChange, draftKey],
+    [isControlled, controlledOnChange],
   );
-
-  // Latest input value for the failure path: text typed while a send is
-  // pending must not be overwritten by the restored snapshot.
-  const textRef = useRef(text);
-  useEffect(() => {
-    textRef.current = text;
-  }, [text]);
 
   const mentions = useMentionDraftStore((s) => s.mentions);
   const removeMention = useMentionDraftStore((s) => s.remove);
   const clearMentions = useMentionDraftStore((s) => s.clear);
 
-  // The mention store is the live copy (the picker route writes to it).
-  // Load it from this key's draft, mirror every later change back, and
-  // empty it on unmount or key change so chips never leak into the next
-  // composer. Unsubscribe before emptying so that is not saved as a clear.
-  // Re-runs when the disk drafts finish loading.
+  // Drop mention draft on composer unmount so navigating away doesn't
+  // leak chips into the next composer's session.
   useEffect(() => {
-    useMentionDraftStore.setState({
-      mentions:
-        useComposerDraftsStore.getState().drafts[draftKey]?.mentions ?? [],
-    });
-    const unsubscribe = useMentionDraftStore.subscribe((state, prev) => {
-      if (state.mentions !== prev.mentions) {
-        useComposerDraftsStore
-          .getState()
-          .patch(draftKey, { mentions: state.mentions });
-      }
-    });
     return () => {
-      unsubscribe();
       clearMentions();
     };
-  }, [draftKey, draftsHydrated, clearMentions]);
-
+  }, [clearMentions]);
 
   // Auto-expand + focus when an `expandTrigger` changes. Comment uses
   // this to react to the long-press → reply flow setting a reply target.
@@ -301,18 +243,21 @@ export function MessageComposer({
     setExpanded(true);
   }
   useEffect(() => {
-    if (!isExpanded || !triggerSeen || disabled) return;
+    if (!expanded || !triggerSeen || disabled) return;
     const frame = requestAnimationFrame(() => inputRef.current?.focus());
     return () => cancelAnimationFrame(frame);
-  }, [isExpanded, triggerSeen, disabled]);
+  }, [expanded, triggerSeen, disabled]);
 
-  const hasInFlightUpload = attachments.some((a) => a.status === "uploading");
-  const canSend =
-    !disabled &&
-    !isSending &&
-    !submitting &&
-    !hasInFlightUpload &&
-    (text.trim().length > 0 || mentions.length > 0);
+  const { canSend, showStop, showQueue } = composerActions({
+    isSending,
+    allowSubmitWhileSending,
+    hasStop: !!renderStop,
+    hasQueueAction: !!queueAction,
+    hasContent: text.trim().length > 0 || mentions.length > 0,
+    hasInFlightUpload: attachments.some((a) => a.status === "uploading"),
+    submitting,
+    disabled,
+  });
 
   const expand = useCallback(() => {
     if (disabled) return;
@@ -325,7 +270,7 @@ export function MessageComposer({
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [disabled, onClearReplyTarget]);
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(async (queue: boolean) => {
     if (!canSend) return;
     const textSnap = text;
     const mentionsSnap = mentions;
@@ -346,15 +291,6 @@ export function MessageComposer({
 
     // Optimistic clear: text + chips empty out immediately so the next
     // typing tick doesn't double-include them. Restored on rejection.
-    const sendKey = draftKey;
-    let ok = false;
-    const sendHandle = onSubmitStart?.(textSnap);
-    const sendScope = useComposerDraftsStore.getState().beginSend(sendKey);
-    // The composer may move to another entity or workspace mid-send; the live
-    // reply and mention stores then belong to that one, not to this send.
-    const isCurrentSend = () =>
-      keyRef.current === sendKey &&
-      useComposerDraftsStore.getState().scopeId === sendScope;
     setText("");
     setAttachments([]);
     clearMentions();
@@ -366,6 +302,7 @@ export function MessageComposer({
         content,
         attachmentIds: activeIds,
         mentions: mentionsSnap,
+        queue,
       });
       // Success → fully exit composing mode. Explicit triple-step
       // because a missing blur leaves the keyboard up; missing
@@ -374,43 +311,23 @@ export function MessageComposer({
       inputRef.current?.blur();
       Keyboard.dismiss();
       setExpanded(false);
-      ok = true;
-      if (isCurrentSend()) onClearReplyTarget?.();
-      if (sendHandle !== undefined) onSubmitSettled?.(sendHandle, true);
     } catch {
-      setText(mergeRestoredText(textSnap, textRef.current), sendScope);
-      setAttachments(attachmentsSnap, sendKey, sendScope);
-      const draftsStore = useComposerDraftsStore.getState();
-      if (isCurrentSend()) {
-        mentionsSnap.forEach((m) => {
-          const present = useMentionDraftStore
-            .getState()
-            .mentions.some((x) => x.type === m.type && x.id === m.id);
-          if (!present) useMentionDraftStore.getState().toggle(m);
-        });
-      } else {
-        // Restore into the draft of the entity the send started in, not the
-        // live mention store.
-        draftsStore.patch(sendKey, { mentions: mentionsSnap }, sendScope);
-      }
-      if (sendHandle !== undefined) onSubmitSettled?.(sendHandle, false);
+      setText(textSnap);
+      setAttachments(attachmentsSnap);
+      mentionsSnap.forEach((m) =>
+        useMentionDraftStore.getState().toggle(m),
+      );
     } finally {
-      useComposerDraftsStore.getState().finishSend(sendKey, sendScope, ok);
       setSubmitting(false);
     }
   }, [
-    draftKey,
-    onClearReplyTarget,
     canSend,
     text,
     mentions,
     attachments,
     setText,
-    setAttachments,
     clearMentions,
     onSubmit,
-    onSubmitStart,
-    onSubmitSettled,
   ]);
 
   /** Streams a picked asset to /api/upload-file, updating the matching
@@ -421,10 +338,6 @@ export function MessageComposer({
       localId: string,
       asset: { uri: string; name: string; type: string },
     ) => {
-      // The result lands in the draft the upload started in, even after the
-      // composer moved to another entity or workspace.
-      const uploadKey = draftKey;
-      const uploadScope = useComposerDraftsStore.getState().scopeId;
       try {
         const result = await api.uploadFile(asset, uploadContext);
         setAttachments((prev) =>
@@ -439,24 +352,23 @@ export function MessageComposer({
                 }
               : it,
           ),
-          uploadKey,
-          uploadScope,
         );
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : t("common:states.error");
+        const message = isStorageLimitReached(err)
+          ? t("editor:upload.storage_full_title")
+          : err instanceof Error
+            ? err.message
+            : t("common:states.error");
         setAttachments((prev) =>
           prev.map((it) =>
             it.localId === localId
               ? { ...it, status: "failed", error: message }
               : it,
           ),
-          uploadKey,
-          uploadScope,
         );
       }
     },
-    [uploadContext, t, setAttachments, draftKey],
+    [uploadContext, t, setAttachments],
   );
 
   const onImagePress = useCallback(async () => {
@@ -493,7 +405,7 @@ export function MessageComposer({
       name: filename,
       type: mimeType,
     });
-  }, [startUpload, setAttachments, t]);
+  }, [startUpload, t]);
 
   const onFilePress = useCallback(async () => {
     const picker = await DocumentPicker.getDocumentAsync({
@@ -528,7 +440,7 @@ export function MessageComposer({
       name: picked.name,
       type: mimeType,
     });
-  }, [startUpload, setAttachments, t]);
+  }, [startUpload, t]);
 
   const onRemoveAttachment = useCallback((localId: string) => {
     setAttachments((prev) => prev.filter((it) => it.localId !== localId));
@@ -668,9 +580,7 @@ export function MessageComposer({
           placeholder={resolvedPlaceholder}
           placeholderTextColor={theme.mutedForeground}
           multiline
-          // Comment text lives in the composer draft: typing before the saved
-          // draft has loaded would replace it.
-          editable={!disabled && (isControlled || draftsHydrated)}
+          editable={!disabled}
           className="px-4 pt-3 pb-1 text-base text-foreground"
           style={{ minHeight: 28, maxHeight: 140, textAlignVertical: "top" }}
         />
@@ -702,7 +612,21 @@ export function MessageComposer({
             className="h-8 w-8"
           />
           <View className="flex-1" />
-          {isSending && renderStop ? (
+          {showQueue && queueAction ? (
+            <IconButton
+              name="time-outline"
+              iconSize={20}
+              onPress={() => void handleSubmit(true)}
+              disabled={!canSend}
+              // No trailing slop: Send's 12pt slop already reaches into the
+              // gap, and an overlap would let a Queue tap land on Send.
+              hitSlop={{ top: 12, bottom: 12, left: 8, right: 0 }}
+              className="mr-4 h-8 w-8"
+              accessibilityLabel={queueAction.accessibilityLabel}
+              accessibilityState={{ disabled: !canSend }}
+            />
+          ) : null}
+          {showStop && renderStop ? (
             renderStop()
           ) : (
             <IconButton
@@ -710,7 +634,7 @@ export function MessageComposer({
               iconSize={18}
               color={theme.primaryForeground}
               variant="default"
-              onPress={handleSubmit}
+              onPress={() => void handleSubmit(false)}
               disabled={!canSend}
               hitSlop={12}
               className="h-8 w-8 rounded-full"
@@ -723,7 +647,7 @@ export function MessageComposer({
     </View>
   );
 
-  const body = isExpanded ? expandedContent : pillContent;
+  const body = expanded ? expandedContent : pillContent;
 
   // When the parent owns keyboard handling (chat.tsx wraps in
   // KeyboardAvoidingView + SafeAreaView), skip the KeyboardStickyView —

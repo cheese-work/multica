@@ -14,19 +14,26 @@
  *
  *   node scripts/perf-compare.mjs --base <ref> --head <ref> [--out <dir>] [--scenario <name>]
  *
- * `--scenario` picks the measurement: `typing` (default), `image-thread`
- * (MUL-8182) or `page-load`. Each run measures exactly one of them.
+ * `--scenario` picks the measurement: `typing-under-live-runs` (default) or
+ * `image-thread` (MUL-8182). Both write the same report path, so one run
+ * measures exactly one of them.
  *
- * `--scenario page-load` measures the five-route page-load spec (CHE-2976)
- * instead, on the desktop and phone profiles, with the same lifecycle and the
- * same honesty rules. The spec runs `--runs` times per profile (default 5), one
- * sample and one CPU-profiled load each, and every number is a median over runs.
+ * `core-paths`, `core-issue` and `core-inbox` (MUL-9539) run the core-path
+ * benchmark, which needs a real local API instead of synthetic HTTP. Run the
+ * script inside the API's environment so both builds talk to it and share
+ * its seeded dataset:
+ *
+ *   make env-exec ARGS="-- node scripts/perf-compare.mjs --scenario core-paths --base <ref> --head <ref>"
+ *
+ * The spec takes its own rounds from PERF_REPEATS / PERF_WARMUP, and every
+ * other PERF_* setting (PERF_CPU_THROTTLE, PERF_INBOX_ROWS, …) passes through.
  */
 import { execFileSync, spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, openSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect, createServer } from "node:net";
+import { renderCoreReport } from "./perf-core-report.mjs";
 
 const repoRoot = execFileSync("git", ["rev-parse", "--show-toplevel"]).toString().trim();
 const args = process.argv.slice(2);
@@ -38,10 +45,8 @@ const baseRef = flag("base");
 const headRef = flag("head", "HEAD");
 const outDir = resolve(flag("out", join(repoRoot, "perf-report")));
 const buildCache = join(repoRoot, ".turbo", "perf-build-cache");
-// Typing-family scenarios share one lifecycle and report shape; `page-load`
-// has its own (CHE-2976). `typing-under-live-runs` is the upstream name for `typing`.
 const SCENARIOS = {
-  typing: {
+  "typing-under-live-runs": {
     title: "Comment typing under live runs (MUL-7227)",
     spec: "typing-under-live-runs.spec.ts",
     metrics: [],
@@ -59,23 +64,44 @@ const SCENARIOS = {
       ["js_heap_mb", "JS heap (MB)"],
     ],
   },
+  ...Object.fromEntries([
+    ["core-paths", "Core paths: big issues and Inbox switching (MUL-9539)"],
+    ["core-issue", "Core paths: big issues (MUL-9539)"],
+    ["core-inbox", "Core paths: Inbox switching (MUL-9539)"],
+  ].map(([name, title]) => [name, { title, spec: "core-paths.spec.ts", core: true }])),
 };
-const requestedScenario = flag("scenario", "typing");
-const scenarioName = requestedScenario === "typing-under-live-runs" ? "typing" : requestedScenario;
-const isPageLoad = scenarioName === "page-load";
+const scenarioName = flag("scenario", "typing-under-live-runs");
 const scenario = SCENARIOS[scenarioName];
-const pageLoadRuns = Number(flag("runs", 5));
-if (!baseRef) {
-  console.error(`usage: node scripts/perf-compare.mjs --base <ref> [--head <ref>] [--out <dir>] [--scenario ${[...Object.keys(SCENARIOS), "page-load"].join("|")} [--runs N]]`);
+if (!baseRef || !scenario) {
+  console.error(
+    `usage: node scripts/perf-compare.mjs --base <ref> [--head <ref>] [--out <dir>] [--scenario ${Object.keys(SCENARIOS).join("|")}]`,
+  );
   process.exit(2);
 }
-if (!isPageLoad && !scenario) {
-  console.error(`unknown scenario "${requestedScenario}" (expected ${[...Object.keys(SCENARIOS), "page-load"].join(", ")})`);
-  process.exit(2);
-}
-if (!Number.isInteger(pageLoadRuns) || pageLoadRuns < 1) {
-  console.error("--runs must be a positive integer");
-  process.exit(2);
+
+/**
+ * The local API a core scenario measures against: the one whose environment
+ * `make env-exec` exported. Both builds use it, and the dataset it holds is
+ * seeded once and reused, so the two sides see the same data.
+ */
+let apiUrl;
+if (scenario.core) {
+  const missing = ["MULTICA_DEV_PROFILE", "DATABASE_URL", "PORT"].filter((name) => !process.env[name]);
+  if (missing.length > 0) {
+    console.error(
+      `--scenario ${scenarioName} needs a local API: start one with \`make up C=api ARGS="--ephemeral"\`, then run this ` +
+        `script through \`make env-exec ARGS="-- node scripts/perf-compare.mjs ..."\` (missing ${missing.join(", ")}).`,
+    );
+    process.exit(2);
+  }
+  apiUrl = `http://localhost:${process.env.PORT}`;
+  try {
+    const response = await fetch(`${apiUrl}/health`);
+    if (!response.ok) throw new Error(`status ${response.status}`);
+  } catch (error) {
+    console.error(`the local API at ${apiUrl} is not healthy (${error instanceof Error ? error.message : error}); is \`make up C=api\` running?`);
+    process.exit(2);
+  }
 }
 
 const run = (cmd, cmdArgs, opts = {}) =>
@@ -213,81 +239,6 @@ const waitForServer = async (port, timeoutMs = 120_000) => {
   throw new Error(`frontend on :${port} did not become reachable`);
 };
 
-/**
- * Time the CPU profile attributed to webpack's runtime chunk, where module
- * evaluation lands. Null when the chunk is not among the profile's top files.
- */
-function webpackSelfMs(evidence) {
-  const files = (evidence.top_files ?? []).filter((file) => /^webpack-[0-9a-f]+\.js$/.test(file.name));
-  return files.length ? files.reduce((total, file) => total + file.ms, 0) : null;
-}
-
-const PAGE_LOAD_PROFILES = ["desktop", "phone"];
-const PAGE_LOAD_ROUTES = ["issues", "issue-detail", "chat", "inbox", "projects"];
-
-/**
- * The page-load spec, run against the server on `port`. Each run is one
- * sample plus one CPU-profiled load per route, in its own report directory so a
- * report left by an earlier run can never be read back. A run that exits
- * non-zero, or leaves no readable report, makes the whole side invalid.
- */
-function measurePageLoad(label, port) {
-  const profiles = {};
-  const profileEvidence = {};
-  const invalid = [];
-  for (const profile of PAGE_LOAD_PROFILES) {
-    profiles[profile] = Object.fromEntries(PAGE_LOAD_ROUTES.map((route) => [route, []]));
-    profileEvidence[profile] = Object.fromEntries(PAGE_LOAD_ROUTES.map((route) => [route, []]));
-    for (let n = 1; n <= pageLoadRuns; n++) {
-      const reportDir = join(outDir, `${label}-${profile}-${n}`);
-      rmSync(reportDir, { recursive: true, force: true });
-      mkdirSync(reportDir, { recursive: true });
-      let exit = 0;
-      try {
-        run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts", `--project=${profile}`], {
-          cwd: repoRoot,
-          env: {
-            ...process.env,
-            PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${port}`,
-            PERF_REPORT_DIR: reportDir,
-            PERF_SAMPLES: "1",
-            PERF_PROFILE: "1",
-          },
-        });
-      } catch (error) {
-        exit = typeof error.status === "number" ? error.status : 1;
-      }
-      if (exit !== 0) invalid.push(`${profile} run ${n}: the scenario process exited ${exit}`);
-      let report;
-      try {
-        report = JSON.parse(readFileSync(join(reportDir, `page-load-${profile}.json`), "utf8"));
-      } catch {
-        invalid.push(`${profile} run ${n}: the scenario produced no readable report`);
-        continue;
-      }
-      for (const route of PAGE_LOAD_ROUTES) {
-        const samples = report.profiles?.[profile]?.[route];
-        if (!samples?.length) invalid.push(`${profile} run ${n}: no sample for ${route}`);
-        else profiles[profile][route].push(...samples);
-        const evidence = report.profile_evidence?.[route];
-        if (!evidence) invalid.push(`${profile} run ${n}: no profile evidence for ${route}`);
-        else if (webpackSelfMs(evidence) === null) {
-          // The spec keeps only its top files. A runtime chunk that fell out of
-          // them was not measured: 0 ms would claim a number nobody took.
-          invalid.push(`${profile} run ${n}: webpack-*.js is not among the top files for ${route}`);
-        } else profileEvidence[profile][route].push(evidence);
-      }
-    }
-  }
-  return {
-    status: invalid.length ? "invalid" : "ok",
-    invalid,
-    runs: pageLoadRuns,
-    profiles,
-    profile_evidence: profileEvidence,
-  };
-}
-
 const seconds = (from) => Math.round((Date.now() - from) / 100) / 10;
 
 async function measure(ref, label) {
@@ -317,10 +268,17 @@ async function measure(ref, label) {
     // two real builds to avoid the ambiguity costs minutes on every local run,
     // and buys nothing on CI, where the runner is always cold anyway.
     const buildStart = Date.now();
+    // A core scenario's app calls the API on its own origin, which the server
+    // proxies to REMOTE_API_URL, as in production. `make env-exec` exports the
+    // API environment's direct URLs; left in place at build or at runtime they
+    // send the browser cross-origin to the API, whose origin check refuses
+    // this server's random port, and the issue history never renders.
+    const sameOrigin = scenario.core ? { NEXT_PUBLIC_API_URL: "", NEXT_PUBLIC_WS_URL: "" } : {};
+    const buildEnv = { ...process.env, ...sameOrigin };
     const buildLog = execFileSync(
       "pnpm",
       ["exec", "turbo", "build", "--filter=@multica/web", `--cache-dir=${buildCache}`],
-      { cwd: checkout, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+      { cwd: checkout, encoding: "utf8", stdio: ["ignore", "pipe", "inherit"], env: buildEnv },
     );
     process.stdout.write(buildLog);
     const buildS = seconds(buildStart);
@@ -330,23 +288,13 @@ async function measure(ref, label) {
     const startStart = Date.now();
     server = spawn("pnpm", ["--filter", "@multica/web", "start"], {
       cwd: checkout,
-      env: { ...process.env, PORT: String(port), REMOTE_API_URL: "http://127.0.0.1:1" },
-      // Kept: a server that dies mid-run is otherwise only a refused connection.
-      stdio: ["ignore", openSync(join(outDir, `${label}-server.log`), "w"), "inherit"],
+      env: { ...process.env, ...sameOrigin, PORT: String(port), REMOTE_API_URL: apiUrl ?? "http://127.0.0.1:1" },
+      stdio: "ignore",
       detached: true,
     });
     liveServers.add(server);
     await waitForServer(port);
     const startS = seconds(startStart);
-
-    if (isPageLoad) {
-      const measureStart = Date.now();
-      const result = measurePageLoad(label, port);
-      return {
-        ...result, ref, sha, build_cached: buildCached,
-        timings_s: { install: installS, build: buildS, start: startS, measure: seconds(measureStart) },
-      };
-    }
 
     // The spec, fixture and browser come from this working tree, not the ref's.
     const reportPath = join(outDir, `${label}.json`);
@@ -357,14 +305,20 @@ async function measure(ref, label) {
     const measureStart = Date.now();
     let scenarioExit = 0;
     try {
+      // The core spec runs its own warmup and rounds, each in a fresh browser
+      // context, and writes one report covering all of them (PERF_REPEATS).
+      // --repeat-each on top would multiply the rounds, not set them.
+      const repeat = scenario.core ? [] : [`--repeat-each=${process.env.PERF_REPEATS ?? "1"}`];
       run("pnpm", ["exec", "playwright", "test", "--config=playwright.perf.config.ts",
-        `--repeat-each=${process.env.PERF_REPEATS ?? "1"}`, ...(scenario.spec ? [scenario.spec] : [])], {
+        ...repeat, ...(scenario.spec ? [scenario.spec] : [])], {
         cwd: repoRoot,
         env: {
           ...process.env,
           PLAYWRIGHT_BASE_URL: `http://127.0.0.1:${port}`,
           PERF_REPORT_PATH: reportPath,
           PERF_SCENARIO: scenarioName,
+          PERF_REF: sha.slice(0, 10),
+          PERF_LABEL: label,
         },
       });
     } catch (error) {
@@ -377,6 +331,12 @@ async function measure(ref, label) {
       report = JSON.parse(readFileSync(reportPath, "utf8"));
     } catch {
       report = { status: "invalid", invalid: ["the scenario produced no readable report"] };
+    }
+    // The core spec's report has no verdict of its own: a step whose content
+    // never appears fails the test, so the process exit is the verdict.
+    if (scenario.core && !report.status) {
+      report.status = scenarioExit === 0 ? "ok" : "invalid";
+      report.invalid = scenarioExit === 0 ? [] : [`the scenario process exited ${scenarioExit}`];
     }
     // The scenario process has the last word. A report that says `ok` from a
     // run whose process then failed is not a sample: whatever failed after the
@@ -399,9 +359,6 @@ async function measure(ref, label) {
   }
 }
 
-const timing = (r) =>
-  `install ${r.timings_s.install}s · build ${r.timings_s.build}s${r.build_cached ? " (restored from cache — not a real build)" : ""} · start ${r.timings_s.start}s · measure ${r.timings_s.measure}s`;
-
 const METRICS = [
   ["typing_elapsed_ms", "Typing elapsed (primary)"],
   ["scenario_elapsed_ms", "Scenario elapsed"],
@@ -414,6 +371,7 @@ const METRICS = [
 ];
 
 function markdown(base, head) {
+  if (scenario.core) return coreMarkdown(base, head);
   const usable = base.status === "ok" && head.status === "ok";
   const rows = [...METRICS, ...scenario.metrics].map(([key, label]) => {
     const a = base[key];
@@ -423,6 +381,8 @@ function markdown(base, head) {
     const ratio = a === 0 ? "N/A" : `${((b / a - 1) * 100).toFixed(1)}%`;
     return `| ${label} | ${a} | ${b} | ${delta >= 0 ? "+" : ""}${delta} | ${ratio} |`;
   });
+  const timing = (r) =>
+    `install ${r.timings_s.install}s · build ${r.timings_s.build}s${r.build_cached ? " (restored from cache — not a real build)" : ""} · start ${r.timings_s.start}s · measure ${r.timings_s.measure}s`;
   return [
     `## ${scenario.title}`,
     "",
@@ -444,54 +404,32 @@ function markdown(base, head) {
   ].join("\n");
 }
 
-/** Median of the numbers in `values`; null when none. */
-const median = (values) => {
-  const sorted = values.filter((v) => typeof v === "number").sort((a, b) => a - b);
-  if (!sorted.length) return null;
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
-};
+const timingLine = (r) =>
+  `install ${r.timings_s.install}s · build ${r.timings_s.build}s${r.build_cached ? " (restored from cache — not a real build)" : ""} · start ${r.timings_s.start}s · measure ${r.timings_s.measure}s`;
 
-const cell = (value) => (value === null ? "—" : Math.round(value));
-const delta = (a, b) => (a === null || b === null ? "—" : `${b - a >= 0 ? "+" : ""}${Math.round(b - a)}`);
-
-function pageLoadMarkdown(base, head) {
+/** The core-path table from scripts/perf-core-report.mjs, one column per ref. */
+function coreMarkdown(base, head) {
   const usable = base.status === "ok" && head.status === "ok";
-  const route = (side, profile, name) => {
-    const samples = side.profiles?.[profile]?.[name] ?? [];
-    const evidence = side.profile_evidence?.[profile]?.[name] ?? [];
-    return {
-      js: median(samples.map((s) => s.js_transferred_bytes / 1024)),
-      lcp: median(samples.map((s) => s.lcp_ms)),
-      longTask: median(samples.map((s) => s.long_task_total_ms)),
-      webpack: median(evidence.map(webpackSelfMs)),
-      script: median(evidence.map((e) => e.script_ms)),
-    };
-  };
-  const tables = PAGE_LOAD_PROFILES.flatMap((profile) => [
-    `### ${profile}`,
-    "",
-    "| Route | JS KiB base | JS KiB head | Δ KiB | webpack self base (ms) | webpack self head (ms) | Δ ms | LCP base (ms) | LCP head (ms) | Long-task base (ms) | Long-task head (ms) |",
-    "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
-    ...PAGE_LOAD_ROUTES.map((name) => {
-      const a = route(base, profile, name);
-      const b = route(head, profile, name);
-      return `| ${name} | ${cell(a.js)} | ${cell(b.js)} | ${delta(a.js, b.js)} | ${cell(a.webpack)} | ${cell(b.webpack)} | ${delta(a.webpack, b.webpack)} | ${cell(a.lcp)} | ${cell(b.lcp)} | ${cell(a.longTask)} | ${cell(b.longTask)} |`;
-    }),
-    "",
-  ]);
+  const sideLine = (name, r) =>
+    `- ${name} \`${r.ref}\` (${r.sha.slice(0, 9)}) — ${r.status}${r.invalid?.length ? `: ${r.invalid.join("; ")}` : ""}`;
+  let table;
+  try {
+    table = renderCoreReport([{ label: "base", report: base }, { label: "head", report: head }]);
+  } catch (error) {
+    table = `**Not comparable:** ${error instanceof Error ? error.message : error}`;
+  }
   return [
-    "## Page load per route (CHE-3018)",
+    `## ${scenario.title}`,
     "",
     usable
-      ? `Median of ${head.runs} runs per profile, one sample each. "webpack self" is the CPU-profiler time in the \`webpack-*.js\` runtime chunk (module evaluation). A report, not a merge gate.`
+      ? "Each side measured in turn on this machine against the same local API and dataset. This is a report, not a merge gate — read small differences as noise until a second run agrees."
       : `**Not a usable comparison.** base: \`${base.status}\`, head: \`${head.status}\`.`,
+    table,
     "",
-    ...tables,
-    `- base \`${base.ref}\` (${base.sha.slice(0, 9)}) — ${base.status}${base.invalid?.length ? `: ${base.invalid.join("; ")}` : ""}`,
-    `- head \`${head.ref}\` (${head.sha.slice(0, 9)}) — ${head.status}${head.invalid?.length ? `: ${head.invalid.join("; ")}` : ""}`,
-    `- base timings: ${timing(base)}`,
-    `- head timings: ${timing(head)}`,
+    sideLine("base", base),
+    sideLine("head", head),
+    `- base timings: ${timingLine(base)}`,
+    `- head timings: ${timingLine(head)}`,
   ].join("\n");
 }
 
@@ -510,7 +448,7 @@ try {
   head = await measure(headRef, "head");
   const totalS = seconds(totalStart);
 
-  const summary = isPageLoad ? pageLoadMarkdown(base, head) : markdown(base, head);
+  const summary = markdown(base, head);
   writeFileSync(join(outDir, "comparison.json"), JSON.stringify({ base, head, total_s: totalS }, null, 2));
   writeFileSync(join(outDir, "comparison.md"), `${summary}\n\n- total wall clock: ${totalS}s\n`);
   console.log(`\n${summary}\n\n- total wall clock: ${totalS}s`);
@@ -519,6 +457,8 @@ try {
   // The comparison itself only fails when a sample is not usable. A slower
   // head is information for the reviewer, not a failure of this script.
   exitCode = base.status === "ok" && head.status === "ok" ? 0 : 1;
+  // Core reports from two datasets do not describe the same work.
+  if (scenario.core && base.dataset?.digest !== head.dataset?.digest) exitCode = 1;
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`\ncomparison aborted: ${message}`);

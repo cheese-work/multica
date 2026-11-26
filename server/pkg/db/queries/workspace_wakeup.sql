@@ -12,7 +12,7 @@ WITH base AS MATERIALIZED (
   w.interval_seconds,w.cron_expression,w.timezone,
   w.next_fire_at,w.enabled,w.revision,w.disabled_at,w.last_task_id,w.last_error,w.created_at,
   w.expires_at,w.expiry_seconds,w.on_timeout,w.timed_out_at,
-  w.condition,w.max_fires,w.fire_count,w.paused_reason,w.default_rule_key,
+  w.condition,w.max_fires,w.fire_count,w.paused_reason,
   (w.source_task_id IS NOT NULL) AS created_by_agent,creator.name AS created_by_name,
   CASE WHEN creator_agent.id IS NOT NULL THEN creator_agent.id END AS source_agent_id,creator_agent.name AS source_agent_name,
   (i.status IN ('done','cancelled') OR EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=i.workspace_id AND s.key=i.status AND s.category IN ('done','closed'))) AS issue_closed,
@@ -38,7 +38,7 @@ LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
  ) r ON true
  WHERE w.workspace_id= @workspace_id AND w.system_rule IS NULL
   -- MUL-8472: private projects the caller cannot see.
-  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR i.project_id IS NULL OR NOT (i.project_id = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
+  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR NOT (COALESCE(i.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
  UNION ALL
  -- The child-done system rule of each open parent that still waits for a
  -- sub-issue: every child when unstaged, else its lowest unfinished stage.
@@ -49,7 +49,7 @@ LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
   NULL::bigint,NULL::text,w.timezone,
   NULL::timestamptz,w.enabled,w.revision,w.disabled_at,w.last_task_id,w.last_error,w.created_at,
   NULL::timestamptz,NULL::bigint,NULL::text,NULL::timestamptz,
-  w.condition,w.max_fires,w.fire_count,w.paused_reason,NULL::text,
+  w.condition,w.max_fires,w.fire_count,w.paused_reason,
   false,NULL::text,
   NULL::uuid,NULL::text,
   false,true,COALESCE(sr.active_runs,0)::int,
@@ -76,9 +76,9 @@ LEFT JOIN "user" actor_user ON actor_user.id=actor_member.user_id
   WHERE t.context->>'wakeup_id'=w.id::text AND t.issue_id=w.issue_id
    AND t.status IN ('queued','deferred','dispatched','running','waiting_local_directory')
  ) sr ON true
- WHERE w.workspace_id= @workspace_id AND w.system_rule IS NOT NULL AND w.system_rule NOT IN ('workflow_edges','pr_merge_owed') AND agg.open_count>0
+ WHERE w.workspace_id= @workspace_id AND w.system_rule='child_done' AND agg.open_count>0
   -- MUL-8472: private projects the caller cannot see.
-  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR p.project_id IS NULL OR NOT (p.project_id = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
+  AND (sqlc.narg('hidden_project_ids')::uuid[] IS NULL OR NOT (COALESCE(p.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY(sqlc.narg('hidden_project_ids')::uuid[])))
   AND p.status NOT IN ('done','cancelled')
   AND NOT EXISTS(SELECT 1 FROM issue_status s WHERE s.workspace_id=p.workspace_id AND s.key=p.status AND s.category IN ('done','closed'))
 ), classified AS (

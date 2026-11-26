@@ -10,10 +10,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
-	"github.com/multica-ai/multica/server/internal/daemon/readproxy"
-	"github.com/multica-ai/multica/server/internal/daemon/sandbox"
 	"github.com/multica-ai/multica/server/pkg/agent"
-	"github.com/multica-ai/multica/server/pkg/credentialexec"
 )
 
 var (
@@ -44,7 +41,6 @@ func init() {
 	// Tag every CLI HTTP request with this binary's build version so the
 	// server can split logs/metrics by client version.
 	cli.ClientVersion = version
-	cli.ClientCommit = commit
 
 	rootCmd.PersistentFlags().String("server-url", "", "Multica server URL (env: MULTICA_SERVER_URL)")
 	rootCmd.PersistentFlags().String("workspace-id", "", "Workspace ID (env: MULTICA_WORKSPACE_ID)")
@@ -53,16 +49,17 @@ func init() {
 
 	// Core commands
 	issueCmd.GroupID = groupCore
+	inboxCmd.GroupID = groupCore
 	issueStatusCatalogCmd.GroupID = groupCore
 	projectCmd.GroupID = groupCore
-	labelCmd.GroupID = groupCore
 	workflowCmd.GroupID = groupCore
+	labelCmd.GroupID = groupCore
 	propertyCmd.GroupID = groupCore
+	quickActionCmd.GroupID = groupCore
 	viewCmd.GroupID = groupCore
 	agentCmd.GroupID = groupCore
 	autopilotCmd.GroupID = groupCore
 	workspaceCmd.GroupID = groupCore
-	meCmd.GroupID = groupCore
 	repoCmd.GroupID = groupCore
 	skillCmd.GroupID = groupCore
 	squadCmd.GroupID = groupCore
@@ -78,25 +75,23 @@ func init() {
 	loginCmd.GroupID = groupAdditional
 	setupCmd.GroupID = groupAdditional
 	attachmentCmd.GroupID = groupAdditional
-	provenanceCmd.GroupID = groupAdditional
 	configCmd.GroupID = groupAdditional
 	updateCmd.GroupID = groupAdditional
 	versionCmd.GroupID = groupAdditional
-	githubCmd.GroupID = groupAdditional
-	gitCmd.GroupID = groupAdditional
-	guardCmd.GroupID = groupAdditional
 
 	rootCmd.AddCommand(issueCmd)
+	rootCmd.AddCommand(inboxCmd)
+	rootCmd.AddCommand(docCmd)
 	rootCmd.AddCommand(issueStatusCatalogCmd)
 	rootCmd.AddCommand(projectCmd)
-	rootCmd.AddCommand(labelCmd)
 	rootCmd.AddCommand(workflowCmd)
+	rootCmd.AddCommand(labelCmd)
 	rootCmd.AddCommand(propertyCmd)
+	rootCmd.AddCommand(quickActionCmd)
 	rootCmd.AddCommand(viewCmd)
 	rootCmd.AddCommand(agentCmd)
 	rootCmd.AddCommand(autopilotCmd)
 	rootCmd.AddCommand(workspaceCmd)
-	rootCmd.AddCommand(meCmd)
 	rootCmd.AddCommand(repoCmd)
 	rootCmd.AddCommand(environmentCmd)
 	rootCmd.AddCommand(skillCmd)
@@ -109,31 +104,17 @@ func init() {
 	rootCmd.AddCommand(loginCmd)
 	rootCmd.AddCommand(setupCmd)
 	rootCmd.AddCommand(attachmentCmd)
-	rootCmd.AddCommand(provenanceCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(versionCmd)
-	rootCmd.AddCommand(githubCmd)
-	rootCmd.AddCommand(gitCmd)
-	rootCmd.AddCommand(guardCmd)
-	rootCmd.AddCommand(browserCmd)
 
 	initHelp(rootCmd)
 }
 
 func main() {
-	if len(os.Args) > 2 && os.Args[1] == credentialexec.HelperArg {
-		if err := credentialexec.RunHelper(os.Args[2:]); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-		return
-	}
-	if len(os.Args) > 1 && os.Args[1] == sandbox.BridgeHelperArg {
-		os.Exit(sandbox.BridgeMain(os.Args[2:]))
-	}
-	if len(os.Args) > 1 && os.Args[1] == readproxy.ShimHelperArg {
-		os.Exit(readproxy.ShimMain(os.Args[2:], os.Getenv, os.Stdout, os.Stderr))
+	if err := agent.ApplyTaskEnvFileOverlay(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
 	}
 	if len(os.Args) == 2 && os.Args[1] == execenv.PreparationHelperArg {
 		logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
@@ -145,6 +126,10 @@ func main() {
 	}
 	if len(os.Args) == 2 && os.Args[1] == agent.CursorHookHelperArg {
 		agent.RunCursorHookRelay(os.Stdin, os.Stdout, os.Getenv)
+		return
+	}
+	if len(os.Args) == 2 && os.Args[1] == agent.AntigravityHookHelperArg {
+		agent.RunAntigravityHookRelay(os.Stdin, os.Stdout, os.Getenv)
 		return
 	}
 	cli.CleanupStaleUpdateArtifacts()

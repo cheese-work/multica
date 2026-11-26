@@ -22,21 +22,11 @@ const (
 	EventIssueReactionAdded   = "issue_reaction:added"
 	EventIssueReactionRemoved = "issue_reaction:removed"
 
-	// Decision events. The payload carries answer_id, issue_id and state
-	// (pending | effective | disclaimed); clients refetch the affected cards.
-	EventDecisionAnswerUpdated = "decision_answer:updated"
-
 	// Agent events
 	EventAgentStatus   = "agent:status"
 	EventAgentCreated  = "agent:created"
 	EventAgentArchived = "agent:archived"
 	EventAgentRestored = "agent:restored"
-
-	// Scheduling pause: published once per real change, never on a no-op.
-	EventAgentSchedulingPaused      = "agent:scheduling_paused"
-	EventAgentSchedulingResumed     = "agent:scheduling_resumed"
-	EventWorkspaceSchedulingPaused  = "workspace:scheduling_paused"
-	EventWorkspaceSchedulingResumed = "workspace:scheduling_resumed"
 
 	// Task events (server <-> daemon).
 	// Events describe task lifecycle or recorded usage changes. Front-end
@@ -55,13 +45,8 @@ const (
 	EventTaskMessage               = "task:message"
 	EventTaskCancelled             = "task:cancelled" // * → cancelled
 
-	// Browser lease events (CHE-4734, W3-5). Internal: the steel-gateway event stream (W3-6)
-	// reads them from the bus; the realtime fanout never forwards them to clients.
-	EventBrowserLeaseRevoked = "browser_lease:revoked" // active or queued → ended or dropped
-
 	// Inbox events
 	EventInboxNew           = "inbox:new"
-	EventInboxUpdated       = "inbox:updated" // an unread record gained another reply
 	EventInboxRead          = "inbox:read"
 	EventInboxUnread        = "inbox:unread"
 	EventInboxArchived      = "inbox:archived"
@@ -79,9 +64,6 @@ const (
 	// Workspace events
 	EventWorkspaceUpdated = "workspace:updated"
 	EventWorkspaceDeleted = "workspace:deleted"
-	// EventWorkspaceBackgroundAgentChanged carries one effective change of one
-	// background job's chain (CHE-4098); it fires after the commit.
-	EventWorkspaceBackgroundAgentChanged = "workspace.background_agent_changed"
 
 	// Member events
 	EventMemberAdded   = "member:added"
@@ -120,9 +102,7 @@ const (
 	EventChatSessionRead     = "chat:session_read"
 	EventChatSessionDeleted  = "chat:session_deleted"
 	EventChatSessionUpdated  = "chat:session_updated"
-	// EventChatSupplementUpdated carries the delivery receipt of a follow-up
-	// steered into the running chat task. Sent to the session creator only.
-	EventChatSupplementUpdated = "chat:supplement_updated"
+	EventChatWakeupChanged   = "chat:wakeup_changed"
 
 	// Project events
 	EventProjectCreated         = "project:created"
@@ -171,6 +151,16 @@ const (
 	// A member's own view and sidebar preferences. Always private to that
 	// member: it exists so their other devices follow along.
 	EventIssueViewPreferenceChanged = "issue_view_preference:changed"
+
+	EventDocCreated = "doc:created"
+	EventDocUpdated = "doc:updated"
+	EventDocDeleted = "doc:deleted"
+	// A doc comment was added, resolved, reopened or deleted. Payload:
+	// doc_id, comment_id; clients refetch the doc's comments.
+	EventDocCommentChanged = "doc_comment:changed"
+	EventDocFolderCreated  = "doc_folder:created"
+	EventDocFolderUpdated  = "doc_folder:updated"
+	EventDocFolderDeleted  = "doc_folder:deleted"
 
 	// Pin events
 	EventPinCreated   = "pin:created"
@@ -271,6 +261,8 @@ const (
 
 	// Telegram installation lifecycle. Same contract as the Slack pair:
 	// front-ends invalidate the Telegram installations query on either.
+	EventWeixinInstallationCreated   = "weixin_installation:created"
+	EventWeixinInstallationRevoked   = "weixin_installation:revoked"
 	EventTelegramInstallationCreated = "telegram_installation:created"
 	EventTelegramInstallationRevoked = "telegram_installation:revoked"
 )
