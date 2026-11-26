@@ -75,7 +75,7 @@ import { SteerDemo } from "@/components/demos/steer-demo";
 
 한 댓글에서 서로 다른 에이전트 여러 명을 @멘션하면 각 에이전트가 실행을 하나씩 받습니다. 여러 멘션이 같은 에이전트를 가리키면 한 번만 실행됩니다.
 
-리뷰 단계가 가득 차 실행을 아직 시작하지 못하면 트리거 결과는 사유 `stage_queue_full`인 `deferred`입니다. 멘션은 이미 대기열에 있고 저절로 시작되므로 같은 에이전트를 다시 멘션하지 마세요. 대기 중인 실행은 자리가 비면 시작됩니다. 자리에는 리뷰어 본인의 대기 실행도 포함되므로 적체가 길면 늦어집니다. 약 30분 후에도 실행이 없으면 조건부 웨이크업으로 시작하세요(`multica issue wakeup create --until-status <status> --agent-id <reviewer>`). 핸드오프가 지연되면 `multica issue assign`, `status`, `update`도 같은 안내를 출력합니다.
+리뷰 단계가 가득 차 실행을 아직 시작하지 못하면 트리거 결과는 사유 `stage_queue_full`인 `deferred`입니다. 멘션은 이미 대기열에 있고 저절로 시작되므로 같은 에이전트를 다시 멘션하지 마세요. 대기 중인 실행은 자리가 비면 시작됩니다. 자리에는 리뷰어 본인의 대기 실행도 포함되므로 적체가 길면 늦어집니다. 약 30분 후에도 실행이 없으면 조건부 웨이크업으로 시작하세요(`multica issue wakeup create <issue> --until-status agent_review --agent-id <reviewer>`). 핸드오프가 지연되면 `multica issue assign`, `status`, `update`도 같은 안내를 출력합니다.
 
 ## 에이전트를 트리거하지 않는 메모
 

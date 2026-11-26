@@ -63,14 +63,14 @@ func TestIssueCommentAddWarnsOnBlockedTriggers_CHE1418(test *testing.T) {
 func TestWarnTriggerOutcomes_StageQueueFullPrintsQueuedNote(t *testing.T) {
 	const agentID = "33333333-3333-4333-8333-333333333333"
 	var out strings.Builder
-	warnBlockedTriggerOutcomes(&out, map[string]any{"trigger_outcomes": []any{
+	warnBlockedTriggerOutcomes(&out, map[string]any{"identifier": "MUL-7", "status": "agent_review", "trigger_outcomes": []any{
 		map[string]any{"target_type": "agent", "target_id": agentID, "status": "deferred", "reason_code": "stage_queue_full"},
 		map[string]any{"target_type": "agent", "target_id": "other", "status": "deferred", "reason_code": "deferred"},
 	}})
 	got := out.String()
 	for _, want := range []string{
 		"Note: review of agent " + agentID + " is queued behind a full stage",
-		"multica issue wakeup create --until-status <status> --agent-id " + agentID,
+		"multica issue wakeup create MUL-7 --until-status agent_review --agent-id " + agentID,
 		"Do not re-mention or re-assign.",
 	} {
 		if !strings.Contains(got, want) {
