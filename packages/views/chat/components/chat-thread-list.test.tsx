@@ -89,7 +89,9 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
     useQuery: (options: { queryKey: readonly unknown[] }) =>
       options.queryKey.includes("open-decisions")
         ? { data: needsYou.rows, isPending: false, isError: false, refetch: vi.fn() }
-        : { data: { tasks: [] } },
+        : options.queryKey.includes("my-wakeups")
+          ? { data: [] }
+          : { data: { tasks: [] } },
     useQueryClient: () => ({ setQueryData: vi.fn(), invalidateQueries: vi.fn() }),
   };
 });
@@ -130,6 +132,7 @@ function renderList(
   {
     onArchive = vi.fn(),
     onSelectSession = vi.fn(),
+    onPrefetchSession = vi.fn(),
     renderedSessions = sessions,
     renderedAgents = [agent],
     loadState = undefined as "loading" | "error" | undefined,
@@ -149,11 +152,12 @@ function renderList(
         loadState={loadState}
         onRetry={onRetry}
         onEnterSelectMode={onEnterSelectMode}
+        onPrefetchSession={onPrefetchSession}
       />
       </NavigationProvider>
     </I18nProvider>,
   );
-  return { onArchive, onSelectSession, container };
+  return { onArchive, onSelectSession, onPrefetchSession, container };
 }
 
 const ARCHIVE_LABEL = enChat.list.archive;
@@ -695,5 +699,22 @@ describe("ChatThreadList has no search of its own (CHE-5593)", () => {
     fireEvent.keyDown(document.body, { key: "/" });
     expect(screen.queryByRole("searchbox")).toBeNull();
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+// Upstream's smooth-exit cases (data-chat-row-exiting through SessionHistoryList
+// animateExit) do not apply: the fork's grouped, virtualized list replaced the
+// history and archived SessionHistoryList views in this component.
+describe("ChatThreadList prefetch", () => {
+  it("triggers onPrefetchSession when hovering or focusing a row", () => {
+    const { onPrefetchSession } = renderList("s1");
+    const row = screen.getByText("Chat s2").closest("[data-chat-thread-row]")!;
+
+    fireEvent.pointerEnter(row);
+    fireEvent.focus(row);
+
+    expect(onPrefetchSession).toHaveBeenCalledTimes(2);
+    expect(onPrefetchSession).toHaveBeenNthCalledWith(1, "s2");
+    expect(onPrefetchSession).toHaveBeenNthCalledWith(2, "s2");
   });
 });

@@ -95,6 +95,10 @@ vi.mock("@multica/views/layout", () => ({
   MachineBannerHeaderSlot: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 
+vi.mock("./document-title-sync", () => ({
+  DocumentTitleSync: () => null,
+}));
+
 vi.mock("@multica/views/voice", () => ({
   VoiceWorkspaceWords: () => null,
 }));

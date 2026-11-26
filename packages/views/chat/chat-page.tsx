@@ -6,6 +6,8 @@ import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { IconButton } from "@multica/ui/components/common/icon-button";
 import { useIsCompact } from "@multica/ui/hooks/use-mobile";
+import { cn } from "@multica/ui/lib/utils";
+import { useReducedMotion } from "@multica/core/appearance";
 import { useCurrentWorkspace, useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
 import { autoCompactThresholdTokens, resolveAutoCompact } from "@multica/core/workspace/auto-compact";
 import {
@@ -27,9 +29,14 @@ import { useListColumnCollapsed } from "../layout/app-shell-context";
 import { ListColumn } from "../layout/list-column";
 import { useBackOrReplace, useNavigation } from "../navigation";
 import { useT } from "../i18n";
-import { ChatMessageList, ChatMessageSkeleton } from "./components/chat-message-list";
+import {
+  ChatMessageList,
+  ChatMessageSkeleton,
+  type ChatMessageEnterTransition,
+} from "./components/chat-message-list";
 import { ChatInput } from "./components/chat-input";
 import { ChatQueue } from "./components/chat-queue";
+import { ChatWakeupStrip, useChatWakeups } from "./components/chat-wakeups";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
 import { useChatRename } from "./components/use-chat-rename";
@@ -39,6 +46,7 @@ import { canForkSession } from "./lib/can-fork-session";
 import { EmptyState } from "./components/chat-empty-state";
 import { NewChatButton } from "./components/new-chat-button";
 import { useChatController } from "./components/use-chat-controller";
+import { useChatSessionPrefetch } from "./components/use-chat-session-prefetch";
 import { OfflineBanner } from "./components/offline-banner";
 import { NoAgentBanner } from "./components/no-agent-banner";
 import { ArchivedAgentBanner } from "./components/archived-agent-banner";
@@ -51,6 +59,7 @@ import { useQuoteRequest } from "./components/use-quote-request";
 import { ChatAppRequests } from "../common/app-requests";
 import { useRegisterCommandBarContext } from "../search/register-context";
 import { useSearchStore } from "@multica/core/command-bar";
+import { CollapsibleSlot } from "./components/collapsible-slot";
 
 /**
  * Chat tab — the first-class two-pane surface (thread list on the left,
@@ -93,9 +102,17 @@ export function ChatPage() {
   const isCurrentChatRoute = pathname === wsPaths.chat();
   const isCompact = useIsCompact();
 
+  const isSurfaceActive = isCurrentChatRoute && getCurrentSlug() === workspaceSlug;
   const c = useChatController({
-    isActive: isCurrentChatRoute && getCurrentSlug() === workspaceSlug,
+    isActive: isSurfaceActive,
   });
+  const prefetchSession = useChatSessionPrefetch({
+    wsId: c.wsId,
+    sessions: c.sessions,
+    activeSessionId: c.activeSessionId,
+    isActive: isSurfaceActive,
+  });
+  const reduceMotion = useReducedMotion();
   const { data: quickActionsPending = null } = useQuery(
     chatQuickActionsPendingOptions(c.activeSessionId ?? ""),
   );
@@ -104,6 +121,7 @@ export function ChatPage() {
   useQuickActionsPendingTimeout(c.activeSessionId ?? null, quickActionsPending);
   // Toast when an accepted refresh later fails in the daemon (async half).
   useQuickActionsFailureToast(c.activeSessionId ?? null);
+  const wakeups = useChatWakeups(c.activeSessionId);
   const regenerateQuickActions = useRegenerateChatQuickActions();
   const urlSession = searchParams.get("session") || null;
   const urlAgent = searchParams.get("agent") || null;
@@ -259,8 +277,37 @@ export function ChatPage() {
     if (urlAgent) consumedAgentIntent.current = urlAgent;
   };
 
+  // Directional hint for in-page session transitions: archiving the current
+  // thread plays a subtle directional glide aligned with list order ("next" or
+  // "prev"); direct clicks or URL switches use a gentle opacity fade. Initial
+  // page load has no transition so first paint lands immediately.
+  const [sessionTransition, setSessionTransition] = useState<{
+    sessionId: string | null;
+    direction: ChatMessageEnterTransition;
+  } | null>(null);
+  const [prevActiveSessionId, setPrevActiveSessionId] = useState<string | null>(
+    c.activeSessionId,
+  );
+  if (c.activeSessionId !== prevActiveSessionId) {
+    setPrevActiveSessionId(c.activeSessionId);
+    if (
+      prevActiveSessionId !== null &&
+      c.activeSessionId !== null &&
+      sessionTransition?.sessionId !== c.activeSessionId
+    ) {
+      setSessionTransition({ sessionId: c.activeSessionId, direction: "fade" });
+    }
+  }
+  const activeTransition: ChatMessageEnterTransition | null =
+    sessionTransition?.sessionId === c.activeSessionId
+      ? sessionTransition.direction
+      : null;
+
   const handleSelect = (session: ChatSession) => {
     supersedeAgentIntent();
+    if (session.id !== c.activeSessionId) {
+      setSessionTransition({ sessionId: session.id, direction: "fade" });
+    }
     if (session.id !== urlSession) requestNav("push", false);
     c.handleSelectSession(session);
   };
@@ -278,8 +325,18 @@ export function ChatPage() {
     onOpenSession: handleSelect,
     onArchived: (session) => {
       if (session.id !== useChatStore.getState().activeSessionId) return;
-      if (isCompact) backOrReplace(wsPaths.chat());
-      else c.advanceSelectionAfterArchive(session);
+      if (isCompact) {
+        setSessionTransition(null);
+        backOrReplace(wsPaths.chat());
+      } else {
+        const result = c.advanceSelectionAfterArchive(session);
+        if (result?.moved) {
+          setSessionTransition({
+            sessionId: result.targetSessionId,
+            direction: result.direction ?? "fade",
+          });
+        }
+      }
     },
     onUnseen: (session) => {
       if (session.id !== useChatStore.getState().activeSessionId) return;
@@ -298,6 +355,7 @@ export function ChatPage() {
     // A manual ⊕ pick outranks a pending deep link; when called FROM the
     // intent effect the ref is already set to this param, so this is a no-op.
     supersedeAgentIntent();
+    setSessionTransition(null);
     // The deep link already owns the current entry: it becomes `?new=1`.
     if (fromIntent) requestNav("replace", true);
     else if (urlSession || !urlNew) requestNav("push", true);
@@ -407,6 +465,7 @@ export function ChatPage() {
         onArchive={handleArchive}
         loadState={c.sessionsLoaded ? undefined : c.sessionsFailed ? "error" : "loading"}
         onRetry={() => void c.refetchSessions()}
+        onPrefetchSession={prefetchSession}
       />
     </div>
   );
@@ -430,6 +489,7 @@ export function ChatPage() {
   );
   // Back follows real history; the list is only the fallback.
   const backToList = () => {
+    setSessionTransition(null);
     if (c.activeSessionId || urlNew) backOrReplace(wsPaths.chat());
   };
 
@@ -454,6 +514,30 @@ export function ChatPage() {
       c.isAgentRuntimeBound &&
       !c.noAgent,
   });
+  const statusBanner = c.isAgentAccessRevoked ? (
+    <AgentAccessRevokedBanner agentName={c.activeAgent?.name} />
+  ) : c.noAgent ? (
+    <NoAgentBanner />
+  ) : c.isAgentArchived ? (
+    <ArchivedAgentBanner agentName={c.activeAgent?.name} />
+  ) : !c.isAgentRuntimeBound && c.activeAgent ? (
+    <RuntimeRequiredBanner
+      agentId={c.activeAgent.id}
+      agentName={c.activeAgent.name}
+    />
+  ) : c.availability === "offline" || c.availability === "unstable" ? (
+    <OfflineBanner agentName={c.activeAgent?.name} availability={c.availability} />
+  ) : null;
+  const hasActiveWakeup =
+    !!c.activeSessionId && wakeups.some((w) => w.status === "active");
+  const emptyEnterClass =
+    activeTransition && !reduceMotion
+      ? activeTransition === "next"
+        ? "animate-chat-enter-next"
+        : activeTransition === "prev"
+          ? "animate-chat-enter-prev"
+          : "animate-chat-enter-fade"
+      : undefined;
   const conversation = (
     <ChatAnnotationContext.Provider value={annotation.scope}>
     <div
@@ -462,7 +546,7 @@ export function ChatPage() {
       className="flex flex-1 flex-col min-h-0 @container"
     >
       {annotation.popup}
-      {c.currentSession && (
+      {c.currentSession ? (
         <ChatSessionHeader
           leading={
             compactConversation ? (
@@ -495,12 +579,22 @@ export function ChatPage() {
             })
           }
         />
-      )}
+      ) : !isCompact && !listCollapsed && c.activeSessionId ? (
+        // Keep the 48px header band reserved while the active session row
+        // resolves from the sessions query so the message area never drops
+        // down when metadata lands. When `listCollapsed` is true, the desktop
+        // wrapper below already renders a 48px `<PageHeader>` above `conversation`.
+        <PageHeader leading={false} className="bg-background">
+          {null}
+        </PageHeader>
+      ) : null}
       {c.showSkeleton ? (
         <ChatMessageSkeleton />
       ) : showsMessageList ? (
         <ChatMessageList
           key={c.activeSessionId}
+          revealKey={c.activeSessionId}
+          enterTransition={activeTransition}
           onQuoteMessage={quote}
           messages={c.messages}
           continuedFromSessionId={c.currentSession?.continued_from_session_id}
@@ -535,36 +629,36 @@ export function ChatPage() {
               : undefined
           }
           quickActionsPendingMessageId={quickActionsPending?.message_id ?? null}
+          wakeups={wakeups}
         />
       ) : (
-        <EmptyState
-          agent={c.activeAgent}
-          hasSessions={c.sessions.length > 0}
-          onPickPrompt={c.sendConversationStarter}
-        />
+        <div
+          key={c.activeSessionId ?? "new"}
+          className={cn("flex min-h-0 flex-1 flex-col overflow-hidden", emptyEnterClass)}
+        >
+          <EmptyState
+            agent={c.activeAgent}
+            hasSessions={c.sessions.length > 0}
+            onPickPrompt={c.sendConversationStarter}
+          />
+        </div>
       )}
 
-      {c.isAgentAccessRevoked ? (
-        <AgentAccessRevokedBanner agentName={c.activeAgent?.name} />
-      ) : c.noAgent ? (
-        <NoAgentBanner />
-      ) : c.isAgentArchived ? (
-        <ArchivedAgentBanner agentName={c.activeAgent?.name} />
-      ) : !c.isAgentRuntimeBound && c.activeAgent ? (
-        <RuntimeRequiredBanner
-          agentId={c.activeAgent.id}
-          agentName={c.activeAgent.name}
-        />
-      ) : (
-        <OfflineBanner agentName={c.activeAgent?.name} availability={c.availability} />
-      )}
+      <CollapsibleSlot slotKey="chat-status-banner" visible={statusBanner !== null}>
+        {statusBanner}
+      </CollapsibleSlot>
 
       <div className="px-4">
         <ChatAppRequests sessionId={c.activeSessionId} />
       </div>
 
+      <CollapsibleSlot slotKey="chat-wakeup-slot" visible={hasActiveWakeup}>
+        <ChatWakeupStrip sessionId={c.activeSessionId} wakeups={wakeups} />
+      </CollapsibleSlot>
+
       <ChatQueue
         tasks={queuedTasks}
+        wakeups={wakeups}
         headStatus={c.pendingTask?.status}
         headSupplement={c.pendingTask?.head_supplement}
         onSteer={c.handleSteerQueuedTask}
@@ -587,6 +681,7 @@ export function ChatPage() {
         onStop={c.handleStop}
         isRunning={!!c.pendingTaskId}
         allowSubmitWhileRunning={c.pendingTask?.supports_queue === true}
+        canSteerWhileRunning={c.pendingTask?.can_supplement}
         disabled={
           c.isAgentArchived ||
           c.isAgentAccessRevoked ||
@@ -668,7 +763,12 @@ export function ChatPage() {
         ) : noAgentPage ? (
           noAgentState
         ) : (
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground",
+              activeTransition && !reduceMotion && "animate-chat-enter-fade",
+            )}
+          >
             <MessageSquare className="h-10 w-10 text-faint-foreground" />
             <p className="text-body">{t(($) => $.page.select_prompt)}</p>
           </div>

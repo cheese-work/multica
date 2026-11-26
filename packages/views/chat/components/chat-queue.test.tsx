@@ -53,7 +53,7 @@ describe("ChatQueue", () => {
     expect(screen.queryByText("2 queued messages")).not.toBeInTheDocument();
     expect(screen.getByText("First follow-up")).toBeInTheDocument();
     expect(screen.getByText("Queued message")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Steer" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "Send now (stops current reply)" })).toHaveLength(2);
     expect(screen.getAllByLabelText("Remove queued message")).toHaveLength(2);
     expect(screen.getAllByLabelText("More queue actions")).toHaveLength(2);
     expect(screen.queryByRole("button", { name: "Clear all" })).not.toBeInTheDocument();
@@ -76,7 +76,7 @@ describe("ChatQueue", () => {
   it("runs steer, remove, and overflow actions against the selected queue state", async () => {
     const actions = renderQueue();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "Steer" })[1]!);
+    fireEvent.click(screen.getAllByRole("button", { name: "Send now (stops current reply)" })[1]!);
     await waitFor(() => expect(actions.onSteer).toHaveBeenCalledWith("task-3"));
     expect(actions.onStopAndSend).not.toHaveBeenCalled();
 
@@ -96,7 +96,7 @@ describe("ChatQueue", () => {
     const actions = renderQueue("queued");
 
     const buttons = screen.getAllByRole("button", {
-      name: "Steer is available after the current reply starts",
+      name: "Available after the current reply starts",
     });
     expect(buttons).toHaveLength(2);
     for (const button of buttons) expect(button).toBeDisabled();
@@ -155,7 +155,7 @@ describe("ChatQueue send-now gating", () => {
   it("leaves Steer available when the head task is dispatchable and permitted", () => {
     renderQueue("running", false);
 
-    expect(screen.getAllByRole("button", { name: "Steer" })[0]!).not.toBeDisabled();
+    expect(screen.getAllByRole("button", { name: "Send now (stops current reply)" })[0]!).not.toBeDisabled();
   });
 });
 
@@ -203,7 +203,7 @@ describe("ChatQueue Steer and Stop & send", () => {
     ["running", "starting", "Run is starting"],
     ["running", "unsupported", "This run can't take new messages. The message stays queued."],
     ["running", "absent", "This run can't take new messages. The message stays queued."],
-    ["queued", "capable", "Steer is available after the current reply starts"],
+    ["queued", "capable", "Available after the current reply starts"],
   ] as const)(
     "shows the fallback reason as visible text (head %s, support %s)",
     (headStatus, support, reason) => {
