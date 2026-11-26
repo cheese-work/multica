@@ -29,6 +29,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/connectedapps"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/dbreader"
+	"github.com/multica-ai/multica/server/internal/doopread"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -245,6 +246,9 @@ type Handler struct {
 	// MergeReceiptBroker verifies the GitHub Actions OIDC token of the workflow
 	// that writes merge receipts (CHE-5594). Nil leaves the route off.
 	MergeReceiptBroker *cibroker.Broker
+	// DoopReader reads design attestations from doop (CHE-7064). Nil, or a reader
+	// with no usable config, answers 503 design_doop_unavailable.
+	DoopReader *doopread.Reader
 	// MergeReceiptWorkspaceID is the one workspace that route writes to.
 	MergeReceiptWorkspaceID string
 	// githubAllowlist is the GITHUB_ALLOWED_ACCOUNT_IDS policy (CHE-3418).
@@ -608,6 +612,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 	taskSvc.QuickActions = llmClient
 	h := &Handler{
 		ProposalGuard:                admitProposalOnce,
+		DoopReader:                   doopread.FromEnv(),
 		Queries:                      queries,
 		ReadSelector:                 dbreader.NewPrimaryOnly(queries),
 		DB:                           executor,

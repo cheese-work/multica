@@ -3,11 +3,11 @@ package service
 import "testing"
 
 func pctRule(enabled bool, pct int) AutoCompact {
-	return AutoCompact{Enabled: enabled, ThresholdPct: pct, Tokens200k: 190_000, Tokens1M: 200_000}
+	return AutoCompact{Enabled: enabled, ThresholdPct: pct, Tokens200k: 190_000, Tokens1M: 200_000, DMRunCap200k: 190_000, DMRunCap1M: 400_000}
 }
 
 func tokenRule(enabled bool, small, large int64) AutoCompact {
-	return AutoCompact{Enabled: enabled, Tokens200k: small, Tokens1M: large}
+	return AutoCompact{Enabled: enabled, Tokens200k: small, Tokens1M: large, DMRunCap200k: 190_000, DMRunCap1M: 400_000}
 }
 
 // Retrospective test (added with the implementation, not first): precedence is
@@ -26,13 +26,25 @@ func TestResolveAutoCompactPrecedence(t *testing.T) {
 		{"stored out-of-range value is ignored", `{"auto_compact":{"threshold_pct":5}}`, `{}`, tokenRule(true, 190_000, 200_000)},
 		{"workspace tokens", `{"auto_compact":{"threshold_tokens_200k":150000,"threshold_tokens_1m":300000}}`, `{}`, tokenRule(true, 150_000, 300_000)},
 		{"token field out of range is ignored", `{"auto_compact":{"threshold_tokens_200k":10,"threshold_tokens_1m":900000}}`, `{}`, tokenRule(true, 190_000, 200_000)},
-		{"agent pct replaces workspace tokens", `{"auto_compact":{"threshold_tokens_1m":300000}}`, `{"auto_compact":{"threshold_pct":60}}`, AutoCompact{Enabled: true, ThresholdPct: 60, Tokens200k: 190_000, Tokens1M: 300_000}},
+		{"agent pct replaces workspace tokens", `{"auto_compact":{"threshold_tokens_1m":300000}}`, `{"auto_compact":{"threshold_pct":60}}`, AutoCompact{Enabled: true, ThresholdPct: 60, Tokens200k: 190_000, Tokens1M: 300_000, DMRunCap200k: 190_000, DMRunCap1M: 400_000}},
 		{"agent tokens replace workspace pct", `{"auto_compact":{"threshold_pct":60}}`, `{"auto_compact":{"threshold_tokens_1m":250000}}`, tokenRule(true, 190_000, 250_000)},
+		// S2 (CHE-10000): the DM run cap is its own pair of keys.
+		{"run caps are saved whole", `{"auto_compact":{"dm_run_cap_tokens_1m":430000,"dm_run_cap_tokens_200k":150000}}`, `{}`,
+			AutoCompact{Enabled: true, Tokens200k: 190_000, Tokens1M: 200_000, DMRunCap1M: 430_000, DMRunCap200k: 150_000}},
+		{"run cap may exceed the threshold range", `{"auto_compact":{"dm_run_cap_tokens_1m":1000000}}`, `{}`,
+			AutoCompact{Enabled: true, Tokens200k: 190_000, Tokens1M: 200_000, DMRunCap1M: 1_000_000, DMRunCap200k: 190_000}},
+		{"agent run cap wins per field", `{"auto_compact":{"dm_run_cap_tokens_1m":430000,"dm_run_cap_tokens_200k":150000}}`, `{"auto_compact":{"dm_run_cap_tokens_1m":500000}}`,
+			AutoCompact{Enabled: true, Tokens200k: 190_000, Tokens1M: 200_000, DMRunCap1M: 500_000, DMRunCap200k: 150_000}},
+		{"null run cap inherits", `{"auto_compact":{"dm_run_cap_tokens_1m":430000}}`, `{"auto_compact":{"dm_run_cap_tokens_1m":null}}`,
+			AutoCompact{Enabled: true, Tokens200k: 190_000, Tokens1M: 200_000, DMRunCap1M: 430_000, DMRunCap200k: 190_000}},
+		{"run cap out of range is ignored", `{"auto_compact":{"dm_run_cap_tokens_1m":1000001,"dm_run_cap_tokens_200k":200001}}`, `{}`, tokenRule(true, 190_000, 200_000)},
+		{"run cap below range is ignored", `{"auto_compact":{"dm_run_cap_tokens_1m":99999,"dm_run_cap_tokens_200k":99999}}`, `{}`, tokenRule(true, 190_000, 200_000)},
+		{"run cap does not clear a saved percent", `{"auto_compact":{"threshold_pct":60,"dm_run_cap_tokens_1m":430000}}`, `{}`,
+			AutoCompact{Enabled: true, ThresholdPct: 60, Tokens200k: 190_000, Tokens1M: 200_000, DMRunCap1M: 430_000, DMRunCap200k: 190_000}},
 		{"unparsable layer is skipped", `not json`, `{"auto_compact":{"threshold_pct":66}}`, pctRule(true, 66)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := ResolveAutoCompact([]byte(tc.workspace), []byte(tc.agent))
-			got.Tokens1MSet = false // covered by TestClaudeCompactEnv
 			if got != tc.want {
 				t.Fatalf("ResolveAutoCompact = %+v, want %+v", got, tc.want)
 			}

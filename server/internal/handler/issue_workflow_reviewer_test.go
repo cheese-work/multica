@@ -190,9 +190,10 @@ func TestReviewerHandler_NoRoutingEntryRefuses(t *testing.T) {
 	issueID := c.issue(t, author)
 	wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress", "no reviewer")
 
-	// A title without a Conventional Commit type has nothing to route by.
+	// A title without a Conventional Commit type routes by the "default" entry
+	// (CHE-9318); with none, the refusal names the blocker.
 	untyped := dbfx.Issue(t, "reviewer routing without a type "+workflowTestSuffix(), testutil.Cols{"project_id": c.projectID, "status": "in_progress"})
-	wantReviewerRefusal(t, updateIssueForTest(t, untyped, map[string]any{"status": "in_review"}), untyped, "in_progress", "Conventional Commit")
+	wantReviewerRefusal(t, updateIssueForTest(t, untyped, map[string]any{"status": "in_review"}), untyped, "in_progress", "blocker", `no \"default\" routing entry`)
 }
 
 // A status move that names the assignee itself still enters the reviewer step:

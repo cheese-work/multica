@@ -33,7 +33,13 @@ func TestDecisionDeliveryBranches(test *testing.T) {
 				if branch == "different_head" {
 					state = "running"
 				}
-				active := dbfx.Task(test, fixture.agentID, testutil.Cols{"issue_id": fixture.issueID, "status": state, "runtime_id": handlerTestRuntimeID(test)})
+				cols := testutil.Cols{"issue_id": fixture.issueID, "status": state, "runtime_id": handlerTestRuntimeID(test)}
+				if branch == "queued" {
+					// A queued comment run takes the decision; a queued step run does not
+					// (CHE-9605, step_run_rewrite_guard_test.go).
+					cols["trigger_comment_id"] = dbfx.Comment(test, fixture.issueID, "earlier question")
+				}
+				active := dbfx.Task(test, fixture.agentID, cols)
 				dbfx.Exec(test, `UPDATE agent_task_queue SET comment_thread_id = $1 WHERE id = $2`, fixture.tagID, active)
 				if branch == "different_head" {
 					dbfx.Exec(test, `UPDATE agent_task_queue SET context = '{"head_sha":"other-head"}' WHERE id = $1`, active)

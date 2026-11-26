@@ -29,7 +29,10 @@ func (f episodeFixture) exhaustBudget(t *testing.T) {
 func (f episodeFixture) conflictingTask(t *testing.T) string {
 	t.Helper()
 	squad := dbfx.Insert(t, "squad", testutil.Cols{"workspace_id": testWorkspaceID, "name": "Conflicting squad " + workflowTestSuffix(), "creator_id": testUserID, "leader_id": f.agentID})
-	return dbfx.Task(t, f.agentID, testutil.Cols{"issue_id": f.issueID, "status": "queued", "runtime_id": handlerTestRuntimeID(t), "squad_id": squad, "is_leader_task": true})
+	// A comment run: a queued step run is never merged into, so only a comment
+	// run can conflict with the squad the answers resume in (CHE-9605).
+	trigger := dbfx.Comment(t, f.issueID, "conflicting trigger")
+	return dbfx.Task(t, f.agentID, testutil.Cols{"issue_id": f.issueID, "status": "queued", "runtime_id": handlerTestRuntimeID(t), "squad_id": squad, "is_leader_task": true, "trigger_comment_id": trigger})
 }
 
 // suspension is the episode's suspended state and the issue placement around it.

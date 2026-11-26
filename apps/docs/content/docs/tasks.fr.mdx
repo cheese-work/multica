@@ -84,7 +84,7 @@ Le journal d'exécution totalise aussi le **Dépensé**, les **Tokens** et le **
 
 ## Échecs et relances automatiques
 
-Les défaillances transitoires — un runtime brièvement hors ligne, un redémarrage du daemon, un délai d'exécution dépassé ou une interruption réseau dans l'outil de codage IA — peuvent déclencher une relance automatique. Par défaut, une exécution ordinaire est tentée au plus deux fois ; les interruptions réseau de l'outil ont droit à trois tentatives au maximum.
+Les défaillances transitoires — un runtime brièvement hors ligne, un redémarrage du daemon, un délai d'exécution dépassé ou une interruption réseau dans l'outil de codage IA — peuvent déclencher une relance automatique. Par défaut, une exécution ordinaire est tentée au plus deux fois ; les interruptions réseau de l'outil ont droit à trois tentatives au maximum. Lorsque le compte du fournisseur refuse une exécution pour dépassement de sa limite de concurrence, les relances attendent 2 minutes puis 10 minutes, et chaque relance est consignée en commentaire système sur l'issue.
 
 Les erreurs renvoyées par l'agent lui-même ne sont généralement pas relancées automatiquement. Identifiants expirés, quota épuisé, mauvaise configuration ou modèle incapable de traiter la requête : il faut d'abord corriger la cause, puis relancer manuellement.
 

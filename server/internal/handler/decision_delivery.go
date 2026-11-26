@@ -219,6 +219,11 @@ func (handler *Handler) loadDecisionRecipient(ctx context.Context, queries *db.Q
 		return err
 	}
 	for _, task := range tasks {
+		// A queued step run is never rewritten into the decision's run
+		// (CHE-9605): the answer gets its own comment run.
+		if task.Status == "queued" && isStepRun(task) {
+			continue
+		}
 		if task.AgentID == agentID && (!snapshot.task.ID.Valid || (task.Status == "queued" && snapshot.task.Status != "queued")) {
 			snapshot.task = task
 		}
@@ -229,6 +234,13 @@ func (handler *Handler) loadDecisionRecipient(ctx context.Context, queries *db.Q
 	}
 	snapshot.head = pgtype.Text{String: head, Valid: head != ""}
 	return nil
+}
+
+// isStepRun reports an assignment-level run (no trigger comment) or a status
+// handoff run: the run a status move owes its handler. Comment merges never
+// rewrite it; the SQL guards in agent.sql use the same predicate.
+func isStepRun(task db.AgentTaskQueue) bool {
+	return !task.TriggerCommentID.Valid || task.TriggerKind.String == "status_handoff"
 }
 
 func decisionWakeReady(snapshot decisionWakeSnapshot, now time.Time) bool {

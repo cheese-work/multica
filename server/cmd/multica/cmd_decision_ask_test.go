@@ -48,3 +48,13 @@ func postDecisionAsk(test *testing.T, words []string) {
 		test.Fatalf("POST %s body %v, want only ask, footer, parent_id and escalation_class", path, body)
 	}
 }
+
+// The --ask-file help names options[].design and says frame_updated_at is the server's (CHE-7064 S10).
+func TestAskFileHelpNamesTheDesignOptionField(test *testing.T) {
+	help := decisionRequestCmd.Flags().Lookup("ask-file").Usage
+	for _, want := range []string{"design {frame_url, attestation_id}", "frame_updated_at", "design_version_server_owned"} {
+		if !strings.Contains(help, want) {
+			test.Errorf("--ask-file help does not mention %q", want)
+		}
+	}
+}

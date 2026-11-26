@@ -294,13 +294,10 @@ func TestCreateComment_WorkerAgentCommentWakesSquadLeader_MUL4015(t *testing.T) 
 }
 
 // TestCreateComment_WorkerAgentCommentQueuesSeparatelyFromLeaderAssignment
-// pins the dedup behavior: when the squad leader ALREADY has a queued or
-// dispatched task on the issue, a worker's completion comment does not double-
-// enqueue a second leader task. This is the desired "coalescing" behavior in
-// production — the leader is going to run once and will observe the worker's
-// comment in that run. Regression coverage so nobody drops the dedup and
-// starts stacking duplicate leader runs.
-func TestCreateComment_WorkerAgentCommentFoldsIntoQueuedLeaderAssignment(t *testing.T) {
+// pins the step-run rule (CHE-9605): when the squad leader's queued task is an
+// assignment-level step run, a worker's completion comment is not folded into
+// it. The comment gets its own leader run; the step run keeps its prompt.
+func TestCreateComment_WorkerAgentCommentKeepsQueuedLeaderAssignmentRun(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -354,8 +351,8 @@ func TestCreateComment_WorkerAgentCommentFoldsIntoQueuedLeaderAssignment(t *test
 		t.Fatalf("CreateComment: expected 201, got %d: %s", w.Code, w.Body.String())
 	}
 
-	// CHE-1418: the worker's result folds into the leader's queued run instead
-	// of queueing a second leader run (the CHE-982 collection-comment storm).
+	// CHE-9605: the leader's queued assignment run is a step run and is never
+	// rewritten, so the worker's result queues its own leader run beside it.
 	var leaderTasks int
 	if err := testPool.QueryRow(ctx, `
 		SELECT count(*) FROM agent_task_queue
@@ -363,8 +360,8 @@ func TestCreateComment_WorkerAgentCommentFoldsIntoQueuedLeaderAssignment(t *test
 	`, issueID, fx.LeaderID).Scan(&leaderTasks); err != nil {
 		t.Fatalf("count leader tasks: %v", err)
 	}
-	if leaderTasks != 1 {
-		t.Fatalf("expected one leader run carrying the worker comment, got %d", leaderTasks)
+	if leaderTasks != 2 {
+		t.Fatalf("expected the assignment run and one leader run carrying the worker comment, got %d", leaderTasks)
 	}
 }
 
