@@ -128,6 +128,7 @@ var actionFixtures = map[string]string{
 	"workflow.step.instructions.set": `{"workflow_id":"` + fixtureID + `","status_key":"in_progress","base_sha256":"` + decisionaction.TextDigest("") + `","instructions":"x"}`,
 	"workspace.routing_agent.set":    `{"workspace_id":"` + fixtureID + `","routing_agent":{},"base_sha256":"` + decisionaction.TextDigest("") + `","after_sha256":"` + decisionaction.TextDigest("") + `"}`,
 	"workspace.delegated_writes.set": `{}`,
+	"github.repo.create":             `{"workspace_id":"` + fixtureID + `","org":"tevo-studio","name":"we006","visibility":"private"}`,
 	"project.status.set":             `{"project_id":"` + fixtureID + `","status":"paused"}`,
 	"workspace.settings.patch":       `{"workspace_id":"` + fixtureID + `","settings":{"idle_started_guard":{"mode":"act"}},"base_sha256":"` + decisionaction.TextDigest("") + `","after_sha256":"` + decisionaction.TextDigest("") + `"}`,
 }
