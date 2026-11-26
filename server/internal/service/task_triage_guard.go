@@ -64,6 +64,9 @@ const (
 	OriginBudgetRecovery
 )
 
+// ErrIssueHasBlockers refuses derived runs until all prerequisites end.
+var ErrIssueHasBlockers = errors.New("the issue is waiting for unfinished blockers")
+
 // ErrIssueInTriage is returned by a derived enqueue path when the issue is
 // waiting in Triage. Handlers render it as 403 issue_in_triage; background
 // callers log it and drop the trigger.
@@ -152,13 +155,27 @@ func guardIssueRunGate(ctx context.Context, q *db.Queries, issueID pgtype.UUID, 
 		}
 		return ReviewGate{}, nil
 	}
+<<<<<<< HEAD
 	state, err := q.GetIssueTriageState(ctx, issueID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ReviewGate{}, nil
 		}
 		return ReviewGate{}, fmt.Errorf("triage guard: load issue triage state: %w", err)
+||||||| 2fcb424b72
+	state, err := q.GetIssueTriageState(ctx, issueID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("triage guard: load issue triage state: %w", err)
+=======
+	admission, err := q.GetIssueRunAdmission(ctx, issueID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+>>>>>>> 35b54a3742bb
 	}
+<<<<<<< HEAD
 	if state.Valid {
 		return ReviewGate{}, ErrIssueInTriage
 	}
@@ -210,7 +227,21 @@ func guardIntakeHold(ctx context.Context, q *db.Queries, issueID pgtype.UUID, ta
 	}
 	if err := intakehold.Enforce(loaded, "run:"+target.Trigger, "agent", util.UUIDToString(target.AgentID)); err != nil {
 		return ErrIntakeHold
+||||||| 2fcb424b72
+	if state.Valid {
+		return ErrIssueInTriage
+=======
+	if err != nil {
+		return fmt.Errorf("issue admission: %w", err)
 	}
+	if admission.TriageState.Valid {
+		return ErrIssueInTriage
+>>>>>>> 35b54a3742bb
+	}
+	if admission.Blocked {
+		return ErrIssueHasBlockers
+	}
+
 	return nil
 }
 

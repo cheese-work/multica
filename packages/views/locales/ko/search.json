@@ -17,6 +17,7 @@
     "chats": "채팅",
     "messages": "메시지",
     "skills": "스킬",
+    "docs": "문서",
     "cancelled": "취소됨",
     "recent": "최근 항목",
     "workspaces": "워크스페이스",
@@ -137,7 +138,7 @@
   },
   "delegate": {
     "row": "에이전트에게 맡기기: “{{prompt}}”",
-    "hint": "빠른 만들기"
+    "hint": "에이전트로 만들기"
   },
   "best": {
     "assign": "{{subject}}를 {{name}}에게 지정",
@@ -165,6 +166,7 @@
   },
   "trigger": {
     "label": "검색..."
+<<<<<<< HEAD
   },
   "messages": {
     "untitled": "제목 없는 채팅",
@@ -181,4 +183,10 @@
     "active": "적용된 필터: {{names}}",
     "none": "적용된 필터 없음"
   }
+||||||| 2fcb424b72
+  }
+=======
+  },
+  "untitled_doc": "제목 없음"
+>>>>>>> 35b54a3742bb
 }

@@ -124,6 +124,7 @@ const (
 	// ReasonQuotaExceeded is a policy-neutral refusal for an exhausted
 	// Cloud-provided autopilot interval.
 	ReasonQuotaExceeded ReasonCode = "quota_exceeded"
+<<<<<<< HEAD
 	// ReasonProviderFailureCooldown means a recurring trigger was withheld after
 	// its latest provider server failure because no unused, healthy recovery was
 	// established before dispatch.
@@ -134,6 +135,16 @@ const (
 	ReasonAgentCommentImplicitRouteSuppressed ReasonCode = "agent_comment_implicit_route_suppressed"
 	ReasonAgentCommentRequiresAgentMention    ReasonCode = "agent_comment_requires_agent_mention"
 	ReasonCommentTriggerRateLimited           ReasonCode = "comment_trigger_rate_limited"
+||||||| 2fcb424b72
+	// ReasonIssueLimitReached means a create_issue Autopilot was admitted for a
+	// run, but Cloud's effective workspace issue-count limit blocked the issue.
+	ReasonIssueLimitReached ReasonCode = "issue_limit_reached"
+=======
+	// ReasonHandedToLeader: a squad member handed the issue to another member,
+	// but the squad's handoff guard (round or daily limit) sent it to the squad
+	// leader instead. The leader's run covers the comment.
+	ReasonHandedToLeader ReasonCode = "handed_to_leader"
+>>>>>>> 35b54a3742bb
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 	// ReasonProviderHold: the target resolves to a model provider a workspace

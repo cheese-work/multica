@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -47,6 +49,9 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
+	if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
+		return
+	}
 
 	var req CreateChatSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -181,6 +186,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
+<<<<<<< HEAD
 	if !listsOwnChatSessions(r.Header.Get("X-Actor-Source")) {
 		if h.listRequesterStaleDMs(w, r, workspaceID) {
 			return
@@ -196,6 +202,12 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, responses)
 		return
 	}
+||||||| 2fcb424b72
+=======
+	if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
+		return
+	}
+>>>>>>> 35b54a3742bb
 
 	// Compute the accessible-agents set once and use it to drop sessions
 	// whose target agent the caller no longer has access to — without this,
@@ -274,6 +286,7 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+<<<<<<< HEAD
 // hydrateChatSessionAttention sets the DM attention projection on each chain's
 // canonical DM. Every other row reads stale_level "none".
 func (h *Handler) hydrateChatSessionAttention(ctx context.Context, sessions []ChatSessionResponse, workspaceID, userID pgtype.UUID) error {
@@ -320,6 +333,32 @@ func formatAttentionTime(t *time.Time) *string {
 	return &s
 }
 
+||||||| 2fcb424b72
+=======
+// requireChatOwnerAccess gates every Chat route that acts as the caller's own
+// conversations. A task token's user id is its runtime owner whoever started
+// the run, so only a live task the owner started may list, read or write the
+// owner's chats; agents read their own session through /api/chat/history.
+// Returns false having already written the error response.
+func (h *Handler) requireChatOwnerAccess(w http.ResponseWriter, r *http.Request, userID, workspaceID string) bool {
+	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return false
+	}
+	ok, err := h.requestRepresentsUser(r, userID, workspaceUUID)
+	if err != nil {
+		slog.Warn("resolve chat access failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to resolve chat access")
+		return false
+	}
+	if !ok {
+		writeError(w, http.StatusForbidden, "chat access requires the session owner's verified human trigger")
+		return false
+	}
+	return true
+}
+
+>>>>>>> 35b54a3742bb
 func (h *Handler) loadChatSessionForUser(w http.ResponseWriter, r *http.Request, userID, workspaceID, sessionID string) (db.ChatSession, bool) {
 	sessionUUID, ok := parseUUIDOrBadRequest(w, sessionID, "chat session id")
 	if !ok {
@@ -327,6 +366,9 @@ func (h *Handler) loadChatSessionForUser(w http.ResponseWriter, r *http.Request,
 	}
 	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
 	if !ok {
+		return db.ChatSession{}, false
+	}
+	if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
 		return db.ChatSession{}, false
 	}
 	session, err := h.Queries.GetChatSessionInWorkspace(r.Context(), db.GetChatSessionInWorkspaceParams{
@@ -745,7 +787,16 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 	// refresh, and wakes the runtime so a queued successor is claimed now
 	// rather than at the daemon's next poll.
 	h.TaskService.BroadcastCancelledTasks(r.Context(), workspaceID, cancelled, reactionTargets)
+<<<<<<< HEAD
 	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
+||||||| 2fcb424b72
+=======
+	// After commit: a firing wakeup locks its row before the session, so
+	// ending wakeups inside the archive tx could deadlock with it.
+	if req.Archived {
+		h.chatWakeups().EndForArchivedSession(r.Context(), updated.ID)
+	}
+>>>>>>> 35b54a3742bb
 
 	resolvedSessionID := uuidToString(updated.ID)
 	status := updated.Status
@@ -826,6 +877,14 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := qtx.DeleteChatTaskSupplementsBySession(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete chat supplements")
+		return
+	}
+	if err := qtx.DeleteChatSupplementCapabilitiesBySession(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete chat supplement capabilities")
+		return
+	}
 	cancelled, err := qtx.CancelAgentTasksByChatSession(r.Context(), session.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to cancel chat session tasks")
@@ -868,6 +927,10 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := qtx.DeleteChatDraftRestoresBySession(r.Context(), session.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete chat session draft restores")
+		return
+	}
+	if err := qtx.DeleteChatWakeupsBySession(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete chat session wakeups")
 		return
 	}
 
@@ -942,6 +1005,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 // Chat Messages
 
 type SendChatMessageRequest struct {
+<<<<<<< HEAD
 	Content           string   `json:"content"`
 	AttachmentIDs     []string `json:"attachment_ids"`
 	DecisionRequestID string   `json:"decision_request_id"`
@@ -953,6 +1017,16 @@ type SendChatMessageRequest struct {
 	// SubmissionID makes the send idempotent per payload: a retry with the same
 	// id and payload replays the original acceptance, a different payload is a 409.
 	SubmissionID *string `json:"submission_id"`
+||||||| 2fcb424b72
+	SubmissionID  *string  `json:"submission_id"`
+	Content       string   `json:"content"`
+	AttachmentIDs []string `json:"attachment_ids"`
+=======
+	Steer         bool     `json:"steer"`
+	SubmissionID  *string  `json:"submission_id"`
+	Content       string   `json:"content"`
+	AttachmentIDs []string `json:"attachment_ids"`
+>>>>>>> 35b54a3742bb
 }
 
 type SendChatMessageResponse = service.ChatSubmissionResponse
@@ -1030,7 +1104,13 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 			return
 		}
+<<<<<<< HEAD
 		accepted, err := h.TaskService.LookupDirectChatSubmission(r.Context(), session, parseUUID(userID), req.Content, attachmentIDs, submitterType, parseUUID(submitterID), submissionID)
+||||||| 2fcb424b72
+		response, err := h.TaskService.LookupDirectChatSubmission(r.Context(), session, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), submissionID)
+=======
+		response, err := h.TaskService.LookupDirectChatSubmission(r.Context(), session, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), submissionID, req.Steer)
+>>>>>>> 35b54a3742bb
 		if err != nil {
 			h.writeChatSubmissionError(w, err)
 			return
@@ -1122,16 +1202,30 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	// surfaced to the agent under `## On Behalf Of`. actorType/actorID were
 	// resolved above for the invoke gate.
 	var sent *service.DirectChatSendResult
+<<<<<<< HEAD
 	var err error
 	if decisionRequestID.Valid {
 		sent, err = h.sendChatDecisionReply(r, session, agent, parseUUID(userID), decisionRequestID, req.Content, attachmentIDs, req.ClientMessageID)
+||||||| 2fcb424b72
+	if submissionID.Valid {
+		sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), submissionID)
+=======
+	if submissionID.Valid {
+		sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), submissionID, req.Steer)
+>>>>>>> 35b54a3742bb
 	} else {
+<<<<<<< HEAD
 		opts := service.DirectChatSendOptions{ClientMessageID: req.ClientMessageID, HumanSend: actorType == "member", AskIDs: askIDs}
 		if submissionID.Valid {
 			sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts, submissionID)
 		} else {
 			sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts)
 		}
+||||||| 2fcb424b72
+		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID))
+=======
+		sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), req.Steer)
+>>>>>>> 35b54a3742bb
 	}
 	if err != nil {
 		var refusal decisionIntentRefusal
@@ -1168,10 +1262,17 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	msg := sent.Message
 	task := sent.Task
+<<<<<<< HEAD
 	if sent.Replayed { // the first attempt already did the side effects below
 		writeReplayedSend(w, sent)
 		return
 	}
+||||||| 2fcb424b72
+=======
+	if sent.Steered {
+		h.notifyTaskSupplementAvailable(task)
+	}
+>>>>>>> 35b54a3742bb
 	currentTitle := session.Title
 	if sent.InitialTitle != "" {
 		currentTitle = sent.InitialTitle
@@ -1211,7 +1312,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		MessageID:     uuidToString(msg.ID),
 		Role:          "user",
 		Content:       req.Content,
-		TaskID:        uuidToString(task.ID),
+		TaskID:        uuidToString(msg.TaskID),
 		CreatedAt:     timestampToString(msg.CreatedAt),
 	})
 
@@ -1231,12 +1332,31 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, SendChatMessageResponse{
+<<<<<<< HEAD
 		MessageID:     uuidToString(msg.ID),
 		TaskID:        uuidToString(task.ID),
 		SupportsQueue: true,
 		Queued:        sent.Queued,
 		CreatedAt:     timestampToString(msg.CreatedAt),
 		AttachmentIDs: boundAttachmentIDs,
+||||||| 2fcb424b72
+		MessageID:     uuidToString(msg.ID),
+		TaskID:        uuidToString(task.ID),
+		SupportsQueue: true,
+		Queued:        sent.Queued,
+		CreatedAt:     timestampToString(task.CreatedAt),
+		AttachmentIDs: boundAttachmentIDs,
+=======
+		MessageID:        uuidToString(msg.ID),
+		TaskID:           uuidToString(task.ID),
+		SupportsQueue:    true,
+		Queued:           sent.Queued,
+		Steered:          sent.Steered,
+		MessageTaskID:    uuidToString(msg.TaskID),
+		MessageCreatedAt: timestampToString(msg.CreatedAt),
+		CreatedAt:        timestampToString(task.CreatedAt),
+		AttachmentIDs:    boundAttachmentIDs,
+>>>>>>> 35b54a3742bb
 	})
 }
 
@@ -1687,6 +1807,7 @@ type PendingChatTaskResponse struct {
 	// as today's bare "Waiting for local directory".
 	WaitReason    string                   `json:"wait_reason,omitempty"`
 	SupportsQueue bool                     `json:"supports_queue"`
+	CanSupplement bool                     `json:"can_supplement"`
 	QueuedTasks   []QueuedChatTaskResponse `json:"queued_tasks,omitempty"`
 	// HeadSupplement says whether a queued follow-up can be steered into the
 	// head task now: capable, starting (negotiation unknown yet) or
@@ -1711,6 +1832,9 @@ type QueuedChatTaskResponse struct {
 	CreatedAt string `json:"created_at"`
 	MessageID string `json:"message_id,omitempty"`
 	Content   string `json:"content,omitempty"`
+	// WakeupID marks a turn a chat wakeup started. Its input is for the
+	// runtime, so Content is empty and clients show the wakeup's title.
+	WakeupID string `json:"wakeup_id,omitempty"`
 }
 
 type PrioritizeQueuedChatTaskResponse struct {
@@ -1952,6 +2076,9 @@ func (h *Handler) ListPendingChatTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
+	if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
+		return
+	}
 
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
@@ -2022,6 +2149,9 @@ func (h *Handler) HasPendingChatTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
+	if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
+		return
+	}
 
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
@@ -2091,16 +2221,21 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 		if task.Status != "queued" {
 			continue
 		}
-		queued = append(queued, QueuedChatTaskResponse{
+		item := QueuedChatTaskResponse{
 			TaskID:    uuidToString(task.ID),
 			Status:    task.Status,
 			CreatedAt: timestampToString(task.CreatedAt),
 			MessageID: uuidToString(task.MessageID),
 			Content:   task.Content,
-		})
+		}
+		if task.MessageKind == protocol.ChatMessageKindWakeup {
+			item.Content, item.WakeupID = "", uuidToString(task.WakeupID)
+		}
+		queued = append(queued, item)
 	}
 
 	writeJSON(w, http.StatusOK, PendingChatTaskResponse{
+<<<<<<< HEAD
 		TaskID:         uuidToString(head.ID),
 		Status:         head.Status,
 		CreatedAt:      timestampToString(head.CreatedAt),
@@ -2108,7 +2243,43 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 		SupportsQueue:  true,
 		QueuedTasks:    queued,
 		HeadSupplement: h.headSupplementState(r.Context(), head.ID, head.Status),
+||||||| 2fcb424b72
+		TaskID:        uuidToString(head.ID),
+		Status:        head.Status,
+		CreatedAt:     timestampToString(head.CreatedAt),
+		WaitReason:    waitReasonForStatus(head.Status, head.WaitReason),
+		SupportsQueue: true,
+		QueuedTasks:   queued,
+=======
+		TaskID:        uuidToString(head.ID),
+		Status:        head.Status,
+		CreatedAt:     timestampToString(head.CreatedAt),
+		WaitReason:    waitReasonForStatus(head.Status, head.WaitReason),
+		SupportsQueue: true,
+		CanSupplement: h.canSupplementChatTask(r, session, head.ID, head.Status),
+		QueuedTasks:   queued,
+>>>>>>> 35b54a3742bb
 	})
+}
+
+func (h *Handler) canSupplementChatTask(r *http.Request, session db.ChatSession, taskID pgtype.UUID, status string) bool {
+	if status != "running" {
+		return false
+	}
+	if _, err := h.Queries.GetChannelChatSessionBindingBySessionAny(r.Context(), session.ID); !errors.Is(err, pgx.ErrNoRows) {
+		return false
+	}
+	capability, err := h.Queries.GetTaskSupplementCapability(r.Context(), taskID)
+	if err != nil || capability.Capability != protocol.DaemonCapabilityTaskSupplementV1 {
+		return false
+	}
+	userID := requestUserID(r)
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(session.WorkspaceID))
+	if actorType != "member" {
+		return false
+	}
+	agent, err := h.Queries.GetAgent(r.Context(), session.AgentID)
+	return err == nil && h.canInvokeAgent(r.Context(), agent, actorType, actorID, userID, uuidToString(session.WorkspaceID))
 }
 
 // PrioritizeQueuedChatTask moves one queued follow-up ahead of its FIFO peers.
@@ -2287,8 +2458,17 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 
 	if session := ownerSession(task); session.Valid {
 		// Chat privacy: only the member who opened the conversation may
+<<<<<<< HEAD
 		// cancel its task, even though the workspace is shared. A DM-derived
 		// background task answers to the same member.
+||||||| 2fcb424b72
+		// cancel its task, even though the workspace is shared.
+=======
+		// cancel its task, even though the workspace is shared.
+		if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
+			return
+		}
+>>>>>>> 35b54a3742bb
 		cs, err := h.Queries.GetChatSessionInWorkspace(r.Context(), db.GetChatSessionInWorkspaceParams{
 			ID:          session,
 			WorkspaceID: wsUUID,
@@ -2517,16 +2697,74 @@ type ChatLastMessage struct {
 	MessageKind string `json:"message_kind"`
 }
 
+// chatLastMessagePreviewMaxRunes caps ChatLastMessage.Content. The list only
+// renders a one-line snippet, but shipping each session's full last reply made
+// the list payload grow with every long agent answer (#9954).
+const chatLastMessagePreviewMaxRunes = 256
+
+// chatLastMessagePreview mirrors the list client's cleanup before applying the
+// cap. Complete fences become whitespace, and Markdown markers are dropped before
+// counting runes so they cannot crowd out visible text.
+func chatLastMessagePreview(content string) string {
+	const fence = "```"
+	var preview strings.Builder
+	preview.Grow(min(len(content), chatLastMessagePreviewMaxRunes))
+	remaining := chatLastMessagePreviewMaxRunes
+	pendingSpace := false
+
+	for len(content) > 0 && remaining > 0 {
+		if strings.HasPrefix(content, fence) {
+			if end := strings.Index(content[len(fence):], fence); end >= 0 {
+				content = content[end+2*len(fence):]
+				pendingSpace = preview.Len() > 0
+				continue
+			}
+		}
+
+		r, width := utf8.DecodeRuneInString(content)
+		content = content[width:]
+		switch r {
+		case '#', '*', '`', '>', '~':
+			continue
+		}
+		// JavaScript's whitespace includes BOM and excludes NEXT LINE.
+		if r == '\uFEFF' || (r != '\u0085' && unicode.IsSpace(r)) {
+			pendingSpace = preview.Len() > 0
+			continue
+		}
+		if pendingSpace {
+			if remaining == 1 {
+				break
+			}
+			preview.WriteByte(' ')
+			remaining--
+			pendingSpace = false
+		}
+		preview.WriteRune(r)
+		remaining--
+	}
+	return preview.String()
+}
+
 // buildChatLastMessage assembles the preview from list-row columns; returns nil
 // when there is no last message (the LEFT JOIN produced a NULL timestamp).
 func buildChatLastMessage(id, taskID pgtype.UUID, at pgtype.Timestamptz, content, role string, failure pgtype.Text, kind string) *ChatLastMessage {
 	if !at.Valid || kind == protocol.ChatMessageKindOnboardingKickoff {
 		return nil
 	}
+	if kind == protocol.ChatMessageKindWakeup {
+		content = ""
+	}
 	return &ChatLastMessage{
+<<<<<<< HEAD
 		ID:            uuidToPtr(id),
 		TaskID:        uuidToPtr(taskID),
 		Content:       content,
+||||||| 2fcb424b72
+		Content:       content,
+=======
+		Content:       chatLastMessagePreview(content),
+>>>>>>> 35b54a3742bb
 		Role:          role,
 		CreatedAt:     timestampToString(at),
 		FailureReason: textToPtr(failure),
@@ -2553,6 +2791,10 @@ type ChatMessageResponse struct {
 	// QuickActions are sanitized follow-ups generated with this assistant turn.
 	// Always an empty array for legacy rows and user messages.
 	QuickActions []protocol.ChatQuickAction `json:"quick_actions"`
+	// WakeupID is set on a wakeup turn's input row (message_kind "wakeup"),
+	// whose content is withheld: it is the runtime's input, not something
+	// the person wrote.
+	WakeupID *string `json:"wakeup_id,omitempty"`
 	// Attachments linked to this message via chat_message_id. The chat
 	// bubble renders file cards from these, and the daemon claim path
 	// (daemon.go) pulls structured metadata from the same source so the
@@ -2638,7 +2880,11 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 }
 
 func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) ChatMessageResponse {
+	if m.MessageKind == protocol.ChatMessageKindWakeup {
+		m.Content = ""
+	}
 	return ChatMessageResponse{
+<<<<<<< HEAD
 		ID:             uuidToString(m.ID),
 		ChatSessionID:  uuidToString(m.ChatSessionID),
 		Role:           m.Role,
@@ -2651,6 +2897,32 @@ func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) C
 		QuickActions:   decodeChatQuickActions(m.QuickActions),
 		Attachments:    attachments,
 		DecisionQuotes: []DecisionCard{},
+||||||| 2fcb424b72
+		ID:            uuidToString(m.ID),
+		ChatSessionID: uuidToString(m.ChatSessionID),
+		Role:          m.Role,
+		Content:       m.Content,
+		TaskID:        uuidToPtr(m.TaskID),
+		CreatedAt:     timestampToString(m.CreatedAt),
+		FailureReason: textToPtr(m.FailureReason),
+		ElapsedMs:     int8ToPtr(m.ElapsedMs),
+		MessageKind:   normalizeMessageKind(m.MessageKind),
+		QuickActions:  decodeChatQuickActions(m.QuickActions),
+		Attachments:   attachments,
+=======
+		ID:            uuidToString(m.ID),
+		ChatSessionID: uuidToString(m.ChatSessionID),
+		Role:          m.Role,
+		Content:       m.Content,
+		TaskID:        uuidToPtr(m.TaskID),
+		CreatedAt:     timestampToString(m.CreatedAt),
+		FailureReason: textToPtr(m.FailureReason),
+		ElapsedMs:     int8ToPtr(m.ElapsedMs),
+		MessageKind:   normalizeMessageKind(m.MessageKind),
+		QuickActions:  decodeChatQuickActions(m.QuickActions),
+		Attachments:   attachments,
+		WakeupID:      uuidToPtr(m.WakeupID),
+>>>>>>> 35b54a3742bb
 	}
 }
 
@@ -2705,10 +2977,16 @@ func normalizeMessageKind(kind string) string {
 		return protocol.ChatMessageKindOnboardingKickoff
 	case protocol.ChatMessageKindOnboardingOpening:
 		return protocol.ChatMessageKindOnboardingOpening
+<<<<<<< HEAD
 	case protocol.ChatMessageKindDecisionReference:
 		return protocol.ChatMessageKindDecisionReference
 	case protocol.ChatMessageKindDecisionRequest, protocol.ChatMessageKindDecisionCancelNotice:
 		return kind
+||||||| 2fcb424b72
+=======
+	case protocol.ChatMessageKindWakeup:
+		return protocol.ChatMessageKindWakeup
+>>>>>>> 35b54a3742bb
 	default:
 		return protocol.ChatMessageKindMessage
 	}

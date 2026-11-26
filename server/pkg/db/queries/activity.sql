@@ -66,6 +66,7 @@ SELECT actor_type, actor_id FROM activity_log
 WHERE issue_id = @issue_id AND action = 'status_changed'
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+<<<<<<< HEAD
 
 -- name: CountEntryGateWarnings :one
 -- Entry-gate warnings already recorded for an issue and step: those for this
@@ -151,3 +152,22 @@ SELECT * FROM activity_log
 WHERE issue_id = $1 AND action = $2
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+||||||| 2fcb424b72
+=======
+
+-- name: ListRecentSquadHandoffs :many
+-- The newest squad handoff records on one issue, newest first. Served by
+-- idx_activity_log_issue_keyset; the action filter is applied to that window.
+SELECT * FROM activity_log
+WHERE issue_id = @issue_id
+  AND action = 'squad_handoff'
+ORDER BY created_at DESC, id DESC
+LIMIT @row_limit;
+
+-- name: CountSquadMemberHandoffsSince :one
+SELECT count(*) FROM activity_log
+WHERE issue_id = @issue_id
+  AND action = 'squad_handoff'
+  AND details->>'kind' = 'member'
+  AND created_at > @since;
+>>>>>>> 35b54a3742bb

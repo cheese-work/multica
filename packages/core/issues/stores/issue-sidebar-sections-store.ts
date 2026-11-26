@@ -12,12 +12,19 @@ export const ISSUE_SIDEBAR_SECTIONS = [
   "wakeups",
   "plugins",
   "parent",
+<<<<<<< HEAD
   "duplicates",
+||||||| 2fcb424b72
+  "duplicates",
+  "pull_requests",
+=======
+  "relations",
+  "pull_requests",
+>>>>>>> 35b54a3742bb
   "environments",
   "deliverables",
   "apps",
   "execution_log",
-  "details",
   "metadata",
 ] as const;
 

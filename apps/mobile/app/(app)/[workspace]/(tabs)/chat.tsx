@@ -29,6 +29,11 @@
  * (packages/views/chat/components/chat-window.tsx ~262-345):
  *   seed messages → seed pendingTask → flip activeSessionId → POST →
  *   patch pendingTask with server task_id + created_at.
+ *
+ * During a reply on a queue-capable server, Send asks to add the message to
+ * that reply (`steer`) and the composer's Queue action keeps it for the next
+ * turn. The server decides whether steering applies; an accepted steer keeps
+ * the running head instead of seeding a new turn.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -82,7 +87,7 @@ import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-sto
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
 import {
   invalidatePendingTask,
-  seedAcceptedPendingTask,
+  reconcileAcceptedChatSend,
 } from "@/data/realtime/chat-ws-updaters";
 import {
   ArchivedSendInterceptedError,
@@ -91,9 +96,9 @@ import {
   unarchiveThenSendOnce,
 } from "@/lib/chat-dm-stats-archive";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
-import {
-  dispatchReasonCode,
-} from "@/lib/dispatch-reason";
+import { queuedChatMessages } from "@/lib/chat-queued-messages";
+import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
+import { sendFailureMessage } from "@/lib/dispatch-reason";
 import { useT } from "@/lib/i18n";
 import { useAgentPresence } from "@/lib/use-agent-presence";
 import { Header } from "@/components/ui/header";
@@ -113,20 +118,6 @@ import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
 export default function ChatTab() {
   const qc = useQueryClient();
   const { t } = useT("chat");
-  const sendFailureMessage = useCallback((err: unknown) => {
-    switch (dispatchReasonCode(err)) {
-      case "invocation_not_allowed":
-        return t("failure.invocation_not_allowed");
-      case "agent_runtime_required":
-        return t("failure.agent_runtime_required");
-      case "runtime_access_denied":
-        return t("failure.runtime_access_denied", {
-          detail: t("failure.runtime_access_recovery"),
-        });
-      default:
-        return t("failure.default");
-    }
-  }, [t]);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
@@ -175,6 +166,7 @@ export default function ChatTab() {
     pendingChatTaskOptions(activeSessionId),
   );
   const visibleMessages = hideQueuedChatMessages(messages, pendingTask);
+  const queuedMessages = queuedChatMessages(pendingTask, messages);
   // Live execution trace for the in-flight task. `task:message` WS events
   // append rows to this same cache key via `appendTaskMessage`, so the
   // list/pill stay in sync without a polling fetch. `enabled` is gated by
@@ -419,6 +411,12 @@ export default function ChatTab() {
     async (
       content: string,
       attachmentIds: string[] = [],
+<<<<<<< HEAD
+||||||| 2fcb424b72
+      options: { clearDraft?: boolean } = {},
+=======
+      options: { clearDraft?: boolean; queue?: boolean } = {},
+>>>>>>> 35b54a3742bb
     ) => {
       if (!currentAgent) return;
       if (accessRevoked) {
@@ -442,7 +440,19 @@ export default function ChatTab() {
       try {
         sessionId = await ensureSession();
       } catch (err) {
+<<<<<<< HEAD
         Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
+||||||| 2fcb424b72
+        // Session create runs the same invoke gate as a send, so a permission
+        // change refuses here too — and this is the only layer that sees the
+        // reason code (MUL-6380).
+        Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
+=======
+        // Session create runs the same invoke gate as a send, so a permission
+        // change refuses here too — and this is the only layer that sees the
+        // reason code (MUL-6380).
+        Alert.alert(t("alerts.not_sent"), sendFailureMessage(err, t));
+>>>>>>> 35b54a3742bb
         throw err;
       }
       if (!sessionId) return;
@@ -485,11 +495,21 @@ export default function ChatTab() {
       }
 
       try {
+<<<<<<< HEAD
         // A retry of the same text reuses its client_message_id (A22), so a
         // timeout that hid a delivered send cannot store a second message.
         const result = await sendWithPendingId(sessionId, content, {
+||||||| 2fcb424b72
+        const result = await api.sendChatMessage(sessionId, content, {
+=======
+        // One request per tap, never replayed: a send whose outcome is unknown
+        // fails visibly and keeps the draft, so a retry is the user's choice.
+        const result = await api.sendChatMessage(sessionId, content, {
+>>>>>>> 35b54a3742bb
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+          queue: options.queue,
         });
+<<<<<<< HEAD
         qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
           old?.map((message) =>
             message.id === optimistic.id
@@ -503,16 +523,35 @@ export default function ChatTab() {
           ),
         );
         seedAcceptedPendingTask(qc, {
+||||||| 2fcb424b72
+        // Replace the local bubble before reconciling pending state. When the
+        // server says this is a follow-up, its real message id lets the shared
+        // queue filter hide it immediately instead of waiting for the refetch.
+        qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
+          old?.map((message) =>
+            message.id === optimistic.id
+              ? {
+                  ...message,
+                  id: result.message_id,
+                  task_id: result.task_id,
+                  created_at: result.created_at,
+                }
+              : message,
+          ),
+        );
+        seedAcceptedPendingTask(qc, {
+=======
+        // Replace the local bubble before reconciling pending state. When the
+        // server says this is a follow-up, its real message id lets the shared
+        // queue filter hide it immediately instead of waiting for the refetch.
+        reconcileAcceptedChatSend(qc, {
+>>>>>>> 35b54a3742bb
           chat_session_id: sessionId,
-          task_id: result.task_id,
-          created_at: result.created_at,
-          message_id: result.message_id,
-          content,
+          optimistic_message_id: optimistic.id,
           optimistic_task_id: optimisticTaskId,
-          supports_queue: result.supports_queue,
-          queued: result.queued,
+          content,
+          result,
         });
-        qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         // This send just committed the new session's server-derived title.
         if (isNewSession) {
           void refetchChatSessionsAfterCommit(qc, chatKeys.sessions(wsId));
@@ -528,7 +567,19 @@ export default function ChatTab() {
           chatKeys.pendingTask(sessionId),
           (old) => removePendingChatTask(old, optimisticTaskId),
         );
+<<<<<<< HEAD
         Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
+||||||| 2fcb424b72
+        // The composer restores the draft on a thrown rejection but says nothing
+        // about it, so a revoked-permission 403 used to read as a silent no-op
+        // (MUL-6380). Name the cause here: only this layer sees the error body.
+        Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
+=======
+        // The composer restores the draft on a thrown rejection but says nothing
+        // about it, so a revoked-permission 403 used to read as a silent no-op
+        // (MUL-6380). Name the cause here: only this layer sees the error body.
+        Alert.alert(t("alerts.not_sent"), sendFailureMessage(err, t));
+>>>>>>> 35b54a3742bb
         throw err;
       }
     },
@@ -540,7 +591,6 @@ export default function ChatTab() {
       runtimeBound,
       ensureSession,
       qc,
-      sendFailureMessage,
       t,
       promoteNewDraft,
       draftScope,
@@ -657,6 +707,7 @@ export default function ChatTab() {
     if (selectRequest && selectRequest === appliedSelect) consumeSelect();
   }, [selectRequest, appliedSelect, consumeSelect]);
 
+<<<<<<< HEAD
   const handleDeleteSession = useCallback(
     (session: ChatSession) => {
       if (session.status !== "archived") return;
@@ -675,6 +726,37 @@ export default function ChatTab() {
               }
               deleteSession.mutate(id);
             },
+||||||| 2fcb424b72
+  const handleDeleteActive = useCallback(() => {
+    if (!activeSession) return;
+    Alert.alert(
+      t("alerts.delete_title"),
+      activeSession.title || t("sessions.new_chat"),
+      [
+        { text: t("common:actions.cancel"), style: "cancel" },
+        {
+          text: t("alerts.delete_confirm"),
+          style: "destructive",
+          onPress: () => {
+            const id = activeSession.id;
+            setActiveSessionId(null);
+            deleteSession.mutate(id);
+=======
+  const handleDeleteActive = useCallback(() => {
+    if (!activeSession) return;
+    Alert.alert(
+      t("alerts.delete_title"),
+      chatSessionDisplayTitle(activeSession.title, t),
+      [
+        { text: t("common:actions.cancel"), style: "cancel" },
+        {
+          text: t("alerts.delete_confirm"),
+          style: "destructive",
+          onPress: () => {
+            const id = activeSession.id;
+            setActiveSessionId(null);
+            deleteSession.mutate(id);
+>>>>>>> 35b54a3742bb
           },
         ],
         { cancelable: true },
@@ -753,6 +835,7 @@ export default function ChatTab() {
           quickActionsDisabled={sending || disabled}
           pendingTask={pendingTask}
           liveTaskMessages={liveTaskMessages}
+          queuedMessages={queuedMessages}
           availability={presenceAvailability}
         />
         {undoToast ? (
@@ -823,6 +906,7 @@ export default function ChatTab() {
           onStop={handleStop}
           sending={sending}
           allowStop={pendingTask?.status !== "queued"}
+          allowSendWhileSending={pendingTask?.supports_queue === true}
           disabled={disabled}
           disabledReason={disabledReason}
           archived={isArchived}

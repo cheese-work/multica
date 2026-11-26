@@ -600,7 +600,12 @@ class ApiClient {
   ): Promise<MemberWithUser[]> {
     const raw = await this.fetch<unknown>(
       `/api/workspaces/${workspaceId}/members`,
-      { signal: opts?.signal },
+      {
+        signal: opts?.signal,
+        // Without it the server leaves guests out of the list, and useIsGuest
+        // could not recognize a guest. Mirrors protocol.AppCapabilityWorkspaceGuestsV1.
+        headers: { "X-Client-Capabilities": "workspace-guests-v1" },
+      },
     );
     return parseWithFallback(raw, MemberListSchema, EMPTY_MEMBER_LIST, {
       endpoint: "listMembers",
@@ -1296,7 +1301,13 @@ class ApiClient {
   async sendChatMessage(
     sessionId: string,
     content: string,
+<<<<<<< HEAD
     opts?: { attachmentIds?: string[]; clientMessageId?: string; askIds?: string[] },
+||||||| 2fcb424b72
+    opts?: { attachmentIds?: string[] },
+=======
+    opts?: { attachmentIds?: string[]; queue?: boolean },
+>>>>>>> 35b54a3742bb
   ): Promise<SendChatMessageResponse> {
     // Strict parse — we need task_id + created_at to anchor the optimistic
     // StatusPill. Fallback would silently break the elapsed-time timer.
@@ -1305,6 +1316,7 @@ class ApiClient {
     // server-side `chat.go` back-fills `chat_message_id` on the listed
     // attachments after the message row is inserted (see
     // server/internal/handler/chat.go:410-456).
+<<<<<<< HEAD
     //
     // `client_message_id` makes a retry idempotent (A22): the server stores
     // one message per (session, id). `ask_ids` answers displayed asks.
@@ -1314,6 +1326,20 @@ class ApiClient {
       client_message_id?: string;
       ask_ids?: string[];
     } = { content };
+||||||| 2fcb424b72
+    const body: { content: string; attachment_ids?: string[] } = { content };
+=======
+    //
+    // `steer` asks the server to add this message to the running reply. The
+    // server decides eligibility (plain text, direct chat, a started reply on
+    // a capable daemon) and queues otherwise; older servers ignore the field
+    // and queue. `queue: true` is the explicit next-turn send. Same contract
+    // as web's `packages/core/api/client.ts`.
+    const body: { content: string; steer: boolean; attachment_ids?: string[] } = {
+      content,
+      steer: opts?.queue !== true,
+    };
+>>>>>>> 35b54a3742bb
     if (opts?.attachmentIds && opts.attachmentIds.length > 0) {
       body.attachment_ids = opts.attachmentIds;
     }

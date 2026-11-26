@@ -525,6 +525,7 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 	if err != nil {
 		return "", false, err
 	}
+<<<<<<< HEAD
 	if _, isPRWakeup := prWakeupSetting(w.SystemRule.String); isPRWakeup {
 		enabled, err := prRuleEnabled(ws.Settings, w.SystemRule.String, config != nil)
 		if err != nil || !enabled {
@@ -532,6 +533,11 @@ func (s *IssueWakeupService) mayJoin(ctx context.Context, q *db.Queries, issue d
 		}
 	}
 	return config.systemInstruction(w, ws.Settings, receipts), true, nil
+||||||| 2fcb424b72
+	return ChildDoneInstruction(w.Instruction, settings), true, nil
+=======
+	return systemWakeupInstruction(w, settings), true, nil
+>>>>>>> 35b54a3742bb
 }
 
 // takenRun is a run that took some of a rule's inputs along and has started.

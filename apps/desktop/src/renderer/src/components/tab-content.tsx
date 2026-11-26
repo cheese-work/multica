@@ -48,6 +48,7 @@ export function TabContent() {
     registerCoordinatorQueryClient(qc);
   }, [qc]);
 
+<<<<<<< HEAD
   // Sync document.title when switching tabs within the active workspace.
   const activeTabId = group?.activeTabId;
   const tabs = group?.tabs;
@@ -56,6 +57,16 @@ export function TabContent() {
     if (tab) document.title = tab.title;
   }, [activeTabId, tabs]);
 
+||||||| 2fcb424b72
+  // Sync document.title when switching tabs within the active workspace.
+  useEffect(() => {
+    if (!group) return;
+    const tab = group.tabs.find((t) => t.id === group.activeTabId);
+    if (tab) document.title = tab.title;
+  }, [group?.activeTabId, group?.tabs]);
+
+=======
+>>>>>>> 35b54a3742bb
   if (!group) return null;
 
   return (

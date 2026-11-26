@@ -57,6 +57,7 @@ import {
 import { useActorName } from "@multica/core/workspace/hooks";
 import { projectListOptions } from "@multica/core/projects/queries";
 import type {
+  IssueStatusEntry,
   IssueWorkflow,
   IssueWorkflowMappingPlan,
   IssueWorkflowStep,
@@ -185,11 +186,31 @@ function sameDraft(a: Draft, b: Draft): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+<<<<<<< HEAD
 function isChangedElsewhere(err: unknown): boolean {
   if (!(err instanceof ApiError) || err.status !== 409 || !err.body || typeof err.body !== "object") return false;
   return (err.body as { code?: unknown }).code === "workflow_changed_elsewhere";
 }
 
+||||||| 2fcb424b72
+=======
+/** Points columns that would create a status at the one the catalog already has by that name. */
+function withExistingStatuses(draft: Draft, statuses: readonly IssueStatusEntry[]): Draft {
+  const used = new Set(draft.middle.flatMap((c) => ("status_key" in c ? [c.status_key] : [])));
+  let changed = false;
+  const middle = draft.middle.map((column): DraftColumn => {
+    if ("status_key" in column) return column;
+    const name = column.new_name.toLowerCase();
+    const existing = statuses.find((e) => e.name.toLowerCase() === name);
+    if (!existing || isFixedWorkflowStatus(existing.key) || used.has(existing.key)) return column;
+    used.add(existing.key);
+    changed = true;
+    return { id: column.id, status_key: existing.key };
+  });
+  return changed ? { ...draft, middle } : draft;
+}
+
+>>>>>>> 35b54a3742bb
 function mappingPlanFrom(err: unknown): IssueWorkflowMappingPlan | null {
   if (!(err instanceof ApiError) || err.status !== 409 || !err.body || typeof err.body !== "object") return null;
   const body = err.body as { code?: unknown; plan?: IssueWorkflowMappingPlan };
@@ -282,13 +303,20 @@ export function WorkflowEditorPage({
     // is in the key because updated_at has one-second resolution: two saves in a
     // second share it and differ only in version.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+<<<<<<< HEAD
   }, [saved?.version, saved?.updated_at, workflowId, seed?.id, template, catalog.activeStatuses.length]);
+||||||| 2fcb424b72
+  }, [saved?.updated_at, workflowId, seed?.id, template, catalog.activeStatuses.length]);
+=======
+  }, [saved?.updated_at, workflowId, seed?.id, template]);
+>>>>>>> 35b54a3742bb
 
   const [draft, setDraft] = useState<Draft>(baseline);
   const [mappingPlan, setMappingPlan] = useState<IssueWorkflowMappingPlan | null>(null);
   const [newName, setNewName] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = useState(false);
+<<<<<<< HEAD
   // The saved workflow refreshes under the editor: updated_at moves, the status
   // catalog grows, another admin saves. A clean editor follows it. An editor with
   // unsaved edits keeps them. When the refresh changed the workflow's content,
@@ -389,6 +417,16 @@ export function WorkflowEditorPage({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rowLoaded]);
+||||||| 2fcb424b72
+  useEffect(() => setDraft(baseline), [baseline]);
+=======
+  useEffect(() => setDraft(baseline), [baseline]);
+  // The catalog can load or change under an open draft; that must not re-seed it.
+  useEffect(
+    () => setDraft((d) => withExistingStatuses(d, catalog.activeStatuses)),
+    [baseline, catalog.activeStatuses],
+  );
+>>>>>>> 35b54a3742bb
 
   const dirty = !workflowId || !sameDraft(draft, baseline);
   const pending = createWorkflow.isPending || updateWorkflow.isPending;
@@ -601,7 +639,7 @@ export function WorkflowEditorPage({
   ];
   const current = listed.find((c) => c.id === selectedId) ?? listed[1]!;
   const nextOf = (column: DraftColumn, h: Handoff | undefined) =>
-    h?.next_status_key ?? workflowNextStatus(draftFlow, columnKey(column));
+    h?.next_status_key ?? workflowNextStatus(draftFlow, columnKey(column), catalog.categoryOf);
   const card = (column: DraftColumn) => {
     const key = "status_key" in column ? column.status_key : null;
     const optional = key === "backlog" || key === "blocked";
@@ -914,7 +952,7 @@ export function WorkflowEditorPage({
           off={isOff(current)}
           handoff={draft.handoffs[current.id]}
           flow={flow}
-          defaultNextLabel={columnLabel(workflowNextStatus(draftFlow, columnKey(current)))}
+          defaultNextLabel={columnLabel(workflowNextStatus(draftFlow, columnKey(current), catalog.categoryOf))}
           canEdit={canEdit}
           statusOptions={middleIds.has(current.id) ? addable : null}
           onReplaceStatus={(key) => replaceStatus(current, key)}

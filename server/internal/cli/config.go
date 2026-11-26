@@ -63,12 +63,22 @@ type CLIConfig struct {
 	// MULTICA_DAEMON_MAX_CONCURRENT_TASKS env, this field, default.
 	MaxConcurrentTasks int `json:"max_concurrent_tasks,omitempty"`
 
+<<<<<<< HEAD
 	// ReservedChatSlots is how many of the daemon's MaxConcurrentTasks slots
 	// only DM (chat) runs may use; issue runs get the rest. 0 (default) keeps
 	// every slot open to both. Resolution precedence (highest wins):
 	// MULTICA_DAEMON_RESERVED_CHAT_SLOTS env, this field, default.
 	ReservedChatSlots int `json:"reserved_chat_slots,omitempty"`
 
+||||||| 2fcb424b72
+=======
+	// Daemon log rotation overrides. Zero means unset; valid environment values
+	// take precedence, followed by these fields, then the 20 MB / 5 / 30 defaults.
+	DaemonLogMaxSizeMB  int `json:"daemon_log_max_size_mb,omitempty"`
+	DaemonLogMaxBackups int `json:"daemon_log_max_backups,omitempty"`
+	DaemonLogMaxAgeDays int `json:"daemon_log_max_age_days,omitempty"`
+
+>>>>>>> 35b54a3742bb
 	// PollInterval is how often the daemon polls the server for new tasks
 	// (Go duration string, e.g. "10s", "500ms"). Same persist-once
 	// motivation as MaxConcurrentTasks. Empty ("") means "not set — use
@@ -96,6 +106,8 @@ type CLIConfig struct {
 	// flag, MULTICA_DAEMON_HEARTBEAT_INTERVAL env, this field,
 	// DefaultHeartbeatInterval.
 	HeartbeatInterval string `json:"heartbeat_interval,omitempty"`
+
+	LogLevel string `json:"log_level,omitempty"`
 
 	// AgentTimeout is the absolute wall-clock cap per agent run (Go
 	// duration string). Unlike the other duration knobs, "0s" is a

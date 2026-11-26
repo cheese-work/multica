@@ -2,9 +2,15 @@ import { forwardRef, useEffect, useRef, useState, useImperativeHandle, useSyncEx
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+<<<<<<< HEAD
 import type { Attachment, AgentTask, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import { ApiClient } from "@multica/core/api/client";
+||||||| 2fcb424b72
+import type { AgentTask, Attachment, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
+=======
+import type { AgentTask, Attachment, InboxItem, Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
+>>>>>>> 35b54a3742bb
 import { issueKeys } from "@multica/core/issues/queries";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -24,17 +30,16 @@ import {
 import { ScrollRestorationProvider, type ScrollRestorationAdapter } from "../../platform";
 import enAgents from "../../locales/en/agents.json";
 import enCommon from "../../locales/en/common.json";
+import enInbox from "../../locales/en/inbox.json";
 import enIssues from "../../locales/en/issues.json";
 import { useRichContentScrollRoot } from "../../rich-content/scroll-root";
 import { useIssueSidebarSectionsStore } from "@multica/core/issues/stores/issue-sidebar-sections-store";
+import { useSubIssuesCollapseStore } from "@multica/core/issues/stores/sub-issues-collapse-store";
+import { configureShortcutPlatform } from "@multica/core/shortcuts";
+import { useAppearanceStore } from "@multica/core/appearance";
+import { useInboxSelectionStore } from "@multica/core/inbox/selection-store";
 
-vi.mock("./issue-wakeup-header-chip", () => ({
-  IssueWakeupHeaderChip: ({ onOpen }: { onOpen: () => void }) => (
-    <button type="button" onClick={onOpen}>Review open wakeups</button>
-  ),
-}));
-
-const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, issues: enIssues } };
+const TEST_RESOURCES = { en: { agents: enAgents, common: enCommon, inbox: enInbox, issues: enIssues } };
 
 const mockNavigation = vi.hoisted(() => ({ current: null as null | object }));
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
@@ -179,7 +184,7 @@ vi.mock("@multica/core/workspace/hooks", () => ({
 vi.mock("@multica/core/workspace/queries", () => ({
   memberListOptions: () => ({
     queryKey: ["workspaces", "ws-1", "members"],
-    queryFn: () => Promise.resolve([{ user_id: "user-1", name: "Test User", email: "test@test.com", role: "admin" }]),
+    queryFn: () => mockApiObj.listMembers(),
   }),
   agentListOptions: () => ({
     queryKey: ["workspaces", "ws-1", "agents"],
@@ -187,10 +192,6 @@ vi.mock("@multica/core/workspace/queries", () => ({
   }),
   squadListOptions: () => ({
     queryKey: ["workspaces", "ws-1", "squads"],
-    queryFn: () => Promise.resolve([]),
-  }),
-  assigneeFrequencyOptions: () => ({
-    queryKey: ["workspaces", "ws-1", "assignee-frequency"],
     queryFn: () => Promise.resolve([]),
   }),
   workspaceListOptions: () => ({
@@ -220,11 +221,18 @@ vi.mock("../../navigation", async () => ({
   ...(await vi.importActual<typeof import("../../navigation/use-held-until-arrival")>(
     "../../navigation/use-held-until-arrival",
   )),
-  AppLink: ({ children, href, ...props }: any) => (
-    <a href={href} {...props}>
-      {children}
-    </a>
-  ),
+  // Forwards ref: the header wraps the link in `TruncatedTooltip`, which
+  // measures the anchor it clones, exactly as the real AppLink supports.
+  AppLink: forwardRef<HTMLAnchorElement, any>(function MockAppLink(
+    { children, href, ...props },
+    ref,
+  ) {
+    return (
+      <a ref={ref} href={href} {...props}>
+        {children}
+      </a>
+    );
+  }),
   useNavigation: () => ({
     push: vi.fn(),
     pathname: "/issues/issue-1",
@@ -284,6 +292,10 @@ vi.mock("../../editor", async () => ({
     children,
   usePreviewSequence: () => ({ openAt: () => false }),
   collectPreviewSequence: () => [],
+  // The real provider is plain context; attachment-thumbnail.test.tsx covers it.
+  ...(await vi.importActual<typeof import("../../editor/image-thumbnails-context")>(
+    "../../editor/image-thumbnails-context",
+  )),
   // Comment attachments render as their filename — the viewer and file cards
   // have their own suites.
   AttachmentDownloadProvider: ({ children }: { children: React.ReactNode }) =>
@@ -437,7 +449,6 @@ const mockApiObj = vi.hoisted(() => ({
   subscribeToIssue: vi.fn().mockResolvedValue(undefined),
   unsubscribeFromIssue: vi.fn().mockResolvedValue(undefined),
   unsubscribeFromIssueSubtree: vi.fn().mockResolvedValue(undefined),
-  getActiveTasksForIssue: vi.fn().mockResolvedValue({ tasks: [] }),
   listTasksByIssue: vi.fn().mockResolvedValue([]),
   rerunIssue: vi.fn(),
   listTaskMessages: vi.fn().mockResolvedValue([]),
@@ -461,7 +472,9 @@ const mockApiObj = vi.hoisted(() => ({
   listRuntimes: vi.fn().mockResolvedValue([]),
   getProject: vi.fn(),
   listProjects: vi.fn().mockResolvedValue({ projects: [] }),
+  listIssueSystemWakeups: vi.fn().mockResolvedValue([]),
   listPins: vi.fn().mockResolvedValue([]),
+  createIssueCollabTicket: vi.fn().mockResolvedValue({ enabled: false }),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -619,20 +632,42 @@ vi.mock("@multica/core/issues/stores", async () => ({
 // layout.
 const scrollIntoViewSpy = vi.hoisted(() => vi.fn());
 const scrollToIndexSpy = vi.hoisted(() => vi.fn());
+<<<<<<< HEAD
 const virtualWindow = vi.hoisted(() => ({ size: Infinity, initialIndex: 0 }));
+||||||| 2fcb424b72
+const scrollIntoViewIndexSpy = vi.hoisted(() => vi.fn());
+const mockVirtualWindow = vi.hoisted(() => ({
+  enabled: false, delayedViewport: false, lateScrollReset: false, offscreenViewport: false, pendingSizeCorrection: false, holdAtIndex: false,
+  targetId: "", targetHeight: 100, scrollParent: null as HTMLElement | null,
+}));
+=======
+const scrollIntoViewIndexSpy = vi.hoisted(() => vi.fn());
+const mockVirtualWindow = vi.hoisted(() => ({
+  enabled: false, delayedViewport: false, lateScrollReset: false, offscreenViewport: false, contentSettlesAbove: false, pendingSizeCorrection: false, holdAtIndex: false,
+  targetId: "", targetHeight: 100, scrollParent: null as HTMLElement | null,
+}));
+>>>>>>> 35b54a3742bb
 
 vi.mock("react-virtuoso", () => ({
   Virtuoso: forwardRef(function MockVirtuoso(
+<<<<<<< HEAD
     { data, itemContent, computeItemKey, initialTopMostItemIndex }: {
+||||||| 2fcb424b72
+    { data, itemContent, computeItemKey, customScrollParent, totalListHeightChanged }: {
+=======
+    { data, itemContent, computeItemKey, customScrollParent, initialScrollTop, totalListHeightChanged }: {
+>>>>>>> 35b54a3742bb
       data: unknown[];
       initialTopMostItemIndex?: { index: number; align?: string; offset?: number };
       itemContent: (i: number, item: unknown) => unknown;
       computeItemKey: (i: number, item: unknown) => React.Key;
       customScrollParent?: HTMLElement;
+      initialScrollTop?: number;
       totalListHeightChanged?: (height: number) => void;
     },
     ref: any,
   ) {
+<<<<<<< HEAD
     const [firstIndex, setFirstIndex] = useState(
       Number.isFinite(virtualWindow.size) && initialTopMostItemIndex
         ? initialTopMostItemIndex.index
@@ -640,10 +675,123 @@ vi.mock("react-virtuoso", () => ({
     );
     // Real Virtuoso opens AT initialTopMostItemIndex; record it as the placement
     // so deep-link tests can tell "list opened at the target" from "page scrolled".
+||||||| 2fcb424b72
+    const [windowStart, setWindowStart] = useState(0);
+    const correctionTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+=======
+    const [windowStart, setWindowStart] = useState(0);
+    // Like Virtuoso, scroll to `initialScrollTop` once the rows are in, counted
+    // from the list's own top: under `customScrollParent` that adds whatever
+    // sits above the list (here a description 500px tall).
     useEffect(() => {
+      if (initialScrollTop === undefined || !customScrollParent) return;
+      const timer = window.setTimeout(() => { customScrollParent.scrollTop = initialScrollTop + 500; }, 100);
+      return () => window.clearTimeout(timer);
+    }, [initialScrollTop, customScrollParent]);
+    const correctionTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+>>>>>>> 35b54a3742bb
+    useEffect(() => {
+<<<<<<< HEAD
       if (initialTopMostItemIndex) scrollToIndexSpy(initialTopMostItemIndex);
       // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
+||||||| 2fcb424b72
+      if (!mockVirtualWindow.holdAtIndex || !customScrollParent) return;
+      correctionTimer.current = setInterval(() => { customScrollParent.scrollTop = 0; }, 10);
+      return () => { if (correctionTimer.current) clearInterval(correctionTimer.current); };
+    }, [customScrollParent]);
+    const viewportMeasured = useRef(!mockVirtualWindow.delayedViewport && !mockVirtualWindow.offscreenViewport);
+    useEffect(() => {
+      const measured = () => {
+        viewportMeasured.current = true;
+        totalListHeightChanged?.(1000);
+      };
+      if (mockVirtualWindow.offscreenViewport && customScrollParent) {
+        const list = document.querySelector('[data-testid="virtuoso-mock"]')?.parentElement;
+        if (list) list.getBoundingClientRect = () => new DOMRect(0, 1000 - customScrollParent.scrollTop, 400, 100);
+        const timer = window.setInterval(() => {
+          if (customScrollParent.scrollTop > 0) { window.clearInterval(timer); measured(); }
+        }, 10);
+        return () => window.clearInterval(timer);
+      }
+      if (!mockVirtualWindow.delayedViewport) { measured(); return; }
+      const timer = window.setTimeout(measured, 100);
+      return () => window.clearTimeout(timer);
+    }, [totalListHeightChanged, customScrollParent]);
+    useEffect(() => {
+      if ((!mockVirtualWindow.lateScrollReset && !mockVirtualWindow.holdAtIndex) || !customScrollParent) return;
+      mockVirtualWindow.scrollParent = customScrollParent;
+      Object.defineProperty(customScrollParent, "clientHeight", { configurable: true, value: 200 });
+      customScrollParent.getBoundingClientRect = () => new DOMRect(0, 0, 400, 200);
+      const target = document.getElementById(`comment-${mockVirtualWindow.targetId}`);
+      if (target) {
+        target.getBoundingClientRect = () => new DOMRect(0, 250 - customScrollParent.scrollTop, 400, mockVirtualWindow.targetHeight);
+        const row = target.closest<HTMLElement>("[data-item-index]");
+        if (row) row.getBoundingClientRect = () => new DOMRect(0, -customScrollParent.scrollTop, 400, 500);
+      }
+    }, [customScrollParent, windowStart, data]);
+    const jump = (location: { index: number; offset?: number; done?: () => void }) => {
+      if (location.offset !== undefined && customScrollParent && mockVirtualWindow.holdAtIndex) {
+        if (correctionTimer.current) clearInterval(correctionTimer.current);
+        customScrollParent.scrollTop = location.offset;
+      }
+      if (mockVirtualWindow.enabled && viewportMeasured.current) setWindowStart(Math.max(0, location.index - 2));
+      if (mockVirtualWindow.lateScrollReset && customScrollParent) {
+        window.setTimeout(() => { customScrollParent.scrollTop = location.offset ?? 0; location.done?.(); }, 80);
+      } else if (!mockVirtualWindow.pendingSizeCorrection && !mockVirtualWindow.holdAtIndex) location.done?.();
+    };
+=======
+      if (!mockVirtualWindow.holdAtIndex || !customScrollParent) return;
+      correctionTimer.current = setInterval(() => { customScrollParent.scrollTop = 0; }, 10);
+      return () => { if (correctionTimer.current) clearInterval(correctionTimer.current); };
+    }, [customScrollParent]);
+    const viewportMeasured = useRef(!mockVirtualWindow.delayedViewport && !mockVirtualWindow.offscreenViewport);
+    useEffect(() => {
+      const measured = () => {
+        viewportMeasured.current = true;
+        totalListHeightChanged?.(1000);
+      };
+      if (mockVirtualWindow.offscreenViewport && customScrollParent) {
+        const list = document.querySelector('[data-testid="virtuoso-mock"]')?.parentElement;
+        if (list) list.getBoundingClientRect = () => new DOMRect(0, 1000 - customScrollParent.scrollTop, 400, 100);
+        // Content above the list can still grow once after the first reveal
+        // and push the list back out of view before it measures.
+        let settled = !mockVirtualWindow.contentSettlesAbove;
+        const timer = window.setInterval(() => {
+          if (customScrollParent.scrollTop <= 0) return;
+          if (!settled) { settled = true; customScrollParent.scrollTop = 0; return; }
+          window.clearInterval(timer);
+          measured();
+        }, 10);
+        return () => window.clearInterval(timer);
+      }
+      if (!mockVirtualWindow.delayedViewport) { measured(); return; }
+      const timer = window.setTimeout(measured, 100);
+      return () => window.clearTimeout(timer);
+    }, [totalListHeightChanged, customScrollParent]);
+    useEffect(() => {
+      if ((!mockVirtualWindow.lateScrollReset && !mockVirtualWindow.holdAtIndex) || !customScrollParent) return;
+      mockVirtualWindow.scrollParent = customScrollParent;
+      Object.defineProperty(customScrollParent, "clientHeight", { configurable: true, value: 200 });
+      customScrollParent.getBoundingClientRect = () => new DOMRect(0, 0, 400, 200);
+      const target = document.getElementById(`comment-${mockVirtualWindow.targetId}`);
+      if (target) {
+        target.getBoundingClientRect = () => new DOMRect(0, 250 - customScrollParent.scrollTop, 400, mockVirtualWindow.targetHeight);
+        const row = target.closest<HTMLElement>("[data-item-index]");
+        if (row) row.getBoundingClientRect = () => new DOMRect(0, -customScrollParent.scrollTop, 400, 500);
+      }
+    }, [customScrollParent, windowStart, data]);
+    const jump = (location: { index: number; offset?: number; done?: () => void }) => {
+      if (location.offset !== undefined && customScrollParent && mockVirtualWindow.holdAtIndex) {
+        if (correctionTimer.current) clearInterval(correctionTimer.current);
+        customScrollParent.scrollTop = location.offset;
+      }
+      if (mockVirtualWindow.enabled && viewportMeasured.current) setWindowStart(Math.max(0, location.index - 2));
+      if (mockVirtualWindow.lateScrollReset && customScrollParent) {
+        window.setTimeout(() => { customScrollParent.scrollTop = location.offset ?? 0; location.done?.(); }, 80);
+      } else if (!mockVirtualWindow.pendingSizeCorrection && !mockVirtualWindow.holdAtIndex) location.done?.();
+    };
+>>>>>>> 35b54a3742bb
     useImperativeHandle(ref, () => ({
       // Real Virtuoso ref methods are not exercised by tests in this file
       // since the deep-link cold-path drives the container's scrollTop on the
@@ -667,10 +815,35 @@ vi.mock("react-virtuoso", () => ({
 // jsdom's HTMLElement.prototype.scrollIntoView is a no-op stub; replace it
 // with a spy so the deep-link effect's call can be observed.
 beforeEach(() => {
+<<<<<<< HEAD
   useIssueTitleDraftStore.setState({ drafts: {} });
   virtualWindow.size = Infinity;
   virtualWindow.initialIndex = 0;
   Object.defineProperty(Range.prototype, "getClientRects", { configurable: true, value: () => [{ width: 0, height: 0 }] });
+||||||| 2fcb424b72
+  mockVirtualWindow.enabled = false;
+  mockVirtualWindow.pendingSizeCorrection = false;
+  mockVirtualWindow.holdAtIndex = false;
+  mockVirtualWindow.delayedViewport = false;
+  mockVirtualWindow.offscreenViewport = false;
+  mockVirtualWindow.lateScrollReset = false;
+  mockVirtualWindow.targetId = "";
+  mockVirtualWindow.targetHeight = 100;
+  mockVirtualWindow.scrollParent = null;
+  scrollIntoViewIndexSpy.mockClear();
+=======
+  mockVirtualWindow.enabled = false;
+  mockVirtualWindow.pendingSizeCorrection = false;
+  mockVirtualWindow.holdAtIndex = false;
+  mockVirtualWindow.delayedViewport = false;
+  mockVirtualWindow.offscreenViewport = false;
+  mockVirtualWindow.contentSettlesAbove = false;
+  mockVirtualWindow.lateScrollReset = false;
+  mockVirtualWindow.targetId = "";
+  mockVirtualWindow.targetHeight = 100;
+  mockVirtualWindow.scrollParent = null;
+  scrollIntoViewIndexSpy.mockClear();
+>>>>>>> 35b54a3742bb
   scrollIntoViewSpy.mockClear();
   scrollToIndexSpy.mockClear();
   Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
@@ -791,6 +964,8 @@ const mockTimeline: TimelineEntry[] = [
 // ---------------------------------------------------------------------------
 
 import { IssueDetail, groupSubIssuesByStage } from "./issue-detail";
+import { InboxArchiveButton, InboxOpenBar } from "../../inbox/components/inbox-bar";
+import { ScrollRestorationProvider, type ScrollRestorationAdapter } from "../../platform";
 import { READING_COLUMN } from "../../layout/reading-column";
 import {
   IssueSurfaceSelectionProvider,
@@ -921,6 +1096,12 @@ function hasHighlightedCommentBackground(root: ParentNode | null): boolean {
 // Tests
 // ---------------------------------------------------------------------------
 
+
+// Timeline thread rows render inside a stable wrapper (MUL-9409), so row order
+// and adjacency are compared at the wrapper level.
+function threadRow(el: Element): Element {
+  return el.closest("[data-thread-row]") ?? el;
+}
 describe("IssueDetail (shared)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -950,11 +1131,11 @@ describe("IssueDetail (shared)", () => {
     mockApiObj.listIssueSubscribers.mockResolvedValue([]);
     mockApiObj.listChildIssues.mockResolvedValue({ issues: [] });
     mockApiObj.getChildIssueProgress.mockResolvedValue({ progress: [] });
+    mockApiObj.listIssueSystemWakeups.mockResolvedValue([]);
     mockApiObj.getAgentTaskSnapshot.mockResolvedValue([]);
     mockApiObj.getWorkspaceWorkingAgents.mockResolvedValue([]);
     mockApiObj.listProperties.mockResolvedValue({ properties: [], total: 0 });
     mockApiObj.listIssues.mockResolvedValue({ issues: [], total: 0 });
-    mockApiObj.getActiveTasksForIssue.mockResolvedValue({ tasks: [] });
     mockApiObj.listTasksByIssue.mockResolvedValue([]);
     mockApiObj.listTaskMessages.mockResolvedValue([]);
     mockApiObj.rerunIssue.mockResolvedValue({ id: "task-rerun" });
@@ -968,6 +1149,7 @@ describe("IssueDetail (shared)", () => {
     useIssueSidebarSectionsStore.getState().reset();
   });
 
+<<<<<<< HEAD
   // CHE-9612: a loaded comment target that does not exist must not cost the
   // reader their previous position; pixel restoration is the fallback.
   it.each(["control", "missing-no-anchor", "missing-stale-anchor"])(
@@ -1070,6 +1252,68 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+||||||| 2fcb424b72
+  describe("sidebar section settings", () => {
+    const wakeupsSlot = (container: HTMLElement) => container.querySelector('[data-issue-sidebar-section="wakeups"]');
+    const wakeupsSwitch = async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Customize sidebar" }));
+      return within(await screen.findByRole("dialog")).getByRole("switch", { name: "Wakeups" });
+    };
+
+    it("hides wakeups from settings after the header chip opened them", async () => {
+      const { container } = renderIssueDetail();
+      fireEvent.click(await screen.findByRole("button", { name: "Review open wakeups" }));
+      expect(wakeupsSlot(container)).not.toBeNull();
+
+      fireEvent.click(await wakeupsSwitch());
+      expect(useIssueSidebarSectionsStore.getState().hidden).toContain("wakeups");
+      expect(wakeupsSlot(container)).toBeNull();
+    });
+
+    it("lets settings hide again the wakeups the header chip revealed", async () => {
+      useIssueSidebarSectionsStore.getState().setHidden("wakeups", true);
+      const { container } = renderIssueDetail();
+      fireEvent.click(await screen.findByRole("button", { name: "Review open wakeups" }));
+      expect(wakeupsSlot(container)).not.toBeNull();
+      expect(useIssueSidebarSectionsStore.getState().hidden).toContain("wakeups");
+
+      const toggle = await wakeupsSwitch();
+      fireEvent.click(toggle);
+      expect(useIssueSidebarSectionsStore.getState().hidden).not.toContain("wakeups");
+      fireEvent.click(toggle);
+      expect(useIssueSidebarSectionsStore.getState().hidden).toContain("wakeups");
+      expect(wakeupsSlot(container)).toBeNull();
+    });
+
+    it("ends the header chip's reveal when the reader moves to another issue", async () => {
+      useIssueSidebarSectionsStore.getState().setHidden("wakeups", true);
+      const issue2 = { ...mockIssue, id: "issue-2", title: "Second issue", description: "Second description" };
+      mockApiObj.getIssue.mockImplementation((issueId: string) =>
+        Promise.resolve(issueId === "issue-2" ? issue2 : mockIssue),
+      );
+      const queryClient = createTestQueryClient();
+      queryClient.setQueryData(["issues", "ws-1", "detail", "issue-2"], issue2);
+      const ui = (issueId: string) => (
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail issueId={issueId} />
+          </QueryClientProvider>
+        </I18nProvider>
+      );
+      const { container, rerender } = render(ui("issue-1"));
+      fireEvent.click(await screen.findByRole("button", { name: "Review open wakeups" }));
+      expect(wakeupsSlot(container)).not.toBeNull();
+
+      rerender(ui("issue-2"));
+      await screen.findByDisplayValue("Second description");
+      rerender(ui("issue-1"));
+      await screen.findByDisplayValue("Add JWT auth to the backend");
+      expect(wakeupsSlot(container)).toBeNull();
+    });
+  });
+
+=======
+>>>>>>> 35b54a3742bb
   it("passes the issue's agent assignment to the local-directory hint", async () => {
     const agent = { id: "agent-vue", name: "Vue developer", runtime_id: "runtime-vue" };
     mockApiObj.getIssue.mockResolvedValue({
@@ -1132,10 +1376,11 @@ describe("IssueDetail (shared)", () => {
     renderIssueDetail();
 
     const header = await screen.findByRole("button", { name: /^Deliverables/ });
-    expect(header).toHaveTextContent("1");
     expect(screen.getByRole("button", { name: "report.md, version 2" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "View all 1 deliverable" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "View 1 deliverable" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "brief.pdf" })).toBeNull();
+    fireEvent.click(header);
+    expect(header).toHaveTextContent("1");
   });
 
   it("keeps images from comments outside the loaded history in deliverables", async () => {
@@ -1159,7 +1404,7 @@ describe("IssueDetail (shared)", () => {
     }]);
     renderIssueDetail();
     expect(await screen.findByRole("button", { name: "historical-chart.png" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "View all 1 deliverable" }));
+    fireEvent.click(screen.getByRole("button", { name: "View 1 deliverable" }));
     expect(await screen.findByTitle("historical-chart.png")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show in comments" })).toBeInTheDocument();
     expect(mockApiObj.listComments).not.toHaveBeenCalled();
@@ -1172,6 +1417,117 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByRole("dialog", { name: /deliverables$/ })).toBeNull();
   });
 
+<<<<<<< HEAD
+||||||| 2fcb424b72
+  it.each([100, 1200])("keeps a %i-pixel deliverable reply visible while the virtual list corrects its size", async (height) => {
+    mockVirtualWindow.enabled = true;
+    mockVirtualWindow.holdAtIndex = true;
+    mockVirtualWindow.targetId = "image-reply";
+    mockVirtualWindow.targetHeight = height;
+    const history = Array.from({ length: 120 }, (_, index) => ({
+      ...mockTimeline[0]!, id: `history-${index}`, parent_id: null, source_task_id: undefined,
+      content: `Historical comment ${index}`,
+      created_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+    }));
+    const root = history[115]!;
+    const image: Attachment = { id: "deep-image", workspace_id: "ws-1", issue_id: "issue-1",
+      comment_id: "image-reply", chat_session_id: null, chat_message_id: null,
+      uploader_type: "agent", uploader_id: "agent-1", filename: "deep-image.png",
+      content_type: "image/png", size_bytes: 100, url: "/image.png", download_url: "/image.png",
+      markdown_url: "/image.png", created_at: root.created_at };
+    mockApiObj.listTimeline.mockResolvedValue([...history, {
+      ...root, id: "image-reply", parent_id: root.id, content: "Deep image explanation", attachments: [image],
+    }]);
+    mockApiObj.listTasksByIssue.mockResolvedValue([]);
+    renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "View all 1 deliverable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show in comments" }));
+    await waitFor(() => expect(hasHighlightedCommentBackground(
+      document.getElementById("comment-image-reply"),
+    )).toBe(true));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 150)); });
+    expect(mockVirtualWindow.scrollParent?.scrollTop).toBe(height === 100 ? 200 : 234);
+    expect(document.querySelectorAll('[id^="comment-history-"]').length).toBeLessThanOrEqual(8);
+    expect(mockApiObj.listComments).not.toHaveBeenCalled();
+    const jumps = scrollIntoViewIndexSpy.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "View all 1 deliverable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show in comments" }));
+    await waitFor(() => expect(scrollIntoViewIndexSpy.mock.calls.length).toBeGreaterThan(jumps));
+  });
+
+=======
+  it.each([100, 1200])("keeps a %i-pixel deliverable reply visible while the virtual list corrects its size", async (height) => {
+    mockVirtualWindow.enabled = true;
+    mockVirtualWindow.holdAtIndex = true;
+    mockVirtualWindow.targetId = "image-reply";
+    mockVirtualWindow.targetHeight = height;
+    const history = Array.from({ length: 120 }, (_, index) => ({
+      ...mockTimeline[0]!, id: `history-${index}`, parent_id: null, source_task_id: undefined,
+      content: `Historical comment ${index}`,
+      created_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+    }));
+    const root = history[115]!;
+    const image: Attachment = { id: "deep-image", workspace_id: "ws-1", issue_id: "issue-1",
+      comment_id: "image-reply", chat_session_id: null, chat_message_id: null,
+      uploader_type: "agent", uploader_id: "agent-1", filename: "deep-image.png",
+      content_type: "image/png", size_bytes: 100, url: "/image.png", download_url: "/image.png",
+      markdown_url: "/image.png", created_at: root.created_at };
+    mockApiObj.listTimeline.mockResolvedValue([...history, {
+      ...root, id: "image-reply", parent_id: root.id, content: "Deep image explanation", attachments: [image],
+    }]);
+    mockApiObj.listTasksByIssue.mockResolvedValue([]);
+    renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "View 1 deliverable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show in comments" }));
+    await waitFor(() => expect(hasHighlightedCommentBackground(
+      document.getElementById("comment-image-reply"),
+    )).toBe(true));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 150)); });
+    expect(mockVirtualWindow.scrollParent?.scrollTop).toBe(height === 100 ? 200 : 234);
+    expect(document.querySelectorAll('[id^="comment-history-"]').length).toBeLessThanOrEqual(8);
+    expect(mockApiObj.listComments).not.toHaveBeenCalled();
+    const jumps = scrollIntoViewIndexSpy.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "View 1 deliverable" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show in comments" }));
+    await waitFor(() => expect(scrollIntoViewIndexSpy.mock.calls.length).toBeGreaterThan(jumps));
+  });
+
+  it("finds text in comments the timeline has not mounted, without mounting the history (MUL-9538)", async () => {
+    mockVirtualWindow.enabled = true;
+    const history = Array.from({ length: 40 }, (_, index) => ({
+      ...mockTimeline[0]!, id: `history-${index}`, parent_id: null, source_task_id: undefined,
+      content: index === 30 ? "The **needle** is in this one" : `Historical comment ${index}`,
+      created_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+    }));
+    mockApiObj.listTimeline.mockResolvedValue(history);
+    mockApiObj.listTasksByIssue.mockResolvedValue([]);
+    // Find only answers in a visible page; jsdom lays nothing out.
+    const rects = vi.spyOn(HTMLElement.prototype, "getClientRects")
+      .mockReturnValue([new DOMRect(0, 0, 1, 1)] as unknown as DOMRectList);
+    // jsdom's user agent names the host OS, which would make the find chord
+    // Cmd+F on a Mac host.
+    configureShortcutPlatform("linux");
+    try {
+      renderIssueDetail();
+      await screen.findByText("Historical comment 0");
+
+      fireEvent.keyDown(document, { key: "f", code: "KeyF", ctrlKey: true });
+      fireEvent.change(await screen.findByRole("textbox", { name: "Find in issue..." }), { target: { value: "needle" } });
+
+      // Counted from the comment's Markdown while it is not mounted.
+      await waitFor(() => expect(screen.getByRole("search")).toHaveTextContent("1/1"));
+      // Landing on it mounts that comment, not the history before it.
+      await waitFor(() => expect(scrollIntoViewIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 30 })));
+      await waitFor(() => expect(document.getElementById("comment-history-30")).not.toBeNull());
+      expect(document.querySelectorAll('[id^="comment-history-"]').length).toBeLessThanOrEqual(8);
+      expect(screen.getByTestId("virtuoso-mock")).toBeInTheDocument();
+    } finally {
+      rects.mockRestore();
+      configureShortcutPlatform(null);
+    }
+  });
+
+>>>>>>> 35b54a3742bb
   it("opens source-context creation from both a root comment and a reply", async () => {
     mockApiObj.listTimeline.mockResolvedValue([
       { ...mockTimeline[0], id: "source-root", parent_id: null },
@@ -1538,7 +1894,7 @@ describe("IssueDetail (shared)", () => {
     // single link to the issue's own detail route (used to open the full page
     // from the inline Inbox pane). A bare issue has no ancestor crumbs.
     const leaf = await screen.findByText("TES-1 Implement authentication");
-    expect(leaf.closest("a")).toHaveAttribute("href", "/test/issues/issue-1");
+    expect(leaf.closest("a")).toHaveAttribute("href", "/test/issues/TES-1");
   });
 
   it("omits the project breadcrumb segment when the issue has no project_id", async () => {
@@ -1590,8 +1946,8 @@ describe("IssueDetail (shared)", () => {
     // Core rows — always rendered regardless of whether the issue has a value.
     expect(screen.getByText("Status")).toBeInTheDocument();
     expect(screen.getByText("Assignee")).toBeInTheDocument();
-    // "Project" appears twice (row label + picker stub), so disambiguate by id.
-    expect(screen.getByTestId("project-picker")).toBeInTheDocument();
+    // Project is optional: the fixture has none, so its row waits in Add property.
+    expect(screen.queryByTestId("project-picker")).not.toBeInTheDocument();
     // priority="high" + due_date are set in the fixture, so both optional rows show.
     expect(screen.getByText("Priority")).toBeInTheDocument();
     expect(screen.getByText("Due date")).toBeInTheDocument();
@@ -1641,11 +1997,69 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText("Priority")).not.toBeInTheDocument();
     expect(screen.queryByText("Due date")).not.toBeInTheDocument();
     expect(screen.queryByText("Labels")).not.toBeInTheDocument();
-    // Project stays as a core row regardless of value.
-    expect(screen.getByTestId("project-picker")).toBeInTheDocument();
+    expect(screen.queryByTestId("project-picker")).not.toBeInTheDocument();
     // No parent → no standalone Parent issue section either.
     expect(screen.queryByText("Parent issue")).not.toBeInTheDocument();
+<<<<<<< HEAD
     expect(screen.getByText("Add property")).toBeInTheDocument();
+||||||| 2fcb424b72
+    expect(screen.getByRole("button", { name: "Add property" })).toBeInTheDocument();
+  });
+
+  it("keeps the Properties header free of add and settings buttons", async () => {
+    renderIssueDetail();
+    const disclosure = await screen.findByRole("button", { name: "Properties" });
+    const header = disclosure.parentElement!;
+    expect(within(header).queryByRole("button", { name: "Add property" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Properties options" })).not.toBeInTheDocument();
+    // Folding the section hides the inline Add property row with the rest of the grid.
+    fireEvent.click(disclosure);
+    expect(screen.queryByRole("button", { name: "Add property" })).not.toBeInTheDocument();
+  });
+
+  it("adds an optional field from the inline Add property row and closes the popover", async () => {
+    renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Add property" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start date" }));
+    // The popover closes (its other options are gone) and the new row is rendered.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Labels" })).not.toBeInTheDocument());
+    expect(screen.getAllByText("Start date")[0]).toBeVisible();
+=======
+    expect(screen.getByRole("button", { name: "Add property" })).toBeInTheDocument();
+  });
+
+  it("shows the Project row once the issue has a project, and offers it otherwise", async () => {
+    mockApiObj.getProject.mockResolvedValue({ id: "proj-1", name: "Demo" });
+    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, project_id: "proj-1" });
+    const { unmount } = renderIssueDetail();
+    expect(await screen.findByTestId("project-picker")).toBeInTheDocument();
+    unmount();
+
+    mockApiObj.getIssue.mockResolvedValue(mockIssue);
+    renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Add property" }));
+    expect(await screen.findByRole("button", { name: "Project" })).toBeInTheDocument();
+  });
+
+  it("keeps the Properties header free of add and settings buttons", async () => {
+    renderIssueDetail();
+    const disclosure = await screen.findByRole("button", { name: "Properties" });
+    const header = disclosure.parentElement!;
+    expect(within(header).queryByRole("button", { name: "Add property" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Properties options" })).not.toBeInTheDocument();
+    // Folding the section hides the inline Add property row with the rest of the grid.
+    fireEvent.click(disclosure);
+    expect(screen.queryByRole("button", { name: "Add property" })).not.toBeInTheDocument();
+  });
+
+  it("adds an optional field from the inline Add property row and closes the popover", async () => {
+    renderIssueDetail();
+    fireEvent.click(await screen.findByRole("button", { name: "Add property" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Start date" }));
+    // The popover closes (its other options are gone) and the new row is rendered.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Labels" })).not.toBeInTheDocument());
+    expect(screen.getAllByText("Start date")[0]).toBeVisible();
+>>>>>>> 35b54a3742bb
   });
 
   it("uses a non-resizable layout with the sidebar sheet closed by default on mobile", async () => {
@@ -1753,43 +2167,187 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByRole("link", { name: mockIssue.identifier })).toBeInTheDocument();
   });
 
-  describe("header icon buttons", () => {
-    function renderWithDone() {
+  it("reveals the header's clipped identifier and title on hover", async () => {
+    renderIssueDetail();
+    await screen.findByText("Implement authentication");
+
+    const link = screen.getByRole("link", { name: `${mockIssue.identifier} ${mockIssue.title}` });
+    // jsdom never lays out the header: model the clip the actions leave the leaf.
+    const leaf = link.firstElementChild as HTMLElement;
+    leaf.style.overflowX = "hidden";
+    Object.defineProperties(leaf, {
+      scrollWidth: { configurable: true, value: 320 },
+      clientWidth: { configurable: true, value: 100 },
+    });
+
+    vi.useFakeTimers();
+    try {
+      fireEvent.pointerEnter(link, { pointerType: "mouse" });
+      await act(async () => { vi.advanceTimersByTime(550); });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(document.querySelector("[data-slot=tooltip-content]"))
+      .toHaveTextContent(`${mockIssue.identifier} ${mockIssue.title}`);
+  });
+
+  describe("Inbox bar", () => {
+    const inboxItem: InboxItem = {
+      id: "n-1",
+      workspace_id: "ws-1",
+      recipient_type: "member",
+      recipient_id: "user-1",
+      actor_type: "member",
+      actor_id: "user-1",
+      type: "new_comment",
+      severity: "info",
+      issue_id: "issue-1",
+      title: "Implement authentication",
+      body: "Ready for review.",
+      issue_status: "in_progress",
+      issue_priority: "none",
+      read: true,
+      archived: false,
+      created_at: "2026-01-15T00:00:00Z",
+      details: null,
+    };
+    function renderWithArchive(onArchive: () => void = () => {}, { item = inboxItem as InboxItem | null } = {}) {
       const queryClient = createTestQueryClient();
       return render(
         <I18nProvider locale="en" resources={TEST_RESOURCES}>
           <QueryClientProvider client={queryClient}>
-            <IssueDetail issueId="issue-1" onDone={() => {}} />
+            <IssueDetail
+              issueId="issue-1"
+              inbox={{
+                item: item ?? undefined,
+                bar: (issueActions) =>
+                  item ? (
+                    <InboxOpenBar issueActions={issueActions}>
+                      <InboxArchiveButton onClick={onArchive} />
+                    </InboxOpenBar>
+                  ) : null,
+              }}
+            />
           </QueryClientProvider>
         </I18nProvider>,
       );
     }
 
-    it("names Mark as done and Pin after their tooltips on an open issue", async () => {
-      renderWithDone();
+    it("opens the issue page on its own, with no Inbox crumb in the header", async () => {
+      const { container } = renderWithArchive();
 
-      expect(
-        await screen.findByRole("button", { name: enIssues.detail.mark_done_tooltip }),
-      ).toBeInTheDocument();
-      expect(screen.getByRole("button", { name: enIssues.detail.pin_tooltip })).toBeInTheDocument();
-      expect(
-        screen.queryByRole("button", { name: enIssues.detail.archive_tooltip }),
-      ).not.toBeInTheDocument();
+      const open = await screen.findByRole("button", { name: enIssues.detail.open_issue_page });
+      expect(open).toHaveAttribute("href", "/test/issues/TES-1");
+      expect(container.querySelector('header a[href="/test/inbox"]')).toBeNull();
     });
 
-    it("names Archive after its tooltip once the issue is done", async () => {
-      mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, status: "done" });
-      renderWithDone();
+    it("leaves the issue page without either", async () => {
+      renderIssueDetail();
 
-      expect(
-        await screen.findByRole("button", { name: enIssues.detail.archive_tooltip }),
-      ).toBeInTheDocument();
-      expect(
-        screen.queryByRole("button", { name: enIssues.detail.mark_done_tooltip }),
-      ).not.toBeInTheDocument();
+      await screen.findByRole("button", { name: enCommon.more_actions });
+      expect(screen.queryByRole("button", { name: enIssues.detail.open_issue_page })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: enInbox.context_menu.archive })).not.toBeInTheDocument();
     });
 
-    it("names the pin toggle Unpin while the issue is pinned", async () => {
+    it("moves status and assignee into the page header while the properties sidebar is closed", async () => {
+      const { container } = renderIssueDetail();
+
+      const toggle = await screen.findByRole("button", { name: enIssues.detail.sidebar_tooltip });
+      expect(container.querySelector('[data-testid="issue-header-actions"]')).toBeNull();
+
+      fireEvent.click(toggle);
+      const headerActions = await waitFor(() => {
+        const el = container.querySelector<HTMLElement>('[data-testid="issue-header-actions"]');
+        expect(el).not.toBeNull();
+        return el!;
+      });
+      expect(headerActions.closest("header")).not.toBeNull();
+      expect(within(headerActions).getByText(enIssues.status.in_progress)).toBeInTheDocument();
+    });
+
+    it("floats the notification's actions above the composer, after the issue's own", async () => {
+      const { container } = renderWithArchive();
+
+      const archive = await screen.findByRole("button", { name: enInbox.context_menu.archive });
+      expect(archive.closest("header")).toBeNull();
+      const bar = archive.closest<HTMLElement>("[data-inbox-bar]")!;
+      expect(bar.closest("[data-composer-dock]")).not.toBeNull();
+      expect(within(bar).queryByText(enInbox.labels.commented)).toBeNull();
+      expect(within(bar).getByText(enIssues.status.in_progress)).toBeInTheDocument();
+      expect(container.querySelector("header")).not.toHaveTextContent(enInbox.context_menu.archive);
+      expect(screen.queryByRole("button", { name: "Mark as done" })).not.toBeInTheDocument();
+    });
+
+    it("gives the group its own room above a composer that rides the timeline, clear of the last comment", async () => {
+      mockViewport.isMobile = true;
+      const { container } = renderWithArchive();
+
+      const archive = await screen.findByRole("button", { name: enInbox.context_menu.archive });
+      const anchor = archive.closest("[data-composer-dock]")!.parentElement!;
+      const composer = container.querySelector("[data-mc='comment-composer']")?.parentElement;
+      // The group sits on the anchor, which keeps the room above it (mt-14)
+      // and stops just short of the composer (mt-3); pinned, it holds off the
+      // viewport bottom.
+      expect(anchor).toHaveClass("sticky", "h-0", "mt-14");
+      expect(anchor.nextElementSibling).toBe(composer);
+      expect(composer).toHaveClass("mt-3");
+      expect(composer).not.toHaveClass("sticky");
+    });
+
+    it("archives the notification without changing the issue's status", async () => {
+      const onArchive = vi.fn();
+      renderWithArchive(onArchive);
+
+      fireEvent.click(await screen.findByRole("button", { name: enInbox.context_menu.archive }));
+      expect(onArchive).toHaveBeenCalledTimes(1);
+      expect(mockApiObj.updateIssue).not.toHaveBeenCalled();
+    });
+
+    it("shows no bar for a notification already archived", async () => {
+      renderWithArchive(() => {}, { item: null });
+
+      await screen.findByRole("button", { name: enCommon.more_actions });
+      expect(screen.queryByRole("button", { name: enInbox.context_menu.archive })).not.toBeInTheDocument();
+    });
+
+    describe("advancing to the next notification", () => {
+      const entering = (container: HTMLElement) => container.querySelector("[class*='animate-inbox-enter']");
+      async function advance() {
+        useInboxSelectionStore.getState().recordTransition("ws-1", "issue-1", "next");
+        const view = renderWithArchive();
+        await screen.findByRole("button", { name: enCommon.more_actions });
+        await waitFor(() => expect(useInboxSelectionStore.getState().transitionByWorkspace["ws-1"]).toBeUndefined());
+        return view;
+      }
+      afterEach(() => {
+        useAppearanceStore.getState().reset();
+        vi.unstubAllGlobals();
+      });
+
+      it("slides the issue in from the direction of travel", async () => {
+        const { container } = await advance();
+        expect(entering(container)).toHaveClass("animate-inbox-enter-next");
+      });
+
+      it("shows the issue at once with the Appearance Reduce motion switch", async () => {
+        useAppearanceStore.getState().set({ reduceMotion: true });
+        const { container } = await advance();
+        expect(entering(container)).toBeNull();
+      });
+
+      it("shows the issue at once with the system reduced-motion setting", async () => {
+        vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+          matches: query === "(prefers-reduced-motion: reduce)",
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        })));
+        const { container } = await advance();
+        expect(entering(container)).toBeNull();
+      });
+    });
+
+    it("keeps pinning in the more-actions menu rather than the header", async () => {
       mockApiObj.listPins.mockResolvedValue([
         {
           id: "pin-1",
@@ -1803,11 +2361,12 @@ describe("IssueDetail (shared)", () => {
       ]);
       renderIssueDetail();
 
+      fireEvent.click(await screen.findByRole("button", { name: enCommon.more_actions }));
       expect(
-        await screen.findByRole("button", { name: enIssues.detail.unpin_tooltip }),
+        await screen.findByRole("menuitem", { name: enIssues.actions.unpin_from_sidebar }),
       ).toBeInTheDocument();
       expect(
-        screen.queryByRole("button", { name: enIssues.detail.pin_tooltip }),
+        screen.queryByRole("button", { name: enIssues.actions.unpin_from_sidebar }),
       ).not.toBeInTheDocument();
     });
   });
@@ -1924,9 +2483,7 @@ describe("IssueDetail (shared)", () => {
     // Default fixture already has metadata: {}, asserted explicitly here.
     renderIssueDetail();
 
-    await waitFor(() => {
-      expect(screen.getByText("Details")).toBeInTheDocument();
-    });
+    await screen.findByTestId("issue-sidebar-footer");
 
     expect(screen.queryByRole("button", { name: /^Metadata\b/ })).not.toBeInTheDocument();
   });
@@ -1961,11 +2518,17 @@ describe("IssueDetail (shared)", () => {
     mockApiObj.listTimeline.mockResolvedValue([root]);
     act(() => client.setQueryData(issueKeys.timeline("issue-1"), [root]));
     await screen.findByText("Waiting for an available agent.");
-    const userBlock = container.querySelector(`#comment-body-${root.id}`)!.parentElement!;
+    const userBlock = container.querySelector(`#root-comment-body-${root.id}`)!.parentElement!;
     const agentBlock = container.querySelector(`[data-run-comment-id="${taskId}"]`)!;
     expect(agentBlock).not.toBeNull();
     expect(userBlock.contains(agentBlock)).toBe(false);
+<<<<<<< HEAD
     expect(timelineRow(agentBlock).previousElementSibling).toBe(timelineRow(userBlock));
+||||||| 2fcb424b72
+    expect(agentBlock.parentElement).toBe(userBlock.parentElement);
+=======
+    expect(threadRow(agentBlock).parentElement).toBe(userBlock.parentElement);
+>>>>>>> 35b54a3742bb
     expect(agentBlock.querySelector(`[data-run-id="${taskId}"]`)).not.toBeNull();
     const running: AgentTask = { ...task, status: "running", started_at: task.created_at, delivered_comment_ids: [root.id] };
     act(() => client.setQueryData(issueKeys.tasks("issue-1"), [running]));
@@ -2033,8 +2596,16 @@ describe("IssueDetail (shared)", () => {
     const firstComment = container.querySelector(`#comment-${first.id}`);
     expect(latestComment).not.toBeNull();
     expect(firstComment).not.toBeNull();
+<<<<<<< HEAD
     expect(timelineRow(latestComment!).nextElementSibling).toBe(timelineRow(run!));
     expect(timelineRow(firstComment!).nextElementSibling).not.toBe(timelineRow(run!));
+||||||| 2fcb424b72
+    expect(latestComment!.nextElementSibling).toBe(run);
+    expect(firstComment!.nextElementSibling).not.toBe(run);
+=======
+    expect(threadRow(latestComment!).nextElementSibling).toBe(threadRow(run));
+    expect(threadRow(firstComment!).nextElementSibling).not.toBe(threadRow(run));
+>>>>>>> 35b54a3742bb
   });
 
   it("keeps the running block after its delivered comment and one queued block after later replies", async () => {
@@ -2076,7 +2647,13 @@ describe("IssueDetail (shared)", () => {
     expect(rootContent!.compareDocumentPosition(runningBlock!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(runningBlock!.compareDocumentPosition(firstComment!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(firstComment!.compareDocumentPosition(latestComment!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+<<<<<<< HEAD
     expect(timelineRow(latestComment!).nextElementSibling).toBe(timelineRow(queuedBlock!));
+||||||| 2fcb424b72
+    expect(latestComment!.nextElementSibling).toBe(queuedBlock);
+=======
+    expect(threadRow(latestComment!).nextElementSibling).toBe(threadRow(queuedBlock!));
+>>>>>>> 35b54a3742bb
     expect(container.querySelectorAll(`[data-run-comment-id="${queued.id}"]`)).toHaveLength(1);
   });
 
@@ -3215,9 +3792,19 @@ describe("IssueDetail (shared)", () => {
     await waitFor(() => expect(container.querySelectorAll('[data-run-slot-id]')).toHaveLength(3));
     const slots = tasks.map((task) => container.querySelector(`[data-run-slot-id="${task.id}"]`)!);
     const [secondRow, thirdRow] = [second, third].map((request) => container.querySelector(`#comment-${request.id}`)!);
+<<<<<<< HEAD
     expect(timelineRow(secondRow!).previousElementSibling).toBe(timelineRow(slots[0]!));
     expect(timelineRow(secondRow!).nextElementSibling).toBe(timelineRow(slots[1]!));
     expect(timelineRow(thirdRow!).nextElementSibling).toBe(timelineRow(slots[2]!));
+||||||| 2fcb424b72
+    expect(secondRow!.previousElementSibling).toBe(slots[0]);
+    expect(secondRow!.nextElementSibling).toBe(slots[1]);
+    expect(thirdRow!.nextElementSibling).toBe(slots[2]);
+=======
+    expect(threadRow(secondRow!).previousElementSibling).toBe(threadRow(slots[0]!));
+    expect(threadRow(secondRow!).nextElementSibling).toBe(threadRow(slots[1]!));
+    expect(threadRow(thirdRow!).nextElementSibling).toBe(threadRow(slots[2]!));
+>>>>>>> 35b54a3742bb
     fireEvent.click(within(slots[0] as HTMLElement).getByRole("button", { name: /View activity/ }));
     await within(slots[0] as HTMLElement).findByText("No activity recorded yet.");
     for (const index of [0, 1]) {
@@ -3263,9 +3850,19 @@ describe("IssueDetail (shared)", () => {
     expect(within(slots[0] as HTMLElement).queryByRole("button", { name: /View activity/ })).not.toBeInTheDocument();
     // Answers land at their own time, after the requests; the queued run
     // stays with its request.
+<<<<<<< HEAD
     expect(timelineRow(thirdRow!).nextElementSibling).toBe(timelineRow(slots[2]!));
     expect(timelineRow(slots[2]!).nextElementSibling).toBe(timelineRow(slots[0]!));
     expect(timelineRow(slots[0]!).nextElementSibling).toBe(timelineRow(slots[1]!));
+||||||| 2fcb424b72
+    expect(thirdRow!.nextElementSibling).toBe(slots[2]);
+    expect(slots[2]!.nextElementSibling).toBe(slots[0]);
+    expect(slots[0]!.nextElementSibling).toBe(slots[1]);
+=======
+    expect(threadRow(thirdRow!).nextElementSibling).toBe(threadRow(slots[2]!));
+    expect(threadRow(slots[2]!).nextElementSibling).toBe(threadRow(slots[0]!));
+    expect(threadRow(slots[0]!).nextElementSibling).toBe(threadRow(slots[1]!));
+>>>>>>> 35b54a3742bb
     expect(container.querySelector(`[data-run-slot-id="${tasks[2]!.id}"]`)).toBe(slots[2]);
     expect(within(slots[2] as HTMLElement).getByText("Waiting for an available agent.")).toBeInTheDocument();
   });
@@ -3341,7 +3938,13 @@ describe("IssueDetail (shared)", () => {
     const userReply = container.querySelector("#comment-user-reply")!;
     const agentBlock = container.querySelector(`[data-run-comment-id="${task.id}"]`)!;
     expect(userReply.contains(agentBlock)).toBe(false);
+<<<<<<< HEAD
     expect(timelineRow(userReply).nextElementSibling).toBe(timelineRow(agentBlock));
+||||||| 2fcb424b72
+    expect(userReply.nextElementSibling).toBe(agentBlock);
+=======
+    expect(threadRow(userReply).nextElementSibling).toBe(threadRow(agentBlock));
+>>>>>>> 35b54a3742bb
     expect(within(agentBlock as HTMLElement).getByRole("button", { name: "Retry run" })).toBeInTheDocument();
     expect(container.querySelectorAll(`[data-run-id="${task.id}"]`)).toHaveLength(1);
   });
@@ -3479,9 +4082,8 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
-  // Details is creator + immutable timestamps, so it ranks below the
-  // execution log, which is what people actually open the sidebar for.
-  it("orders the Details section after the execution log", async () => {
+  // Creator and dates are one line under every section, not a section.
+  it("closes the sidebar with a one-line creation footer after the sections", async () => {
     mockApiObj.listTasksByIssue.mockResolvedValue([
       {
         id: "task-past",
@@ -3503,11 +4105,11 @@ describe("IssueDetail (shared)", () => {
     renderIssueDetail();
 
     const executionLog = await screen.findByText("Execution log");
-    const details = screen.getByText("Details");
-
-    // DOCUMENT_POSITION_FOLLOWING: Details comes after the execution log.
+    const footer = await screen.findByTestId("issue-sidebar-footer");
+    expect(footer).toHaveTextContent(/^Created by Test User · Jan 1[45]$/);
+    expect(screen.queryByText("Details")).not.toBeInTheDocument();
     expect(
-      executionLog.compareDocumentPosition(details) & Node.DOCUMENT_POSITION_FOLLOWING,
+      executionLog.compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 
@@ -3587,14 +4189,14 @@ describe("IssueDetail (shared)", () => {
   it("does not re-render comment cards when unrelated page state changes", async () => {
     renderIssueDetail();
     await screen.findByText("I can help with this");
-    await screen.findByText("Details");
+    const properties = await screen.findByRole("button", { name: "Properties" });
 
     const commentBodies = new Set(mockTimeline.map((entry) => entry.content));
     const cardRenders = () =>
       readonlyContentRenders.filter((content) => commentBodies.has(content)).length;
     const before = cardRenders();
 
-    fireEvent.click(screen.getByText("Details"));
+    fireEvent.click(properties);
 
     expect(cardRenders()).toBe(before);
   });
@@ -3739,11 +4341,21 @@ describe("IssueDetail (shared)", () => {
       renderIssueDetail();
 
       expect(await screen.findByText("created this issue on behalf of Test User")).toBeInTheDocument();
+<<<<<<< HEAD
       // Fork default: Details starts open (upstream v0.10.0 starts collapsed).
       const creatorRow = screen.getByText("Created by").parentElement!;
       expect(creatorRow).toHaveTextContent("Claude Agent");
       expect(within(creatorRow).getByRole("link", { name: "On behalf of Test User" }))
         .toHaveAttribute("href", "/test/members/user-1");
+||||||| 2fcb424b72
+      fireEvent.click(screen.getByText("Details"));
+      const creatorRow = screen.getByText("Created by").parentElement!;
+      expect(creatorRow).toHaveTextContent("Claude Agent");
+      expect(within(creatorRow).getByRole("link", { name: "On behalf of Test User" }))
+        .toHaveAttribute("href", "/test/members/user-1");
+=======
+      expect(screen.getByTestId("issue-sidebar-footer")).toHaveTextContent(/^Created by Claude Agent for Test User · Jan 1[45]$/);
+>>>>>>> 35b54a3742bb
       expect(screen.queryByText("Requested by")).not.toBeInTheDocument();
     });
 
@@ -3763,8 +4375,15 @@ describe("IssueDetail (shared)", () => {
       renderIssueDetail();
 
       expect(await screen.findByText("created this issue")).toBeInTheDocument();
+<<<<<<< HEAD
       // Fork default: Details starts open.
       expect(screen.queryByText(/On behalf of/)).not.toBeInTheDocument();
+||||||| 2fcb424b72
+      fireEvent.click(screen.getByText("Details"));
+      expect(screen.queryByText(/On behalf of/)).not.toBeInTheDocument();
+=======
+      expect(screen.getByTestId("issue-sidebar-footer")).not.toHaveTextContent(" for ");
+>>>>>>> 35b54a3742bb
       expect(screen.queryByText("Requested by")).not.toBeInTheDocument();
     });
 
@@ -3780,8 +4399,15 @@ describe("IssueDetail (shared)", () => {
       renderIssueDetail();
 
       expect(await screen.findByText("created this issue on behalf of Unknown")).toBeInTheDocument();
+<<<<<<< HEAD
       // Fork default: Details starts open.
       expect(screen.getByText("Created by").parentElement).toHaveTextContent("On behalf of Unknown");
+||||||| 2fcb424b72
+      fireEvent.click(screen.getByText("Details"));
+      expect(screen.getByText("Created by").parentElement).toHaveTextContent("On behalf of Unknown");
+=======
+      expect(screen.getByTestId("issue-sidebar-footer")).toHaveTextContent("for Unknown");
+>>>>>>> 35b54a3742bb
     });
   });
 
@@ -3952,7 +4578,7 @@ describe("IssueDetail (shared)", () => {
     const links = await screen.findAllByRole("link", { name: "MUL-9" });
     expect(links[0]?.getAttribute("href")).toBe("/test/issues/issue-9");
     expect(screen.getByText(/^marked this issue as a duplicate of/i)).toBeInTheDocument();
-    expect(screen.getByText(/removed the duplicate mark, MUL-8 was deleted/i)).toBeInTheDocument();
+    expect(screen.getByText(/removed the duplicate mark \(MUL-8 was deleted\)/i)).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "MUL-8" })).not.toBeInTheDocument();
     // Reopening replaces the status row, so the unmarked row says where it went.
     expect(screen.getByText(/and moved it to Todo/i)).toBeInTheDocument();
@@ -4280,6 +4906,113 @@ describe("IssueDetail (shared)", () => {
   });
 
   describe("highlightCommentId scroll-to-comment", () => {
+<<<<<<< HEAD
+||||||| 2fcb424b72
+    it.each([
+      { kind: "root", delayedViewport: false, lateScrollReset: false },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false },
+      { kind: "root", delayedViewport: true, lateScrollReset: false },
+      { kind: "reply", delayedViewport: false, lateScrollReset: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, offscreenViewport: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, pendingSizeCorrection: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, holdAtIndex: true },
+    ])("keeps long history virtualized for a $kind (late viewport: $delayedViewport, late scroll: $lateScrollReset, below fold: $offscreenViewport)", async ({ kind, delayedViewport, lateScrollReset, offscreenViewport, pendingSizeCorrection, holdAtIndex }) => {
+      mockVirtualWindow.holdAtIndex = !!holdAtIndex;
+      mockVirtualWindow.pendingSizeCorrection = !!pendingSizeCorrection;
+      mockVirtualWindow.enabled = true;
+      mockVirtualWindow.delayedViewport = delayedViewport;
+      mockVirtualWindow.offscreenViewport = !!offscreenViewport;
+      mockVirtualWindow.lateScrollReset = lateScrollReset;
+      const history = Array.from({ length: 120 }, (_, index) => ({
+        ...mockTimeline[0]!,
+        id: `history-${index}`,
+        parent_id: null,
+        source_task_id: undefined,
+        content: `Historical comment ${index}`,
+        created_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+      }));
+      const root = history[115]!;
+      const target = kind === "root" ? root : {
+        ...root,
+        id: "deep-reply",
+        parent_id: root.id,
+        content: "Offscreen reply target",
+      };
+      mockVirtualWindow.targetId = target.id;
+      mockApiObj.listTimeline.mockResolvedValue(kind === "root" ? history : [...history, target]);
+      mockApiObj.listTasksByIssue.mockResolvedValue([]);
+      renderIssueDetailWithHighlight(target.id);
+
+      await waitFor(() => expect(hasHighlightedCommentBackground(
+        document.getElementById(`comment-${target.id}`),
+      )).toBe(true));
+      if (lateScrollReset || holdAtIndex) {
+        await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 150)); });
+        expect(mockVirtualWindow.scrollParent?.scrollTop).toBe(200);
+      }
+      expect(screen.queryByTestId("virtuoso-mock")).not.toBeNull();
+      expect(document.querySelectorAll('[id^="comment-history-"]').length).toBeLessThanOrEqual(8);
+      expect(document.getElementById("comment-history-0")).toBeNull();
+      expect(scrollIntoViewIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 115 }));
+    });
+
+=======
+    it.each([
+      { kind: "root", delayedViewport: false, lateScrollReset: false },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false },
+      { kind: "root", delayedViewport: true, lateScrollReset: false },
+      { kind: "reply", delayedViewport: false, lateScrollReset: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, offscreenViewport: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, offscreenViewport: true, contentSettlesAbove: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, pendingSizeCorrection: true },
+      { kind: "reply", delayedViewport: false, lateScrollReset: false, holdAtIndex: true },
+    ])("keeps long history virtualized for a $kind (late viewport: $delayedViewport, late scroll: $lateScrollReset, below fold: $offscreenViewport, settling above: $contentSettlesAbove)", async ({ kind, delayedViewport, lateScrollReset, offscreenViewport, contentSettlesAbove, pendingSizeCorrection, holdAtIndex }) => {
+      mockVirtualWindow.holdAtIndex = !!holdAtIndex;
+      mockVirtualWindow.pendingSizeCorrection = !!pendingSizeCorrection;
+      mockVirtualWindow.enabled = true;
+      mockVirtualWindow.delayedViewport = delayedViewport;
+      mockVirtualWindow.offscreenViewport = !!offscreenViewport;
+      mockVirtualWindow.contentSettlesAbove = !!contentSettlesAbove;
+      mockVirtualWindow.lateScrollReset = lateScrollReset;
+      const history = Array.from({ length: 120 }, (_, index) => ({
+        ...mockTimeline[0]!,
+        id: `history-${index}`,
+        parent_id: null,
+        source_task_id: undefined,
+        content: `Historical comment ${index}`,
+        created_at: new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString(),
+      }));
+      const root = history[115]!;
+      const target = kind === "root" ? root : {
+        ...root,
+        id: "deep-reply",
+        parent_id: root.id,
+        content: "Offscreen reply target",
+      };
+      mockVirtualWindow.targetId = target.id;
+      mockApiObj.listTimeline.mockResolvedValue(kind === "root" ? history : [...history, target]);
+      mockApiObj.listTasksByIssue.mockResolvedValue([]);
+      renderIssueDetailWithHighlight(target.id);
+
+      // Wait phase by phase: page boot (issue + timeline queries, first
+      // commit), the jump mounting the target row, then the landing frames.
+      // On a loaded runner the three together outrun one waitFor's budget.
+      await screen.findByTestId("virtuoso-mock");
+      await waitFor(() => expect(document.getElementById(`comment-${target.id}`)).not.toBeNull());
+      await waitFor(() => expect(hasHighlightedCommentBackground(
+        document.getElementById(`comment-${target.id}`),
+      )).toBe(true));
+      if (lateScrollReset || holdAtIndex) {
+        await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 150)); });
+        expect(mockVirtualWindow.scrollParent?.scrollTop).toBe(200);
+      }
+      expect(screen.queryByTestId("virtuoso-mock")).not.toBeNull();
+      expect(document.querySelectorAll('[id^="comment-history-"]').length).toBeLessThanOrEqual(8);
+      expect(document.getElementById("comment-history-0")).toBeNull();
+      expect(scrollIntoViewIndexSpy).toHaveBeenCalledWith(expect.objectContaining({ index: 115 }));
+    });
+
+>>>>>>> 35b54a3742bb
     it("waits for run grouping before consuming the comment landing", async () => {
       let finishTasks!: (tasks: AgentTask[]) => void;
       mockApiObj.listTasksByIssue.mockReturnValue(new Promise<AgentTask[]>((resolve) => { finishTasks = resolve; }));
@@ -4292,6 +5025,7 @@ describe("IssueDetail (shared)", () => {
       expect(landedBeforeGrouping).toBe(false);
     });
 
+<<<<<<< HEAD
     it.each(["root", "reply"])("reveals a virtualized-out %s annotation from the footer and preserves the pending edit", async (sourceKind) => {
       virtualWindow.size = 1;
       virtualWindow.initialIndex = 41;
@@ -4308,6 +5042,194 @@ describe("IssueDetail (shared)", () => {
           id: "offscreen-note", sourceCommentId: source.id, sourceActorName: "Source author",
           quote: source.content, start: 0, prefix: "", suffix: "", note: "Original offscreen note",
         }],
+||||||| 2fcb424b72
+    it("restarts a comment landing that a timeline update cancels while it is still aligning", async () => {
+      mockApiObj.listTasksByIssue.mockResolvedValue([]);
+      // The anchor keeps moving for 300ms, like reply heights settling, so the
+      // alignment loop is still running when the update arrives.
+      let driftStart = 0;
+      const drift = () => {
+        driftStart ||= performance.now();
+        return Math.min(performance.now() - driftStart, 300);
+      };
+      const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        const container = this.closest<HTMLElement>("[data-tab-scroll-root]");
+        if (this === container) return new DOMRect(0, 0, 400, 200);
+        if (this.id === "comment-comment-2" && container) {
+          return new DOMRect(0, 250 + drift() - container.scrollTop, 400, 100);
+        }
+        return new DOMRect(0, 0, 0, 0);
+=======
+    describe("on a route that already recorded the landing", () => {
+      function renderOverLandedRoute(props: Partial<React.ComponentProps<typeof IssueDetail>> = {}) {
+        mockApiObj.listTasksByIssue.mockResolvedValue([]);
+        const viewState = new Map([["highlight:issue-1", "comment-2"]]);
+        const adapter: ScrollRestorationAdapter = {
+          get: () => undefined,
+          getViewState: (key) => viewState.get(key),
+          setViewState: (key, value) => {
+            if (value === undefined) viewState.delete(key);
+            else viewState.set(key, value);
+          },
+        };
+        render(
+          <I18nProvider locale="en" resources={TEST_RESOURCES}>
+            <QueryClientProvider client={createTestQueryClient()}>
+              <ScrollRestorationProvider adapter={adapter}>
+                <IssueDetail issueId="issue-1" highlightCommentId="comment-2" {...props} />
+              </ScrollRestorationProvider>
+            </QueryClientProvider>
+          </I18nProvider>,
+        );
+      }
+
+      it("does not replay it when the view merely remounts", async () => {
+        renderOverLandedRoute();
+        await waitFor(() => expect(document.getElementById("comment-comment-2")).not.toBeNull());
+        await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 100)); });
+        expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(false);
+      });
+
+      // MUL-9492: a Work panel click on another page cannot clear the issue
+      // route's record before it navigates there.
+      it("lands a pending request anyway and reports it", async () => {
+        const onHighlightLanded = vi.fn();
+        renderOverLandedRoute({ highlightRequestToken: 3, highlightRequestPending: true, onHighlightLanded });
+        await waitFor(() => expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(true));
+        expect(onHighlightLanded).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    // MUL-9959: the reading position is the comment at the viewport's centre,
+    // found as its nearest `[id^="comment-"]` ancestor. The root comment's
+    // body sat in between with id `comment-body-<id>`, so a reader in the
+    // middle of a comment's text saved "body-<id>", which matches no comment,
+    // and the tab came back at the top.
+    it("saves the reading position against the comment whose body is at the viewport's centre", async () => {
+      mockApiObj.listTasksByIssue.mockResolvedValue([]);
+      const anchors: string[] = [];
+      const adapter: ScrollRestorationAdapter = {
+        get: () => undefined,
+        getViewState: () => undefined,
+        setViewState: (key, value) => {
+          if (key === "timeline-anchor:main:issue-1" && value) anchors.push(value);
+        },
+      };
+      const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        return this.hasAttribute("data-tab-scroll-root") ? new DOMRect(0, 0, 400, 200) : new DOMRect(0, 0, 0, 0);
+      });
+      const hadElementFromPoint = "elementFromPoint" in document;
+      const originalElementFromPoint = document.elementFromPoint;
+      let centre: Element | null = null;
+      document.elementFromPoint = () => centre;
+      try {
+        render(
+          <I18nProvider locale="en" resources={TEST_RESOURCES}>
+            <QueryClientProvider client={createTestQueryClient()}>
+              <ScrollRestorationProvider adapter={adapter}>
+                <IssueDetail issueId="issue-1" />
+              </ScrollRestorationProvider>
+            </QueryClientProvider>
+          </I18nProvider>,
+        );
+        centre = await screen.findByText("Started working on this");
+        fireEvent.scroll(centre.closest("[data-tab-scroll-root]")!);
+        await waitFor(() => expect(anchors.length).toBeGreaterThan(0));
+        expect(JSON.parse(anchors.at(-1)!)).toMatchObject({ commentId: "comment-1" });
+      } finally {
+        rect.mockRestore();
+        if (hadElementFromPoint) document.elementFromPoint = originalElementFromPoint;
+        else delete (document as { elementFromPoint?: unknown }).elementFromPoint;
+      }
+    });
+
+    // MUL-9959: the timeline's Virtuoso took the page's saved offset as its
+    // `initialScrollTop`, which it counts from the list's top, so a reader in
+    // the description came back a description's height further down.
+    it("returns to the saved offset of a page scrolled in the description", async () => {
+      mockApiObj.listTasksByIssue.mockResolvedValue([]);
+      const adapter: ScrollRestorationAdapter = {
+        get: (key) => (key === "main:issue-1" ? { top: 300, height: 2000 } : undefined),
+      };
+      render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={createTestQueryClient()}>
+            <ScrollRestorationProvider adapter={adapter}>
+              <IssueDetail issueId="issue-1" />
+            </ScrollRestorationProvider>
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+      const comment = await screen.findByText("Started working on this");
+      await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 200)); });
+      expect(comment.closest<HTMLElement>("[data-tab-scroll-root]")!.scrollTop).toBe(300);
+    });
+
+    it("restarts a comment landing that a timeline update cancels while it is still aligning", async () => {
+      mockApiObj.listTasksByIssue.mockResolvedValue([]);
+      // The anchor keeps moving for 300ms, like reply heights settling, so the
+      // alignment loop is still running when the update arrives.
+      let driftStart = 0;
+      const drift = () => {
+        driftStart ||= performance.now();
+        return Math.min(performance.now() - driftStart, 300);
+      };
+      // The update lands between two frames of the alignment loop, after its
+      // second measurement of the mounted anchor. Timing it from the test
+      // instead raced the loop on slow CI runners.
+      let interrupt: (() => void) | null = null;
+      let alignedReads = 0;
+      let interrupted = false;
+      const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        const container = this.closest<HTMLElement>("[data-tab-scroll-root]");
+        if (this === container) return new DOMRect(0, 0, 400, 200);
+        if (this.id === "comment-comment-2" && container) {
+          if (this.dataset.virtualThreadMounted !== "false" && ++alignedReads === 2 && interrupt) {
+            const update = interrupt;
+            setTimeout(() => {
+              update();
+              interrupted = true;
+            }, 0);
+          }
+          return new DOMRect(0, 250 + drift() - container.scrollTop, 400, 100);
+        }
+        return new DOMRect(0, 0, 0, 0);
+      });
+      try {
+        const { queryClient } = renderIssueDetailWithHighlight("comment-2");
+        interrupt = () =>
+          act(() => {
+            queryClient.setQueryData<TimelineEntry[]>(["issues", "timeline", "issue-1"], (old) => [
+              ...(old ?? []),
+              { ...mockTimeline[0]!, id: "comment-late", content: "Arrived mid-landing", created_at: "2026-01-18T00:00:00Z" },
+            ]);
+          });
+        await waitFor(() => expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(true));
+        await waitFor(() => expect(interrupted).toBe(true));
+        const container = document.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+        // 250 + 300 drift - 16 top gap: where the comment sits once settled.
+        await waitFor(() => expect(container.scrollTop).toBe(534), { timeout: 2000 });
+      } finally {
+        rect.mockRestore();
+      }
+    });
+
+    it("does not restart a comment landing after the user scrolls away and another thread receives a reply", async () => {
+      mockApiObj.listTasksByIssue.mockResolvedValue([]);
+      let driftStart = 0;
+      const drift = () => {
+        driftStart ||= performance.now();
+        return Math.min(performance.now() - driftStart, 300);
+      };
+      let userScrolled = false;
+      const rect = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        const container = this.closest<HTMLElement>("[data-tab-scroll-root]");
+        if (this === container) return new DOMRect(0, 0, 400, 200);
+        if (this.id === "comment-comment-2" && container) {
+          return new DOMRect(0, 250 + drift() - container.scrollTop, 400, 100);
+        }
+        return new DOMRect(0, 0, 0, 0);
+>>>>>>> 35b54a3742bb
       });
       useIssueDisclosureStore.getState().expandAllThreads("issue-1", [root.id]);
       Object.defineProperty(document.documentElement, "clientWidth", { configurable: true, value: 1024 });
@@ -4471,6 +5393,7 @@ describe("IssueDetail (shared)", () => {
       useCommentCollapseStore.getState().toggle("issue-1", comments[30]!.id);
       const rects = vi.spyOn(Element.prototype, "getClientRects").mockReturnValue([{ width: 1, height: 1 }] as unknown as DOMRectList);
       try {
+<<<<<<< HEAD
         renderIssueDetail();
         await screen.findByText("Search root 0");
         fireEvent.keyDown(document, { key: "f", ctrlKey: true });
@@ -4497,6 +5420,49 @@ describe("IssueDetail (shared)", () => {
         await waitFor(() => expect(screen.queryByPlaceholderText("Find in issue...")).not.toBeInTheDocument());
         expect(useResolvedExpandStore.getState().expandedByIssue["issue-1"]?.has(comments[30]!.id)).toBeFalsy();
         expect(useCommentCollapseStore.getState().isCollapsed("issue-1", comments[30]!.id)).toBe(true);
+||||||| 2fcb424b72
+        const { queryClient } = renderIssueDetailWithHighlight("comment-2");
+        await waitFor(() => expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(true));
+        const container = document.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+        act(() => {
+          queryClient.setQueryData<TimelineEntry[]>(["issues", "timeline", "issue-1"], (old) => [
+            ...(old ?? []),
+            { ...mockTimeline[0]!, id: "comment-late", content: "Arrived mid-landing", created_at: "2026-01-18T00:00:00Z" },
+          ]);
+        });
+        expect(driftStart).toBeGreaterThan(0);
+        expect(performance.now() - driftStart).toBeLessThan(300);
+        // 250 + 300 drift - 16 top gap: where the comment sits once settled.
+        await waitFor(() => expect(container.scrollTop).toBe(534), { timeout: 2000 });
+=======
+        const { queryClient } = renderIssueDetailWithHighlight("comment-2");
+        await waitFor(() => expect(hasHighlightedCommentBackground(document.getElementById("comment-comment-2"))).toBe(true));
+        const container = document.querySelector<HTMLElement>("[data-tab-scroll-root]")!;
+
+        // User scrolls up to read/annotate an earlier thread before landing settles.
+        container.scrollTop = 40;
+        container.dispatchEvent(new Event("wheel"));
+        userScrolled = true;
+
+        // An agent posts a new reply in another thread, rebuilding timeline items.
+        act(() => {
+          queryClient.setQueryData<TimelineEntry[]>(["issues", "timeline", "issue-1"], (old) => [
+            ...(old ?? []),
+            {
+              ...mockTimeline[0]!,
+              id: "agent-reply-other-thread",
+              parent_id: "comment-2",
+              actor_type: "agent",
+              actor_id: "agent-1",
+              content: "Fast agent reply in thread 2",
+              created_at: "2026-01-18T00:00:00Z",
+            },
+          ]);
+        });
+        await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 120)); });
+        expect(userScrolled).toBe(true);
+        expect(container.scrollTop).toBe(40);
+>>>>>>> 35b54a3742bb
       } finally {
         rects.mockRestore();
       }
@@ -4716,6 +5682,76 @@ describe("IssueDetail (shared)", () => {
           hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
         ).toBe(true);
       });
+    });
+
+    it("holds the composer back until a landing on cached data puts its target on screen (MUL-9538)", async () => {
+      const queryClient = createTestQueryClient();
+      queryClient.setQueryData(issueKeys.detail("ws-1", "issue-1"), mockIssue);
+      queryClient.setQueryData(issueKeys.timeline("issue-1"), mockTimeline);
+      queryClient.setQueryData(issueKeys.tasks("issue-1"), []);
+      render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail issueId="issue-1" highlightCommentId="comment-2" />
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+
+      // The landing frame renders the target, not the composer below it.
+      expect(document.getElementById("comment-comment-2")).not.toBeNull();
+      expect(screen.queryByTestId("comment-composer-shell")).toBeNull();
+
+      await waitFor(() => expect(
+        hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+      ).toBe(true));
+      expect(await screen.findByTestId("comment-composer-shell")).toBeInTheDocument();
+    });
+
+    it("holds the composer for an Inbox landing whose comment arrives a render later (MUL-9538)", async () => {
+      const queryClient = createTestQueryClient();
+      queryClient.setQueryData(issueKeys.detail("ws-1", "issue-1"), mockIssue);
+      queryClient.setQueryData(issueKeys.timeline("issue-1"), mockTimeline);
+      queryClient.setQueryData(issueKeys.tasks("issue-1"), []);
+      const page = (highlightCommentId?: string) => (
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail issueId="issue-1" highlightRequestPending highlightCommentId={highlightCommentId} />
+          </QueryClientProvider>
+        </I18nProvider>
+      );
+      // Web reads the comment from the URL fragment, which the router writes
+      // after the page's first render.
+      const { rerender } = render(page());
+      expect(screen.queryByTestId("comment-composer-shell")).toBeNull();
+      rerender(page("comment-2"));
+      expect(screen.queryByTestId("comment-composer-shell")).toBeNull();
+
+      await waitFor(() => expect(
+        hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+      ).toBe(true));
+      expect(await screen.findByTestId("comment-composer-shell")).toBeInTheDocument();
+    });
+
+    it("lets the composer in at once when an Inbox landing names no comment", async () => {
+      const queryClient = createTestQueryClient();
+      queryClient.setQueryData(issueKeys.detail("ws-1", "issue-1"), mockIssue);
+      queryClient.setQueryData(issueKeys.timeline("issue-1"), mockTimeline);
+      queryClient.setQueryData(issueKeys.tasks("issue-1"), []);
+      render(
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail issueId="issue-1" highlightRequestPending />
+          </QueryClientProvider>
+        </I18nProvider>,
+      );
+      // Within a frame, well before the hold's upper bound.
+      expect(await screen.findByTestId("comment-composer-shell", {}, { timeout: 200 })).toBeInTheDocument();
+    });
+
+    it("renders the composer while a deep link's timeline is still loading", async () => {
+      mockApiObj.listTimeline.mockReturnValue(new Promise(() => {}));
+      renderIssueDetailWithHighlight("comment-2");
+      expect(await screen.findByTestId("comment-composer-shell")).toBeInTheDocument();
     });
 
     it("auto-expands a folded resolved thread when deep-link target is a reply inside it", async () => {
@@ -5046,7 +6082,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      fireEvent.click(await screen.findByRole("button", { name: "View all 1 deliverable" }));
+      fireEvent.click(await screen.findByRole("button", { name: "View 1 deliverable" }));
       const overview = await screen.findByRole("dialog", { name: /deliverables$/ });
       expect(document.getElementById("comment-reply-2")).toBeNull();
       fireEvent.click(within(overview).getByRole("button", { name: "Show in comments" }));
@@ -5094,7 +6130,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      fireEvent.click(await screen.findByRole("button", { name: "View all 1 deliverable" }));
+      fireEvent.click(await screen.findByRole("button", { name: "View 1 deliverable" }));
       const overview = await screen.findByRole("dialog", { name: /deliverables$/ });
       fireEvent.click(within(overview).getByRole("button", { name: "Show in comments" }));
 
@@ -5613,6 +6649,7 @@ describe("IssueDetail (shared)", () => {
     });
 
     beforeEach(() => {
+      useSubIssuesCollapseStore.setState({ collapsedIssueIds: new Set() });
       useSubIssueDisplayStore.setState({
         rowProperties: { ...DEFAULT_SUB_ISSUE_ROW_PROPERTIES },
         rowPropertyIds: [],
@@ -5639,6 +6676,75 @@ describe("IssueDetail (shared)", () => {
       ...overrides,
     });
 
+<<<<<<< HEAD
+||||||| 2fcb424b72
+    it("jumps from the outline to the expanded sub-issues section without comments", async () => {
+      // Preview/order behavior lives in thread-minimap.test.tsx; this tests the real section.
+      mockApiObj.listTimeline.mockResolvedValue([]);
+      mockApiObj.listChildIssues.mockResolvedValue({
+        issues: [subIssue({ id: "child-1", title: "Child destination" })],
+      });
+      const { container } = renderIssueDetail();
+      await screen.findByText("Child destination");
+      const section = container.querySelector<HTMLDivElement>(".group\\/sub-issues")!;
+      fireEvent.click(within(section).getByRole("button", { name: "Sub-issues" }));
+      expect(screen.queryByText("Child destination")).not.toBeInTheDocument();
+
+      const scroller = container.querySelector<HTMLDivElement>("[data-tab-scroll-root]")!;
+      scroller.scrollTop = 600;
+      vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({ top: 100 } as DOMRect);
+      vi.spyOn(section, "getBoundingClientRect").mockReturnValue({ top: -200 } as DOMRect);
+      fireEvent.click(within(screen.getByRole("navigation", { name: "Quick navigation" }))
+        .getByRole("button", { name: "Sub-issues" }));
+
+      expect(await screen.findByText("Child destination")).toBeInTheDocument();
+      await waitFor(() => expect(scroller.scrollTop).toBe(284));
+    });
+
+=======
+    const inlineChildren = () => within(document.querySelector<HTMLElement>('[class~="group/sub-issues"]')!);
+    const findInlineChild = (title: string) => waitFor(() => inlineChildren().getByText(title));
+
+    it("lists sub-issues in the main column only, with the system wakeup beside its heading", async () => {
+      mockApiObj.listChildIssues.mockResolvedValue({
+        issues: [subIssue({ id: "child-open", identifier: "TES-11", title: "Open destination", status: "todo" })],
+      });
+      mockApiObj.listIssueSystemWakeups.mockResolvedValue([{
+        id: "rule", revision: 1, default_instruction: "Advance the next stage.", customized: false, paused_reason: null,
+        rule: "child_done", workspace_default: true, enabled: true, instruction: "", staged: false, stage: null, total: 1, remaining: 1,
+        waiting: ["TES-11"], target: { type: "agent", id: "agent-1", name: "Claude Agent" }, blocked: "",
+      }]);
+      const { container } = renderIssueDetail();
+      await findInlineChild("Open destination");
+      expect(container.querySelector('[data-issue-sidebar-section="sub_issues"]')).toBeNull();
+      const section = container.querySelector<HTMLElement>('[class~="group/sub-issues"]')!;
+      expect(await within(section).findByRole("button", { name: "Wakes Claude Agent when all finish" })).toBeInTheDocument();
+    });
+
+    it("jumps from the outline to the expanded sub-issues section without comments", async () => {
+      // Preview/order behavior lives in thread-minimap.test.tsx; this tests the real section.
+      mockApiObj.listTimeline.mockResolvedValue([]);
+      mockApiObj.listChildIssues.mockResolvedValue({
+        issues: [subIssue({ id: "child-1", title: "Child destination" })],
+      });
+      const { container } = renderIssueDetail();
+      await findInlineChild("Child destination");
+      const section = container.querySelector<HTMLDivElement>(".group\\/sub-issues")!;
+      fireEvent.click(within(section).getByRole("button", { name: "Sub-issues" }));
+      expect(within(section).queryByText("Child destination")).not.toBeInTheDocument();
+
+      const scroller = container.querySelector<HTMLDivElement>("[data-tab-scroll-root]")!;
+      scroller.scrollTop = 600;
+      vi.spyOn(scroller, "getBoundingClientRect").mockReturnValue({ top: 100 } as DOMRect);
+      vi.spyOn(section, "getBoundingClientRect").mockReturnValue({ top: -200 } as DOMRect);
+      fireEvent.click(within(screen.getByRole("navigation", { name: "Quick navigation" }))
+        .getByRole("button", { name: "Sub-issues" }));
+
+      expect(await findInlineChild("Child destination")).toBeInTheDocument();
+      await waitFor(() => expect(scroller.scrollTop).toBe(284));
+    });
+
+>>>>>>> 35b54a3742bb
     it("renders priority, labels, due date and nested progress on rows", async () => {
       mockApiObj.listChildIssues.mockResolvedValue({
         issues: [
@@ -5666,7 +6772,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      await screen.findByText("Fix login flow");
+      await findInlineChild("Fix login flow");
       // Label chips ride inside the row link.
       expect(screen.getByText("backend")).toBeInTheDocument();
       expect(screen.getByText("auth")).toBeInTheDocument();
@@ -5676,7 +6782,7 @@ describe("IssueDetail (shared)", () => {
       const due = screen.getByText("Jan 1");
       expect(due.closest("span")?.className).toContain("text-destructive");
       // Bare row shows no due date / no progress chip of its own.
-      const bareRow = screen.getByText("Ship dashboards").closest("a");
+      const bareRow = inlineChildren().getByText("Ship dashboards").closest("a");
       expect(bareRow?.textContent).not.toContain("/");
     });
 
@@ -5703,7 +6809,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      await screen.findByText("Fix login flow");
+      await findInlineChild("Fix login flow");
       expect(screen.queryByText("backend")).not.toBeInTheDocument();
       expect(screen.queryByText("Jan 1")).not.toBeInTheDocument();
     });
@@ -5745,7 +6851,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      await screen.findByText("Fix login flow");
+      await findInlineChild("Fix login flow");
       // Chip renders only on the row that has a value for the property.
       expect(await screen.findByText("Sprint 3")).toBeInTheDocument();
       expect(screen.getAllByText("Sprint 3")).toHaveLength(1);
@@ -5798,7 +6904,7 @@ describe("IssueDetail (shared)", () => {
 
       renderIssueDetail();
 
-      await screen.findByText("Wrapped up");
+      await findInlineChild("Wrapped up");
       const due = screen.getByText("Jan 1");
       expect(due.closest("span")?.className).not.toContain("text-destructive");
       expect(due.closest("span")?.className).toContain("text-muted-foreground");
@@ -6169,6 +7275,30 @@ describe("IssueDetail (shared)", () => {
         ),
       );
     });
+  });
+
+  // A guest changes only its own subscription (MUL-9869): it sees who follows
+  // the issue, but gets no picker that would subscribe someone else.
+  it("shows a guest the subscribers without the picker", async () => {
+    mockApiObj.listMembers.mockResolvedValue([
+      { user_id: "user-1", name: "Test User", email: "test@test.com", role: "guest" },
+    ]);
+    mockApiObj.listIssueSubscribers.mockResolvedValue([
+      {
+        issue_id: "issue-1",
+        user_type: "agent" as const,
+        user_id: "agent-1",
+        reason: "manual" as const,
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ]);
+    renderIssueDetail();
+
+    expect(await screen.findByText("Subscribe")).toBeTruthy();
+    const header = (await screen.findByText("Activity")).parentElement?.parentElement;
+    await waitFor(() => expect(header?.querySelector('[data-slot="avatar-group"]')).not.toBeNull());
+    expect(header?.querySelector('[data-trigger="popover"]')).toBeNull();
+    document.body.innerHTML = "";
   });
 
   it("keeps the initial assignment block before a later mention and its run (MUL-7632)", async () => {

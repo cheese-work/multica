@@ -24,6 +24,7 @@ import "../issues/stores/decision-answer-draft-store";
 import "../projects/draft-store";
 import "../feedback/draft-store";
 import "../agents/manual-draft-store";
+<<<<<<< HEAD
 import "../agents/settings-draft-stores";
 import "../skills/draft-stores";
 import "../issue-workflows/draft-stores";
@@ -32,6 +33,10 @@ import "../squads/stores/create-squad-draft-store";
 import "../autopilots/stores/draft-stores";
 import "../quick-actions/draft-store";
 import "../settings/draft-stores";
+||||||| 2fcb424b72
+=======
+import "../docs/draft-store";
+>>>>>>> 35b54a3742bb
 import { registerDraftCleanup } from "./cleanup-registry";
 
 // Retired: drafts for a running turn now live in the thread's reply draft.

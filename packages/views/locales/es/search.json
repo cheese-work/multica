@@ -17,6 +17,7 @@
     "autopilots": "Automatizaciones",
     "chats": "Chats",
     "skills": "Skills",
+    "docs": "Documentos",
     "new": "Nuevo",
     "best_match": "Mejor coincidencia",
     "actions": "Acciones",
@@ -143,7 +144,7 @@
   },
   "delegate": {
     "row": "Encargar a un agente: «{{prompt}}»",
-    "hint": "Creación rápida"
+    "hint": "Crear con agente"
   },
   "best": {
     "assign": "Asignar {{subject}} a {{name}}",
@@ -165,6 +166,7 @@
     "back": "Atrás",
     "prefix_commands": "Comandos",
     "prefix_issues": "Tareas",
+<<<<<<< HEAD
     "prefix_people": "Personas y agentes",
     "add_filter": "Add filter",
     "remove_filter": "Remove filter"
@@ -185,4 +187,12 @@
     "active": "Filters on: {{names}}",
     "none": "No filters on"
   }
+||||||| 2fcb424b72
+    "prefix_people": "Personas y agentes"
+  }
+=======
+    "prefix_people": "Personas y agentes"
+  },
+  "untitled_doc": "Sin título"
+>>>>>>> 35b54a3742bb
 }

@@ -5,8 +5,16 @@ const withMDX = createMDX();
 /** @type {import('next').NextConfig} */
 const config = {
   reactStrictMode: true,
+<<<<<<< HEAD
   ...(process.env.STANDALONE === "true" ? { output: "standalone" } : {}),
+||||||| 2fcb424b72
+=======
+  // Otherwise `next dev` writes a generic apps/docs/AGENTS.md; agent guidance
+  // lives in the root AGENTS.md.
+  agentRules: false,
+>>>>>>> 35b54a3742bb
   basePath: "/docs",
+<<<<<<< HEAD
   // CI builds this in a 4GiB, 2-CPU nested container, where the default
   // Turbopack build OOM-kills (CHE-3165). Same recipe as apps/web: webpack
   // build (`next build --webpack`), trimmed compile footprint, and `cpus`
@@ -22,6 +30,16 @@ const config = {
     }
     return config;
   },
+||||||| 2fcb424b72
+=======
+  // Page URLs answer HTML or Markdown by `Accept` (see proxy.ts), so caches
+  // must key on it. Hosts that serve prerendered pages from their CDN apply
+  // this header there; when `next start` renders a page, Next replaces `Vary`
+  // with its own (next/dist/build/templates/app-page-runtime.js).
+  async headers() {
+    return [{ source: "/((?!_next|api)[^.]*)", headers: [{ key: "Vary", value: "Accept" }] }];
+  },
+>>>>>>> 35b54a3742bb
   // Visiting http://host/ (outside basePath) would otherwise 404 — redirect
   // to the docs root. basePath: false makes the source and destination
   // literal (not re-prefixed with `/docs`), so the redirect runs before

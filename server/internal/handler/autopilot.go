@@ -1637,12 +1637,6 @@ func (h *Handler) AddAutopilotCollaborator(w http.ResponseWriter, r *http.Reques
 	if !ok {
 		return
 	}
-	// Only workspace members can be granted access — agents already reach
-	// autopilots through their own dispatch path, not this grant list.
-	if !h.isWorkspaceEntity(r.Context(), "member", req.UserID, workspaceID) {
-		writeError(w, http.StatusBadRequest, "user_id must be a member of this workspace")
-		return
-	}
 
 	// granted_by is the audit record of who widened access. A grant outlives the
 	// run that made it, so it must name the human who authorized it rather than
@@ -1650,6 +1644,7 @@ func (h *Handler) AddAutopilotCollaborator(w http.ResponseWriter, r *http.Reques
 	grantedByUUID := actor.UserID
 	grantedBy := uuidToString(grantedByUUID)
 
+<<<<<<< HEAD
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to grant access")
@@ -1658,6 +1653,40 @@ func (h *Handler) AddAutopilotCollaborator(w http.ResponseWriter, r *http.Reques
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
 	if _, err := qtx.AddAutopilotCollaborator(r.Context(), db.AddAutopilotCollaboratorParams{
+||||||| 2fcb424b72
+	if _, err := h.Queries.AddAutopilotCollaborator(r.Context(), db.AddAutopilotCollaboratorParams{
+=======
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to grant access")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	// Member removal prunes grants under this lock; taking it before the
+	// membership check keeps a concurrent grant from landing behind the prune.
+	if err := qtx.LockSubscriberWrites(r.Context(), db.LockSubscriberWritesParams{
+		WorkspaceID: ap.WorkspaceID,
+		UserID:      targetUUID,
+	}); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to grant access")
+		return
+	}
+	// Only workspace members can be granted access — agents already reach
+	// autopilots through their own dispatch path, not this grant list.
+	if _, err := qtx.LockActiveMember(r.Context(), db.LockActiveMemberParams{
+		UserID:      targetUUID,
+		WorkspaceID: ap.WorkspaceID,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusBadRequest, "user_id must be a member of this workspace")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to grant access")
+		return
+	}
+	if _, err := qtx.AddAutopilotCollaborator(r.Context(), db.AddAutopilotCollaboratorParams{
+>>>>>>> 35b54a3742bb
 		AutopilotID: ap.ID,
 		UserType:    "member",
 		UserID:      targetUUID,
@@ -1666,6 +1695,7 @@ func (h *Handler) AddAutopilotCollaborator(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to grant access")
 		return
 	}
+<<<<<<< HEAD
 	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
 		Kind:        "autopilot.collaborator.add",
 		WorkspaceID: ap.WorkspaceID,
@@ -1679,6 +1709,13 @@ func (h *Handler) AddAutopilotCollaborator(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to grant access")
 		return
 	}
+||||||| 2fcb424b72
+=======
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to grant access")
+		return
+	}
+>>>>>>> 35b54a3742bb
 
 	h.publish(protocol.EventAutopilotUpdated, workspaceID, "member", grantedBy, map[string]any{
 		"autopilot_id": uuidToString(ap.ID),
@@ -2738,6 +2775,7 @@ func (h *Handler) TriggerAutopilot(w http.ResponseWriter, r *http.Request) {
 	if idempotencyKey == "" {
 		idempotencyKey = service.NewRequestIdempotencyKey()
 	}
+<<<<<<< HEAD
 	// The dispatcher owns its transactions, so the request is audited first: when
 	// the audit insert fails nothing is dispatched.
 	if err := h.auditManualAutopilotRun(r, autopilot); err != nil {
@@ -2745,6 +2783,15 @@ func (h *Handler) TriggerAutopilot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run, reasonCode, err := h.AutopilotService.DispatchAutopilotManualWithKey(r.Context(), autopilot, pgtype.UUID{}, nil, invokerUserID, idempotencyKey)
+||||||| 2fcb424b72
+	run, reasonCode, err := h.AutopilotService.DispatchAutopilotManualWithKey(r.Context(), autopilot, pgtype.UUID{}, nil, invokerUserID, idempotencyKey)
+=======
+	startedBy := service.ManualRunStartedByMember
+	if actorType, _ := h.resolveActor(r, requestUserID(r), workspaceID); actorType == "agent" {
+		startedBy = service.ManualRunStartedByAgent
+	}
+	run, reasonCode, err := h.AutopilotService.DispatchAutopilotManualWithKey(r.Context(), autopilot, pgtype.UUID{}, nil, invokerUserID, idempotencyKey, startedBy)
+>>>>>>> 35b54a3742bb
 	if err != nil {
 		var quotaErr *service.AutopilotQuotaExceededError
 		if errors.As(err, &quotaErr) {

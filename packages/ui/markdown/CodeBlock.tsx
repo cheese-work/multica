@@ -1,7 +1,15 @@
 import * as React from 'react'
+<<<<<<< HEAD
 import type { BundledLanguage } from 'shiki'
 import { Copy, Check } from "@multica/ui/icons"
+||||||| 2fcb424b72
+import { codeToHtml, bundledLanguages, type BundledLanguage } from 'shiki'
+import { Copy, Check } from "@multica/ui/icons"
+=======
+import { codeToHtml, bundledLanguages, type BundledLanguage } from 'shiki'
+>>>>>>> 35b54a3742bb
 import { useTranslation } from "react-i18next"
+import { CopyCheckIcon } from "@multica/ui/components/common/copy-check-icon"
 import { Button } from "@multica/ui/components/ui/button"
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip"
 import { cn } from '@multica/ui/lib/utils'
@@ -195,11 +203,7 @@ export function CodeBlock({
                 className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity text-muted-foreground hover:text-foreground"
                 aria-label={t(($) => $.copy_code)}
               >
-                {copied ? (
-                  <Check className="size-3.5 text-success" />
-                ) : (
-                  <Copy className="size-3.5" />
-                )}
+                <CopyCheckIcon copied={copied} />
               </Button>
             }
           />

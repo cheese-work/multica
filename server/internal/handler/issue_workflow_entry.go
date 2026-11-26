@@ -732,6 +732,15 @@ func (h *Handler) workflowBriefInput(ctx context.Context, issue db.Issue, def is
 		StatusName: func(key string) string {
 			return resolver.Name(ctx, h.Queries, key)
 		},
+		EffectiveStatus: func(key string) string {
+			return resolver.Effective(ctx, h.Queries, key)
+		},
+		StatusCategory: func(key string) string {
+			return resolver.Category(ctx, h.Queries, key)
+		},
+		StatusDescription: func(key string) string {
+			return resolver.Description(ctx, h.Queries, key)
+		},
 		HandlerName: func(step issueworkflow.Step) string {
 			if !step.HandsOff() {
 				return ""
@@ -834,8 +843,24 @@ func (h *Handler) assigneeActiveRuns(ctx context.Context, q *db.Queries, issue d
 // no project, or Default with no handoffs and no run budget. The issue's assignee gets the
 // step's instructions and commands; any other agent working on the issue
 // gets the observer brief, so it does not move a step it does not own.
+<<<<<<< HEAD
 func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task *db.AgentTaskQueue) *TaskProjectWorkflowData {
 	def, project, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+||||||| 2fcb424b72
+//
+// legacyRuntimeRules is true for a daemon that does not advertise
+// protocol.DaemonCapabilityWorkflowStatusRulesV1; see BriefInput.
+func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task *db.AgentTaskQueue, legacyRuntimeRules bool) *TaskProjectWorkflowData {
+	def, project, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
+=======
+//
+// legacyRuntimeRules is true for a daemon that does not advertise
+// protocol.DaemonCapabilityWorkflowStatusRulesV1, and stepCommands for one
+// that does not advertise protocol.DaemonCapabilityWorkflowStatusMapV1; see
+// BriefInput.
+func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task *db.AgentTaskQueue, legacyRuntimeRules, stepCommands bool) *TaskProjectWorkflowData {
+	def, project, err := issueworkflow.ForProject(ctx, h.Queries, issue.WorkspaceID, issue.ProjectID)
+>>>>>>> 35b54a3742bb
 	if err != nil {
 		slog.Warn("task claim: failed to load project workflow for brief injection",
 			"issue_id", uuidToString(issue.ID), "error", err)
@@ -853,6 +878,13 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 		return nil
 	}
 	in := h.workflowBriefInput(ctx, issue, *def, project)
+<<<<<<< HEAD
+||||||| 2fcb424b72
+	in.LegacyRuntimeRules = legacyRuntimeRules
+=======
+	in.LegacyRuntimeRules = legacyRuntimeRules
+	in.StepCommands = stepCommands
+>>>>>>> 35b54a3742bb
 	stepMoved := workflowStepMoved(def, issue.Status, task)
 	if stepMoved {
 		in.BoundStep = task.WorkflowStep.String
@@ -863,6 +895,7 @@ func (h *Handler) claimProjectWorkflow(ctx context.Context, issue db.Issue, task
 			in.AssigneeName = h.actorDisplayName(ctx, issue.WorkspaceID, issue.AssigneeType.String, issue.AssigneeID)
 		}
 	}
+<<<<<<< HEAD
 	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in) + h.runBudgetLine(ctx, issue, def), stepMoved: stepMoved}
 }
 
@@ -900,6 +933,15 @@ func (h *Handler) runBudgetLine(ctx context.Context, issue db.Issue, def *issuew
 	}
 	return fmt.Sprintf("%s; %d tokens used (%d %s unreported).\n",
 		runs, usage.TotalInputTokens+usage.TotalOutputTokens, usage.UnreportedTaskCount, unit)
+||||||| 2fcb424b72
+	return &TaskProjectWorkflowData{Brief: issueworkflow.Brief(in), stepMoved: stepMoved}
+=======
+	return &TaskProjectWorkflowData{
+		Brief:     issueworkflow.Brief(in),
+		StatusMap: !legacyRuntimeRules && !stepCommands,
+		stepMoved: stepMoved,
+	}
+>>>>>>> 35b54a3742bb
 }
 
 // taskRunsForAssignee reports whether a run works on the issue as its

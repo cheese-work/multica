@@ -701,6 +701,7 @@ func (q *Queries) ListGitHubInstallationsByWorkspace(ctx context.Context, worksp
 	return items, nil
 }
 
+<<<<<<< HEAD
 const listGitHubInstallationsMissingAccountID = `-- name: ListGitHubInstallationsMissingAccountID :many
 SELECT id, workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id, created_at, updated_at, account_id FROM github_installation
 WHERE account_id IS NULL
@@ -843,6 +844,55 @@ func (q *Queries) ListGitHubReviewAuthorCandidates(ctx context.Context, arg List
 	return items, nil
 }
 
+||||||| 2fcb424b72
+=======
+const listGitHubInstallationsWithConnectedBy = `-- name: ListGitHubInstallationsWithConnectedBy :many
+SELECT gi.id, gi.workspace_id, gi.installation_id, gi.account_login, gi.account_type, gi.account_avatar_url, gi.connected_by_id, gi.created_at, gi.updated_at, COALESCE(u.name, '')::text AS connected_by
+FROM github_installation gi
+LEFT JOIN member m ON m.user_id = gi.connected_by_id AND m.workspace_id = gi.workspace_id
+LEFT JOIN "user" u ON u.id = m.user_id
+WHERE gi.workspace_id = $1
+ORDER BY gi.created_at ASC
+`
+
+type ListGitHubInstallationsWithConnectedByRow struct {
+	GithubInstallation GithubInstallation `json:"github_installation"`
+	ConnectedBy        string             `json:"connected_by"`
+}
+
+// Only disclose the connector's display name while they belong to this workspace.
+func (q *Queries) ListGitHubInstallationsWithConnectedBy(ctx context.Context, workspaceID pgtype.UUID) ([]ListGitHubInstallationsWithConnectedByRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubInstallationsWithConnectedBy, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGitHubInstallationsWithConnectedByRow{}
+	for rows.Next() {
+		var i ListGitHubInstallationsWithConnectedByRow
+		if err := rows.Scan(
+			&i.GithubInstallation.ID,
+			&i.GithubInstallation.WorkspaceID,
+			&i.GithubInstallation.InstallationID,
+			&i.GithubInstallation.AccountLogin,
+			&i.GithubInstallation.AccountType,
+			&i.GithubInstallation.AccountAvatarUrl,
+			&i.GithubInstallation.ConnectedByID,
+			&i.GithubInstallation.CreatedAt,
+			&i.GithubInstallation.UpdatedAt,
+			&i.ConnectedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+>>>>>>> 35b54a3742bb
 const listIssueIDsForPullRequest = `-- name: ListIssueIDsForPullRequest :many
 SELECT issue_id FROM issue_pull_request
 WHERE pull_request_id = $1
@@ -914,7 +964,7 @@ JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 JOIN issue i ON i.id = ipr.issue_id
 WHERE pr.workspace_id = $1
   AND i.workspace_id = $1
-  AND ($2::uuid[] IS NULL OR i.project_id IS NULL OR NOT (i.project_id = ANY($2::uuid[])))
+  AND ($2::uuid[] IS NULL OR NOT (COALESCE(i.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($2::uuid[])))
 UNION ALL
 SELECT
     ipr.issue_id,
@@ -925,7 +975,7 @@ JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 JOIN issue i ON i.id = ipr.issue_id
 WHERE pr.workspace_id = $1
   AND i.workspace_id = $1
-  AND ($2::uuid[] IS NULL OR i.project_id IS NULL OR NOT (i.project_id = ANY($2::uuid[])))
+  AND ($2::uuid[] IS NULL OR NOT (COALESCE(i.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($2::uuid[])))
 ORDER BY pr_created_at DESC
 `
 

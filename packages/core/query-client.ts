@@ -1,9 +1,16 @@
+<<<<<<< HEAD
 import {
   QueryClient,
   type InvalidateOptions,
   type InvalidateQueryFilters,
   type Query,
 } from "@tanstack/react-query";
+||||||| 2fcb424b72
+import { QueryClient } from "@tanstack/react-query";
+=======
+import { QueryClient } from "@tanstack/react-query";
+import { inboxQueryRetry, inboxQueryRetryDelay } from "./inbox/retry";
+>>>>>>> 35b54a3742bb
 import { setWorkspaceSlugLookup } from "./paths/workspace-slugs";
 import { workspaceKeys } from "./workspace/queries";
 import type { Workspace } from "./types";
@@ -44,7 +51,13 @@ function deferInvalidationWhenHidden(qc: QueryClient): QueryClient {
 }
 
 export function createQueryClient(): QueryClient {
+<<<<<<< HEAD
   return deferInvalidationWhenHidden(new QueryClient({
+||||||| 2fcb424b72
+  return new QueryClient({
+=======
+  const client = new QueryClient({
+>>>>>>> 35b54a3742bb
     defaultOptions: {
       queries: {
         staleTime: Infinity,
@@ -57,7 +70,22 @@ export function createQueryClient(): QueryClient {
         retry: false,
       },
     },
+<<<<<<< HEAD
   }));
+||||||| 2fcb424b72
+  });
+=======
+  });
+  // Keep the policy on the app client so custom clients and explicit query
+  // overrides retain their retry settings. A busy server (503 + Retry-After)
+  // is tried again a few times with backoff instead of leaving the Inbox
+  // looking empty (MUL-9635); see ./inbox/retry.
+  client.setQueryDefaults(["inbox"], {
+    retry: inboxQueryRetry,
+    retryDelay: (failureCount, error) => inboxQueryRetryDelay(failureCount, error),
+  });
+  return client;
+>>>>>>> 35b54a3742bb
 }
 
 /**

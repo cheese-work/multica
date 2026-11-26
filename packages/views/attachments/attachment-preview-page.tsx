@@ -31,6 +31,7 @@ import { useCallback, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "@multica/ui/icons";
 import { api } from "@multica/core/api";
+import { getPreviewKind } from "../editor/utils/preview";
 import { useT } from "../i18n";
 import { useRestoredViewState, useViewStateWriter } from "../platform";
 import {
@@ -61,15 +62,38 @@ export function AttachmentPreviewPage({
   const query = useQuery({
     queryKey: ["attachment-preview-page", attachmentId] as const,
     queryFn: () => api.getAttachment(attachmentId),
+<<<<<<< HEAD
     staleTime: 0,
     refetchOnMount: "always",
+||||||| 2fcb424b72
+    // The record carries signed media URLs. Refetching would re-sign them and
+    // reload a playing video or an open PDF under the reader; one fetch per
+    // page view is enough.
+    staleTime: Infinity,
+=======
+    // Images authenticate once per page open; loaded streams stay stable.
+    staleTime: Infinity,
+    refetchOnMount: (query) =>
+      query.state.data && getPreviewKind(
+        query.state.data.content_type, query.state.data.filename,
+      ) === "image" ? "always" : false,
+>>>>>>> 35b54a3742bb
     refetchOnWindowFocus: false,
     retry: false,
   });
+<<<<<<< HEAD
   const attachment = query.isFetchedAfterMount && !query.isError && query.data?.id ? query.data : null;
+||||||| 2fcb424b72
+  const attachment = query.data?.id ? query.data : null;
+=======
+  const attachment = query.data?.id === attachmentId ? query.data : null;
+  const isImage = attachment &&
+    getPreviewKind(attachment.content_type, attachment.filename) === "image";
+  const imagePending = isImage && query.fetchStatus !== "idle";
+>>>>>>> 35b54a3742bb
 
-  // Set document.title so desktop's MutationObserver-based tab title picks
-  // up the filename. Web shows the same string in the browser tab.
+  // Web shows this in the browser tab; on desktop it refines the window title
+  // when the URL carries no `?name=` filename.
   const title = attachment?.filename || filename;
   useEffect(() => {
     if (title) document.title = title;
@@ -82,10 +106,11 @@ export function AttachmentPreviewPage({
     [writeViewState],
   );
 
-  if (attachment) {
+  if (attachment && !(isImage && (imagePending || query.isError))) {
     return (
       <AttachmentPreviewStandalone
         attachment={attachment}
+        currentImageMetadata={isImage ? attachment : undefined}
         renderHtmlFrame={renderPageHtmlFrame}
         initialHtmlAddress={normalizeHtmlPreviewAddress(
           restoredAddress ?? initialAddress ?? "",
@@ -97,7 +122,13 @@ export function AttachmentPreviewPage({
 
   return (
     <div className="dark flex h-full w-full items-center justify-center gap-2 bg-black/95 px-4 text-body text-muted-foreground">
+<<<<<<< HEAD
       {query.isLoading || (!query.isFetchedAfterMount && query.isFetching) ? (
+||||||| 2fcb424b72
+      {query.isLoading ? (
+=======
+      {query.isPending || imagePending ? (
+>>>>>>> 35b54a3742bb
         <>
           <Loader2 className="size-4 animate-spin" />
           {t(($) => $.attachment.preview_loading)}

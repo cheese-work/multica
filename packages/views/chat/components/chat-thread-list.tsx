@@ -5,6 +5,7 @@ import { GroupedVirtuoso } from "react-virtuoso";
 import { toast } from "sonner";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  AlarmClock,
   Archive,
   ArchiveRestore,
   CheckIcon,
@@ -31,6 +32,17 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { useWorkspacePresenceMap } from "@multica/core/agents";
 import { api } from "@multica/core/api";
+<<<<<<< HEAD
+||||||| 2fcb424b72
+import { pendingChatTasksOptions, chatKeys, sortChatSessions } from "@multica/core/chat/queries";
+=======
+import {
+  pendingChatTasksOptions,
+  chatKeys,
+  myChatWakeupsOptions,
+  sortChatSessions,
+} from "@multica/core/chat/queries";
+>>>>>>> 35b54a3742bb
 import {
   pendingChatTasksOptions,
   chatKeys,
@@ -131,10 +143,37 @@ export function ChatThreadList({
   activeSessionId,
   onSelectSession,
   onArchive,
+<<<<<<< HEAD
   loadState,
   onRetry,
   onEnterSelectMode,
 }: ChatThreadListProps) {
+||||||| 2fcb424b72
+}: {
+  sessions: ChatSession[];
+  agents: Agent[];
+  activeSessionId: string | null;
+  onSelectSession: (session: ChatSession) => void;
+  // Archiving is owned by the parent so the selection advance stays layout-
+  // aware (desktop advances to the next chat; mobile drops back to the list)
+  // and routes through the shared controller — see ChatPage.handleArchive.
+  onArchive: (session: ChatSession) => void;
+}) {
+=======
+  onPrefetchSession,
+}: {
+  sessions: ChatSession[];
+  agents: Agent[];
+  activeSessionId: string | null;
+  onSelectSession: (session: ChatSession) => void;
+  // Archiving is owned by the parent so the selection advance stays layout-
+  // aware (desktop advances to the next chat; mobile drops back to the list)
+  // and routes through the shared controller — see ChatPage.handleArchive.
+  onArchive: (session: ChatSession) => void;
+  /** Warm a session's messages and context on pointer hover or keyboard focus. */
+  onPrefetchSession?: (sessionId: string) => void;
+}) {
+>>>>>>> 35b54a3742bb
   const { t } = useT("chat");
   const { t: tLayout } = useT("layout");
   const locale = useLocale();
@@ -219,6 +258,11 @@ export function ChatThreadList({
   const queryClient = useQueryClient();
 
   const { data: pending } = useQuery(pendingChatTasksOptions(wsId));
+  const { data: myWakeups } = useQuery(myChatWakeupsOptions(wsId));
+  const waitingSessionIds = useMemo(
+    () => new Set((myWakeups ?? []).filter((w) => w.status === "active").map((w) => w.chat_session_id)),
+    [myWakeups],
+  );
   const pendingTaskBySessionId = useMemo(
     () => new Map((pending?.tasks ?? []).map((task) => [task.chat_session_id, task])),
     [pending],
@@ -369,6 +413,12 @@ export function ChatThreadList({
       );
     } else if (last?.failure_reason) {
       previewNode = <span className="block truncate text-destructive">{t(($) => $.list.failed)}</span>;
+    } else if (last?.message_kind === "wakeup") {
+      previewNode = (
+        <span className="block truncate italic text-muted-foreground">
+          {t(($) => $.list.wakeup_preview)}
+        </span>
+      );
     } else if (last?.message_kind === "no_response") {
       // A no_response turn stores a non-empty English fallback as its content,
       // so the preview is never blank even on older clients; new clients show a
@@ -535,6 +585,7 @@ export function ChatThreadList({
     return (
       <SwipeRow
         key={session.id}
+<<<<<<< HEAD
         leftActions={selecting ? [] : leftActions}
         rightAction={selecting ? undefined : rightAction}
         onFullSwipeLeft={
@@ -547,8 +598,18 @@ export function ChatThreadList({
       <RowContextMenu
         groups={isConfirmingAction || isRenaming || selecting ? [] : menuGroups}
         data-testid="chat-thread-row"
+||||||| 2fcb424b72
+=======
+        data-chat-thread-row={session.id}
+>>>>>>> 35b54a3742bb
         aria-current={isCurrent ? "true" : undefined}
         tabIndex={0}
+        onPointerEnter={() => {
+          if (!isConfirmingAction) onPrefetchSession?.(session.id);
+        }}
+        onFocus={() => {
+          if (!isConfirmingAction) onPrefetchSession?.(session.id);
+        }}
         onClick={(e) => {
           if (isConfirmingAction || isRenaming || e.defaultPrevented) return;
           if (selecting) {
@@ -626,6 +687,12 @@ export function ChatThreadList({
               <Pin
                 aria-label={t(($) => $.list.pinned)}
                 className="size-3 shrink-0 -rotate-45 fill-current text-muted-foreground"
+              />
+            )}
+            {waitingSessionIds.has(session.id) && (
+              <AlarmClock
+                aria-label={t(($) => $.list.wakeup_active)}
+                className="size-3 shrink-0 text-brand"
               />
             )}
             {isRenaming ? (
@@ -763,6 +830,7 @@ export function ChatThreadList({
     [sections],
   );
 
+<<<<<<< HEAD
   // Virtuoso needs the real scroll container (the page owns it); until the
   // wrapper has found it, a bounded slice of real rows keeps the first frame
   // populated. The same slice is what renders where nothing scrolls (tests).
@@ -819,6 +887,54 @@ export function ChatThreadList({
           defaultItemHeight={ROW_HEIGHT_PX}
           increaseViewportBy={{ top: 400, bottom: 400 }}
         />
+||||||| 2fcb424b72
+  // Archived view: a back header, then the archived rows. Delete lives only
+  // here (via each row's hover actions).
+  if (view === "archived") {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <button
+          type="button"
+          onClick={() => setView("history")}
+          className="flex w-full shrink-0 items-center gap-1.5 rounded-md px-2 py-2 text-left text-caption font-medium text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <ChevronLeft className="size-4 shrink-0" />
+          <span className="truncate">{t(($) => $.list.archived_title)}</span>
+          <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
+            {archivedSessions.length}
+          </span>
+        </button>
+        <div className="min-h-0 flex-1">
+          <SessionHistoryList sessions={archivedSessions} renderRow={renderRow} />
+        </div>
+        {rowContextMenu}
+=======
+  // Archived view: a back header, then the archived rows. Delete lives only
+  // here (via each row's hover actions).
+  if (view === "archived") {
+    return (
+      <div className="flex h-full min-h-0 flex-col">
+        <button
+          type="button"
+          onClick={() => setView("history")}
+          className="flex w-full shrink-0 items-center gap-1.5 rounded-md px-2 py-2 text-left text-caption font-medium text-muted-foreground outline-none transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+        >
+          <ChevronLeft className="size-4 shrink-0" />
+          <span className="truncate">{t(($) => $.list.archived_title)}</span>
+          <span className="ml-auto shrink-0 tabular-nums text-muted-foreground">
+            {archivedSessions.length}
+          </span>
+        </button>
+        <div className="min-h-0 flex-1">
+          <SessionHistoryList
+            key="archived"
+            sessions={archivedSessions}
+            renderRow={renderRow}
+            animateExit
+          />
+        </div>
+        {rowContextMenu}
+>>>>>>> 35b54a3742bb
       </div>
     );
   } else {
@@ -843,6 +959,7 @@ export function ChatThreadList({
 
   return (
     <>
+<<<<<<< HEAD
       {selecting && (
         <div className="flex items-center gap-1 px-2 py-1.5">
           <span className="min-w-0 flex-1 truncate text-label font-semibold">
@@ -874,6 +991,23 @@ export function ChatThreadList({
           />
         </div>
       )}
+||||||| 2fcb424b72
+      <SessionHistoryList
+        sessions={historySessions}
+        renderRow={renderRow}
+        footer={archivedEntry}
+      />
+      {rowContextMenu}
+=======
+      <SessionHistoryList
+        key="history"
+        sessions={historySessions}
+        renderRow={renderRow}
+        footer={archivedEntry}
+        animateExit
+      />
+      {rowContextMenu}
+>>>>>>> 35b54a3742bb
     </>
   );
 }

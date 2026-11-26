@@ -32,10 +32,17 @@ function CallbackContent() {
   const loginWithGoogle = useAuthStore((s) => s.loginWithGoogle);
   const [error, setError] = useState<CallbackError | null>(null);
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
+<<<<<<< HEAD
   // The code is single-use. Strict Mode re-runs this effect in development,
   // and so does any change of its dependencies; a second exchange would be
   // refused and show an error for a login that succeeded.
   const exchangedCode = useRef<string | null>(null);
+||||||| 2fcb424b72
+=======
+  // Single-use OAuth codes must only be exchanged once even if React StrictMode
+  // re-invokes mount effects in development.
+  const exchangedCodeRef = useRef<string | null>(null);
+>>>>>>> 35b54a3742bb
 
   useEffect(() => {
     const code = searchParams.get("code");
@@ -55,9 +62,18 @@ function CallbackContent() {
       return;
     }
 
+<<<<<<< HEAD
     if (exchangedCode.current === code) return;
     exchangedCode.current = code;
 
+||||||| 2fcb424b72
+=======
+    if (exchangedCodeRef.current === code) {
+      return;
+    }
+    exchangedCodeRef.current = code;
+
+>>>>>>> 35b54a3742bb
     const state = searchParams.get("state") || "";
     const stateParts = state.split(",");
     const isDesktop = stateParts.includes("platform:desktop");

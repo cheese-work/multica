@@ -52,6 +52,9 @@ type batchIssueResult struct {
 	Outcome    string `json:"outcome"`
 	Code       string `json:"code,omitempty"`
 	Message    string `json:"message,omitempty"`
+	// RunOutcome is set on an updated item whose write could have started a
+	// run; see IssueRunOutcome.
+	RunOutcome *IssueRunOutcome `json:"run_outcome,omitempty"`
 }
 
 // batchSkipError ends one issue's write with a reason the caller can act on,
@@ -239,6 +242,7 @@ func (h *Handler) resolveBatchPropertyPlan(w http.ResponseWriter, r *http.Reques
 
 type batchIssueWrite struct {
 	issue             db.Issue
+	prev              db.Issue
 	labelsChanged     bool
 	propertiesChanged bool
 }
@@ -246,8 +250,16 @@ type batchIssueWrite struct {
 // writeBatchIssue applies one issue's field update, label operations and
 // property operations in a single transaction, so an issue is either written
 // in full or skipped in full. params is nil when the batch changes no field.
+<<<<<<< HEAD
 func (h *Handler) writeBatchIssue(ctx context.Context, workspaceID pgtype.UUID, prev db.Issue, params *db.UpdateIssueParams, statusKey string, labels *batchLabelPlan, properties *batchPropertyPlan, wf *workflowWrite) (batchIssueWrite, error) {
 	out := batchIssueWrite{issue: prev}
+||||||| 2fcb424b72
+func (h *Handler) writeBatchIssue(ctx context.Context, workspaceID pgtype.UUID, prev db.Issue, params *db.UpdateIssueParams, statusKey string, labels *batchLabelPlan, properties *batchPropertyPlan) (batchIssueWrite, error) {
+	out := batchIssueWrite{issue: prev}
+=======
+func (h *Handler) writeBatchIssue(ctx context.Context, workspaceID pgtype.UUID, prev db.Issue, params *db.UpdateIssueParams, rawFields map[string]json.RawMessage, workflowAssignee bool, statusKey string, labels *batchLabelPlan, properties *batchPropertyPlan) (batchIssueWrite, error) {
+	out := batchIssueWrite{issue: prev, prev: prev}
+>>>>>>> 35b54a3742bb
 	tx, err := h.beginWakeupWrite(ctx)
 	if err != nil {
 		return out, err
@@ -270,6 +282,7 @@ func (h *Handler) writeBatchIssue(ctx context.Context, workspaceID pgtype.UUID, 
 
 	var cancelled []db.AgentTaskQueue
 	if params != nil {
+<<<<<<< HEAD
 		// Fork: the same locked write as the single-issue path (project lock,
 		// workflow re-check and entry gates under the issue row lock, move
 		// guards), so a label or property in the batch cannot step past a
@@ -277,6 +290,15 @@ func (h *Handler) writeBatchIssue(ctx context.Context, workspaceID pgtype.UUID, 
 		// issue row. A gate failure returns here and the deferred Rollback
 		// drops the label and property writes below with it.
 		out.issue, cancelled, err = h.writeIssueLocked(ctx, q, workspaceID, *params, wf)
+||||||| 2fcb424b72
+		out.issue, cancelled, err = updateIssueStoppingWakeups(ctx, q, *params)
+=======
+		out.prev, err = lockIssueForFieldUpdate(ctx, q, workspaceID, params, rawFields, workflowAssignee)
+		if err != nil {
+			return out, err
+		}
+		out.issue, cancelled, err = updateIssueStoppingWakeups(ctx, q, *params)
+>>>>>>> 35b54a3742bb
 		if err != nil {
 			return out, err
 		}

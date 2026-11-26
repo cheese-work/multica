@@ -24,7 +24,14 @@ import { useDeleteChatSession } from "@/data/mutations/chat";
 import { chatSessionsOptions } from "@/data/queries/chat";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+<<<<<<< HEAD
 import { splitChatSessions } from "@/lib/chat-dm-stats-archive";
+||||||| 2fcb424b72
+import { cn } from "@/lib/utils";
+=======
+import { cn } from "@/lib/utils";
+import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
+>>>>>>> 35b54a3742bb
 import { useT } from "@/lib/i18n";
 import { useAttentionRefresh } from "@/lib/use-attention-refresh";
 import { cn } from "@/lib/utils";
@@ -65,7 +72,7 @@ export default function ChatSessionsRoute() {
     if (session.status !== "archived") return;
     Alert.alert(
       t("alerts.delete_title"),
-      session.title || t("sessions.new_chat"),
+      chatSessionDisplayTitle(session.title, t),
       [
         { text: t("common:actions.cancel"), style: "cancel" },
         {
@@ -115,6 +122,7 @@ export default function ChatSessionsRoute() {
                       selected && "bg-secondary/60",
                     )}
                   >
+<<<<<<< HEAD
                     <View
                       className={cn(
                         "h-2 w-2 rounded-full",
@@ -171,6 +179,11 @@ export default function ChatSessionsRoute() {
                 >
                   <Text className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                     {t("sessions.archived_title")} · {archived.length}
+||||||| 2fcb424b72
+                    {session.title || t("sessions.new_chat")}
+=======
+                    {chatSessionDisplayTitle(session.title, t)}
+>>>>>>> 35b54a3742bb
                   </Text>
                   <Ionicons
                     name={archivedOpen ? "chevron-down" : "chevron-forward"}

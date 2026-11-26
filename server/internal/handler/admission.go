@@ -53,6 +53,7 @@ const (
 type DispatchReasonCode = dispatch.ReasonCode
 
 const (
+<<<<<<< HEAD
 	ReasonQueued                              = dispatch.ReasonQueued
 	ReasonProjectInactive                     = dispatch.ReasonProjectInactive
 	ReasonCoalesced                           = dispatch.ReasonCoalesced
@@ -81,6 +82,44 @@ const (
 	ReasonInternalError                       = dispatch.ReasonInternalError
 	ReasonProviderHold                        = dispatch.ReasonProviderHold
 	ReasonProjectAccessBlocked                = dispatch.ReasonProjectAccessBlocked
+||||||| 2fcb424b72
+	ReasonQueued                = dispatch.ReasonQueued
+	ReasonCoalesced             = dispatch.ReasonCoalesced
+	ReasonDeferred              = dispatch.ReasonDeferred
+	ReasonSteered               = dispatch.ReasonSteered
+	ReasonInvocationNotAllowed  = dispatch.ReasonInvocationNotAllowed
+	ReasonTargetUnavailable     = dispatch.ReasonTargetUnavailable
+	ReasonRuntimeOffline        = dispatch.ReasonRuntimeOffline
+	ReasonRuntimeUnusable       = dispatch.ReasonRuntimeUnusable
+	ReasonRuntimeAccessDenied   = dispatch.ReasonRuntimeAccessDenied
+	ReasonRuntimeProfileMissing = dispatch.ReasonRuntimeProfileMissing
+	ReasonAgentRuntimeRequired  = dispatch.ReasonAgentRuntimeRequired
+	ReasonAttributionBlocked    = dispatch.ReasonAttributionBlocked
+	ReasonAlreadyActive         = dispatch.ReasonAlreadyActive
+	ReasonSelfTriggerSuppressed = dispatch.ReasonSelfTriggerSuppressed
+	ReasonIssueInTriage         = dispatch.ReasonIssueInTriage
+	ReasonProjectAccessBlocked  = dispatch.ReasonProjectAccessBlocked
+	ReasonInternalError         = dispatch.ReasonInternalError
+=======
+	ReasonQueued                = dispatch.ReasonQueued
+	ReasonCoalesced             = dispatch.ReasonCoalesced
+	ReasonDeferred              = dispatch.ReasonDeferred
+	ReasonSteered               = dispatch.ReasonSteered
+	ReasonInvocationNotAllowed  = dispatch.ReasonInvocationNotAllowed
+	ReasonTargetUnavailable     = dispatch.ReasonTargetUnavailable
+	ReasonRuntimeOffline        = dispatch.ReasonRuntimeOffline
+	ReasonRuntimeUnusable       = dispatch.ReasonRuntimeUnusable
+	ReasonRuntimeAccessDenied   = dispatch.ReasonRuntimeAccessDenied
+	ReasonRuntimeProfileMissing = dispatch.ReasonRuntimeProfileMissing
+	ReasonAgentRuntimeRequired  = dispatch.ReasonAgentRuntimeRequired
+	ReasonAttributionBlocked    = dispatch.ReasonAttributionBlocked
+	ReasonAlreadyActive         = dispatch.ReasonAlreadyActive
+	ReasonSelfTriggerSuppressed = dispatch.ReasonSelfTriggerSuppressed
+	ReasonIssueInTriage         = dispatch.ReasonIssueInTriage
+	ReasonProjectAccessBlocked  = dispatch.ReasonProjectAccessBlocked
+	ReasonHandedToLeader        = dispatch.ReasonHandedToLeader
+	ReasonInternalError         = dispatch.ReasonInternalError
+>>>>>>> 35b54a3742bb
 )
 
 // DispatchTarget is the caller-visible reference to an execution target. Name

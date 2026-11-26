@@ -58,7 +58,9 @@ import {
   X,
   type IconComponent,
 } from "@multica/ui/icons";
-import type { Attachment } from "@multica/core/types";
+import { useQueryClient } from "@tanstack/react-query";
+import type { Attachment, Workspace } from "@multica/core/types";
+import { workspaceKeys } from "@multica/core/workspace/queries";
 import {
   attachmentIdFromDownloadURL,
   attachmentIdFromLocalUploadURL,
@@ -174,6 +176,12 @@ interface PreviewState {
   contentType: string;
   mediaUrl: string;
   attachmentId: string | null;
+  /**
+   * Workspace that owns the attachment, when known. Id-keyed requests target
+   * it rather than the current route's workspace, so a file linked from
+   * another workspace the reader belongs to still previews and downloads.
+   */
+  workspaceId: string | null;
   /** 0 when unknown (URL-only source). */
   sizeBytes: number;
   /**
@@ -206,6 +214,7 @@ function normalize(source: PreviewSource): PreviewState {
       contentType: source.attachment.content_type,
       mediaUrl: resolvePreviewMediaUrl(source.attachment),
       attachmentId: source.attachment.id,
+      workspaceId: source.attachment.workspace_id || null,
       sizeBytes: source.attachment.size_bytes,
       kind: getPreviewKind(
         source.attachment.content_type,
@@ -220,6 +229,7 @@ function normalize(source: PreviewSource): PreviewState {
     attachmentId:
       attachmentIdFromDownloadURL(source.url) ??
       attachmentIdFromLocalUploadURL(source.url) ?? null,
+    workspaceId: null,
     sizeBytes: 0,
     kind: source.forceKind ?? getPreviewKind("", source.filename),
   };
@@ -369,8 +379,10 @@ function useSettledImageURL(
   targetUrl: string,
   enabled: boolean,
   onLoadError?: () => void,
+  identity = targetUrl,
+  pending = false,
 ): string {
-  const [settled, setSettled] = useState<string | null>(null);
+  const [settled, setSettled] = useState<{ url: string; identity: string } | null>(null);
   const onErrorRef = useRef(onLoadError);
   onErrorRef.current = onLoadError;
 
@@ -385,13 +397,13 @@ function useSettledImageURL(
     let cancelled = false;
     const probe = new window.Image();
     if (typeof probe.decode !== "function") {
-      setSettled(targetUrl);
+      setSettled({ url: targetUrl, identity });
       return;
     }
     probe.src = targetUrl;
     probe.decode().then(
       () => {
-        if (!cancelled) setSettled(targetUrl);
+        if (!cancelled) setSettled({ url: targetUrl, identity });
       },
       () => {
         // Rejection covers both load failure and undecodable bytes.
@@ -401,9 +413,11 @@ function useSettledImageURL(
     return () => {
       cancelled = true;
     };
-  }, [targetUrl, enabled]);
+  }, [targetUrl, enabled, identity]);
 
-  return enabled && settled !== null ? settled : targetUrl;
+  return enabled && settled !== null && !(pending && settled.identity === identity)
+    ? settled.url
+    : targetUrl;
 }
 
 // Warms the browser cache for a sequence neighbour so paging to it swaps
@@ -415,6 +429,13 @@ export function PreviewImagePrefetch({ source }: { source: PreviewSource }) {
     state.attachmentId ?? undefined,
     state.mediaUrl,
     true,
+    {
+      refreshOnMount: true,
+      metadataSource: source.kind === "url" && state.attachmentId
+        ? "markdown-link"
+        : "workspace",
+      workspaceId: state.workspaceId ?? undefined,
+    },
   );
 
   useEffect(() => {
@@ -472,6 +493,7 @@ export function AttachmentPreviewModal({
   // useWorkspaceSlug (not useWorkspacePaths) — returns null outside a
   // workspace route instead of throwing, so the new-tab button just hides.
   const slug = useWorkspaceSlug();
+  const queryClient = useQueryClient();
   const navigation = useNavigation();
   // The html kind's current address, for "Open in new tab". Tagged with its
   // file so one document's address never follows the reader to the next.
@@ -548,7 +570,7 @@ export function AttachmentPreviewModal({
     const attachmentId =
       state.attachmentId ?? attachmentIdFromStorageURL(state.mediaUrl, cdnDomain);
     if (attachmentId) {
-      return download(attachmentId);
+      return download(attachmentId, state.workspaceId ?? undefined);
     }
     return openExternal(state.mediaUrl);
   };
@@ -556,9 +578,18 @@ export function AttachmentPreviewModal({
   // Open-in-new-tab: the full-page route (/attachments/{id}/preview) shows
   // every previewable kind, but loads the file by id — a URL-only source has
   // none, and a file the viewer cannot show gains nothing from a tab.
-  const canOpenInNewTab = kind !== null && !!slug && !!state.attachmentId;
+  // The route lives under the workspace that owns the file, which a file
+  // linked from another workspace does not share with the current page. A
+  // workspace missing from the reader's list has no route to open.
+  const ownerSlug = (() => {
+    if (!slug || !state.workspaceId) return slug;
+    const workspaces = queryClient.getQueryData<Workspace[]>(workspaceKeys.list());
+    if (!workspaces) return slug;
+    return workspaces.find((w) => w.id === state.workspaceId)?.slug ?? null;
+  })();
+  const canOpenInNewTab = kind !== null && !!ownerSlug && !!state.attachmentId;
   const handleOpenInNewTab = () => {
-    if (!slug || !state.attachmentId) return;
+    if (!ownerSlug || !state.attachmentId) return;
     const address =
       htmlAddressRef.current?.attachmentId === state.attachmentId
         ? htmlAddressRef.current.address
@@ -568,7 +599,7 @@ export function AttachmentPreviewModal({
       address ? `loc=${encodeURIComponent(address)}` : "",
     ].filter(Boolean);
     const query = params.length > 0 ? `?${params.join("&")}` : "";
-    const path = `${paths.workspace(slug).attachmentPreview(state.attachmentId)}${query}`;
+    const path = `${paths.workspace(ownerSlug).attachmentPreview(state.attachmentId)}${query}`;
     if (navigation.openInNewTab) {
       navigation.openInNewTab(path, state.filename, { activate: true });
     } else {
@@ -702,7 +733,7 @@ const renderViewerHtmlFrame: HtmlFrameRenderer = ({ html, title, location }) => 
 // no tree to switch to. Shares the stage's query, so nothing is fetched twice.
 function useStructuredParse(state: PreviewState, enabled: boolean) {
   const format = enabled ? structuredFormat(state.contentType, state.filename) : null;
-  const query = useAttachmentHtmlText(format ? state.attachmentId : null);
+  const query = useAttachmentHtmlText(format ? state.attachmentId : null, state.workspaceId);
   const text = query.data?.text;
   return useMemo(
     () => (format && text !== undefined ? parseStructured(text, format) : null),
@@ -744,7 +775,9 @@ function GenericPreviewPanel({
   renderHtmlFrame = renderViewerHtmlFrame,
   initialHtmlAddress = "",
   onHtmlAddressChange,
+  currentImageMetadata,
 }: {
+  currentImageMetadata?: Attachment;
   surface: "viewer" | "page";
   kind: PreviewKind | null;
   source: PreviewSource;
@@ -811,15 +844,26 @@ function GenericPreviewPanel({
     htmlLocation,
   };
 
-  // Gallery navigation hands this panel an attachment the reader never
-  // clicked, so — unlike the click-through path, where <Attachment> had
-  // already upgraded the URL — the viewer has to run the re-sign itself. A
-  // no-op for URLs that are already loadable (signed CDN, public storage).
+  // Cached attachment records can outlive their signed URLs. Reuse recent
+  // prefetch metadata and revalidate stale entries when opening the viewer.
+  // Bare CDN links keep their native URL and cookie-based access.
+  const cdnDomain = useConfigStore((s) => s.cdnDomain);
   const resigned = useResignedInlineMedia(
-    state.attachmentId ?? undefined,
+    kind === "image" ? state.attachmentId ?? undefined : undefined,
     state.mediaUrl,
     kind === "image",
+    {
+      refreshOnMount: kind === "image",
+      metadataSource: source.kind === "url" && state.attachmentId
+        ? "markdown-link"
+        : "workspace",
+      workspaceId: state.workspaceId ?? undefined,
+      currentMetadata: kind === "image" ? currentImageMetadata : undefined,
+    },
   );
+  useEffect(() => {
+    if (kind === "image" && resigned.failed) onImageError?.();
+  }, [kind, resigned.failed, onImageError]);
   // Until that upgrade lands the picked URL may be one this client cannot
   // load natively (desktop, split-origin web); handed to <img> it would fail
   // and, in a sequence, read as a broken image to skip. Hold the previous
@@ -828,7 +872,10 @@ function GenericPreviewPanel({
   // The previous image stays on the canvas until this one has decoded — the
   // swap itself is what used to flash. Also absorbs the re-sign URL upgrade
   // (raw -> signed) without a second visible load.
-  const mediaUrl = useSettledImageURL(targetUrl, kind === "image", onImageError);
+  const mediaUrl = useSettledImageURL(
+    targetUrl, kind === "image", onImageError,
+    state.attachmentId ?? state.mediaUrl, resigned.pending,
+  );
   // A load error from the <img> belongs to the file being opened only when
   // that is what it shows — a frame held from the previous image never
   // reports against the next one.
@@ -837,7 +884,6 @@ function GenericPreviewPanel({
 
   // Video, audio and PDF stream straight from a URL the reader has never
   // loaded, so they get a freshly signed one rather than the record's.
-  const cdnDomain = useConfigStore((s) => s.cdnDomain);
   const streamed = useFreshStreamedMediaURL(
     state.attachmentId ??
       attachmentIdFromLocalUploadURL(state.mediaUrl) ??
@@ -845,6 +891,7 @@ function GenericPreviewPanel({
     state.mediaUrl,
     kind === "video" || kind === "audio" || kind === "pdf",
     kind === "pdf",
+    state.workspaceId,
   );
   const streamUrl = streamed.pending ? "" : streamed.url;
 
@@ -855,7 +902,10 @@ function GenericPreviewPanel({
   const canCopyImage = kind === "image" && isDesktopShell();
   const canCopyText =
     kind !== null && TEXT_BACKED_KINDS.has(kind) && (kind !== "html" || htmlSource);
-  const copyContent = useAttachmentHtmlText(canCopyText ? state.attachmentId : null);
+  const copyContent = useAttachmentHtmlText(
+    canCopyText ? state.attachmentId : null,
+    state.workspaceId,
+  );
   const handleCopyText = async () => {
     if (!copyContent.data || copyContent.isError) return;
     if (await copyText(copyContent.data.text)) {
@@ -864,8 +914,12 @@ function GenericPreviewPanel({
       toast.error(t(($) => $.attachment.copy_failed));
     }
   };
+  const copyableImageUrl = !resigned.pending && !resigned.failed && !imageFailed
+    ? mediaUrl
+    : "";
   const handleCopyImage = async () => {
-    if (await copyImage(mediaUrl)) {
+    if (!copyableImageUrl) return;
+    if (await copyImage(copyableImageUrl)) {
       toast.success(t(($) => $.image.image_copied));
     } else {
       toast.error(t(($) => $.image.copy_image_failed));
@@ -1096,7 +1150,7 @@ function GenericPreviewPanel({
           {canCopyImage && (
             <ChromeButton
               label={t(($) => $.image.copy_image)}
-              disabled={!mediaUrl}
+              disabled={!copyableImageUrl}
               onClick={() => void handleCopyImage()}
             >
               <Copy className="size-4" />
@@ -1294,7 +1348,7 @@ function GenericPreviewPanel({
               },
             }}
           >
-            {kind === "image" && imageFailed ? (
+            {kind === "image" && (imageFailed || resigned.failed) ? (
               <UnsupportedFallback
                 message={t(($) => $.attachment.preview_failed)}
                 onDownload={handleDownload}
@@ -1720,6 +1774,7 @@ function PreviewContent({
       return (
         <TextBackedPreview
           attachmentId={state.attachmentId!}
+          workspaceId={state.workspaceId}
           onDownload={onDownload}
           downloading={downloading}
           render={(text) => (
@@ -1737,6 +1792,7 @@ function PreviewContent({
       return (
         <TextBackedPreview
           attachmentId={state.attachmentId!}
+          workspaceId={state.workspaceId}
           onDownload={onDownload}
           downloading={downloading}
           render={(text) =>
@@ -1758,6 +1814,7 @@ function PreviewContent({
       return (
         <TextBackedPreview
           attachmentId={state.attachmentId!}
+          workspaceId={state.workspaceId}
           onDownload={onDownload}
           downloading={downloading}
           render={(text) => (
@@ -1774,6 +1831,7 @@ function PreviewContent({
       return (
         <TextBackedPreview
           attachmentId={state.attachmentId!}
+          workspaceId={state.workspaceId}
           onDownload={onDownload}
           downloading={downloading}
           render={(text) => {
@@ -1810,6 +1868,7 @@ function PreviewContent({
       return (
         <TextBackedPreview
           attachmentId={state.attachmentId!}
+          workspaceId={state.workspaceId}
           onDownload={onDownload}
           downloading={downloading}
           render={(text) => code(text, extensionToLanguage(state.filename))}
@@ -1853,17 +1912,19 @@ function DocumentSheet({
 // is much longer than any plausible preview session.
 function TextBackedPreview({
   attachmentId,
+  workspaceId,
   onDownload,
   downloading,
   render,
 }: {
   attachmentId: string;
+  workspaceId: string | null;
   onDownload: () => void;
   downloading: boolean;
   render: (text: string) => ReactNode;
 }) {
   const { t } = useT("editor");
-  const query = useAttachmentHtmlText(attachmentId);
+  const query = useAttachmentHtmlText(attachmentId, workspaceId);
 
   if (query.isLoading) return <PreviewLoading />;
   if (query.error) {
@@ -2027,11 +2088,14 @@ function UnsupportedFallback({
  */
 export function AttachmentPreviewStandalone({
   attachment,
+  currentImageMetadata,
   renderHtmlFrame,
   initialHtmlAddress,
   onHtmlAddressChange,
 }: {
   attachment: Attachment;
+  /** Metadata authenticated by the page request for this open. */
+  currentImageMetadata?: Attachment;
   renderHtmlFrame?: HtmlFrameRenderer;
   /** Query and fragment an HTML file opens at. */
   initialHtmlAddress?: string;
@@ -2060,6 +2124,7 @@ export function AttachmentSourceStandalone({ source, renderHtmlFrame, initialHtm
   return (
     <div className="flex h-full w-full flex-col bg-black/95">
       <PreviewPanel
+        currentImageMetadata={currentImageMetadata}
         surface="page"
         kind={state.kind}
         source={source}

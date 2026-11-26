@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { SidebarProvider } from "@multica/ui/components/ui/sidebar";
+import { WorkspaceTrialNotices } from "../billing/trial-notices";
 import { AppearanceSync } from "../common/appearance-sync";
 import { ModalRegistry } from "../modals/registry";
 import { SourceBackfillModal } from "../onboarding/source-backfill-modal";
@@ -75,10 +76,17 @@ export function DashboardLayout({
               <div className="flex min-w-0 flex-1 flex-col">
                 <AppShellCard>
                   <NavigationProgress />
+<<<<<<< HEAD
                   <MachinePauseBanner />
                   <WorkspacePauseBanner />
                   <OpenDecisionsChip />
                   <MachineBannerHeaderSlot>{children}</MachineBannerHeaderSlot>
+||||||| 2fcb424b72
+                  {children}
+=======
+                  <WorkspaceTrialNotices />
+                  {children}
+>>>>>>> 35b54a3742bb
                   <ModalRegistry />
                   <SourceBackfillModal />
                   {extra}

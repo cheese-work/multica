@@ -229,7 +229,12 @@ export function Markdown({
       //
       //   mention://issue/<uuid>   → navigate to that issue detail
       //   mention://project/<uuid> → navigate to that project detail
+<<<<<<< HEAD
       //   mention://comment/<uuid>?issue=<uuid> → issue detail, comment highlighted
+||||||| 2fcb424b72
+=======
+      //   mention://doc/<uuid>     → open the doc on web (no docs screen in the app)
+>>>>>>> 35b54a3742bb
       //   mention://member/<uuid>  → no-op (no member profile screen yet)
       //   mention://agent/<uuid>   → no-op (no agent profile screen yet)
       //   mention://squad/<uuid>   → no-op (no squad profile screen yet)
@@ -264,6 +269,12 @@ export function Markdown({
           // the mapping explicit so a new type can't silently no-op.
           if (type === "issue") router.push(`/${wsSlug}/issue/${id}`);
           else if (type === "project") router.push(`/${wsSlug}/project/${id}`);
+          else if (type === "doc") {
+            const webUrl = process.env.EXPO_PUBLIC_WEB_URL?.replace(/\/+$/, "");
+            if (webUrl) {
+              Linking.openURL(`${webUrl}/${wsSlug}/docs/${id}`).catch(() => {});
+            }
+          }
         }
         return;
       }

@@ -11,8 +11,14 @@ import {
   AGENT_DESCRIPTION_MAX_LENGTH,
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
+<<<<<<< HEAD
   EMPTY_AGENT_PROFILE_DRAFT,
   useAgentProfileDraftStore,
+||||||| 2fcb424b72
+=======
+  agentDescriptionLength,
+  isAgentDescriptionWithinLimit,
+>>>>>>> 35b54a3742bb
 } from "@multica/core/agents";
 import { usePersistedDraft } from "@multica/core/drafts";
 import { useConfigStore } from "@multica/core/config";
@@ -29,6 +35,7 @@ import {
   type SettingsSaveStatus,
 } from "../../settings/components/settings-layout";
 import { useAutoSave } from "../../settings/components/use-auto-save";
+import { useEditedValue } from "../../settings/components/use-edited-value";
 import { useT } from "../../i18n";
 import { CharCounter } from "./char-counter";
 import { ConversationStartersEditor } from "./conversation-starters-editor";
@@ -98,10 +105,24 @@ export function AgentDetailInspector({
     [agent.id, onUpdate],
   );
 
+<<<<<<< HEAD
   const [profile, setProfile] = usePersistedDraft(
     useAgentProfileDraftStore,
     agent.id,
     EMPTY_AGENT_PROFILE_DRAFT,
+||||||| 2fcb424b72
+  const [name, setName] = useState(agent.name);
+  const [description, setDescription] = useState(agent.description ?? "");
+  const [starters, setStarters] = useState<AgentConversationStarter[]>(
+    agent.conversation_starters ?? [],
+=======
+  const nameField = useEditedValue(agent.name, agent.id);
+  const descriptionField = useEditedValue(agent.description ?? "", agent.id);
+  const name = nameField.value;
+  const description = descriptionField.value;
+  const [starters, setStarters] = useState<AgentConversationStarter[]>(
+    agent.conversation_starters ?? [],
+>>>>>>> 35b54a3742bb
   );
   const [name, setNameState] = useState(profile.name ?? agent.name);
   const [description, setDescriptionState] = useState(
@@ -127,10 +148,18 @@ export function AgentDetailInspector({
   };
 
   useEffect(() => {
+<<<<<<< HEAD
     const saved = useAgentProfileDraftStore.getState().getDraft(agent.id);
     setNameState(saved?.name ?? agent.name);
     setDescriptionState(saved?.description ?? agent.description ?? "");
     setStartersState(saved?.starters ?? agent.conversation_starters ?? []);
+||||||| 2fcb424b72
+    setName(agent.name);
+    setDescription(agent.description ?? "");
+    setStarters(agent.conversation_starters ?? []);
+=======
+    setStarters(agent.conversation_starters ?? []);
+>>>>>>> 35b54a3742bb
     // Reset only when moving to another agent. Cache updates from this form
     // must not erase a newer local draft while an autosave is in flight.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -149,6 +178,7 @@ export function AgentDetailInspector({
   );
   const saveProfile = useCallback(
     async (next: ProfileDraft) => {
+<<<<<<< HEAD
       await update({ name: next.name, description: next.description });
       // Confirmed by the server (the parent rolls back and throws on failure).
       // Drop only what was sent: a newer edit typed meanwhile stays a draft.
@@ -158,8 +188,26 @@ export function AgentDetailInspector({
       if (current.name?.trim() === next.name) sent.name = null;
       if (current.description === next.description) sent.description = null;
       if (Object.keys(sent).length) setProfile(sent);
+||||||| 2fcb424b72
+      await update({ name: next.name, description: next.description });
+=======
+      // Send only what was edited here, so the rest keeps changes made elsewhere.
+      const changes: Partial<ProfileDraft> = {};
+      if (nameField.edited) changes.name = next.name;
+      if (descriptionField.edited) changes.description = next.description;
+      if (Object.keys(changes).length === 0) return;
+      await update(changes);
+      nameField.markSaved(next.name);
+      descriptionField.markSaved(next.description);
+>>>>>>> 35b54a3742bb
     },
+<<<<<<< HEAD
     [agent.id, setProfile, update],
+||||||| 2fcb424b72
+    [update],
+=======
+    [descriptionField, nameField, update],
+>>>>>>> 35b54a3742bb
   );
   const profileAutoSave = useAutoSave({
     value: profileDraft,
@@ -168,7 +216,7 @@ export function AgentDetailInspector({
     enabled:
       canEdit &&
       profileDraft.name.length > 0 &&
-      profileDraft.description.length <= AGENT_DESCRIPTION_MAX_LENGTH,
+      isAgentDescriptionWithinLimit(profileDraft.description),
     isEqual: profileDraftsEqual,
   });
 
@@ -257,7 +305,7 @@ export function AgentDetailInspector({
                     autoComplete="off"
                     aria-label={t(($) => $.inspector.name_label)}
                     value={name}
-                    onChange={(event) => setName(event.target.value)}
+                    onChange={(event) => nameField.edit(event.target.value)}
                     onBlur={profileAutoSave.flush}
                     disabled={!canEdit}
                     aria-invalid={nameInvalid || undefined}
@@ -281,16 +329,18 @@ export function AgentDetailInspector({
                     autoComplete="off"
                     aria-label={t(($) => $.inspector.description_label)}
                     value={description}
-                    onChange={(event) => setDescription(event.target.value)}
+                    onChange={(event) => descriptionField.edit(event.target.value)}
                     onBlur={profileAutoSave.flush}
                     disabled={!canEdit}
                     rows={5}
-                    maxLength={AGENT_DESCRIPTION_MAX_LENGTH}
+                    // No maxLength: it counts UTF-16 units and would disagree
+                    // with the counter on emoji. Past the limit the counter
+                    // turns red and autosave holds off.
                     className="resize-y"
                     placeholder={t(($) => $.inspector.description_placeholder)}
                   />
                   <CharCounter
-                    length={[...description].length}
+                    length={agentDescriptionLength(description)}
                     max={AGENT_DESCRIPTION_MAX_LENGTH}
                   />
                 </div>

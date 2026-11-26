@@ -252,8 +252,14 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 						return
 					}
 					r.Header.Set("X-User-ID", userID)
+<<<<<<< HEAD
 					r.Header.Set("X-Actor-Source", "pat")
 					next.ServeHTTP(w, r)
+||||||| 2fcb424b72
+					next.ServeHTTP(w, r)
+=======
+					next.ServeHTTP(w, r.WithContext(withPersonalAccessToken(r.Context())))
+>>>>>>> 35b54a3742bb
 					return
 				}
 
@@ -300,7 +306,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				// within the TTL window skip this write entirely.
 				go queries.UpdatePersonalAccessTokenLastUsed(context.Background(), pat.ID)
 
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(withPersonalAccessToken(r.Context())))
 				return
 			}
 

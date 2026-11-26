@@ -2,7 +2,14 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, MemberWithUser } from "@multica/core/types";
+<<<<<<< HEAD
 import { agentBackgroundUseOptions } from "@multica/core/workspace/queries";
+||||||| 2fcb424b72
+=======
+import { usesInvocationMembers } from "@multica/core/agents";
+import { usePaidFeatureAccess } from "@multica/core/billing";
+import { useWorkspaceId } from "@multica/core/hooks";
+>>>>>>> 35b54a3742bb
 import {
   SettingsCard,
   SettingsSection,
@@ -24,6 +31,7 @@ export function AgentAccessSettings({
   onUpdate: (id: string, data: Record<string, unknown>) => Promise<void>;
 }) {
   const { t } = useT("agents");
+<<<<<<< HEAD
   const { data: backgroundUse = [] } = useQuery(
     agentBackgroundUseOptions(agent.workspace_id, agent.id),
   );
@@ -31,6 +39,13 @@ export function AgentAccessSettings({
     (u) => u.scope === "workspace",
   );
   const canEdit = currentUserId !== null && agent.owner_id === currentUserId;
+||||||| 2fcb424b72
+=======
+  const wsId = useWorkspaceId();
+  const membersAccess = usePaidFeatureAccess(wsId, "agent_invocation_members", {
+    hasExistingConfig: usesInvocationMembers(agent.permission_mode, agent.invocation_targets),
+  });
+>>>>>>> 35b54a3742bb
 
   return (
     <SettingsSection
@@ -48,6 +63,7 @@ export function AgentAccessSettings({
             (agent.composio_toolkit_allowlist ?? []).length > 0
           }
           onDirtyChange={onDirtyChange}
+          membersAccess={membersAccess}
           onChange={(next) => onUpdate(agent.id, next)}
         />
         {isWorkspaceBackgroundAgent && (

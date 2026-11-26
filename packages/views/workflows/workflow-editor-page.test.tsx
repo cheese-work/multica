@@ -17,10 +17,17 @@ import { issueWorkflowKeys } from "@multica/core/issue-workflows";
 import { projectListOptions } from "@multica/core/projects/queries";
 import type { IssueStatusEntry, IssueWorkflow } from "@multica/core/types";
 import { renderWithI18n } from "../test/i18n";
+import type { IssueWorkflow } from "@multica/core/types";
 import { WorkflowEditorPage } from "./workflow-editor-page";
 
+<<<<<<< HEAD
 // Unsent editor edits persist per target; start every test with none.
 beforeEach(resetAllRegisteredDrafts);
+||||||| 2fcb424b72
+const { createWorkflow } = vi.hoisted(() => ({ createWorkflow: vi.fn() }));
+=======
+const { createWorkflow, statusEntries } = vi.hoisted(() => ({ createWorkflow: vi.fn(), statusEntries: { current: [] as unknown[] } }));
+>>>>>>> 35b54a3742bb
 
 const apiMock = vi.hoisted(() => ({
   updateIssueWorkflow: vi.fn(),
@@ -32,15 +39,40 @@ vi.mock("@multica/core/api", async (importOriginal) => ({
   api: apiMock,
 }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
+<<<<<<< HEAD
 vi.mock("@multica/core/paths", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/paths")>()),
   useCurrentWorkspace: () => ({ id: "ws-1", slug: "acme" }),
+||||||| 2fcb424b72
+vi.mock("@multica/core/paths", () => ({ useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme" }) }));
+vi.mock("@multica/core/issue-statuses/hooks", () => ({ useIssueStatuses: () => buildIssueStatusCatalog([]) }));
+vi.mock("@multica/core/workspace/hooks", () => ({ useActorName: () => ({ getActorName: () => "Builder" }) }));
+vi.mock("@multica/core/issue-workflows", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/issue-workflows")>()),
+  useIssueWorkflows: () => ({ workflows: [], isLoaded: true }),
+  useCreateIssueWorkflow: () => ({ mutateAsync: createWorkflow, isPending: false }),
+  useUpdateIssueWorkflow: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDeleteIssueWorkflow: () => ({ mutateAsync: vi.fn(), isPending: false }),
+=======
+vi.mock("@multica/core/paths", () => ({ useCurrentWorkspace: () => ({ id: "ws-1", name: "Acme" }) }));
+vi.mock("@multica/core/issue-statuses/hooks", () => ({
+  useIssueStatuses: () => buildIssueStatusCatalog(statusEntries.current as never),
+}));
+vi.mock("@multica/core/workspace/hooks", () => ({ useActorName: () => ({ getActorName: () => "Builder" }) }));
+vi.mock("@multica/core/issue-workflows", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/issue-workflows")>()),
+  useIssueWorkflows: () => ({ workflows: [], isLoaded: true }),
+  useCreateIssueWorkflow: () => ({ mutateAsync: createWorkflow, isPending: false }),
+  useUpdateIssueWorkflow: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useDeleteIssueWorkflow: () => ({ mutateAsync: vi.fn(), isPending: false }),
+>>>>>>> 35b54a3742bb
 }));
 vi.mock("@multica/core/workspace/hooks", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@multica/core/workspace/hooks")>()),
   useActorName: () => ({ getActorName: () => "Someone" }),
 }));
 
+<<<<<<< HEAD
 function workflow(overrides: Partial<IssueWorkflow> = {}): IssueWorkflow {
   const step = (status_key: string) => ({
     status_key,
@@ -60,8 +92,32 @@ function workflow(overrides: Partial<IssueWorkflow> = {}): IssueWorkflow {
     version: "v-2026-01-01",
     ...overrides,
   } as IssueWorkflow;
+||||||| 2fcb424b72
+function renderEditor(props: { template?: "content"; canCreateStatus?: boolean } = {}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(projectListOptions("ws-1").queryKey, [] as never);
+  qc.setQueryData(agentListOptions("ws-1").queryKey, [{ id: "agent-1", name: "Builder", archived_at: null }] as never);
+  qc.setQueryData(memberListOptions("ws-1").queryKey, [] as never);
+  renderWithI18n(
+    <QueryClientProvider client={qc}>
+      <WorkflowEditorPage workflowId={null} seed={null} canEdit onBack={vi.fn()} onOpen={vi.fn()} {...props} />
+    </QueryClientProvider>,
+  );
+=======
+function renderEditor(props: { template?: "content"; canCreateStatus?: boolean; seed?: IssueWorkflow } = {}) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  qc.setQueryData(projectListOptions("ws-1").queryKey, [] as never);
+  qc.setQueryData(agentListOptions("ws-1").queryKey, [{ id: "agent-1", name: "Builder", archived_at: null }] as never);
+  qc.setQueryData(memberListOptions("ws-1").queryKey, [] as never);
+  renderWithI18n(
+    <QueryClientProvider client={qc}>
+      <WorkflowEditorPage workflowId={null} seed={props.seed ?? null} canEdit onBack={vi.fn()} onOpen={vi.fn()} template={props.template} canCreateStatus={props.canCreateStatus} />
+    </QueryClientProvider>,
+  );
+>>>>>>> 35b54a3742bb
 }
 
+<<<<<<< HEAD
 function statusEntry(key: string): IssueStatusEntry {
   return {
     id: key, workspace_id: "ws-1", key, name: key, description: "",
@@ -227,6 +283,16 @@ describe("workflow editor baseline refresh", () => {
       expect(update.mock.calls[1]![1]).toMatchObject({ expected_version: "v-2026-01-02" });
     });
   });
+||||||| 2fcb424b72
+afterEach(() => {
+  cleanup();
+  createWorkflow.mockReset();
+=======
+afterEach(() => {
+  cleanup();
+  createWorkflow.mockReset();
+  statusEntries.current = [];
+>>>>>>> 35b54a3742bb
 });
 
 // updated_at has one-second resolution and version has full precision, so two
@@ -303,7 +369,84 @@ describe("workflow editor version binding", () => {
       workflow({ ...sameSecond, version: "2026-01-01T00:00:05.700000Z", name: "Delivery by admin" }),
     );
 
+<<<<<<< HEAD
     expect(screen.getByDisplayValue("Delivery by admin")).toBeTruthy();
+||||||| 2fcb424b72
+    // QA is followed by Deploy on the board, so that is where its agent goes
+    // next — not Done, the next status that exists before the save.
+    fireEvent.click(stepCard("QA"));
+    fireEvent.click(screen.getByRole("radio", { name: /Hand to an agent/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose an agent" }));
+    fireEvent.click(await screen.findByText("Builder"));
+
+    expect(screen.getByRole("combobox", { name: "When done, move to" }).textContent).toContain("Next column (Deploy)");
+    expect(stepCard("QA").textContent).toContain("then → Deploy");
+    // The explicit choices still list only statuses that exist before the save.
+    fireEvent.click(screen.getByRole("combobox", { name: "When done, move to" }));
+    expect(screen.queryByRole("option", { name: "Deploy" })).toBeNull();
+  });
+});
+
+// Statuses are shared by every board, so only admins add them (MUL-8120).
+describe("WorkflowEditorPage status creation", () => {
+  it("blocks saving a template that needs new statuses for a member", () => {
+    renderEditor({ template: "content", canCreateStatus: false });
+    expect(screen.getByRole("alert").textContent).toMatch(/Only workspace admins can add statuses/);
+    expect(screen.getByRole("button", { name: "Create" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("lets an admin save the same template", () => {
+    renderEditor({ template: "content", canCreateStatus: true });
+=======
+    // QA is followed by Deploy on the board, so that is where its agent goes
+    // next — not Done, the next status that exists before the save.
+    fireEvent.click(stepCard("QA"));
+    fireEvent.click(screen.getByRole("radio", { name: /Hand to an agent/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose an agent" }));
+    fireEvent.click(await screen.findByText("Builder"));
+
+    expect(screen.getByRole("combobox", { name: "When done, move to" }).textContent).toContain("Next column (Deploy)");
+    expect(stepCard("QA").textContent).toContain("then → Deploy");
+    // The explicit choices still list only statuses that exist before the save.
+    fireEvent.click(screen.getByRole("combobox", { name: "When done, move to" }));
+    expect(screen.queryByRole("option", { name: "Deploy" })).toBeNull();
+  });
+
+  // The agent's brief never routes finished work into a closed column, so
+  // the editor's default must not either (MUL-9913).
+  it("skips a custom closed column when showing the default next", () => {
+    statusEntries.current = [{ key: "wont_fix", name: "Won't Fix", category: "closed", description: "", color: "", icon: "", position: 0 }];
+    const step = (status_key: string) => ({ status_key, handler: { type: "none" as const }, instructions: "" });
+    // Seeded as a duplicate: a new draft pre-filled with these columns.
+    renderEditor({
+      seed: {
+        id: "wf-1", workspace_id: "ws-1", name: "Delivery", description: "", is_default: false, owner_id: null,
+        project_ids: [], created_at: "", updated_at: "",
+        steps: [
+          step("todo"),
+          { status_key: "in_review", handler: { type: "agent", id: "agent-1" }, instructions: "" },
+          step("wont_fix"),
+          step("done"),
+          step("cancelled"),
+        ],
+      },
+    });
+    fireEvent.click(stepCard("In Review"));
+    expect(screen.getByRole("combobox", { name: "When done, move to" }).textContent).toContain("Next column (Done)");
+  });
+});
+
+// Statuses are shared by every board, so only admins add them (MUL-8120).
+describe("WorkflowEditorPage status creation", () => {
+  it("blocks saving a template that needs new statuses for a member", () => {
+    renderEditor({ template: "content", canCreateStatus: false });
+    expect(screen.getByRole("alert").textContent).toMatch(/Only workspace admins can add statuses/);
+    expect(screen.getByRole("button", { name: "Create" }).hasAttribute("disabled")).toBe(true);
+  });
+
+  it("lets an admin save the same template", () => {
+    renderEditor({ template: "content", canCreateStatus: true });
+>>>>>>> 35b54a3742bb
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -336,6 +479,7 @@ describe("workflow editor version binding", () => {
   });
 });
 
+<<<<<<< HEAD
 // An existing workflow's row is not there until its query loads. Until then the
 // editor holds defaults, and saving them by workflow id would replace the saved
 // columns and handoffs the editor never saw.
@@ -343,6 +487,62 @@ describe("workflow editor before the row is available", () => {
   const statuses = ["backlog", "todo", "in_progress", "blocked", "done", "cancelled"].map(statusEntry);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
   let queryClient: QueryClient;
+||||||| 2fcb424b72
+/** A step in the list (the detail panel's status picker shares its name). */
+function stepCard(name: string) {
+  const card = screen
+    .getAllByRole("button", { name: new RegExp(`^${name}`) })
+    .find((b) => b.hasAttribute("aria-pressed"));
+  if (!card) throw new Error(`no step card ${name}`);
+  return card;
+}
+=======
+// The catalog refetches whenever anyone adds or archives a status.
+describe("WorkflowEditorPage when the status catalog changes", () => {
+  const status = (key: string, name: string) => ({ key, name, category: "started", description: "", color: "", icon: "", position: 0 });
+  const changeDescription = (value: string) =>
+    fireEvent.change(screen.getByRole("textbox", { name: "Description" }), { target: { value } });
+
+  it("keeps an unsaved new workflow", async () => {
+    renderEditor();
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Release" } });
+    await addNewStatus("Deploy");
+
+    statusEntries.current = [status("triage", "Triage")];
+    changeDescription("Ships weekly");
+
+    expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).value).toBe("Release");
+    expect((screen.getByRole("textbox", { name: "Description" }) as HTMLTextAreaElement).value).toBe("Ships weekly");
+    expect(stepCard("Deploy")).toBeTruthy();
+  });
+
+  it("uses a status an admin adds for a template without dropping the member's edits", async () => {
+    createWorkflow.mockResolvedValue({ id: "wf-1" });
+    renderEditor({ template: "content", canCreateStatus: false });
+    fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Blog" } });
+    expect(screen.getByRole("alert")).toBeTruthy();
+
+    statusEntries.current = [status("drafting", "Drafting"), status("editing", "Editing"), status("scheduled", "Scheduled")];
+    changeDescription("Posts");
+
+    await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+    expect((screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).value).toBe("Blog");
+    fireEvent.click(screen.getByRole("button", { name: "Create" }));
+    await waitFor(() => expect(createWorkflow).toHaveBeenCalled());
+    const steps = createWorkflow.mock.calls[0]![0].steps as { status_key?: string }[];
+    expect(steps.map((s) => s.status_key)).toEqual(expect.arrayContaining(["drafting", "editing", "scheduled"]));
+  });
+});
+
+/** A step in the list (the detail panel's status picker shares its name). */
+function stepCard(name: string) {
+  const card = screen
+    .getAllByRole("button", { name: new RegExp(`^${name}`) })
+    .find((b) => b.hasAttribute("aria-pressed"));
+  if (!card) throw new Error(`no step card ${name}`);
+  return card;
+}
+>>>>>>> 35b54a3742bb
 
   function mount(workflowId: string | null) {
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });

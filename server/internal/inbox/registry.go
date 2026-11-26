@@ -40,6 +40,8 @@ var typeGroups = map[string]string{
 	"status_changed":     GroupStatusChanges,
 	"new_comment":        GroupComments,
 	"mentioned":          GroupMentions,
+	"doc_comment":        GroupComments,
+	"doc_mentioned":      GroupMentions,
 	"reaction_added":     GroupReactions,
 	"priority_changed":   GroupUpdates,
 	"start_date_changed": GroupUpdates,
@@ -59,7 +61,22 @@ var typeGroups = map[string]string{
 	"quick_create_done":        "",
 	"quick_create_failed":      "",
 	"quick_create_unconfirmed": "",
+<<<<<<< HEAD
 	"project_owner_joined":     "",
+||||||| 2fcb424b72
+	"autopilot_paused":         "",
+	"autopilot_quota_exceeded": "",
+	"children_done":            "",
+	"project_owner_joined":     "",
+=======
+	"autopilot_paused":         "",
+	"autopilot_quota_exceeded": "",
+	// The workspace used its monthly app calls (MUL-10047); owners and admins.
+	"app_tool_calls_quota_exceeded": "",
+	"children_done":                 "",
+	"blockers_done":                 "",
+	"project_owner_joined":          "",
+>>>>>>> 35b54a3742bb
 	// The agent is stopped until the person answers these.
 	"app_action_requested":  "",
 	"app_action_reminder":   "",
@@ -106,6 +123,7 @@ func Group(notifType string) (group string, ok bool) {
 	return group, ok
 }
 
+<<<<<<< HEAD
 // groupOf is Group plus the retired types, which still mute with their old
 // group.
 func groupOf(notifType string) (group string, ok bool) {
@@ -118,12 +136,99 @@ func groupOf(notifType string) (group string, ok bool) {
 
 // Muted reports whether a member's parsed preferences mute notifType. A
 // missing key means the default "all": preferences are stored sparse.
+||||||| 2fcb424b72
+// Muted reports whether a member's parsed preferences mute notifType. A
+// missing key means the default "all": preferences are stored sparse.
+=======
+// mutedByDefault are the groups a member hears nothing from until they turn
+// them on. Every other group defaults to "all". Preferences are stored sparse,
+// so a missing key means its group's default.
+//
+// Status changes are routine churn on most issues, so they start muted
+// (MUL-9449). An explicit "all" is how a member opts back in.
+var mutedByDefault = map[string]bool{
+	GroupStatusChanges: true,
+}
+
+// WithLegacyDefaults returns prefs with every group that is muted by default
+// and absent from prefs set to "all". A full replacement from a client built
+// before those defaults changed omits a group to mean "on", so the
+// replace-all write path stores that meaning explicitly. prefs is not
+// modified.
+func WithLegacyDefaults(prefs map[string]string) map[string]string {
+	result := make(map[string]string, len(prefs)+len(mutedByDefault))
+	for group := range mutedByDefault {
+		result[group] = "all"
+	}
+	for k, v := range prefs {
+		result[k] = v
+	}
+	return result
+}
+
+// SquadHandoffsPref narrows the comments group: "muted" drops the new_comment
+// rows the comment listener marked with SquadHandoffDetail, the agents of an
+// issue's squad handing work to each other (MUL-10008). Absent means "all".
+const SquadHandoffsPref = "squad_handoffs"
+
+// SquadHandoffDetail is the new_comment details key, set to "true", that
+// marks a squad handoff. Details values stay strings: clients parse them as
+// a string map and reject the whole Inbox list otherwise.
+const SquadHandoffDetail = "squad_handoff"
+
+// SquadResultDetail is the new_comment details key, set to "true", on the row
+// that delivers the handoff a squad's chain ended with: its leader's run
+// finished without passing the work on, so that report is the result
+// (MUL-10054). Only members who muted squad handoffs receive it; everyone
+// else already has the report's own row.
+const SquadResultDetail = "squad_result"
+
+// MutedSquadHandoff reports whether a member's parsed preferences drop this
+// new_comment row: a squad handoff for a member who muted them, or a squad
+// result for one who did not.
+func MutedSquadHandoff(prefs map[string]string, notifType string, details []byte) bool {
+	if notifType != "new_comment" || len(details) == 0 {
+		return false
+	}
+	var d map[string]any
+	if err := json.Unmarshal(details, &d); err != nil {
+		return false
+	}
+	muted := prefs[SquadHandoffsPref] == "muted"
+	if d[SquadResultDetail] == "true" {
+		return !muted
+	}
+	return muted && d[SquadHandoffDetail] == "true"
+}
+
+// Muted reports whether a member's parsed preferences mute notifType. nil
+// prefs, a member without a stored row, applies every group's default.
+>>>>>>> 35b54a3742bb
 func Muted(prefs map[string]string, notifType string) bool {
 	group, _ := groupOf(notifType)
 	if group == "" {
 		return false
 	}
-	return prefs[group] == "muted"
+	value, ok := prefs[group]
+	if !ok {
+		return mutedByDefault[group]
+	}
+	return value == "muted"
+}
+
+// WithDefaults returns prefs with every group that is muted by default
+// written out. The preferences API answers with it so a client built before a
+// group's default changed, which reads a missing key as "all", still shows
+// what the server delivers. prefs is not modified.
+func WithDefaults(prefs map[string]string) map[string]string {
+	result := make(map[string]string, len(prefs)+len(mutedByDefault))
+	for group := range mutedByDefault {
+		result[group] = "muted"
+	}
+	for k, v := range prefs {
+		result[k] = v
+	}
+	return result
 }
 
 // Preferences holds the parsed notification preferences of a set of members
@@ -132,8 +237,8 @@ type Preferences map[string]map[string]string
 
 // LoadPreferences reads the preferences of userIDs in one query, for a fanout
 // that delivers to many members. A read failure is logged and yields no
-// preferences, so the fanout delivers rather than drops. The result is never
-// nil, which is how Deliver tells "loaded" from "not loaded".
+// preferences, so every recipient gets the defaults. The result is never nil,
+// which is how Deliver tells "loaded" from "not loaded".
 func LoadPreferences(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, userIDs []pgtype.UUID) Preferences {
 	result := Preferences{}
 	if len(userIDs) == 0 {

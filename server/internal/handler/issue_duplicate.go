@@ -165,6 +165,7 @@ func liveDuplicateMark(status string, id pgtype.UUID) *string {
 // ListIssueDuplicates returns both sides of an issue's duplicate relation: the
 // original it duplicates, if any, and the issues marked as its duplicates.
 func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
+	r = h.withBlockerViewer(r)
 	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
 	if !ok {
 		return
@@ -174,8 +175,14 @@ func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
+<<<<<<< HEAD
 	readFilter := h.newReadFilter(r)
 	fill := h.newStatusCategoryFiller(r.Context(), issue.WorkspaceID, hidden)
+||||||| 2fcb424b72
+	fill := h.newStatusCategoryFiller(r.Context(), issue.WorkspaceID, hidden)
+=======
+	fill := h.newStatusCategoryFiller(r.Context(), issue.WorkspaceID, hidden, nil)
+>>>>>>> 35b54a3742bb
 
 	var duplicateOf *IssueResponse
 	if issue.Status == issuestatus.Cancelled && issue.DuplicateOfIssueID.Valid {

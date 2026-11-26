@@ -43,7 +43,13 @@ func TestAgentRuntimeLookupWSHotPathIsZeroRead(t *testing.T) {
 	before := lookupSnapshot(t, m)
 
 	for i := 0; i < 1000; i++ {
+<<<<<<< HEAD
 		if _, err := h.HandleDaemonWSHeartbeat(ctx, identity, protocol.DaemonHeartbeatRequestPayload{RuntimeID: runtimeID}); err != nil {
+||||||| 2fcb424b72
+		if _, err := h.HandleDaemonWSHeartbeat(ctx, identity, runtimeID, false); err != nil {
+=======
+		if _, err := h.HandleDaemonWSHeartbeat(ctx, identity, runtimeID, protocol.DaemonHeartbeatRequestPayload{}); err != nil {
+>>>>>>> 35b54a3742bb
 			t.Fatalf("HandleDaemonWSHeartbeat %d: %v", i, err)
 		}
 	}

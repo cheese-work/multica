@@ -17,6 +17,7 @@
     "chats": "Chats",
     "messages": "Messages",
     "skills": "Skills",
+    "docs": "Docs",
     "cancelled": "Cancelled",
     "recent": "Recent",
     "workspaces": "Workspaces",
@@ -140,7 +141,7 @@
   },
   "delegate": {
     "row": "Hand to agent: “{{prompt}}”",
-    "hint": "Quick create"
+    "hint": "Create with agent"
   },
   "best": {
     "assign": "Assign {{subject}} to {{name}}",
@@ -168,6 +169,7 @@
   },
   "trigger": {
     "label": "Search..."
+<<<<<<< HEAD
   },
   "messages": {
     "untitled": "Untitled chat",
@@ -185,4 +187,10 @@
     "active": "Filters on: {{names}}",
     "none": "No filters on"
   }
+||||||| 2fcb424b72
+  }
+=======
+  },
+  "untitled_doc": "Untitled"
+>>>>>>> 35b54a3742bb
 }

@@ -9,7 +9,9 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useWorkspacePaths, issueRouteRef } from "@multica/core/paths";
 import { useModalStore } from "@multica/core/modals";
+import { useIsGuest } from "@multica/core/permissions";
 import { useQuery } from "@tanstack/react-query";
 import { workspaceWakeupSummariesOptions } from "@multica/core/issues/wakeups";
 import {
@@ -46,6 +48,7 @@ import { Swimlane2View } from "../components/swimlane2/swimlane2-view";
 import { TableView } from "../components/table-view";
 import { useT } from "../../i18n";
 import { CollectionPageState } from "../../layout/collection-page";
+import { useWarmRoute } from "../../navigation";
 import { IssueContextMenuProvider } from "../actions";
 import { IssueSurfaceActionsProvider } from "./actions-context";
 import { IssuePeekHost } from "../components/issue-peek";
@@ -61,6 +64,8 @@ import {
 export interface IssueSurfaceRenderContext {
   controller: IssueSurfaceController;
   issues: Issue[];
+  /** Whether the viewer may create issues here; false for a guest (MUL-9420). */
+  canCreate: boolean;
 }
 
 interface IssueSurfaceComponentProps extends IssueSurfaceProps {
@@ -244,10 +249,18 @@ function IssueSurfaceContent({
   contentClassName,
 }: Omit<IssueSurfaceComponentProps, "surfaceKey">) {
   const workspaceId = useWorkspaceId();
+<<<<<<< HEAD
   const swimlaneGrouping = useViewStore((s) => s.swimlaneGrouping);
+||||||| 2fcb424b72
+=======
+  // A guest (MUL-9420) cannot create issues anywhere, sub-issues included.
+  const guest = useIsGuest(workspaceId);
+  const canCreate = allowCreate && !guest;
+>>>>>>> 35b54a3742bb
   // One polling owner for the whole surface; individual cards only select cache data.
   useQuery({ ...workspaceWakeupSummariesOptions(workspaceId), refetchInterval: 10_000 });
   const { t } = useT("projects");
+  const paths = useWorkspacePaths();
   const controller = useIssueSurfaceController({
     scope,
     modes,
@@ -273,6 +286,8 @@ function IssueSurfaceContent({
         : controller.issues,
     [clientFilter, controller.issues],
   );
+  const firstIssue = issues[0] ?? tableLoadedIssues[0];
+  useWarmRoute("issue", firstIssue ? paths.issueDetail(issueRouteRef(firstIssue)) : null);
   const swimlaneIssues = useMemo(
     () =>
       clientFilter
@@ -281,8 +296,8 @@ function IssueSurfaceContent({
     [clientFilter, controller.swimlaneIssues],
   );
   const renderContext = useMemo(
-    () => ({ controller, issues }),
-    [controller, issues],
+    () => ({ controller, issues, canCreate }),
+    [controller, issues, canCreate],
   );
   const openCreateIssue = useCallback(
     (defaults?: IssueCreateDefaults) => {
@@ -346,7 +361,7 @@ function IssueSurfaceContent({
               title={t(($) => $.detail.empty_issues_title)}
               description={t(($) => $.detail.empty_issues_hint)}
               actions={
-                allowCreate && <>
+                canCreate && <>
                   <Button size="sm" onClick={() => controller.openCreateIssue()}>
                     <Plus aria-hidden="true" />
                     {t(($) => $.detail.empty_issues_new_button)}
@@ -378,7 +393,7 @@ function IssueSurfaceContent({
                 childProgressMap={controller.childProgressMap}
                 projectMap={controller.projectMap}
                 projectId={controller.projectId}
-                onCreateIssue={allowCreate ? openCreateIssue : undefined}
+                onCreateIssue={canCreate ? openCreateIssue : undefined}
                 statusPagination={controller.statusPagination}
                 groupBranches={controller.groupBranches}
               />
@@ -391,7 +406,7 @@ function IssueSurfaceContent({
                 projectMap={controller.projectMap}
                 projectId={controller.projectId}
                 onMoveIssue={controller.moveIssue}
-                onCreateIssue={allowCreate ? openCreateIssue : undefined}
+                onCreateIssue={canCreate ? openCreateIssue : undefined}
                 statusPagination={controller.statusPagination!}
               />
             )}
@@ -402,7 +417,7 @@ function IssueSurfaceContent({
                 search={controller.tableSearch}
                 onSearchChange={controller.setTableSearch}
                 onLoadedIssuesChange={handleTableLoadedIssuesChange}
-                onCreateIssue={openCreateIssue}
+                onCreateIssue={guest ? undefined : openCreateIssue}
                 exportIssues={controller.exportTableIssues}
                 resolveExportLookups={controller.resolveTableExportLookups}
               />
@@ -423,7 +438,7 @@ function IssueSurfaceContent({
                 childProgressMap={controller.childProgressMap}
                 projectMap={controller.projectMap}
                 projectId={controller.projectId}
-                onCreateIssue={allowCreate ? openCreateIssue : undefined}
+                onCreateIssue={canCreate ? openCreateIssue : undefined}
                 groupBranches={controller.groupBranches}
               />
             )}

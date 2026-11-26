@@ -76,8 +76,13 @@ import { IdleGuardRows } from "./idle-guard-rows";
 import { WorkspaceSchedulingRow } from "./workspace-scheduling-row";
 import { RuntimeProfileRow } from "./runtime-profile-row";
 import { useAutoSave } from "./use-auto-save";
+<<<<<<< HEAD
 import { useSettingsDraft } from "./use-settings-draft";
 import { useWorkspaceSettingsDraftStore } from "@multica/core/settings/draft-stores";
+||||||| 2fcb424b72
+=======
+import { useEditedValue } from "./use-edited-value";
+>>>>>>> 35b54a3742bb
 
 interface WorkspaceDetailsDraft {
   name: string;
@@ -161,6 +166,7 @@ export function WorkspaceTab() {
     navigation.push(resolvePostAuthDestination(remaining, hasOnboarded));
   };
 
+<<<<<<< HEAD
   // CHE-1612: settings.compact_prompt saves through its own request field,
   // so this form never sends (and never drops) the rest of the settings.
   const savedFields = useMemo(
@@ -204,6 +210,18 @@ export function WorkspaceTab() {
   const thresholdInvalid =
     thresholdDraft !== null &&
     (thresholdText.trim() === "" || !isValidAutoCompactPct(thresholdValue));
+||||||| 2fcb424b72
+  const [name, setName] = useState(workspace?.name ?? "");
+  const [description, setDescription] = useState(workspace?.description ?? "");
+  const [context, setContext] = useState(workspace?.context ?? "");
+=======
+  const nameField = useEditedValue(workspace?.name ?? "", workspace?.id);
+  const descriptionField = useEditedValue(workspace?.description ?? "", workspace?.id);
+  const contextField = useEditedValue(workspace?.context ?? "", workspace?.id);
+  const name = nameField.value;
+  const description = descriptionField.value;
+  const context = contextField.value;
+>>>>>>> 35b54a3742bb
   const [prefixDraft, setPrefixDraft] = useState<string | null>(null);
   const [prefixSaveStatus, setPrefixSaveStatus] =
     useState<SettingsSaveStatus>("idle");
@@ -227,10 +245,25 @@ export function WorkspaceTab() {
   const isSoleOwner = isOwner && ownerCount <= 1;
   const isSoleMember = members.length <= 1;
 
+<<<<<<< HEAD
   // The persisted fields are keyed by workspace id, so switching workspaces
   // swaps them; only the local threshold and prefix drafts need a reset.
+||||||| 2fcb424b72
+  // Reset form state only when the user switches to a different workspace.
+  // Keying on workspace?.id (not the object ref) avoids wiping unsaved edits
+  // when an unrelated mutation — e.g. avatar/logo upload — replaces the
+  // cached Workspace object via setQueryData.
+=======
+>>>>>>> 35b54a3742bb
   useEffect(() => {
+<<<<<<< HEAD
     setThresholdDraft(null);
+||||||| 2fcb424b72
+    setName(workspace?.name ?? "");
+    setDescription(workspace?.description ?? "");
+    setContext(workspace?.context ?? "");
+=======
+>>>>>>> 35b54a3742bb
     setPrefixDraft(null);
   }, [workspace?.id]);
 
@@ -260,12 +293,21 @@ export function WorkspaceTab() {
   const saveDetails = useCallback(
     async (next: WorkspaceDetailsDraft) => {
       if (!workspace) return;
-      const updated = await api.updateWorkspace(workspace.id, next);
+      // Send only what was edited here, so the rest keeps changes made elsewhere.
+      const changes: Partial<WorkspaceDetailsDraft> = {};
+      if (nameField.edited) changes.name = next.name;
+      if (descriptionField.edited) changes.description = next.description;
+      if (contextField.edited) changes.context = next.context;
+      if (Object.keys(changes).length === 0) return;
+      const updated = await api.updateWorkspace(workspace.id, changes);
       qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
         old?.map((ws) => (ws.id === updated.id ? updated : ws)),
       );
+      nameField.markSaved(next.name);
+      descriptionField.markSaved(next.description);
+      contextField.markSaved(next.context);
     },
-    [qc, workspace],
+    [contextField, descriptionField, nameField, qc, workspace],
   );
   const detailsAutoSave = useAutoSave({
     value: detailsDraft,
@@ -460,6 +502,7 @@ export function WorkspaceTab() {
                 name={workspace.name}
                 size={64}
                 disabled={!canManageWorkspace}
+                textIconEnabled
                 ariaLabel={t(($) => $.workspace.change_logo_aria)}
                 onUploaded={async (url) => {
                   try {
@@ -497,7 +540,7 @@ export function WorkspaceTab() {
                 autoComplete="organization"
                 aria-label={t(($) => $.workspace.name_label)}
                 value={name}
-                onChange={(event) => setName(event.target.value)}
+                onChange={(event) => nameField.edit(event.target.value)}
                 onBlur={detailsAutoSave.flush}
                 disabled={!canManageWorkspace}
               />
@@ -518,7 +561,7 @@ export function WorkspaceTab() {
                 autoComplete="off"
                 aria-label={t(($) => $.workspace.description_label)}
                 value={description}
-                onChange={(event) => setDescription(event.target.value)}
+                onChange={(event) => descriptionField.edit(event.target.value)}
                 onBlur={detailsAutoSave.flush}
                 rows={3}
                 disabled={!canManageWorkspace}
@@ -543,7 +586,7 @@ export function WorkspaceTab() {
                 autoComplete="off"
                 aria-label={t(($) => $.workspace.context_label)}
                 value={context}
-                onChange={(event) => setContext(event.target.value)}
+                onChange={(event) => contextField.edit(event.target.value)}
                 onBlur={detailsAutoSave.flush}
                 rows={4}
                 disabled={!canManageWorkspace}

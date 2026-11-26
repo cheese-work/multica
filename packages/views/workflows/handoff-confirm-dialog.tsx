@@ -84,19 +84,30 @@ function useDuration() {
  * or the workflow changed), the move applies without asking.
  */
 export function WorkflowHandoffConfirmDialog({
+  open: openProp,
   issue,
   toStatus,
   toProject,
   onCancel,
   onConfirm,
+  onOpenChangeComplete,
 }: {
+  /** Override open state while keeping issue data mounted for exit animation. */
+  open?: boolean;
   /** The issue being moved; null keeps the dialog closed. */
   issue: { id: string; identifier: string } | null;
   /** The status being moved to; ignored with `toProject`. */
   toStatus: string;
   toProject?: { id: string; title: string } | null;
   onCancel: () => void;
+<<<<<<< HEAD
   onConfirm: (options: HandoffConfirmOptions) => void;
+||||||| 2fcb424b72
+  onConfirm: (options: { stopPreviousRuns: boolean }) => void;
+=======
+  onConfirm: (options: { stopPreviousRuns: boolean }) => void;
+  onOpenChangeComplete?: (open: boolean) => void;
+>>>>>>> 35b54a3742bb
 }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
@@ -106,8 +117,16 @@ export function WorkflowHandoffConfirmDialog({
   const duration = useDuration();
   const [stop, setStop] = useState(true);
   const [briefOpen, setBriefOpen] = useState(false);
+<<<<<<< HEAD
   const open = issue !== null;
   const { data: fetched, isPending, isError, isFetching, dataUpdatedAt, refetch } = useQuery({
+||||||| 2fcb424b72
+  const open = issue !== null;
+  const { data: preview, isPending, isError } = useQuery({
+=======
+  const open = (openProp ?? true) && issue !== null;
+  const { data: preview, isPending, isError } = useQuery({
+>>>>>>> 35b54a3742bb
     ...workflowHandoffPreviewOptions(wsId, issue?.id ?? "", toProject ? "" : toStatus, toProject?.id),
     enabled: open,
   });
@@ -188,7 +207,11 @@ export function WorkflowHandoffConfirmDialog({
   }
 
   return (
-    <Dialog open={open && !(preview && !preview.handoff)} onOpenChange={(v) => !v && onCancel()}>
+    <Dialog
+      open={open && !(preview && !preview.handoff)}
+      onOpenChange={(v) => !v && onCancel()}
+      onOpenChangeComplete={onOpenChangeComplete}
+    >
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>

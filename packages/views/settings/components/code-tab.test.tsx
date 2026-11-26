@@ -141,7 +141,53 @@ describe("CodeTab — GitHub", () => {
     render(<CodeTab />, { wrapper: Wrapper });
 
     expect(screen.getByText("Connected")).toBeInTheDocument();
-    expect(screen.getByText(/Connected to acme · Connected by Ada/)).toBeInTheDocument();
+    expect(screen.getByText("Connected to acme")).toBeInTheDocument();
+    expect(screen.getByText("Connected by Ada")).toBeInTheDocument();
+  });
+
+  it("keeps adding available with two connections and attributes each connection", async () => {
+    connect();
+    installationsRef.current.installations.push({ id: "inst-2", account_login: "other-org", connected_by: "Grace" });
+    const user = userEvent.setup();
+    render(<CodeTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Connected by Ada")).toBeInTheDocument();
+    expect(screen.getByText("Connected by Grace")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add account or organization" }));
+    expect(mockConnectGitHub).toHaveBeenCalledOnce();
+    expect(mockDeleteInstallation).not.toHaveBeenCalled();
+    expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+  });
+
+  it.each([["acme", "inst-1"], ["other-org", "inst-2"]])(
+    "disconnects only %s and leaves the other connection and workspace settings intact",
+    async (login, id) => {
+      connect();
+      installationsRef.current.installations.push({ id: "inst-2", account_login: "other-org", connected_by: "Grace" });
+      const user = userEvent.setup();
+      const { rerender } = render(<CodeTab />, { wrapper: Wrapper });
+
+      await user.click(screen.getByRole("button", { name: `Disconnect ${login}` }));
+      const dialog = await screen.findByRole("alertdialog");
+      expect(dialog).toHaveTextContent(login!);
+      expect(mockDeleteInstallation).not.toHaveBeenCalled();
+      await user.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+      await waitFor(() => expect(mockDeleteInstallation).toHaveBeenCalledExactlyOnceWith("workspace-1", id));
+      expect(mockUpdateWorkspace).not.toHaveBeenCalled();
+      installationsRef.current.installations = installationsRef.current.installations.filter((installation) => installation.id !== id);
+      rerender(<CodeTab />);
+      expect(screen.getByText(id === "inst-1" ? "Connected to other-org" : "Connected to acme")).toBeInTheDocument();
+    },
+  );
+
+  it("shows both connections without management controls when can_manage is false", () => {
+    connect();
+    installationsRef.current.installations.push({ id: "inst-2", account_login: "other-org", connected_by: "Grace" });
+    installationsRef.current.can_manage = false;
+    render(<CodeTab />, { wrapper: Wrapper });
+    expect(screen.getByText("Connected to acme")).toBeInTheDocument();
+    expect(screen.getByText("Connected to other-org")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Disconnect|Add account|GitHub actions/ })).toBeNull();
   });
 
   it.each(["owner", "admin"] as const)(
@@ -244,8 +290,15 @@ describe("CodeTab — GitHub", () => {
     const user = userEvent.setup();
     render(<CodeTab />, { wrapper: Wrapper });
 
+<<<<<<< HEAD
     await user.click(screen.getByRole("button", { name: "GitHub actions" }));
     await user.click(await screen.findByRole("menuitem", { name: "Disconnect acme" }));
+||||||| 2fcb424b72
+    await user.click(screen.getByRole("button", { name: "GitHub actions" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Disconnect" }));
+=======
+    await user.click(screen.getByRole("button", { name: "Disconnect acme" }));
+>>>>>>> 35b54a3742bb
     expect(mockDeleteInstallation).not.toHaveBeenCalled();
     const dialog = await screen.findByRole("alertdialog", { name: "Disconnect acme?" });
     expect(dialog).toHaveTextContent("Multica will stop receiving webhooks for acme.");
@@ -256,6 +309,7 @@ describe("CodeTab — GitHub", () => {
     );
   });
 
+<<<<<<< HEAD
   it.each([
     ["inst-1", "acme"],
     ["inst-2", "other-org"],
@@ -333,6 +387,34 @@ describe("CodeTab — GitHub", () => {
     expect(mockDeleteInstallation).not.toHaveBeenCalled();
   });
 
+||||||| 2fcb424b72
+=======
+  it.each(["cancel", "confirm"])("keeps the account name in the outgoing confirmation on %s", async (action) => {
+    connect();
+    installationsRef.current.installations.push({ id: "inst-2", account_login: "other-org" });
+    mockDeleteInstallation.mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    render(<CodeTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Disconnect acme" }));
+    const dialog = await screen.findByRole("alertdialog");
+    // Keep the outgoing node: jsdom does not run the dialog's exit animation.
+    const description = within(dialog).getByText(/^Disconnect acme from this workspace\?/);
+    await user.click(within(dialog).getByRole("button", { name: action === "cancel" ? "Cancel" : "Disconnect" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+
+    expect(description).toHaveTextContent("Disconnect acme from this workspace?");
+    if (action === "cancel") {
+      expect(mockDeleteInstallation).not.toHaveBeenCalled();
+    } else {
+      expect(mockDeleteInstallation).toHaveBeenCalledExactlyOnceWith("workspace-1", "inst-1");
+    }
+
+    await user.click(screen.getByRole("button", { name: "Disconnect other-org" }));
+    expect(await screen.findByRole("alertdialog")).toHaveTextContent("Disconnect other-org from this workspace?");
+  });
+
+>>>>>>> 35b54a3742bb
   it("shows members the connection read-only and who can change it", () => {
     connect();
     roleRef.current = "member";

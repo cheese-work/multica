@@ -1,4 +1,4 @@
-import { app } from "electron";
+import { app, net } from "electron";
 import { execFile } from "child_process";
 import { createHash } from "crypto";
 import { existsSync } from "fs";
@@ -28,6 +28,7 @@ function run(cmd: string, args: string[], cwd?: string): Promise<void> {
   });
 }
 
+<<<<<<< HEAD
 const NODE_TO_GO_OS: Record<string, string> = { darwin: "darwin", linux: "linux" };
 const NODE_TO_GO_ARCH: Record<string, string> = { x64: "amd64", arm64: "arm64" };
 
@@ -42,10 +43,34 @@ export function serverCliKey(
     throw new Error(
       `unsupported platform for CLI auto-install: ${platform}/${arch} (the server builds linux and darwin on amd64/arm64)`,
     );
+||||||| 2fcb424b72
+async function downloadToFile(url: string, dest: string): Promise<void> {
+  const res = await fetch(url, { redirect: "follow" });
+  if (!res.ok || !res.body) {
+    throw new Error(`download failed: ${res.status} ${res.statusText}`);
+=======
+async function downloadToFile(url: string, dest: string): Promise<void> {
+  const res = await net.fetch(url, { redirect: "follow" });
+  if (!res.ok || !res.body) {
+    throw new Error(`download failed: ${res.status} ${res.statusText}`);
+>>>>>>> 35b54a3742bb
   }
+<<<<<<< HEAD
   return `${os}-${goArch}`;
+||||||| 2fcb424b72
+  await mkdir(dirname(dest), { recursive: true });
+  // Node's fetch returns a web ReadableStream; adapt to a Node stream for pipeline.
+  const nodeStream = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+  await pipeline(nodeStream, createWriteStream(dest));
+=======
+  await mkdir(dirname(dest), { recursive: true });
+  // Electron's net.fetch returns a web ReadableStream; adapt to a Node stream for pipeline.
+  const nodeStream = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
+  await pipeline(nodeStream, createWriteStream(dest));
+>>>>>>> 35b54a3742bb
 }
 
+<<<<<<< HEAD
 async function serverGet(
   fetchImpl: typeof fetch,
   serverUrl: string,
@@ -56,6 +81,19 @@ async function serverGet(
     redirect: "follow",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
+||||||| 2fcb424b72
+// Fetch goreleaser's published checksums.txt and parse it into a
+// filename → sha256 lookup. Format is `<hex>  <filename>` per line.
+async function fetchChecksums(): Promise<Map<string, string>> {
+  const url = `${GITHUB_LATEST_BASE}/checksums.txt`;
+  const res = await fetch(url, { redirect: "follow" });
+=======
+// Fetch goreleaser's published checksums.txt and parse it into a
+// filename → sha256 lookup. Format is `<hex>  <filename>` per line.
+async function fetchChecksums(): Promise<Map<string, string>> {
+  const url = `${GITHUB_LATEST_BASE}/checksums.txt`;
+  const res = await net.fetch(url, { redirect: "follow" });
+>>>>>>> 35b54a3742bb
   if (!res.ok) {
     throw new Error(`${path} failed: HTTP ${res.status}`);
   }

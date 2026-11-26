@@ -17,6 +17,7 @@
     "chats": "Discussions",
     "messages": "Messages",
     "skills": "Skills",
+    "docs": "Documents",
     "cancelled": "Annulés",
     "recent": "Récents",
     "workspaces": "Espaces de travail",
@@ -140,7 +141,7 @@
   },
   "delegate": {
     "row": "Confier à un agent : « {{prompt}} »",
-    "hint": "Création rapide"
+    "hint": "Créer avec un agent"
   },
   "best": {
     "assign": "Assigner {{subject}} à {{name}}",
@@ -168,6 +169,7 @@
   },
   "trigger": {
     "label": "Rechercher..."
+<<<<<<< HEAD
   },
   "messages": {
     "untitled": "Discussion sans titre",
@@ -185,4 +187,10 @@
     "active": "Filtres actifs : {{names}}",
     "none": "Aucun filtre actif"
   }
+||||||| 2fcb424b72
+  }
+=======
+  },
+  "untitled_doc": "Sans titre"
+>>>>>>> 35b54a3742bb
 }

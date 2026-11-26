@@ -16,6 +16,7 @@
     "autopilots": "Автопилоты",
     "chats": "Чаты",
     "skills": "Навыки",
+    "docs": "Документы",
     "cancelled": "Отменено",
     "recent": "Недавние",
     "workspaces": "Рабочие пространства",
@@ -146,7 +147,7 @@
   },
   "delegate": {
     "row": "Передать агенту: «{{prompt}}»",
-    "hint": "Быстрое создание"
+    "hint": "Создать с агентом"
   },
   "best": {
     "assign": "Назначить «{{subject}}»: {{name}}",
@@ -174,6 +175,7 @@
   },
   "trigger": {
     "label": "Поиск..."
+<<<<<<< HEAD
   },
   "messages": {
     "untitled": "Untitled chat",
@@ -193,4 +195,10 @@
     "active": "Filters on: {{names}}",
     "none": "No filters on"
   }
+||||||| 2fcb424b72
+  }
+=======
+  },
+  "untitled_doc": "Без названия"
+>>>>>>> 35b54a3742bb
 }

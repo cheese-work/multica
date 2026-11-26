@@ -69,9 +69,16 @@ type PrepareParams struct {
 	// other providers wire MCP via ExecOptions.McpConfig in the agent backend.
 	McpConfig json.RawMessage
 	// CursorMcpAuthSource is an explicit opt-in path to a Cursor mcp-auth.json
-	// file, or the Cursor project data directory containing it. Only Cursor's
-	// managed MCP path consumes it.
+	// file, or the Cursor project data directory containing it.
 	CursorMcpAuthSource string
+	// CursorMcpAuthStore is the agent's persistent Cursor mcp-auth.json
+	// (CursorMcpAuthStorePath), linked into the task when CursorMcpAuthSource
+	// is unset so MCP logins outlive the task. Empty keeps them task-local.
+	CursorMcpAuthStore string
+	// CursorUserDataDir is the Cursor data dir (CursorUserDataDir) a task
+	// without managed mcp_config runs on. The task's project there is linked
+	// to CursorMcpAuthSource or CursorMcpAuthStore. Empty leaves it untouched.
+	CursorUserDataDir string
 	// OpenclawGateway pins the OpenClaw Gateway endpoint inside the per-task
 	// wrapper. Only consulted when Provider == "openclaw" and the agent's
 	// runtime_config selected gateway mode (issue #3260). Zero means "inherit
@@ -167,6 +174,7 @@ type TaskContextForEnv struct {
 	ProjectArchived               bool                    // project is archived; rendered as a note in the Project Context section
 	ProjectResources              []ProjectResourceForEnv // resources attached to the project
 	ChatSessionID                 string                  // non-empty for chat tasks
+	DocID                         string                  // non-empty for doc discussion tasks (MUL-9933)
 	// ChatChannelType is the IM platform behind a chat session ("slack",
 	// "feishu", "wecom"); empty for a web/mobile chat. It names the surface in
 	// the brief's copy; what that surface can DELIVER is the separate field
@@ -192,6 +200,10 @@ type TaskContextForEnv struct {
 	// TestBriefByteIdenticalAcrossRunsForEveryKind is what keeps this field out
 	// of the brief.
 	ChatChannelDeliversFiles bool
+	// DocsEnabled is the server's docs_v1 flag from the claim. The brief lists
+	// `multica doc` and mention://doc only when it is true, so agents are not
+	// sent to an API that answers 403 docs_disabled.
+	DocsEnabled bool
 
 	AutopilotRunID          string // non-empty for autopilot run_only tasks
 	AutopilotID             string
@@ -220,6 +232,26 @@ type TaskContextForEnv struct {
 	// cap dropped from IssueStatuses, so the brief can disclose truncation
 	// instead of presenting a partial catalog as complete.
 	IssueStatusesOmitted int
+<<<<<<< HEAD
+||||||| 2fcb424b72
+	// HasProjectWorkflow is true when the claim carried a project workflow
+	// brief for this issue (MUL-7420). The brief then swaps its built-in
+	// in_progress / in_review rules for a pointer at that per-turn block, whose
+	// statuses and commands are the issue's real contract (MUL-8145). Servers
+	// that send no workflow leave it false and the brief unchanged.
+	HasProjectWorkflow bool
+=======
+	// HasProjectWorkflow is true when the claim carried a project workflow
+	// brief for this issue (MUL-7420). The brief then swaps its built-in
+	// in_progress / in_review rules for a pointer at that per-turn block, whose
+	// statuses and commands are the issue's real contract (MUL-8145). Servers
+	// that send no workflow leave it false and the brief unchanged.
+	HasProjectWorkflow bool
+	// ProjectWorkflowStatusMap is true when that block is a status map
+	// rather than per-step commands (MUL-9913): the brief then states the
+	// rules for choosing from the map. Only meaningful with HasProjectWorkflow.
+	ProjectWorkflowStatusMap bool
+>>>>>>> 35b54a3742bb
 	// ConnectedApps lists per-run external app capabilities mounted through
 	// MCP overlays. Rendered briefly so the agent can map app names such as
 	// Notion to the actual MCP server name (`composio`).
@@ -255,6 +287,7 @@ type IssueStatusForEnv struct {
 }
 
 type SkillContextForEnv struct {
+	ID          string
 	Name        string
 	BuiltinName string // original built-in identity; empty for workspace and plugin skills
 	Description string
@@ -270,6 +303,10 @@ type SkillFileContextForEnv struct {
 
 // Environment represents a prepared, isolated execution environment.
 type Environment struct {
+	// SkillDirectories records successful writes by skill ID, including any
+	// filesystem collision suffix. It crosses the preparation-helper JSON
+	// boundary like PreparedSkillNames.
+	SkillDirectories map[string]string
 	// RootDir is the top-level env directory ({workspacesRoot}/{task_id_short}/).
 	RootDir string
 	// WorkDir is the directory to pass as Cwd to the agent. Normally
@@ -325,6 +362,14 @@ type Environment struct {
 	// exports this as CURSOR_DATA_DIR so project-level MCP approvals are
 	// isolated from the user's persistent ~/.cursor/projects state.
 	CursorDataDir string
+	// CursorUserDataDir is set instead of CursorDataDir when the task runs on
+	// the user's Cursor data dir and its project there is seeded with the
+	// agent's MCP login. Cursor uses that dir by default, so it is not exported.
+	CursorUserDataDir string
+	// CursorMcpAuthMirror merges the MCP login changes Cursor makes in the
+	// task's copy back into the agent's login. Nil when the login is
+	// task-local or the provider is not Cursor.
+	CursorMcpAuthMirror *CursorMcpAuthMirror
 	// HermesHome is the effective HERMES_HOME overlay (set only for
 	// the hermes provider, and only when the agent has skills bound — empty
 	// otherwise, leaving the user's real home in place). With a conversation
@@ -564,6 +609,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	}
 
 	env := &Environment{
+		SkillDirectories:  make(map[string]string),
 		RootDir:           envRoot,
 		WorkDir:           workDir,
 		LocalDirectory:    params.LocalWorkDir != "",
@@ -612,7 +658,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		}()
 	}
 
-	preparedSkillNames, err := writeContextFiles(workDir, params.Provider, params.Task, manifest)
+	preparedSkillNames, err := writeContextFilesTracked(workDir, params.Provider, params.Task, manifest, env.SkillDirectories)
 	if err != nil {
 		return nil, fmt.Errorf("execenv: write context files: %w", err)
 	}
@@ -632,15 +678,16 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// follow-up can be claimed the instant the prior task completes — before
 	// the prior handler writes .gc_meta.json — so reuse eligibility must be
 	// provable from an artifact that exists the moment the env is created. Only
-	// managed (non-local_directory) issue and chat envs get this marker; that is
-	// exactly the set with a durable conversation scope. Non-fatal: a write failure
+	// managed (non-local_directory) issue, chat and doc discussion envs get this
+	// marker; that is exactly the set with a durable conversation scope. Non-fatal: a write failure
 	// only costs the next follow-up its session reuse (it falls back to a fresh
 	// session), which must never block dispatching this task.
-	if params.LocalWorkDir == "" && (params.Task.IssueID != "" || params.Task.ChatSessionID != "") {
+	if params.LocalWorkDir == "" && (params.Task.IssueID != "" || params.Task.ChatSessionID != "" || params.Task.DocID != "") {
 		if err := WriteManagedEnvProvenance(envRoot, ManagedEnvProvenance{
 			WorkspaceID:   params.WorkspaceID,
 			IssueID:       params.Task.IssueID,
 			ChatSessionID: params.Task.ChatSessionID,
+			DocID:         params.Task.DocID,
 			AgentID:       params.Task.AgentID,
 		}); err != nil && logger != nil {
 			logger.Warn("execenv: write managed env provenance failed (non-fatal); a follow-up may start a fresh session", "error", err)
@@ -653,11 +700,17 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, CodexBinaryPath: params.CodexBinaryPath, IsLocalDirectory: params.LocalWorkDir != "" || params.LocalWorktree != nil, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task), CodexCustomArgs: params.CodexCustomArgs, Managed: params.HarnessProfile == HarnessProfileManaged}, logger); err != nil {
 			return nil, fmt.Errorf("execenv: prepare codex-home: %w", err)
 		}
+<<<<<<< HEAD
 		if params.HarnessProfile == HarnessProfileManaged {
 			if env.PreparedSkillNames, err = prepareManagedCodex(envRoot, codexHome, params.Task.AgentSkills, params.McpConfig, logger); err != nil {
 				return nil, fmt.Errorf("execenv: prepare managed codex: %w", err)
 			}
 		} else if env.PreparedSkillNames, err = hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
+||||||| 2fcb424b72
+		if env.PreparedSkillNames, err = hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
+=======
+		if env.PreparedSkillNames, err = hydrateCodexSkillsTracked(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger, env.SkillDirectories); err != nil {
+>>>>>>> 35b54a3742bb
 			return nil, fmt.Errorf("execenv: hydrate codex skills: %w", err)
 		}
 		env.CodexHome = codexHome
@@ -686,7 +739,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// Emptying an agent's own skill list is NOT a way to opt out of the overlay.
 	if params.Provider == "hermes" && len(params.Task.AgentSkills) > 0 {
 		hermesHome := filepath.Join(envRoot, "hermes-home")
-		sessions, err := prepareHermesHome(hermesHome, params.HermesSourceHome, params.HermesSourceMustExist, params.Task.AgentSkills, params.HermesEnv, params.HermesMemoryStore, params.HermesSessionStore, logger)
+		sessions, err := prepareHermesHomeTracked(hermesHome, params.HermesSourceHome, params.HermesSourceMustExist, params.Task.AgentSkills, params.HermesEnv, params.HermesMemoryStore, params.HermesSessionStore, logger, env.SkillDirectories)
 		if err != nil {
 			return nil, fmt.Errorf("execenv: prepare hermes-home: %w", err)
 		}
@@ -719,13 +772,12 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// an isolated CURSOR_DATA_DIR for the per-workdir approval sidecar. Cursor
 	// still reads ~/.cursor/mcp.json, but only servers with approval entries in
 	// this per-task data dir can load, so user-global MCP servers do not leak
-	// into managed-MCP runs.
+	// into managed-MCP runs. Without managed MCP the task runs on the user's
+	// data dir, and only its MCP login is copied there.
 	if params.Provider == "cursor" {
-		cursorDataDir, err := prepareCursorMcpConfig(envRoot, workDir, params.McpConfig, params.CursorMcpAuthSource, manifest)
-		if err != nil {
+		if err := prepareCursorMcp(env, envRoot, workDir, params.McpConfig, params.CursorMcpAuthSource, params.CursorMcpAuthStore, params.CursorUserDataDir, manifest, logger); err != nil {
 			return nil, fmt.Errorf("execenv: prepare cursor mcp config: %w", err)
 		}
-		env.CursorDataDir = cursorDataDir
 	}
 
 	if err := writeSidecarManifest(envRoot, manifest); err != nil {
@@ -803,6 +855,10 @@ type ReuseParams struct {
 	McpConfig json.RawMessage
 	// CursorMcpAuthSource mirrors PrepareParams.CursorMcpAuthSource on reuse.
 	CursorMcpAuthSource string
+	// CursorMcpAuthStore mirrors PrepareParams.CursorMcpAuthStore on reuse.
+	CursorMcpAuthStore string
+	// CursorUserDataDir mirrors PrepareParams.CursorUserDataDir on reuse.
+	CursorUserDataDir string
 	// OpenclawGateway is the per-task Gateway pin re-applied on reuse so the
 	// agent picks up any runtime_config changes saved since the prior run.
 	OpenclawGateway OpenclawGatewayPin
@@ -868,10 +924,11 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 		rootDir = ""
 	}
 	env := &Environment{
-		RootDir:        rootDir,
-		WorkDir:        params.WorkDir,
-		LocalDirectory: params.LocalDirectory,
-		logger:         logger,
+		SkillDirectories: make(map[string]string),
+		RootDir:          rootDir,
+		WorkDir:          params.WorkDir,
+		LocalDirectory:   params.LocalDirectory,
+		logger:           logger,
 	}
 	if env.RootDir != "" {
 		env.MulticaConfigRoot = filepath.Join(env.RootDir, "multica-config")
@@ -938,7 +995,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 			logger.Warn("execenv: roll back incomplete reused sidecars failed", "error", rollbackErr)
 		}
 	}
-	preparedSkillNames, err := writeContextFiles(params.WorkDir, params.Provider, params.Task, manifest)
+	preparedSkillNames, err := writeContextFilesTracked(params.WorkDir, params.Provider, params.Task, manifest, env.SkillDirectories)
 	if err != nil {
 		if preparedSkillNames == nil {
 			logger.Warn("execenv: refresh context files failed before skill materialization completed; forcing fresh prepare", "error", err)
@@ -977,11 +1034,25 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 			return nil
 		}
 		env.CodexHome = codexHome
+<<<<<<< HEAD
 		if params.HarnessProfile == HarnessProfileManaged {
 			managedSkillNames, err := prepareManagedCodex(env.RootDir, codexHome, params.Task.AgentSkills, params.McpConfig, logger)
 			if err != nil {
 				logger.Warn("execenv: refresh managed codex home failed; forcing fresh prepare", "error", err)
 				return nil
+||||||| 2fcb424b72
+		preparedSkillNames, err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger)
+		if err != nil && preparedSkillNames == nil {
+			logger.Warn("execenv: refresh codex skills failed before materialization completed; forcing fresh prepare", "error", err)
+			if cleanupErr := os.RemoveAll(filepath.Join(codexHome, "skills")); cleanupErr != nil {
+				logger.Warn("execenv: remove incomplete reused codex skills failed", "error", cleanupErr)
+=======
+		preparedSkillNames, err := hydrateCodexSkillsTracked(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger, env.SkillDirectories)
+		if err != nil && preparedSkillNames == nil {
+			logger.Warn("execenv: refresh codex skills failed before materialization completed; forcing fresh prepare", "error", err)
+			if cleanupErr := os.RemoveAll(filepath.Join(codexHome, "skills")); cleanupErr != nil {
+				logger.Warn("execenv: remove incomplete reused codex skills failed", "error", cleanupErr)
+>>>>>>> 35b54a3742bb
 			}
 			env.PreparedSkillNames = managedSkillNames
 		} else {
@@ -1041,7 +1112,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	if params.Provider == "hermes" && env.RootDir != "" {
 		hermesHome := filepath.Join(env.RootDir, "hermes-home")
 		if len(params.Task.AgentSkills) > 0 {
-			sessions, err := prepareHermesHome(hermesHome, params.HermesSourceHome, params.HermesSourceMustExist, params.Task.AgentSkills, params.HermesEnv, params.HermesMemoryStore, params.HermesSessionStore, logger)
+			sessions, err := prepareHermesHomeTracked(hermesHome, params.HermesSourceHome, params.HermesSourceMustExist, params.Task.AgentSkills, params.HermesEnv, params.HermesMemoryStore, params.HermesSessionStore, logger, env.SkillDirectories)
 			if err != nil {
 				// Fail closed: a half-built overlay must not run. Returning nil
 				// makes the daemon fall back to a fresh Prepare, whose error
@@ -1071,12 +1142,10 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	// mcp_config must replace the prior run's .cursor/mcp.json and isolated
 	// approvals before the next cursor-agent process starts.
 	if params.Provider == "cursor" && env.RootDir != "" {
-		cursorDataDir, err := prepareCursorMcpConfig(env.RootDir, params.WorkDir, params.McpConfig, params.CursorMcpAuthSource, manifest)
-		if err != nil {
+		if err := prepareCursorMcp(env, env.RootDir, params.WorkDir, params.McpConfig, params.CursorMcpAuthSource, params.CursorMcpAuthStore, params.CursorUserDataDir, manifest, logger); err != nil {
 			logger.Warn("execenv: refresh cursor mcp config failed", "error", err)
 			return nil
 		}
-		env.CursorDataDir = cursorDataDir
 	}
 
 	if env.RootDir != "" {
@@ -1133,6 +1202,12 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 // user-level skills natively (see context.go for the workdir-local paths
 // they use for workspace skills).
 func hydrateCodexSkills(codexHome string, workspaceSkills []SkillContextForEnv, disabledRuntimeSkills []RuntimeSkillRefForEnv, logger *slog.Logger) ([]string, error) {
+	return hydrateCodexSkillsTracked(codexHome, workspaceSkills, disabledRuntimeSkills, logger, nil)
+}
+
+// hydrateCodexSkillsTracked additionally records, when installed is non-nil,
+// each successful skill write's absolute directory by skill ID.
+func hydrateCodexSkillsTracked(codexHome string, workspaceSkills []SkillContextForEnv, disabledRuntimeSkills []RuntimeSkillRefForEnv, logger *slog.Logger, installed map[string]string) ([]string, error) {
 	skillsDir := filepath.Join(codexHome, "skills")
 	if err := os.RemoveAll(skillsDir); err != nil {
 		return nil, fmt.Errorf("clear codex skills dir: %w", err)
@@ -1143,7 +1218,7 @@ func hydrateCodexSkills(codexHome string, workspaceSkills []SkillContextForEnv, 
 	preparedSkillNames := resolveSkillSlugs(workspaceSkills)
 	if len(workspaceSkills) > 0 {
 		var err error
-		preparedSkillNames, err = writeSkillFilesWithNames(skillsDir, workspaceSkills, nil)
+		preparedSkillNames, err = writeSkillFilesWithNamesTracked(skillsDir, workspaceSkills, nil, installed)
 		if err != nil {
 			return nil, err
 		}
@@ -1162,7 +1237,14 @@ const (
 	GCKindChat         GCMetaKind = "chat"
 	GCKindAutopilotRun GCMetaKind = "autopilot_run"
 	GCKindQuickCreate  GCMetaKind = "quick_create"
+<<<<<<< HEAD
 	GCKindBackground   GCMetaKind = "background"
+||||||| 2fcb424b72
+=======
+	// GCKindDoc is a doc discussion run's env, reused by the agent's next run
+	// on the same doc (MUL-9933).
+	GCKindDoc GCMetaKind = "doc"
+>>>>>>> 35b54a3742bb
 )
 
 // GCMeta is persisted to .gc_meta.json inside the env root so the GC loop
@@ -1180,6 +1262,7 @@ type GCMeta struct {
 	IssueID        string     `json:"issue_id,omitempty"`
 	ChatSessionID  string     `json:"chat_session_id,omitempty"`
 	AutopilotRunID string     `json:"autopilot_run_id,omitempty"`
+	DocID          string     `json:"doc_id,omitempty"`
 	TaskID         string     `json:"task_id,omitempty"`
 	WorkspaceID    string     `json:"workspace_id"`
 	CompletedAt    time.Time  `json:"completed_at"`
@@ -1261,6 +1344,7 @@ type ManagedEnvProvenance struct {
 	WorkspaceID   string `json:"workspace_id"`
 	IssueID       string `json:"issue_id,omitempty"`
 	ChatSessionID string `json:"chat_session_id,omitempty"`
+	DocID         string `json:"doc_id,omitempty"`
 	AgentID       string `json:"agent_id"`
 }
 

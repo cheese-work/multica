@@ -31,7 +31,8 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import type { ExtraProps } from "react-markdown";
-import { Check, Copy, Maximize2, RotateCcw } from "@multica/ui/icons";
+import { Maximize2, RotateCcw } from "@multica/ui/icons";
+import { CopyCheckIcon } from "@multica/ui/components/common/copy-check-icon";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../i18n";
@@ -91,6 +92,116 @@ function sameWidths(a: number[] | null, b: number[] | null): boolean {
   return a === b || (!!a && !!b && a.length === b.length && a.every((w, i) => w === b[i]));
 }
 
+<<<<<<< HEAD
+||||||| 2fcb424b72
+// The editor keeps its header row in <tbody>, so the first row stands for the
+// columns in both renderers.
+function headerCells(table: HTMLTableElement): HTMLTableCellElement[] {
+  return Array.from(table.rows[0]?.cells ?? []);
+}
+
+// Each column's min-content and max-content width, read with the table's own
+// sizing lifted and restored within the same task, so the browser paints only
+// the restored layout. Only the <table> and its <col>s are touched: in the
+// editor, a style written to a cell would reach ProseMirror as an edit.
+function measureColumns(table: HTMLTableElement): { min: number[]; max: number[] } {
+  const { style } = table;
+  const saved = { layout: style.tableLayout, width: style.width, minWidth: style.minWidth };
+  const fixed = table.hasAttribute("data-column-widths");
+  const cols = Array.from(table.querySelectorAll<HTMLElement>("colgroup > col"));
+  const colWidths = cols.map((col) => col.style.width);
+  const read = () => headerCells(table).map((cell) => Math.ceil(cell.getBoundingClientRect().width));
+
+  if (fixed) table.removeAttribute("data-column-widths");
+  for (const col of cols) col.style.width = "";
+  style.tableLayout = "auto";
+  style.minWidth = "0";
+  style.width = "max-content";
+  const max = read();
+  style.width = "min-content";
+  const min = read();
+
+  style.tableLayout = saved.layout;
+  style.width = saved.width;
+  style.minWidth = saved.minWidth;
+  cols.forEach((col, i) => {
+    col.style.width = colWidths[i] ?? "";
+  });
+  if (fixed) table.setAttribute("data-column-widths", "");
+  return { min, max };
+}
+
+// The browser's automatic layout reads well while the columns' minimums fit.
+// Once they do not, it shrinks every column to its minimum, which leaves a
+// prose column a few characters wide beside a column of unbreakable paths.
+// Past that point each column gets its content width, capped so one long cell
+// cannot claim the table, and the table scrolls.
+const PREFERRED_MAX_COLUMN_WIDTH = 320;
+
+function overflowWidths(table: HTMLTableElement, available: number): number[] | null {
+  const { min, max } = measureColumns(table);
+  if (min.length === 0 || sum(min) <= available) return null;
+  return min.map((least, i) => Math.max(least, Math.min(max[i] ?? least, PREFERRED_MAX_COLUMN_WIDTH)));
+}
+
+=======
+// The editor keeps its header row in <tbody>, so the first row stands for the
+// columns in both renderers.
+function headerCells(table: HTMLTableElement): HTMLTableCellElement[] {
+  return Array.from(table.rows[0]?.cells ?? []);
+}
+
+// Each column's min-content and max-content width, read with the table's own
+// sizing lifted and restored within the same task, so the browser paints only
+// the restored layout. Only the <table> and its <col>s are touched: in the
+// editor, a style written to a cell would reach ProseMirror as an edit.
+function measureColumns(
+  table: HTMLTableElement,
+  available?: number,
+): { min: number[]; max: number[] } {
+  const { style } = table;
+  const saved = { layout: style.tableLayout, width: style.width, minWidth: style.minWidth };
+  const fixed = table.hasAttribute("data-column-widths");
+  const cols = Array.from(table.querySelectorAll<HTMLElement>("colgroup > col"));
+  const colWidths = cols.map((col) => col.style.width);
+  const read = () => headerCells(table).map((cell) => Math.ceil(cell.getBoundingClientRect().width));
+
+  if (fixed) table.removeAttribute("data-column-widths");
+  for (const col of cols) col.style.width = "";
+  style.tableLayout = "auto";
+  style.minWidth = "0";
+  style.width = "min-content";
+  const min = read();
+  let max: number[] = [];
+  if (available === undefined || sum(min) > available) {
+    style.width = "max-content";
+    max = read();
+  }
+
+  style.tableLayout = saved.layout;
+  style.width = saved.width;
+  style.minWidth = saved.minWidth;
+  cols.forEach((col, i) => {
+    col.style.width = colWidths[i] ?? "";
+  });
+  if (fixed) table.setAttribute("data-column-widths", "");
+  return { min, max };
+}
+
+// The browser's automatic layout reads well while the columns' minimums fit.
+// Once they do not, it shrinks every column to its minimum, which leaves a
+// prose column a few characters wide beside a column of unbreakable paths.
+// Past that point each column gets its content width, capped so one long cell
+// cannot claim the table, and the table scrolls.
+const PREFERRED_MAX_COLUMN_WIDTH = 320;
+
+function overflowWidths(table: HTMLTableElement, available: number): number[] | null {
+  const { min, max } = measureColumns(table, available);
+  if (min.length === 0 || sum(min) <= available) return null;
+  return min.map((least, i) => Math.max(least, Math.min(max[i] ?? least, PREFERRED_MAX_COLUMN_WIDTH)));
+}
+
+>>>>>>> 35b54a3742bb
 interface ColumnEdges {
   /** Left offset of each column's handle within the wrapper's scroll area. */
   lefts: number[];
@@ -221,6 +332,7 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
       setAutoWidths((prev) => (sameWidths(prev, next) ? prev : next));
     };
     fit();
+<<<<<<< HEAD
     const unsubscribe = onResize(fit);
     // Content widths change when a web font replaces its fallback. Fonts that
     // are already loaded cannot change them, so a remount keeps its cached fit.
@@ -230,6 +342,27 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
         fit(true);
       });
     }
+||||||| 2fcb424b72
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
+    observer?.observe(wrapper);
+    // Content widths change when a web font replaces its fallback.
+    void document.fonts?.ready.then(() => {
+      measuredAt = -1;
+      fit();
+    });
+=======
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(fit);
+    observer?.observe(wrapper);
+    // Content widths change when a web font replaces its fallback. Once the
+    // fonts have loaded, `ready` resolves at once and a second measure of every
+    // table would only repeat the first.
+    if (document.fonts && document.fonts.status !== "loaded") {
+      void document.fonts.ready.then(() => {
+        measuredAt = -1;
+        fit();
+      });
+    }
+>>>>>>> 35b54a3742bb
     return () => {
       active = false;
       unsubscribe();
@@ -410,7 +543,7 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
               className={cn(toolbarButton, "w-6")}
               aria-label={t(($) => $.table.copy_markdown)}
             >
-              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+              <CopyCheckIcon copied={copied} />
             </button>
           }
         />
@@ -455,20 +588,24 @@ export function RichTableFrame({ model, getMarkdown, tableRef: onTable, children
         </div>
         {/* Columns continue past the edge: a shadow, not a fade to a background
             colour, because the same table renders on cards, pages and chat. */}
-        {overflow.start && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-y-px left-px w-3 rounded-l-[var(--radius)]"
-            style={{ background: `linear-gradient(to right, ${SCROLL_SHADOW}, transparent)` }}
-          />
-        )}
-        {overflow.end && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-y-px right-px w-3 rounded-r-[var(--radius)]"
-            style={{ background: `linear-gradient(to left, ${SCROLL_SHADOW}, transparent)` }}
-          />
-        )}
+        <div
+          aria-hidden
+          data-overflow-shadow={overflow.start ? "start" : undefined}
+          className={cn(
+            "pointer-events-none absolute inset-y-px left-px w-3 rounded-l-[var(--radius)] transition-opacity duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
+            overflow.start ? "opacity-100" : "opacity-0",
+          )}
+          style={{ background: `linear-gradient(to right, ${SCROLL_SHADOW}, transparent)` }}
+        />
+        <div
+          aria-hidden
+          data-overflow-shadow={overflow.end ? "end" : undefined}
+          className={cn(
+            "pointer-events-none absolute inset-y-px right-px w-3 rounded-r-[var(--radius)] transition-opacity duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none",
+            overflow.end ? "opacity-100" : "opacity-0",
+          )}
+          style={{ background: `linear-gradient(to left, ${SCROLL_SHADOW}, transparent)` }}
+        />
       </div>
       {expanded && (
         <RichTableDialog model={model} open={expanded} onOpenChange={setExpanded} getMarkdown={getMarkdown} />

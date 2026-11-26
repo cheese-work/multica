@@ -86,15 +86,23 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...actual,
+<<<<<<< HEAD
     useQuery: (options: { queryKey: readonly unknown[] }) =>
       options.queryKey.includes("open-decisions")
         ? { data: needsYou.rows, isPending: false, isError: false, refetch: vi.fn() }
         : { data: { tasks: [] } },
+||||||| 2fcb424b72
+    useQuery: () => ({ data: { tasks: [] } }),
+=======
+    useQuery: ({ queryKey }: { queryKey: readonly unknown[] }) =>
+      queryKey.includes("my-wakeups") ? { data: [] } : { data: { tasks: [] } },
+>>>>>>> 35b54a3742bb
     useQueryClient: () => ({ setQueryData: vi.fn(), invalidateQueries: vi.fn() }),
   };
 });
 
 import { ChatThreadList } from "./chat-thread-list";
+import { SESSION_LIST_VIRTUALIZE_AFTER } from "./session-history-list";
 
 const TEST_RESOURCES = { en: { chat: enChat, issues: enIssues } };
 
@@ -130,6 +138,7 @@ function renderList(
   {
     onArchive = vi.fn(),
     onSelectSession = vi.fn(),
+    onPrefetchSession = vi.fn(),
     renderedSessions = sessions,
     renderedAgents = [agent],
     loadState = undefined as "loading" | "error" | undefined,
@@ -137,6 +146,7 @@ function renderList(
     onEnterSelectMode = undefined as ((session: ChatSession) => void) | undefined,
   } = {},
 ) {
+<<<<<<< HEAD
   const { container } = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       <NavigationProvider value={{ push: navigate, replace: vi.fn(), back: vi.fn(), pathname: "/test-ws/chat", searchParams: new URLSearchParams(), hash: "", getShareableUrl: (path) => path }}>
@@ -152,8 +162,49 @@ function renderList(
       />
       </NavigationProvider>
     </I18nProvider>,
+||||||| 2fcb424b72
+  render(
+    <VirtuosoMockContext.Provider value={{ viewportHeight: 560, itemHeight: 56 }}>
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatThreadList
+          sessions={renderedSessions}
+          agents={renderedAgents}
+          activeSessionId={activeSessionId}
+          onSelectSession={onSelectSession}
+          onArchive={onArchive}
+        />
+      </I18nProvider>
+    </VirtuosoMockContext.Provider>,
+=======
+  const makeUi = (list: ChatSession[], activeId: string | null) => (
+    <VirtuosoMockContext.Provider value={{ viewportHeight: 560, itemHeight: 56 }}>
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <ChatThreadList
+          sessions={list}
+          agents={renderedAgents}
+          activeSessionId={activeId}
+          onSelectSession={onSelectSession}
+          onArchive={onArchive}
+          onPrefetchSession={onPrefetchSession}
+        />
+      </I18nProvider>
+    </VirtuosoMockContext.Provider>
+>>>>>>> 35b54a3742bb
   );
+<<<<<<< HEAD
   return { onArchive, onSelectSession, container };
+||||||| 2fcb424b72
+  return { onArchive, onSelectSession };
+=======
+  const view = render(makeUi(renderedSessions, activeSessionId));
+  return {
+    onArchive,
+    onSelectSession,
+    onPrefetchSession,
+    rerenderList: (list: ChatSession[], activeId: string | null = activeSessionId) =>
+      view.rerender(makeUi(list, activeId)),
+  };
+>>>>>>> 35b54a3742bb
 }
 
 const ARCHIVE_LABEL = enChat.list.archive;
@@ -695,5 +746,79 @@ describe("ChatThreadList has no search of its own (CHE-5593)", () => {
     fireEvent.keyDown(document.body, { key: "/" });
     expect(screen.queryByRole("searchbox")).toBeNull();
     expect(document.activeElement).toBe(document.body);
+  });
+});
+
+describe("ChatThreadList prefetch and smooth exit", () => {
+  it("triggers onPrefetchSession when hovering or focusing a row", () => {
+    const { onPrefetchSession } = renderList("s1");
+    const row = screen.getByText("Chat s2").closest("[data-chat-thread-row]")!;
+
+    fireEvent.pointerEnter(row);
+    fireEvent.focus(row);
+
+    expect(onPrefetchSession).toHaveBeenCalledTimes(2);
+    expect(onPrefetchSession).toHaveBeenNthCalledWith(1, "s2");
+    expect(onPrefetchSession).toHaveBeenNthCalledWith(2, "s2");
+  });
+
+  it("marks a removed history row as exiting while animating out in a short list", () => {
+    const { rerenderList } = renderList("s1");
+    expect(screen.getByText("Chat s1")).toBeInTheDocument();
+
+    // Optimistic archive flips s1 to status="archived", dropping it from history.
+    const nextSessions = sessions.map((s) =>
+      s.id === "s1" ? { ...s, status: "archived" as const } : s,
+    );
+    rerenderList(nextSessions, "s2");
+
+    const exiting = document.querySelector("[data-chat-row-exiting]");
+    expect(exiting).toBeInTheDocument();
+    expect(exiting).toHaveAttribute("aria-hidden", "true");
+    expect(exiting?.className).toContain("pointer-events-none");
+    expect(screen.getByText("Chat s2").closest("[aria-current]")).toHaveAttribute(
+      "aria-current",
+      "true",
+    );
+  });
+
+  it("marks a removed archived row as exiting when unarchived in the archived view", () => {
+    const archived = [
+      makeSession({ id: "a1", status: "archived", updated_at: "2026-07-08T03:00:00Z" }),
+      makeSession({ id: "a2", status: "archived", updated_at: "2026-07-08T02:00:00Z" }),
+    ];
+    const { rerenderList } = renderList(null, {
+      renderedSessions: [...sessions, ...archived],
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Archived.*2/ }));
+    expect(screen.getByText("Chat a1")).toBeInTheDocument();
+
+    rerenderList(
+      [...sessions, { ...archived[0]!, status: "active" }, archived[1]!],
+      null,
+    );
+
+    const exiting = document.querySelector("[data-chat-row-exiting]");
+    expect(exiting).toBeInTheDocument();
+    expect(exiting).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("keeps the same scroll container element when crossing the virtualization threshold", () => {
+    const overThreshold = Array.from(
+      { length: SESSION_LIST_VIRTUALIZE_AFTER + 1 },
+      (_, i) => makeSession({ id: `s-${i}` }),
+    );
+    const { rerenderList } = renderList("s-0", {
+      renderedSessions: overThreshold,
+    });
+
+    const scrollerBefore = document.querySelector("[data-chat-session-scroller]");
+    expect(scrollerBefore).toBeInTheDocument();
+
+    // Archiving one row drops the active count from 61 to 60 (virtualized -> animated list).
+    rerenderList(overThreshold.slice(1), "s-1");
+
+    const scrollerAfter = document.querySelector("[data-chat-session-scroller]");
+    expect(scrollerAfter).toBe(scrollerBefore);
   });
 });

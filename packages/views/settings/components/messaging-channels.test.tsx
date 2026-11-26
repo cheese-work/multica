@@ -1,4 +1,11 @@
+<<<<<<< HEAD
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+||||||| 2fcb424b72
+import { beforeEach, describe, expect, it, vi } from "vitest";
+=======
+import { useState } from "react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+>>>>>>> 35b54a3742bb
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@multica/core/types";
@@ -57,6 +64,10 @@ vi.mock("@multica/core/api", async (original) => ({
       "listDingTalkInstallations",
       "listWecomInstallations",
       "listTelegramInstallations",
+      "listWeixinInstallations",
+      "beginWeixinLogin",
+      "pollWeixinLogin",
+      "cancelWeixinLogin",
       "registerSlackBYO",
       "registerDingTalkBYO",
       "registerWecomBYO",
@@ -66,6 +77,7 @@ vi.mock("@multica/core/api", async (original) => ({
       "deleteDingTalkInstallation",
       "deleteWecomInstallation",
       "deleteTelegramInstallation",
+      "deleteWeixinInstallation",
       "listAgentDingTalkGroups",
       "listAgents",
       "beginLarkInstall",
@@ -127,6 +139,7 @@ beforeEach(() => {
     "listDingTalkInstallations",
     "listWecomInstallations",
     "listTelegramInstallations",
+    "listWeixinInstallations",
   ] as const) {
     vi.mocked(api[name]).mockResolvedValue(listing() as never);
   }
@@ -255,7 +268,7 @@ describe("agent messaging channels", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("gives an agent owner Lark and DingTalk, with admin-only platforms labelled", async () => {
+  it("gives an agent owner Feishu, DingTalk and WeChat, with admin-only platforms labelled", async () => {
     state.role = "member";
     show(<AgentChannelsSection agent={agent} />);
     await waitFor(() =>
@@ -272,6 +285,9 @@ describe("agent messaging channels", () => {
     ).toBeEnabled();
     expect(
       within(dialog).getByRole("button", { name: /^DingTalk$/ }),
+    ).toBeEnabled();
+    expect(
+      within(dialog).getByRole("button", { name: /^WeChat$/ }),
     ).toBeEnabled();
     expect(
       within(dialog).getByRole("button", { name: /Slack Ask an admin/ }),
@@ -351,7 +367,7 @@ describe("agent messaging channels", () => {
   it("does not display revoked connections or another agent's connection", async () => {
     vi.mocked(api.listTelegramInstallations).mockResolvedValue(
       listing([
-        { ...active, status: "revoked" },
+        { ...active, status: "Revoked" },
         { ...active, id: "i2", agent_id: "agent-2" },
       ]) as never,
     );
@@ -360,15 +376,17 @@ describe("agent messaging channels", () => {
     expect(screen.queryByText("Telegram")).toBeNull();
   });
 
-  it.each(["lark", "slack", "dingtalk", "wecom", "telegram"] as const)(
+  it.each(["lark", "slack", "dingtalk", "wecom", "telegram", "weixin"] as const)(
     "confirms %s disconnect and preserves the connection on failure",
     async (channel) => {
+      if (channel === "weixin") state.role = "member";
       const methods = {
         lark: ["listLarkInstallations", "deleteLarkInstallation"],
         slack: ["listSlackInstallations", "deleteSlackInstallation"],
         dingtalk: ["listDingTalkInstallations", "deleteDingTalkInstallation"],
         wecom: ["listWecomInstallations", "deleteWecomInstallation"],
         telegram: ["listTelegramInstallations", "deleteTelegramInstallation"],
+        weixin: ["listWeixinInstallations", "deleteWeixinInstallation"],
       } as const;
       const [list, remove] = methods[channel];
       vi.mocked(api[list]).mockResolvedValue(listing([active]) as never);
@@ -410,6 +428,50 @@ const platformName = {
 } as const;
 
 describe("shared connection dialog", () => {
+  it("shows the WeChat QR to the agent owner and cancels it on close", async () => {
+    state.role = "member";
+    const login = {
+      id: "login-1",
+      status: "wait",
+      qr_code_url: "https://weixin.qq.com/test-qr",
+      expires_at: new Date(Date.now() + 300_000).toISOString(),
+    };
+    vi.mocked(api.beginWeixinLogin).mockResolvedValue(login);
+    vi.mocked(api.pollWeixinLogin).mockResolvedValue(login);
+    vi.mocked(api.cancelWeixinLogin).mockResolvedValue(undefined);
+    function Harness() {
+      const [open, setOpen] = useState(true);
+      return (
+        <ChannelConnectDialog
+          agents={[agent]}
+          initialAgent={agent}
+          initialChannel="weixin"
+          open={open}
+          onOpenChange={setOpen}
+        />
+      );
+    }
+    show(<Harness />);
+    const platform = await screen.findByRole("button", { name: "WeChat" });
+    await waitFor(() => expect(platform).toBeEnabled());
+    fireEvent.click(platform);
+    const qr = await screen.findByTitle("WeChat connection QR code");
+    expect(api.beginWeixinLogin).toHaveBeenCalledWith("ws-1", agent.id);
+    expect(screen.queryByRole("button", { name: "Connect WeChat" })).toBeNull();
+    const guide = screen.getByRole("button", { name: "Setup guide" });
+    expect(
+      qr.compareDocumentPosition(guide) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    fireEvent.click(guide);
+    expect(state.open).toHaveBeenCalledWith(
+      "https://multica.ai/docs/weixin-bot-integration",
+    );
+    // The footer's Close; the header's icon button shares the name.
+    fireEvent.click(screen.getAllByRole("button", { name: "Close" })[0]!);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(api.cancelWeixinLogin).toHaveBeenCalledWith("ws-1", login.id);
+  });
+
   it("offers only Feishu for new connections while international Lark is disabled", async () => {
     show(
       <ChannelConnectDialog
@@ -522,7 +584,7 @@ describe("shared connection dialog", () => {
     [
       "dingtalk",
       "registerDingTalkBYO",
-      ["AppKey (client id)", "AppSecret (client secret)"],
+      ["AppKey (Client ID)", "AppSecret (Client Secret)"],
       { client_id: "first", client_secret: "second" },
     ],
     [
@@ -650,7 +712,7 @@ describe("workspace overview", () => {
     );
     expect(state.replace).toHaveBeenCalledWith("/acme/settings?tab=channels");
     expect(screen.getByText("Who can connect")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Connect" })).toHaveLength(5);
+    expect(screen.getAllByRole("button", { name: "Connect" })).toHaveLength(6);
   });
 
   it("reports failed reads as unavailable and keeps a retry control", async () => {
