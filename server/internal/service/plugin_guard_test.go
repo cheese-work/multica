@@ -407,3 +407,65 @@ func TestInvokeGuardDeadlineCoversDatabase(t *testing.T) {
 		})
 	}
 }
+
+// The plugin answers allow in time, but the row insert stalls until the
+// deadline. A guard that cannot record its answer inside its bound has not
+// answered, so the on_error policy decides, and the row still lands as timeout.
+func TestInvokeGuardDeadlineCoversTheInvocationInsert(t *testing.T) {
+	for _, onError := range []string{"closed", "open"} {
+		t.Run(onError, func(t *testing.T) {
+			f := newGuardFixture(t, onError, 300, answer(`{"decision":"allow"}`))
+			tx, err := sharedTestPool(t).Begin(context.Background())
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			released := false
+			release := func() {
+				if !released {
+					released = true
+					_ = tx.Rollback(context.Background())
+				}
+			}
+			t.Cleanup(release)
+			// SHARE conflicts with the ROW EXCLUSIVE lock an INSERT takes and not
+			// with the ACCESS SHARE of the breaker and rate reads, so only the
+			// insert waits.
+			if _, err := tx.Exec(context.Background(), `LOCK TABLE plugin_invocation IN SHARE MODE`); err != nil {
+				t.Fatalf("lock plugin_invocation: %v", err)
+			}
+
+			started := time.Now()
+			result, err := f.service.InvokeGuard(context.Background(), f.invocation)
+			elapsed := time.Since(started)
+			// The database stays stalled for a while after the guard answered, so
+			// the abandoned insert is cancelled while it waits; releasing at once
+			// would let the server run it before the cancel arrives.
+			time.Sleep(300 * time.Millisecond)
+			release()
+			if err != nil {
+				t.Fatalf("InvokeGuard: %v", err)
+			}
+			if f.requests() != 1 {
+				t.Fatalf("the plugin was called %d times, want 1", f.requests())
+			}
+			if elapsed > 300*time.Millisecond+guardDeadlineSlack {
+				t.Fatalf("a stalled insert held the guard for %s; the bound is 300ms", elapsed)
+			}
+			wantDecision := GuardDecisionDeny
+			if onError == "open" {
+				wantDecision = GuardDecisionAllow
+			}
+			if result.Source != GuardSourceOnError || result.Decision != wantDecision || result.Status != "timeout" {
+				t.Fatalf("result = %+v, want the on_error %s with status timeout, not the plugin's allow", result, wantDecision)
+			}
+			if _, status := waitForGuardRow(t, result.InvocationID); status != "timeout" {
+				t.Fatalf("invocation status = %s, want timeout", status)
+			}
+			var rows int
+			if err := sharedTestPool(t).QueryRow(context.Background(),
+				`SELECT count(*) FROM plugin_invocation WHERE id = $1`, result.InvocationID).Scan(&rows); err != nil || rows != 1 {
+				t.Fatalf("rows for the invocation = %d (err %v), want exactly 1", rows, err)
+			}
+		})
+	}
+}

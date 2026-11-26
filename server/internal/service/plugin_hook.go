@@ -541,6 +541,11 @@ func (s *PluginService) HookBreakerOpen(ctx context.Context, installationID pgty
 }
 
 func (s *PluginService) recordInvocation(ctx context.Context, invocation HookInvocation, status string, attempt, latency int, message string) {
+	// Best effort: telemetry must never fail the call it is describing.
+	_ = s.insertInvocation(ctx, invocation, status, attempt, latency, message)
+}
+
+func (s *PluginService) insertInvocation(ctx context.Context, invocation HookInvocation, status string, attempt, latency int, message string) error {
 	params := db.CreatePluginInvocationParams{
 		ID:             invocation.ID,
 		InstallationID: invocation.Installation.ID,
@@ -563,8 +568,8 @@ func (s *PluginService) recordInvocation(ctx context.Context, invocation HookInv
 	if message != "" {
 		params.Error = pgtype.Text{String: truncate(message, 500), Valid: true}
 	}
-	// Best effort: telemetry must never fail the call it is describing.
-	_, _ = s.Queries.CreatePluginInvocation(ctx, params)
+	_, err := s.Queries.CreatePluginInvocation(ctx, params)
+	return err
 }
 
 func hookFailureStatus(err error) string {

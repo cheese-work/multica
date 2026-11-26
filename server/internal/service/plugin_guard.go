@@ -125,15 +125,20 @@ func (s *PluginService) InvokeGuard(ctx context.Context, invocation HookInvocati
 			status = "timeout"
 		}
 		message := redactHookError(callErr)
-		s.recordGuardInvocation(ctx, invocation, status, result.LatencyMs, message)
+		s.recordGuardInvocation(ctx, invocation, status, status, result.LatencyMs, message, message)
 		return onError(status, message), nil
 	}
 	answer, err := parseGuardAnswer(output)
 	if err != nil {
-		s.recordGuardInvocation(ctx, invocation, "failed", result.LatencyMs, err.Error())
+		s.recordGuardInvocation(ctx, invocation, "failed", "failed", result.LatencyMs, err.Error(), err.Error())
 		return onError("failed", err.Error()), nil
 	}
-	s.recordGuardInvocation(ctx, invocation, "ok", result.LatencyMs, "")
+	// An allow that cannot be recorded inside the deadline is not an answer in
+	// time: the plugin's verdict is dropped for the on_error policy.
+	const lateMessage = "guard deadline passed while the answer was being recorded"
+	if !s.recordGuardInvocation(ctx, invocation, "ok", "timeout", result.LatencyMs, "", lateMessage) {
+		return onError("timeout", lateMessage), nil
+	}
 	result.Status = "ok"
 	result.Source = GuardSourcePlugin
 	result.Decision = answer.Decision
@@ -145,22 +150,33 @@ func (s *PluginService) InvokeGuard(ctx context.Context, invocation HookInvocati
 // deadline.
 const guardRecordGrace = 3 * time.Second
 
-// recordGuardInvocation writes the invocation row inside the guard deadline
-// while there is time left. Once the deadline has passed the answer must not
-// wait for the write, so the row is written in the background on a context that
-// keeps the values but not the cancellation. A timed-out call still leaves its
-// row, which is what lets the breaker see a plugin that keeps timing out.
-func (s *PluginService) recordGuardInvocation(ctx context.Context, invocation HookInvocation, status string, latency int, message string) {
+// recordGuardInvocation writes the invocation row inside the guard deadline and
+// reports whether it did. A write that fails for a reason other than the
+// deadline is best-effort telemetry, as on the other hook paths, and counts as
+// recorded. When the deadline passed before or during the write, the answer
+// must not wait for it: the row is written in the background under lateStatus,
+// on a context that keeps the values but not the cancellation, and false is
+// returned so the caller answers with the timeout policy. Writing the row is
+// what lets the breaker see a plugin that keeps timing out. The row keeps the
+// invocation ID, so a write that did commit before the client noticed the
+// deadline is not duplicated.
+func (s *PluginService) recordGuardInvocation(ctx context.Context, invocation HookInvocation, status, lateStatus string, latency int, message, lateMessage string) bool {
 	if ctx.Err() == nil {
-		s.recordInvocation(ctx, invocation, status, 1, latency, message)
-		return
+		err := s.insertInvocation(ctx, invocation, status, 1, latency, message)
+		if err == nil || ctx.Err() == nil {
+			return true
+		}
 	}
 	detached := context.WithoutCancel(ctx)
 	go func() {
 		writeCtx, cancel := context.WithTimeout(detached, guardRecordGrace)
 		defer cancel()
-		s.recordInvocation(writeCtx, invocation, status, 1, latency, message)
+		if lateStatus != status {
+			message = lateMessage
+		}
+		s.recordInvocation(writeCtx, invocation, lateStatus, 1, latency, message)
 	}()
+	return false
 }
 
 // parseGuardAnswer is strict about the two things a verdict must be: a known
