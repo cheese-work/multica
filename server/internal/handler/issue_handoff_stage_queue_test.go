@@ -193,3 +193,88 @@ func TestLoopBreakerRefusedReviewHandoffIsQueuedAndRetried(t *testing.T) {
 		t.Fatalf("tasks after the window clears = %d, want %d", got, before+1)
 	}
 }
+
+// CHE-9895: the write that enters agent_review, or names the reviewer again at
+// agent_review, never ends with no run and no word to the caller.
+
+type outcomesResp struct {
+	TriggerOutcomes []CommentTriggerOutcome `json:"trigger_outcomes"`
+}
+
+func reassignSameReviewer(t *testing.T, issueID, agentID string) outcomesResp {
+	t.Helper()
+	req := withURLParam(newRequest(http.MethodPatch, "/api/issues/"+issueID, map[string]any{
+		"assignee_type": "agent", "assignee_id": agentID,
+	}), "id", issueID)
+	var out outcomesResp
+	testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK).JSON(&out)
+	return out
+}
+
+func wantOutcome(t *testing.T, got outcomesResp, agentID string, status DispatchStatus, reason DispatchReasonCode) {
+	t.Helper()
+	for _, o := range got.TriggerOutcomes {
+		if o.TargetID == agentID && o.Status == status && o.ReasonCode == reason {
+			return
+		}
+	}
+	t.Fatalf("trigger_outcomes = %+v, want agent %s %s/%s", got.TriggerOutcomes, agentID, status, reason)
+}
+
+// A handoff the stage queue holds back tells the caller it is queued.
+func TestRefusedReviewHandoffTellsTheCaller(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := seededReadyAgentID(t)
+	reviewerFull(t, agentID, 2)
+	issueID := reviewHandoffIssue(t, agentID)
+
+	var out outcomesResp
+	testutil.Call(t, testHandler.MoveIssue, moveStatus(issueID, "agent_review")).Want(http.StatusOK).JSON(&out)
+
+	wantOutcome(t, out, agentID, DispatchDeferred, ReasonStageQueueFull)
+}
+
+// The reviewer is already assigned and no run exists: naming the same reviewer
+// again starts exactly one review run; a repeat adds none and says it is covered.
+func TestReassignSameReviewerAtAgentReviewStartsOneRun(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := seededReadyAgentID(t)
+	issueID := reviewHandoffIssue(t, agentID)
+	dbfx.Exec(t, `UPDATE issue SET status = 'agent_review', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, issueID, agentID)
+
+	reassignSameReviewer(t, issueID, agentID)
+	if n := taskCount(t, issueID); n != 1 {
+		t.Fatalf("tasks after re-assigning the same reviewer = %d, want 1", n)
+	}
+	out := reassignSameReviewer(t, issueID, agentID)
+	if n := taskCount(t, issueID); n != 1 {
+		t.Fatalf("tasks after a second re-assign = %d, want still 1", n)
+	}
+	wantOutcome(t, out, agentID, DispatchCoalesced, ReasonCoalesced)
+}
+
+// With the stage full, the same-reviewer write queues the PR and says so; the
+// run starts when a slot frees.
+func TestReassignSameReviewerWhileStageFullIsQueued(t *testing.T) {
+	seedTestCatalog(t)
+	agentID := seededReadyAgentID(t)
+	reviewerFull(t, agentID, 2)
+	issueID := reviewHandoffIssue(t, agentID)
+	dbfx.Exec(t, `UPDATE issue SET status = 'agent_review', assignee_type = 'agent', assignee_id = $2 WHERE id = $1`, issueID, agentID)
+
+	out := reassignSameReviewer(t, issueID, agentID)
+	if n := taskCount(t, issueID); n != 0 {
+		t.Fatalf("tasks while the stage is full = %d, want 0", n)
+	}
+	wantOutcome(t, out, agentID, DispatchDeferred, ReasonStageQueueFull)
+
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now()
+	  WHERE id = (SELECT t.id FROM agent_task_queue t JOIN issue i ON i.id = t.issue_id
+	               WHERE t.agent_id = $1 AND t.status = 'running' AND i.title = 'stage slot holder' LIMIT 1)`, agentID)
+	if err := testHandler.TaskService.ReleaseStageQueues(t.Context()); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	if n := taskCount(t, issueID); n != 1 {
+		t.Fatalf("tasks after a slot frees = %d, want 1", n)
+	}
+}
