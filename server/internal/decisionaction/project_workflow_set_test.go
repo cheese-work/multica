@@ -36,12 +36,12 @@ func TestProjectWorkflowSetNormalize(t *testing.T) {
 		many[i] = fmt.Sprintf("00000000-0000-4000-8000-%012d", i)
 	}
 	cases := map[string]json.RawMessage{
-		"no projects":        projectSetPayload(workflow),
-		"too many projects":  projectSetPayload(workflow, many...),
-		"a project twice":    projectSetPayload(workflow, a, a),
-		"another workflow":   json.RawMessage(strings.Replace(string(projectSetPayload(workflow, a)), `"workflow_id":"`+workflow+`","status_mapping"`, `"workflow_id":"`+b+`","status_mapping"`, 1)),
-		"an unknown field":   json.RawMessage(strings.Replace(string(projectSetPayload(workflow, a)), `{"workflow_id"`, `{"extra":1,"workflow_id"`, 1)),
-		"a malformed UUID":   projectSetPayload(workflow, "not-a-uuid"),
+		"no projects":       projectSetPayload(workflow),
+		"too many projects": projectSetPayload(workflow, many...),
+		"a project twice":   projectSetPayload(workflow, a, a),
+		"another workflow":  json.RawMessage(strings.Replace(string(projectSetPayload(workflow, a)), `"workflow_id":"`+workflow+`","status_mapping"`, `"workflow_id":"`+b+`","status_mapping"`, 1)),
+		"an unknown field":  json.RawMessage(strings.Replace(string(projectSetPayload(workflow, a)), `{"workflow_id"`, `{"extra":1,"workflow_id"`, 1)),
+		"a malformed UUID":  projectSetPayload(workflow, "not-a-uuid"),
 	}
 	for name, raw := range cases {
 		if _, _, err := normalizeProjectWorkflowSet(raw, nil); err == nil {

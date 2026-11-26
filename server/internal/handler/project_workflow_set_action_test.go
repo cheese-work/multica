@@ -147,7 +147,9 @@ func TestApproveProjectWorkflowSetFailsStaleBaseAndChangesNoProject(t *testing.T
 			projects := []string{f.narrowProject(t), f.narrowProject(t)}
 			card := f.openBatchCard(t, projects)
 			c.mutate(t, f, projects[1])
-			state := func() [2]string { return [2]string{projectWorkflowOf(t, projects[0]), projectWorkflowOf(t, projects[1])} }
+			state := func() [2]string {
+				return [2]string{projectWorkflowOf(t, projects[0]), projectWorkflowOf(t, projects[1])}
+			}
 			before := state()
 			out := card.approve(t)
 			if out.State != "failed" || out.ErrorCode != staleBaseCode {
