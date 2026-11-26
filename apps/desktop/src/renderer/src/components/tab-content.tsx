@@ -48,14 +48,6 @@ export function TabContent() {
     registerCoordinatorQueryClient(qc);
   }, [qc]);
 
-  // Sync document.title when switching tabs within the active workspace.
-  const activeTabId = group?.activeTabId;
-  const tabs = group?.tabs;
-  useEffect(() => {
-    const tab = tabs?.find((t) => t.id === activeTabId);
-    if (tab) document.title = tab.title;
-  }, [activeTabId, tabs]);
-
   if (!group) return null;
 
   return (

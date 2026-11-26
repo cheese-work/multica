@@ -33,6 +33,9 @@
  *     `onClearReplyTarget` from its store; chat doesn't.
  *   - Stop visual / animation — chat passes a `renderStop()` slot when
  *     `isSending` is true.
+ *   - What a send during a run means — chat opts in with
+ *     `allowSubmitWhileSending` and adds a `queueAction`; the composer only
+ *     reports which action submitted.
  *
  * Drafts: text (comment mode), mention chips and attachments live in
  * `useComposerDraftsStore` under `draftKey`, so they survive this component
@@ -60,6 +63,7 @@ import { api, MAX_FILE_SIZE } from "@/data/api";
 import { useComposerDraftsStore } from "@/data/stores/composer-drafts-store";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
+import { composerActions } from "@/lib/composer-actions";
 import { stripMarkdown } from "@/lib/strip-markdown";
 import { THEME } from "@/lib/theme";
 import { continuousCorners } from "@/lib/radius";
@@ -72,6 +76,7 @@ import {
 } from "@/components/issue/composer-attachment-row";
 import { useT } from "@/lib/i18n";
 import { mergeRestoredText } from "@/lib/merge-restored-text";
+import { isStorageLimitReached } from "@/lib/upload-error";
 
 export interface MessageComposerReplyTarget {
   actorName: string;
@@ -91,6 +96,8 @@ interface Props {
     content: string;
     attachmentIds: string[];
     mentions: MentionChip[];
+    /** True when submitted through `queueAction` instead of Send. */
+    queue: boolean;
   }) => Promise<void>;
 
   /** Push target for the `@` button. The picker route reads /
@@ -134,6 +141,13 @@ interface Props {
    *  this to show a Stop affordance while the agent is running. */
   isSending?: boolean;
   renderStop?: () => ReactNode;
+  /** While `isSending`, still accept typed content. Send takes the action
+   *  slot whenever there is content to send; Stop stays reachable for an
+   *  empty composer or an upload in flight (same slot rule as web chat). */
+  allowSubmitWhileSending?: boolean;
+  /** Secondary submit shown beside Send while `isSending` with content.
+   *  Chat uses it for "queue for the next turn". */
+  queueAction?: { accessibilityLabel: string };
 
   /** Hard-disable. Used when chat has no usable agent. The pill shows
    *  `disabledReason` instead of `pillLabel`, and the pill is
@@ -192,6 +206,8 @@ export function MessageComposer({
   expandTrigger,
   isSending = false,
   renderStop,
+  allowSubmitWhileSending = false,
+  queueAction,
   disabled = false,
   disabledReason,
   manageKeyboard = true,
@@ -306,13 +322,16 @@ export function MessageComposer({
     return () => cancelAnimationFrame(frame);
   }, [isExpanded, triggerSeen, disabled]);
 
-  const hasInFlightUpload = attachments.some((a) => a.status === "uploading");
-  const canSend =
-    !disabled &&
-    !isSending &&
-    !submitting &&
-    !hasInFlightUpload &&
-    (text.trim().length > 0 || mentions.length > 0);
+  const { canSend, showStop, showQueue } = composerActions({
+    isSending,
+    allowSubmitWhileSending,
+    hasStop: !!renderStop,
+    hasQueueAction: !!queueAction,
+    hasContent: text.trim().length > 0 || mentions.length > 0,
+    hasInFlightUpload: attachments.some((a) => a.status === "uploading"),
+    submitting,
+    disabled,
+  });
 
   const expand = useCallback(() => {
     if (disabled) return;
@@ -325,7 +344,7 @@ export function MessageComposer({
     requestAnimationFrame(() => inputRef.current?.focus());
   }, [disabled, onClearReplyTarget]);
 
-  const handleSubmit = useCallback(async () => {
+  const handleSubmit = useCallback(async (queue: boolean) => {
     if (!canSend) return;
     const textSnap = text;
     const mentionsSnap = mentions;
@@ -366,6 +385,7 @@ export function MessageComposer({
         content,
         attachmentIds: activeIds,
         mentions: mentionsSnap,
+        queue,
       });
       // Success → fully exit composing mode. Explicit triple-step
       // because a missing blur leaves the keyboard up; missing
@@ -443,8 +463,11 @@ export function MessageComposer({
           uploadScope,
         );
       } catch (err) {
-        const message =
-          err instanceof Error ? err.message : t("common:states.error");
+        const message = isStorageLimitReached(err)
+          ? t("editor:upload.storage_full_title")
+          : err instanceof Error
+            ? err.message
+            : t("common:states.error");
         setAttachments((prev) =>
           prev.map((it) =>
             it.localId === localId
@@ -702,7 +725,21 @@ export function MessageComposer({
             className="h-8 w-8"
           />
           <View className="flex-1" />
-          {isSending && renderStop ? (
+          {showQueue && queueAction ? (
+            <IconButton
+              name="time-outline"
+              iconSize={20}
+              onPress={() => void handleSubmit(true)}
+              disabled={!canSend}
+              // No trailing slop: Send's 12pt slop already reaches into the
+              // gap, and an overlap would let a Queue tap land on Send.
+              hitSlop={{ top: 12, bottom: 12, left: 8, right: 0 }}
+              className="mr-4 h-8 w-8"
+              accessibilityLabel={queueAction.accessibilityLabel}
+              accessibilityState={{ disabled: !canSend }}
+            />
+          ) : null}
+          {showStop && renderStop ? (
             renderStop()
           ) : (
             <IconButton
@@ -710,7 +747,7 @@ export function MessageComposer({
               iconSize={18}
               color={theme.primaryForeground}
               variant="default"
-              onPress={handleSubmit}
+              onPress={() => void handleSubmit(false)}
               disabled={!canSend}
               hitSlop={12}
               className="h-8 w-8 rounded-full"

@@ -600,7 +600,12 @@ class ApiClient {
   ): Promise<MemberWithUser[]> {
     const raw = await this.fetch<unknown>(
       `/api/workspaces/${workspaceId}/members`,
-      { signal: opts?.signal },
+      {
+        signal: opts?.signal,
+        // Without it the server leaves guests out of the list, and useIsGuest
+        // could not recognize a guest. Mirrors protocol.AppCapabilityWorkspaceGuestsV1.
+        headers: { "X-Client-Capabilities": "workspace-guests-v1" },
+      },
     );
     return parseWithFallback(raw, MemberListSchema, EMPTY_MEMBER_LIST, {
       endpoint: "listMembers",
@@ -1296,7 +1301,7 @@ class ApiClient {
   async sendChatMessage(
     sessionId: string,
     content: string,
-    opts?: { attachmentIds?: string[]; clientMessageId?: string; askIds?: string[] },
+    opts?: { attachmentIds?: string[]; clientMessageId?: string; askIds?: string[]; queue?: boolean },
   ): Promise<SendChatMessageResponse> {
     // Strict parse — we need task_id + created_at to anchor the optimistic
     // StatusPill. Fallback would silently break the elapsed-time timer.
@@ -1308,12 +1313,22 @@ class ApiClient {
     //
     // `client_message_id` makes a retry idempotent (A22): the server stores
     // one message per (session, id). `ask_ids` answers displayed asks.
+    //
+    // `steer` asks the server to add this message to the running reply. The
+    // server decides eligibility (plain text, direct chat, a started reply on
+    // a capable daemon) and queues otherwise; older servers ignore the field
+    // and queue. `queue: true` is the explicit next-turn send. Same contract
+    // as web's `packages/core/api/client.ts`.
     const body: {
       content: string;
+      steer: boolean;
       attachment_ids?: string[];
       client_message_id?: string;
       ask_ids?: string[];
-    } = { content };
+    } = {
+      content,
+      steer: opts?.queue !== true,
+    };
     if (opts?.attachmentIds && opts.attachmentIds.length > 0) {
       body.attachment_ids = opts.attachmentIds;
     }
