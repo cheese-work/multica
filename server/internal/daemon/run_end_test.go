@@ -77,7 +77,7 @@ func cgroupSandbox(t *testing.T) (*sandbox.Launcher, string) {
 	if !ok {
 		return nil, ""
 	}
-	root, err := os.MkdirTemp(filepath.Join("/sys/fs/cgroup", rel), "e3-")
+	root, err := os.MkdirTemp("/sys/fs/cgroup"+rel, "e3-")
 	if err != nil {
 		return nil, ""
 	}
