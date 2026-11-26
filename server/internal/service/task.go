@@ -4628,6 +4628,11 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 		)
 		return false
 	}
+	if changed {
+		// Backstop for a notice whose ingestion-time write failed. It inserts
+		// nothing for events already noticed, so a replayed ack stays silent.
+		s.reconcileCompactNoticesBestEffort(ctx, taskID)
+	}
 	if !settled || payload.Outcome == "" {
 		return changed
 	}
@@ -4871,6 +4876,7 @@ func (s *TaskService) claimTaskOutcome(ctx context.Context, agentID, runtimeID p
 			RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
 			MinPriority:      minPriority,
 			ChatOnly:         scope.chatOnly,
+			AgingStepSecs:    queueAgingStep.Seconds(),
 		}
 		if b := scope.upto; b != nil {
 			claimParams.UptoPriority = pgtype.Int4{Int32: b.priority, Valid: true}
@@ -5102,7 +5108,7 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 	preSelectVersion := s.EmptyClaim.CurrentVersion(ctx, runtimeKey)
 
 	t0 := time.Now()
-	tasks, err := s.Queries.ListQueuedClaimCandidatesByRuntime(ctx, runtimeID)
+	tasks, err := s.Queries.ListQueuedClaimCandidatesByRuntime(ctx, db.ListQueuedClaimCandidatesByRuntimeParams{RuntimeID: runtimeID, AgingStepSecs: queueAgingStep.Seconds()})
 	listMs = time.Since(t0).Milliseconds()
 	listCount = len(tasks)
 	if err != nil {
@@ -5585,7 +5591,7 @@ func (s *TaskService) ClaimTasksForRuntimesWithNonDMLimit(ctx context.Context, r
 	}
 
 	// 4. One candidate SELECT across the non-empty set.
-	candidates, err := s.Queries.ListQueuedClaimCandidatesByRuntimes(ctx, nonEmpty)
+	candidates, err := s.Queries.ListQueuedClaimCandidatesByRuntimes(ctx, db.ListQueuedClaimCandidatesByRuntimesParams{RuntimeIds: nonEmpty, AgingStepSecs: queueAgingStep.Seconds()})
 	if err != nil {
 		s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "error_list", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
 		// Steps 2/6 commit reclaimed/claimed tasks in their own transactions,
@@ -6338,6 +6344,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			replyTask.ChatSessionID = chatAssistantMsg.ChatSessionID
 		}
 		suggest := s.chatQuickActionsEligible(ctx, replyTask, chatAssistantMsg)
+		// Backstop for a notice whose ingestion-time write failed; clients
+		// refetch on chat:done, so the notice is stored before it fires.
+		s.reconcileCompactNoticesBestEffort(ctx, task.ID)
 		s.broadcastChatDone(ctx, replyTask, chatAssistantMsg, suggest)
 		dmnotify.Publish(s.Bus, dmNotified)
 		if suggest {
@@ -10024,6 +10033,11 @@ func urgentReservedSlotEnabled(runtimeConfig []byte) bool {
 	}
 	return *cfg.Enabled
 }
+
+// queueAgingStep is how long a queued run waits to gain one effective priority
+// level in claim order (CHE-9926). Aging is capped at high, so urgent still
+// wins; the urgent reserved slot reads the stored priority, not the aged one.
+const queueAgingStep = 30 * time.Minute
 
 func priorityToInt(p string) int32 {
 	switch p {

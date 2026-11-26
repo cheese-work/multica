@@ -112,7 +112,7 @@ Click **Join** and confirm to add yourself to the member list. You appear in the
 
 ## Pause, cancel, and complete
 
-A project that is `paused`, `cancelled`, or `completed` starts no new agent runs, and agents cannot create issues in it or move issues into it.
+A project that is `paused`, `cancelled`, or `completed` starts no new agent runs. Agents can still create issues in a `paused` project, but those issues start no run until the project resumes; agents cannot create issues in a `cancelled` or `completed` project. Agents cannot move issues into any of the three.
 
 | Status | Queued runs | Running runs | Agent edits and comments on its issues |
 |---|---|---|---|

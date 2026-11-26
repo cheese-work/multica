@@ -103,7 +103,7 @@ func TestCarryOver_ClaimCarriesSummaryAndCurrentSegmentOnly(t *testing.T) {
 		t.Fatalf("PriorSessionID = %q, want empty", got.PriorSessionID)
 	}
 	wantInClaim(t, got.ChatMessage, "SUMMARY-TEXT", "REPLY-AFTER-DIVIDER", "NEXT-QUESTION")
-	wantNotIn(t, got.ChatMessage, "OLD-QUESTION", "OLD-ANSWER", "OLD-USER-AFTER-ANSWER")
+	wantNotIn(t, withoutHumanBlock(got.ChatMessage), "OLD-QUESTION", "OLD-ANSWER", "OLD-USER-AFTER-ANSWER")
 	if n := strings.Count(got.ChatMessage, "NEXT-QUESTION"); n != 1 {
 		t.Errorf("the new question appears %d times, want once", n)
 	}
@@ -119,7 +119,8 @@ func TestCarryOver_FallsBackToTheOldSegmentTail(t *testing.T) {
 	dm.compact(t, "SUMMARY-TEXT")
 	got := dm.claim(t, "NEXT-QUESTION")
 	wantInClaim(t, got.ChatMessage, "SUMMARY-TEXT", "OLD-ANSWER-LAST", "OLD-USER-AFTER-ANSWER", "NEXT-QUESTION")
-	wantNotIn(t, got.ChatMessage, "OLD-QUESTION-FIRST", "OLD-ANSWER-FIRST", "OLD-QUESTION-SECOND")
+	wantNotIn(t, withoutHumanBlock(got.ChatMessage), "OLD-QUESTION-FIRST", "OLD-ANSWER-FIRST", "OLD-QUESTION-SECOND")
+	wantNotIn(t, got.ChatMessage, "OLD-ANSWER-FIRST")
 }
 
 // (i): a question queued before the compact reaches its own claim once: the
@@ -155,7 +156,8 @@ func TestCarryOver_FallbackStopsAtThePreviousDivider(t *testing.T) {
 			dm.compact(t, "SUMMARY-TWO")
 			got := dm.claim(t, "NEXT-QUESTION")
 			wantInClaim(t, got.ChatMessage, "SUMMARY-TWO", seg1[1], "NEXT-QUESTION")
-			wantNotIn(t, got.ChatMessage, "SUMMARY-ONE", "OLD-ANSWER-LAST", "OLD-USER-AFTER-ANSWER", "OLD-QUESTION")
+			wantNotIn(t, withoutHumanBlock(got.ChatMessage), "SUMMARY-ONE", "OLD-ANSWER-LAST", "OLD-USER-AFTER-ANSWER", "OLD-QUESTION")
+			wantNotIn(t, got.ChatMessage, "OLD-ANSWER-LAST")
 		})
 	}
 }

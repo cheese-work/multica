@@ -60,6 +60,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 PASS の示す head の PR がまだオープンでも、ステップに `done` への `pr.merged` エッジとタスク自身の監視がある場合は、実行は残りません。サーバーは実行を開始せず、`auto_close_pending_merge` アクティビティ行を 1 件記録します。その後マージでタスクが実行なしで閉じます。 マージ時にサーバーはすべての条件を再確認します。満たさない条件（PASS のない新しい head、新たな有効なウェイクアップなど）があれば、閉じずにステップの実行を開始し、監視を外します。
 
+`warn` と `block` では、拒否された完了は `auto_close_skipped` アクティビティ行を 1 件記録します。行には最初に成立しなかった述語（`first_failure`）と、述語が読んだ入力（モードとその由来（ワークスペースまたはステップ）、課題の `post_close_work`、done エッジ、PASS 行とそれが指す head、リンクされた PR、未完了の子課題と決定、ウェイクアップ数、親の `delivery_stop`、確認時刻）が残ります。`multica issue close-check <issue>` は課題の現在の状態で全述語を表示し、`multica issue close-check <issue> --activity <row>` は保存された入力に同じ述語を実行します。課題がその後変わっても、サーバーがそのとき出した答えが返ります。どちらも読み取り専用です。
+
 モードは `multica workspace update --auto-close-mode off|warn|block` で設定します。読み取れない値は `off` として扱われます。
 
 ### ブロック時の実行スキップ

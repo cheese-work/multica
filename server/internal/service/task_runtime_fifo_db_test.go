@@ -313,3 +313,24 @@ func TestRuntimeFIFOBlockedPrefixNeverStarvesLaterAgent(t *testing.T) {
 		}
 	})
 }
+
+// AG (CHE-9926 aging): the claim bound compares the aged priority, not the
+// stored one. A's oldest row is stored at priority 0 but has aged to high and is
+// blocked; A's newer row is stored high. B's row sits between them. The bound of
+// A's first group must exclude A's newer row (equal aged priority, newer), so
+// B's row starts.
+func TestRuntimeFIFOBoundUsesAgedPriority(t *testing.T) {
+	forEachFIFOPath(t, func(t *testing.T, p fifoPath) {
+		f := newClaimDecisionFixture(t, 5)
+		agentA := util.UUIDToString(f.agentID)
+		agentB := f.fifoAgent(t, "fifo-ag-b")
+		now := time.Now().UTC().Truncate(time.Microsecond)
+		f.fifoRunning(t, agentA, now.Add(-4*time.Hour), testutil.Cols{"issue_id": f.issueID})
+		f.setRuntimeCap(t, int32Ptr(2)) // one running + one free slot
+		f.fifoRow(t, agentA, now.Add(-170*time.Minute), testutil.Cols{"issue_id": f.issueID, "priority": 0})
+		bRow := f.fifoRow(t, agentB, now.Add(-100*time.Minute), testutil.Cols{"issue_id": f.fx.Issue(t, "fifo-ag-b issue"), "priority": 3})
+		f.fifoRow(t, agentA, now.Add(-50*time.Minute), testutil.Cols{"issue_id": f.fx.Issue(t, "fifo-ag-a newer issue"), "priority": 3})
+
+		wantOnly(t, p.claim(t, f), bRow)
+	})
+}

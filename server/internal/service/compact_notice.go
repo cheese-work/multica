@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -124,4 +125,13 @@ func (s *TaskService) ReconcileCompactNotices(ctx context.Context, taskID pgtype
 		})
 	}
 	return created, nil
+}
+
+// reconcileCompactNoticesBestEffort is the terminal and cancel-finalize backstop
+// around ReconcileCompactNotices. The turn is already settled when it runs, so a
+// failure is logged and never fails the caller.
+func (s *TaskService) reconcileCompactNoticesBestEffort(ctx context.Context, taskID pgtype.UUID) {
+	if _, err := s.ReconcileCompactNotices(ctx, taskID); err != nil {
+		slog.Warn("reconcile compact notices failed", "task_id", util.UUIDToString(taskID), "error", err)
+	}
 }
