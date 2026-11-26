@@ -788,7 +788,7 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 `issue.project.set` 把 issue 移到另一个项目：`multica decision propose issue.project.set --version 1 --issue MUL-123 --param project_id=<project-id>`。卡片显示移动前后的项目、工作流、运行上限和已用运行次数，并说明这次移动是否扩大运行预算。扩大预算的移动是 `spend` 卡片，其他移动是 `reversible`。只有工作区所有者可以批准。若请求之后 issue 已离开原项目，或目标工作流的预算变大，卡片会被拒绝。
 
-`issue.project.quick_set` 和 `project.workflow.quick_set` 由服务器打开，而不是由智能体提出：持任务令牌的智能体把 issue 移到遵循 Quick 的项目，或把项目切换为 Quick 时，会得到所有者卡片而不是被拒绝，只有所有者用通行密钥批准后才会执行（`spend` 类）。卡片显示工作流、运行上限，以及项目切换时有多少 issue 会移到另一个状态。若请求之后 issue、项目或运行预算发生变化，卡片会以 `stale_base` 结束。
+`issue.project.quick_set` 和 `project.workflow.quick_set` 由服务器打开，而不是由智能体提出：持任务令牌的智能体把 issue 移到遵循 Quick 的项目，或把项目切换为 Quick 时，会得到所有者卡片而不是被拒绝，只有所有者用通行密钥批准后才会执行（`spend` 类）。卡片显示工作流、运行上限，以及项目切换时有多少 issue 会移到另一个状态。若请求之后 issue、项目或运行预算发生变化，卡片会以 `stale_base` 结束。 当切换会放宽运行预算（例如 Default 到 Product）时，`project.workflow.set` 以同样方式打开：智能体运行中的 `multica project workflow set <project-id>... <workflow>` 指定两个或更多项目（最多 50 个）时，会打开一张卡片，列出每个项目切换前后的工作流和运行上限。批准后所有项目都切换，或都不切换；请求之后出现任何差异都会以 `stale_base` 结束。个人访问令牌仍会收到 `budget_rebinding_requires_interactive`。
 
 `project.status.set` 用于更改项目状态：`multica decision propose project.status.set --version 1 --issue MUL-123 --param project_id=<project-id> --param status=paused`。`status` 取值为 `planned`、`in_progress`、`paused`、`completed` 或 `cancelled`。任务令牌或云节点令牌不能通过 `multica project status` 或 `multica project update --status` 更改项目状态：服务器返回 403 并指明此操作。由人通过通行密钥批准该卡片。状态只在批准后才会改变，结果中包含旧状态和新状态。暂停、完成或取消会像直接更改一样，结束该项目排队中和已派发的运行。由人进行的更改照常有效。
 

@@ -265,8 +265,8 @@ func TestProjectWorkflowSetCardPreviewListsEveryProject(t *testing.T) {
 	for label, values := range fields {
 		if strings.HasPrefix(label, "Project Set project ") {
 			rows++
-			if !strings.HasPrefix(values[0], "narrow-") || !strings.HasPrefix(values[1], "wide-") || !strings.Contains(values[0], "cap 25") || strings.Contains(values[1], "cap 25") {
-				t.Fatalf("%s = %v; want the narrow workflow with cap 25, then the wide one without it", label, values)
+			if !strings.HasPrefix(values[0], "narrow-") || !strings.HasPrefix(values[1], "wide-") || !strings.Contains(values[0], "cap 25") || !strings.Contains(values[1], "cap 25") {
+				t.Fatalf("%s = %v; want the narrow workflow, then the wide one, each with its cap", label, values)
 			}
 		}
 	}
