@@ -123,3 +123,26 @@ func TestHumanAdminCanEditAndDeleteAnAgentsComment(t *testing.T) {
 	updateComment(t, newRequestAs(adminID, http.MethodPut, "/api/comments/"+f.ownCommentA, map[string]any{"content": "edited by admin"}), f.ownCommentA).Want(http.StatusOK)
 	deleteComment(t, newRequestAs(adminID, http.MethodDelete, "/api/comments/"+f.ownCommentA, nil), f.ownCommentA).Want(http.StatusNoContent)
 }
+
+func TestCanModifyComment(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		actorType string
+		isAuthor  bool
+		role      string
+		want      bool
+	}{
+		{"agent author", "agent", true, "owner", true},
+		{"agent owner role, not author", "agent", false, "owner", false},
+		{"agent admin role, not author", "agent", false, "admin", false},
+		{"agent member role, not author", "agent", false, "member", false},
+		{"member author", "member", true, "member", true},
+		{"member owner, not author", "member", false, "owner", true},
+		{"member admin, not author", "member", false, "admin", true},
+		{"member plain, not author", "member", false, "member", false},
+	} {
+		if got := CanModifyComment(tc.actorType, tc.isAuthor, tc.role); got != tc.want {
+			t.Errorf("%s: CanModifyComment = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
