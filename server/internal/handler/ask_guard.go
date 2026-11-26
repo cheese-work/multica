@@ -63,10 +63,10 @@ const reversibleAskFix = "Standing Delivery Authorization (CHE-584) lets agents 
 // refuseReversibleAsk (CHE-5754) refuses a plain agent question whose class is
 // reversible: the ask is for work Standing Delivery Authorization already
 // allows. Action, proposal and batch requests are the approval-gated path
-// (CHE-5167) and stay open. The reversible_ask_guard setting decides: off allows,
+// (CHE-5167) and stay open, as does the typed discovery_brief subject (CHE-10271). The reversible_ask_guard setting decides: off allows,
 // warn logs, block refuses. Set it to off to revert; no data changes.
 func (handler *Handler) refuseReversibleAsk(ctx context.Context, issue db.Issue, input decisionRequestInput) error {
-	if input.EscalationClass != "reversible" || input.Action != nil || input.Proposal != nil || input.Batch != nil || input.Kind == decisiontx.KindAction {
+	if input.EscalationClass != "reversible" || input.Action != nil || input.Proposal != nil || input.Batch != nil || input.Kind == decisiontx.KindAction || input.Parsed != nil && input.Parsed.Subject == decisiontx.SubjectDiscoveryBrief {
 		return nil
 	}
 	workspace, err := handler.Queries.GetWorkspace(ctx, issue.WorkspaceID)
