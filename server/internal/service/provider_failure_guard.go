@@ -120,7 +120,7 @@ type providerFailureRecoveryAttempt struct {
 	ProbeStatus  int32
 	// SuccessEvidence: ProbeAt is the breaker's last_success_at, not an HTTP probe.
 	SuccessEvidence bool
-	// CooldownElapsed: no probe evidence was obtainable; ProbeAt is the decision time.
+	// CooldownElapsed: no probe evidence of a changed condition was obtainable; ProbeAt is the decision time.
 	CooldownElapsed bool
 	Scope           providerFailureRecoveryScope
 	SkipReason      string
@@ -218,6 +218,11 @@ func (s *TaskService) prepareProviderFailureRecovery(ctx context.Context, q *db.
 	attempt.ProbeAt = evidence.CheckedAt.UTC()
 	attempt.ProbeStatus = int32(evidence.StatusCode)
 	if evidence.StatusCode != http.StatusUnauthorized || !evidence.CheckedAt.After(attempt.FailedAt) {
+		// A probe that keeps answering 502 would otherwise latch the trigger
+		// forever (CHE-10039): past the unprobed threshold, one bounded recovery.
+		if time.Since(attempt.FailedAt) >= providerFailureUnprobedRecoveryAfter {
+			return unprobedProviderRecovery(attempt, "probe did not establish a changed condition"), nil
+		}
 		attempt.SkipReason = "fresh /v1/models probe did not establish a changed condition"
 		return attempt, nil
 	}

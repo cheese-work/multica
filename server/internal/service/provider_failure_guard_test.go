@@ -781,11 +781,23 @@ func TestAutopilotScheduleRecoversOnceWhenProbeFailsAndFailureIsOld(t *testing.T
 	}
 }
 
-// A probe that answers without the changed condition is observed evidence, so
-// it keeps the skip however old the failure is.
-func TestAutopilotScheduleSkipsWhenProbeAnswersWithoutChangedConditionAndFailureIsOld(t *testing.T) {
+// A probe that keeps answering 502 must not latch the trigger either: past the
+// threshold it admits one recovery run, and a failed recovery run stops the loop.
+func TestAutopilotScheduleRecoversOnceWhenProbeAnswers502AndFailureIsOld(t *testing.T) {
 	f, ownerID := newPrincipalFixture(t)
-	autopilotID, triggerID, _ := seedAutopilotProviderFailure(t, f, ownerID, "7 hours")
+	autopilotID, triggerID, failedTaskID := seedAutopilotProviderFailure(t, f, ownerID, "7 hours")
 	f.svc.TaskSvc.ProviderFailureProbe = &providerFailureProbeStub{evidence: ProviderFailureProbeEvidence{CheckedAt: time.Now().UTC(), StatusCode: http.StatusBadGateway}}
-	requireCooldownSkip(t, f, autopilotID, triggerID, "probe 502")
+	run := requireUnprobedRecovery(t, f, autopilotID, triggerID, failedTaskID)
+
+	f.Exec(t, "UPDATE agent_task_queue SET status='failed', failure_reason='agent_error.provider_server_error', completed_at=now() WHERE id=$1", util.UUIDToString(run.TaskID))
+	f.Exec(t, "UPDATE autopilot_run SET status='failed', completed_at=now() WHERE id=$1", util.UUIDToString(run.ID))
+	requireCooldownSkip(t, f, autopilotID, triggerID, "failed recovery run after probe 502")
+}
+
+// Inside the threshold a probe answer without the changed condition still skips.
+func TestAutopilotScheduleSkipsWhenProbeAnswers502AndFailureIsRecent(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, _ := seedAutopilotProviderFailure(t, f, ownerID, "2 hours")
+	f.svc.TaskSvc.ProviderFailureProbe = &providerFailureProbeStub{evidence: ProviderFailureProbeEvidence{CheckedAt: time.Now().UTC(), StatusCode: http.StatusBadGateway}}
+	requireCooldownSkip(t, f, autopilotID, triggerID, "probe 502, recent failure")
 }
