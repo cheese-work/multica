@@ -1124,6 +1124,20 @@ WHERE id = (
               WHERE ctd.task_id = atq.id AND ctd.chat_type = 'group'
           )
       ))
+      -- CHE-10088: optional upper bound in claim order (priority DESC,
+      -- created_at ASC, id ASC). A runtime poll that walks candidates across
+      -- agents passes the last candidate key of this agent's consecutive group,
+      -- so the claim cannot take a row that is newer than another agent's
+      -- candidate. All three params NULL means no bound.
+      AND (
+          sqlc.narg('upto_priority')::int IS NULL
+          OR atq.priority > sqlc.narg('upto_priority')::int
+          OR (atq.priority = sqlc.narg('upto_priority')::int AND (
+              atq.created_at < sqlc.narg('upto_created_at')::timestamptz
+              OR (atq.created_at = sqlc.narg('upto_created_at')::timestamptz
+                  AND atq.id <= sqlc.narg('upto_id')::uuid)
+          ))
+      )
     ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
@@ -3293,7 +3307,7 @@ WHERE atq.runtime_id = $1
             OR r.visibility = 'private'
         )
   )
-ORDER BY atq.priority DESC, atq.created_at ASC;
+ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC;
 
 -- name: CancelSupersededDeferredRetriesForRuntimes :many
 -- Cancels deferred auto-retry rows that a newer active task has already
@@ -3422,7 +3436,7 @@ WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
             OR r.visibility = 'private'
         )
   )
-ORDER BY atq.priority DESC, atq.created_at ASC;
+ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC;
 
 -- name: NextDeferredTaskFireAtForRuntimes :one
 -- Returns the next future deferred task for a daemon's authorized runtime set,
