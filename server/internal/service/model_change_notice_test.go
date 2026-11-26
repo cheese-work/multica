@@ -41,8 +41,8 @@ func TestModelChangeNoticeText(t *testing.T) {
 			"Opus 5.5 refused the request (provider safety classification cyber) and no fallback model was available."},
 		{"unrecognized id is shown as reported", base(map[string]any{"phase": "attempt", "reason": "overloaded", "target_model": "gpt-9"}),
 			"Runtime is retrying Opus 5.5 → gpt-9. Reason: provider overloaded. Scope: session."},
-		{"dated id keeps family and version", base(map[string]any{"phase": "return", "source_model": "claude-sonnet-4-5-20250929", "target_model": "claude-haiku-4-5"}),
-			"Runtime returned to Haiku 4.5 from Sonnet 4.5. Scope: session."},
+		{"dated id keeps family and version", base(map[string]any{"phase": "return", "source_model": "claude-opus-4-1-20250805", "target_model": "claude-opus-4-5"}),
+			"Runtime returned to Opus 4.5 from Opus 4.1. Scope: session."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
