@@ -235,6 +235,8 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` はコメントを除き、すべてのアクティビティ記録を残します。`--action` は指定したアクションだけを返し、繰り返し指定でき、`--activity-only` を含意します。サーバーが読み込む履歴には上限があり、切り詰められた場合は stderr に警告が出ます。その結果から滞在時間を推定しないでください。
 
+`multica issue close-check <issue>` は、課題を変更せずに、自動完了した（またはしなかった）理由を表示します。課題の現在の状態での各完了述語とその値、最初に成立しない述語、有効な `auto_close` モードとその由来（ワークスペースまたはステップ）です。`--activity <row>` は 1 件の `auto_close_skipped` 行に保存された入力に同じ述語を実行するため、課題がその後変わっても、そのとき記録された最初の失敗を返します。行は `multica issue timeline <issue> --action auto_close_skipped` で探せます。
+
 ```bash
 multica issue description history MUL-123
 multica issue description diff MUL-123 --from 30 --to 35
