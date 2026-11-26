@@ -1,0 +1,25 @@
+{
+  "fix": "Workspace governance artifacts, names and run data belong in the private store, not in this public fork. Remove the path or the wording; a bare issue key is fine.",
+  "exempt": ["scripts/public-fork-guard.mjs", "scripts/public-fork-guard.test.mjs", "scripts/public-fork-guard/", ".github/CODEOWNERS"],
+  "paths": [
+    { "id": "path-plans", "pattern": "^\\.plans/" },
+    { "id": "path-planning", "pattern": "^\\.planning/" },
+    { "id": "path-docs-ux-evidence", "pattern": "^docs/ux/CHE-[0-9]+(/|\\.(yml|md)$)" },
+    { "id": "path-docs-evidence", "pattern": "^docs/evidence/" },
+    { "id": "path-docs-plans", "pattern": "^docs/plans/CHE-" },
+    { "id": "path-docs-engineering-spike", "pattern": "^docs/(engineering/)?che-[0-9]+" },
+    { "id": "path-evidence", "pattern": "(^|/)evidence/CHE-" },
+    { "id": "path-internal-docs", "pattern": "(^|/)docs/internal/" },
+    { "id": "path-workspace-policy", "pattern": "^config/(tevo-|README\\.md$)" },
+    { "id": "path-root-test-log", "pattern": "^(red|green)[0-9]*\\.txt$" }
+  ],
+  "names": [
+    { "id": "agent-name", "pattern": "\\bx99\\b", "ignoreCase": true },
+    { "id": "agent-name-lane", "pattern": "\\b(mbp|c00)-[a-z0-9]", "ignoreCase": true },
+    { "id": "agent-name-tofu", "pattern": "\\bTofu\\b" },
+    { "id": "product-org", "pattern": "tevo", "ignoreCase": true },
+    { "id": "workspace-person", "pattern": "\\bCheese\\b|congvc", "ignoreCase": false },
+    { "id": "workspace-org", "pattern": "cheese-work/(?!multica(\\.git)?(?![\\w-]))" },
+    { "id": "workspace-repo", "pattern": "multica-dotfiles" }
+  ]
+}

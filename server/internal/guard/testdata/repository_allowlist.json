@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "plugins": [
+    {
+      "name": "ci-wait",
+      "match": {
+        "tool": "gh"
+      },
+      "action": "deny",
+      "builtin": "ci-wait"
+    },
+    {
+      "name": "ci-wait-sleep",
+      "match": {
+        "tool": "sleep"
+      },
+      "action": "deny",
+      "builtin": "ci-wait"
+    },
+    {
+      "name": "gh-pr",
+      "match": {
+        "tool": "gh",
+        "subcommand": [
+          "pr"
+        ]
+      },
+      "action": "fix",
+      "builtin": "gh-pr"
+    },
+    {
+      "name": "gh-api",
+      "match": {
+        "tool": "gh",
+        "subcommand": [
+          "api"
+        ]
+      },
+      "action": "deny",
+      "builtin": "gh-api"
+    },
+    {
+      "name": "wakeup-create",
+      "match": {
+        "tool": "multica",
+        "subcommand": [
+          "issue",
+          "wakeup",
+          "create"
+        ]
+      },
+      "action": "shadow",
+      "builtin": "multica-wakeup"
+    },
+    {
+      "name": "wakeup-update",
+      "match": {
+        "tool": "multica",
+        "subcommand": [
+          "issue",
+          "wakeup",
+          "update"
+        ]
+      },
+      "action": "shadow",
+      "builtin": "multica-wakeup"
+    }
+  ],
+  "repository_allowlist": {
+    "example-org": [
+      "app-one",
+      "app-template",
+      "app-three",
+      "app-four"
+    ]
+  }
+}
