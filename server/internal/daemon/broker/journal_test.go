@@ -466,6 +466,22 @@ func TestTamperedHeaderSendsNothing(t *testing.T) {
 	}
 }
 
+func TestPutRefusesExpiryBeyondTokenLife(t *testing.T) {
+	t.Parallel()
+	root := journalRoot(t)
+	f := newJFake(t)
+	j := openTestJournal(t, root, NewInstanceID(), nil, nil)
+	if err := j.Put(entryFor(f, "ghs_toolong_iiiiiiiiiiiiiiiiiiiiiiii", 3*time.Hour, time.Now())); err == nil {
+		t.Fatal("Put accepted an expiry 3h out")
+	}
+	if got := entryFiles(t, root); len(got) != 0 {
+		t.Fatalf("entries %v after a refused Put", got)
+	}
+	if err := j.Put(entryFor(f, "ghs_hour_jjjjjjjjjjjjjjjjjjjjjjjjjj", time.Hour, time.Now())); err != nil {
+		t.Fatalf("Put of a one-hour token: %v", err)
+	}
+}
+
 func TestKeyWriteFailureLeavesNoKeyAndRecovers(t *testing.T) {
 	t.Parallel()
 	fails := map[string]func(*os.File, []byte) error{

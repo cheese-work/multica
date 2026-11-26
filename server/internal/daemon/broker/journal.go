@@ -45,11 +45,14 @@ import (
 // never touches `held`, `retiring` or `sweeping` ones.
 
 const (
-	journalKeyFile       = "journal.key"
-	journalFormat        = 1
-	journalNameLen       = 16 // hex characters of sha256(token) in an entry name
-	journalTempMark      = ".tmp-"
-	journalGarbageAge    = 2 * time.Hour
+	journalKeyFile    = "journal.key"
+	journalFormat     = 1
+	journalNameLen    = 16 // hex characters of sha256(token) in an entry name
+	journalTempMark   = ".tmp-"
+	journalGarbageAge = 2 * time.Hour
+	// journalMaxLife bounds the expiry Put accepts. A GitHub installation token
+	// lives an hour, so a file older than journalGarbageAge holds a dead token.
+	journalMaxLife       = time.Hour + 30*time.Minute
 	journalRevokeTimeout = 15 * time.Second
 )
 
@@ -379,6 +382,9 @@ func (j *Journal) Put(e JournalEntry) error {
 	if err := j.checkBase(e.APIBase); err != nil {
 		return err
 	}
+	if e.Expires.After(j.now().Add(journalMaxLife)) {
+		return errors.New("journal: entry expiry is further out than a token can live")
+	}
 	name := entryName(e.Token)
 
 	j.mu.Lock()
@@ -625,7 +631,7 @@ func (j *Journal) sweepOne(ctx context.Context, name string, res *SweepResult) {
 		}
 		if perr != nil {
 			// No header value can be trusted, so age comes from the file: a
-			// token lives an hour at most, far less than journalGarbageAge.
+			// Put refuses an expiry beyond journalMaxLife, far less than journalGarbageAge.
 			drop := false
 			if info, serr := os.Stat(j.path(name)); serr == nil && now.Sub(info.ModTime()) > journalGarbageAge {
 				os.Remove(j.path(name))
