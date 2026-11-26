@@ -1,6 +1,11 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -36,5 +41,36 @@ func TestFindingFlags(t *testing.T) {
 		if _, err := parse(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+// The review-gate handler tests send testdata/finding_revision.json as the
+// review_findings of a round-2 verdict (CHE-9942 W2). This test pins that file
+// to what the CLI emits for the same --finding value, so a change to the wire
+// format of findingFlags fails here before it silently refuses a verdict.
+func TestFindingFlagsMatchHandlerFixture(t *testing.T) {
+	c := &cobra.Command{}
+	c.Flags().StringArray("finding", nil, "")
+	_ = c.Flags().Set("finding", "P1@missing_test_first@revision:B")
+	got, err := findingFlags(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// TestMain moves the working directory, so resolve from this file.
+	_, self, _, _ := runtime.Caller(0)
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(self), "..", "..", "internal", "handler", "testdata", "finding_revision.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []map[string]any
+	if err := json.Unmarshal(raw, &want); err != nil {
+		t.Fatal(err)
+	}
+	// Round-trip the CLI output through JSON, as the request body does.
+	sent, _ := json.Marshal(got)
+	var onWire []map[string]any
+	_ = json.Unmarshal(sent, &onWire)
+	if !reflect.DeepEqual(onWire, want) {
+		t.Fatalf("findingFlags emits %s, fixture holds %s", sent, raw)
 	}
 }
