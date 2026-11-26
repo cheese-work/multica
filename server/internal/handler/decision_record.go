@@ -507,7 +507,7 @@ func (handler *Handler) persistDecisionRecord(ctx context.Context, queries *db.Q
 	if !source.TaskID.Valid {
 		pending = ""
 	}
-	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.%s\nOpen issue: %s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, pending, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)))
+	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.%s\n%s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, pending, util.OpenIssueFooter(fmt.Sprintf("%s-%d", workspace.IssuePrefix, issue.Number), uuidToString(issue.ID)))
 	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: source.SessionID, Role: "assistant", Content: note, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "task_token", Valid: true}, DecisionAnswerID: answer.ID})
 	if err != nil {
 		return empty, err

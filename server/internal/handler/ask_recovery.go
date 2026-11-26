@@ -56,8 +56,8 @@ func (handler *Handler) deliverAskRecoveries(ctx context.Context) error {
 
 // askRecoveryContent quotes the stored source verbatim. It names no option,
 // recommendation or approval, so nothing in it can answer a decision.
-func askRecoveryContent(identifier, issuePath, issueID, source string) string {
-	return fmt.Sprintf("This is automatic recovery, not a decision request. A run asked about [%s](mention://issue/%s) and ended before the ask reached you.\n\nOriginal ask:\n\n%s\n\nReply in the comment thread under this notice on the issue to answer; a reply in this chat does not count. Open issue: %s", identifier, issueID, source, issuePath)
+func askRecoveryContent(identifier, issueID, source string) string {
+	return fmt.Sprintf("This is automatic recovery, not a decision request. A run asked about [%s](mention://issue/%s) and ended before the ask reached you.\n\nOriginal ask:\n\n%s\n\nReply in the comment thread under this notice on the issue to answer; a reply in this chat does not count. %s", identifier, issueID, source, util.OpenIssueFooter(identifier, issueID))
 }
 
 // deliverAskRecovery writes the notice, the issue comment, the DM message and
@@ -131,7 +131,7 @@ func (handler *Handler) deliverAskRecovery(ctx context.Context, listed db.AskGua
 		return err
 	}
 	identifier := fmt.Sprintf("%s-%d", workspace.IssuePrefix, issue.Number)
-	content := askRecoveryContent(identifier, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)), uuidToString(issue.ID), source)
+	content := askRecoveryContent(identifier, uuidToString(issue.ID), source)
 	sent, err := handler.writeMemberNotice(ctx, queries, memberNotice{
 		Issue: issue, Agent: agent, MemberID: event.MemberID, Content: content,
 		Kind: protocol.ChatMessageKindAskRecovery, AuthorType: "agent", AuthorID: agent.ID,
