@@ -24,6 +24,10 @@ func TestMain(m *testing.M) {
 		"MULTICA_WORKSPACE_ID",
 		"MULTICA_SERVER_URL",
 		"MULTICA_TASK_CONFIG_ROOT",
+		"MULTICA_TASK_WORKSPACES_ROOT",
+		"MULTICA_AGENT_NAME",
+		devEnvHomeEnv,
+		devEnvNameEnv,
 	} {
 		os.Unsetenv(key)
 	}
@@ -41,10 +45,31 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
+	// The daemon-task marker lookup walks up from the working directory. Run
+	// from a checkout inside an agent task workdir, the package directory sits
+	// below that task's real marker, and every API, config and daemon path
+	// refuses. Tests that need a marker create one and t.Chdir into it.
+	testLaunchDir, err = os.Getwd()
+	if err == nil {
+		err = os.Chdir(scratchHome)
+	}
+	if err != nil {
+		_ = os.RemoveAll(scratchHome)
+		fmt.Fprintf(os.Stderr, "move cmd/multica tests into scratch home: %v\n", err)
+		os.Exit(1)
+	}
+
 	code := m.Run()
+	// Windows cannot remove the current working directory.
+	_ = os.Chdir(os.TempDir())
 	_ = os.RemoveAll(scratchHome)
 	os.Exit(code)
 }
+
+// testLaunchDir is the working directory the test binary started in, before
+// TestMain moved it into the scratch home. A helper process whose parent set
+// exec.Cmd.Dir reads its fixtures from there.
+var testLaunchDir string
 
 var redirectTestHome = testutil.RedirectUserHome
 
@@ -79,108 +104,40 @@ func TestResolveAppURL(t *testing.T) {
 }
 
 func TestResolveCallbackBinding(t *testing.T) {
-	// Fake outbound detector: pretends the CLI has a fixed LAN IP regardless
-	// of which server it dials.
-	fixed := func(ip string) func(string) net.IP {
-		return func(string) net.IP { return net.ParseIP(ip).To4() }
-	}
-	failing := func(string) net.IP { return nil }
-
-	type bindingCase struct {
+	loopbackCases := []struct {
 		name         string
 		flagHost     string
-		serverURL    string
-		appURL       string
-		detect       func(string) net.IP
 		wantCallback string
-		wantBind     string
-		wantError    bool
+	}{
+		{"default stays on loopback", "", "localhost"},
+		{"blank flag stays on loopback", "  ", "localhost"},
+		{"--callback-host localhost", "localhost", "localhost"},
+		{"--callback-host 127.0.0.1", "127.0.0.1", "127.0.0.1"},
 	}
-	cases := []bindingCase{
-		{
-			name:         "IPv6 app URL uses a supported loopback callback",
-			appURL:       "http://[fd00::1]:3000",
-			detect:       failing,
-			wantCallback: "localhost",
-			wantBind:     "127.0.0.1",
-		},
-
-		{
-			name:         "public app URL stays on loopback",
-			appURL:       "https://multica.ai",
-			serverURL:    "https://api.multica.ai",
-			detect:       failing,
-			wantCallback: "localhost",
-			wantBind:     "127.0.0.1",
-		},
-		{
-			name:         "localhost app URL stays on loopback",
-			appURL:       "http://localhost:3000",
-			serverURL:    "http://localhost:8080",
-			detect:       failing,
-			wantCallback: "localhost",
-			wantBind:     "127.0.0.1",
-		},
-		{
-			name:         "same-machine self-host uses loopback (CLI IP matches app IP)",
-			appURL:       "http://192.168.0.28:3000",
-			serverURL:    "http://192.168.0.28:8080",
-			detect:       fixed("192.168.0.28"),
-			wantCallback: "localhost",
-			wantBind:     "127.0.0.1",
-		},
-		{
-			name:         "cross-machine self-host points callback at CLI's LAN IP",
-			appURL:       "http://192.168.0.28:3000",
-			serverURL:    "http://192.168.0.28:8080",
-			detect:       fixed("192.168.0.47"),
-			wantCallback: "192.168.0.47",
-			wantBind:     "0.0.0.0",
-		},
-		{
-			name:         "outbound detection failure falls back to app IP",
-			appURL:       "http://192.168.0.28:3000",
-			serverURL:    "http://192.168.0.28:8080",
-			detect:       failing,
-			wantCallback: "192.168.0.28",
-			wantBind:     "0.0.0.0",
-		},
-		{
-			name:         "--callback-host flag overrides everything",
-			flagHost:     "10.0.0.5",
-			appURL:       "https://multica.ai",
-			serverURL:    "https://api.multica.ai",
-			detect:       fixed("10.0.0.5"),
-			wantCallback: "10.0.0.5",
-			wantBind:     "0.0.0.0",
-		},
-	}
-
-	for _, host := range []string{"198.18.0.1", "8.8.8.8", "100.64.0.1", "169.254.1.1", "::1", "fd00::1", "::ffff:192.168.0.1", "cli.internal.example", "localhost:1234", "127.0.0.1@evil.example"} {
-		cases = append(cases, bindingCase{name: "unsupported explicit host " + host, flagHost: host, wantError: true})
-	}
-	for _, ip := range []string{"198.18.0.1", "8.8.8.8", "100.64.0.1", "169.254.1.1"} {
-		cases = append(cases, bindingCase{name: "unsupported outbound IP " + ip, appURL: "http://192.168.0.28:3000", detect: fixed(ip), wantError: true})
-	}
-
-	for _, tc := range cases {
+	for _, tc := range loopbackCases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			gotCallback, gotBind, err := resolveCallbackBinding(tc.flagHost, tc.serverURL, tc.appURL, tc.detect)
-			if tc.wantError {
-				if err == nil || !strings.Contains(err.Error(), "--callback-host") {
-					t.Fatalf("expected actionable callback error, got %v", err)
-				}
-				return
-			}
+			gotCallback, gotBind, err := resolveCallbackBinding(tc.flagHost)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if gotCallback != tc.wantCallback {
 				t.Errorf("callback host = %q, want %q", gotCallback, tc.wantCallback)
 			}
-			if gotBind != tc.wantBind {
-				t.Errorf("bind addr = %q, want %q", gotBind, tc.wantBind)
+			if ip := net.ParseIP(gotBind); ip == nil || !ip.IsLoopback() {
+				t.Errorf("bind addr %q is not a loopback address; the login JWT must never cross the network in clear text", gotBind)
+			}
+		})
+	}
+
+	// RFC 1918 hosts used to bind 0.0.0.0 so a LAN browser could reach the CLI.
+	// The JWT travels in the callback URL over plain HTTP, so they are refused.
+	for _, host := range []string{"10.0.0.5", "172.16.0.1", "192.168.0.47", "0.0.0.0", "198.18.0.1", "8.8.8.8", "100.64.0.1", "169.254.1.1", "::1", "fd00::1", "::ffff:192.168.0.1", "cli.internal.example", "localhost:1234", "127.0.0.1@evil.example"} {
+		host := host
+		t.Run("unsupported explicit host "+host, func(t *testing.T) {
+			_, bind, err := resolveCallbackBinding(host)
+			if err == nil || !strings.Contains(err.Error(), "ssh -L") || !strings.Contains(err.Error(), "--callback-host") {
+				t.Fatalf("expected actionable callback error naming ssh -L, got bind=%q err=%v", bind, err)
 			}
 		})
 	}

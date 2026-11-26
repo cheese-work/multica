@@ -67,7 +67,20 @@
     "unread_other": "{{count}} 條未讀對話",
     "default": "問 Multica"
   },
+  "bar": {
+    "history": "對話記錄",
+    "history_group": {
+      "today": "今天",
+      "week": "過去 7 天",
+      "older": "更早"
+    },
+    "close_chip": "關閉 {{title}}",
+    "all_chats": "全部對話",
+    "more_other": "另外 {{count}} 個對話"
+  },
   "input": {
+    "page_context_add": "將目前頁面加入為上下文",
+    "page_context_remove": "移除頁面上下文",
     "placeholder_no_agent": "建立一個 AI 代理後才能開始對話",
     "placeholder_archived": "此會話已歸檔",
     "placeholder_archived_agent": "該 AI 代理已歸檔",
@@ -136,6 +149,8 @@
     "resend_failed_toast": "無法重新傳送訊息"
   },
   "message_list": {
+    "jump_to_latest": "跳到最新",
+    "new_reply": "新回覆",
     "show_details": "檢視詳情",
     "show_earlier_context": "顯示先前脈絡",
     "replied_in": "{{elapsed}} 內回覆",
@@ -156,6 +171,7 @@
       "environment_prepare_failed": "執行 AI 代理的那臺機器沒能把這次執行準備好，任務沒有啟動。下方的原始錯誤會說明是哪一步失敗——常見的是磁碟空間、權限、目錄仍被佔用，或本地配置讀不出來。與 AI 代理和模型廠商無關。",
       "provider_network": "與模型服務的連線中斷，回覆沒能完成。檢查網路後重試。",
       "provider_auth_or_access": "AI 代理的模型帳號登入已失效。重新登入後再試。",
+      "model_not_found_or_unavailable": "此 AI 代理使用的模型無法使用——它可能不存在，或此帳號沒有存取權限。請改選其他模型，或請管理員啟用該模型，然後再試。",
       "provider_quota_limit": "AI 代理的模型帳號額度已用盡。充值或更換帳號後再試。",
       "provider_capacity_or_rate_limit": "模型服務繁忙或觸發了限流。稍後再試。",
       "context_overflow": "這次對話超出了模型的上下文長度。開一個新會話，或把需求拆得更小一些。",
@@ -237,6 +253,7 @@
     "restore_tooltip": "還原",
     "expand_tooltip": "展開",
     "minimize_tooltip": "最小化",
+    "close_tooltip": "關閉",
     "another_running": "另一個對話正在執行",
     "another_unread": "另一個對話有未讀回覆",
     "running": "執行中",
@@ -277,7 +294,6 @@
       "label": "推薦一個操作",
       "prompt": "根據你對我的工作區的瞭解，推薦一個有用的初始操作。"
     },
-    "customize": "自定義開場建議",
     "uploading": "請等待附件上傳完成後再使用開場建議。",
     "draft_in_progress": "請先傳送或清空草稿，再使用開場建議。"
   },
@@ -368,8 +384,6 @@
     "no_response_preview": "無文字回覆",
     "quick_agents": "常用 AI 代理",
     "add": "新增",
-    "add_agent": "新增常用 AI 代理",
-    "unpin_agent": "移出常用",
     "waiting": "等待回覆",
     "pin": "置頂",
     "unpin": "取消置頂",

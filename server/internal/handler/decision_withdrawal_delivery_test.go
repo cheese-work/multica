@@ -74,7 +74,8 @@ func TestDecisionWithdrawalDelivery(test *testing.T) {
 			recipient := fixture.agentID
 			switch branch {
 			case "queued", "running":
-				active := dbfx.Task(test, recipient, testutil.Cols{"issue_id": fixture.issueID, "status": branch, "runtime_id": handlerTestRuntimeID(test)})
+				// A comment run in the tag thread: a queued step run is never merged into (CHE-9605).
+				active := dbfx.Task(test, recipient, testutil.Cols{"issue_id": fixture.issueID, "status": branch, "runtime_id": handlerTestRuntimeID(test), "trigger_comment_id": fixture.tagID})
 				dbfx.Exec(test, `UPDATE agent_task_queue SET comment_thread_id = $1 WHERE id = $2`, fixture.tagID, active)
 				outcome = "merged_into_queued"
 				if branch == "running" {

@@ -68,6 +68,11 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 	}
 	parsed, err := decisiontx.DecodeAskKind(input.Ask, kind)
 	if err != nil {
+		var coded *decisiontx.CodedAskError
+		if errors.As(err, &coded) {
+			writeErrorCode(writer, http.StatusBadRequest, coded.Code, coded.AskError.Error())
+			return
+		}
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}

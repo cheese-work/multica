@@ -98,28 +98,22 @@ func (g *reviewerGuard) check(ctx context.Context, q *db.Queries, agent db.Agent
 	return nil
 }
 
-// pickReviewer is the first reachable reviewer of the issue type's routing
-// entry that passes the independence check. found is false with a refusal when
-// the issue has no routable type, the workspace lists no reviewer for it, or
-// none qualifies.
-func (h *Handler) pickReviewer(ctx context.Context, q *db.Queries, issue db.Issue, g *reviewerGuard) (id pgtype.UUID, found bool, refusal error) {
-	typ, ok := issueworkflow.TitleType(issue.Title)
-	if !ok {
-		return pgtype.UUID{}, false, &ReviewIndependenceError{
-			Reason:     "the issue title has no Conventional Commit type to route a reviewer by",
-			AuthorLabs: g.authorLabs,
-		}
-	}
-	ws, err := q.GetWorkspace(ctx, issue.WorkspaceID)
+// pickReviewer is the first reachable reviewer of the issue's routing entry
+// (its type's, else the "default" entry for an untyped or unlisted title) that
+// passes the independence check. found is false with a refusal that names the
+// blocker when the workspace lists no reviewer for it or none qualifies.
+func (h *Handler) pickReviewer(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, title string, g *reviewerGuard) (id pgtype.UUID, found bool, refusal error) {
+	typ, _ := issueworkflow.TitleType(title)
+	ws, err := q.GetWorkspace(ctx, workspaceID)
 	if err != nil {
 		return pgtype.UUID{}, false, err
 	}
 	var settings map[string]any
 	_ = json.Unmarshal(ws.Settings, &settings)
-	entry, listed := capabilityrouting.FromSettings(settings)[typ]
+	entry, listed := capabilityrouting.FromSettings(settings).For(typ)
 	if !listed {
 		return pgtype.UUID{}, false, &ReviewIndependenceError{
-			Reason:     fmt.Sprintf("the workspace routes no reviewer for type %q", typ),
+			Reason:     fmt.Sprintf("blocker: the workspace routes no reviewer for type %q and has no %q routing entry", typ, capabilityrouting.DefaultKey),
 			AuthorLabs: g.authorLabs,
 		}
 	}
@@ -129,8 +123,8 @@ func (h *Handler) pickReviewer(ctx context.Context, q *db.Queries, issue db.Issu
 		if err != nil {
 			continue
 		}
-		agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: agentID, WorkspaceID: issue.WorkspaceID})
-		if err != nil || agent.ArchivedAt.Valid || !service.BackgroundAgentReachable(ctx, q, bgagents.Routing, issue.WorkspaceID, candidate) {
+		agent, err := q.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{ID: agentID, WorkspaceID: workspaceID})
+		if err != nil || agent.ArchivedAt.Valid || !service.BackgroundAgentReachable(ctx, q, bgagents.Routing, workspaceID, candidate) {
 			continue
 		}
 		refused := g.check(ctx, q, agent)
@@ -142,11 +136,11 @@ func (h *Handler) pickReviewer(ctx context.Context, q *db.Queries, issue db.Issu
 		}
 	}
 	if first != nil {
-		first.Reason = fmt.Sprintf("no reachable reviewer of another lab is listed for type %q; first candidate refused: %s", typ, first.Reason)
+		first.Reason = fmt.Sprintf("blocker: no reachable reviewer of another lab is listed for type %q; first candidate refused: %s", typ, first.Reason)
 		return pgtype.UUID{}, false, first
 	}
 	return pgtype.UUID{}, false, &ReviewIndependenceError{
-		Reason:     fmt.Sprintf("no reachable reviewer of another lab is listed for type %q", typ),
+		Reason:     fmt.Sprintf("blocker: no reachable reviewer of another lab is listed for type %q", typ),
 		AuthorLabs: g.authorLabs,
 	}
 }

@@ -40,7 +40,7 @@ func discoverZcodeModels(ctx context.Context, runtimeCmd Command) (Catalog, erro
 	if err := requireNodeForZcodeScript(lookedUp); err != nil {
 		return empty, err
 	}
-	runtimeEnv, cleanupConfig, err := prepareZcodeRuntimeEnv(lookedUp, os.Environ())
+	runtimeEnv, cleanupConfig, err := prepareZcodeRuntimeEnv(lookedUp, withoutServerOnlyEnv(os.Environ()))
 	if err != nil {
 		return empty, err
 	}

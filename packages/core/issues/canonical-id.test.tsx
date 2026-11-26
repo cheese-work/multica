@@ -2,14 +2,14 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { setApiInstance } from "../api";
 import { ApiError, type ApiClient } from "../api/client";
 import type { Issue } from "../types";
 import { createQueryClient } from "../query-client";
-import { issueDetailViewOptions, issueKeys } from "./queries";
+import { issueDetailOptions, issueDetailViewOptions, issueKeys } from "./queries";
 import { isIssueUuid, isNotFoundError, useCanonicalIssue } from "./canonical-id";
 
 const ISSUE_UUID = "cb240efb-154c-42a8-ae92-42b02676feca";
@@ -253,87 +253,27 @@ describe("useCanonicalIssue", () => {
   });
 
   // Regression (CHE-3411): any failed resolution used to read as "deleted".
-  // A 401 or a timeout says nothing about whether the issue exists.
+  // A 5xx or a timeout says nothing about whether the issue exists.
   it("reports a non-404 failure as a retryable load error, not not-found", async () => {
     const noRetry = new QueryClient({
       defaultOptions: { queries: { staleTime: Infinity, retry: false } },
     });
-    // A 401 is not retried by the lookup policy, so it settles at once.
-    getIssue.mockRejectedValueOnce(new ApiError("unauthorized", 401, "Unauthorized"));
+    // 401/403/404 read as unavailable; any other failure is retryable.
+    getIssue.mockRejectedValueOnce(new ApiError("server error", 500, "Internal Server Error"));
 
     const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
       wrapper: createWrapper(noRetry),
     });
 
-    await waitFor(() => expect(result.current.loadError).toBe(true));
+    await waitFor(() => expect(result.current.loadFailed).toBe(true));
     expect(result.current.notFound).toBe(false);
     expect(result.current.isResolving).toBe(false);
 
     result.current.retry();
     await waitFor(() => expect(result.current.canonicalId).toBe(ISSUE_UUID));
-    expect(result.current.loadError).toBe(false);
+    expect(result.current.loadFailed).toBe(false);
 
     noRetry.clear();
-  });
-
-  // CHE-3535: over a lossy link one dropped request must not reach the error
-  // state. The route's lookup backs off and retries transient failures.
-  describe("transient lookup failures", () => {
-    afterEach(() => {
-      vi.useRealTimers();
-    });
-
-    it("renders the issue when network failures are followed by success", async () => {
-      vi.useFakeTimers();
-      getIssue
-        .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-        .mockRejectedValueOnce(new ApiError("bad gateway", 502, "Bad Gateway"))
-        .mockResolvedValue(issue);
-
-      const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
-        wrapper: createWrapper(qc),
-      });
-
-      // Still resolving, never failed, while backoff is pending.
-      await act(() => vi.advanceTimersByTimeAsync(10));
-      expect(result.current.isResolving).toBe(true);
-      expect(result.current.loadError).toBe(false);
-
-      await act(() => vi.advanceTimersByTimeAsync(10_000));
-
-      expect(result.current.canonicalId).toBe(ISSUE_UUID);
-      expect(result.current.issue).toEqual(issue);
-      expect(result.current.loadError).toBe(false);
-      expect(result.current.notFound).toBe(false);
-      expect(getIssue).toHaveBeenCalledTimes(3);
-    });
-
-    it("settles on a load error after bounded retries of a persistent failure", async () => {
-      vi.useFakeTimers();
-      getIssue.mockRejectedValue(new TypeError("Failed to fetch"));
-
-      const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
-        wrapper: createWrapper(qc),
-      });
-      await act(() => vi.advanceTimersByTimeAsync(60_000));
-
-      expect(result.current.loadError).toBe(true);
-      expect(result.current.notFound).toBe(false);
-      expect(getIssue).toHaveBeenCalledTimes(4);
-    });
-
-    it("does not retry a 404", async () => {
-      vi.useFakeTimers();
-      getIssue.mockRejectedValue(new ApiError("not found", 404, "Not Found"));
-
-      const { result } = renderHook(() => useCanonicalIssue("ws-1", "ZZZ-134"), {
-        wrapper: createWrapper(qc),
-      });
-      await act(() => vi.advanceTimersByTimeAsync(60_000));
-
-      expect(result.current.notFound).toBe(true);
-      expect(getIssue).toHaveBeenCalledTimes(1);
-    });
   });
 
   it("stays idle without a workspace id", () => {
@@ -354,5 +294,70 @@ describe("isNotFoundError", () => {
     expect(isNotFoundError(new ApiError("boom", 500, "Internal Server Error"))).toBe(false);
     expect(isNotFoundError(new Error("network down"))).toBe(false);
     expect(isNotFoundError(null)).toBe(false);
+  });
+});
+
+// The issue page shows its load error, with Retry, after the first failed
+// request. The app's query defaults retry once, so each primary read opts out.
+describe("primary issue reads under the app query defaults", () => {
+  let qc: QueryClient;
+  let getIssue: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    qc = createQueryClient();
+    getIssue = vi.fn(async () => { throw new ApiError("unavailable", 503, "Service Unavailable"); });
+    setApiInstance({ getIssue } as unknown as ApiClient);
+  });
+  afterEach(() => { qc.clear(); vi.restoreAllMocks(); });
+
+  const settled = { timeout: 500 };
+
+  it("fails the identifier resolution after one request", async () => {
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(result.current.loadFailed).toBe(true), settled);
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails the UUID detail read after one request", async () => {
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", ISSUE_UUID), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(result.current.loadFailed).toBe(true), settled);
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails the detail view read after one request", async () => {
+    const { result } = renderHook(() => useQuery(issueDetailViewOptions("ws-1", ISSUE_UUID)), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(result.current.isError).toBe(true), settled);
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The hover card reads the same detail entry with the plain options. When it
+// starts the request first, the page joins that in-flight read and must still
+// show its error after one failed request (CHE-7523 finding).
+describe("primary issue reads that join an in-flight hover-card read", () => {
+  let qc: QueryClient;
+  let getIssue: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    qc = createQueryClient();
+    getIssue = vi.fn(async () => { throw new ApiError("unavailable", 503, "Service Unavailable"); });
+    setApiInstance({ getIssue } as unknown as ApiClient);
+  });
+  afterEach(() => { qc.clear(); vi.restoreAllMocks(); });
+
+  const settled = { timeout: 500 };
+
+  it("fails the UUID detail read after one request", async () => {
+    renderHook(() => useQuery(issueDetailOptions("ws-1", ISSUE_UUID)), { wrapper: createWrapper(qc) });
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", ISSUE_UUID), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(result.current.loadFailed).toBe(true), settled);
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails the identifier resolution after one request", async () => {
+    renderHook(() => useQuery(issueDetailOptions("ws-1", "TRS-134")), { wrapper: createWrapper(qc) });
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), { wrapper: createWrapper(qc) });
+    await waitFor(() => expect(result.current.loadFailed).toBe(true), settled);
+    expect(getIssue).toHaveBeenCalledTimes(1);
   });
 });

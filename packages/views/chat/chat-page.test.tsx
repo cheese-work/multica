@@ -7,7 +7,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import { useSyncExternalStore } from "react";
 import type { Agent } from "@multica/core/types";
 import { useChatStore } from "@multica/core/chat";
-import { useSearchStore } from "../search/search-store";
+import { useSearchStore } from "@multica/core/command-bar";
 import { chatKeys } from "@multica/core/chat/queries";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { I18nProvider } from "@multica/core/i18n/react";
@@ -101,6 +101,12 @@ vi.mock("./components/offline-banner", () => ({
 }));
 vi.mock("./components/no-agent-banner", () => ({
   NoAgentBanner: () => null,
+}));
+vi.mock("../common/app-requests", () => ({
+  ChatAppRequests: () => null,
+}));
+vi.mock("../common/app-requests", () => ({
+  ChatAppRequests: () => null,
 }));
 vi.mock("./components/archived-agent-banner", () => ({
   ArchivedAgentBanner: () => null,
@@ -666,6 +672,25 @@ describe("ChatPage responsive layout", () => {
     ).not.toBeInTheDocument();
     expect(screen.getByText("chat-input")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Chat" })).toBeInTheDocument();
+  });
+
+  // The DM list virtualizes against the nearest `overflow-y: auto` ancestor
+  // (`findScrollParent`); the page must provide one or the list stays a short
+  // seed slice that never scrolls (CHE-10067). jsdom loads no Tailwind, so the
+  // utility class stands in for the computed style.
+  it.each([
+    ["desktop", DESKTOP],
+    ["compact", FOLD_INNER_PORTRAIT],
+  ])("gives the thread list a scrolling ancestor on %s", (_name, width) => {
+    layout.width = width;
+    renderPage("");
+
+    let el: HTMLElement | null = screen.getByRole("button", { name: "select-thread" });
+    let scrolls = false;
+    while ((el = el.parentElement)) {
+      if (el.classList.contains("overflow-y-auto")) scrolls = true;
+    }
+    expect(scrolls).toBe(true);
   });
 
   it.each([TABLET, FOLD_INNER_LANDSCAPE])("keeps both panes at %spx", (width) => {

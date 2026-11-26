@@ -58,6 +58,7 @@ type View struct {
 	CanvasID           string
 	PageID             string
 	PageIssueID        string // empty when the page is bound to no issue
+	Ruleset            string // the design ruleset the run applied; empty when doop names none
 	Complete           bool
 	Current            bool
 	Frames             []Frame
@@ -125,6 +126,7 @@ type attestationWire struct {
 	CanvasID    *string         `json:"canvasId"`
 	PageID      *string         `json:"pageId"`
 	PageIssueID json.RawMessage `json:"pageIssueId"`
+	Ruleset     *string         `json:"ruleset"`
 	Complete    *bool           `json:"complete"`
 	Current     *bool           `json:"current"`
 	Frames      *[]frameWire    `json:"frames"`
@@ -201,6 +203,9 @@ func decode(raw []byte, id string) (View, bool) {
 		if json.Unmarshal(wire.PageIssueID, &view.PageIssueID) != nil {
 			return View{}, false
 		}
+	}
+	if wire.Ruleset != nil {
+		view.Ruleset = *wire.Ruleset
 	}
 	for _, frame := range *wire.Frames {
 		if frame.FrameID == nil || *frame.FrameID == "" || frame.UpdatedAt == nil {

@@ -44,6 +44,19 @@ func validateAutoCompactConfig(value any) error {
 			}
 		}
 	}
+	// CHE-10000: the DM run caps. null is "inherit", so a revert card can clear
+	// a saved cap; every other value is a whole token count in range.
+	for key, max := range map[string]int64{
+		"dm_run_cap_tokens_200k": service.AutoCompactMaxRunCap200k,
+		"dm_run_cap_tokens_1m":   service.AutoCompactMaxRunCap1M,
+	} {
+		if v, present := rule[key]; present && v != nil {
+			n, isNum := v.(float64)
+			if !isNum || !service.ValidAutoCompactTokens(n, max) {
+				return fmt.Errorf("auto_compact.%s must be an integer from %d to %d, or null to inherit", key, service.AutoCompactMinTokens, max)
+			}
+		}
+	}
 	return nil
 }
 

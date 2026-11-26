@@ -82,14 +82,10 @@ func TestDecisionVetoNoticeDestinations(test *testing.T) {
 				}
 				var issueKey string
 				dbfx.QueryRow(test, `SELECT workspace.issue_prefix || '-' || issue.number::text FROM issue JOIN workspace ON workspace.id = issue.workspace_id WHERE issue.id = $1`, fixture.issueID).Scan(&issueKey)
-				workspace, err := testHandler.Queries.GetWorkspace(context.Background(), fixture.issue.WorkspaceID)
-				if err != nil {
-					test.Fatal(err)
-				}
-				wantIssueLink := "/" + workspace.Slug + "/issues/" + fixture.issueID
-				if !strings.Contains(message.Content, issueKey) || !strings.Contains(message.Content, "Do not publish: approval was conditional.") || !strings.Contains(message.Content, fixture.agentID) || !strings.Contains(message.Content, "Open issue: "+wantIssueLink) {
+				if !strings.Contains(message.Content, issueKey) || !strings.Contains(message.Content, "Do not publish: approval was conditional.") || !strings.Contains(message.Content, fixture.agentID) {
 					test.Fatalf("veto note lacks issue, actor or reason: %s", message.Content)
 				}
+				requireOpenIssueFooter(test, message.Content, issueKey, fixture.issueID)
 			} else if dbfx.Count(test, `SELECT count(*) FROM chat_message WHERE chat_session_id = $1 AND message_kind = 'decision_veto'`, fixture.sessionID) != 0 {
 				test.Fatal("notice was inserted into an archived lane")
 			}

@@ -67,7 +67,20 @@
     "unread_other": "未読のチャット {{count}}件",
     "default": "Multica に質問"
   },
+  "bar": {
+    "history": "チャット履歴",
+    "history_group": {
+      "today": "今日",
+      "week": "過去 7 日間",
+      "older": "それ以前"
+    },
+    "close_chip": "{{title}} を閉じる",
+    "all_chats": "すべてのチャット",
+    "more_other": "他 {{count}} 件のチャット"
+  },
   "input": {
+    "page_context_add": "このページをコンテキストに追加",
+    "page_context_remove": "ページのコンテキストを削除",
     "placeholder_no_agent": "チャットを始めるにはエージェントを作成してください",
     "placeholder_archived": "このセッションはアーカイブされています",
     "placeholder_compacting": "コンパクト中…",
@@ -157,6 +170,8 @@
     "quote_message": "引用",
     "speaker_you": "あなた",
     "load_older_messages": "さらに前のメッセージを読み込む",
+    "jump_to_latest": "最新に移動",
+    "new_reply": "新しい返信",
     "show_details": "詳細を表示",
     "show_earlier_context": "以前の文脈を表示",
     "replied_in": "{{elapsed}}で返信",
@@ -177,6 +192,7 @@
       "environment_prepare_failed": "エージェントを実行しているマシンでこの実行を準備できず、開始されませんでした。何が失敗したかは下のエラーに出ています——ディスクの空き容量、権限、使用中のフォルダー、読み取れないローカル設定などが多いです。エージェントやモデルプロバイダーの問題ではありません。",
       "provider_network": "モデルサービスとの接続が切断され、返信を完了できませんでした。ネットワークを確認してから再度お試しください。",
       "provider_auth_or_access": "エージェントのモデルアカウントのログインが無効になりました。再度ログインしてからお試しください。",
+      "model_not_found_or_unavailable": "このエージェントが使うモデルは利用できません。存在しないか、このアカウントにアクセス権がない可能性があります。別のモデルを選ぶか、管理者にモデルの有効化を依頼してから、もう一度お試しください。",
       "provider_quota_limit": "エージェントのモデルアカウントの残高が不足しています。チャージするかアカウントを切り替えてからお試しください。",
       "provider_capacity_or_rate_limit": "モデルサービスが混雑しているか、レート制限がかかっています。しばらくしてからお試しください。",
       "context_overflow": "この会話がモデルのコンテキスト長を超えました。新しいセッションを開始するか、リクエストを分けてみてください。",
@@ -237,6 +253,7 @@
     "restore_tooltip": "復元",
     "expand_tooltip": "展開",
     "minimize_tooltip": "最小化",
+    "close_tooltip": "閉じる",
     "another_running": "別のチャットが実行中です",
     "another_unread": "別のチャットに未読の返信があります",
     "running": "実行中",
@@ -277,7 +294,6 @@
       "label": "アクションを提案",
       "prompt": "私のワークスペースについて知っていることを踏まえ、最初に役立つアクションを提案してください。"
     },
-    "customize": "開始例をカスタマイズ",
     "uploading": "アップロードが完了してから開始例を使用してください。",
     "draft_in_progress": "開始例を使う前に、下書きを送信するか消去してください。"
   },
@@ -368,8 +384,6 @@
     "no_response_preview": "テキスト返信なし",
     "quick_agents": "よく使う Agent",
     "add": "追加",
-    "add_agent": "よく使う Agent を追加",
-    "unpin_agent": "よく使うから外す",
     "waiting": "返信待ち",
     "pin": "ピン留め",
     "unpin": "ピン留めを解除",

@@ -350,9 +350,28 @@ after `main` already held `678_issue_workflow_owner` and
 The up and down SQL bytes are unchanged. Both statements use `IF NOT EXISTS`,
 so a database that already applied the old names re-runs them safely.
 
+## Upstream v0.10.0 migrations renumbering
+
+The merge of upstream `v0.10.0` (CHE-6210) brings 47 migrations, upstream `614`–`660`, above the merge base.
+The runner applies `up` files in byte order of the file name, and the lexically last migration on this tree outside the incoming set is `999x_merge_queue_state_pr_uidx` (added by `origin/main`; `_` sorts after digits, so it sorts after any `999x01`).
+No all-digit prefix sorts after `999x_`, so the incoming migrations take the letter-suffix prefixes `99zz01`–`99zz47` (`999y_` stays free for `main`; they were `999p01`–`999p47` until `main` reached `999x`, then `999z01`–`999z47` until `main` added `999z_decision_backing_lane_uidx`, then `99zz01`–`99zz47` until `main` added the `99a_`–`99g_` migrations, which sort after every `999…` stem; `99zz` sorts after `99g_`, and `main`'s next `99h_`–`99z_` stems stay below it), in upstream order
+(`renumber-map.json` holds the full `{from, to}` map; `node scripts/migration-order-check.mjs` checks it). The same file names a stem,
+so every registry key in `main.go` that named an incoming stem (25 `concurrentIndexCleanups` entries) uses the new stem.
+
+Examples:
+
+- `614_project_creator` is now `99zz01_project_creator`
+- `617_connected_apps` is now `99zz04_connected_apps`
+- `659_issue_view_preference_projects_page` is now `99zz46_issue_view_preference_projects_page`
+- `660_inbox_item_snoozed_at` is now `99zz47_inbox_item_snoozed_at`
+
+The up and down SQL bytes are unchanged from `v0.10.0`. None of the 52 upstream migrations already on this tree under fork names is touched,
+and none reappears under its upstream name. A later sync must not reintroduce the upstream filenames under their original prefixes.
+Irreversible down files: `99zz04_connected_apps` (drops 7 tables) and `99zz46_issue_view_preference_projects_page` (deletes saved `projects_page` preferences).
+
 ## Upstream-merge renumber map and parity checks
 
 CI job `migration-checks` (required through `backend-tests`, on `pull_request` and `merge_group`) runs two checks (CHE-6210 A2c):
 
 - **Order.** Runs only when the change adds `server/cmd/migrate/renumber-map.json`: a JSON array of `{"from": "<upstream stem>", "to": "<stem on this tree>"}` in upstream order. It fails when a `to` stem does not sort after every unmapped `up` file (byte order of the file name, as the runner sorts), when the `to` stems leave array order, when a `down` file is missing, or when a stem in this file's registries names no migration. Use a letter-suffix prefix after `999j_`: the numeric suggestion of `scripts/migration-prefix-check.mjs` sorts before it. Run locally: `node scripts/migration-order-check.mjs`.
-- **Parity.** Runs when the change touches `server/migrations` or this directory. `scripts/migration-parity.sh <base>` applies the tree to an empty database, applies the base commit and then the tree to a second one, and fails on any difference in normalized `pg_dump --schema-only`. When the map exists it also rolls the mapped `down` files back and lists schema differences from the base. Schema parity does not prove data preservation.
+- **Parity.** Runs when the change touches `server/migrations` or this directory. `scripts/migration-parity.sh <base>` applies the tree to an empty database, applies the base commit and then the tree to a second one, and fails on any difference in normalized `pg_dump --schema-only`. When the map exists it also rolls back the `down` files of every stem the change adds over the base (the PR's own migrations, plus the mapped set when the base predates the map), rolls the same stems back on a copy of the base, and lists schema differences between the two (CHE-10205). A base that already holds the mapped stems is not rolled back past them. `scripts/migration-parity.test.sh` covers a clean and a leaking `down` file. Schema parity does not prove data preservation.

@@ -875,6 +875,43 @@ describe("ChatMessageList tool rows (#8835 regression)", () => {
   });
 });
 
+describe("ChatMessageList command tool rows", () => {
+  it("shows a command line by line, not as escaped JSON", async () => {
+    const qc = new QueryClient();
+    qc.setQueryData(chatKeys.taskMessages(TASK_ID), [
+      taskMsg(0, "tool_use", {
+        tool: "Bash",
+        input: { command: "pnpm test\npnpm lint", description: "Run checks" },
+      }),
+    ]);
+
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={qc}>
+          <ChatMessageList
+            messages={[]}
+            pendingTask={{ task_id: TASK_ID, status: "running" }}
+            availability="online"
+          />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(await screen.findByText("Bash"));
+
+    // Match the raw text: the default matcher collapses the newline that this
+    // test is about.
+    const command = Array.from(document.querySelectorAll("pre > div")).find(
+      (line) => line.textContent === "pnpm test\npnpm lint",
+    );
+    expect(command).toHaveClass("text-foreground");
+    // Same capped, scrolling box as the panel's other inputs and results.
+    expect(command?.parentElement).toHaveClass("max-h-32", "overflow-auto");
+    expect(screen.queryByText(/"command":/)).not.toBeInTheDocument();
+    expect(command?.nextElementSibling?.textContent).toContain('"description": "Run checks"');
+  });
+});
+
 describe("ChatMessageList footer spacing", () => {
   it("keeps the bottom inset when no task is pending", () => {
     const { container } = render(
@@ -980,7 +1017,7 @@ describe("ChatMessageList quick actions skeleton", () => {
     created_at: "2026-07-22T00:00:00Z",
   };
 
-  it("renders pill skeletons for the message awaiting its supplement", () => {
+  it("renders chip skeletons for the message awaiting its supplement", () => {
     const qc = new QueryClient();
     const { container } = render(
       <I18nProvider locale="en" resources={TEST_RESOURCES}>
@@ -995,7 +1032,7 @@ describe("ChatMessageList quick actions skeleton", () => {
         </QueryClientProvider>
       </I18nProvider>,
     );
-    expect(container.querySelectorAll(".rounded-full[aria-hidden] , [aria-hidden] .rounded-full").length).toBeGreaterThan(0);
+    expect(container.querySelectorAll('[aria-hidden] [data-slot="skeleton"]').length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /suggested/i })).toBeNull();
   });
 
@@ -1013,7 +1050,7 @@ describe("ChatMessageList quick actions skeleton", () => {
         </QueryClientProvider>
       </I18nProvider>,
     );
-    expect(container.querySelector("[aria-hidden] .rounded-full")).toBeNull();
+    expect(container.querySelector('[aria-hidden] [data-slot="skeleton"]')).toBeNull();
   });
 });
 
@@ -1245,6 +1282,14 @@ describe("ChatMessageList failure copy (MUL-5370 regression)", () => {
     ).toBeInTheDocument();
   });
 
+  it("tells the member to pick another model, not to sign in, when the model is unavailable", async () => {
+    renderFailure("agent_error.model_not_found_or_unavailable");
+    const copy = enChat.message_list.failure.model_not_found_or_unavailable;
+    expect(await screen.findByText(copy)).toBeInTheDocument();
+    expect(copy).not.toMatch(/sign in/i);
+    expect(screen.queryByText(FALLBACK)).not.toBeInTheDocument();
+  });
+
   it("degrades an unnamed refined reason to its agent_error family", async () => {
     renderFailure("agent_error.unknown");
     expect(
@@ -1396,6 +1441,22 @@ describe("ChatMessageList compact notice", () => {
     const divider = screen.getByRole("separator");
     expect(divider).toHaveTextContent(/^Compacted · \d{2}:\d{2} \S+ · 164k tokens$/);
     expect(divider).toHaveClass("w-full");
+  });
+
+  // CHE-9935: the server's mid-turn notice reads "Compacted mid-turn at Xk tokens (kept Yk)".
+  it.each([
+    ["with token counts", "Compacted mid-turn at 397k tokens (kept 31k). Earlier details may be lost.", /^Compacted · \d{2}:\d{2} \S+ · 397k tokens$/],
+    ["without token counts", "Compacted mid-turn. Earlier details may be lost.", /^Compacted · \d{2}:\d{2} \S+$/],
+  ])("draws the divider for a mid-turn compaction notice %s", (_name, content, label) => {
+    render(
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatMessageList messages={[{ ...notice, content }]} pendingTask={null} availability="online" />
+        </QueryClientProvider>
+      </I18nProvider>,
+    );
+    expect(screen.getByRole("separator")).toHaveTextContent(label);
+    expect(screen.getByRole("note")).toHaveTextContent(content);
   });
 
   it.each([

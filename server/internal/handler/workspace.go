@@ -119,6 +119,7 @@ type WorkspaceResponse struct {
 	// holds claims for every agent in the workspace. Both null when scheduling runs.
 	SchedulingPausedAt *string `json:"scheduling_paused_at"`
 	SchedulingPausedBy *string `json:"scheduling_paused_by"`
+	PinnedAt           *string `json:"pinned_at,omitempty"`
 }
 
 func (h *Handler) workspaceToResponse(w db.Workspace) WorkspaceResponse {
@@ -186,10 +187,58 @@ func (h *Handler) ListWorkspaces(w http.ResponseWriter, r *http.Request) {
 
 	resp := make([]WorkspaceResponse, len(workspaces))
 	for i, ws := range workspaces {
-		resp[i] = h.workspaceToResponse(ws)
+		resp[i] = h.workspaceToResponse(db.Workspace{
+			ID: ws.ID, Name: ws.Name, Slug: ws.Slug, Description: ws.Description,
+			Settings: ws.Settings, CreatedAt: ws.CreatedAt, UpdatedAt: ws.UpdatedAt,
+			Context: ws.Context, Repos: ws.Repos, IssuePrefix: ws.IssuePrefix,
+			IssueCounter: ws.IssueCounter, AvatarUrl: ws.AvatarUrl,
+			AttributionFailClosed: ws.AttributionFailClosed,
+			ExportRedactionMode:   ws.ExportRedactionMode, ExportManifestRetentionDays: ws.ExportManifestRetentionDays,
+			DecisionPasskeyGate: ws.DecisionPasskeyGate, PolicyRevision: ws.PolicyRevision,
+			SchedulingPausedAt: ws.SchedulingPausedAt, SchedulingPausedBy: ws.SchedulingPausedBy,
+		})
+		if ws.PinnedAt.Valid {
+			pinnedAt := timestampToString(ws.PinnedAt)
+			resp[i].PinnedAt = &pinnedAt
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) SetWorkspacePinned(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseUUIDOrBadRequest(w, workspaceIDFromURL(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	member, ok := h.workspaceMember(w, r, uuidToString(id))
+	if !ok {
+		return
+	}
+	var req struct {
+		Pinned *bool `json:"pinned"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Pinned == nil {
+		writeError(w, http.StatusBadRequest, "pinned must be a boolean")
+		return
+	}
+	pinnedAt, err := h.Queries.SetWorkspacePinned(r.Context(), db.SetWorkspacePinnedParams{
+		WorkspaceID: id, UserID: member.UserID, Pinned: *req.Pinned,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update workspace pin")
+		return
+	}
+	var result *string
+	if pinnedAt.Valid {
+		value := timestampToString(pinnedAt)
+		result = &value
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"pinned_at": result})
 }
 
 func (h *Handler) GetWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -607,7 +656,7 @@ func (h *Handler) UpdateWorkspace(w http.ResponseWriter, r *http.Request) {
 	if req.Settings != nil {
 		// What depends on the stored settings (the pause guard, the PR merge
 		// switch) is decided under the workspace row lock in saveWorkspace.
-		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateLongThreadSettings(req.Settings), validateAskLoopBackSetting(req.Settings), validateDecisionAskParkSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateProviderHoldSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateCardThreadSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateQuickFirstSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings), queueorder.ValidateSetting(req.Settings)); err != nil {
+		if err := errors.Join(validateCompactConfig(req.Settings), validateAskGuardSetting(req.Settings), validateLongThreadSettings(req.Settings), validateAskLoopBackSetting(req.Settings), validateDecisionAskParkSetting(req.Settings), validateHeldSettingModeSetting(req.Settings), validateBlockedDispatchDedupSetting(req.Settings), validateReviewFindingsCategorySetting(req.Settings), validateProviderHoldSetting(req.Settings), validateIncidentResponseSetting(req.Settings), validateGuardPolicySetting(req.Settings), validateAutopilotAssignGateSetting(req.Settings), validateAgentCannotDoSetting(req.Settings), h.validateCannotDoAgents(r.Context(), idUUID, req.Settings), validateCardLintSetting(req.Settings), validateCardThreadSetting(req.Settings), validateServerActionSetting(req.Settings), validateIntakeHoldSetting(req.Settings), validateQuickFirstSetting(req.Settings), validateDesignGuardSetting(req.Settings), ghstack.ValidateSetting(req.Settings), mergequeue.ValidateSetting(req.Settings), queueorder.ValidateSetting(req.Settings)); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

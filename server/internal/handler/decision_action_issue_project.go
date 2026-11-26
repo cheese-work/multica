@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"net/http"
 	"strconv"
 	"strings"
@@ -114,6 +115,9 @@ func projectIDString(id pgtype.UUID) string {
 // run budget.
 func (handler *Handler) requestClassFor(ctx context.Context, issue db.Issue, agentClass string, draft *decisionActionDraft) (string, error) {
 	class := actionRequestClass(agentClass, draft.Definition.MinClass)
+	if err := refuseRepoCreateClass(draft, class); err != nil {
+		return "", err
+	}
 	if draft.Type != issueProjectSetType || class != "reversible" {
 		return class, nil
 	}
@@ -332,7 +336,7 @@ func (handler *Handler) publishIssueProjectSet(ctx context.Context, action db.De
 		return err
 	}
 	resp := issueToResponse(issue, handler.getIssuePrefix(ctx, issue.WorkspaceID))
-	handler.fillStatusCategory(ctx, issue.WorkspaceID, &resp)
+	handler.fillStatusCategory(ctx, issue.WorkspaceID, projectaccess.Hidden{}, &resp)
 	actorID := uuidToString(action.ApprovedByUserID)
 	payload := map[string]any{
 		"issue":           resp,

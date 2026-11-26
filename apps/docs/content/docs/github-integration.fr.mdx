@@ -17,6 +17,8 @@ Multica auto-hébergé peut aussi connecter en parallèle des instances Forgejo,
 
 Un propriétaire ou un administrateur de l'espace de travail peut effectuer la connexion :
 
+Une nouvelle connexion exige aussi le contrôle de l’installation GitHub : une installation personnelle doit appartenir à l’utilisateur qui autorise l’App ; une installation d’organisation exige la permission admin sur chaque dépôt couvert. Un accès en lecture seule ou partiel ne suffit pas. Sélectionnez au moins un dépôt pour une installation d’organisation.
+
 <Steps>
 <Step>
 Ouvrez **Paramètres → Code**.
@@ -219,6 +221,38 @@ Chaque résultat est ajouté à l'activité de chaque tâche associée à la PR,
 
 L'API des piles est en préversion chez GitHub : un changement de forme apparaît donc comme `schema`, jamais comme un webhook en échec.
 
+## Créer un dépôt avec une carte d'approbation [#repo-create]
+
+Un agent ne peut pas créer seul un dépôt GitHub. Il prépare un fichier d'action, et le propriétaire de l'espace de travail l'approuve avec une clé d'accès. Le serveur crée ensuite le dépôt avec un identifiant d'administrateur d'organisation que l'agent ne voit jamais.
+
+```bash
+multica github repo-create --org tevo-studio --name we006 \
+  --template tevo-studio/code-android-template --private \
+  --description "WE-006 app" --out repo-create.json
+multica decision request <issue> --action-file repo-create.json
+```
+
+| Option | Sens |
+|---|---|
+| `--org` | L'organisation. Seules `tevo-studio` et `cheese-work` sont acceptées. |
+| `--name` | Le nom du dépôt. |
+| `--template` | Modèle `owner/repo` facultatif. Son propriétaire doit aussi être une organisation approuvée. L'API de génération de GitHub n'accepte pas de référence : la branche par défaut du modèle est utilisée. |
+| `--private`, `--visibility` | `private` (par défaut), `internal` ou `public`. Un dépôt public est une publication : demandez avec `--class publish`. |
+| `--description` | Une ligne, 290 caractères au plus. Le serveur ajoute un marqueur `[multica-action:<id>]` à la description du dépôt. |
+| `--out`, `--dry-run`, `--expires-in` | Écrire le fichier d'action, seulement l'afficher, ou fixer la durée d'ouverture de la carte. |
+
+À l'approbation, le serveur crée le dépôt, le relit, puis l'ajoute au registre des dépôts de l'espace de travail. Si l'organisation a déjà une entrée dans `guard_policy.repository_allowlist`, il y ajoute aussi le dépôt. Une organisation sans entrée reste sans restriction, car en ajouter une exclurait le reste de l'organisation. Une carte rejetée ou expirée ne crée rien. Si GitHub refuse la demande, l'action se termine en échec et les lignes de l'espace de travail restent inchangées.
+
+### Auto-hébergement
+
+Définissez l'identifiant sur le serveur d'API uniquement. C'est un objet JSON qui associe chaque organisation à un jeton autorisé à y créer des dépôts :
+
+```dotenv
+MULTICA_GITHUB_REPO_ADMIN_TOKENS={"tevo-studio":"<token>","cheese-work":"<token>"}
+```
+
+Le daemon retire cette variable de tout environnement d'agent, et aucune carte, aucun résultat ni aucun journal ne la contient. Sans elle, une carte approuvée se termine en échec avec `credential_not_configured`. L'application GitHub elle-même n'a besoin d'aucune permission Administration pour cela.
+
 ## Déconnecter
 
 Choisir **Déconnecter** dans le menu **⋯** de la ligne GitHub, sur **Paramètres → Code**, supprime seulement la relation entre l'espace de travail Multica courant et l'installation ; cela ne désinstalle pas l'App de GitHub à votre place. Les enregistrements de PR existants sont conservés, et les nouveaux événements cessent d'arriver dans cet espace de travail.
@@ -282,8 +316,8 @@ Créez l'App dans **Developer settings → GitHub Apps** sur GitHub et renseigne
 | Champ | Valeur |
 |---|---|
 | Homepage URL | L'adresse de votre frontend Multica, par ex. `https://multica.example.com` |
-| Callback URL | Laisser vide |
-| Setup URL | `https://<api-host>/api/github/setup`, avec **Redirect on update** activé |
+| Callback URL | `https://<api-host>/api/github/setup` |
+| Request user authorization (OAuth) during installation | Activer |
 | Webhook URL | `https://<api-host>/api/webhooks/github` |
 | Webhook secret | Une chaîne aléatoire que vous conservez durablement |
 
@@ -332,19 +366,21 @@ Récupérez le slug dans l'URL publique de l'App. Par exemple, le slug de `https
 ```dotenv
 GITHUB_APP_SLUG=multica-acme
 GITHUB_WEBHOOK_SECRET=<the webhook secret you entered when creating the App>
+GITHUB_APP_CLIENT_ID=<Client ID>
+GITHUB_APP_CLIENT_SECRET=<Client secret>
 FRONTEND_ORIGIN=https://multica.example.com
 ```
 
-Si `GITHUB_APP_SLUG` ou `GITHUB_WEBHOOK_SECRET` manque, le bouton de connexion est désactivé et le point de terminaison du webhook refuse de traiter les événements.
+Les six variables GitHub de cette section sont requises pour les nouvelles connexions, y compris `GITHUB_APP_ID` et `GITHUB_APP_PRIVATE_KEY`. Si une variable manque, la connexion est désactivée ; la réception des webhooks exige seulement `GITHUB_WEBHOOK_SECRET`. Les connexions existantes continuent de fonctionner. Avant le déploiement, définissez la première Callback URL sur cet endpoint et activez OAuth lors de l’installation. GitHub n’utilise alors pas de Setup URL distincte.
 
-Pour que la carte de PR affiche le statut CI et la possibilité de fusion, définissez aussi les deux variables suivantes. Multica s'en sert pour s'authentifier en tant qu'App et récupérer les instantanés :
+Pour les nouvelles connexions, le statut CI et la possibilité de fusion des PR, définissez aussi les deux variables suivantes. Multica compare la liste complète des dépôts de l’installation, obtenue avec un jeton metadata en lecture seule, aux dépôts administrés par l’utilisateur :
 
 ```dotenv
 GITHUB_APP_ID=<the GitHub App's numeric ID>
 GITHUB_APP_PRIVATE_KEY=<full PEM private key, keeping the BEGIN/END lines and newlines>
 ```
 
-Générez la clé privée dans **Private keys → Generate a private key** de la GitHub App. Sans ces deux variables, les PR sont toujours reflétées et les tâches toujours associées automatiquement et changées de statut à la fusion ; la carte de PR n'affiche simplement ni CI ni état de fusion.
+Générez la clé privée dans **Private keys → Generate a private key** de la GitHub App. Sans ces deux variables, la connexion est désactivée. Les connexions existantes continuent de refléter les PR et de mettre à jour les tâches via les webhooks, mais les cartes de PR n’affichent ni CI ni état de fusion.
 
 Si vous ajoutez la permission Members ou Actions à une App déjà installée, approuvez le changement de permission dans chaque organisation cible avant de la connecter à un nouvel espace de travail. Les installations existantes doivent accepter la nouvelle permission ; tant qu'elles ne l'ont pas fait, les réveils `--until-gh-run` ne reçoivent aucun événement de workflow.
 
@@ -374,7 +410,7 @@ Redémarrez le serveur API, puis effectuez la connexion dans **Paramètres → C
 
 ## Dépannage
 
-- **Bouton de connexion désactivé** : vérifiez que `GITHUB_APP_SLUG` et `GITHUB_WEBHOOK_SECRET` parviennent bien au processus de l'API.
+- **Bouton de connexion désactivé** : vérifiez les six variables GitHub ci-dessus, la première Callback URL et **Request user authorization (OAuth) during installation**.
 - **Le webhook renvoie 401** : vérifiez que la GitHub App et l'API utilisent le même secret de webhook, puis relancez la livraison depuis **Recent Deliveries** sur GitHub.
 - **PR toujours ouverte dans Multica après sa fusion sur GitHub** : le webhook `closed` a été perdu. Si `GITHUB_APP_ID` et `GITHUB_APP_PRIVATE_KEY` sont configurés, la prochaine actualisation CI lit la PR sur GitHub et enregistre la fusion ou la fermeture comme si le webhook était arrivé. Ouvrez la tâche pour lancer une actualisation, ou attendez l'actualisation périodique en arrière-plan. Sans ces identifiants, relancez la livraison depuis **Recent Deliveries**.
 - **PR non associée** : vérifiez que le dépôt fait partie du périmètre autorisé de l'App, que l'association automatique est activée, que l'identifiant appartient à l'espace de travail courant et que personne n'a retiré la PR de la tâche.

@@ -17,6 +17,8 @@ Self-hosted Multica can also connect self-hosted Forgejo, Gitea, or GitLab insta
 
 A workspace owner or admin can complete the connection:
 
+A new connection also requires GitHub installation control: a personal installation must belong to the authorizing GitHub user; an organization installation requires admin permission on every repository it covers. Read-only or partial access is insufficient. Select at least one repository for an organization installation before connecting.
+
 <Steps>
 <Step>
 Open **Settings → Code**.
@@ -220,6 +222,38 @@ Each outcome goes to the activity of every issue linked to the PR, in each works
 | `readback_failed` | The write succeeded, but the read-back did not find the stack in order. Check the PR on GitHub. | Yes |
 
 The stacks API is in preview on GitHub, so a shape change shows up as `schema` and never as a failed webhook.
+
+## Create a repository through an approval card [#repo-create]
+
+An agent cannot create a GitHub repository by itself. It prepares an action file, and the workspace owner approves it with a passkey. The server then creates the repository with an organization-admin credential that the agent never sees.
+
+```bash
+multica github repo-create --org tevo-studio --name we006 \
+  --template tevo-studio/code-android-template --private \
+  --description "WE-006 app" --out repo-create.json
+multica decision request <issue> --action-file repo-create.json
+```
+
+| Flag | Meaning |
+|---|---|
+| `--org` | The organization. Only `tevo-studio` and `cheese-work` are accepted. |
+| `--name` | The repository name. |
+| `--template` | Optional `owner/repo` template. Its owner must also be an approved organization. GitHub's generate API takes no ref, so the template's default branch is used. |
+| `--private`, `--visibility` | `private` (default), `internal` or `public`. A public repository is a publication: ask with `--class publish`. |
+| `--description` | One line, 290 characters at most. The server adds a `[multica-action:<id>]` marker to the repo description. |
+| `--out`, `--dry-run`, `--expires-in` | Write the action file, only print it, or set how long the card stays open. |
+
+On approval the server creates the repository, reads it back, and adds it to the workspace repo registry. If the organization already has an entry in `guard_policy.repository_allowlist`, it adds the repository there too. An organization with no entry is left unrestricted, because adding one would lock out the rest of the organization. A rejected or expired card creates nothing. If GitHub refuses the request, the action ends as failed and the workspace rows stay unchanged.
+
+### Self-hosting
+
+Set the credential on the API server only. It is a JSON object that maps each organization to a token with permission to create repositories there:
+
+```dotenv
+MULTICA_GITHUB_REPO_ADMIN_TOKENS={"tevo-studio":"<token>","cheese-work":"<token>"}
+```
+
+The daemon removes this variable from every agent environment, and no card, result or log carries it. Without it, an approved card ends as failed with `credential_not_configured`. The GitHub App itself needs no Administration permission for this.
 
 ## Disconnect
 

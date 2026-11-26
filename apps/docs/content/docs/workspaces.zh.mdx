@@ -60,6 +60,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 PASS 所指 head 的 PR 仍未合并时，如果该步骤有到 `done` 的 `pr.merged` 边以及任务自己的监视，则不会保留运行：服务器不启动运行，并记录一条 `auto_close_pending_merge` 活动记录。之后合并会不经运行直接关闭任务。合并时服务器会重新检查所有条件。若有条件不再成立（新的 head 没有 PASS、出现新的有效唤醒等），则不关闭任务，而是启动该步骤的运行并移除监视。
 
+在 `warn` 和 `block` 模式下，被拒绝的关闭会记录一条 `auto_close_skipped` 活动行。它写明第一个未满足的条件（`first_failure`），并保存各条件读取的输入：模式及其来源（工作区或步骤）、议题的 `post_close_work`、done 边、PASS 行及其所指的 head、关联的 PR、未关闭的子议题和决定、唤醒数量、父议题的 `delivery_stop` 以及检查时间。`multica issue close-check <issue>` 按议题当前状态显示每个条件；`multica issue close-check <issue> --activity <row>` 对已存储的输入运行同一组条件，因此即使议题之后发生变化，得到的仍是服务器当时的答案。两者均为只读。
+
 用 `multica workspace update --auto-close-mode off|warn|block` 设置模式。无法读取的值按 `off` 处理。
 
 ### 阻塞进入时跳过运行

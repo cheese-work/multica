@@ -53,6 +53,25 @@ var (
 // member-facing recovery guidance describe the actual failure.
 const concurrentRequestLimitWitness = "concurrent request limit"
 
+// claudeCodeModelNotFoundWitnesses are the two phrases of Claude Code's text
+// for an HTTP 404 model_not_found: "There's an issue with the selected model
+// (X). It may not exist or you may not have access to it. Run --model to pick
+// a different model." The second phrase contains rule 3's "you may not have
+// access", so these must be checked before the auth rule or the member is told
+// to sign in for a model that simply is not there. The apostrophe is left out
+// of the first phrase so both quote forms match. Mirror into the MUL-1949
+// offline backfill SQL, ahead of its auth branch.
+var claudeCodeModelNotFoundWitnesses = []string{
+	"issue with the selected model",
+	"may not exist or you may not have access",
+}
+
+// isClaudeCodeModelNotFound is shared by Classify and NormalizeDaemonReason so
+// new and old daemons land on the same reason.
+func isClaudeCodeModelNotFound(lower string) bool {
+	return containsAny(lower, claudeCodeModelNotFoundWitnesses...)
+}
+
 var httpForbiddenCodeRe = regexp.MustCompile(`(^|[^0-9a-z])403([^0-9a-z]|$)`)
 
 // isUsageLimit403 is shared by Classify and NormalizeDaemonReason so new and
@@ -86,7 +105,7 @@ func isUsageLimit403(lower string) bool {
 // failure_reason today and lets per-backend structured upgrades land
 // independently.
 func Classify(rawError string) Reason {
-	trimmed := strings.TrimSpace(rawError)
+	trimmed := strings.TrimSpace(WithoutCodebuddyProtocolSummary(rawError))
 	if trimmed == "" {
 		// SQL maps NULL/empty to a separate bucket ("empty_error"),
 		// but that bucket is not part of the canonical taxonomy. In-flight
@@ -161,6 +180,11 @@ func Classify(rawError string) Reason {
 		strings.Contains(lower, "no provider configured"):
 		return ReasonAgentMissingConfig
 
+	// 2b. Claude Code's 404 model_not_found text embeds "you may not have
+	//    access", so it must be claimed before the auth rule below.
+	case isClaudeCodeModelNotFound(lower):
+		return ReasonAgentModelNotFoundOrUnavailable
+
 	// 3. Auth / access. 401 / 403 / "Not logged in" / invalid token
 	//    / lacks access to the model. Status codes use an alphanumeric
 	//    boundary so "4030" / "1401ms" / a hex ID containing "401"
@@ -205,12 +229,15 @@ func Classify(rawError string) Reason {
 		):
 		return ReasonAgentProviderQuotaLimit
 
-	// 5. Capacity / rate limit. 429 / 529 / overloaded / rate limit.
+	// 5. Capacity / rate limit. 429 / 529 / overloaded / rate limit, and
+	//    Kiro's throttling message, which carries none of those words and
+	//    would otherwise reach rule 6 through its "Internal error" wrapper.
 	case httpCapacityCodeRe.MatchString(lower),
 		containsAny(lower,
 			"rate limit",
 			"overloaded",
 			"no capacity available",
+			kiroThrottledWitness,
 		):
 		return ReasonAgentProviderCapacityOrRateLimit
 
@@ -581,6 +608,17 @@ const (
 	kiroDispatchFailurePhrase     = "dispatch failure"
 )
 
+// kiroThrottledWitness is Kiro CLI's fixed message for a throttled request
+// (GH #10652), surfaced through the same -32603 response-stream wrapper:
+//
+//	kiro session/prompt failed: session/prompt: Internal error (code=-32603,
+//	data=Encountered an error in the response stream: The request was
+//	throttled by the service (request_id: ...))
+//
+// The whole phrase is matched rather than a bare "throttled", which also
+// appears in unrelated text such as log or heartbeat descriptions.
+const kiroThrottledWitness = "request was throttled by the service"
+
 func isKiroDispatchFailure(lower string) bool {
 	return strings.Contains(lower, kiroResponseStreamErrorPhrase) &&
 		strings.Contains(lower, kiroDispatchFailurePhrase)
@@ -653,6 +691,15 @@ var legacyUsageLimit403Reasons = map[string]bool{
 	"agent_error":                           true,
 }
 
+// legacyClaudeCodeModelNotFoundReasons are the buckets an older daemon lands
+// Claude Code's 404 model text in: the auth rule (via "you may not have
+// access") or the catchalls.
+var legacyClaudeCodeModelNotFoundReasons = map[string]bool{
+	string(ReasonAgentProviderAuthOrAccess): true,
+	string(ReasonAgentUnknown):              true,
+	"agent_error":                           true,
+}
+
 // NormalizeDaemonReason upgrades a failure_reason reported by an older daemon
 // onto the taxonomy this server understands, using the raw error text as the
 // witness. It returns the reason unchanged when nothing applies.
@@ -669,6 +716,7 @@ var legacyUsageLimit403Reasons = map[string]bool{
 // can be deleted once no daemon old enough to produce its wire shape is still
 // reporting.
 func NormalizeDaemonReason(reason, rawError string) Reason {
+	rawError = WithoutCodebuddyProtocolSummary(rawError)
 	if ResponseProtectionUnavailable(rawError) {
 		return ReasonAPIInvalidRequest
 	}
@@ -678,6 +726,10 @@ func NormalizeDaemonReason(reason, rawError string) Reason {
 	}
 	if legacyUsageLimit403Reasons[reason] && isUsageLimit403(strings.ToLower(rawError)) {
 		return ReasonAgentProviderQuotaLimit
+	}
+	if legacyClaudeCodeModelNotFoundReasons[reason] &&
+		isClaudeCodeModelNotFound(strings.ToLower(rawError)) {
+		return ReasonAgentModelNotFoundOrUnavailable
 	}
 	if legacySkillBundleReasons[reason] &&
 		strings.HasPrefix(strings.TrimSpace(rawError), legacySkillBundlePrefix) {
@@ -717,6 +769,14 @@ func NormalizeDaemonReason(reason, rawError string) Reason {
 	if legacyKiroDispatchFailureReasons[reason] && isKiroDispatchFailure(lowerError) &&
 		Classify(rawError) == ReasonAgentProviderNetwork {
 		return ReasonAgentProviderNetwork
+	}
+	// GH #10652: a daemon predating kiroThrottledWitness files Kiro's
+	// throttling under the same wrapper buckets. Neither bucket is retryable,
+	// so this only corrects the label; Classify must still agree.
+	if legacyKiroDispatchFailureReasons[reason] &&
+		strings.Contains(lowerError, kiroThrottledWitness) &&
+		Classify(rawError) == ReasonAgentProviderCapacityOrRateLimit {
+		return ReasonAgentProviderCapacityOrRateLimit
 	}
 	if legacyOpencodeStreamEndedReasons[reason] &&
 		(strings.HasPrefix(lowerError, opencodeStreamEndedPrefix) ||

@@ -163,6 +163,40 @@ multica issue comment add MUL-123 --content-file ask.md --from-thread <comment-i
 
 同じプロジェクト・同じ親タスクの下に、タイトルが同じ（大文字小文字と余分な空白は区別しない）未完了のタスクがすでにあると、`issue create` は作成を拒否してそのタスクを示します。それでも作る場合は `--allow-duplicate` を付けます。あるタスクを別のタスクの重複にするには `multica issue status MUL-124 cancelled --duplicate-of MUL-123` を使います。
 
+複数の PR を順番に作成するタスクでは、`issue create --title "..." --pr-auto-complete off` または `issue update <id> --pr-auto-complete off` で、マージ時も状態を維持できます。`--pr-auto-complete on` はワークスペースのルールを復元し、次の PR イベントから有効になります。`issue pull-requests <id>` は、PR が未関連付けでもタスクとワークスペースの設定、移行先の状態、判定結果を表示します。対応サーバーは作成トランザクション内で設定を保存し、旧サーバーには追加の PUT を送ります。失敗時は作成済み ID と再試行用の update コマンドが表示されるため、create を繰り返さないでください。
+
+### 一括更新
+
+複数のタスクに同じ変更を適用できます。`--ids-stdin` ではタスク番号または UUID を標準入力から1行ずつ読み取ります。
+
+```bash
+multica issue batch update MUL-123 MUL-124 --priority high --add-label QA --dry-run
+multica issue batch update MUL-123 MUL-124 --priority high --add-label QA
+multica issue batch update MUL-123 MUL-124 --property "Severity=High" --unset-property Reviewer
+```
+
+`--add-label` と `--remove-label` は他のラベルを変えません。`--clear-labels` は追加の前に全ラベルを消します。`--property` で値を設定し、`--unset-property` で消します。複数値のプロパティは値全体を置き換えます。ステータス、担当者、プロジェクト、日付、親タスク、ステージも変更できます。`--no-start` を付けるとエージェントの実行を開始せずに変更を適用します。
+
+タスクごとに `updated`、`unchanged`、または理由付きの `skipped` が返ります。1件でもスキップされると結果を出力して非ゼロで終了しますが、成功した変更は残ります。修正後はスキップされたタスクだけを再試行してください。`--dry-run` は検証と変更予定の表示だけを行い、書き込みません。
+
+### タスクを削除する
+
+1 件のタスクを削除するか、複数のタスク番号または完全な UUID を渡して一括削除します。
+
+```bash
+multica issue delete MUL-123
+multica issue delete MUL-123 MUL-124 --yes --output json
+```
+
+削除は元に戻せません。コメントと添付ファイルが削除され、進行中の実行はキャンセルされ、関連する自動化の実行は失敗扱いになります。削除したタスクを参照する重複マークは解除されます。サブタスクは親との関連が外れますが、削除されません。確認の前にすべての ID を解決し、存在しないタスクやアクセスできないタスクがあれば、削除せずにコマンドを中止します。
+
+コマンドは確認を求めます。`--yes` で確認を省略できます。指定しない場合、確認に答えられない非対話実行は、何も削除せずにエラーで終了します。
+
+`--dry-run` は削除権限を含めて削除予定を確認します。書き込みや確認プロンプトはありません。
+
+```bash
+multica issue delete MUL-123 MUL-124 --dry-run --output json
+```
 ブロック中のタスクが何を待っているかを記録するには、移動に `--blocked-on <ref>` を付けます：`multica issue status MUL-124 blocked --blocked-on pr:merged`。このフラグは `blocked` のときだけ使えます。ref は `status_changed` アクティビティとタスクのメタデータキー `blocked_on` に保存され、タスクが `blocked` を離れると削除されます。フラグなしの `blocked` への移動はこれまでどおりです。ref の各形式は、ウェイクアップ条件フラグの対象です：
 
 | ref | 対応するフラグ |
@@ -201,6 +235,8 @@ multica issue timeline MUL-123 --since 2026-08-19T00:00:00Z
 
 `--activity-only` はコメントを除き、すべてのアクティビティ記録を残します。`--action` は指定したアクションだけを返し、繰り返し指定でき、`--activity-only` を含意します。サーバーが読み込む履歴には上限があり、切り詰められた場合は stderr に警告が出ます。その結果から滞在時間を推定しないでください。
 
+`multica issue close-check <issue>` は、課題を変更せずに、自動完了した（またはしなかった）理由を表示します。課題の現在の状態での各完了述語とその値、最初に成立しない述語、有効な `auto_close` モードとその由来（ワークスペースまたはステップ）です。`--activity <row>` は 1 件の `auto_close_skipped` 行に保存された入力に同じ述語を実行するため、課題がその後変わっても、そのとき記録された最初の失敗を返します。行は `multica issue timeline <issue> --action auto_close_skipped` で探せます。
+
 ```bash
 multica issue description history MUL-123
 multica issue description diff MUL-123 --from 30 --to 35
@@ -238,6 +274,15 @@ multica issue comment list MUL-123 --roots-only --summary --waiting-on <member> 
 - サーバーが関係を計算できないときは、絞り込まれていない一覧を出力せず、コマンドがエラーになります。
 
 一覧も必要なフィールドだけに絞れます：`multica issue list --output json --fields id,identifier,title,status`。絞り込みは CLI 側で行われるので、減るのは出力とコンテキストで、リクエストの量は変わりません。
+
+最終更新日時でタスクを絞り込むには、RFC3339 形式の `--updated-since` と `--updated-until` を両方指定します。サーバーは、現在の `updated_at` が `since` 以上、`until` 未満のタスクを返します：`[since, until)`。既存のフィルター、並べ替え、ページネーションと組み合わせて使えます。ページ間で同じ期間を指定してください。ページネーションはスナップショットを提供しないため、同時に更新が行われると結果が変わる場合があります。
+
+```bash
+multica issue list --updated-since 2026-11-05T10:00:00Z \
+  --updated-until 2026-11-05T10:01:00Z \
+  --sort created_at --direction asc --limit 100 --offset 0 \
+  --output json --fields id,workspace_id,project_id,title
+```
 
 ### ウェイクアップ
 
@@ -365,7 +410,7 @@ multica runtime profile create --display-name "社内 Claude ラッパー" \
   --command-name ccms --runtime-type claude
 ```
 
-`daemon autostart` は現在のプロファイルをログイン時に起動するよう登録します。プラットフォームごとの違いは[ログイン時の自動起動](/daemon-runtimes#autostart)を参照してください。`runtime usage` は既定で 90 日分を集計し、`--days` は最大 365 です。`runtime update` はそのコンピューターのデーモンに CLI を指定のバージョンへ更新させ、`--wait` を付けると更新が終わるまで待ちます。`runtime profile create` は互換ツールを `--runtime-type` で指定します（古い `--protocol-family` も使えます）。固定引数は今のところ Web アプリでしか設定できません。
+`daemon autostart` は現在のプロファイルをログイン時に起動するよう登録します。プラットフォームごとの違いは[ログイン時の自動起動](/daemon-runtimes#autostart)を参照してください。`runtime usage` は既定で 90 日分を集計し、`--days` は最大 365 です。`runtime update` はそのコンピューターのデーモンに CLI を指定のバージョンへ更新させ、`--wait` を付けると更新の完了を待ちます。更新の失敗、更新のタイムアウト、待機自体のタイムアウトでは、終了コードが非ゼロになります。`runtime profile create` は互換ツールを `--runtime-type` で指定します（古い `--protocol-family` も使えます）。固定引数は今のところ Web アプリでしか設定できません。
 
 `daemon update-schedule get|set|clear --runtime-id <id>` は、そのランタイムが動くマシンの更新スケジュールを表示・編集します（[スケジュール更新](/daemon-runtimes#update-schedule)を参照）。`set` は `--cron`（5 フィールド、必須）、`--timezone`（IANA 名、既定は `Asia/Ho_Chi_Minh`）、`--window-minutes`（10〜30、既定 30）、スケジュールを一時停止状態で保存する `--enabled=false` を受け付けます。`get` は次の 3 回の実行時刻も表示します。変更できるのはマシンのオーナーとワークスペースのオーナーだけです。
 
@@ -374,6 +419,17 @@ multica runtime profile create --display-name "社内 Claude ラッパー" \
 `multica runtime breaker list` は各プロバイダーのサーキットブレーカーを表示し、`multica runtime breaker reset <provider>` は強制的に閉じます（オーナーまたは管理者のみ）。[プロバイダーのサーキットブレーカー](/daemon-runtimes#provider-breaker)を参照してください。
 
 仕組みとカスタムプロファイルについては[デーモンとランタイム](/daemon-runtimes)を参照してください。
+
+## 環境 [#environments]
+
+```bash
+multica env start web
+multica env start web --wait=false
+multica env list
+multica env stop web
+```
+
+`multica env`（長い形式は `multica environment`）は、リポジトリが `.multica/environments.toml` に宣言した環境を起動します。環境はデーモンが管理するため、実行が終わっても動き続け、タスクのサイドバーに表示され、TTL が切れると停止します。`start` は環境が応答するまで待ってから URL を表示します。これらのコマンドは実行中のタスクの認証情報を使うので、エージェントの実行の中でしか使えません。自分のコンピューターからはタスクのサイドバーを使ってください。ファイルの形式と例は[環境](/environments)を参照してください。
 
 ## プロジェクト、ワークスペース、オートパイロット
 
@@ -433,11 +489,45 @@ multica decision request --issue MUL-123 --for <user-id> --class reversible --as
 
 4 つ目の値 `server_action` は、選択肢を選んだ人として サーバーが操作を行います。選択肢に `action {type, params}` を付けます。`issue.status.set` は `params.status`（`in_review` などのステータスキー）、`issue.assign` は `params.assignee_type`（`member` または `agent`）と `params.assignee_id`（UUID）を取ります。サーバーはこれらの値を小文字にして前後の空白を除いて保存し、`what_happens` に「On pick: the server moves CHE-123 to in_review as you.」のような 1 行を追加します。`after_choice` が `human_steps` の選択肢には `after_wait` を付けられ、エージェントが待つイベントを 1 つだけ指定します。`until_pr {url, state}`（`checks`、`merged`、`conflicts`、`dequeued`）、`until_status {status}`、`until_issue {issue, state}`（`done`、`ended`、`in_review`、`blocked`）です。ワークスペース設定 `decision_server_actions`（`off` または `on`、既定は `off`）が、カードに `server_action` を載せることを許可します。`off` の間、またはそれ以外の値の間は、サーバーは `400` とコード `server_actions_off`、フィールドパスを返します。トピック質問、`--action-file` リクエスト、`--kind action` カード、`--covers` の一括カード、CI カードでは型付き選択肢は拒否され、フィールドパスが示されます。設定 `standing_answers`（既定 `{"review_cap":"off"}`、`review_cap` は `off` または `split`）は、不正な形式なら `off` として読まれます。`decision_server_actions` と `standing_answers` を変更できるのはワークスペースのオーナーだけです。
 
+選択肢には `design {frame_url, attestation_id}` を付けられます。doop のデザインフレームと、それを検証したアテステーション実行を示します。サーバーはこのフィールドを厳密に読みます。`design` 内の未知のキーは `400` で拒否されます。`frame_updated_at` は決して設定しないでください。フレームのバージョンはサーバーが自分で付与し、0 以外の値は `400` とコード `design_version_server_owned` で拒否され、フィールドパス（`ask.options[0].design.frame_updated_at`）が示されます。0 または省略は受け付けられます。デザインガード（`designguard.Validate`）は、引用されたフレームを、アテステーション、issue の Design url、レビュアーの判定、独立性ルールと照合します。選択肢に `design` を持つカードは、`--covers` のバッチカードでカバーされることはありません。
+
 ワークスペース設定 `decision_card_lint_mode`(`off`、`warn`、`block`。既定は `off`)は、選択肢カードの文面を検査します。`warn` ではカードを作成し、指摘ごとに 1 件のヒントを応答に付けます。`block` ではサーバーが理由コードとフィールドパスを付けて `400` を返し、カードは作成しません。コードは次のとおりです。`weak_cons` は、選択肢のデメリットがすべて「あなたの時間」(「takes 1 minute of your time」)または確認・レビューをもう 1 回行うことだけの場合。`option_markdown` は、`label`、`what_happens`、`pros`、`cons` に表、見出し、画像、HTML、コードブロック、Mermaid ブロックがある場合(太字、斜体、インラインコード、リスト、リンクは使えます)。`option_leak` は、選択肢の文面が推奨を示す場合(「recommended」、「(rec)」、または 1 つのラベルだけの太字)。`default_leak` は、クラス `spend`、`deploy`、`publish`、`irreversible`、`product_direction` で `default_if_no_reply` が選択肢を名指しする場合(「No action until you pick.」と書いてください)。英語とベトナム語の言い回しを照合します。アクションカードと免除トピックのカードは検査しません。 カードの issue コメントに質問先の人へのメンションがない場合、サーバーがメンションを追加し `mention_missing` をログに記録します。拒否はされません。
 
 ワークスペース設定 `decision_card_thread`(`off`、`on`。既定は `off`)は、新しいカードごとに専用のスレッドを作ります。`on` では、カードの issue コメントは新しいルートコメントになり、サーバーは `decision_card_lint_mode` の値にかかわらず、質問先の人へのメンションを必ず追加します。決定の通知は引き続き受信トレイの唯一の項目で、追加したメンションは項目を作りません。`--parent` を渡すと、そのスレッドが元になります。新しいスレッドに元が記録され、元のスレッドにはリンク付きのシステム返信が 1 件付き、元のスレッドの解決状態は変わらず、CLI は `Card placed in a new thread <id>; thread <source root> got a link.` と表示します。親を持つ決定意図コメントも同じ方法で新しいスレッドを開き、カードはそのスレッドに置かれます。再質問と、DM エージェントが DM に書く質問は、今の場所のままです。`off` では何も変わりません。
 
+### Webhook イベントフィルター [#webhook-event-filters]
+
+`autopilot trigger-add` または `trigger-update` の `--event-filters-file` で、Webhook トリガーのイベントと action のフィルターを設定できます。空でない JSON 配列を `filters.json` として保存します。
+
+```json
+[
+  {"event": "pull_request_review", "actions": ["submitted"]},
+  {"event": "push"}
+]
+```
+
+この例では、PR レビューの送信とすべての push イベントを受け入れます。`actions` を省略するか空の配列を指定すると、そのイベントのすべての action を受け入れます。
+
+```bash
+multica autopilot trigger-add <autopilot-id> --kind webhook --event-filters-file filters.json
+multica autopilot trigger-list <autopilot-id> --full-id
+multica autopilot trigger-update <autopilot-id> <trigger-id> --event-filters-file filters.json
+multica autopilot get <autopilot-id> --output json
+```
+
+更新時はファイルの内容でフィルター一覧全体を置き換えます。両方のフィルターオプションを省略すると、ラベルの変更やトリガーの有効化・無効化でも保存済みのフィルターを保持します。`autopilot get` はトップレベルの `triggers` 配列でフィルターを返します。
+
+すべてのフィルターを削除して全イベントを受け入れるには、更新専用のオプションを使います。
+
+```bash
+multica autopilot trigger-update <autopilot-id> <trigger-id> --clear-event-filters
+```
+
+`--clear-event-filters` と `--event-filters-file` は同時に指定できません。トップレベルが `null` または空の配列であるファイルや、不明なフィールド、不正な JSON、空または空白のみのイベント名・action 名を含むファイルは拒否されます。これらのオプションは Webhook トリガー専用です。フィルターファイルを指定せずに作成すると全イベントを受け入れます。受信イベントの照合方法は[オートパイロット](/autopilots#event-filters)を参照してください。
+
 ワークスペース設定 `design_card_guard` は、`mode`、`doop_origin`、`design_url_property_id`、`design_workflow_id` を持つオブジェクトです。`mode` は `off`、`warn`、`block` のいずれかで、キーがない場合や `mode` がない場合は `off` です。`warn` または `block` では、`doop_origin`(パスのない `https` オリジン)と `design_url_property_id`(UUID)が必須で、`design_workflow_id`(UUID)は任意です。それ以外のフィールド、`null` 値、型の誤りはサーバーが `400` で拒否します。決定アクションによる設定変更でもこのキーを指定できます。現時点では設定の読み取りと検証だけを行い、カードに対する警告や拒否はまだ行いません。
+
+`multica issue design-verdict <issue> --attestation <id> --verdict PASS|CHANGES [--findings-file <path>]` は、型付きのデザインレビュー判定を 1 件記録します（`POST /api/issues/{id}/design-verdicts`）。書き込めるのはエージェント自身の実行だけです。その issue で `dispatched` または `running` のタスクのタスクトークンが必要で、なければサーバーは `403 design_verdict_run_required` を返します。`--findings-file` は `{"severity": "P0|P1|P2|P3", "summary": "..."}` の JSON 配列で、`CHANGES` には P0 または P1 の指摘が 1 件以上必要です。サーバーは doop のアテステーションを読み、未知の ID には `404 design_attestation_not_found`、doop を読めないときは `503 design_doop_unavailable`、`design_card_guard` が `off` または不正なときは `503 design_guard_misconfigured` を返します。`PASS` はさらに、issue の Design url とアテステーション（canvas、page、frame、完全かつ最新）に一致し、デザイン作成者から独立したレビュアーによるものでなければならず、満たさなければサーバーは拒否コード付きの `409` を返します。`CHANGES` はこれらの検査を行いません。不正な本文は `400` です。成功すると `201` を返し、`design_review_verdict` のアクティビティ行を 1 件書きます。issue とアテステーションごとに最新の行が有効な判定で、編集・削除のルートはありません。
 
 ## バックグラウンドエージェント
 
@@ -485,6 +575,7 @@ multica browser status <lease-id>
 | `workspace` | ワークスペースの作成、表示、切り替えとメンバーの招待 |
 | `repo` | ワークスペースのリポジトリを管理し、ローカルにチェックアウト |
 | `daemon`、`runtime` | ローカルデーモンの起動と停止。ランタイムの表示と管理 |
+| `env` | リポジトリが宣言した環境の起動・停止・一覧（エージェントの実行の中でのみ） |
 | `attachment` | 添付ファイルのアップロードとダウンロード |
 | `user profile` | 現在のユーザーのプロフィールを表示・更新 |
 | `auth`、`login`、`setup` | サインイン、認証状態の確認、接続の初期化 |
@@ -571,16 +662,20 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 
 | コマンド | サブコマンド | 用途 | 主なフラグ |
 | --- | --- | --- | --- |
-| `issue` | `list` | タスクを一覧 | `--status`、`--priority`、`--assignee`、`--project`、`--metadata`（繰り返し可）、`--property`（繰り返し可、`"名前=値"` または `"Score>=3"`、`"Due<2026-01-01"`、`"Notes~=text"` のような比較；`__none__` は未設定に一致）、`--limit`、`--offset`、`--sort`（`effective_due`：継承した最も早い期限の順に期限ありを先頭に並べる、および `property:<名前または id>` に対応）、`--full-id`、`--resolve-properties`（JSON のみ；保存された id に加えてプロパティ名・選択肢名・メンバー名を返します）、`--fields`（JSON のみ；カンマ区切りで残すフィールドを指定） |
+| `issue` | `list` | タスクを一覧 | `--status`、`--priority`、`--assignee`、`--project`、`--updated-since` / `--updated-until`（RFC3339 の期間指定、両方必須）、`--metadata`（繰り返し可）、`--property`（繰り返し可、`"名前=値"` または `"Score>=3"`、`"Due<2026-01-01"`、`"Notes~=text"` のような比較；`__none__` は未設定に一致）、`--limit`、`--offset`、`--sort`（`effective_due`：継承した最も早い期限の順に期限ありを先頭に並べる、および `property:<名前または id>` に対応）、`--full-id`、`--resolve-properties`（JSON のみ；保存された id に加えてプロパティ名・選択肢名・メンバー名を返します）、`--fields`（JSON のみ；カンマ区切りで残すフィールドを指定） |
 | | `get <id>` | 単一のタスクを表示 | `--resolve-properties`（JSON のみ；保存された id に加えてプロパティ名・選択肢名・メンバー名を返します） |
-| | `create` | タスクを作成 | `--title`（必須）、`--description` / `--description-stdin` / `--description-file`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（繰り返し可）、`--property`（繰り返し可）、`--allow-duplicate`（同じタイトルの未完了タスクがあっても作成）、`--discovery-reason`（クイック作成のみ：依頼が不明確な理由。`--status investigating` と併用） |
+| | `create` | タスクを作成 | `--title`（必須）、`--description` / `--description-stdin` / `--description-file`、`--pr-auto-complete on/off`、`--status`、`--priority`、`--assignee`、`--parent`、`--stage`、`--project`、`--start-date`、`--due-date`、`--attachment`（繰り返し可）、`--property`（繰り返し可）、`--allow-duplicate`（同じタイトルの未完了タスクがあっても作成）、`--discovery-reason`（クイック作成のみ：依頼が不明確な理由。`--status investigating` と併用） |
 | | `update <id>` | タスクのフィールドを更新 | `create` と同系のフィールドに加え `--position`、`--no-start`、`--duplicate-of` |
+| | `batch update <id>...` | 複数のタスクに同じ変更を適用 | `--ids-stdin`, `--status`, `--priority`, `--assignee` / `--assignee-id` / `--unassign`, `--project`, `--start-date`, `--due-date`, `--parent`, `--stage`, `--add-label`, `--remove-label`, `--clear-labels`, `--property`, `--unset-property`, `--no-start`, `--dry-run` |
+| | `delete <id>...` | 1 件以上のタスクを完全に削除 | `--yes` で確認を省略。タスク番号または完全な UUID を指定; `--dry-run` |
 | | `assign <id>` | 割り当てまたは割り当て解除 | `--to`（メンバー、エージェント、スクワッドを名前であいまいマッチ）、`--to-id`、`--unassign`、`--no-start` |
 | | `status <id> <status>` | ステータスを変更 | `--no-start`、`--duplicate-of`、`--blocked-on`、`--waiting-on` |
 | | `reorder <id>` | カラム内で移動 | |
-| | `search <query>` | タスクを検索 | `--limit`、`--include-closed` |
+| | `search <query>` | タスクを検索 | `--limit`、`--include-closed`、`--project` |
 | | `children <id>` | サブタスクをステージごとに一覧 | |
 | | `pull-requests <id>` | 関連付けられた PR を一覧 | |
+| | `pull-requests link <id> <pr-url>` | タイトルとブランチにタスクキーがない同期済み PR を関連付け | `unlink` で外した PR の復元にも使えます |
+| | `pull-requests unlink <id> <pr>` | 関連付けた PR を外し、以後自動で関連付けない | `<pr>` は PR の URL、番号、または id |
 | | `comment list/add/update/delete/resolve/unresolve` | コメントを管理 | `add`: `--content` / `--content-stdin` / `--content-file`、`--parent`、`--attachment`；`update`: `--expected-revision`（必須）、`--content` / `--content-stdin` / `--content-file`；`list`: `--since`、`--thread`、`--tail`、`--recent`、`--roots-only`、`--summary`、`--compact`、`--full`、`--with-me`、`--without-me`、`--waiting-on`、`--for` |
 | | `timeline <id>` | アクティビティ記録とコメントを時系列で表示 | `--action`（繰り返し可）、`--activity-only`、`--since`、`--tail` |
 | | `wakeup events/list/get/create/update/disable/trigger/delete/checkin/runs` | タスクのウェイクアップを管理。詳しくは[タスクのウェイクアップ](/issue-wakeups) | `create` / `update`: `--agent-id`、`--kind`（`event`、`at`、`every`、`cron`）、`--event`、`--at` / `--after`、`--every`、`--cron`、`--timezone`、`--until-*` 条件、`--expires-in` / `--expires-at`、`--instruction` / `--instruction-file`；`checkin`: `--note` |
@@ -593,12 +688,15 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `usage <issue-id>` | 集計されたトークン使用量を表示 | |
 | | `rerun-task <run-id>` | 元のエージェントとトリガーのコンテキストで指定した実行を再試行 | `--issue`, `--fresh` |
 | | `cancel-task <task-id>` | 進行中またはキュー中の実行をキャンセル | `--issue` |
-| `project` | `list/get/create/update/delete` | プロジェクトを管理 | `create`: `--title`（必須）、`--lead`、`--status`、`--icon`、`--start-date`、`--due-date`、`--repo`（繰り返し可）; `update` の A/B 分割（オーナー、管理者、プロジェクトリード）: `--split-arm-b`（ワークフロー ID）、`--split-start`、`--split-end`（RFC 3339）、`--split-exclude-assignee` / `--split-exclude-squad`（繰り返し可）、`--clear-split` |
+| `project` | `get/create/update/delete` | プロジェクトを管理 | `create`: `--title`（必須）、`--lead`、`--status`、`--icon`、`--start-date`、`--due-date`、`--repo`（繰り返し可）、`--visibility`（`workspace` または `private`）、`--member`（繰り返し可、`--visibility private` と併用）；`update`: `--visibility`、`--member`（プロジェクトをプライベートにする場合も、すでにプライベートの場合もリストに追加）; `update` の A/B 分割（オーナー、管理者、プロジェクトリード）: `--split-arm-b`（ワークフロー ID）、`--split-start`、`--split-end`（RFC 3339）、`--split-exclude-assignee` / `--split-exclude-squad`（繰り返し可）、`--clear-split` |
+| | `list` | プロジェクトを一覧表示・絞り込み | `--status`, `--priority`, `--lead`, `--search`, `--archived`, `--sort` (`name`, `priority`, `status`, `progress`, `start_date`, `due_date`, `created_at`, `last_activity_at`), `--direction` (`asc` / `desc`), `--limit` (1–200), `--offset` |
 | | `status <id> <status>` | プロジェクトのステータスを変更 | |
+| | `archive/restore <id>` | プロジェクトをアーカイブ／復元。アーカイブ済みのプロジェクトは `list` に表示されず、新しいタスクを受け付けず、そこにタスクを作成する自動化は一時停止される | `list --archived` でアーカイブ済みのプロジェクトのみを表示 |
 | | `resource list/add/update/remove` | プロジェクトの追加リソースを管理 | `--type`、`--url`、`--default-branch-hint`、`--ref`、`--local-path`、`--daemon-id`、`--execution-mode`（ローカルディレクトリの `in_place` / `worktree`） |
+| | `member list/add/remove` | プライベートプロジェクトのメンバーを一覧・追加・削除。追加と削除はリストに載っている `owner`/`admin` とプロジェクトのアクセス管理者のみ。エージェントはアクセス権を変更できない | `add <project-id> <member>...`、`remove <project-id> <member>`。メンバーは名前、メールアドレス、またはユーザー ID |
 | `label` | `list/get/create/update/delete` | ワークスペースのラベルを管理 | `list`: `--resource-type`（`issue` または `skill`）、`--full-id`；`create`: `--name`、`--color`、`--resource-type`（`issue` または `skill`）、`--description` |
 | `property` | `list/get/create/update/archive/unarchive` | ワークスペースのカスタムプロパティを管理 | `create`: `--name`、`--type`（`text`、`number`、`select`、`multi_select`、`date`、`checkbox`、`url`、`actor`、`multi_actor`、`multi_text`、`multi_url`）、`--option`（繰り返し可、select 系のみ）；`list`: `--include-archived`；タイプは作成後に変更できません |
-| `view` | `list/get/issues` | 開けるビュー（自分のものとワークスペースで共有されたもの）を読み取り、`issues` でビューに表示されるタスクを保存された並び順で一覧（保存されたフィルターはすべてサーバー側で適用）。エージェントの実行中は、ビューと「自分」の条件はランタイム所有者のものになります | `<view>` は ID、ID プレフィックス、または完全な名前を受け付けます；`list`: `--scope`（`workspace`、`my`、`project`）、`--project`、`--full-id`；`issues`: `--limit`（最大 100）、`--cursor`（前のページの `next_cursor`）、`--today`（相対的な期日フィルターの基準日、既定は今日）、`--fields`（JSON のみ）、`--full-id` |
+| `view` | `list/get/issues/create/update/duplicate/delete` | 開けるビュー（自分のものとワークスペースで共有されたもの）を読み取り、`issues` でビューに表示されるタスクを保存された並び順で一覧（保存されたフィルターはすべてサーバー側で適用）。`create`・`update`・`duplicate`・`delete` はアプリと同じ形式でビューを書き込むため、サイドバーに表示され、アプリで引き続き編集できます。`update` は指定した項目だけを変更し、読み取り後に他の人が変更したビューは上書きせずに拒否します。変更・削除できるのは所有者（共有ビューはワークスペースのオーナーと管理者も）だけです。エージェントの実行中は、ビューと「自分」の条件はランタイム所有者のものになります | `<view>` は ID、ID プレフィックス、または完全な名前を受け付けます；`list`: `--scope`（`workspace`、`my`、`project`）、`--project`、`--full-id`；`issues`: `--limit`（最大 100）、`--cursor`（前のページの `next_cursor`）、`--today`（相対的な期日フィルターの基準日、既定は今日）、`--fields`（JSON のみ）、`--full-id`；`create`: `--name`、`--scope`、`--project`、`--scope-variant`、`--visibility`；`create/update/duplicate` のフィルター: `--status`、`--priority`、`--assignee`、`--creator`、`--label`、`--project-filter`、`--property "Name=Value"`、`--negate <filter>` など；表示: `--view-mode`、`--grouping`、`--sort`、`--direction`、`--show-sub-issues` など；`--definition-file`、`--clear-filters`、`--dry-run` |
 | `agent` | `list/get/create/update/archive/restore` | エージェントを管理 | `--name`、`--runtime-id`（`create` では必須）、`--instructions`、`--conversation-starters`、`--model`、`--thinking-level`、`--custom-env` / `--custom-env-file` / `--custom-env-stdin`（`create` のみ）、`--custom-args`、`--mcp-config` / `--mcp-config-file` / `--mcp-config-stdin`、`--permission-mode`、`--visibility`（古い書き方）、`--max-concurrent-tasks` |
 | | `copy <agent-id>` | 新しいエージェントとして複製。元のエージェントは変更されません | `--name`（デフォルトは元の名前 + ` (copy)`）、`--runtime-id`（別のランタイムへ複製する場合は `--model` の同時指定が必須）、`--no-skills`；`custom_env`、`mcp_config`、`runtime_config` などの機密設定は複製されないため、`create` と同じフラグで再指定してください |
 | | `tasks <id>` | エージェントの実行を表示 | |
@@ -639,6 +737,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | | `profile list/create/update/delete` | カスタムランタイムプロファイルを管理 | `create`: `--display-name`、`--command-name`（いずれも必須）、`--runtime-type`（または古い `--protocol-family`）、`--description`；`update`: `--enabled` |
 | | `profile set-path/unset-path <profile-id>` | ローカルの実行ファイルパスを固定（ローカルのみ有効。サーバーには送信されません） | |
 | | `breaker list/reset <provider>` | プロバイダーのサーキットブレーカーを表示、または強制的に閉じる | `reset`：ワークスペースのオーナーまたは管理者のみ |
+| `env` | `start <name>` / `stop <name>` / `list` | このタスクの宣言された環境を起動・停止・一覧表示。エージェントの実行の中でのみ使えます。[環境](/environments)を参照 | `start`: `--wait`（既定 `true`）；すべて: `--output`（`table` または `json`） |
 
 ### Additional
 
@@ -658,7 +757,7 @@ CLI の設定ファイルには、あなたとして Multica にアクセスで�
 | `guard` | `log` | ワークスペースの最近のガード判定を新しい順に一覧表示する。`--plugin`、`--action`（`fixed`、`refused`、`plugin-error`、`shadow-hit`、`pass`）、`--since`（日数、`24h` や `7d` のような期間、または RFC 3339 の時刻。既定は `7d`）、`--limit`（既定 50、最大 500）で絞り込める。デーモンは各実行の終了時にその判定ログをアップロードする。Guard 設定ページも同じ行を表示する | 出力：JSON 行（`--output table` で表） |
 | `guard` | `stats` | プラグインごとのガード判定数（`fixed`、`refused`、`errors`）を直近 `--days` 日（既定 7、最大 90）について数える。Guard 設定ページも同じ数値を表示する | 出力：JSON 行（`--output table` で表） |
 
-`repository_allowlist` は所有者と許可するリポジトリ名を対応付け、大文字小文字を区別しません。指定した所有者は既定で拒否し、未指定の所有者は制限しません。プラグインや下位レイヤーより先に `gh pr create`、`gh pr comment`、`git push`、認証済み `repo checkout` の未許可操作を拒否します。Git は pushurl と URL 書き換えを含む実際の送信先を確認し、不明なら拒否します。承認前に daemon を更新してください。Cheese Work の正規ファイルは `config/tevo-prod1-guard.json` です。
+`repository_allowlist` は所有者と許可するリポジトリ名を対応付け、大文字小文字を区別しません。指定した所有者は既定で拒否し、未指定の所有者は制限しません。プラグインや下位レイヤーより先に `gh pr create`、`gh pr comment`、`git push`、認証済み `repo checkout` の未許可操作を拒否します。Git は pushurl と URL 書き換えを含む実際の送信先を確認し、不明なら拒否します。承認前に daemon を更新してください。
 
 
 ### 判断の提案
@@ -679,7 +778,7 @@ multica decision propose <action-type> --version 1 --issue MUL-123 --params-file
 
 `issue.project.set` は Issue を別のプロジェクトへ移動します: `multica decision propose issue.project.set --version 1 --issue MUL-123 --param project_id=<project-id>`。カードには移動前後のプロジェクト、ワークフロー、実行上限、使用済み実行数が表示され、移動が実行予算を広げるかどうかも示されます。予算を広げる移動は `spend` カード、それ以外は `reversible` です。承認できるのはワークスペースのオーナーのみです。依頼後に Issue が元のプロジェクトを離れた場合、または移動先ワークフローの予算が増えた場合、カードは拒否されます。
 
-`issue.project.quick_set` と `project.workflow.quick_set` は提案するものではなくサーバーが開きます。タスクトークンを持つエージェントが課題を Quick に従うプロジェクトへ移す、またはプロジェクトを Quick に切り替えると、拒否ではなくオーナーカードが開き、オーナーがパスキーで承認して初めて移動が行われます（`spend` クラス）。カードにはワークフローと実行上限、プロジェクト切り替えでは別のステータスへ移る課題数が表示されます。リクエスト後に課題、プロジェクト、実行予算が変わると `stale_base` で終了します。
+`issue.project.quick_set` と `project.workflow.quick_set` は提案するものではなくサーバーが開きます。タスクトークンを持つエージェントが課題を Quick に従うプロジェクトへ移す、またはプロジェクトを Quick に切り替えると、拒否ではなくオーナーカードが開き、オーナーがパスキーで承認して初めて移動が行われます（`spend` クラス）。カードにはワークフローと実行上限、プロジェクト切り替えでは別のステータスへ移る課題数が表示されます。リクエスト後に課題、プロジェクト、実行予算が変わると `stale_base` で終了します。 切り替えが実行予算を広げる場合（例: Default から Product）、`project.workflow.set` も同様に開かれます。エージェントの実行から 2 つ以上（最大 50）のプロジェクトを指定した `multica project workflow set <project-id>... <workflow>` は、各プロジェクトの前後のワークフローと実行上限を並べたカードを 1 枚開きます。承認すると全プロジェクトが切り替わるか、1 つも切り替わりません。リクエスト後に差異があれば `stale_base` で終了します。個人アクセストークンは引き続き `budget_rebinding_requires_interactive` で拒否されます。
 
 `project.status.set` はプロジェクトのステータスを変更します: `multica decision propose project.status.set --version 1 --issue MUL-123 --param project_id=<project-id> --param status=paused`。`status` は `planned`、`in_progress`、`paused`、`completed`、`cancelled` のいずれかです。タスクトークンまたはクラウドノードトークンは、`multica project status` や `multica project update --status` でプロジェクトのステータスを変更できません。サーバーは 403 を返し、このアクションを示します。人がパスキーでカードを承認します。ステータスは承認時にだけ変わり、結果には変更前と変更後のステータスが入ります。一時停止、完了、キャンセルでは、直接変更した場合と同じく、そのプロジェクトのキュー中および送信済みの実行が終了します。人による変更はこれまでどおり動作します。
 

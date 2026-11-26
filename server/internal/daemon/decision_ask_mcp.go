@@ -17,7 +17,7 @@ const (
 	decisionAskInstallation = "builtin"
 	decisionAskDescription  = "Ask the person who requested this issue one decision. The server picks the " +
 		"person and the DM lane and parks the issue until they answer. Arguments: ask (context_eli10, " +
-		"agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros, cons, cost_or_time}], " +
+		"agent_did, decision, stakes_if_wrong, options[{label, what_happens, pros, cons, cost_or_time, design {frame_url, attestation_id} (optional; cites a doop design frame and its attestation run; never set frame_updated_at, the server stamps it and a non-zero value is refused with 400 design_version_server_owned)}], " +
 		"recommendation, recommended_option (exact label; required with two or more options), confidence (optional, 0-1), default_if_no_reply, source_issue_id, source_comment_id, state_claims[{claim, readback_command, observed_at (RFC 3339, at most 2 hours old)}]), escalation_class " +
 		"(reversible, spend, deploy, publish, irreversible or product_direction), optional footer."
 	decisionAskSchema = `{"type":"object","required":["ask","escalation_class"],"properties":{"ask":{"type":"object"},"escalation_class":{"type":"string"},"footer":{"type":"string"},"parent_id":{"type":"string"}},"additionalProperties":false}`
@@ -25,9 +25,13 @@ const (
 
 // decisionAskReachable reports whether the task's runtime can load the MCP
 // config that carries decision_ask. Pi fails to start with any MCP config below
-// its MCP floor, and decision_ask would put one on every issue task, so the
-// tool stays off pi runs that cannot take it; those use `multica agent decision ask`.
+// its MCP floor, and Droid and Amp reject any managed MCP config. decision_ask
+// would put one on every issue task, so the tool stays off runs that cannot take
+// it; those use `multica agent decision ask`.
 func decisionAskReachable(provider, cliVersion string, builtinRuntime bool) bool {
+	if provider == "droid" || provider == "amp" {
+		return false // these backends refuse any Multica-managed MCP config
+	}
 	return provider != "pi" || agent.PiAcceptsMCP(cliVersion, builtinRuntime)
 }
 

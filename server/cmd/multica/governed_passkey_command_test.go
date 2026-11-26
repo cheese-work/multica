@@ -57,7 +57,7 @@ func TestPasskeyOnlyCommandRunsOnTheRealProposeParser(t *testing.T) {
 // Every `multica config propose` example in the built-in skill parses on the
 // real flags and names --out or --dry-run, so a copied example runs.
 func TestSkillConfigProposeExamplesNameOut(t *testing.T) {
-	text, err := os.ReadFile("../../internal/service/builtin_skills/multica-platform/references/decisions.md")
+	text, err := os.ReadFile(filepath.Join(testLaunchDir, "..", "..", "internal", "service", "builtin_skills", "multica-platform", "references", "decisions.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

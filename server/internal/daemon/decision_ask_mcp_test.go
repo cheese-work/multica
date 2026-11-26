@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -59,7 +60,7 @@ func TestDecisionAskToolIsAbsentFromChatTasks(t *testing.T) {
 // Pi refuses to start with any MCP config below its MCP floor, so a tool every
 // issue task carries would stop those tasks on old pi. Pi at or above the floor
 // loads it, and a custom profile command only promises pi's protocol.
-func TestDecisionAskReachableFollowsPiMcpFloor(t *testing.T) {
+func TestDecisionAskReachableFollowsMcpSupport(t *testing.T) {
 	cases := []struct {
 		name, provider, version string
 		builtin, want           bool
@@ -70,6 +71,10 @@ func TestDecisionAskReachableFollowsPiMcpFloor(t *testing.T) {
 		{"pi below the floor", "pi", "0.98.9", true, false},
 		{"pi version unreadable", "pi", "", true, false},
 		{"pi custom profile", "pi", "", false, true},
+		// Droid and Amp refuse any Multica-managed MCP config, so decision_ask
+		// (which would put one on every issue task) stays off them.
+		{"droid", "droid", "1.0.0", true, false},
+		{"amp", "amp", "1.0.0", true, false},
 	}
 	for _, c := range cases {
 		if got := decisionAskReachable(c.provider, c.version, c.builtin); got != c.want {
@@ -81,5 +86,14 @@ func TestDecisionAskReachableFollowsPiMcpFloor(t *testing.T) {
 func TestDecisionAskToolIsAbsentWhenRuntimeCannotLoadIt(t *testing.T) {
 	if tools := taskHookTools(Task{ID: "task-1", IssueID: "issue-1"}, false); len(tools) != 0 {
 		t.Fatalf("tools = %v, want none", tools)
+	}
+}
+
+// The tool description names options[].design and says frame_updated_at is the server's (CHE-7064 S10).
+func TestDecisionAskDescriptionNamesTheDesignOptionField(t *testing.T) {
+	for _, want := range []string{"design {frame_url, attestation_id}", "frame_updated_at", "design_version_server_owned"} {
+		if !strings.Contains(decisionAskDescription, want) {
+			t.Errorf("decision_ask description does not mention %q", want)
+		}
 	}
 }

@@ -66,25 +66,22 @@ interface LoginPageProps {
 
 export function redirectToCliCallback(url: string, token: string, state: string) {
   const separator = url.includes("?") ? "&" : "?";
+  // eslint-disable-next-line no-restricted-syntax -- CLI login runs in the web app only; the token must reach the CLI's local listener in this tab
   window.location.href = `${url}${separator}token=${encodeURIComponent(token)}&state=${encodeURIComponent(state)}`;
 }
 
 /**
- * Validate that a CLI callback URL points to a safe host over HTTP.
- * Allows localhost and private/LAN IPs (RFC 1918) to support self-hosted setups
- * on local VMs while blocking arbitrary public hosts.
+ * Validate that a CLI callback URL is a plain-HTTP loopback address.
+ * The login JWT is appended to this URL's query, so any non-loopback host would
+ * expose it on the network. Remote CLIs use SSH port forwarding to a loopback
+ * listener. Keep aligned with isSupportedCallbackHost in server/cmd/multica.
  */
 export function validateCliCallback(cliCallback: string): boolean {
   try {
     const cbUrl = new URL(cliCallback);
     if (cbUrl.protocol !== "http:") return false;
     const h = cbUrl.hostname;
-    if (h === "localhost" || h === "127.0.0.1") return true;
-    // Allow RFC 1918 private IPs: 10.x.x.x, 172.16-31.x.x, 192.168.x.x
-    if (/^10\./.test(h)) return true;
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
-    if (/^192\.168\./.test(h)) return true;
-    return false;
+    return h === "localhost" || h === "127.0.0.1";
   } catch {
     return false;
   }
@@ -272,6 +269,7 @@ export function LoginPage({
       prompt: "select_account",
     });
     if (google.state) params.set("state", google.state);
+    // eslint-disable-next-line no-restricted-syntax -- web OAuth redirect; Desktop passes onGoogleLogin and returns above
     window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
   };
 

@@ -172,7 +172,7 @@ func TestProviderHoldExpiryFailsOnceAndNotifiesOwner(t *testing.T) {
 	if rows, err := svc.FailExpiredProviderHolds(ctx, metadata.Hold.Until.Add(time.Hour), 10); err != nil || len(rows) != 0 {
 		t.Fatalf("duplicate expiry: %d %v", len(rows), err)
 	}
-	item, err := q.GetInboxItem(ctx, task.ID)
+	item, err := q.GetInboxItemInWorkspace(ctx, db.GetInboxItemInWorkspaceParams{ID: task.ID, WorkspaceID: r.workspaceID})
 	if err != nil {
 		t.Fatal(err)
 	}

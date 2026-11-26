@@ -6,6 +6,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/initctx"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/pkg/credentialexec"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
 
@@ -135,6 +136,7 @@ type Task struct {
 	ProjectID                     string                 `json:"project_id,omitempty"`                       // active project for this task, when present
 	ProjectTitle                  string                 `json:"project_title,omitempty"`                    // human-readable project title for context injection
 	ProjectDescription            string                 `json:"project_description,omitempty"`              // durable project-level context injected into the brief
+	ProjectArchived               bool                   `json:"project_archived,omitempty"`                 // project is archived; the brief says so
 	ProjectResources              []ProjectResourceData  `json:"project_resources,omitempty"`                // project-scoped resources to expose to the agent
 	IsLeaderTask                  bool                   `json:"is_leader_task,omitempty"`                   // true when executing in the squad-leader coordinator role
 	LeaderRoleResolved            bool                   `json:"leader_role_resolved,omitempty"`             // server capability: IsLeaderTask/SquadID authoritatively answer "is this a leader run". Absent on servers predating it — those before #4951 never sent is_leader_task at all, later ones send it without this guarantee — so taskIsSquadLeader falls back to the briefing marker for both (MUL-5811)
@@ -204,6 +206,11 @@ type Task struct {
 	WakeupID         string `json:"wakeup_id,omitempty"`
 	WakeupSystemRule string `json:"wakeup_system_rule,omitempty"` // a platform rule (e.g. child_done) started the run
 	WakeupJoined     string `json:"wakeup_joined,omitempty"`      // wakeups that joined this run instead of queuing their own
+
+	ChatSource *protocol.ChatSource `json:"chat_source,omitempty"`
+	// ChatFeishuSource is the Feishu ids of the message a Feishu chat task
+	// answers. Older servers omit it and the prompt then lists no ids.
+	ChatFeishuSource *protocol.FeishuSource `json:"chat_feishu_source,omitempty"`
 
 	SquadID               string `json:"squad_id,omitempty"`                // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName             string `json:"squad_name,omitempty"`              // display name for the picker squad, used in prompt text
@@ -393,6 +400,10 @@ type TaskResult struct {
 	// the terminal report so the server clears the resume pointer and flags the
 	// continuity gap for the next claim. Not part of the wire result itself.
 	SessionRolloutMissing bool `json:"-"`
+	// TimeoutCheckpoint is the git state, last tool calls and near-limit
+	// warning outcome of a run that hit its wall-clock cap. Forwarded on the
+	// fail callback only; nil for every other outcome (CHE-9762).
+	TimeoutCheckpoint *timeoutCheckpoint `json:"-"`
 	// RetiredSessionID names a session this run was told to resume and then
 	// abandoned as unresumable (GH #6066). Forwarded on every terminal path,
 	// including the completed one: a fresh-session retry that SUCCEEDS is

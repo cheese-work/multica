@@ -256,8 +256,12 @@ func (handler *Handler) actionPreviewFields(ctx context.Context, action db.Decis
 		return handler.issueProjectSetPreview(ctx, action)
 	case projectWorkflowQuickSetType:
 		return handler.projectWorkflowQuickSetPreview(ctx, action)
+	case projectWorkflowSetType:
+		return handler.projectWorkflowSetPreview(ctx, action)
 	case projectStatusSetType:
 		return handler.projectStatusSetPreview(ctx, action)
+	case decisionaction.GitHubRepoCreate:
+		return handler.githubRepoCreatePreview(ctx, action)
 	case "agent.env.patch":
 		return handler.envPatchPreview(ctx, action, viewer)
 	case "agent.copy":

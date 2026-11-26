@@ -121,3 +121,13 @@ describe("AttachmentList — revision chain", () => {
     expect(await screen.findByText("Could not load the changes.")).toBeTruthy();
   });
 });
+
+describe("AttachmentList — image thumbnails", () => {
+  it("marks the image list with the selector the thumbnail styles depend on", () => {
+    const image = { ...rev("i1", 1, null, "shot.png"), content_type: "image/png" };
+    const { container } = renderList(<AttachmentList attachments={[image]} content="" />);
+    const list = container.querySelector("[data-comment-image-list]");
+    expect(list).toBeTruthy();
+    expect(list?.querySelector("img, [data-image-node], .image-node")).toBeTruthy();
+  });
+});

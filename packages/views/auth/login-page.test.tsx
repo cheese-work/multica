@@ -814,24 +814,20 @@ describe("validateCliCallback", () => {
     expect(validateCliCallback("http://127.0.0.1:8080/cb")).toBe(true);
   });
 
-  it("accepts 10.x.x.x private IPs", () => {
-    expect(validateCliCallback("http://10.0.0.5:9876/callback")).toBe(true);
-    expect(validateCliCallback("http://10.255.255.255:1234/cb")).toBe(true);
-  });
-
-  it("accepts 172.16-31.x.x private IPs", () => {
-    expect(validateCliCallback("http://172.16.0.1:9876/callback")).toBe(true);
-    expect(validateCliCallback("http://172.31.255.255:1234/cb")).toBe(true);
+  it.each([
+    "http://10.0.0.5:9876/callback",
+    "http://10.255.255.255:1234/cb",
+    "http://172.16.0.1:9876/callback",
+    "http://172.31.255.255:1234/cb",
+    "http://192.168.1.131:41117/callback",
+    "http://192.168.0.1:8080/cb",
+  ])("rejects plain-HTTP RFC 1918 callback %s (JWT would cross the LAN in clear text)", (url) => {
+    expect(validateCliCallback(url)).toBe(false);
   });
 
   it("rejects 172.x outside 16-31 range", () => {
     expect(validateCliCallback("http://172.15.0.1:9876/callback")).toBe(false);
     expect(validateCliCallback("http://172.32.0.1:9876/callback")).toBe(false);
-  });
-
-  it("accepts 192.168.x.x private IPs", () => {
-    expect(validateCliCallback("http://192.168.1.131:41117/callback")).toBe(true);
-    expect(validateCliCallback("http://192.168.0.1:8080/cb")).toBe(true);
   });
 
   it("rejects https:// URLs", () => {

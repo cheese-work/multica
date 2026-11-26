@@ -89,15 +89,6 @@ entries:
       url: "^/[^/]+/agents/new$"
       marker: { role: heading, name: "Where should this agent run?" }
     scenes: []
-  - screen: ws.agents-new-ai
-    state: default
-    path: "/[workspaceSlug]/agents/new/ai"
-    auth: owner
-    seed: {}
-    expect:
-      url: "^/[^/]+/agents/new/ai$"
-      marker: { role: heading, name: "Build with AI" }
-    scenes: []
   - screen: ws.agents-new-ai-session
     state: default
     path: "/[workspaceSlug]/agents/new/ai/[sessionId]"
@@ -186,6 +177,15 @@ entries:
     seed: { id: issue }
     expect:
       url: "^/[^/]+/issues/[^/]+$"
+      marker: { role: textbox, name: "Issue title" }
+    scenes: []
+  - screen: ws.issue-deliverable
+    state: default
+    path: "/[workspaceSlug]/issues/[id]/deliverables/[name]"
+    auth: owner
+    seed: { id: issue, name: deliverable }
+    expect:
+      url: "^/[^/]+/issues/[^/]+/deliverables/[^/]+$"
       marker: { role: textbox, name: "Issue title" }
     scenes: []
   - screen: ws.member-detail
@@ -556,4 +556,31 @@ entries:
     expect:
       url: "^/[^/]+/settings$"
       marker: { role: heading, name: "Site search" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-appearance
+    path: "/[workspaceSlug]/settings?tab=appearance"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Appearance" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-voice-input
+    path: "/[workspaceSlug]/settings?tab=voice-input"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Voice input" }
+    scenes: []
+  - screen: ws.settings
+    state: tab-personal-background-agents
+    path: "/[workspaceSlug]/settings?tab=personal-background-agents"
+    auth: owner
+    seed: {}
+    expect:
+      url: "^/[^/]+/settings$"
+      marker: { role: heading, name: "Background agents" }
     scenes: []

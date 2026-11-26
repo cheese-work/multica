@@ -215,7 +215,7 @@ func TestAuditLatePartialAfterCompletion(t *testing.T) {
 	e := telegramTestEvent()
 	o.enqueueTerminalReply(e)
 	auditDrain(t, o, c, e.ChatSessionID)
-	c.advance(editInterval + time.Millisecond)
+	c.advance(privateEditInterval + time.Millisecond)
 	o.handleTaskMessage(auditPartial(e))
 	bot.wantOne(t)
 }
@@ -292,7 +292,7 @@ func TestAuditLatePartialAfterCancellationOrEmptyCompletion(t *testing.T) {
 				empty.Payload = protocol.ChatDonePayload{TaskID: e.TaskID, ChatSessionID: e.ChatSessionID}
 				o.enqueueTerminalReply(empty)
 			}
-			c.advance(editInterval + time.Millisecond)
+			c.advance(privateEditInterval + time.Millisecond)
 			o.handleTaskMessage(auditPartial(e))
 			bot.wantOne(t)
 		})
@@ -330,7 +330,7 @@ func TestAuditPartialResolutionOverlapsCompletion(t *testing.T) {
 	<-q.entered
 	o.enqueueTerminalReply(e)
 	auditDrain(t, o, c, e.ChatSessionID)
-	c.advance(editInterval + time.Millisecond)
+	c.advance(privateEditInterval + time.Millisecond)
 	q.release <- struct{}{}
 	<-finished
 	bot.wantOne(t)
@@ -345,7 +345,7 @@ func TestAuditAutomaticRetryPreservesSingleReply(t *testing.T) {
 	o.handleTaskMessage(auditPartial(first))
 	o.handleTaskFailed(events.Event{TaskID: first.TaskID, Type: protocol.EventTaskFailed,
 		Payload: map[string]any{"retry_pending": true}})
-	c.advance(editInterval + time.Millisecond)
+	c.advance(privateEditInterval + time.Millisecond)
 	retry := telegramTestEventFor(3, 5, chatDoneContent(first.Payload))
 	_ = retryTask
 	o.handleTaskMessage(auditPartial(retry))

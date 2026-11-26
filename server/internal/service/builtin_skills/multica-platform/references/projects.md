@@ -7,6 +7,7 @@ display metadata; it is context later injected into task briefs and
 - [Core model](#core-model)
 - [CLI](#cli)
 - [local_directory execution modes](#local_directory-execution-modes)
+- [Archived projects](#archived-projects)
 - [Referring to a project in a comment](#referring-to-a-project-in-a-comment)
 - [When to add a resource](#when-to-add-a-resource)
 - [Debugging wrong context](#debugging-wrong-context)
@@ -55,6 +56,9 @@ multica project create --title "<title>" --priority high --output json   # urgen
 multica project update <project-id> --priority medium --output json
 multica project update <project-id> --start-date "" --output json   # clear the start date
 multica project status <project-id> in_progress --output json
+multica project list --archived --output json
+multica project archive <project-id> --output json
+multica project restore <project-id> --output json
 multica project resource list <project-id> --output json
 multica project resource add <project-id> --type github_repo --url <github-url> --output json
 multica project resource add <project-id> --type github_repo --url <github-url> --ref <branch-or-sha> --output json
@@ -112,6 +116,31 @@ run in place. Saving `worktree` is refused (HTTP 422, code
 advertise the capability — the fix is updating the Multica app there, then
 retrying. Pass an empty value to clear it back to the default.
 
+## Archived projects
+
+Archiving is separate from status: a `completed` or `cancelled` project can be
+archived or not, and restoring it keeps its status. An archived project has a
+non-null `archived_at` (plus `archived_by_type` / `archived_by_id`).
+
+- `project list` hides archived projects; `--archived` lists only them.
+  `project get`, `project restore` and `issue list --project` still reach
+  them. An ID prefix resolves to a live project first and to an archived one
+  only when nothing live matches; `--project` on `issue create` and
+  `autopilot create` refuses an archived-only match and prints the restore
+  command. Updates resolve it normally and leave the decision to the server.
+- It accepts no new issues. Creating an issue with `--project` set to it, or
+  moving an issue into it, fails with HTTP 409 code `project_archived`. Issues
+  already in it stay readable and editable, and sub-issues of those issues
+  inherit the project as before.
+- Archiving pauses every active autopilot that files issues into the project
+  (`pause_reason: project_archived`; `project archive` lists them). Restoring
+  does not resume them, and an autopilot cannot be resumed or pointed at the
+  project while it stays archived.
+- When your task's project is archived, the brief says so. Finish the work at
+  hand; restore the project only when the user asks.
+
+Archive and restore need the same permission as editing the project.
+
 ## Referring to a project in a comment
 
 A project has no `MUL-123`-style identifier, so writing its title as prose
@@ -154,8 +183,8 @@ is task-local checkout state.
 
 ## Side effects
 
-Project create/update/delete/status and project resource add/update/remove
-mutate durable workspace state and affect future tasks. Ask before changing
+Project create/update/delete/status/archive/restore and project resource
+add/update/remove mutate durable workspace state and affect future tasks. Ask before changing
 `local_directory` unless the user explicitly requested that exact local path.
 
 ## Project workflows
@@ -223,11 +252,33 @@ issue inside a workflow needs none of them.
 - Whole workflow: `multica workflow create|update --steps-file <json>`
   replaces all steps; `multica workflow delete` is refused for Default and for
   a workflow a project still uses.
+- Status catalog: a step's `new_status` may carry `icon` (`dotted`, `circle`,
+  `half`, `three_quarters`, `check`, `slash`, `cross`; empty keeps the category
+  default), so a definition applied in a fresh workspace renders the glyph its
+  author declared. The field applies only when the status is created — a
+  status that already exists by name is reused unchanged. Repair an existing
+  catalog row, including on a workspace that synced before the field was
+  declared, with `multica issue-status update <key-or-name> --icon <value>`
+  (`--icon ""` resets it), and read the catalog with `multica issue-status
+  list`. These commands edit the workspace catalog, not a workflow, and need
+  workspace owner/admin.
 - Switching: `multica project workflow set <project-id> <workflow|default>`.
   Run it with `--dry-run` first. Issues on statuses the target lacks need
   `--map old=new`; a missing mapping fails with
   `workflow_status_mapping_required` and the plan. Pick each target from the
   plan or ask; never guess. The move neither reassigns issues nor starts runs.
+- A switch that widens a run budget (for example Default to Product) is refused
+  for a personal access token or CLI session with
+  `budget_rebinding_requires_interactive`. From an agent run, the same command
+  opens an owner passkey card (`project.workflow.set`, class spend) and changes
+  nothing until an owner approves it. Name two or more projects
+  (`multica project workflow set <project-id>... <workflow>`, up to 50) and the
+  run opens ONE card for all of them: it lists each project with its workflow
+  and run cap before and after. Approval switches every project or none; if any
+  project, its issues or the budget changed since the card opened, the action
+  ends `stale_base` and no project changes. Switches that need no approval are
+  made directly, one project at a time. Switching into Quick keeps its own card
+  (`project.workflow.quick_set`).
 - Permissions are the server's: editing or deleting a workflow needs its owner
   or a workspace admin, switching a project needs an admin or the project
   lead. A 403 is the answer, not something to work around.
@@ -247,3 +298,13 @@ While the issue is held, a decision request keeps its full flow, but delivering 
 
 `multica project delete <id>` is destructive. Read `project get <id>` and the
 issues in the project first; do not delete a project that still has live work.
+
+## Project members
+
+```bash
+multica project member list <project-id>
+multica project member add <project-id> <member>...     # name, email or user id
+multica project member remove <project-id> <member>
+```
+
+A change here alters who can see a private project. Ask before running `add` or `remove` when the user did not request it.

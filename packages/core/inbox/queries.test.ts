@@ -63,23 +63,107 @@ describe("deduplicateInboxItems", () => {
     });
   });
 
+  it("leaves an app request row on its own request, not an older comment", () => {
+    const merged = deduplicateInboxItems([
+      item({ id: "comment-notification", created_at: "2026-06-15T08:00:00Z", details: { comment_id: "comment-1" } }),
+      item({
+        id: "app-notification",
+        type: "app_action_requested",
+        created_at: "2026-06-15T08:01:00Z",
+        details: { request_id: "request-1" },
+      }),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.id).toBe("app-notification");
+    expect(merged[0]?.details).toEqual({ request_id: "request-1" });
+  });
+
+  // Fork rule (CHE-6382/6399): the kept row opens at its own comment. Upstream
+  // v0.10.0 opens an unread group at its oldest unread comment instead; the
+  // replacement is deferred to fork shrink 5a.
   it("preserves the newest row's own comment anchor", () => {
     const merged = deduplicateInboxItems([
-      item({
-        id: "older-comment",
-        created_at: "2026-06-15T08:00:00Z",
-        details: { comment_id: "comment-1" },
-      }),
-      item({
-        id: "newer-comment",
-        created_at: "2026-06-15T08:02:00Z",
-        details: { comment_id: "comment-2" },
-      }),
+      item({ id: "older-comment", created_at: "2026-06-15T08:00:00Z", details: { comment_id: "comment-1" } }),
+      item({ id: "newer-comment", created_at: "2026-06-15T08:02:00Z", details: { comment_id: "comment-2" } }),
     ]);
 
     expect(merged).toHaveLength(1);
     expect(merged[0]?.id).toBe("newer-comment");
     expect(merged[0]?.details?.comment_id).toBe("comment-2");
+  });
+
+  it("keeps the newest row's own comment over an older unread one, a read comment before them included", () => {
+    const merged = deduplicateInboxItems([
+      item({ id: "read-comment", read: true, created_at: "2026-06-15T07:00:00Z", details: { comment_id: "comment-0" } }),
+      item({ id: "older-comment", created_at: "2026-06-15T08:00:00Z", details: { comment_id: "comment-1" } }),
+      item({ id: "newer-comment", created_at: "2026-06-15T08:02:00Z", details: { comment_id: "comment-2" } }),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.id).toBe("newer-comment");
+    expect(merged[0]?.details?.comment_id).toBe("comment-2");
+  });
+
+  it("opens at the newest comment once every notification is read", () => {
+    const merged = deduplicateInboxItems([
+      item({ id: "older-comment", read: true, created_at: "2026-06-15T08:00:00Z", details: { comment_id: "comment-1" } }),
+      item({ id: "newer-comment", read: true, created_at: "2026-06-15T08:02:00Z", details: { comment_id: "comment-2" } }),
+    ]);
+
+    expect(merged[0]?.details?.comment_id).toBe("comment-2");
+  });
+
+  it("opens an unread notification with no comment where the reader left off, not at a read comment", () => {
+    const merged = deduplicateInboxItems([
+      item({ id: "read-comment", read: true, created_at: "2026-06-15T08:00:00Z", details: { comment_id: "comment-1" } }),
+      item({ id: "status", type: "status_changed", created_at: "2026-06-15T08:02:00Z", details: { from: "todo", to: "in_review" } }),
+    ]);
+
+    expect(merged[0]?.id).toBe("status");
+    expect(merged[0]?.details).toEqual({ from: "todo", to: "in_review" });
+  });
+
+  it("keeps the row's own comment even when only a notification without one is unread", () => {
+    const merged = deduplicateInboxItems([
+      item({ id: "status", type: "status_changed", created_at: "2026-06-15T08:00:00Z", details: { to: "in_review" } }),
+      item({ id: "read-comment", read: true, created_at: "2026-06-15T08:02:00Z", details: { comment_id: "comment-1" } }),
+    ]);
+
+    expect(merged[0]?.id).toBe("read-comment");
+    expect(merged[0]?.details).toEqual({ comment_id: "comment-1" });
+  });
+
+  it("opens an unread failed run at the run", () => {
+    const merged = deduplicateInboxItems([
+      item({ id: "read-comment", read: true, created_at: "2026-06-15T08:00:00Z", details: { comment_id: "comment-1" } }),
+      item({ id: "failed", type: "task_failed", created_at: "2026-06-15T08:02:00Z", details: { task_id: "task-1" } }),
+    ]);
+
+    expect(merged[0]?.details).toEqual({ task_id: "task-1", comment_id: "task-1" });
+  });
+
+  it("leaves a reaction to lead only when nothing else unread has an entry", () => {
+    const withReply = deduplicateInboxItems([
+      item({ id: "reaction", type: "reaction_added", created_at: "2026-06-15T08:00:00Z", details: { emoji: "👍", comment_id: "old-comment" } }),
+      item({ id: "reply", created_at: "2026-06-15T08:02:00Z", details: { comment_id: "comment-2" } }),
+    ]);
+    expect(withReply[0]?.details?.comment_id).toBe("comment-2");
+
+    const alone = deduplicateInboxItems([
+      item({ id: "reaction", type: "reaction_added", created_at: "2026-06-15T08:00:00Z", details: { emoji: "👍", comment_id: "old-comment" } }),
+      item({ id: "status", type: "status_changed", created_at: "2026-06-15T08:02:00Z", details: { to: "in_review" } }),
+    ]);
+    expect(alone[0]?.details?.comment_id).toBe("old-comment");
+  });
+
+  it("opens a read issue at the newest notification's entry, a reaction included", () => {
+    const merged = deduplicateInboxItems([
+      item({ id: "reply", read: true, created_at: "2026-06-15T08:00:00Z", details: { comment_id: "comment-2" } }),
+      item({ id: "reaction", type: "reaction_added", read: true, created_at: "2026-06-15T08:02:00Z", details: { emoji: "👍", comment_id: "old-comment" } }),
+    ]);
+
+    expect(merged[0]?.details?.comment_id).toBe("old-comment");
   });
 
   it("drops archived rows so an optimistic archive leaves the list at once", () => {
@@ -132,7 +216,10 @@ describe("deduplicateInboxItems mentions", () => {
       { ...mention("all", "2026-06-15T08:07:00Z", "all"), issue_id: "issue-3" },
     ];
 
-    expect(matches(rows).map((row) => row.id)).toEqual(["all", "direct"]);
+    // v0.10's filter takes every notification and renders each issue as its
+    // newest matching one, so the mention wins without a client-only `mention_row`.
+    const filtered = filterInboxItems(rows, { ...EMPTY_INBOX_FILTERS, mentionsOnly: true });
+    expect(filtered.map((row) => row.id)).toEqual(["all", "direct"]);
     // The unfiltered list still shows the newest row, the budget notice.
     expect(deduplicateInboxItems(rows).map((row) => row.id)).toContain("budget-after-mention");
   });
@@ -191,8 +278,8 @@ describe("deduplicateArchivedInboxItems", () => {
 });
 
 describe("archived inbox options", () => {
-  it("keeps an idle selection out of archive query keys", () => {
-    const idle: InboxFilters = { ...EMPTY_INBOX_FILTERS, idleOnly: true };
+  it("keeps an agent selection out of archive query keys", () => {
+    const idle: InboxFilters = { ...EMPTY_INBOX_FILTERS, agent: "idle" };
 
     expect(archivedInboxPagesOptions("ws", idle).queryKey).toEqual(
       archivedInboxPagesOptions("ws", EMPTY_INBOX_FILTERS).queryKey,
@@ -200,6 +287,21 @@ describe("archived inbox options", () => {
     expect(archivedInboxFacetsOptions("ws", idle).queryKey).toEqual(
       archivedInboxFacetsOptions("ws", EMPTY_INBOX_FILTERS).queryKey,
     );
+  });
+
+  it("carries the previous result across a filter change but never across workspaces", () => {
+    const todo: InboxFilters = { ...EMPTY_INBOX_FILTERS, statuses: ["todo"] };
+    for (const options of [archivedInboxPagesOptions, archivedInboxFacetsOptions]) {
+      const placeholder = options("ws", todo).placeholderData as (
+        previousData: unknown,
+        previousQuery: { queryKey: readonly unknown[] } | undefined,
+      ) => unknown;
+      const previous = { cached: true };
+
+      expect(placeholder(previous, { queryKey: options("ws", EMPTY_INBOX_FILTERS).queryKey })).toBe(previous);
+      expect(placeholder(previous, { queryKey: options("other-ws", todo).queryKey })).toBeUndefined();
+      expect(placeholder(undefined, undefined)).toBeUndefined();
+    }
   });
 });
 
