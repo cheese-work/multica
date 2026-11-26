@@ -18,7 +18,8 @@ const projectWorkflowSetTestType = "project.workflow.set"
 
 type projectSetFixture struct {
 	escalateFixture
-	// narrow is budgeted (25 runs), wide has no budget: narrow to wide widens.
+	// Both are budgeted at 25 runs; wide's window starts later, so narrow to wide
+	// widens and wide to narrow does not.
 	narrow, wide string
 	hostIssue    string
 	taskID       string
@@ -31,6 +32,7 @@ func newProjectSetFixture(t *testing.T) projectSetFixture {
 	f.narrow = createTestWorkflow(t, "narrow-"+workflowTestSuffix(), steps...).ID
 	f.wide = createTestWorkflow(t, "wide-"+workflowTestSuffix(), steps...).ID
 	dbfx.Exec(t, `UPDATE issue_workflow SET run_budget_since = now() - interval '1 hour', max_runs_per_issue = 25 WHERE id = $1`, f.narrow)
+	dbfx.Exec(t, `UPDATE issue_workflow SET run_budget_since = now(), max_runs_per_issue = 25 WHERE id = $1`, f.wide)
 	host := createWorkflowTestProject(t, "Set host project "+workflowTestSuffix())
 	f.hostIssue = dbfx.Issue(t, "set host "+workflowTestSuffix(), testutil.Cols{"status": "in_progress", "project_id": host})
 	f.taskID = createHandlerTestTaskForAgentOnIssue(t, seededReadyAgentID(t), f.hostIssue)
@@ -89,7 +91,10 @@ func TestApproveProjectWorkflowSetSwitchesEveryProjectWithoutReassigningOrStarti
 	queued := func() int {
 		return dbfx.Count(t, `SELECT count(*) FROM agent_task_queue q JOIN issue i ON i.id = q.issue_id WHERE i.project_id = ANY($1::uuid[])`, projects)
 	}
-	assigneesBefore, queuedBefore := assignees(), queued()
+	audits := func() int {
+		return dbfx.Count(t, `SELECT count(*) FROM workspace_audit_event WHERE kind = 'project.workflow.update' AND target_id = ANY($1::uuid[])`, projects)
+	}
+	assigneesBefore, queuedBefore, auditsBefore := assignees(), queued(), audits()
 
 	card := f.openBatchCard(t, projects)
 	if got := pendingActionsOfType(t, projectWorkflowSetTestType, f.hostIssue); got != 1 {
@@ -115,8 +120,8 @@ func TestApproveProjectWorkflowSetSwitchesEveryProjectWithoutReassigningOrStarti
 	if got := queued(); got != queuedBefore {
 		t.Fatalf("queued runs %d -> %d: a switch must not start runs", queuedBefore, got)
 	}
-	if got := dbfx.Count(t, `SELECT count(*) FROM workspace_audit_event WHERE kind = 'project.workflow.update' AND target_id = ANY($1::uuid[])`, projects); got != len(projects) {
-		t.Fatalf("project.workflow.update audit rows = %d, want %d", got, len(projects))
+	if got := audits() - auditsBefore; got != len(projects) {
+		t.Fatalf("new project.workflow.update audit rows = %d, want %d", got, len(projects))
 	}
 }
 
@@ -179,8 +184,10 @@ func TestProjectWorkflowSetRefusesOtherCredentialsAndNamesTheCardPath(t *testing
 }
 
 func TestProjectWorkflowSetLeavesNarrowingAndQuickSwitchesAlone(t *testing.T) {
-	f := newProjectSetFixture(t)
+	// Each subtest builds its own fixture: both fixtures create the workflow
+	// named Quick, which a workspace holds once.
 	t.Run("a narrowing switch is a direct write for an agent", func(t *testing.T) {
+		f := newProjectSetFixture(t)
 		project := createWorkflowTestProject(t, "Narrowing project "+workflowTestSuffix())
 		setProjectWorkflow(t, project, map[string]any{"workflow_id": f.wide}).Want(http.StatusOK)
 		agentSwitchProject(t, project, f.taskID, map[string]any{"workflow_id": f.narrow}).Want(http.StatusOK)
@@ -192,6 +199,7 @@ func TestProjectWorkflowSetLeavesNarrowingAndQuickSwitchesAlone(t *testing.T) {
 		}
 	})
 	t.Run("a batch that needs no approval writes nothing and says so", func(t *testing.T) {
+		f := newProjectSetFixture(t)
 		a := createWorkflowTestProject(t, "Direct a "+workflowTestSuffix())
 		b := createWorkflowTestProject(t, "Direct b "+workflowTestSuffix())
 		for _, p := range []string{a, b} {
