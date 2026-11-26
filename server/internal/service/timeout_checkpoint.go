@@ -35,6 +35,7 @@ const (
 	timeoutCheckpointMaxActionLen  = 160
 	timeoutCheckpointMaxToolLen    = 64
 	timeoutCheckpointMaxReasonLen  = 160
+	timeoutCheckpointMaxProbeLen   = 160
 	timeoutCheckpointMaxCommentLen = 4096
 
 	// TimeoutCheckpointCoveragePrefix starts the first line of every checkpoint
@@ -81,6 +82,8 @@ type TimeoutCheckpoint struct {
 	LastActions    []TimeoutCheckpointAction `json:"last_actions"`
 	TotalToolCalls int                       `json:"total_tool_calls"`
 	Warning        TimeoutCheckpointWarning  `json:"warning"`
+	// Probe is empty when the daemon's git probe worked, else "failed <reason>".
+	Probe string `json:"probe,omitempty"`
 }
 
 var sha40 = regexp.MustCompile(`^[0-9a-fA-F]{40}$`)
@@ -127,6 +130,7 @@ func ParseTimeoutCheckpoint(raw json.RawMessage) *TimeoutCheckpoint {
 		LastActions    []json.RawMessage `json:"last_actions"`
 		TotalToolCalls json.RawMessage   `json:"total_tool_calls"`
 		Warning        json.RawMessage   `json:"warning"`
+		Probe          json.RawMessage   `json:"probe"`
 	}
 	if len(raw) == 0 || string(raw) == "null" || json.Unmarshal(raw, &top) != nil {
 		return nil
@@ -174,6 +178,11 @@ func ParseTimeoutCheckpoint(raw json.RawMessage) *TimeoutCheckpoint {
 			w.Reason = oneLine(truncateRunes(redact.Text(w.Reason), timeoutCheckpointMaxReasonLen))
 			cp.Warning = w
 		}
+	}
+	// The daemon only ever sends "failed <reason>"; anything else is dropped.
+	var probe string
+	if json.Unmarshal(top.Probe, &probe) == nil && (probe == "failed" || strings.HasPrefix(probe, "failed ")) {
+		cp.Probe = oneLine(truncateRunes(redact.Text(probe), timeoutCheckpointMaxProbeLen))
 	}
 	return cp
 }
@@ -241,6 +250,10 @@ func renderTimeoutCheckpointOnce(cp TimeoutCheckpoint, attempt int32) string {
 		b.WriteString("\n")
 	case TimeoutWarningDisabled:
 		b.WriteString("Near-limit warning: disabled\n")
+	}
+
+	if cp.Probe != "" {
+		b.WriteString("Git probe: " + cp.Probe + "\n")
 	}
 
 	b.WriteString("\nRepos:\n")

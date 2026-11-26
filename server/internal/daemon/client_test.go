@@ -438,7 +438,7 @@ func TestFailTask_RetriesOnTransient5xxThenSucceeds(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.URL)
-	if err := c.FailTask(context.Background(), "task-1", "boom", "", "", "", "timeout", true, "", ""); err != nil {
+	if err := c.FailTask(context.Background(), "task-1", "boom", "", "", "", "timeout", true, "", "", nil); err != nil {
 		t.Fatalf("FailTask: %v", err)
 	}
 	if got := calls.Load(); got != 3 {
@@ -562,7 +562,7 @@ func TestTerminalReportsCarryRetiredSessionID(t *testing.T) {
 			name:     "fail",
 			endpoint: "/api/daemon/tasks/task-1/fail",
 			call: func(c *Client) error {
-				return c.FailTask(context.Background(), "task-1", "boom", "", "/tmp/wd", "", "api_invalid_request", false, "POISONED-S", "")
+				return c.FailTask(context.Background(), "task-1", "boom", "", "/tmp/wd", "", "api_invalid_request", false, "POISONED-S", "", nil)
 			},
 		},
 	} {
@@ -621,7 +621,7 @@ func TestTerminalReportsCarryDurableWorkDir(t *testing.T) {
 		{
 			name: "fail",
 			call: func(c *Client) error {
-				return c.FailTask(context.Background(), "task-1", "boom", "", "/tmp/wd", "", "agent_error", false, "", durableWorkDir)
+				return c.FailTask(context.Background(), "task-1", "boom", "", "/tmp/wd", "", "agent_error", false, "", durableWorkDir, nil)
 			},
 		},
 		{
