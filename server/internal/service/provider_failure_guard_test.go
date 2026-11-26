@@ -739,3 +739,53 @@ func TestAutopilotScheduleSkipsWhenProviderBreakerOpenDespiteSuccess(t *testing.
 		t.Fatalf("open breaker: run status %q, want skipped", run.Status)
 	}
 }
+
+// CHE-10039: one 502 must not latch a scheduled trigger forever. With no probe
+// (or a failing one) and no same-provider success, the guard admits one
+// recovery run once the failure is older than providerFailureUnprobedRecoveryAfter.
+func requireUnprobedRecovery(t *testing.T, f principalFixture, autopilotID, triggerID, failedTaskID string) *db.AutopilotRun {
+	t.Helper()
+	run := f.dispatch(t, autopilotID, triggerID)
+	if run.Status != "running" || !run.TaskID.Valid {
+		t.Fatalf("run = status %q task valid=%v reason=%q, want one recovery run", run.Status, run.TaskID.Valid, run.FailureReason.String)
+	}
+	var recordedRun, changed string
+	if err := f.Pool.QueryRow(context.Background(), `SELECT recovery_run_id,changed_condition FROM provider_failure_recovery WHERE failed_task_id=$1`, failedTaskID).Scan(&recordedRun, &changed); err != nil {
+		t.Fatal(err)
+	}
+	if recordedRun != util.UUIDToString(run.ID) || changed != providerFailureElapsedState {
+		t.Fatalf("recovery receipt run=%s changed=%s, want run %s changed %s", recordedRun, changed, util.UUIDToString(run.ID), providerFailureElapsedState)
+	}
+	return run
+}
+
+func TestAutopilotScheduleRecoversOnceWhenProbeNotConfiguredAndFailureIsOld(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, failedTaskID := seedAutopilotProviderFailure(t, f, ownerID, "7 hours")
+	run := requireUnprobedRecovery(t, f, autopilotID, triggerID, failedTaskID)
+
+	// The recovery run fails the same way: the loop stops and the owner is told.
+	f.Exec(t, "UPDATE agent_task_queue SET status='failed', failure_reason='agent_error.provider_server_error', completed_at=now() WHERE id=$1", util.UUIDToString(run.TaskID))
+	f.Exec(t, "UPDATE autopilot_run SET status='failed', completed_at=now() WHERE id=$1", util.UUIDToString(run.ID))
+	requireCooldownSkip(t, f, autopilotID, triggerID, "failed recovery run")
+}
+
+func TestAutopilotScheduleRecoversOnceWhenProbeFailsAndFailureIsOld(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, failedTaskID := seedAutopilotProviderFailure(t, f, ownerID, "7 hours")
+	probe := &providerFailureProbeStub{err: errors.New("gateway unreachable")}
+	f.svc.TaskSvc.ProviderFailureProbe = probe
+	requireUnprobedRecovery(t, f, autopilotID, triggerID, failedTaskID)
+	if probe.calls != 1 {
+		t.Fatalf("probe calls = %d, want 1", probe.calls)
+	}
+}
+
+// A probe that answers without the changed condition is observed evidence, so
+// it keeps the skip however old the failure is.
+func TestAutopilotScheduleSkipsWhenProbeAnswersWithoutChangedConditionAndFailureIsOld(t *testing.T) {
+	f, ownerID := newPrincipalFixture(t)
+	autopilotID, triggerID, _ := seedAutopilotProviderFailure(t, f, ownerID, "7 hours")
+	f.svc.TaskSvc.ProviderFailureProbe = &providerFailureProbeStub{evidence: ProviderFailureProbeEvidence{CheckedAt: time.Now().UTC(), StatusCode: http.StatusBadGateway}}
+	requireCooldownSkip(t, f, autopilotID, triggerID, "probe 502")
+}

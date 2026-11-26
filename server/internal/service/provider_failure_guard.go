@@ -28,6 +28,14 @@ const (
 	providerFailureChangedState    = "provider_server_error_to_http_401"
 	// providerFailureSuccessState: same-provider success evidence (CHE-4311).
 	providerFailureSuccessState = "provider_success_after_failure"
+	// providerFailureElapsedState: no probe evidence was obtainable, so the
+	// guard admits one recovery run after providerFailureUnprobedRecoveryAfter
+	// (CHE-10039).
+	providerFailureElapsedState = "provider_cooldown_elapsed_unprobed"
+	// providerFailureUnprobedRecoveryAfter: a skip creates no task, so without
+	// a probe nothing else could ever clear the latch. One bounded retry; a
+	// failed recovery run still stops the loop.
+	providerFailureUnprobedRecoveryAfter = 6 * time.Hour
 )
 
 type ProviderFailureProbeEvidence struct {
@@ -112,6 +120,8 @@ type providerFailureRecoveryAttempt struct {
 	ProbeStatus  int32
 	// SuccessEvidence: ProbeAt is the breaker's last_success_at, not an HTTP probe.
 	SuccessEvidence bool
+	// CooldownElapsed: no probe evidence was obtainable; ProbeAt is the decision time.
+	CooldownElapsed bool
 	Scope           providerFailureRecoveryScope
 	SkipReason      string
 	ReturnOwner     bool
@@ -196,17 +206,14 @@ func (s *TaskService) prepareProviderFailureRecovery(ctx context.Context, q *db.
 		return attempt, nil
 	}
 	if s.ProviderFailureProbe == nil {
-		attempt.SkipReason = "cooldown expiry alone is not recovery evidence; probe is not configured"
-		return attempt, nil
+		return unprobedProviderRecovery(attempt, "probe is not configured"), nil
 	}
 	evidence, err := s.ProviderFailureProbe.Probe(ctx)
 	if err != nil {
 		if errors.Is(err, errProviderRecoveryProbeNotConfigured) {
-			attempt.SkipReason = "cooldown expiry alone is not recovery evidence; probe is not configured"
-			return attempt, nil
+			return unprobedProviderRecovery(attempt, "probe is not configured"), nil
 		}
-		attempt.SkipReason = "cooldown expiry alone is not recovery evidence; probe failed"
-		return attempt, nil
+		return unprobedProviderRecovery(attempt, "probe failed"), nil
 	}
 	attempt.ProbeAt = evidence.CheckedAt.UTC()
 	attempt.ProbeStatus = int32(evidence.StatusCode)
@@ -215,6 +222,21 @@ func (s *TaskService) prepareProviderFailureRecovery(ctx context.Context, q *db.
 		return attempt, nil
 	}
 	return attempt, nil
+}
+
+// unprobedProviderRecovery decides when no probe evidence can be obtained. A
+// skip creates no task, so nothing else would ever clear the latch (CHE-10039):
+// past providerFailureUnprobedRecoveryAfter it admits one recovery run. The
+// reservation is unique per failed task and a failed recovery run still stops
+// the loop (ReturnOwner above), so this is one bounded retry, not a loop.
+func unprobedProviderRecovery(attempt *providerFailureRecoveryAttempt, why string) *providerFailureRecoveryAttempt {
+	now := time.Now().UTC()
+	if now.Sub(attempt.FailedAt) < providerFailureUnprobedRecoveryAfter {
+		attempt.SkipReason = "cooldown expiry alone is not recovery evidence; " + why
+		return attempt
+	}
+	attempt.ProbeAt, attempt.CooldownElapsed = now, true
+	return attempt
 }
 
 // providerSuccessAfter is the CHE-1741 R1 evidence: the failed task's provider
@@ -362,6 +384,9 @@ func (s *TaskService) reserveProviderFailureRecovery(ctx context.Context, q *db.
 	if attempt.SuccessEvidence {
 		changed, status = providerFailureSuccessState, pgtype.Int4{}
 	}
+	if attempt.CooldownElapsed {
+		changed, status = providerFailureElapsedState, pgtype.Int4{}
+	}
 	// CHE-4568: the recurring recovery claims through the shared store before
 	// it reserves. The run needs an issue to anchor the claim; one without
 	// keeps today's behaviour.
@@ -462,6 +487,9 @@ func providerFailureCooldownReason(attempt *providerFailureRecoveryAttempt) stri
 	}
 	if attempt.SuccessEvidence {
 		return fmt.Sprintf("provider_failure_cooldown: same-provider success after failure; failed_task_id=%s", util.UUIDToString(attempt.FailedTaskID))
+	}
+	if attempt.CooldownElapsed {
+		return fmt.Sprintf("provider_failure_cooldown: failure older than %s with no probe evidence; one recovery run; failed_task_id=%s", providerFailureUnprobedRecoveryAfter, util.UUIDToString(attempt.FailedTaskID))
 	}
 	return fmt.Sprintf("provider_failure_cooldown: fresh unauthenticated /v1/models probe returned 401; failed_task_id=%s", util.UUIDToString(attempt.FailedTaskID))
 }
