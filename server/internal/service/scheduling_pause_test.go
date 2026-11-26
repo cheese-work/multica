@@ -65,11 +65,11 @@ func (f pauseFixture) candidates(t *testing.T, a pauseAgent) int {
 	t.Helper()
 	ctx := context.Background()
 	q := db.New(f.pool)
-	single, err := q.ListQueuedClaimCandidatesByRuntime(ctx, a.runtimeID)
+	single, err := q.ListQueuedClaimCandidatesByRuntime(ctx, db.ListQueuedClaimCandidatesByRuntimeParams{RuntimeID: a.runtimeID, AgingStepSecs: queueAgingStep.Seconds()})
 	if err != nil {
 		t.Fatalf("list candidates: %v", err)
 	}
-	batch, err := q.ListQueuedClaimCandidatesByRuntimes(ctx, []pgtype.UUID{a.runtimeID})
+	batch, err := q.ListQueuedClaimCandidatesByRuntimes(ctx, db.ListQueuedClaimCandidatesByRuntimesParams{RuntimeIds: []pgtype.UUID{a.runtimeID}, AgingStepSecs: queueAgingStep.Seconds()})
 	if err != nil {
 		t.Fatalf("list batch candidates: %v", err)
 	}
