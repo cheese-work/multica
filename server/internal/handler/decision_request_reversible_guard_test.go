@@ -39,25 +39,49 @@ func TestDecisionRequestReversibleAskGuard(test *testing.T) {
 }
 
 // A Discovery brief card (Plan step 13) is class reversible by contract. The typed
-// subject discovery_brief is the only exemption; the same card with another subject
-// or none stays refused, and the class is not rewritten.
+// subject discovery_brief exempts it only on an issue that follows the Plan (gstack)
+// workflow. The same label on an ordinary issue, or no label, stays refused, and the
+// class is not rewritten.
 func TestDecisionRequestReversibleGuardExemptsDiscoveryBrief(test *testing.T) {
 	for _, tc := range []struct {
-		name, subject string
-		want, created int
+		name, subject, workflow string
+		want, created           int
 	}{
-		{"discovery_brief passes in block mode", "discovery_brief", http.StatusCreated, 1},
-		{"no subject stays refused", "", http.StatusUnprocessableEntity, 0},
+		{"discovery_brief on a Plan (gstack) issue passes in block mode", "discovery_brief", "Plan (gstack)", http.StatusCreated, 1},
+		{"discovery_brief on an ordinary issue stays refused", "discovery_brief", "", http.StatusUnprocessableEntity, 0},
+		{"discovery_brief on another workflow stays refused", "discovery_brief", "Default B", http.StatusUnprocessableEntity, 0},
+		{"no subject on a Plan (gstack) issue stays refused", "", "Plan (gstack)", http.StatusUnprocessableEntity, 0},
 	} {
 		test.Run(tc.name, func(test *testing.T) {
 			fixture := newRequestCoreFixture(test, false)
 			setReversibleAskGuard(test, "block")
+			if tc.workflow != "" {
+				setIssueWorkflowByName(test, fixture.issueID, tc.workflow)
+			}
 			ask := fixture.structuredAsk()
 			ask.Subject = tc.subject
 			testutil.Call(test, testHandler.RequestDecision, fixture.artifactRequest(ask)).Want(tc.want)
 			fixture.assertCounts(test, tc.created)
 		})
 	}
+}
+
+// setIssueWorkflowByName gives the issue its own workflow row of that name. The row
+// and the override go away with the test.
+func setIssueWorkflowByName(t *testing.T, issueID, name string) {
+	t.Helper()
+	ctx := context.Background()
+	var workflowID string
+	if err := testPool.QueryRow(ctx, `INSERT INTO issue_workflow (workspace_id, name, description, initial_status_key, steps, owner_id) VALUES ($1, $2, '', 'todo', '[]'::jsonb, $3) RETURNING id`, testWorkspaceID, name, testUserID).Scan(&workflowID); err != nil {
+		t.Fatalf("insert workflow: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE issue SET workflow_id = $1 WHERE id = $2`, workflowID, issueID); err != nil {
+		t.Fatalf("set issue workflow: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE issue SET workflow_id = NULL WHERE id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM issue_workflow WHERE id = $1`, workflowID)
+	})
 }
 
 func setReversibleAskGuard(t *testing.T, mode string) {
