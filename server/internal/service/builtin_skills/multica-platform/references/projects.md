@@ -267,6 +267,18 @@ issue inside a workflow needs none of them.
   `--map old=new`; a missing mapping fails with
   `workflow_status_mapping_required` and the plan. Pick each target from the
   plan or ask; never guess. The move neither reassigns issues nor starts runs.
+- A switch that widens a run budget (for example Default to Product) is refused
+  for a personal access token or CLI session with
+  `budget_rebinding_requires_interactive`. From an agent run, the same command
+  opens an owner passkey card (`project.workflow.set`, class spend) and changes
+  nothing until an owner approves it. Name two or more projects
+  (`multica project workflow set <project-id>... <workflow>`, up to 50) and the
+  run opens ONE card for all of them: it lists each project with its workflow
+  and run cap before and after. Approval switches every project or none; if any
+  project, its issues or the budget changed since the card opened, the action
+  ends `stale_base` and no project changes. Switches that need no approval are
+  made directly, one project at a time. Switching into Quick keeps its own card
+  (`project.workflow.quick_set`).
 - Permissions are the server's: editing or deleting a workflow needs its owner
   or a workspace admin, switching a project needs an admin or the project
   lead. A 403 is the answer, not something to work around.
