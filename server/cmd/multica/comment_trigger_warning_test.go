@@ -68,9 +68,17 @@ func TestWarnTriggerOutcomes_StageQueueFullPrintsQueuedNote(t *testing.T) {
 		map[string]any{"target_type": "agent", "target_id": "other", "status": "deferred", "reason_code": "deferred"},
 	}})
 	got := out.String()
-	want := "Note: review of agent " + agentID + " is queued behind a full stage and starts by itself; do not re-mention.\n"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
+	for _, want := range []string{
+		"Note: review of agent " + agentID + " is queued behind a full stage",
+		"multica issue wakeup create --until-status <status> --agent-id " + agentID,
+		"Do not re-mention or re-assign.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "other") {
+		t.Fatalf("an unrelated deferral must stay silent: %q", got)
 	}
 	if strings.Contains(got, "started no run") {
 		t.Fatalf("must not print the started-no-run warning:\n%s", got)

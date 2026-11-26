@@ -13,14 +13,15 @@ func warnBlockedTriggerOutcomes(w io.Writer, result map[string]any) {
 	for _, raw := range outcomes {
 		outcome, _ := raw.(map[string]any)
 		if outcome["status"] == "deferred" && outcome["reason_code"] == "stage_queue_full" {
-			fmt.Fprintf(w, "Note: review of %v %v is queued behind a full stage and starts by itself; do not re-mention.\n",
-				outcome["target_type"], outcome["target_id"])
+			fmt.Fprintf(w, "Note: review of %v %v is queued behind a full stage; it starts when a slot frees. "+
+				"If no run exists after about 30 minutes, start it with: multica issue wakeup create --until-status <status> --agent-id %v. Do not re-mention or re-assign.\n",
+				outcome["target_type"], outcome["target_id"], outcome["target_id"])
 			continue
 		}
 		if outcome["status"] != "blocked" {
 			continue
 		}
-		fmt.Fprintf(w, "Warning: mention of %v %v started no run (%v).\n",
+		fmt.Fprintf(w, "Warning: trigger for %v %v started no run (%v).\n",
 			outcome["target_type"], outcome["target_id"], outcome["reason_code"])
 	}
 }
