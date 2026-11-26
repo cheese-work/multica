@@ -41,8 +41,6 @@ export function checkMigrationPrefixes({ files, main, pulls }) {
   return { collisions, commands, nextFree: firstFree };
 }
 
-class FileLimitError extends Error {}
-
 export function addedMigrations(files) {
   return files.filter((file) => ["added", "copied", "renamed"].includes(file.status) && MIGRATION.test(file.filename))
     .map((file) => file.filename);
@@ -66,7 +64,7 @@ export async function collectMigrations({ repository, number, token, expectedHea
       const batch = await request(`${endpoint}${endpoint.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
       if (!Array.isArray(batch)) throw new Error(`Invalid GitHub list: ${endpoint}`);
       entries.push(...batch);
-      if (entries.length >= limit) throw new FileLimitError(`GitHub ${endpoint} reached its ${limit}-file limit; cannot verify all migrations`);
+      if (entries.length >= limit) throw new Error(`GitHub ${endpoint} reached its ${limit}-file limit; cannot verify all migrations`);
       if (batch.length < 100) return entries;
     }
   }
@@ -81,8 +79,8 @@ export async function collectMigrations({ repository, number, token, expectedHea
     throw new Error("PR head changed or closed; rerun the check on the current head");
   }
   const mainPaths = new Set(tree.tree.filter((entry) => entry.type === "blob").map((entry) => entry.path));
-  // CHE-10381: GitHub caps the PR files list at 3000. For another open PR over the cap, read its
-  // migrations from its head git tree, new versus the main tree. Never skip the PR.
+  // CHE-10381: GitHub caps the PR files list at 3000. For another open PR with a large file list, read
+  // its migrations from its head git tree, new versus the main tree. Never skip the PR.
   async function headTreeMigrations(pull) {
     if (!pull.head?.sha) throw new Error(`PR #${pull.number} has no head commit; cannot verify all migrations`);
     const head = await request(`git/trees/${pull.head.sha}?recursive=1`);
@@ -94,13 +92,11 @@ export async function collectMigrations({ repository, number, token, expectedHea
   const pulls = [];
   await Promise.all(Array.from({ length: Math.min(8, pending.length) }, async () => {
     for (let pull = pending.shift(); pull; pull = pending.shift()) {
-      let added;
-      try {
-        added = addedMigrations(await pages(`pulls/${pull.number}/files`, 3000));
-      } catch (error) {
-        if (!(error instanceof FileLimitError)) throw error;
-        added = await headTreeMigrations(pull);
-      }
+      // A full first page means 100 or more changed files. Paging on costs up to 30 sequential requests per
+      // PR (38 s live, over the 25 s CI deadline), so read the head tree instead: one request, exact.
+      const first = await request(`pulls/${pull.number}/files?per_page=100&page=1`);
+      if (!Array.isArray(first)) throw new Error(`Invalid GitHub list: pulls/${pull.number}/files`);
+      const added = first.length < 100 ? addedMigrations(first) : await headTreeMigrations(pull);
       pulls.push({ number: pull.number, files: added });
     }
   }));
