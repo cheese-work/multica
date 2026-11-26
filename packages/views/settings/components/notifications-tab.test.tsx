@@ -293,11 +293,15 @@ describe("notification setting hierarchy", () => {
 
 describe("notification delivery scope", () => {
   it("makes the delivery scope discoverable in settings search", () => {
+    // The search index reads cached notification preferences (upstream), so it needs a client.
+    const qc = new QueryClient();
     const { result } = renderHook(() => useSettingsSearchIndex([{ value: "notifications", label: "Notifications" }]), {
       wrapper: ({ children }) => (
-        <I18nProvider locale="en" resources={{ en: { settings: enSettings } }}>
-          {children}
-        </I18nProvider>
+        <QueryClientProvider client={qc}>
+          <I18nProvider locale="en" resources={{ en: { settings: enSettings } }}>
+            {children}
+          </I18nProvider>
+        </QueryClientProvider>
       ),
     });
     expect(result.current).toContainEqual({
@@ -323,7 +327,8 @@ describe("notification delivery scope", () => {
     const control = screen.getByRole("switch", { name: "Only decisions and issues assigned to me" });
     expect(control).toBeChecked();
     await userEvent.click(control);
-    expect(mutate).toHaveBeenCalledWith({ mentions: "muted" }, expect.any(Object));
+    // Upstream saves an enabled group as an explicit "all" instead of deleting the key.
+    expect(mutate).toHaveBeenCalledWith({ mentions: "muted", unassigned_activity: "all" }, expect.any(Object));
     expect(screen.getByRole("switch", { name: "Mentions" })).not.toBeChecked();
   });
 });

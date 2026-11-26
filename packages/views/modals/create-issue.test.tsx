@@ -2567,7 +2567,7 @@ describe("CreateIssueModal", () => {
 
       await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", "wf-review"));
       fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });
-      await user.click(screen.getByRole("button", { name: "Create Issue" }));
+      await user.click(screen.getByRole("button", { name: "Create issue" }));
 
       await waitFor(() => expect(mockCreateIssue).toHaveBeenCalledWith(expect.objectContaining({ workflow_id: "wf-review" })));
     });
@@ -2630,7 +2630,7 @@ describe("CreateIssueModal", () => {
 
       await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", ""));
       fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });
-      await user.click(screen.getByRole("button", { name: "Create Issue" }));
+      await user.click(screen.getByRole("button", { name: "Create issue" }));
 
       await waitFor(() => expect(mockCreateIssue).toHaveBeenCalled());
       expect(mockCreateIssue.mock.calls[0]![0].workflow_id).toBeUndefined();
@@ -2647,7 +2647,7 @@ describe("CreateIssueModal", () => {
 
       await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", ""));
       fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });
-      await user.click(screen.getByRole("button", { name: "Create Issue" }));
+      await user.click(screen.getByRole("button", { name: "Create issue" }));
 
       await waitFor(() => expect(mockCreateIssue).toHaveBeenCalled());
       expect(mockCreateIssue.mock.calls[0]![0].workflow_id).toBeUndefined();
@@ -2664,7 +2664,7 @@ describe("CreateIssueModal", () => {
 
       await waitFor(() => expect(screen.getByTestId("status-picker")).toHaveAttribute("data-workflow-id", ""));
       fireEvent.change(screen.getByPlaceholderText("Issue title"), { target: { value: "Flow issue" } });
-      await user.click(screen.getByRole("button", { name: "Create Issue" }));
+      await user.click(screen.getByRole("button", { name: "Create issue" }));
 
       await waitFor(() => expect(mockCreateIssue).toHaveBeenCalled());
       expect(mockCreateIssue.mock.calls[0]![0].workflow_id).toBeUndefined();

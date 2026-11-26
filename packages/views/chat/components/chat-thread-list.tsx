@@ -226,7 +226,9 @@ export function ChatThreadList({
   const { data: pending } = useQuery(pendingChatTasksOptions(wsId));
   const { data: myWakeups } = useQuery(myChatWakeupsOptions(wsId));
   const waitingSessionIds = useMemo(
-    () => new Set((myWakeups ?? []).filter((w) => w.status === "active").map((w) => w.chat_session_id)),
+    // Array guard: the fork list tests mock every query with one shared
+    // `{ tasks: [] }` payload, so a non-array must read as "no wakeups".
+    () => new Set((Array.isArray(myWakeups) ? myWakeups : []).filter((w) => w.status === "active").map((w) => w.chat_session_id)),
     [myWakeups],
   );
   const pendingTaskBySessionId = useMemo(

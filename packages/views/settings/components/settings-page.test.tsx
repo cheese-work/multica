@@ -392,7 +392,7 @@ describe("SettingsPage information architecture", () => {
     expect(within(workspace).getByRole("link", { name: "Members" })).toBeInTheDocument();
     const issues = within(nav()).getByRole("region", { name: "Issues & workflow" });
     // Workflows sit behind the project_workflows flag; the fork keeps Issue Statuses while it is off.
-    expect(within(issues).getByRole("link", { name: "Issue Statuses" })).toBeInTheDocument();
+    expect(within(issues).getByRole("link", { name: "Issue statuses" })).toBeInTheDocument();
     const connections = within(nav()).getByRole("region", { name: "Connections & extensions" });
     for (const name of ["Code", "Messaging", "MCP servers"]) {
       expect(within(connections).getByRole("link", { name })).toBeInTheDocument();

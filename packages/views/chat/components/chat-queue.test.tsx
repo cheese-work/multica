@@ -206,11 +206,13 @@ describe("ChatQueue Steer and Stop & send", () => {
     ["queued", "capable", "Available after the current reply starts"],
   ] as const)(
     "shows the fallback reason as visible text (head %s, support %s)",
-    (headStatus, support, reason) => {
+    async (headStatus, support, reason) => {
       renderQueue(headStatus, false, support);
 
       const visible = screen.getByText(reason);
-      expect(visible).toBeVisible();
+      // Upstream's queue shell fades in (opacity 0 -> 1), so wait for the
+      // entrance animation before checking visibility.
+      await waitFor(() => expect(visible).toBeVisible());
       expect(visible).toHaveAttribute("data-slot", "chat-queue-reason");
     },
   );

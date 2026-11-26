@@ -20,6 +20,7 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import {
   ChevronRight,
+  ChevronDown,
   Brain,
   AlertCircle,
   AlertTriangle,
