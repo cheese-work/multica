@@ -57,12 +57,33 @@ var (
 // lists; the sandbox itself is safe because it mounts only what a Spec names.
 func DefaultDeny() []string {
 	deny := []string{"/var/run/docker.sock", "/run/docker.sock"}
+	// The credential journal (its entries and journal.key) is daemon-private.
+	// Denying the base covers every profile's root beneath it.
+	if base := CredJournalBase(); base != "" {
+		deny = append(deny, base)
+	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		for _, rel := range []string{".ssh", ".config/gh", ".config/github-apps", ".claude", ".codex"} {
 			deny = append(deny, filepath.Join(home, rel))
 		}
 	}
 	return deny
+}
+
+// CredJournalBase is the directory that holds one credential journal root per
+// daemon profile: $XDG_STATE_HOME/multica/cred-journal, or
+// ~/.local/state/multica/cred-journal. It is empty when neither a state home
+// nor a user home is known.
+func CredJournalBase() string {
+	state := os.Getenv("XDG_STATE_HOME")
+	if state == "" || !filepath.IsAbs(state) {
+		home, err := os.UserHomeDir()
+		if err != nil || home == "" {
+			return ""
+		}
+		state = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(state, "multica", "cred-journal")
 }
 
 // bind is one host path mounted at dest, or at its own path when dest is empty.
