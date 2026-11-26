@@ -25,6 +25,7 @@ import { chatSessionsOptions } from "@/data/queries/chat";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { splitChatSessions } from "@/lib/chat-dm-stats-archive";
+import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
 import { useT } from "@/lib/i18n";
 import { useAttentionRefresh } from "@/lib/use-attention-refresh";
 import { cn } from "@/lib/utils";
@@ -65,7 +66,7 @@ export default function ChatSessionsRoute() {
     if (session.status !== "archived") return;
     Alert.alert(
       t("alerts.delete_title"),
-      session.title || t("sessions.new_chat"),
+      chatSessionDisplayTitle(session.title, t),
       [
         { text: t("common:actions.cancel"), style: "cancel" },
         {
@@ -135,7 +136,7 @@ export default function ChatSessionsRoute() {
                         )}
                         numberOfLines={1}
                       >
-                        {session.title || t("sessions.new_chat")}
+                        {chatSessionDisplayTitle(session.title, t)}
                       </Text>
                     </View>
                     {session.pinned ? (
@@ -211,7 +212,7 @@ export default function ChatSessionsRoute() {
                                 className="text-sm text-foreground"
                                 numberOfLines={1}
                               >
-                                {session.title || t("sessions.new_chat")}
+                                {chatSessionDisplayTitle(session.title, t)}
                               </Text>
                               <Text className="mt-0.5 text-xs text-muted-foreground">
                                 {t("sessions.archived")}

@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { SidebarProvider } from "@multica/ui/components/ui/sidebar";
+import { WorkspaceTrialNotices } from "../billing/trial-notices";
 import { AppearanceSync } from "../common/appearance-sync";
 import { ModalRegistry } from "../modals/registry";
 import { SourceBackfillModal } from "../onboarding/source-backfill-modal";
@@ -78,6 +79,7 @@ export function DashboardLayout({
                   <MachinePauseBanner />
                   <WorkspacePauseBanner />
                   <OpenDecisionsChip />
+                  <WorkspaceTrialNotices />
                   <MachineBannerHeaderSlot>{children}</MachineBannerHeaderSlot>
                   <ModalRegistry />
                   <SourceBackfillModal />

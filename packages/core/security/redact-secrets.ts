@@ -7,9 +7,15 @@ import providerRules from "../../../server/pkg/redact/provider-rules.json";
 
 // Provider-token rules are shared with the server (server/pkg/redact embeds the
 // same file); the parity fixture in redact.test.ts keeps both on one list.
-const patterns = (
-  providerRules as { pattern: string; flags: string; replacement: string }[]
-).map(({ pattern, flags, replacement }) => ({ re: new RegExp(pattern, `${flags}g`), replacement }));
+const patterns = [
+  ...(providerRules as { pattern: string; flags: string; replacement: string }[]).map(
+    ({ pattern, flags, replacement }) => ({ re: new RegExp(pattern, `${flags}g`), replacement }),
+  ),
+  // Multica credentials (upstream v0.13.0). Kept in this file until the shared
+  // provider-rules.json carries the same rule; preserves short JSON control
+  // escapes (\n, \t) that precede a token.
+  { re: /(?:\b|(\\[bfnrt]))(?:mat|mul|mdt|mcn)_[0-9a-fA-F]{40}\b/g, replacement: "$1[REDACTED_MULTICA_TOKEN]" },
+];
 
 const genericCredentialPattern = /(?:API_KEY|API_SECRET|SECRET_KEY|SECRET|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL|PASSWORD|TOKEN)\s*[=:]\s*/gi;
 const credentialReferencePattern = /^(?:\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})|<[A-Za-z_][A-Za-z0-9_-]*>|\*{3,})/;

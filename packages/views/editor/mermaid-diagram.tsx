@@ -40,10 +40,11 @@ import {
   type CSSProperties,
   type RefObject,
 } from "react";
-import { Check, Copy, Frame, Maximize2, Minus, Plus } from "@multica/ui/icons";
+import { Frame, Maximize2, Minus, Plus } from "@multica/ui/icons";
 import { parse, stringify } from "yaml";
 import type { MermaidConfig } from "mermaid";
 import { useMermaidOrientationSetting } from "@multica/core/workspace/mermaid-orientation";
+import { CopyCheckIcon } from "@multica/ui/components/common/copy-check-icon";
 import { copyText } from "@multica/ui/lib/clipboard";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
 import { useT } from "../i18n";
@@ -720,7 +721,7 @@ export function MermaidDiagram({
               onClick={handleCopySource}
               aria-label={t(($) => $.mermaid.copy_source)}
             >
-              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+              <CopyCheckIcon copied={copied} />
             </button>
           </TooltipHint>
         </div>
@@ -795,7 +796,7 @@ export function MermaidDiagram({
                   onClick={handleCopySource}
                   aria-label={t(($) => $.mermaid.copy_source)}
                 >
-                  {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                  <CopyCheckIcon copied={copied} />
                 </button>
               </TooltipHint>
               <TooltipHint label={t(($) => $.mermaid.open_viewer)}>

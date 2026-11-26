@@ -260,12 +260,18 @@ export function WorkspaceTab() {
   const saveDetails = useCallback(
     async (next: WorkspaceDetailsDraft) => {
       if (!workspace) return;
-      const updated = await api.updateWorkspace(workspace.id, next);
+      // Send only what was edited here, so the rest keeps changes made elsewhere.
+      const changes: Partial<WorkspaceDetailsDraft> = {};
+      if (next.name !== savedDetails.name) changes.name = next.name;
+      if (next.description !== savedDetails.description) changes.description = next.description;
+      if (next.context !== savedDetails.context) changes.context = next.context;
+      if (Object.keys(changes).length === 0) return;
+      const updated = await api.updateWorkspace(workspace.id, changes);
       qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
         old?.map((ws) => (ws.id === updated.id ? updated : ws)),
       );
     },
-    [qc, workspace],
+    [qc, savedDetails, workspace],
   );
   const detailsAutoSave = useAutoSave({
     value: detailsDraft,
@@ -460,6 +466,7 @@ export function WorkspaceTab() {
                 name={workspace.name}
                 size={64}
                 disabled={!canManageWorkspace}
+                textIconEnabled
                 ariaLabel={t(($) => $.workspace.change_logo_aria)}
                 onUploaded={async (url) => {
                   try {

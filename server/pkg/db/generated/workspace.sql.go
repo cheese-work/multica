@@ -105,6 +105,9 @@ cleared_outbound_cards AS (
 cleared_chat_submission_receipts AS (
     DELETE FROM chat_submission_receipt WHERE chat_submission_receipt.workspace_id = $1
 ),
+cleared_comment_idempotency_receipts AS (
+    DELETE FROM comment_idempotency_receipt WHERE comment_idempotency_receipt.workspace_id = $1
+),
 cleared_draft_restores AS (
     -- chat_draft_restore is keyed by chat_session_id with no FK (MUL-3515) and has
     -- no reaper, while its chat_session rows cascade away with the workspace. Reach
@@ -464,6 +467,7 @@ SELECT w.id, w.name
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
+  AND m.role IN ('owner', 'admin', 'member', 'guest')
 ORDER BY w.id ASC
 `
 
@@ -475,7 +479,8 @@ type ListDaemonWorkspacesRow struct {
 // Daemons only need the membership set and display name to discover which
 // workspaces should have local runtimes. Keep this projection intentionally
 // narrow so the periodic consistency check never reads UI-only JSON/text
-// columns such as settings, repos, or context.
+// columns such as settings, repos, or context. A role this build does not
+// know is no membership (see GetMemberByUserAndWorkspace).
 func (q *Queries) ListDaemonWorkspaces(ctx context.Context, userID pgtype.UUID) ([]ListDaemonWorkspacesRow, error) {
 	rows, err := q.db.Query(ctx, listDaemonWorkspaces, userID)
 	if err != nil {
@@ -527,10 +532,12 @@ SELECT w.id, w.name, w.slug, w.description, w.settings,
        w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
        w.export_redaction_mode, w.export_manifest_retention_days,
        w.decision_passkey_gate, w.policy_revision,
-       w.scheduling_paused_at, w.scheduling_paused_by, m.pinned_at
+       w.scheduling_paused_at, w.scheduling_paused_by, m.pinned_at,
+       m.role
 FROM member m
 JOIN workspace w ON w.id = m.workspace_id
 WHERE m.user_id = $1
+  AND m.role IN ('owner', 'admin', 'member', 'guest')
 ORDER BY m.pinned_at DESC NULLS LAST, w.created_at ASC
 `
 
@@ -555,8 +562,11 @@ type ListWorkspacesRow struct {
 	SchedulingPausedAt          pgtype.Timestamptz `json:"scheduling_paused_at"`
 	SchedulingPausedBy          pgtype.UUID        `json:"scheduling_paused_by"`
 	PinnedAt                    pgtype.Timestamptz `json:"pinned_at"`
+	Role                        string             `json:"role"`
 }
 
+// The role narrows what a guest is shown (workspaceResponseFor). A role this
+// build does not know is no membership (see GetMemberByUserAndWorkspace).
 func (q *Queries) ListWorkspaces(ctx context.Context, userID pgtype.UUID) ([]ListWorkspacesRow, error) {
 	rows, err := q.db.Query(ctx, listWorkspaces, userID)
 	if err != nil {
@@ -587,6 +597,7 @@ func (q *Queries) ListWorkspaces(ctx context.Context, userID pgtype.UUID) ([]Lis
 			&i.SchedulingPausedAt,
 			&i.SchedulingPausedBy,
 			&i.PinnedAt,
+			&i.Role,
 		); err != nil {
 			return nil, err
 		}

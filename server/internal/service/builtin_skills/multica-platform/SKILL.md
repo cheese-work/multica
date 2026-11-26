@@ -1,6 +1,6 @@
 ---
 name: multica-platform
-description: "Multica platform actions the brief does not cover: issue and PR contracts, batch changes, saved views, charts, mentions, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, local environments, wakeups, labels, workspace admin, skill import, themes. Not for product code."
+description: "Multica platform actions the brief does not cover: issue and PR contracts, batch changes, saved views, charts, mentions, inbox, docs, agents, squads, autopilots, projects, workflows, decisions, chat, runtimes, local environments, wakeups, labels, workspace admin, skill import, themes. Not for product code."
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
@@ -26,6 +26,7 @@ Read the invariants below, then open the reference(s) your task actually needs
 | `references/pull-requests.md` | Linked PR state and current GitHub checks, guard plugins, `guard log`/`guard stats` |
 | `references/wakeups.md` | Wakeups: event/time triggers, ownership and close behavior, retained inputs and status |
 | `references/mentions.md` | Writing a `mention://` link: which types enqueue a run, which are inert, why one silently did nothing; steering another agent's running turn (`comment add --steer`) |
+| `references/docs.md` | Docs (the workspace knowledge base): reading, searching, editing a doc people may be editing live, folders, review comment threads, version history and restore, which doc actions are human-only |
 | `references/agents.md` | Creating, copying or debugging an agent definition: fields, secrets, MCP config, skill binding |
 | `references/squads.md` | Squads: leader routing, roster, recording leader activity, why a squad did or did not run |
 | `references/autopilots.md` | Autopilots: schedule / webhook / manual triggers, `create_issue` vs `run_only`, why one did not fire |
@@ -37,8 +38,9 @@ Read the invariants below, then open the reference(s) your task actually needs
 | `references/workspace.md` | Workspace settings, members, MCP library, repo registry, user profile, attachment download, provenance export, GitHub kill switch, `workspace capability-routing` |
 | `references/runtimes.md` | Runtimes, daemons, `repo checkout`, browser leases (`browser lease/renew/release/status`), and the task CLI boundary |
 | `references/environments.md` | Local environments in the issue sidebar: writing `.multica/environments.toml`, `multica env start` / `stop` / `list`, detected servers |
-| `references/skill-import.md` | Importing a skill into this workspace from a URL or a local archive |
+| `references/skill-import.md` | Importing a skill into this workspace from a URL or a local archive; editing a workspace skill's content without overwriting someone else's save (`--base-revision`) |
 | `references/themes.md` | Building or changing a Multica app theme: the format, the checker, delivering to Desktop's themes folder or as a `.zip` |
+| `references/inbox.md` | Going through the runtime owner's inbox for them: listing unread notifications, marking read or unread, archiving, snoozing, bulk clean-up (`multica inbox`) |
 
 Open what the task needs. A single-domain task usually needs one; a task that
 crosses domains needs each domain it touches — creating a squad, assigning it an

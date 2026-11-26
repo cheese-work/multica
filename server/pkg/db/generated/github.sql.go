@@ -739,6 +739,53 @@ func (q *Queries) ListGitHubInstallationsMissingAccountID(ctx context.Context) (
 	return items, nil
 }
 
+const listGitHubInstallationsWithConnectedBy = `-- name: ListGitHubInstallationsWithConnectedBy :many
+SELECT gi.id, gi.workspace_id, gi.installation_id, gi.account_login, gi.account_type, gi.account_avatar_url, gi.connected_by_id, gi.created_at, gi.updated_at, gi.account_id, COALESCE(u.name, '')::text AS connected_by
+FROM github_installation gi
+LEFT JOIN member m ON m.user_id = gi.connected_by_id AND m.workspace_id = gi.workspace_id
+LEFT JOIN "user" u ON u.id = m.user_id
+WHERE gi.workspace_id = $1
+ORDER BY gi.created_at ASC
+`
+
+type ListGitHubInstallationsWithConnectedByRow struct {
+	GithubInstallation GithubInstallation `json:"github_installation"`
+	ConnectedBy        string             `json:"connected_by"`
+}
+
+// Only disclose the connector's display name while they belong to this workspace.
+func (q *Queries) ListGitHubInstallationsWithConnectedBy(ctx context.Context, workspaceID pgtype.UUID) ([]ListGitHubInstallationsWithConnectedByRow, error) {
+	rows, err := q.db.Query(ctx, listGitHubInstallationsWithConnectedBy, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGitHubInstallationsWithConnectedByRow{}
+	for rows.Next() {
+		var i ListGitHubInstallationsWithConnectedByRow
+		if err := rows.Scan(
+			&i.GithubInstallation.ID,
+			&i.GithubInstallation.WorkspaceID,
+			&i.GithubInstallation.InstallationID,
+			&i.GithubInstallation.AccountLogin,
+			&i.GithubInstallation.AccountType,
+			&i.GithubInstallation.AccountAvatarUrl,
+			&i.GithubInstallation.ConnectedByID,
+			&i.GithubInstallation.CreatedAt,
+			&i.GithubInstallation.UpdatedAt,
+			&i.GithubInstallation.AccountID,
+			&i.ConnectedBy,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGitHubPRsWithUnverifiedHead = `-- name: ListGitHubPRsWithUnverifiedHead :many
 SELECT installation_id, repo_owner, repo_name, pr_number
 FROM github_pull_request
@@ -914,7 +961,7 @@ JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
 JOIN issue i ON i.id = ipr.issue_id
 WHERE pr.workspace_id = $1
   AND i.workspace_id = $1
-  AND ($2::uuid[] IS NULL OR i.project_id IS NULL OR NOT (i.project_id = ANY($2::uuid[])))
+  AND ($2::uuid[] IS NULL OR NOT (COALESCE(i.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($2::uuid[])))
 UNION ALL
 SELECT
     ipr.issue_id,
@@ -925,7 +972,7 @@ JOIN issue_vcs_pull_request ipr ON ipr.pull_request_id = pr.id
 JOIN issue i ON i.id = ipr.issue_id
 WHERE pr.workspace_id = $1
   AND i.workspace_id = $1
-  AND ($2::uuid[] IS NULL OR i.project_id IS NULL OR NOT (i.project_id = ANY($2::uuid[])))
+  AND ($2::uuid[] IS NULL OR NOT (COALESCE(i.project_id, '00000000-0000-0000-0000-000000000000'::uuid) = ANY($2::uuid[])))
 ORDER BY pr_created_at DESC
 `
 

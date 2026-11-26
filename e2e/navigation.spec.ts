@@ -1,34 +1,30 @@
 import { test, expect } from "@playwright/test";
-import { appRail, loginAsDefault, waitForHydrated, waitForPageText } from "./helpers";
+import { appRail, loginAsDefault, waitForPageText } from "./helpers";
 
 const ROUTE_CHANGE_TIMEOUT = 30000;
 
 test.describe("Navigation", () => {
   test.beforeEach(async ({ page }) => {
     await loginAsDefault(page);
-    // "networkidle" never arrives: the app keeps polling and holding realtime
-    // connections. Wait for the rail the tests click instead.
-    await waitForHydrated(appRail(page).getByRole("link", { name: "Inbox" }));
   });
 
   test("rail navigation works", async ({ page }) => {
     const rail = appRail(page);
-    await rail.getByRole("link", { name: "Inbox" }).click();
-    await expect(page).toHaveURL(/\/inbox/, { timeout: ROUTE_CHANGE_TIMEOUT });
-    await waitForPageText(page, "Inbox");
-    // Each destination renames the browser tab after itself (MUL-6222).
-    await expect(page).toHaveTitle("Inbox | Multica");
-
     // Team lands on its first page, Agents.
     await rail.getByRole("link", { name: "Team" }).click();
     await expect(page).toHaveURL(/\/agents/, { timeout: ROUTE_CHANGE_TIMEOUT });
     await waitForPageText(page, "Agents");
+    // Each destination renames the browser tab after itself (MUL-6222).
     await expect(page).toHaveTitle("Agents | Multica");
+
+    await rail.getByRole("link", { name: "Chat" }).click();
+    await expect(page).toHaveURL(/\/chat/, { timeout: ROUTE_CHANGE_TIMEOUT });
+    await expect(page).toHaveTitle("Chat | Multica");
 
     // Work lands on its first page, Issues.
     await rail.getByRole("link", { name: "Work", exact: true }).click();
     await expect(page).toHaveURL(/\/issues/, { timeout: ROUTE_CHANGE_TIMEOUT });
-    await waitForPageText(page, "Issues");
+    await waitForPageText(page, "All issues");
     await expect(page).toHaveTitle("Issues | Multica");
   });
 

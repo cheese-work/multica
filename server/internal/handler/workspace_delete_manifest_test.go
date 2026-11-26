@@ -133,11 +133,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"chat_pinned_agent":                  workspaceDelete,
 	"chat_session":                       workspaceDelete,
 	"chat_submission_receipt":            workspaceDelete,
-	"chat_task_supplement":               workspaceDelete,
-	"chat_turn_outcome":                  workspaceDelete, // workspace_id; removed by workspace id, even after its root session was hard-deleted.
 	"chat_wakeup":                        workspaceDelete,
 	"client_usage_daily":                 workspaceDeleteDetach,
 	"comment":                            workspaceDelete,
+	"comment_idempotency_receipt":        workspaceDelete,
 	"comment_reaction":                   workspaceDelete,
 	"comment_search_text":                workspaceDelete, // CHE-2943 derived; the comment delete trigger removes it, no FK.
 	"comment_supersession":               workspaceDelete,
@@ -145,28 +144,18 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"contact_sales_inquiry":              workspaceDeleteKeep,
 	"daemon_connection":                  workspaceDelete,
 	"daemon_token":                       workspaceDelete,
-	"decision_action":                    workspaceDeleteWorker,
-	"decision_agent_scope":               workspaceDeleteWorker, // immutable scope is removed before its orphan request by the decision worker.
-	"decision_agent_settlement":          workspaceDeleteWorker,
-	"decision_agent_notice":              workspaceDeleteWorker,
-	"decision_agent_reliance":            workspaceDeleteWorker,
-	"decision_agent_undo":                workspaceDeleteWorker,
-	"decision_answer":                    workspaceDeleteWorker,
-	"decision_bound_write":               workspaceDeleteWorker, // no FK; orphan cleanup deletes the row with its request.
-	"decision_class_change":              workspaceDeleteWorker,
-	"decision_expiry_digest":             workspaceDelete, // workspace_id FK ON DELETE CASCADE removes the day digests with the workspace.
-	"decision_expiry_digest_request":     workspaceDelete, // cascades from its digest and from decision_request (worker orphan cleanup).
-	"decision_intent":                    workspaceDeleteWorker,
-	"decision_intent_target":             workspaceDeleteWorker,
-	"decision_request":                   workspaceDeleteWorker,
-	"decision_wait":                      workspaceDelete,       // explicit workspace-scoped delete in DeleteWorkspaceLeafData; no FK.
-	"decision_wake_event":                workspaceDeleteWorker, // no FK; orphan cleanup deletes the rows with their request.
-	"decision_wake_receipt":              workspaceDeleteWorker, // no FK; orphan cleanup deletes the rows with their event's request.
-	"decision_worker_lease":              workspaceDeleteKeep,
-	"wakeup_definition_activation":       workspaceDeleteKeep,
+	"dashboard_range_view":               workspaceDelete,
 	"dingtalk_group_presence":            workspaceDelete,
 	"dingtalk_bot_identity":              workspaceDelete,
 	"dingtalk_group_route":               workspaceDelete,
+	"doc":                                workspaceDelete,
+	"doc_collab_state":                   workspaceDelete,
+	"doc_comment":                        workspaceDelete,
+	"doc_folder":                         workspaceDelete,
+	"doc_revision":                       workspaceDelete,
+	"doc_version":                        workspaceDelete,
+	"entitlement_feature_attempt":        workspaceDelete,
+	"entitlement_limit_overage":          workspaceDelete,
 	"feedback":                           workspaceDeleteDetach,
 	"github_dispatch_halt":               workspaceDelete,
 	"github_dispatch_halt_audit":         workspaceDelete,
@@ -225,8 +214,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_child_event":                  workspaceDelete,
 	"issue_view":                         workspaceDelete,
 	"issue_view_preference":              workspaceDelete,
+	"issue_blocker":                      workspaceDelete,
 	"issue_dependency":                   workspaceDelete,
-	"issue_idle_guard":                   workspaceDelete, // CHE-3947; FK cascade from issue and workspace.
+	"issue_description_collab_state":     workspaceDelete,
+	"issue_description_revision":         workspaceDelete,
 	"issue_label":                        workspaceDelete,
 	"issue_property":                     workspaceDelete,
 	"issue_pr_automation":                workspaceDelete,
@@ -255,6 +246,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"lark_user_binding":                  workspaceDelete,
 	"maintenance_job":                    workspaceDeleteKeep, // Global maintenance audit history, not workspace-owned.
 	"member":                             workspaceDelete,
+	"member_search_access":               workspaceDelete,
 	"member_delegation_day":              workspaceDeleteKeep, // user-scoped telemetry ledger, no workspace_id
 	"member_setting":                     workspaceDelete,
 	"browser_instance":                   workspaceDelete,
@@ -287,6 +279,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"plugin_package_version":             workspaceDelete,
 	"plugin_package_file":                workspaceDelete,
 	"project":                            workspaceDelete,
+	"project_folder":                     workspaceDelete,
 	"project_member":                     workspaceDelete,
 	"project_subscriber":                 workspaceDelete,
 	"project_resource":                   workspaceDelete,
@@ -326,8 +319,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"sys_cron_executions":                workspaceDeleteKeep,
 	"theme_store_download":               workspaceDeleteKeep, // per registry theme, not workspace-owned
 	"task_context_receipt":               workspaceDelete,
+	"runtime_rate_limit":                 workspaceDelete,
 	"task_message":                       workspaceDelete,
-	"silence_alert_receipt":              workspaceDelete, // CHE-2990 per-task alert receipt; removed with its task in DeleteTaskBatch.
+	"chat_task_supplement":               workspaceDelete,
+	"chat_task_supplement_fork_875":      workspaceDelete,
 	"task_supplement":                    workspaceDelete,
 	"task_supplement_capability":         workspaceDelete,
 	"task_pr_event_capability":           workspaceDelete, // CHE-2298 a2
@@ -338,8 +333,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"task_usage_hourly_dirty":            workspaceDelete,
 	"task_usage_hourly_rollup_state":     workspaceDeleteKeep,
 	"user":                               workspaceDeleteKeep,
-	"user_composio_connection":           workspaceDeleteKeep,
-	"user_passkey":                       workspaceDeleteKeep,
+	"user_composio_connection":           workspaceDelete, // personal accounts made in the workspace; older rows have no workspace and stay
 	"vcs_commit_status":                  workspaceDelete,
 	"vcs_connection":                     workspaceDelete,
 	"vcs_pull_request":                   workspaceDelete,
@@ -349,11 +343,16 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workflow_webhook_event":             workspaceDelete, // CHE-2031
 	"workflow_webhook_nonce":             workspaceDelete, // CHE-2031 no workspace_id; deleted through its endpoint.
 	"wecom_install_session":              workspaceDelete,
+	"weixin_login_session":               workspaceDelete,
+	"weixin_account_state":               workspaceDelete,
 	"workspace_composio_connection":      workspaceDelete,
+	"remote_app_connection":              workspaceDelete, // team rows (owner_id = workspace) and personal rows made in the workspace
+	"remote_app_oauth_client":            workspaceDeleteKeep,
 	"agent_app":                          workspaceDelete,
 	"app_action_rule":                    workspaceDelete,
 	"app_action_request":                 workspaceDelete,
 	"app_tool_call":                      workspaceDelete,
+	"app_tool_call_quota_period":         workspaceDelete,
 	"issue_environment":                  workspaceDelete,
 	"issue_environment_command":          workspaceDelete,
 	"issue_environment_config":           workspaceDelete,

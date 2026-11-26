@@ -8,9 +8,10 @@ import enChat from "../../locales/en/chat.json";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), cancel: vi.fn(), error: vi.fn() }));
 vi.mock("@multica/core/api", () => ({
-  api: { listChatSessionWakeups: mocks.list, cancelChatSessionWakeup: mocks.cancel },
+  api: { listChatSessionWakeups: mocks.list, cancelChatWakeup: mocks.cancel },
 }));
 vi.mock("sonner", () => ({ toast: { error: mocks.error } }));
+vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 
 import { ScheduledWakeupsChip } from "./scheduled-wakeups-chip";
 

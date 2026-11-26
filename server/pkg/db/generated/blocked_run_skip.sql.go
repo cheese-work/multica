@@ -100,7 +100,7 @@ func (q *Queries) ListBlockedEntryLinkCandidates(ctx context.Context, arg ListBl
 }
 
 const listBlockedEntryLinkedIssues = `-- name: ListBlockedEntryLinkedIssues :many
-SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via, requester_user_id FROM issue
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via, requester_user_id, description_revision FROM issue
 WHERE status = 'blocked' AND metadata ? 'blocked_entry_link' AND id > $1::uuid
 ORDER BY id
 LIMIT 200
@@ -154,6 +154,7 @@ func (q *Queries) ListBlockedEntryLinkedIssues(ctx context.Context, afterID pgty
 			&i.DescriptionExternalRead,
 			&i.CreatedVia,
 			&i.RequesterUserID,
+			&i.DescriptionRevision,
 		); err != nil {
 			return nil, err
 		}

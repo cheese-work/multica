@@ -3,7 +3,7 @@ import { createAuthStore } from "../auth";
 import { setCurrentWorkspace } from "../platform/workspace-storage";
 import { configStore } from "../config";
 import type { StorageAdapter, User } from "../types";
-import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage } from "./client";
+import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, WORKSPACE_GUESTS_CAPABILITY, clientErrorMessage } from "./client";
 import { isSchemaValidationError, setSchemaLogger, type SchemaValidationError } from "./schema";
 import { noopLogger } from "../logger";
 import { setApiRequestObserver } from "./request-observer";
@@ -327,10 +327,8 @@ describe("ApiClient requested_by_id list param", () => {
     const client = new ApiClient("https://api.example.test");
 
     await client.listIssues({ requested_by_id: "u1" });
-    await client.listGroupedIssues({ group_by: "assignee", requested_by_id: "u1" });
 
     expect(String(fetchMock.mock.calls[0]?.[0])).toContain("requested_by_id=u1");
-    expect(String(fetchMock.mock.calls[1]?.[0])).toContain("requested_by_id=u1");
   });
 });
 
@@ -2085,6 +2083,24 @@ describe("ApiClient", () => {
       expect(att.id).toBe("att-1");
       expect([att.width, att.height]).toEqual(expected);
     });
+
+    it.each([
+      [{ thumbnail_url: "/api/attachments/att-1/thumbnail" }, "/api/attachments/att-1/thumbnail"],
+      [{ thumbnail_url: 42 }, undefined],
+      [{ thumbnail_url: "" }, undefined],
+      [{}, undefined],
+    ])("keeps the attachment and drops an unusable thumbnail %j", async (metadata, expected) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(
+        JSON.stringify({
+          id: "att-1", filename: "shot.png", url: "/uploads/shot.png",
+          download_url: "/uploads/shot.png", ...metadata,
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )));
+      const att = await new ApiClient("https://api.example.test").getAttachment("att-1");
+      expect(att.id).toBe("att-1");
+      expect(att.thumbnail_url).toBe(expected);
+    });
   });
 
   describe("getAttachmentTextContent", () => {
@@ -2522,14 +2538,14 @@ describe("ApiClient", () => {
       const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-10-27T02:50:00Z" }), { status: 201 }));
       vi.stubGlobal("fetch", fetchMock);
       await new ApiClient("https://api.example.test").sendChatMessage("session-1", "> C. CHE-2162\n\n1", [], "request-2");
-      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "> C. CHE-2162\n\n1", decision_request_id: "request-2" });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "> C. CHE-2162\n\n1", steer: true, decision_request_id: "request-2" });
     });
 
     it("CHE-4153 sendChatMessage sends client_message_id and ask_ids when given", async () => {
       const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-11-12T02:50:00Z" }), { status: 201 }));
       vi.stubGlobal("fetch", fetchMock);
       await new ApiClient("https://api.example.test").sendChatMessage("session-1", "hi", [], undefined, { clientMessageId: "c-1", askIds: ["a-1"] });
-      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "hi", client_message_id: "c-1", ask_ids: ["a-1"] });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({ content: "hi", steer: true, client_message_id: "c-1", ask_ids: ["a-1"] });
     });
 
     it("CHE-4153 attention actions post the exact displayed keys", async () => {
@@ -2549,6 +2565,32 @@ describe("ApiClient", () => {
       expect(calls[3]![1]).toBe("POST");
     });
 
+    it("rejects a refused upload with an ApiError carrying the body's code (MUL-9489)", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            code: "storage_limit_reached",
+            error: "This workspace has reached its attachment storage limit.",
+            used_bytes: 900,
+            limit_bytes: 1000,
+          }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const client = new ApiClient("https://api.example.test");
+      const file = new File(["hi"], "hi.png", { type: "image/png" });
+      const err = await client.uploadFile(file).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ApiError);
+      expect(err).toMatchObject({
+        status: 403,
+        message: "This workspace has reached its attachment storage limit.",
+        body: { code: "storage_limit_reached", used_bytes: 900, limit_bytes: 1000 },
+      });
+    });
+
     it("sendChatMessage serialises attachment_ids onto the JSON body when present", async () => {
       const fetchMock = vi.fn().mockResolvedValue(
         new Response(JSON.stringify({ message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z" }), {
@@ -2564,6 +2606,7 @@ describe("ApiClient", () => {
       const [, init] = fetchMock.mock.calls[0]!;
       expect(JSON.parse(init?.body as string)).toEqual({
         content: "hello",
+        steer: true,
         attachment_ids: ["att-1", "att-2"],
       });
     });
@@ -2583,8 +2626,17 @@ describe("ApiClient", () => {
       await client.sendChatMessage("session-1", "hello");
       await client.sendChatMessage("session-1", "again", []);
 
-      expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "hello" });
-      expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string)).toEqual({ content: "again" });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "hello", steer: true });
+      expect(JSON.parse(fetchMock.mock.calls[1]![1]?.body as string)).toEqual({ content: "again", steer: true });
+    });
+
+    it("sendChatMessage explicitly opts out of steering for Queue message", async () => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        message_id: "m1", task_id: "t1", created_at: "2026-08-01T00:00:00Z",
+      }), { status: 201 }));
+      vi.stubGlobal("fetch", fetchMock);
+      await new ApiClient("https://api.example.test").sendChatMessage("session-1", "next turn", undefined, undefined, { queue: true });
+      expect(JSON.parse(fetchMock.mock.calls[0]![1]?.body as string)).toEqual({ content: "next turn", steer: false });
     });
 
     it("sendChatMessage accepts the server's null attachment_ids for text-only sends", async () => {
@@ -3938,16 +3990,6 @@ describe("created-by filter compatibility", () => {
 });
 
 
-describe("grouped created-by compatibility", () => {
-  it("retries a legacy server with literal creator_id", async () => {
-    const fetchMock = vi.fn(async (_url: string) => Response.json({ groups: [] }));
-    vi.stubGlobal("fetch", fetchMock);
-    await new ApiClient("https://api.example.test").listGroupedIssues({ group_by: "assignee", created_by_user_id: "me" });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(new URL(fetchMock.mock.calls[1]![0]).searchParams.get("creator_id")).toBe("me");
-  });
-});
-
 describe("ApiClient request observer", () => {
   afterEach(() => setApiRequestObserver(null));
 
@@ -4012,5 +4054,27 @@ describe("personal background agents", () => {
     expect(fetchMock.mock.calls[0]?.[1]?.method).toBe("PUT");
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(patch);
     expect(result).toBeNull();
+  });
+});
+
+// The server hides guest rows from member and invitation lists unless the
+// caller declares it can render the guest role; drop the header and the
+// members page silently loses every guest.
+describe("workspace guest lists", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it.each([
+    ["listMembers", (c: ApiClient) => c.listMembers("ws-1")],
+    ["listWorkspaceInvitations", (c: ApiClient) => c.listWorkspaceInvitations("ws-1")],
+  ])("%s advertises the guest capability", async (_name, call) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response("[]", {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await call(new ApiClient("https://api.example.test"));
+
+    const init = fetchMock.mock.calls[0]?.[1] as { headers: Record<string, string> };
+    expect(init.headers["X-Client-Capabilities"]).toBe(WORKSPACE_GUESTS_CAPABILITY);
   });
 });

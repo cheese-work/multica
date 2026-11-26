@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { issueRouteRef, type IssueRouteRef } from "../paths/paths";
 import type { Issue } from "../types";
 import { issueDetailOptions, issueKeys } from "./queries";
 import { useIssueReadState } from "./read-state";
@@ -20,6 +21,31 @@ export function isNotFoundError(error: unknown): boolean {
 /** True for a canonical issue UUID; false for an identifier like `MUL-123`. */
 export function isIssueUuid(value: string): boolean {
   return UUID_RE.test(value);
+}
+
+/**
+ * The `/{ws}/issues/{segment}` a link to an issue known only by its UUID
+ * should carry: the identifier once the issue is cached, else the UUID. The
+ * issue page rewrites a UUID address to the identifier after load, and on web
+ * that rewrite mounts the page a second time.
+ */
+export function useIssueRouteRef(wsId: string, issueId: string): IssueRouteRef {
+  const { data } = useQuery({ ...issueDetailOptions(wsId, issueId), enabled: false });
+  return issueRouteRef({ id: issueId, identifier: data?.identifier });
+}
+
+/** `useIssueRouteRef` for event handlers: reads the cache once, without subscribing. */
+export function cachedIssueRouteRef(qc: QueryClient, wsId: string, issueId: string): IssueRouteRef {
+  const data = qc.getQueryData<Issue>(issueKeys.detail(wsId, issueId));
+  return issueRouteRef({ id: issueId, identifier: data?.identifier });
+}
+
+/** An issue cached under its UUID whose identifier is `identifier`. */
+function cachedIssueByIdentifier(qc: QueryClient, wsId: string, identifier: string): Issue | undefined {
+  for (const [key, data] of qc.getQueriesData<Issue>({ queryKey: [...issueKeys.all(wsId), "detail"] })) {
+    if (data?.identifier === identifier && key[key.length - 1] === data.id) return data;
+  }
+  return undefined;
 }
 
 export interface CanonicalIssue {
@@ -91,6 +117,9 @@ export function useCanonicalIssue(
   const resolve = useQuery({
     ...issueDetailOptions(wsId, routeId),
     enabled: resolveEnabled,
+    // An identifier link to an issue some list or peek already loaded by UUID
+    // opens from that entry instead of fetching the issue again.
+    initialData: resolveEnabled ? () => cachedIssueByIdentifier(qc, wsId, routeId) : undefined,
   });
 
   const canonicalId = isUuid ? routeId : (resolve.data?.id ?? null);
@@ -106,9 +135,10 @@ export function useCanonicalIssue(
   // Mirror the loaded row into its identifier-keyed entry, the reverse of the
   // `initialData` hop above.
   //
-  // In-app links still carry the UUID, so opening one lands on the UUID URL and
-  // the route then rewrites the address bar to the identifier. That rewrite is
-  // a navigation: the route re-renders with the identifier as its segment, and
+  // A link that only knows the UUID (an old URL, or an issue not yet cached)
+  // lands on the UUID URL and the route then rewrites the address bar to the
+  // identifier. That rewrite is a navigation: the route re-renders with the
+  // identifier as its segment, and
   // without this seed the resolution query above would miss on a cache entry
   // nothing has filled and re-fetch an issue already in hand — a second request
   // for one issue open. The `??` keeps a realtime-patched entry intact, and
@@ -142,6 +172,9 @@ export function useCanonicalIssue(
       !isUuid &&
       detail.data !== undefined &&
       detail.data === resolve.data &&
+      // An entry adopted from the cache (`cachedIssueByIdentifier`) was not read
+      // from the detail endpoint during this mount, however fresh its stamp.
+      resolve.isFetchedAfterMount &&
       resolve.dataUpdatedAt >= mountedAt,
     ...readState,
   };

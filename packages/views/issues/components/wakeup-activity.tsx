@@ -47,7 +47,7 @@ interface StoredPreview {
 interface WakeupDetails {
   wakeup?: StoredPreview;
   /** The built-in rule that fired; user-made rules carry none. */
-  rule?: "child_done" | "pr_merged" | "pr_checks_failed" | "pr_checks_passed" | "pr_needs_attention" | "pr_dequeued";
+  rule?: "child_done" | "blockers_done" | "pr_merged" | "pr_checks_failed" | "pr_checks_passed" | "pr_needs_attention" | "pr_dequeued";
   pr_number?: number;
   pr_url?: string;
   comment_id?: string;
@@ -162,11 +162,18 @@ export function formatWakeupActivity(
         ? t(($) => $.activity.wakeup_created_scheduled, { condition, agent })
         : t(($) => $.activity.wakeup_created, { condition, agent });
     case "wakeup_triggered": {
-      if (details.rule === "child_done") {
+      if (details.rule === "child_done" || details.rule === "blockers_done") {
         const count = details.total ?? 1;
-        const closed = details.stage
-          ? t(($) => $.activity.wakeup_child_done_stage, { stage: details.stage, count })
-          : t(($) => $.activity.wakeup_child_done_all, { count });
+        const closed =
+          details.rule === "blockers_done"
+            ? t(($) => $.waiting.ended)
+            : details.stage
+              ? count === 1
+                ? t(($) => $.activity.wakeup_child_done_stage_single, { stage: details.stage })
+                : t(($) => $.activity.wakeup_child_done_stage, { stage: details.stage, count })
+              : count === 1
+                ? t(($) => $.activity.wakeup_child_done_all_single)
+                : t(($) => $.activity.wakeup_child_done_all, { count });
         // The squad's leader ran, but the entry names the assignee people see.
         const name =
           details.target_type && details.target_id
@@ -250,7 +257,7 @@ export function wakeupActivityChip(
 export function WakeupActivityIcon({ entry }: { entry: TimelineEntry }) {
   const details = detailsOf(entry);
   const className = "h-4 w-4 shrink-0 text-muted-foreground";
-  if (details.rule === "child_done") return <ListChecks className={className} aria-hidden="true" />;
+  if (details.rule === "child_done" || details.rule === "blockers_done") return <ListChecks className={className} aria-hidden="true" />;
   switch (entry.action) {
     case "wakeup_timed_out":
       return <Hourglass className={className} aria-hidden="true" />;
