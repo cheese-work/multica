@@ -2105,11 +2105,13 @@ export function AttachmentPreviewStandalone({
     () => ({ kind: "full", attachment }),
     [attachment],
   );
-  return <AttachmentSourceStandalone source={source} renderHtmlFrame={renderHtmlFrame} initialHtmlAddress={initialHtmlAddress} onHtmlAddressChange={onHtmlAddressChange} />;
+  return <AttachmentSourceStandalone source={source} currentImageMetadata={currentImageMetadata} renderHtmlFrame={renderHtmlFrame} initialHtmlAddress={initialHtmlAddress} onHtmlAddressChange={onHtmlAddressChange} />;
 }
 
-export function AttachmentSourceStandalone({ source, renderHtmlFrame, initialHtmlAddress, onHtmlAddressChange }: {
+export function AttachmentSourceStandalone({ source, currentImageMetadata, renderHtmlFrame, initialHtmlAddress, onHtmlAddressChange }: {
   source: PreviewSource;
+  /** Metadata authenticated by the page request for this open. */
+  currentImageMetadata?: Attachment;
   renderHtmlFrame?: HtmlFrameRenderer;
   initialHtmlAddress?: string;
   onHtmlAddressChange?: (address: string) => void;
