@@ -1394,7 +1394,7 @@ describe("ChatPage composer mentions", () => {
     searchIssuesMock.mockResolvedValue({ issues: [], total: 0 } as never);
     searchProjectsMock.mockResolvedValue({
       projects: [
-        { id: "proj-2", title: "tevo-studio/sa004-vpn", description: null, icon: null, status: "in_progress" },
+        { id: "proj-2", title: "acme/sa004-vpn", description: null, icon: null, status: "in_progress" },
       ],
       total: 1,
     } as never);
@@ -1403,7 +1403,7 @@ describe("ChatPage composer mentions", () => {
     try {
       seedSession("session-9");
       renderPage("session=session-9");
-      expect(await screen.findByText("tevo-studio/sa004-vpn")).toBeInTheDocument();
+      expect(await screen.findByText("acme/sa004-vpn")).toBeInTheDocument();
       expect(screen.getByText("Search results")).toBeInTheDocument();
     } finally {
       renderMentionPicker.query = "";
