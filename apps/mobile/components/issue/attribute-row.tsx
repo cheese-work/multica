@@ -244,7 +244,7 @@ export function AttributeRow({
           icon={<Text className="text-xs text-muted-foreground/80">⇄</Text>}
           label={ownWorkflow?.name ?? (issue.workflow_id ? t("workflow.title") : t("workflow.follow_project"))}
           variant={issue.workflow_id ? "filled" : "dimmed"}
-          onPress={() => openPicker("workflow")}
+          onPress={pickerFor("workflow")}
         />
       ) : null}
 
