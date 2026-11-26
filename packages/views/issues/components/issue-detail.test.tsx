@@ -5136,6 +5136,32 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+  it("sets a due date from the sidebar picker without looping (CHE-10192)", async () => {
+    mockApiObj.getIssue.mockResolvedValue({ ...mockIssue, due_date: "2026-11-27" });
+    mockApiObj.updateIssue.mockImplementation(async (_id: string, patch: object) => ({
+      ...mockIssue,
+      due_date: "2026-11-27",
+      ...patch,
+    }));
+    renderIssueDetail();
+
+    const row = (await screen.findByText("Due date")).parentElement!;
+    fireEvent.click(within(row).getByRole("button"));
+    await act(() => vi.dynamicImportSettled());
+    await screen.findByRole("grid");
+    const target = new Date(2026, 10, 28);
+    fireEvent.click(document.querySelector(`button[data-day="${target.toLocaleDateString()}"]`)!);
+
+    await waitFor(() =>
+      expect(mockApiObj.updateIssue).toHaveBeenCalledWith(
+        "issue-1",
+        expect.objectContaining({ due_date: "2026-11-28" }),
+      ),
+    );
+    await waitFor(() => expect(screen.queryByRole("grid")).not.toBeInTheDocument());
+    expect(mockApiObj.updateIssue).toHaveBeenCalledTimes(1);
+  });
+
   it("sends empty description when editor is cleared", async () => {
     renderIssueDetail();
 
