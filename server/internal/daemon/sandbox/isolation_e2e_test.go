@@ -103,7 +103,7 @@ func findMarker(t *testing.T, l *Launcher, script string) string {
 // line (a unique sleep argument): the kernel's ptrace rule can hide environ
 // across user namespaces on its own, so the command line is the check that only
 // the pid namespace satisfies. A control run proves the probe finds both when
-// they are visible. Build tag sandbox_e2e, X99 only.
+// they are visible. Build tag sandbox_e2e, a Linux host with bubblewrap.
 func TestSandboxHidesOtherRunEnviron(t *testing.T) {
 	l := newLauncher()
 	requireE2ESandbox(t, l)
