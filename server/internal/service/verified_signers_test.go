@@ -145,6 +145,36 @@ func TestVerifiedSignersAnEditedFailStillWithdraws(t *testing.T) {
 	m.wantSigners(t)
 }
 
+// An edit can only withdraw. A FAIL edited into notes (the head kept or not)
+// must still end the signer's earlier PASS, or an edit would restore it.
+func TestVerifiedSignersAFailEditedIntoNotesStillWithdraws(t *testing.T) {
+	for name, notes := range map[string]string{
+		"head kept":    "Notes only, no verdict. Looked at head `a` again.",
+		"head removed": "Notes only, no verdict.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := passFixture(t)
+			terra := m.signer(t, "terra", "gpt-6.1-terra")
+			m.say(t, "agent", terra, verdictBy("PASS", "a", "x"), m.clock.Add(-3*time.Hour))
+			id := m.say(t, "agent", terra, verdictBy("FAIL", "a", "x"), m.clock.Add(-2*time.Hour))
+			m.wantSigners(t)
+			m.edit(t, id, notes)
+			m.wantSigners(t)
+		})
+	}
+}
+
+// An edited comment from before the PASS cannot have been a newer verdict, so it
+// does not withdraw the PASS.
+func TestVerifiedSignersAnEditedNoteOlderThanThePassDoesNotWithdraw(t *testing.T) {
+	m := passFixture(t)
+	terra := m.signer(t, "terra", "gpt-6.1-terra")
+	id := m.say(t, "agent", terra, "Working notes.", m.clock.Add(-3*time.Hour))
+	m.edit(t, id, "Working notes, tidied.")
+	m.say(t, "agent", terra, verdictBy("PASS", "a", "x"), m.clock.Add(-2*time.Hour))
+	m.wantSigners(t, terra)
+}
+
 func TestVerifiedSignersNeverCountsThePRAuthor(t *testing.T) {
 	m := passFixture(t)
 	m.say(t, "agent", m.author, verdictBy("PASS", "a", "x"), m.clock.Add(-time.Hour))
