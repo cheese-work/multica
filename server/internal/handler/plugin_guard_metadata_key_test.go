@@ -149,3 +149,33 @@ func TestPluginGuardMetadataKeysFollowTheInstallationLifecycle(t *testing.T) {
 	}
 	want("uninstall")
 }
+
+// Two guard hooks may declare the same key; the projection holds one row.
+func TestPluginGuardMetadataKeysDeduplicateAcrossHooks(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	second := `{
+      "key": "qa-proof-2",
+      "name": "QA proof 2",
+      "description": "Second guard.",
+      "triggers": ["guard"],
+      "guard": { "timeout_ms": 2000, "on_error": "closed", "overridable": true, "metadata_writers": ["qa_note"] },
+      "transport": { "type": "http", "url": "https://example.com/hooks/qa-proof-2" }
+    }`
+	manifest := strings.Replace(guardMetadataTestManifest, `"hooks": [{`, `"hooks": [`+second+`, {`, 1)
+	versionID := withLocalPluginSourceIn(t, t.TempDir(), manifest)
+	recorder := installGuardPlugin(t, versionID)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var installed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
+		t.Fatalf("decode installation: %v", err)
+	}
+	want := []guardKeyRow{{"post_close_work", true}, {"qa_note", true}}
+	if got := guardMetadataKeys(t, installed.ID); !slices.Equal(got, want) {
+		t.Fatalf("declared keys = %+v, want %+v", got, want)
+	}
+}

@@ -27,11 +27,18 @@ func (s *PluginService) reconcilePluginGuardMetadataKeys(
 		existing[row.MetadataKey] = row
 	}
 
+	declared := make(map[string]struct{})
 	for _, hook := range manifest.Contributes.Hooks {
 		if hook.Guard == nil || !HookAllowsTrigger(hook, plugincontract.TriggerGuard) {
 			continue
 		}
 		for _, key := range hook.Guard.MetadataWriters {
+			// Two hooks (or one hook twice) may declare the same key; the
+			// unique index allows one row per installation and key.
+			if _, dup := declared[key]; dup {
+				continue
+			}
+			declared[key] = struct{}{}
 			row, found := existing[key]
 			if !found {
 				if _, err := queries.CreatePluginGuardMetadataKey(ctx, db.CreatePluginGuardMetadataKeyParams{
