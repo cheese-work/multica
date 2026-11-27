@@ -207,6 +207,7 @@ func cleanupPluginInstallations(t *testing.T) {
 		ctx := context.Background()
 		testPool.Exec(ctx, `DELETE FROM plugin_invocation WHERE installation_id IN (SELECT id FROM plugin_installation WHERE workspace_id = $1)`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM plugin_hook_schedule WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM plugin_guard_metadata_key WHERE workspace_id = $1`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM plugin_storage WHERE installation_id IN (SELECT id FROM plugin_installation WHERE workspace_id = $1)`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM plugin_secret WHERE installation_id IN (SELECT id FROM plugin_installation WHERE workspace_id = $1)`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM plugin_installation WHERE workspace_id = $1`, testWorkspaceID)

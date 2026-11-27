@@ -521,6 +521,51 @@ func (q *Queries) CreateIssueWithOrigin(ctx context.Context, arg CreateIssueWith
 	return i, err
 }
 
+const declareIssueMetadataKey = `-- name: DeclareIssueMetadataKey :one
+UPDATE issue SET
+    metadata = jsonb_set(metadata, ARRAY[$1::text], $2::jsonb),
+    revision = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at = now()
+WHERE id = $3 AND workspace_id = $4
+RETURNING id, workspace_id, metadata, revision
+`
+
+type DeclareIssueMetadataKeyParams struct {
+	Key         string      `json:"key"`
+	Value       []byte      `json:"value"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type DeclareIssueMetadataKeyRow struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Metadata    []byte      `json:"metadata"`
+	Revision    int64       `json:"revision"`
+}
+
+// Sets a metadata key that an enabled guard plugin declared. Unlike
+// SetIssueMetadataKey it matches even when the value is unchanged and always
+// bumps revision: the caller records the writer in the same transaction, and
+// a writer change must be visible as a revision change.
+func (q *Queries) DeclareIssueMetadataKey(ctx context.Context, arg DeclareIssueMetadataKeyParams) (DeclareIssueMetadataKeyRow, error) {
+	row := q.db.QueryRow(ctx, declareIssueMetadataKey,
+		arg.Key,
+		arg.Value,
+		arg.ID,
+		arg.WorkspaceID,
+	)
+	var i DeclareIssueMetadataKeyRow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Metadata,
+		&i.Revision,
+	)
+	return i, err
+}
+
 const deleteIssue = `-- name: DeleteIssue :exec
 WITH target AS (
     SELECT issue.id FROM issue WHERE issue.id = $1 AND issue.workspace_id = $2

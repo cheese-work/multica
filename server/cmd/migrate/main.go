@@ -197,6 +197,8 @@ var concurrentIndexCleanups = map[string]string{
 	"99g_issue_wakeup_receipt_started_pr_event_idx":             "idx_issue_wakeup_receipt_pr_event_id_task",
 	"9999969_activity_log_status_moves_idx":                     "idx_activity_log_status_moves",
 	"9999971_issue_handoff_operation_created_idx":               "idx_issue_handoff_operation_created",
+	"9999975_plugin_guard_metadata_key_installation_index":     "idx_plugin_guard_metadata_key_installation",
+	"9999976_plugin_guard_metadata_key_declared_index":         "idx_plugin_guard_metadata_key_declared",
 	"910_ask_guard_event_intent_target_index":                   "idx_ask_guard_event_intent_target",
 	"911_ask_guard_event_request_index":                         "idx_ask_guard_event_cleared_by_request",
 	"915_ask_recovery_notice_event_index":                       "idx_ask_recovery_notice_event",

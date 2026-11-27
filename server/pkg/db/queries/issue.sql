@@ -824,6 +824,19 @@ WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
   AND metadata -> sqlc.arg('key')::text IS DISTINCT FROM sqlc.arg('value')::jsonb
 RETURNING id, workspace_id, metadata, revision;
 
+-- name: DeclareIssueMetadataKey :one
+-- Sets a metadata key that an enabled guard plugin declared. Unlike
+-- SetIssueMetadataKey it matches even when the value is unchanged and always
+-- bumps revision: the caller records the writer in the same transaction, and
+-- a writer change must be visible as a revision change.
+UPDATE issue SET
+    metadata = jsonb_set(metadata, ARRAY[sqlc.arg('key')::text], sqlc.arg('value')::jsonb),
+    revision = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+RETURNING id, workspace_id, metadata, revision;
+
 -- name: DeleteIssueMetadataKey :one
 -- Atomically removes a single key from the issue's metadata JSONB.
 -- Deleting a missing key is a no-op (returns no rows).
