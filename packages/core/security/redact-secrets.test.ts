@@ -149,6 +149,43 @@ describe("redactProse and redactForType", () => {
     expect(redactProse(`${cell} ${githubToken}`)).not.toContain(githubToken);
   });
 
+  it("redactProse masks generic credentials written as assignments", () => {
+    const cases: [string, string][] = [
+      ["password=hunter2", "password=[REDACTED]"],
+      ["password = hunter2", "password = [REDACTED]"],
+      ["password: hunter2", "password: [REDACTED]"],
+      ["token = abc", "token = [REDACTED]"],
+      ["Set DB_PASSWORD=hunter2 and retry", "Set DB_PASSWORD=[REDACTED] and retry"],
+      ["api_key: abc123xyz", "api_key: [REDACTED]"],
+      ["API_KEY = abc123xyz.", "API_KEY = [REDACTED]"],
+      ["The password: hunter2hunter2 was pasted", "The password: [REDACTED] was pasted"],
+      ["secret_key=abc, token=def", "secret_key=[REDACTED] token=[REDACTED]"],
+    ];
+    for (const [input, want] of cases) {
+      const result = redactProse(input);
+      expect(result).toBe(want);
+      expect(redactForType("text", input)).toBe(want);
+      expect(redactForType("thinking", input)).toBe(want);
+    }
+  });
+
+  it("redactProse keeps credential references and ordinary sentences", () => {
+    for (const input of [
+      "the password field is required",
+      "Enter your password: then press enter",
+      "The token: input, output, cache read",
+      "Your secret is safe with us",
+      "password: required",
+      "Token: 12 per hour",
+      "the password is stored in the vault",
+      "Set API_KEY=$API_KEY in the shell",
+      "Use DB_PASSWORD=<your-password> here",
+      "api_key: ***",
+    ]) {
+      expect(redactProse(input)).toBe(input);
+    }
+  });
+
   it("redactForType uses prose rules only for text and thinking", () => {
     expect(redactForType("text", cell)).toBe(cell);
     expect(redactForType("thinking", cell)).toBe(cell);
