@@ -151,7 +151,7 @@ func TestGateEveryMergedRuntimeMCPServerReachableThroughIsolatedPath(t *testing.
 	mustJSONFile(t, filepath.Join(home, ".claude.json"), runtimeDoc)
 	agentRaw, _ := json.Marshal(agentDoc)
 
-	merged, err := mergeRuntimeAndAgentMcpConfig("claude", agentRaw)
+	merged, err := mergeRuntimeAndAgentMcpConfig("claude", "", agentRaw)
 	if err != nil {
 		t.Fatal(err)
 	}

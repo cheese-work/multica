@@ -30,14 +30,15 @@ func TestChatWakeupMessageCarriesSessionOwner(t *testing.T) {
 	f := newChatWakeupFixture(t)
 	var got []events.Event
 	f.svc.Tasks.Bus.Subscribe(protocol.EventChatMessage, func(e events.Event) { got = append(got, e) })
-	w := f.create(t, time.Minute, "refresh readiness")
-	f.makeDue(t, w)
+	f.at(time.Now().Add(-time.Hour))
+	f.create(t, ChatWakeupInput{AfterSeconds: 60, Instruction: "refresh readiness"})
+	f.at(time.Now())
 
 	if err := f.svc.Tick(context.Background()); err != nil {
 		t.Fatalf("Tick: %v", err)
 	}
 
-	if len(got) != 1 || got[0].ChatSessionOwnerID != f.userID {
-		t.Fatalf("wakeup message owner = %+v, want %s", got, f.userID)
+	if len(got) != 1 || got[0].ChatSessionOwnerID != f.fx.UserID {
+		t.Fatalf("wakeup message owner = %+v, want %s", got, f.fx.UserID)
 	}
 }

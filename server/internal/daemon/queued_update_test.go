@@ -40,7 +40,7 @@ func queuedUpdateDaemon(t *testing.T, respond func(updateReport) int) (*Daemon, 
 		}
 		w.WriteHeader(code)
 	})
-	d.runUpdateFn = func(string) (string, error) {
+	d.runUpdateFn = func(context.Context, string) (string, error) {
 		t.Fatal("runUpdateFn must not run")
 		return "", nil
 	}
@@ -67,9 +67,9 @@ func TestQueuedUpdate_HeldWhileBusyAndStartedWhenIdle(t *testing.T) {
 	d, reports := queuedUpdateDaemon(t, nil)
 	d.activeTasks.Store(2)
 
-	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"))
+	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"), time.Now())
 	// A re-offer with an unchanged task count reports nothing new.
-	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"))
+	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"), time.Now())
 
 	got := reports()
 	if len(got) != 1 || got[0].payload["status"] != "scheduled" || got[0].payload["active_tasks"] != float64(2) {
@@ -83,7 +83,7 @@ func TestQueuedUpdate_HeldWhileBusyAndStartedWhenIdle(t *testing.T) {
 	}
 
 	installed := make(chan string, 1)
-	d.runUpdateFn = func(target string) (string, error) {
+	d.runUpdateFn = func(_ context.Context, target string) (string, error) {
 		installed <- target
 		return "", errors.New("stop before restart")
 	}
@@ -112,10 +112,10 @@ func TestQueuedUpdate_RefusedStartIsNotInstalled(t *testing.T) {
 		return http.StatusOK
 	})
 	d.activeTasks.Store(1)
-	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"))
+	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"), time.Now())
 
 	d.activeTasks.Store(0)
-	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"))
+	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"), time.Now())
 
 	if got := statuses(reports()); len(got) != 2 || got[1] != "update-1:running" {
 		t.Fatalf("reports = %v", got)
@@ -140,10 +140,10 @@ func TestQueuedUpdate_OneUpdatePerMachine(t *testing.T) {
 		return http.StatusOK
 	})
 	d.activeTasks.Store(1)
-	d.handleUpdate(context.Background(), "runtime-ws-a", deferrable("update-1"))
+	d.handleUpdate(context.Background(), "runtime-ws-a", deferrable("update-1"), time.Now())
 
 	// Another workspace's runtime on the same daemon asks for a second update.
-	d.handleUpdate(context.Background(), "runtime-ws-b", deferrable("update-2"))
+	d.handleUpdate(context.Background(), "runtime-ws-b", deferrable("update-2"), time.Now())
 	got := reports()
 	last := got[len(got)-1]
 	if last.updateID != "update-2" || last.payload["status"] != "failed" || last.payload["error"] != errAnotherUpdateQueued {
@@ -155,7 +155,7 @@ func TestQueuedUpdate_OneUpdatePerMachine(t *testing.T) {
 
 	// Once the held one is cancelled, the next one takes the slot.
 	withdrawn.Store(true)
-	d.handleUpdate(context.Background(), "runtime-ws-b", deferrable("update-3"))
+	d.handleUpdate(context.Background(), "runtime-ws-b", deferrable("update-3"), time.Now())
 	if d.queuedUpdate == nil || d.queuedUpdate.id != "update-3" {
 		t.Fatalf("held = %+v, want update-3", d.queuedUpdate)
 	}
@@ -165,7 +165,7 @@ func TestQueuedUpdate_RefusedWhileInstalling(t *testing.T) {
 	d, reports := queuedUpdateDaemon(t, nil)
 	d.updating.Store(true)
 
-	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-2"))
+	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-2"), time.Now())
 
 	got := reports()
 	if len(got) != 1 || got[0].payload["status"] != "failed" || got[0].payload["error"] != errAnotherUpdateQueued {
@@ -182,16 +182,16 @@ func TestQueuedUpdate_ReofferWhileInstallingIsIgnored(t *testing.T) {
 	d, reports := queuedUpdateDaemon(t, nil)
 	release := make(chan struct{})
 	installed := make(chan struct{})
-	d.runUpdateFn = func(string) (string, error) {
+	d.runUpdateFn = func(context.Context, string) (string, error) {
 		close(installed)
 		<-release
 		return "", errors.New("stop before restart")
 	}
 
-	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"))
+	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"), time.Now())
 	<-installed
-	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"))
-	d.handleUpdate(context.Background(), "runtime-2", deferrable("update-2"))
+	d.handleUpdate(context.Background(), "runtime-1", deferrable("update-1"), time.Now())
+	d.handleUpdate(context.Background(), "runtime-2", deferrable("update-2"), time.Now())
 	close(release)
 
 	waitFor(t, func() bool { return len(reports()) == 3 }, "install result reported")
