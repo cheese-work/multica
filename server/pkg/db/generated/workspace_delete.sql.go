@@ -991,6 +991,10 @@ deleted_hook_schedules AS (
     DELETE FROM plugin_hook_schedule
     WHERE installation_id IN (SELECT id FROM installations)
 ),
+deleted_guard_metadata_keys AS (
+    DELETE FROM plugin_guard_metadata_key
+    WHERE installation_id IN (SELECT id FROM installations)
+),
 deleted_invocations AS (
     DELETE FROM plugin_invocation
     WHERE workspace_id = $1

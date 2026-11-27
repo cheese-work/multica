@@ -359,3 +359,19 @@ WHERE (owed.installation_id, owed.repo_owner, owed.repo_name, owed.pr_number) IN
     FOR UPDATE SKIP LOCKED
 )
 RETURNING owed.installation_id, owed.repo_owner, owed.repo_name, owed.pr_number;
+
+-- name: GitHubPRNeedsCommitIdentities :one
+-- CHE-9319: true when the PR's workspace has the review_independence setting and
+-- the stored commit identities are not those of this head, so the refresher reads
+-- the PR's commits once per head and only for a workspace that uses the rule.
+SELECT (w.settings ? 'review_independence') AND COALESCE(p.commit_identities->>'head', '') <> @head_sha::text
+FROM github_pull_request p
+JOIN workspace w ON w.id = p.workspace_id
+WHERE p.id = @pr_id;
+
+-- name: SetGitHubPRCommitIdentities :execrows
+-- Stores the identities named on the commits of a head. Guarded on the row's
+-- head, so commits of a head the PR has moved past are never written.
+UPDATE github_pull_request
+SET commit_identities = @commit_identities::jsonb
+WHERE id = @pr_id AND head_sha = @head_sha::text;
