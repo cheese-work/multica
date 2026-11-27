@@ -1067,7 +1067,9 @@ require_contains "$out" "Migrations failed"
   cd "$renewal_checkout"
   psql_log="$tmp_dir/psql-renewal.log"
   status=0
-  PSQL_LOG="$psql_log" bash scripts/dev-env.sh up --components api --ttl 48 > "$out" 2>&1 || status=$?
+  # Startup collects other environments only when asked (`up --gc`); renewal
+  # with `--gc` must still collect the expired neighbour.
+  PSQL_LOG="$psql_log" bash scripts/dev-env.sh up --components api --ttl 48 --gc > "$out" 2>&1 || status=$?
   [ "$status" -ne 0 ] || fail "renewal fixture unexpectedly started a backend"
   require_contains "$out" "Migrations failed"
   require_contains "$out" "Reusing environment $NAME"
