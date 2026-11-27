@@ -192,6 +192,23 @@ func parseSemver(raw string) (semver, error) {
 	return semver{Major: major, Minor: minor, Patch: patch}, nil
 }
 
+// CompareVersionCores orders the semver cores of two version strings: -1, 0 or
+// 1. ok is false when either one has no major.minor.patch core.
+func CompareVersionCores(a, b string) (cmp int, ok bool) {
+	va, errA := parseSemver(a)
+	vb, errB := parseSemver(b)
+	if errA != nil || errB != nil {
+		return 0, false
+	}
+	switch {
+	case va.lessThan(vb):
+		return -1, true
+	case vb.lessThan(va):
+		return 1, true
+	}
+	return 0, true
+}
+
 // lessThan returns true if v < other.
 func (v semver) lessThan(other semver) bool {
 	if v.Major != other.Major {

@@ -4428,6 +4428,14 @@ func CanModifyComment(actorType string, isAuthor bool, memberRole string) bool {
 	return actorType != "agent" && roleAllowed(memberRole, "owner", "admin")
 }
 
+// CommentProtectionOn reports whether comment protection is in force: an agent
+// run that did not write a comment cannot modify it, even with an owner role.
+// It evaluates CanModifyComment on that synthetic case and is the probe the
+// service layer's VerifiedSigners takes (CHE-10267).
+func CommentProtectionOn() bool {
+	return !CanModifyComment("agent", false, "owner")
+}
+
 func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	r = h.withWakeupActor(r)
 	commentId := chi.URLParam(r, "commentId")

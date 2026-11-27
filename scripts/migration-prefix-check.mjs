@@ -58,18 +58,22 @@ export async function collectMigrations({ repository, number, token, expectedHea
     if (!response.ok) throw new Error(`GitHub ${endpoint}: HTTP ${response.status}`);
     return response.json();
   }
-  async function pages(endpoint, limit = Infinity) {
+  async function pages(endpoint) {
     const entries = [];
     for (let page = 1; ; page++) {
       const batch = await request(`${endpoint}${endpoint.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
       if (!Array.isArray(batch)) throw new Error(`Invalid GitHub list: ${endpoint}`);
       entries.push(...batch);
-      if (entries.length >= limit) throw new Error(`GitHub ${endpoint} reached its ${limit}-file limit; cannot verify all migrations`);
       if (batch.length < 100) return entries;
     }
   }
-  const files = addedMigrations(await pages(`pulls/${number}/files`, 3000));
-  if (files.length === 0) return { files, main: [], pulls: [] };
+  // A full first page means 100 or more changed files. GitHub caps the files list at 3000 and paging to the cap
+  // is too slow for the CI deadline (CHE-10449), so a PR with a full first page is read from its head tree.
+  const first = await request(`pulls/${number}/files?per_page=100&page=1`);
+  if (!Array.isArray(first)) throw new Error(`Invalid GitHub list: pulls/${number}/files`);
+  const large = first.length >= 100;
+  let files = addedMigrations(first);
+  if (!large && files.length === 0) return { files, main: [], pulls: [] };
   const [tree, openPulls] = await Promise.all([
     request("git/trees/main?recursive=1"),
     pages("pulls?state=open"),
@@ -88,6 +92,7 @@ export async function collectMigrations({ repository, number, token, expectedHea
     return head.tree.filter((entry) => entry.type === "blob" && !mainPaths.has(entry.path)).map((entry) => entry.path)
       .filter((path) => MIGRATION.test(path));
   }
+  if (large) files = await headTreeMigrations(openPulls.find((pull) => pull.number === number) ?? { number });
   const pending = openPulls.filter((pull) => pull.number !== number);
   const pulls = [];
   await Promise.all(Array.from({ length: Math.min(8, pending.length) }, async () => {

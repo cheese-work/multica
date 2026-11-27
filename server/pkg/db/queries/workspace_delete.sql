@@ -1094,6 +1094,10 @@ deleted_hook_schedules AS (
     DELETE FROM plugin_hook_schedule
     WHERE installation_id IN (SELECT id FROM installations)
 ),
+deleted_guard_metadata_keys AS (
+    DELETE FROM plugin_guard_metadata_key
+    WHERE installation_id IN (SELECT id FROM installations)
+),
 -- Hook call records are workspace-scoped in their own right, so this deletes by
 -- workspace rather than through the installation ids: a row whose installation
 -- was already uninstalled would otherwise survive the workspace it described.

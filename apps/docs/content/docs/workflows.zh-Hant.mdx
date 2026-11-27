@@ -90,6 +90,10 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 如果**設定**中沒有**工作流**，說明當前工作區還不能使用這個功能，狀態仍在**設定 → 任務狀態**中管理。
 
+## 被拒絕的評審結論 [#refused-verdicts]
+
+伺服器會用 `400` 和三個代碼之一拒絕評審者的結論：`review_verdict_findings_required`（要求修改的結論需要 P0 或 P1 問題）、`review_finding_category_required`（每個問題都需要類別）和 `review_round_new_blocker`（第 2 輪起，新的 P0 或 P1 需要 `@revision`）。拒絕訊息在 `error` 和 `cli_form` 中給出 CLI 寫法：`--finding "P1@<category>:<summary>"`，`review_round_new_blocker` 則是 `--finding "P1@<category>@revision:<summary>"`。如果你的 CLI 早於 `0.10.0-20261125-1520`，`review_round_new_blocker` 還會說明這一點，並加上 `client_version`、`min_client_version` 和 `client_outdated`；請更新 multica CLI。伺服器無法比較的 CLI 版本（`dev`、未提供）不會被判為過舊。
+
 ## 相關指引
 
 - [專案](/projects) — 組織使用同一套流程的任務。

@@ -856,6 +856,7 @@ func normalizeCodexMcpServerConfig(server map[string]any) map[string]any {
 	}
 	normalized["experimental_use_rmcp_client"] = true
 	mapCodexBearerEnvReference(normalized)
+	mapCodexEnvHeaderReferences(normalized)
 	return normalized
 }
 
@@ -894,6 +895,50 @@ func mapCodexBearerEnvReference(server map[string]any) {
 			server["http_headers"] = rest
 		}
 		return
+	}
+}
+
+var codexEnvRefRe = regexp.MustCompile(`^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$`)
+
+// mapCodexEnvHeaderReferences rewrites every non-Authorization header whose
+// value is exactly `${VAR}` into Codex's `env_http_headers = { Name = "VAR" }`
+// (CHE-7064 D1.6: the doop task assertion header). Codex does not expand
+// `${...}` in `http_headers`, so the literal would be sent as the value.
+// Authorization stays on the bearer path above; partial values such as
+// `prefix-${VAR}` stay literal. An existing env_http_headers entry for the
+// same header wins.
+func mapCodexEnvHeaderReferences(server map[string]any) {
+	headers, ok := server["http_headers"].(map[string]any)
+	if !ok {
+		return
+	}
+	envHeaders, _ := server["env_http_headers"].(map[string]any)
+	rest := make(map[string]any, len(headers))
+	mapped := make(map[string]any)
+	for k, v := range headers {
+		str, _ := v.(string)
+		m := codexEnvRefRe.FindStringSubmatch(str)
+		if m == nil || strings.EqualFold(k, "Authorization") {
+			rest[k] = v
+			continue
+		}
+		mapped[k] = m[1]
+	}
+	if len(mapped) == 0 {
+		return
+	}
+	merged := make(map[string]any, len(envHeaders)+len(mapped))
+	for k, v := range mapped {
+		merged[k] = v
+	}
+	for k, v := range envHeaders {
+		merged[k] = v
+	}
+	server["env_http_headers"] = merged
+	if len(rest) == 0 {
+		delete(server, "http_headers")
+	} else {
+		server["http_headers"] = rest
 	}
 }
 

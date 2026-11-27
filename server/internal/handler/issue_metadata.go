@@ -84,6 +84,38 @@ func setIssueMetadataValue(ctx context.Context, q *db.Queries, workspaceID, issu
 	return q.SetIssueMetadataKey(ctx, db.SetIssueMetadataKeyParams{WorkspaceID: workspaceID, ID: issueID, Key: key, Value: raw})
 }
 
+// activityMetadataWritten records the writer of a declared metadata key.
+const activityMetadataWritten = "metadata_written"
+
+// writeDeclaredIssueMetadata sets a key that an enabled guard plugin declared.
+// The issue update and the metadata_written row share the caller's
+// transaction: both commit or neither does. An identical value still bumps
+// revision, so a re-declaration by another actor is visible as a change.
+func writeDeclaredIssueMetadata(ctx context.Context, q *db.Queries, issue db.Issue, key string, value json.RawMessage, actorType, actorID string) (db.SetIssueMetadataKeyRow, error) {
+	if err := validateIssueMetadataKey(key); err != nil {
+		return db.SetIssueMetadataKeyRow{}, err
+	}
+	if err := validateIssueMetadataValue(value); err != nil {
+		return db.SetIssueMetadataKeyRow{}, fmt.Errorf("metadata %q: %w", key, err)
+	}
+	row, err := q.DeclareIssueMetadataKey(ctx, db.DeclareIssueMetadataKeyParams{WorkspaceID: issue.WorkspaceID, ID: issue.ID, Key: key, Value: value})
+	if err != nil {
+		return db.SetIssueMetadataKeyRow{}, err
+	}
+	var v any
+	if err := json.Unmarshal(value, &v); err != nil {
+		return db.SetIssueMetadataKeyRow{}, err
+	}
+	if err := recordEntryActivity(ctx, q, issue, actorType, actorID, activityMetadataWritten, map[string]any{"key": key, "value": v}); err != nil {
+		return db.SetIssueMetadataKeyRow{}, err
+	}
+	return db.SetIssueMetadataKeyRow(row), nil
+}
+
+func isIssueMetadataKeyDeclared(ctx context.Context, q *db.Queries, issue db.Issue, key string) (bool, error) {
+	return q.IsIssueMetadataKeyDeclared(ctx, db.IsIssueMetadataKeyDeclaredParams{WorkspaceID: issue.WorkspaceID, MetadataKey: key})
+}
+
 func validateIssueMetadataKey(key string) error {
 	if key == "" {
 		return errors.New("key is required")
@@ -235,8 +267,16 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	queryStarted := time.Now()
 	updated, err := wakeupWrite(h, r, func(q *db.Queries) (db.SetIssueMetadataKeyRow, error) {
+		declared, err := isIssueMetadataKeyDeclared(r.Context(), q, issue, key)
+		if err != nil {
+			return db.SetIssueMetadataKeyRow{}, err
+		}
+		if declared {
+			return writeDeclaredIssueMetadata(r.Context(), q, issue, key, req.Value, actorType, actorID)
+		}
 		return setIssueMetadataValue(r.Context(), q, issue.WorkspaceID, issue.ID, key, req.Value)
 	})
 	queryDuration := time.Since(queryStarted)
@@ -283,7 +323,6 @@ func (h *Handler) SetIssueMetadataKey(w http.ResponseWriter, r *http.Request) {
 	h.recordIssueMetadataMutation(r, "set", "changed", issueID, key, queryDuration)
 
 	workspaceID := uuidToString(updated.WorkspaceID)
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	if key == postCloseWorkKey {
 		h.recordPostCloseWorkSetter(r.Context(), issue, actorType, actorID, req.Value)
 	}
@@ -314,13 +353,25 @@ func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	queryStarted := time.Now()
 	updated, err := wakeupWrite(h, r, func(q *db.Queries) (db.DeleteIssueMetadataKeyRow, error) {
-		return q.DeleteIssueMetadataKey(r.Context(), db.DeleteIssueMetadataKeyParams{
-			ID:          issue.ID,
-			WorkspaceID: issue.WorkspaceID,
-			Key:         key,
-		})
+		declared, err := isIssueMetadataKeyDeclared(r.Context(), q, issue, key)
+		if err != nil {
+			return db.DeleteIssueMetadataKeyRow{}, err
+		}
+		params := db.DeleteIssueMetadataKeyParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID, Key: key}
+		if !declared {
+			return q.DeleteIssueMetadataKey(r.Context(), params)
+		}
+		row, err := q.DeclareIssueMetadataKeyDelete(r.Context(), db.DeclareIssueMetadataKeyDeleteParams(params))
+		if err != nil {
+			return db.DeleteIssueMetadataKeyRow{}, err
+		}
+		if err := recordEntryActivity(r.Context(), q, issue, actorType, actorID, activityMetadataWritten, map[string]any{"key": key, "deleted": true}); err != nil {
+			return db.DeleteIssueMetadataKeyRow{}, err
+		}
+		return db.DeleteIssueMetadataKeyRow(row), nil
 	})
 	queryDuration := time.Since(queryStarted)
 	if err != nil {
@@ -357,7 +408,6 @@ func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request)
 	h.recordIssueMetadataMutation(r, "delete", "changed", issueID, key, queryDuration)
 
 	workspaceID := uuidToString(updated.WorkspaceID)
-	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	metadata := parseIssueMetadata(updated.Metadata)
 	h.publish(protocol.EventIssueMetadataChanged, workspaceID, actorType, actorID, map[string]any{
 		"issue_id":       uuidToString(updated.ID),

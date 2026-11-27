@@ -52,6 +52,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/passkey"
 	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/realtime"
+	"github.com/multica-ai/multica/server/internal/reviewindependence"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
@@ -550,7 +551,10 @@ type Handler struct {
 	fetchPullRequestJSON func(ctx context.Context, installationID int64, owner, repo string, number int32) (json.RawMessage, error)
 	// readApprovalSnapshot overrides the snapshot read of the R3 approval action; nil uses PRRefresh.
 	readApprovalSnapshot githubSnapshotReader
-	cfg                  Config
+	// readPRCommits overrides the PR commit read of the review-independence
+	// rule (CHE-9319); nil uses the GitHub App client.
+	readPRCommits func(ctx context.Context, installationID int64, owner, repo string, number int32) ([]reviewindependence.PRCommit, error)
+	cfg           Config
 }
 
 // StackAutolinkEnqueuer is the trigger side of ghstack.Dispatcher.

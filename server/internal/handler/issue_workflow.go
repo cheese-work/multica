@@ -2147,7 +2147,7 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 	}
 	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, workflowCaller{handoffAssignee: handoffAssignee})
 	if err != nil {
-		if writeIssueWorkflowError(w, err) {
+		if writeIssueWorkflowError(r.Context(), w, err) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")
