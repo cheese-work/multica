@@ -31,6 +31,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/gitca"
+	"github.com/multica-ai/multica/server/internal/githubrepo"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -527,6 +528,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// the same base URL so Billing cannot be readable while invitation writes
 	// silently skip Cloud's authoritative seat policy.
 	h.SeatCapacity = seatCapacityExecutor(signupConfig.CloudURL)
+	// github.repo.create (CHE-9525): the org-admin tokens live only in this
+	// process's environment; an approved action is the only caller.
+	repoCreator, repoCreatorErr := githubrepo.NewClientFromEnv(os.Getenv)
+	if repoCreatorErr != nil {
+		slog.Warn("github repo creation disabled", "error", repoCreatorErr)
+	}
+	h.GitHubRepoCreator = repoCreator
 	capacityLocker := seatcapacity.NewWorkspaceLocker(pool)
 	h.SeatCapacityLocker = capacityLocker
 	if seatcapacity.CanRunWorker(h.SeatCapacity) {
@@ -1808,6 +1816,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// /v1 prevents the Public API from accepting session cookies.
 	// A5b: routes that change other runs' issues or tasks without naming them.
 	denyRunToken := h.DenyTaskTokenWrites(taskWriteScopeMode())
+	// A project workflow switch may open an owner card for a run's token (CHE-10137), never write.
+	runTokenCardOnly := h.TaskTokenCardOnly(taskWriteScopeMode())
 	// Human-only actions refuse a run's task token in every mode, not only under the rollout flag,
 	// and refuse a cloud-node credential (RequireHumanActor), which acts as its owner.
 	denyTaskToken := h.DenyTaskTokenWrites(handler.TaskWriteScopeOn)
@@ -2350,6 +2360,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/search", h.SearchIssues)
 				r.Get("/child-progress", h.ChildIssueProgress)
 				r.Get("/urgent-orphans", h.ListUrgentOrphanIssues)
+				r.Get("/review-findings", h.ListReviewFindingCategories)
 				r.Get("/pull-requests", h.ListIssuePullRequestSummaries)
 				r.Get("/children", h.ListChildrenByParents)
 				r.Get("/grouped", h.ListGroupedIssues)
@@ -2374,6 +2385,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/agent-decisions", h.LookupAgentDecision)
 					r.Get("/human-in-charge", h.GetHumanInCharge)
 					r.Post("/agent-decisions/rely", h.RelyAgentDecision)
+					r.Post("/design-verdicts", h.RecordDesignVerdict)
 					r.Get("/relations", h.GetIssueRelations)
 					r.Put("/", h.UpdateIssue)
 					r.Post("/move", h.MoveIssue)
@@ -2386,6 +2398,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/description/history", h.ListIssueDescriptionRevisions)
 					r.Get("/description/diff", h.DiffIssueDescription)
 					r.Get("/workflow-handoff", h.PreviewWorkflowHandoff)
+					r.Get("/close-check", h.GetIssueCloseCheck)
 					r.Get("/run-budget", h.GetIssueRunBudget)
 					r.Get("/stage-queue", h.GetIssueStageQueue)
 					// CHE-2798 S1c: the direct raise and top-up are gone; a raise or top-up is a
@@ -2556,6 +2569,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Human-only: a machine credential carries its owner's user
 				// id and must not use the owner's way into private projects.
 				r.With(handler.RequireHumanActor).Get("/private", h.ListPrivateProjectsForOwner)
+				// CHE-10137: one owner card switches the workflow of many projects.
+				r.With(runTokenCardOnly).Post("/workflow", h.SetProjectsWorkflow)
 				r.Get("/", h.ListProjects)
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {
@@ -2565,7 +2580,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/join", h.JoinPrivateProject)
 					r.Post("/archive", h.ArchiveProject)
 					r.Post("/restore", h.RestoreProject)
-					r.With(denyRunToken).Post("/workflow", h.SetProjectWorkflow)
+					r.With(runTokenCardOnly).Post("/workflow", h.SetProjectWorkflow)
 					r.With(denyRunToken).Put("/workflow-split", h.SetProjectWorkflowSplit)
 					r.With(denyRunToken).Delete("/workflow-split", h.ClearProjectWorkflowSplit)
 					r.Get("/members", h.ListProjectMembers)

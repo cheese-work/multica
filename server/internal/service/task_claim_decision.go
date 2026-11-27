@@ -6,6 +6,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // Claim decision observability (#8551, queue-wait attribution).
@@ -109,6 +110,23 @@ type claimScope struct {
 	// chatOnly restricts the claim to DM tasks (not issue or group channel
 	// tasks): the daemon's non-DM budget under reserved_chat_slots is spent.
 	chatOnly bool
+	// upto, when set, bounds the claim to rows not after this key in claim
+	// order (CHE-10088): a runtime poll walking candidates across agents passes
+	// the last key of one agent's consecutive group, so the claim never starts a
+	// row newer than another agent's candidate.
+	upto *claimBound
+}
+
+// claimBound is a position in claim order (priority DESC, created_at ASC,
+// id ASC): the claim may take rows at or before it.
+type claimBound struct {
+	priority  int32
+	createdAt pgtype.Timestamptz
+	id        pgtype.UUID
+}
+
+func claimBoundOf(row db.AgentTaskQueue) *claimBound {
+	return &claimBound{priority: row.Priority, createdAt: row.CreatedAt, id: row.ID}
 }
 
 // claimDecisionDetail carries the capacity numbers behind a no_capacity or

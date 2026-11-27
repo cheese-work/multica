@@ -84,9 +84,13 @@ function withoutMarkdownCode(body) {
   return stripped;
 }
 
+// Ordinary words that precede a number (round-2, step-3) are not issue keys.
+const NON_ISSUE_WORD = /^(?:round|step|phase|stage|wave|pass|attempt|rc|v)-/i;
+
 function issueKeys(text) {
   const keys = new Set();
   for (const match of text.matchAll(ISSUE_KEY)) {
+    if (NON_ISSUE_WORD.test(match[0])) continue;
     keys.add(match[0].toUpperCase());
   }
   return [...keys];

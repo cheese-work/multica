@@ -5,6 +5,8 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
+
+	"github.com/multica-ai/multica/server/internal/githubrepo"
 )
 
 // restrictedEnv is the runtime-wide switch (CHE-2216 slice A2b). Off keeps the
@@ -19,9 +21,23 @@ func SetRestrictedEnv(on bool) { restrictedEnv.Store(on) }
 // all of os.Environ(), or only the allowlisted names when restricted.
 func BaseEnviron() []string {
 	if !restrictedEnv.Load() {
-		return os.Environ()
+		return withoutServerOnlyEnv(os.Environ())
 	}
 	kept, _ := SplitEnv(os.Environ())
+	return kept
+}
+
+// serverOnlyEnvNames are credentials only the server process may hold. A daemon
+// that shares a host or environment with it must not pass them to an agent.
+var serverOnlyEnvNames = map[string]bool{githubrepo.AdminTokensEnv: true}
+
+func withoutServerOnlyEnv(environ []string) []string {
+	kept := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		if key, _, _ := strings.Cut(entry, "="); !serverOnlyEnvNames[key] {
+			kept = append(kept, entry)
+		}
+	}
 	return kept
 }
 

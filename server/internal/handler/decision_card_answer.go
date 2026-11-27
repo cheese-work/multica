@@ -261,7 +261,7 @@ func (handler *Handler) answerDecisionRequestTx(request *http.Request, workspace
 	if err != nil {
 		return empty, err
 	}
-	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\nOpen issue: /issue/%s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, uuidToString(issue.ID))
+	note := fmt.Sprintf("Decision recorded for [%s-%d](mention://issue/%s).\nClass: %s.\n%s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), decision.EscalationClass, util.OpenIssueFooter(fmt.Sprintf("%s-%d", workspace.IssuePrefix, issue.Number), uuidToString(issue.ID)))
 	message, err := queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: note, MessageKind: pgtype.Text{String: "decision_reference", Valid: true}, SentVia: pgtype.Text{String: "interactive_jwt", Valid: true}, DecisionAnswerID: answer.ID})
 	if err != nil {
 		return empty, err

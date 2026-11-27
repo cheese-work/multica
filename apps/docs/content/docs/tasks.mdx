@@ -84,7 +84,7 @@ The execution log also totals the issue's **Spent**, **Tokens**, and **Agent tim
 
 ## Failures and automatic retries
 
-Transient faults — a runtime going briefly offline, a daemon restart, an execution timeout, or a network interruption in the AI coding tool — can trigger an automatic retry. A regular run executes at most twice by default; tool network interruptions get up to three attempts.
+Transient faults — a runtime going briefly offline, a daemon restart, an execution timeout, or a network interruption in the AI coding tool — can trigger an automatic retry. A regular run executes at most twice by default; tool network interruptions get up to three attempts. When the provider account rejects a run for exceeding its concurrency limit, the retries wait 2 minutes and then 10 minutes, and each retry is logged as a system comment on the issue.
 
 Errors returned by the agent itself are usually not retried automatically. Expired credentials, exhausted quota, misconfiguration, or a model unable to complete the request all need the cause fixed first, then a manual retry.
 
@@ -97,6 +97,8 @@ For a squad-assigned issue, a failed run of the current squad leader also sets t
 ## Loop breaker
 
 Multica refuses an agent's run on an issue when that agent has already started 5 runs on the issue in the last 30 minutes. The refused run is the 6th. The issue moves to `blocked` with the reason `loop-breaker: <agent> started N runs in 30 min`, and one system comment names the agent and the trigger types of its last runs. Multica posts at most one such comment per issue and agent per hour. Runs by other agents on the issue and chat tasks without an issue are not counted.
+
+A review run of a pull request that waits in its owner's stage queue is not dropped: the issue stays in its review status instead of moving to `blocked`, the system comment says the run is queued, and the run starts on its own once fewer than the limit of runs fall inside the window.
 
 Set `MULTICA_LOOP_BREAKER_MAX_RUNS` (default `6`; `0` turns the breaker off) and `MULTICA_LOOP_BREAKER_WINDOW` (default `30m`) on the server to change the limits.
 

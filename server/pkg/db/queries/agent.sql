@@ -1124,7 +1124,26 @@ WHERE id = (
               WHERE ctd.task_id = atq.id AND ctd.chat_type = 'group'
           )
       ))
-    ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
+      -- CHE-10088: optional upper bound in claim order (aged priority DESC,
+      -- created_at ASC, id ASC). A runtime poll that walks candidates across
+      -- agents passes the last candidate key of this agent's consecutive group,
+      -- so the claim cannot take a row that is newer than another agent's
+      -- candidate. upto_priority is the bound row's stored priority; its aged
+      -- priority is recomputed here with the same now() as the row's own, so the
+      -- bound row compares equal to itself. All three params NULL means no bound.
+      AND (
+          sqlc.narg('upto_priority')::int IS NULL
+          OR GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) > GREATEST(sqlc.narg('upto_priority')::int, LEAST(sqlc.narg('upto_priority')::int + COALESCE(floor(extract(epoch FROM now() - sqlc.narg('upto_created_at')::timestamptz) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3))
+          OR (GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) = GREATEST(sqlc.narg('upto_priority')::int, LEAST(sqlc.narg('upto_priority')::int + COALESCE(floor(extract(epoch FROM now() - sqlc.narg('upto_created_at')::timestamptz) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) AND (
+              atq.created_at < sqlc.narg('upto_created_at')::timestamptz
+              OR (atq.created_at = sqlc.narg('upto_created_at')::timestamptz
+                  AND atq.id <= sqlc.narg('upto_id')::uuid)
+          ))
+      )
+-- CHE-9926 aging: a queued row gains one level per @aging_step_secs of wait,
+    -- capped at 3 (high) so it never outranks an urgent row; 0 turns aging off. Keep the three
+    -- claim orderings (ClaimAgentTask and both candidate lists) identical.
+    ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
@@ -2448,10 +2467,11 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
   );
 
 -- name: HasPendingTaskForIssueAndAgentAtStep :one
--- HasPendingTaskForIssueAndAgent for a workflow handoff (MUL-7420): an
--- assignment-level run stamped for a step the issue has left does not count,
--- because its status changes would be refused as workflow_step_moved and it
--- cannot finish the step being entered. Runs tied to a comment keep counting.
+-- HasPendingTaskForIssueAndAgent for a workflow handoff (MUL-7420): only a step
+-- run counts (CHE-9605), an assignment-level run or a status handoff run. A step
+-- run stamped for a step the issue has left does not count, because its status
+-- changes would be refused as workflow_step_moved and it cannot finish the step
+-- being entered. A run that answers a comment never stands in for the step run.
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
   AND (
@@ -2462,11 +2482,8 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     COALESCE(sqlc.narg('head_sha')::text, '') = ''
     OR context->>'head_sha' = sqlc.narg('head_sha')::text
   )
-  AND NOT (
-    trigger_comment_id IS NULL
-    AND workflow_step IS NOT NULL
-    AND workflow_step <> sqlc.arg('step')::text
-  );
+  AND (trigger_comment_id IS NULL OR trigger_kind = 'status_handoff')
+  AND (workflow_step IS NULL OR workflow_step = sqlc.arg('step')::text);
 
 -- name: LastVerdictHeadSHA :one
 -- PR head of the issue's latest review verdict, PASS or CHANGES (CHE-3243): a
@@ -2730,6 +2747,9 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = @issue_id
       AND t.agent_id = @agent_id
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(@new_trigger_comment_id::uuid)
+      -- CHE-9605: never retarget a step run (an assignment-level run or a status
+      -- handoff run); it keeps its trigger, kind, note and attribution.
+      AND t.trigger_comment_id IS NOT NULL AND t.trigger_kind IS DISTINCT FROM 'status_handoff'
       AND (
           t.status = 'queued'
           OR (t.status = 'deferred' AND t.context->>'channel_issue_media_pending' = 'true')
@@ -2759,6 +2779,7 @@ RETURNING *;
 -- the per-thread unique index is free there. A race that fills it surfaces as a
 -- unique violation and the caller falls back to the per-thread path. Arrivals
 -- that miss each other here are collapsed after insert (LockQueuedSiblingTask).
+-- A step run is never the target (CHE-9605): the comment keeps its own run.
 -- The squad role must match: a leader-role comment never folds into the same
 -- agent's worker task (or the reverse), since the claim briefing differs.
 UPDATE agent_task_queue
@@ -2783,6 +2804,9 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = @issue_id
       AND t.agent_id = @agent_id
       AND t.status = 'queued'
+      -- CHE-9605: never retarget a step run (an assignment-level run or a status
+      -- handoff run); it keeps its trigger, kind, note and attribution.
+      AND t.trigger_comment_id IS NOT NULL AND t.trigger_kind IS DISTINCT FROM 'status_handoff'
       AND (sqlc.narg('target_task_id')::uuid IS NULL OR t.id = sqlc.narg('target_task_id')::uuid)
       AND t.is_leader_task = (sqlc.narg('squad_id')::uuid IS NOT NULL)
       AND t.squad_id IS NOT DISTINCT FROM sqlc.narg('squad_id')::uuid
@@ -2806,11 +2830,13 @@ RETURNING id, coalesced_comment_ids;
 -- enqueue, the caller (holding the (issue, agent) enqueue lock) looks for an
 -- older queued sibling with the same squad role and reviewed head, and locks
 -- it so a claim cannot take it mid-collapse. A sibling claimed first is
--- re-checked by FOR UPDATE and no longer matches.
+-- re-checked by FOR UPDATE and no longer matches. A step run is never a sibling
+-- (CHE-9605): the fresh comment run is not folded into it.
 SELECT t.id FROM agent_task_queue t
 JOIN agent_task_queue m ON m.id = @task_id
 WHERE t.issue_id = m.issue_id AND t.agent_id = m.agent_id AND t.id <> m.id
   AND t.status = 'queued' AND t.context->>'wakeup_id' IS NULL
+  AND t.trigger_comment_id IS NOT NULL AND t.trigger_kind IS DISTINCT FROM 'status_handoff'
   AND t.is_leader_task = m.is_leader_task
   AND t.squad_id IS NOT DISTINCT FROM m.squad_id
   AND COALESCE(t.context->>'head_sha', '') = COALESCE(m.context->>'head_sha', '')
@@ -2851,6 +2877,7 @@ SET coalesced_comment_ids = (
     runtime_connected_apps = src.runtime_connected_apps
 FROM agent_task_queue src
 WHERE t.id = @sibling_id AND t.status = 'queued' AND src.id = @source_id
+  AND t.trigger_comment_id IS NOT NULL AND t.trigger_kind IS DISTINCT FROM 'status_handoff'
 RETURNING t.id;
 
 -- name: RegisterPlannedCommentForActiveTask :one
@@ -2877,6 +2904,12 @@ RETURNING t.id;
 -- could execute under the first member's identity/connected-apps (MUL-4302).
 -- Only claim-receipt statuses (already-built delivered set) are safe planned-id
 -- targets.
+--
+-- One queued exception (CHE-9605): a status-handoff step run holding the thread's
+-- slot. MergeCommentIntoPendingTask never retargets it, so the comment is only
+-- appended to its planned set. Its trigger, kind, note and attribution stay, the
+-- claim does not receipt the id (the step prompt renders no coalesced comment),
+-- and completion reconcile replays the comment under its own attribution.
 -- Recheck status on the UPDATE target after a concurrent row-lock wait. The
 -- subquery can see an active snapshot while completion commits; appending to
 -- that completed row would be too late for its completion replay to see it.
@@ -2891,7 +2924,10 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = @issue_id
       AND t.agent_id = @agent_id
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(@comment_id::uuid)
-      AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND (
+          t.status IN ('dispatched', 'running', 'waiting_local_directory')
+          OR (t.status = 'queued' AND t.trigger_kind = 'status_handoff')
+      )
       AND (sqlc.narg('target_task_id')::uuid IS NULL OR t.id = sqlc.narg('target_task_id')::uuid)
       AND (
           COALESCE(sqlc.narg('head_sha')::text, '') = ''
@@ -2900,7 +2936,10 @@ WHERE id = (
     ORDER BY t.created_at DESC
     LIMIT 1
 )
-AND status IN ('dispatched', 'running', 'waiting_local_directory')
+AND (
+    status IN ('dispatched', 'running', 'waiting_local_directory')
+    OR (status = 'queued' AND trigger_kind = 'status_handoff')
+)
 RETURNING id, coalesced_comment_ids;
 
 -- name: MergeDelegatedFailureCommentIntoPendingTask :one
@@ -2923,6 +2962,9 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = @issue_id
       AND t.agent_id = @agent_id
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id(@comment_id::uuid)
+      -- CHE-9605: never retarget a step run (an assignment-level run or a status
+      -- handoff run); it keeps its trigger, kind, note and attribution.
+      AND t.trigger_comment_id IS NOT NULL AND t.trigger_kind IS DISTINCT FROM 'status_handoff'
       AND (
           t.status = 'queued'
           OR (t.status = 'deferred' AND t.context->>'channel_issue_media_pending' = 'true')
@@ -3248,7 +3290,7 @@ ORDER BY priority DESC, created_at ASC;
 -- runtime is busy on a long-running task. Backed by the partial index
 -- idx_agent_task_queue_claim_candidates so the warm path is cheap.
 SELECT atq.* FROM agent_task_queue atq
-WHERE atq.runtime_id = $1
+WHERE atq.runtime_id = @runtime_id
   AND atq.status = 'queued'
   AND NOT (COALESCE(atq.context, '{}'::jsonb) ? 'provider_hold')
       AND (atq.context->>'wakeup_id' IS NULL OR EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id=(atq.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL AND w.revision=(atq.context->>'wakeup_revision')::bigint))
@@ -3270,7 +3312,7 @@ WHERE atq.runtime_id = $1
             OR r.visibility = 'private'
         )
   )
-ORDER BY atq.priority DESC, atq.created_at ASC;
+ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC;
 
 -- name: CancelSupersededDeferredRetriesForRuntimes :many
 -- Cancels deferred auto-retry rows that a newer active task has already
@@ -3399,7 +3441,7 @@ WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
             OR r.visibility = 'private'
         )
   )
-ORDER BY atq.priority DESC, atq.created_at ASC;
+ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF(@aging_step_secs::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC;
 
 -- name: NextDeferredTaskFireAtForRuntimes :one
 -- Returns the next future deferred task for a daemon's authorized runtime set,

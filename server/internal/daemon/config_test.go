@@ -1964,3 +1964,35 @@ func TestAgentTimeoutFor_GlobalFallback(t *testing.T) {
 		t.Fatalf("claude = %s, want global 2h", got)
 	}
 }
+
+func TestLoadConfig_AgentNearLimitWarning(t *testing.T) {
+	stageFakeAgent(t)
+	load := func() (Config, error) {
+		return LoadConfig(Overrides{ServerURL: "http://localhost:8080", WorkspacesRoot: t.TempDir()})
+	}
+	for _, c := range []struct {
+		env  string
+		want time.Duration
+	}{
+		{"", DefaultAgentNearLimitWarning},
+		{"15m", 15 * time.Minute},
+		{"90s", 90 * time.Second},
+		{"0", 0},
+	} {
+		t.Setenv("MULTICA_AGENT_NEAR_LIMIT_WARNING", c.env)
+		cfg, err := load()
+		if err != nil {
+			t.Fatalf("env %q: %v", c.env, err)
+		}
+		if cfg.AgentNearLimitWarning != c.want {
+			t.Fatalf("env %q: AgentNearLimitWarning = %s, want %s", c.env, cfg.AgentNearLimitWarning, c.want)
+		}
+	}
+	if DefaultAgentNearLimitWarning != 10*time.Minute {
+		t.Fatalf("default = %s, want 10m", DefaultAgentNearLimitWarning)
+	}
+	t.Setenv("MULTICA_AGENT_NEAR_LIMIT_WARNING", "bogus")
+	if _, err := load(); err == nil {
+		t.Fatal("invalid MULTICA_AGENT_NEAR_LIMIT_WARNING must fail LoadConfig")
+	}
+}

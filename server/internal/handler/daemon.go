@@ -3209,10 +3209,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	}
 	// CHE-4331: compaction env for Claude Code, derived from auto_compact at
 	// claim time; never stored in agent env, and the agent's own env wins.
+	// CHE-10000: a chat task gets the DM run cap, any other task the built-in one.
 	if runtime.Provider == "claude" {
 		if ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(runtimeWorkspaceID)); err != nil {
 			slog.Warn("daemon claim: load workspace for auto-compact env failed", "task_id", uuidToString(task.ID), "error", err)
-		} else if extra := service.ClaudeCompactEnv(runtime.Provider, preset.Settings.Model, ws.Settings, agent.RuntimeConfig, customEnv); len(extra) > 0 {
+		} else if extra := service.ClaudeCompactEnv(runtime.Provider, preset.Settings.Model, task.ChatSessionID.Valid, ws.Settings, agent.RuntimeConfig, customEnv); len(extra) > 0 {
 			if customEnv == nil {
 				customEnv = map[string]string{}
 			}
@@ -3373,6 +3374,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// cached prompt prefix (MUL-5377 seam). Best-effort — see
 		// loadIssueCheckpointBlock's doc comment for the degrade path.
 		resp.CheckpointBlock = h.loadIssueCheckpointBlock(r.Context(), issue, task.AgentID)
+		if pointer := h.timeoutRetryPointer(r.Context(), *task); pointer != "" {
+			resp.CheckpointBlock = strings.TrimSpace(pointer + "\n\n" + resp.CheckpointBlock)
+		}
 
 		// Squad-leader briefing injection: keyed off the task being a
 		// leader-task (is_leader_task) carrying a squad_id — NOT off the
@@ -3504,6 +3508,11 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		// Workspace-scoped load (MUL-4252) so a foreign comment UUID resolves to
 		// "missing" instead of leaking another tenant's text into the prompt.
 		plannedCommentIDs := append([]pgtype.UUID{}, task.CoalescedCommentIds...)
+		if task.TriggerKind.String == "status_handoff" {
+			// The step prompt renders no coalesced comment (CHE-9605), so none is
+			// embedded or receipted; completion reconcile replays each one.
+			plannedCommentIDs = nil
+		}
 		if task.TriggerCommentID.Valid {
 			plannedCommentIDs = append(plannedCommentIDs, task.TriggerCommentID)
 		}
@@ -5046,7 +5055,7 @@ func trailingUserMessages(msgs []db.ChatMessage) []db.ChatMessage {
 	// A compact notice is server-authored context for the reader, not a turn: it
 	// never ends the unanswered run and never reaches a prompt (CHE-1807).
 	msgs = slices.DeleteFunc(slices.Clone(msgs), func(m db.ChatMessage) bool {
-		return m.MessageKind == protocol.ChatMessageKindCompactNotice
+		return m.MessageKind == protocol.ChatMessageKindCompactNotice || m.MessageKind == protocol.ChatMessageKindModelChangeNotice
 	})
 	start := 0
 	for i := len(msgs) - 1; i >= 0; i-- {
@@ -6408,6 +6417,11 @@ type TaskFailRequest struct {
 	// to report" — this says "never hand this id to a later run". Older
 	// daemons omit it, which is exactly the pre-fix behaviour.
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
+	// TimeoutCheckpoint (CHE-9761): the daemon's facts about a run that hit its
+	// time cap. Raw on purpose: a malformed field is dropped by the service
+	// validator, never turned into a 400 for the fail report itself. Older
+	// daemons omit it.
+	TimeoutCheckpoint json.RawMessage `json:"timeout_checkpoint,omitempty"`
 }
 
 func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
@@ -6428,6 +6442,10 @@ func (h *Handler) FailTask(w http.ResponseWriter, r *http.Request) {
 	// here lands in a TEXT column too and a NUL in any one of them fails the
 	// same transaction (GH #7098).
 	sanitizeTaskFailRequest(&req)
+
+	// CHE-9761: post the checkpoint comment first, so it exists before the fail
+	// transaction mints the retry that is pointed at it. Best-effort.
+	h.TaskService.PostTimeoutCheckpoint(r.Context(), parseUUID(taskID), req.Error, req.FailureReason, req.TimeoutCheckpoint)
 
 	h.failTask(w, r, taskID, workspaceID, req)
 }
@@ -6501,6 +6519,26 @@ type TaskMessageBatchRequest struct {
 func sealsChatText(rows []db.CreateTaskMessagesRow) bool {
 	for _, m := range rows {
 		if m.Type != string(agent.MessageText) {
+			return true
+		}
+	}
+	return false
+}
+
+// batchHasModelChange reports whether a batch holds a runtime model transition.
+func batchHasModelChange(messages []TaskMessageRequest) bool {
+	for _, m := range messages {
+		if m.Type == string(agent.MessageModelChange) {
+			return true
+		}
+	}
+	return false
+}
+
+// batchHasContextCompacted reports whether a batch holds a compaction event.
+func batchHasContextCompacted(messages []TaskMessageRequest) bool {
+	for _, m := range messages {
+		if m.Type == string(agent.MessageContextCompacted) {
 			return true
 		}
 	}
@@ -6679,6 +6717,31 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 				ChatSessionOwnerID: scope.ChatSessionOwnerID,
 				Payload:            taskMessageToPayload(db.TaskMessage(m), taskID, uuidToString(task.IssueID)),
 			})
+		}
+	}
+
+	// A mid-turn compaction gets its DM notice as soon as its run message is
+	// stored, whatever the task status: a cancel settles the task before the
+	// daemon flushes its transcript. Keyed on the request, not on the rows just
+	// created, so a replayed batch retries a notice an earlier call failed to
+	// write. The run messages are stored and the daemon does not retry, so a
+	// writer error is logged and does not fail the request (CHE-9935).
+	if task.ChatSessionID.Valid && batchHasContextCompacted(req.Messages) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+		defer cancel()
+		if _, err := h.TaskService.ReconcileCompactNotices(ctx, task.ID); err != nil {
+			slog.Warn("write compact notices failed", "task_id", taskID, "error", err)
+		}
+	}
+
+	// A runtime model change gets its DM notice the same way, so the member sees
+	// an automatic fallback during the turn and it persists after reload
+	// (CHE-10140). Best-effort for the same reason as the compaction notice.
+	if task.ChatSessionID.Valid && batchHasModelChange(req.Messages) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+		defer cancel()
+		if _, err := h.TaskService.ReconcileModelChangeNotices(ctx, task.ID); err != nil {
+			slog.Warn("write model change notices failed", "task_id", taskID, "error", err)
 		}
 	}
 

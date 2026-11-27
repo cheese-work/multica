@@ -1328,6 +1328,16 @@ const MessageBubble = memo(function MessageBubble({
     return <CompactNotice message={message} />;
   }
 
+  // The server-authored note that the runtime changed (or tried to change) the
+  // serving model: a muted note, not a reply from the agent (CHE-10140).
+  if (message.message_kind === "model_change_notice") {
+    return (
+      <p role="note" className="text-caption text-muted-foreground">
+        {message.content}
+      </p>
+    );
+  }
+
   // A fired wakeup is a system event, not something the member typed.
   if (message.scheduled_wakeup) {
     return <WakeupEventRow wakeup={message.scheduled_wakeup} />;
@@ -1990,6 +2000,9 @@ function FailureBubble({
     environment_prepare_failed: t(($) => $.message_list.failure.environment_prepare_failed),
     "agent_error.provider_network": t(($) => $.message_list.failure.provider_network),
     "agent_error.provider_auth_or_access": t(($) => $.message_list.failure.provider_auth_or_access),
+    "agent_error.model_not_found_or_unavailable": t(
+      ($) => $.message_list.failure.model_not_found_or_unavailable,
+    ),
     "agent_error.provider_quota_limit": t(($) => $.message_list.failure.provider_quota_limit),
     "agent_error.provider_capacity_or_rate_limit": t(
       ($) => $.message_list.failure.provider_capacity_or_rate_limit,

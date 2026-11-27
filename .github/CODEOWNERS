@@ -11,3 +11,8 @@
 /.github/CODEOWNERS                                       @congvc-dev
 /scripts/security-weekly/                                 @congvc-dev
 /.github/workflows/security-weekly.yml                    @congvc-dev
+
+# Public-fork guard (CHE-9778): the rules decide what may enter the public fork; a loosened rule would let workspace data in.
+/scripts/public-fork-guard.mjs                            @congvc-dev
+/scripts/public-fork-guard.test.mjs                       @congvc-dev
+/scripts/public-fork-guard/                               @congvc-dev

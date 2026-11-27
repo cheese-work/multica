@@ -32,6 +32,7 @@ var wantOptionLeafFields = []string{
 	"Action.Type", "Action.Params.Status", "Action.Params.AssigneeType", "Action.Params.AssigneeID",
 	"AfterWait.UntilPR.URL", "AfterWait.UntilPR.State", "AfterWait.UntilStatus.Status",
 	"AfterWait.UntilIssue.Issue", "AfterWait.UntilIssue.State",
+	"Design.FrameURL", "Design.AttestationID", "Design.FrameUpdatedAt", // CHE-7089: a different frame is a different ask
 }
 
 var hex64 = regexp.MustCompile(`^[0-9a-f]{64}$`)

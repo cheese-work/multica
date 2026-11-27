@@ -73,7 +73,7 @@ page:
 			if message.ID == summary.ID {
 				break page
 			}
-			if skip[message.ID] || message.MessageKind == protocol.ChatMessageKindCompactNotice {
+			if skip[message.ID] || message.MessageKind == protocol.ChatMessageKindCompactNotice || message.MessageKind == protocol.ChatMessageKindModelChangeNotice {
 				continue
 			}
 			entry := strings.ReplaceAll(forkEntry(message), compactionRecentClose, `<\/recent_messages>`)
@@ -91,6 +91,15 @@ page:
 		params.BeforeCreatedAt, params.BeforeID = last.CreatedAt, last.ID
 	}
 
+	skipped := make([]pgtype.UUID, 0, len(skip))
+	for id := range skip {
+		skipped = append(skipped, id)
+	}
+	earlier, err := h.earlierHumanBlock(ctx, session.ID, summary.CreatedAt, summary.ID, skipped)
+	if err != nil {
+		return "", err
+	}
+
 	var block strings.Builder
 	block.WriteString(head)
 	block.WriteString(content)
@@ -102,6 +111,7 @@ page:
 	if cut {
 		block.WriteString(cutNote)
 	}
+	block.WriteString(earlier)
 	block.WriteString(older)
 	return strings.TrimRight(block.String(), "\n"), nil
 }

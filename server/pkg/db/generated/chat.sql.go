@@ -1074,6 +1074,68 @@ func (q *Queries) CreateChatTask(ctx context.Context, arg CreateChatTaskParams) 
 	return i, err
 }
 
+const createCompactNoticeIdempotent = `-- name: CreateCompactNoticeIdempotent :one
+INSERT INTO chat_message (id, chat_session_id, role, content, message_kind, sent_via, created_at)
+VALUES (
+    $1, $2, 'assistant', $3,
+    'compact_notice', 'system',
+    GREATEST($4::timestamptz,
+             COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $2), $4::timestamptz))
+)
+ON CONFLICT (id) DO NOTHING
+RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id, reanchored_at
+`
+
+type CreateCompactNoticeIdempotentParams struct {
+	ID            pgtype.UUID        `json:"id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	Content       string             `json:"content"`
+	EventAt       pgtype.Timestamptz `json:"event_at"`
+}
+
+// One mid-turn compaction notice per context_compacted run message (CHE-9935).
+// The caller derives id from the run message id, so a replay conflicts and
+// inserts nothing: no row comes back and the caller publishes nothing. The
+// notice sits at the event time, clamped above the segment floor (Rule W, see
+// CreateChatMessage). It carries no task_id: like the layer B notice, it is not
+// a reply of the task.
+func (q *Queries) CreateCompactNoticeIdempotent(ctx context.Context, arg CreateCompactNoticeIdempotentParams) (ChatMessage, error) {
+	row := q.db.QueryRow(ctx, createCompactNoticeIdempotent,
+		arg.ID,
+		arg.ChatSessionID,
+		arg.Content,
+		arg.EventAt,
+	)
+	var i ChatMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChatSessionID,
+		&i.Role,
+		&i.Content,
+		&i.TaskID,
+		&i.CreatedAt,
+		&i.FailureReason,
+		&i.ElapsedMs,
+		&i.MessageKind,
+		&i.ChannelMediaPendingUntil,
+		&i.ChannelIngested,
+		&i.QuickActions,
+		&i.ChannelContextRevision,
+		&i.ChannelOutboundType,
+		&i.ChannelOutboundInstallationID,
+		&i.ChannelOutboundChatID,
+		&i.ChannelOutboundMessageIds,
+		&i.ChannelTypingSettled,
+		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
+		&i.ClientMessageID,
+		&i.ReanchoredAt,
+	)
+	return i, err
+}
+
 const createMikaOnboardingOpening = `-- name: CreateMikaOnboardingOpening :one
 INSERT INTO chat_message (chat_session_id, role, content, message_kind, created_at, id, sent_via)
 VALUES (
@@ -1113,6 +1175,67 @@ func (q *Queries) CreateMikaOnboardingOpening(ctx context.Context, arg CreateMik
 		arg.Content,
 		arg.KickoffCreatedAt,
 		arg.ID,
+	)
+	var i ChatMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChatSessionID,
+		&i.Role,
+		&i.Content,
+		&i.TaskID,
+		&i.CreatedAt,
+		&i.FailureReason,
+		&i.ElapsedMs,
+		&i.MessageKind,
+		&i.ChannelMediaPendingUntil,
+		&i.ChannelIngested,
+		&i.QuickActions,
+		&i.ChannelContextRevision,
+		&i.ChannelOutboundType,
+		&i.ChannelOutboundInstallationID,
+		&i.ChannelOutboundChatID,
+		&i.ChannelOutboundMessageIds,
+		&i.ChannelTypingSettled,
+		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
+		&i.ClientMessageID,
+		&i.ReanchoredAt,
+	)
+	return i, err
+}
+
+const createModelChangeNoticeIdempotent = `-- name: CreateModelChangeNoticeIdempotent :one
+INSERT INTO chat_message (id, chat_session_id, role, content, message_kind, sent_via, created_at)
+VALUES (
+    $1, $2, 'assistant', $3,
+    'model_change_notice', 'system',
+    GREATEST($4::timestamptz,
+             COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $2), $4::timestamptz))
+)
+ON CONFLICT (id) DO NOTHING
+RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id, reanchored_at
+`
+
+type CreateModelChangeNoticeIdempotentParams struct {
+	ID            pgtype.UUID        `json:"id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	Content       string             `json:"content"`
+	EventAt       pgtype.Timestamptz `json:"event_at"`
+}
+
+// One model change notice per native model transition (CHE-10140). The caller
+// derives id from the native event identity, so a replay conflicts and inserts
+// nothing: no row comes back and the caller publishes nothing. Same placement
+// rules as CreateCompactNoticeIdempotent: at the event time, clamped above the
+// segment floor, no task_id.
+func (q *Queries) CreateModelChangeNoticeIdempotent(ctx context.Context, arg CreateModelChangeNoticeIdempotentParams) (ChatMessage, error) {
+	row := q.db.QueryRow(ctx, createModelChangeNoticeIdempotent,
+		arg.ID,
+		arg.ChatSessionID,
+		arg.Content,
+		arg.EventAt,
 	)
 	var i ChatMessage
 	err := row.Scan(
@@ -3287,6 +3410,87 @@ func (q *Queries) ListChatDraftRestoresBySession(ctx context.Context, chatSessio
 			&i.Content,
 			&i.AttachmentIds,
 			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatEarlierHumanMessages = `-- name: ListChatEarlierHumanMessages :many
+SELECT m.id, m.chat_session_id, m.role, m.content, m.task_id, m.created_at, m.failure_reason, m.elapsed_ms, m.message_kind, m.channel_media_pending_until, m.channel_ingested, m.quick_actions, m.channel_context_revision, m.channel_outbound_type, m.channel_outbound_installation_id, m.channel_outbound_chat_id, m.channel_outbound_message_ids, m.channel_typing_settled, m.sent_via, m.decision_answer_id, m.lineage_message_ids, m.decision_request_ids, m.client_message_id, m.reanchored_at FROM chat_message m
+WHERE m.chat_session_id = $1
+  AND m.role = 'user'
+  AND m.message_kind = 'message'
+  AND (m.created_at, m.id) < ($2::timestamptz, $3::uuid)
+  AND NOT (m.id = ANY($4::uuid[]))
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued')
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_answer da
+      WHERE da.disclaimed_at IS NOT NULL AND m.id = ANY(da.chat_message_ids))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT $5
+`
+
+type ListChatEarlierHumanMessagesParams struct {
+	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
+	BeforeCreatedAt pgtype.Timestamptz `json:"before_created_at"`
+	BeforeID        pgtype.UUID        `json:"before_id"`
+	ExcludedIds     []pgtype.UUID      `json:"excluded_ids"`
+	RowLimit        int32              `json:"row_limit"`
+}
+
+// Carry-over block, earlier human messages (CHE-10002): the human's ordinary
+// messages before the boundary (the segment floor, or the latest summary row),
+// newest first. Same exclusions as ListChatCarryOverMessages: a queued
+// follow-up is not delivered yet, and the claiming task's own input batch is
+// delivered by the claim. The source message of a withdrawn decision stays out,
+// as the withdrawn decision does (CHE-4447).
+func (q *Queries) ListChatEarlierHumanMessages(ctx context.Context, arg ListChatEarlierHumanMessagesParams) ([]ChatMessage, error) {
+	rows, err := q.db.Query(ctx, listChatEarlierHumanMessages,
+		arg.ChatSessionID,
+		arg.BeforeCreatedAt,
+		arg.BeforeID,
+		arg.ExcludedIds,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatMessage{}
+	for rows.Next() {
+		var i ChatMessage
+		if err := rows.Scan(
+			&i.ID,
+			&i.ChatSessionID,
+			&i.Role,
+			&i.Content,
+			&i.TaskID,
+			&i.CreatedAt,
+			&i.FailureReason,
+			&i.ElapsedMs,
+			&i.MessageKind,
+			&i.ChannelMediaPendingUntil,
+			&i.ChannelIngested,
+			&i.QuickActions,
+			&i.ChannelContextRevision,
+			&i.ChannelOutboundType,
+			&i.ChannelOutboundInstallationID,
+			&i.ChannelOutboundChatID,
+			&i.ChannelOutboundMessageIds,
+			&i.ChannelTypingSettled,
+			&i.SentVia,
+			&i.DecisionAnswerID,
+			&i.LineageMessageIds,
+			&i.DecisionRequestIds,
+			&i.ClientMessageID,
+			&i.ReanchoredAt,
 		); err != nil {
 			return nil, err
 		}

@@ -387,6 +387,9 @@ func (h *Handler) writeIssueLocked(ctx context.Context, q *db.Queries, workspace
 	if err := wf.recordAuthor(ctx, q, issue); err != nil {
 		return issue, cancelledWakeups, err
 	}
+	if err := wf.recordSignerMissing(ctx, q, issue); err != nil {
+		return issue, cancelledWakeups, err
+	}
 	if err := wf.recordLeft(ctx, q, issue); err != nil {
 		return issue, cancelledWakeups, err
 	}
@@ -5266,6 +5269,9 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	if err := wf.recordAuthor(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record author: %w", err)
 	}
+	if err := wf.recordSignerMissing(ctx, qtx, issue); err != nil {
+		return db.Issue{}, current, false, fmt.Errorf("record missing signer: %w", err)
+	}
 	if err := wf.recordLeft(ctx, qtx, issue); err != nil {
 		return db.Issue{}, current, false, fmt.Errorf("record left assignee: %w", err)
 	}
@@ -5869,6 +5875,22 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	)
 	willRun = willRun && !suppressRun
 
+	// Naming the handler a hands-off step already has is a request for that
+	// step's run, not a no-op: without this the write ends with no run and no
+	// word to the caller (CHE-9895).
+	reasserted := handoff == nil && !assigneeChanged && !suppressRun &&
+		(req.AssigneeType != nil || req.AssigneeID != nil) && h.assigneeHandlesStep(r.Context(), issue)
+	if reasserted {
+		trigger, willRun = h.IssueService.WillEnqueueRun(r.Context(),
+			service.IssueTriggerInput{Issue: issue, PrevStatus: prevIssue.Status, AssigneeChanged: true, EnteredHandoffStep: true},
+			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
+		)
+	}
+	var runOutcomes []CommentTriggerOutcome
+	if reasserted && !willRun {
+		runOutcomes = h.stepRunOutcome(r.Context(), issue)
+	}
+
 	updatedPayload := map[string]any{
 		"issue":                resp,
 		"assignee_changed":     assigneeChanged,
@@ -5898,6 +5920,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if handoff != nil {
 		ran, reason := h.deferHandoffRun(r.Context(), issue, willRun, "")
+		if reason == handoffRunReasonStageQueueFull {
+			runOutcomes = append(runOutcomes, stageQueueDeferredOutcome(issue))
+		}
 		handoffPayload := workflowHandoffPayload(issue, handoff, h.workflowHandoffBrief(r.Context(), issue, handoff), ran, reason)
 		updatedPayload["workflow_handoff"] = handoffPayload
 		h.finishRecordedHandoff(r.Context(), statusRec, handoffPayload)
@@ -5970,8 +5995,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 		intentID := recIntentID(statusRec)
 		dispatchCtx = service.WithStatusHandoffComments(dispatchCtx, handoffContextIDs(statusRec, existingContext))
-		if h.dispatchIssueRun(withHandoffIntent(dispatchCtx, intentID), issue, trigger, actorType, actorID, handoffNote) && !intentID.Valid {
+		started := h.dispatchIssueRun(withHandoffIntent(dispatchCtx, intentID), issue, trigger, actorType, actorID, handoffNote)
+		if started && !intentID.Valid {
 			h.consumeHandedWakeups(r.Context(), issue.ID, handed)
+		}
+		if reasserted {
+			runOutcomes = h.reassertedRunOutcome(r.Context(), issue, started)
 		}
 	} else if statusRec != nil {
 		h.skipHandoffIntent(r.Context(), statusRec.intentID, "no_run")
@@ -6002,6 +6031,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	if statusRec != nil {
 		h.storeHandoffOperationResponse(r.Context(), statusRec.operation, resp)
 	}
+	resp.TriggerOutcomes = append(resp.TriggerOutcomes, runOutcomes...)
 	writeJSON(w, http.StatusOK, resp)
 }
 

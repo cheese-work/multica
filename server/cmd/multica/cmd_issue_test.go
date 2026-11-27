@@ -4875,14 +4875,14 @@ func TestRunIssueStatusSendsReviewFindings(t *testing.T) {
 	newDuplicateMarkTestServer(t, true, &body)
 
 	cmd := newIssueStatusTestCmd()
-	_ = cmd.Flags().Set("finding", "P1: leaks the token")
-	_ = cmd.Flags().Set("finding", "P3:naming")
+	_ = cmd.Flags().Set("finding", "P1@secret_leak: leaks the token")
+	_ = cmd.Flags().Set("finding", "P3@naming:naming")
 	if err := runIssueStatus(cmd, []string{"MUL-2", "in_progress"}); err != nil {
 		t.Fatalf("runIssueStatus: %v", err)
 	}
 	want := map[string]any{"status": "in_progress", "review_findings": []any{
-		map[string]any{"severity": "P1", "summary": "leaks the token"},
-		map[string]any{"severity": "P3", "summary": "naming"},
+		map[string]any{"severity": "P1", "summary": "leaks the token", "category": "secret_leak"},
+		map[string]any{"severity": "P3", "summary": "naming", "category": "naming"},
 	}}
 	if !reflect.DeepEqual(body, want) {
 		t.Fatalf("body = %#v, want %#v", body, want)
@@ -5036,6 +5036,52 @@ func TestRunIssueAssignNoStartSendsSuppressRun(t *testing.T) {
 	}
 	if got := body["suppress_run"]; got != true {
 		t.Fatalf("suppress_run = %#v, want true", got)
+	}
+}
+
+// CHE-9895: a deferred review handoff reaches the assigning caller, with the way to re-trigger.
+func TestRunIssueAssignPrintsDeferredStageQueueOutcome(t *testing.T) {
+	const agentID = "5fb87ac7-23b5-4a7a-81fa-ed295a54545d"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "agent_review"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/workspaces/ws-1/members":
+			json.NewEncoder(w).Encode([]map[string]any{})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/agents":
+			json.NewEncoder(w).Encode([]map[string]any{{"id": agentID, "name": "CodeBot"}})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/squads":
+			json.NewEncoder(w).Encode([]map[string]any{})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1":
+			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "agent_review",
+				"trigger_outcomes": []map[string]any{{"target_type": "agent", "target_id": agentID, "status": "deferred", "reason_code": "stage_queue_full"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	setCLITestServerEnv(t, srv.URL)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", t.TempDir())
+	t.Setenv("MULTICA_TOKEN", "mat_test-token")
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldErr, oldOut := os.Stderr, os.Stdout
+	os.Stderr = w
+	os.Stdout, _ = os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	cmd := newIssueAssignTestCmd()
+	_ = cmd.Flags().Set("to-id", agentID)
+	runErr := runIssueAssign(cmd, []string{"MUL-1"})
+	w.Close()
+	os.Stderr, os.Stdout = oldErr, oldOut
+	out, _ := io.ReadAll(r)
+	if runErr != nil {
+		t.Fatalf("runIssueAssign: %v", runErr)
+	}
+	if !strings.Contains(string(out), "queued behind a full stage") || !strings.Contains(string(out), "multica issue assign MUL-1 --to-id "+agentID) {
+		t.Fatalf("deferred outcome not printed to the caller:\n%s", out)
 	}
 }
 

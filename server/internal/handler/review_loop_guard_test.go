@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -95,7 +97,7 @@ func (l reviewLoop) newPR(t *testing.T, head string) string {
 }
 
 func finding(severity string) map[string]any {
-	return map[string]any{"severity": severity, "summary": "finding " + severity}
+	return map[string]any{"severity": severity, "summary": "finding " + severity, "category": "unverified_claim"}
 }
 
 func TestReviewLoop_ChangesVerdictWithoutP0P1IsRejected(t *testing.T) {
@@ -348,5 +350,104 @@ func TestReviewLoop_CrossIssueVerdictCannotResetTheRoundCount(t *testing.T) {
 	agentUpdateIssue(t, l.issueID, l.agentID, l.run, body).Want(http.StatusOK)
 	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "need_decision" {
 		t.Fatalf("third round from the reviewer's run: status = %q, want need_decision", status)
+	}
+}
+
+// revisionFinding is the finding the CLI sends for
+// `--finding P1@missing_test_first@revision:B`; the CLI test pins the file to
+// findingFlags output (CHE-9942 W2).
+func revisionFinding(t *testing.T) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/finding_revision.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findings []map[string]any
+	if err := json.Unmarshal(raw, &findings); err != nil || len(findings) != 1 {
+		t.Fatalf("fixture = %s, %v", raw, err)
+	}
+	return findings[0]
+}
+
+// round2 plays round 1 (CHANGES with P1 "A"), the author's fix, and the return
+// to agent_review, and leaves the review run of round 2 running. It returns the
+// author agent and that run.
+func (l reviewLoop) round2(t *testing.T) (author, run string) {
+	t.Helper()
+	author = eligibleAgent(t, "Review loop author "+workflowTestSuffix())
+	setColumnHandoff(t, l.projectID, "in_progress", handToAgent(author, "Fix the findings.")).Want(http.StatusOK)
+	l.verdict(t, "in_progress", map[string]any{"severity": "P1", "summary": "A", "category": "missing_test_first"}).Want(http.StatusOK)
+	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "in_progress" {
+		t.Fatalf("after round 1: status = %q, want in_progress", status)
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed', completed_at = now() WHERE id = $1`, l.run)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'cancelled' WHERE issue_id = $1 AND status = 'queued'`, l.issueID)
+	updateIssueForTest(t, l.issueID, map[string]any{"status": "agent_review"}).Want(http.StatusOK)
+	runs := queuedRuns(t, l.issueID)
+	if len(runs) != 1 {
+		t.Fatalf("back to agent_review queued %v, want one review run", runs)
+	}
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'running', dispatched_at = now(), started_at = now() WHERE id = $1`, runs[0].id)
+	return author, runs[0].id
+}
+
+func (l reviewLoop) queuedAuthorRuns(t *testing.T, author string) (n int) {
+	t.Helper()
+	dbfx.QueryRow(t, `SELECT count(*) FROM agent_task_queue WHERE issue_id = $1 AND agent_id = $2 AND status = 'queued'`, l.issueID, author).Scan(&n)
+	return n
+}
+
+// Round 2 with a blocker the revision introduced is accepted and sends the
+// work back: the issue moves to in_progress, the author's run is queued once,
+// and the round is recorded.
+func TestReviewLoop_SecondRoundWithRevisionBlockerQueuesTheAuthor(t *testing.T) {
+	l := newReviewLoop(t)
+	author, run := l.round2(t)
+	if n := l.queuedAuthorRuns(t, author); n != 0 {
+		t.Fatalf("author runs queued before round 2 = %d, want 0", n)
+	}
+
+	agentUpdateIssue(t, l.issueID, l.agentID, run, map[string]any{
+		"status": "in_progress", "review_findings": []map[string]any{revisionFinding(t)},
+	}).Want(http.StatusOK)
+
+	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "in_progress" {
+		t.Fatalf("after round 2: status = %q, want in_progress", status)
+	}
+	if n := l.queuedAuthorRuns(t, author); n != 1 {
+		t.Fatalf("queued author runs = %d, want 1", n)
+	}
+	var rounds int
+	dbfx.QueryRow(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_changes_requested'`, l.issueID).Scan(&rounds)
+	if rounds != 2 {
+		t.Fatalf("recorded review_changes_requested = %d, want 2 (round 1 and round 2)", rounds)
+	}
+}
+
+// Negative control: the same round-2 finding without introduced_by_revision is
+// a new blocker that round 1 did not list. It is refused and queues nothing.
+func TestReviewLoop_SecondRoundNewBlockerWithoutRevisionFlagIsRefused(t *testing.T) {
+	l := newReviewLoop(t)
+	author, run := l.round2(t)
+	f := revisionFinding(t)
+	delete(f, "introduced_by_revision")
+
+	body := agentUpdateIssue(t, l.issueID, l.agentID, run, map[string]any{
+		"status": "in_progress", "review_findings": []map[string]any{f},
+	}).Want(http.StatusBadRequest).Map()
+
+	if body["code"] != "review_round_new_blocker" {
+		t.Fatalf("refusal = %v, want code review_round_new_blocker", body)
+	}
+	if status, _, _ := issueStatusAndAssignee(t, l.issueID); status != "agent_review" {
+		t.Fatalf("status after refused verdict = %q, want agent_review", status)
+	}
+	if n := l.queuedAuthorRuns(t, author); n != 0 {
+		t.Fatalf("queued author runs = %d, want 0", n)
+	}
+	var rounds int
+	dbfx.QueryRow(t, `SELECT count(*) FROM activity_log WHERE issue_id = $1 AND action = 'review_changes_requested'`, l.issueID).Scan(&rounds)
+	if rounds != 1 {
+		t.Fatalf("recorded review_changes_requested = %d, want 1 (round 1 only)", rounds)
 	}
 }

@@ -36,6 +36,7 @@ func init() {
 		"POST /api/runtimes/{runtimeId}/models":              "asks the daemon to list models; stores a transient request and changes no configuration",
 		"POST /api/runtimes/{runtimeId}/local-skills":        "asks the daemon to list local skills; stores a transient request and changes no configuration",
 		"POST /api/projects/{id}/wakeup-definitions/preview": "resolves a proposed rule without saving it; writes nothing",
+		"POST /api/projects/workflow":                        "CHE-10137: opens one owner decision card for many project switches and writes no project; approval writes one project.workflow.update row per project in its transaction",
 		// CHE-7023: routes the v0.10.0 merge and the fork's merge gate left unclassified.
 		"PUT /api/projects/{id}/subscription":              "the caller's own notification subscription; no workspace setting, project access or agent reach changes",
 		"DELETE /api/projects/{id}/subscription":           "the caller's own notification subscription; no workspace setting, project access or agent reach changes",

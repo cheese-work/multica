@@ -117,7 +117,7 @@ func (handler *Handler) decisionVetoNoticeStep(ctx context.Context, located db.D
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return false, err
 	}
-	content := fmt.Sprintf("Decision vetoed for [%s-%d](mention://issue/%s) by %s.\nReason: %s\nOpen issue: %s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), actor, answer.VetoReason.String, util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)))
+	content := fmt.Sprintf("Decision vetoed for [%s-%d](mention://issue/%s) by %s.\nReason: %s\n%s", workspace.IssuePrefix, issue.Number, uuidToString(issue.ID), actor, answer.VetoReason.String, util.OpenIssueFooter(fmt.Sprintf("%s-%d", workspace.IssuePrefix, issue.Number), uuidToString(issue.ID)))
 	var message db.ChatMessage
 	if active {
 		message, err = queries.CreateChatMessage(ctx, db.CreateChatMessageParams{ID: dbid.NewV7(), ChatSessionID: session.ID, Role: "assistant", Content: content, MessageKind: pgtype.Text{String: "decision_veto", Valid: true}, SentVia: pgtype.Text{String: "system", Valid: true}})

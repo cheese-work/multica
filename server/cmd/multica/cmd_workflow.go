@@ -169,14 +169,20 @@ var projectWorkflowGetCmd = &cobra.Command{
 }
 
 var projectWorkflowSetCmd = &cobra.Command{
-	Use:   "set <project-id> <workflow|default>",
-	Short: "Switch the project to another workflow",
+	Use:   "set <project-id>... <workflow|default>",
+	Short: "Switch one or more projects to another workflow",
 	Long: `Switch the project to another workflow, or back to the workspace Default.
 
 Issues on statuses the new workflow does not list must be mapped with
 --map old=new. Use --dry-run to print the migration plan first. Moving issues
-this way neither reassigns them nor starts runs.`,
-	Args: exactArgs(2),
+this way neither reassigns them nor starts runs.
+
+A switch that widens a run budget needs an owner passkey. From an agent run,
+name two or more projects (up to 50) and the command opens ONE approval card
+that lists every project with its workflow and run cap before and after.
+Nothing changes until an owner approves it; then every project switches or
+none does. Projects whose switches need no approval are switched directly.`,
+	Args: cobra.MinimumNArgs(2),
 	RunE: runProjectWorkflowSet,
 }
 
@@ -1051,7 +1057,79 @@ func runProjectWorkflowGet(cmd *cobra.Command, args []string) error {
 	})
 }
 
+// runProjectWorkflowSetBatch switches several projects to one workflow. The
+// server opens one owner card for all of them; when none of the switches needs
+// the owners it answers workflow_batch_direct and the projects are switched one
+// at a time, as a single-project call does.
+func runProjectWorkflowSetBatch(cmd *cobra.Command, projectArgs []string, workflowArg string) error {
+	if dryRun, _ := cmd.Flags().GetBool("dry-run"); dryRun {
+		return fmt.Errorf("--dry-run takes one project; run it per project before the batch")
+	}
+	pairs, _ := cmd.Flags().GetStringArray("map")
+	mapping, err := parseStatusMapping(pairs)
+	if err != nil {
+		return err
+	}
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	ids := make([]string, 0, len(projectArgs))
+	for _, arg := range projectArgs {
+		ref, err := resolveProjectID(ctx, client, arg)
+		if err != nil {
+			return fmt.Errorf("resolve project %q: %w", arg, err)
+		}
+		ids = append(ids, ref.ID)
+	}
+	body := map[string]any{"project_ids": ids, "workflow_id": nil}
+	if !strings.EqualFold(strings.TrimSpace(workflowArg), "default") {
+		wf, err := resolveWorkflow(ctx, client, workflowArg)
+		if err != nil {
+			return fmt.Errorf("resolve workflow: %w", err)
+		}
+		body["workflow_id"] = strVal(wf, "id")
+	}
+	if mapping != nil {
+		body["status_mapping"] = mapping
+	}
+	var result map[string]any
+	err = client.PostJSON(ctx, "/api/projects/workflow", body, &result)
+	var httpErr *cli.HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict && strings.Contains(httpErr.Body, "workflow_batch_direct") {
+		results := make([]any, 0, len(ids))
+		for _, id := range ids {
+			single := map[string]any{"workflow_id": body["workflow_id"]}
+			if mapping != nil {
+				single["status_mapping"] = mapping
+			}
+			var one map[string]any
+			if err := client.PostJSON(ctx, "/api/projects/"+id+"/workflow", single, &one); err != nil {
+				if reported := reportMappingRequired(cmd, err); reported != nil {
+					return reported
+				}
+				return fmt.Errorf("set project workflow %s: %w", id, err)
+			}
+			results = append(results, one)
+		}
+		return cli.PrintJSON(os.Stdout, map[string]any{"switched": results})
+	}
+	if err != nil {
+		if reported := reportMappingRequired(cmd, err); reported != nil {
+			return reported
+		}
+		return fmt.Errorf("set projects workflow: %w", err)
+	}
+	return cli.PrintJSON(os.Stdout, result)
+}
+
 func runProjectWorkflowSet(cmd *cobra.Command, args []string) error {
+	if len(args) > 2 {
+		return runProjectWorkflowSetBatch(cmd, args[:len(args)-1], args[len(args)-1])
+	}
 	pairs, _ := cmd.Flags().GetStringArray("map")
 	mapping, err := parseStatusMapping(pairs)
 	if err != nil {

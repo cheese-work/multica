@@ -2803,6 +2803,7 @@ type claimRuntimeGuardTask struct {
 	PriorSessionID                string          `json:"prior_session_id"`
 	PriorWorkDir                  string          `json:"prior_work_dir"`
 	PriorSessionResumeUnavailable bool            `json:"prior_session_resume_unavailable"`
+	CheckpointBlock               string          `json:"checkpoint_block"`
 	ChatMessage                   string          `json:"chat_message"`
 	ThreadName                    string          `json:"thread_name"`
 	QuickCreateAttachmentIDs      []string        `json:"quick_create_attachment_ids"`

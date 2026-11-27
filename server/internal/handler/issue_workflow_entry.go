@@ -49,7 +49,14 @@ type workflowHandoff struct {
 	// kept is true when the issue's sticky assignee for the step won over the
 	// step handler (CHE-5490).
 	kept bool
+	// signerMissing is set when the step landed in blocked for want of a PASS
+	// signer (CHE-9318): the reason to record with the move.
+	signerMissing string
 }
+
+// errHandoffAssigneeIsNotPassSigner refuses a handoff_assignee other than the
+// PASS signer on a step that hands to the signer.
+var errHandoffAssigneeIsNotPassSigner = errors.New("handoff_assignee cannot replace the agent that signed the PASS")
 
 // errHandoffAssigneeNotApplicable refuses a handoff_assignee on a write that
 // is not a status move into a step that hands off, or that also sets the
@@ -182,6 +189,7 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 		assigneeID   pgtype.UUID
 		guard        *reviewerGuard
 		pickRefusal  error
+		signerBound  bool
 	)
 	if holdsReviewerRule(step) {
 		var err error
@@ -192,12 +200,34 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	if step.Handler.Type == issueworkflow.HandlerReviewer {
 		// The pick needs the issue's authors, so it is not ResolveHandler's.
 		var picked pgtype.UUID
-		picked, ok, pickRefusal = h.pickReviewer(ctx, q, prev, guard)
+		picked, ok, pickRefusal = h.pickReviewer(ctx, q, prev.WorkspaceID, prev.Title, guard)
 		if ok {
 			assigneeType, assigneeID = issueworkflow.HandlerAgent, picked
 		}
 	} else {
-		humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID, subjectOf(prev))
+		subject := subjectOf(prev)
+		if explicitAgentMove(prev.Status, pgtype.Text{String: entering, Valid: true}, caller) && caller.run != nil &&
+			verdictOf(def, prev.Status, entering, caller.findings) == "PASS" {
+			// Only a review of the head every linked PR stands at signs.
+			onHead, err := runHeadIsLinkedHead(ctx, q, prev.ID, caller.run)
+			if err != nil {
+				return nil, err
+			}
+			subject.PassRunOffHead = !onHead
+			if onHead {
+				subject.PassSigner = caller.run.AgentID
+			}
+		}
+		if signerBound, err = bindsPassSigner(ctx, q, step, subject); err != nil {
+			return nil, err
+		}
+		humans, err := h.workflowHumans(ctx, q, step, project, prev.WorkspaceID, prev.RequestedByID, subject)
+		var noSigner *passSignerError
+		if errors.As(err, &noSigner) && signerBound {
+			// The signer is the only route: an override or a sticky assignee
+			// cannot stand in for a missing one.
+			return h.recoverNoPassSigner(ctx, q, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller, def, entering, noSigner)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -206,6 +236,14 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	sticky, err := issueworkflow.StickyStepAssignee(ctx, q, prev.WorkspaceID, prev.ID, entering)
 	if err != nil {
 		return nil, err
+	}
+	if signerBound {
+		// The PASS signer is authoritative (CHE-9318): a sticky assignee does
+		// not replace it, and a move that names another assignee is refused.
+		sticky = nil
+		if want := (issueworkflow.StepAssignee{Type: assigneeType, ID: assigneeID}); caller.handoffAssignee != nil && *caller.handoffAssignee != want {
+			return nil, errHandoffAssigneeIsNotPassSigner
+		}
 	}
 	// A step with nobody to resolve to hands off only when the move names one
 	// or the issue keeps one for the step. A reviewer step whose table lists
@@ -219,7 +257,7 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 		}
 		return nil, pickRefusal
 	}
-	if ok && step.KeepOtherAssignee {
+	if ok && step.KeepOtherAssignee && !signerBound {
 		keep, err := h.keepsOtherAssignee(ctx, q, prev, *def, project, assigneeType, assigneeID)
 		if err != nil {
 			return nil, err
@@ -246,6 +284,37 @@ func (h *Handler) decideWorkflowHandoff(ctx context.Context, q *db.Queries, prev
 	params.AssigneeType = pgtype.Text{String: assignee.Type, Valid: true}
 	params.AssigneeID = assignee.ID
 	return &workflowHandoff{def: *def, step: step, project: project, stepHandler: stepHandler, override: overridden, kept: kept}, nil
+}
+
+// recoverNoPassSigner is the blocked recovery path of a same_as step on
+// agent_review that has no PASS signer for the exact head (CHE-9318): the move
+// lands in blocked instead, with an activity row that names why, and hands off
+// as blocked does. A workflow without a blocked step refuses the move.
+func (h *Handler) recoverNoPassSigner(ctx context.Context, q *db.Queries, prev db.Issue, params *db.UpdateIssueParams, statusExplicit, assigneeTouched, enterOnMove bool, caller workflowCaller, def *issueworkflow.Definition, entering string, cause *passSignerError) (*workflowHandoff, error) {
+	if entering == "blocked" || !def.Has("blocked") {
+		return nil, cause
+	}
+	params.Status = pgtype.Text{String: "blocked", Valid: true}
+	caller.handoffAssignee = nil // blocked is not the step the override named
+	hand, err := h.decideWorkflowHandoff(ctx, q, prev, params, statusExplicit, assigneeTouched, enterOnMove, caller)
+	if hand != nil {
+		hand.signerMissing = cause.Error() + "; moved to blocked instead of " + entering
+	}
+	return hand, err
+}
+
+// recordSignerMissing keeps why a same_as step on agent_review landed in
+// blocked, in the transaction that moves the issue.
+func (w *workflowWrite) recordSignerMissing(ctx context.Context, q *db.Queries, moved db.Issue) error {
+	if w == nil || w.handoff == nil || w.handoff.signerMissing == "" {
+		return nil
+	}
+	details, _ := json.Marshal(map[string]string{"message": w.handoff.signerMissing, "from": w.prev.Status, "to": moved.Status})
+	_, err := q.CreateActivity(ctx, db.CreateActivityParams{
+		ID: dbid.NewV7(), WorkspaceID: moved.WorkspaceID, IssueID: moved.ID, ActorType: strToText("system"),
+		Action: "review_signer_missing", Details: details,
+	})
+	return err
 }
 
 // keepsOtherAssignee reports whether a step flagged KeepOtherAssignee leaves
@@ -346,6 +415,55 @@ func (h *Handler) deferHandoffRun(ctx context.Context, issue db.Issue, willRun b
 		return false, handoffRunReasonStageQueueFull
 	}
 	return true, runReason
+}
+
+// assigneeHandlesStep reports whether the issue sits in a hands-off step of its
+// workflow that its current assignee handles.
+func (h *Handler) assigneeHandlesStep(ctx context.Context, issue db.Issue) bool {
+	if !issue.AssigneeID.Valid {
+		return false
+	}
+	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	if err != nil || def == nil {
+		return false
+	}
+	step, ok := def.Step(issue.Status)
+	return ok && step.HandsOff()
+}
+
+func assigneeOutcome(issue db.Issue, status DispatchStatus, reason DispatchReasonCode) CommentTriggerOutcome {
+	return CommentTriggerOutcome{TargetType: issue.AssigneeType.String, TargetID: uuidToString(issue.AssigneeID), Status: status, ReasonCode: reason}
+}
+
+// stageQueueDeferredOutcome tells the caller the handler's stage is full and the
+// run starts when a slot frees.
+func stageQueueDeferredOutcome(issue db.Issue) CommentTriggerOutcome {
+	return assigneeOutcome(issue, DispatchDeferred, ReasonStageQueueFull)
+}
+
+// stepRunOutcome says why naming the step's handler again starts no run: a run
+// for the step is already pending, or the PR head was already answered.
+func (h *Handler) stepRunOutcome(ctx context.Context, issue db.Issue) []CommentTriggerOutcome {
+	pending, answered := h.IssueService.StepRunCover(ctx, issue)
+	switch {
+	case pending:
+		return []CommentTriggerOutcome{assigneeOutcome(issue, DispatchCoalesced, ReasonCoalesced)}
+	case answered:
+		return []CommentTriggerOutcome{assigneeOutcome(issue, DispatchBlocked, ReasonReviewHeadAnswered)}
+	}
+	return nil
+}
+
+// reassertedRunOutcome is the caller's answer once the dispatch of a re-named
+// handler ran: queued, held by the stage queue, or failed.
+func (h *Handler) reassertedRunOutcome(ctx context.Context, issue db.Issue, started bool) []CommentTriggerOutcome {
+	if started {
+		return []CommentTriggerOutcome{assigneeOutcome(issue, DispatchQueued, ReasonQueued)}
+	}
+	if snap, err := service.LoadStageQueueSnapshot(ctx, h.Queries, issue); err == nil && snap.State == "queued" {
+		return []CommentTriggerOutcome{stageQueueDeferredOutcome(issue)}
+	}
+	return []CommentTriggerOutcome{assigneeOutcome(issue, DispatchBlocked, ReasonInternalError)}
 }
 
 // workflowStepMoved shares the step guard with the claim brief so a run is
