@@ -29,7 +29,7 @@ export interface PluginSurface {
   platforms?: string[];
 }
 
-export type PluginHookTrigger = "ui" | "manual" | "agent" | "event" | "schedule";
+export type PluginHookTrigger = "ui" | "manual" | "agent" | "event" | "schedule" | "guard";
 
 export interface PluginHookSchedule {
   cron: string;
