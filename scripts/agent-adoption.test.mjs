@@ -91,7 +91,7 @@ const agentPr = {
   author: "alice",
   body: "Agent-facing: yes\nAdoption item: pass --property on issue create",
   paths: ["server/cmd/multica/cmd_issue.go"],
-  diff: '+\tissueCreateCmd.Flags().StringArray("property", nil, "")',
+  diff: '+\tissueCreateCmd.Flags().StringArray("property", nil, "")',  mergeCommit: "c".repeat(40),
 };
 const otherAgentPr = { ...agentPr, number: 15, title: "feat(daemon): guard shim", author: "bob", body: "Agent-facing: yes\nAdoption item: no raw sleep", diff: "" };
 const plainPr = { number: 13, title: "fix(web): copy", author: "carol", body: "Agent-facing: no", paths: ["apps/web/a.tsx"], diff: "" };
@@ -429,4 +429,81 @@ test("diffFromFiles and cliDiff drop _test.go files: test fixtures are not CLI f
   assert.deepEqual(newCliFlags(diffFromFiles(files)), [{ command: "issue list", flag: "resolved" }]);
   const full = files.map((f) => `diff --git a/${f.filename} b/${f.filename}\n+++ b/${f.filename}\n${f.patch}\n`).join("");
   assert.deepEqual(newCliFlags(cliDiff(full)), [{ command: "issue list", flag: "resolved" }]);
+});
+
+// CHE-10289 (CHE-9942 W4): per-host CLI build check against the merge commits of agent-facing PRs that change CLI source.
+// Host labels come from the already-present host assertions in the body test above.
+const HOSTS_UNDER_TEST = [...new Set(buildDaily({ prev, next, prs: [agentPr] }).body.match(/^\| (\w{3}) \|/gm).map((row) => /\w{3}/.exec(row)[0]))];
+const mergeA = "079af87397" + "a".repeat(30);
+const mergeB = "1234567890" + "b".repeat(30);
+const usageDiff = 'diff --git a/server/cmd/multica/cmd_issue.go b/server/cmd/multica/cmd_issue.go\n+++ b/server/cmd/multica/cmd_issue.go\n+\tUse: "status <id> <status>",\n';
+// The PR #2139 shape: a changed usage string, no new flag. `paths` has no CLI entry because gh lists only the first 100 files.
+const usagePr = { ...agentPr, number: 2139, title: "feat(cli): finding revision", diff: usageDiff, paths: [], mergeCommit: mergeA };
+const noCliPr = { ...otherAgentPr, mergeCommit: mergeB };
+const buildSection = (body) => /## CLI build per host\n[\s\S]*?(?=\n## )/.exec(body)?.[0];
+const stripBuild = (body) =>
+  body.replace(/## CLI build per host\n[\s\S]*?\n(?=## )/, "").replace(/^Estimate: [0-9.]+ h/, "Estimate: <h>").replace(/^\d+\. Every host row in `CLI build per host`.*\n/m, "");
+
+test("W4 (a): a CLI-source PR without a new flag lists 3 host rows with its merge commit and adds the acceptance line", () => {
+  const { body } = buildDaily({ prev, next, prs: [usagePr] });
+  const section = buildSection(body);
+  assert.ok(section, "section present");
+  assert.match(section, /These PRs change CLI source: #2139 \(`079af87397`\)\. Run on each host; paste the commit and the compare result for every listed merge commit\./);
+  for (const host of HOSTS_UNDER_TEST) {
+    assert.match(section, new RegExp(`^\\| ${host} \\| \`"\\$MULTICA_CLI_PATH" version\`, then \`gh api repos/cheese-work/multica/compare/<merge>\\.\\.\\.<host commit> --jq \\.status\` \\| \`079af87397\` \\| pending \\|$`, "m"));
+  }
+  assert.equal((section.match(/^\| \w{3} \|/gm) ?? []).length, 3);
+  assert.match(section, /Pass: `ahead` or `identical` for each listed commit\. Do not apply any instruction before every host row passes\./);
+  const criteria = /## Acceptance criteria\n([\s\S]*?)(?=\n## |$)/.exec(body)[1];
+  assert.match(criteria, /^5\. Every host row in `CLI build per host` passes \(or the section is absent\) before any instruction is applied\.$/m);
+  // order: flag readback, then the build section, then the evidence section
+  assert.ok(body.indexOf("## CLI readback per host") < body.indexOf("## CLI build per host"));
+  assert.ok(body.indexOf("## CLI build per host") < body.indexOf("## Evidence and result lines"));
+  assert.match(body, /No new CLI flags in this range\. No host readback needed\./);
+});
+
+test("W4 (b): a PR with an empty CLI diff adds no section, no acceptance line and no estimate change", () => {
+  const { body } = buildDaily({ prev, next, prs: [noCliPr] });
+  assert.equal(buildSection(body), undefined);
+  assert.doesNotMatch(body, /CLI build per host/);
+  assert.equal((/## Acceptance criteria\n([\s\S]*?)$/.exec(body)[1].match(/^\d+\. /gm) ?? []).length, 4);
+  assert.match(body, /^Estimate: 1 h\n/);
+});
+
+test("W4 (c): the PR rows, flag rows and evidence section stay byte-identical; only the section, the acceptance line and the estimate differ", () => {
+  const withSection = buildDaily({ prev, next, prs: [usagePr, noCliPr] }).body;
+  const without = buildDaily({ prev, next, prs: [{ ...usagePr, diff: "" }, noCliPr] }).body;
+  assert.equal(stripBuild(withSection), stripBuild(without));
+  // with a flag row too: the flag table is unchanged and sits before the new section
+  const flagged = buildDaily({ prev, next, prs: [{ ...agentPr, mergeCommit: mergeA }] }).body;
+  const flagRows = /## CLI readback per host\n([\s\S]*?)\n## CLI build per host/.exec(flagged)[1];
+  assert.match(flagRows, /\| \w{3} \| `multica issue create --help \\\| grep -- --property` \| pending \|/);
+  assert.match(flagRows, /Do not apply any instruction before every host row reads back with its flag listed\.\n$/);
+});
+
+test("W4 (d): the estimate adds 0.5 h with the section and keeps the 2 h cap", () => {
+  const est = (prs) => Number(/^Estimate: ([0-9.]+) h/.exec(buildDaily({ prev, next, prs }).body)[1]);
+  assert.equal(est([noCliPr]), 1);
+  assert.equal(est([usagePr]), 1.5);
+  const many = (cli) => Array.from({ length: 7 }, (_, i) => ({ ...(cli ? usagePr : noCliPr), number: 100 + i }));
+  assert.equal(est(many(false)), 2);
+  assert.equal(est(many(true)), 2);
+});
+
+test("W4 (e): the trigger is the CLI diff, not paths (gh lists only 100 files of a 3000-file merge)", () => {
+  const bigMerge = { ...usagePr, number: 1834, paths: ["server/internal/foo/a.go"], mergeCommit: mergeB };
+  const section = buildSection(buildDaily({ prev, next, prs: [bigMerge] }).body);
+  assert.ok(section);
+  assert.match(section, /#1834 \(`1234567890`\)/);
+  assert.equal(buildSection(buildDaily({ prev, next, prs: [{ ...bigMerge, paths: ["server/cmd/multica/cmd_issue.go"], diff: "" }] }).body), undefined);
+});
+
+test("W4: several CLI PRs list every merge commit in the intro and in each row", () => {
+  const section = buildSection(buildDaily({ prev, next, prs: [usagePr, { ...usagePr, number: 2163, mergeCommit: mergeB }] }).body);
+  assert.match(section, /#2139 \(`079af87397`\), #2163 \(`1234567890`\)/);
+  assert.equal((section.match(/\| `079af87397`, `1234567890` \| pending \|/g) ?? []).length, 3);
+});
+
+test("W4: a CLI-source PR with no merge commit fails closed instead of printing an empty check", () => {
+  assert.throws(() => buildDaily({ prev, next, prs: [{ ...usagePr, mergeCommit: undefined }] }), /merge commit/);
 });
