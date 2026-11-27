@@ -17,16 +17,21 @@ import (
 func protectionOn() bool  { return true }
 func protectionOff() bool { return false }
 
-func (m *mergeFix) read(t *testing.T, protection CommentProtection) VerifiedSignersResult {
+func (m *mergeFix) readErr(t *testing.T, protection CommentProtection) (VerifiedSignersResult, error) {
 	t.Helper()
 	tx, err := m.f.Pool.Begin(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	got, err := VerifiedSigners(context.Background(), tx, m.f.q, MergeCandidate{
+	return VerifiedSigners(context.Background(), tx, m.f.q, MergeCandidate{
 		WorkspaceID: parseTestUUID(t, m.f.WorkspaceID), IssueID: m.issue, Owner: "fixture", Repo: "merge", Number: 9, HeadSHA: "a",
 	}, protection)
+}
+
+func (m *mergeFix) read(t *testing.T, protection CommentProtection) VerifiedSignersResult {
+	t.Helper()
+	got, err := m.readErr(t, protection)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,6 +172,20 @@ func TestVerifiedSignersPRAuthorIsNilWhenUnknown(t *testing.T) {
 	m.f.Exec(t, "UPDATE workspace SET settings=settings - 'github_review_authors' WHERE id=$1", m.f.WorkspaceID)
 	if got := m.read(t, protectionOn); got.PRAuthor != nil {
 		t.Fatalf("pr_author = %+v, want nil when the PR author is unknown", got.PRAuthor)
+	}
+}
+
+// A lookup fault must not read as an unknown author: with the author unknown the
+// author's own PASS could count as a signer.
+func TestVerifiedSignersAuthorLookupFaultReturnsNoSignerFacts(t *testing.T) {
+	m := passFixture(t)
+	m.f.Exec(t, `UPDATE workspace SET settings = jsonb_set(settings, '{github_review_authors}', '"unreadable"') WHERE id=$1`, m.f.WorkspaceID)
+	got, err := m.readErr(t, protectionOn)
+	if err == nil {
+		t.Fatalf("err = nil, want the lookup error; got %+v", got)
+	}
+	if len(got.Signers) != 0 || got.PRAuthor != nil {
+		t.Fatalf("result = %+v, want no facts on a lookup error", got)
 	}
 }
 
