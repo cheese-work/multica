@@ -407,6 +407,53 @@ func TestChatWakeupHonorsPrivateProjects(t *testing.T) {
 	}
 }
 
+// A guest sees nothing outside a project (projectaccess hides NoProject), so a
+// condition on a project-less issue must fail the access check for a guest
+// requester or guest agent owner, at creation and at every evaluation, and
+// still pass for a member.
+func TestChatWakeupHidesProjectlessIssuesFromGuests(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cond func(issue string) map[string]any
+	}{
+		{"issue status", func(issue string) map[string]any {
+			return map[string]any{"type": "issue", "issue_id": issue, "state": "done"}
+		}},
+		{"issue reply", func(issue string) map[string]any {
+			return map[string]any{"type": "issue_reply", "issue_id": issue}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newChatWakeupFixture(t)
+			ctx := context.Background()
+			person := f.fx.User(t, "Person", fmt.Sprintf("person-%d@example.test", time.Now().UnixNano()))
+			f.fx.Member(t, f.fx.WorkspaceID, person, "member")
+			f.fx.Exec(t, "UPDATE agent_task_queue SET initiator_user_id = $1 WHERE id = $2", person, util.UUIDToString(f.source.ID))
+			f.source.InitiatorUserID = util.MustParseUUID(person)
+			f.fx.Exec(t, "UPDATE agent SET owner_id = $1 WHERE id = $2", person, util.UUIDToString(f.source.AgentID))
+			issue := f.fx.Issue(t, "Project-less issue")
+			cond, _ := json.Marshal(tc.cond(issue))
+
+			// A member still gets the wakeup.
+			w := f.create(t, ChatWakeupInput{Condition: cond})
+
+			// Once the person is a guest, the same condition is refused at creation ...
+			f.fx.Exec(t, "UPDATE member SET role = 'guest' WHERE workspace_id = $1 AND user_id = $2", f.fx.WorkspaceID, person)
+			if _, err := f.svc.Create(ctx, f.source, ChatWakeupInput{Title: "Watch", Instruction: "Report it", Condition: cond}); !errors.Is(err, ErrChatWakeupInput) {
+				t.Fatalf("guest watching a project-less issue: err = %v, want an input error", err)
+			}
+			// ... and the existing one ends without delivering status or an excerpt.
+			f.fx.Exec(t, "UPDATE issue SET status = 'done' WHERE id = $1", issue)
+			f.fx.Insert(t, "comment", testutil.Cols{"workspace_id": f.fx.WorkspaceID, "issue_id": issue, "author_id": f.fx.UserID, "author_type": "member", "content": "secret excerpt"})
+			f.dueNow(t, w.ID)
+			got := f.process(t, w.ID)
+			if got.LastTaskID.Valid || got.Status != "failed" || got.EndReason.String != "access_lost" {
+				t.Fatalf("guest wakeup on a project-less issue = %+v, want failed access_lost with no turn", got)
+			}
+		})
+	}
+}
+
 func TestChatWakeupReplyGoesWhereTheRequestCameFrom(t *testing.T) {
 	ctx := context.Background()
 
