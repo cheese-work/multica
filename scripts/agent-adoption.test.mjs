@@ -127,9 +127,22 @@ test("two Adoption mode lines fail: a PR carries one", () => {
   assert.match(checkAgentFacing(yes("Adoption mode: none: a", "Adoption mode: none: b"), cliPaths)[0], /one `Adoption mode:`/);
 });
 
-test("Agent-facing: no and a non-agent-surface PR need no mode", () => {
+test("Agent-facing: no and a PR with no field on a non-agent-surface path need no mode", () => {
   assert.deepEqual(checkAgentFacing("Agent-facing: no", cliPaths), []);
-  assert.deepEqual(checkAgentFacing(yes(), ["apps/web/page.tsx"]), []);
+  assert.deepEqual(checkAgentFacing("Agent-facing: no", ["apps/web/page.tsx"]), []);
+  assert.deepEqual(checkAgentFacing("no field here", ["apps/web/page.tsx"]), []);
+});
+
+test("an explicit yes PR needs a valid mode on any path, not only on agent-surface paths", () => {
+  for (const paths of [["apps/web/page.tsx"], ["scripts/agent-adoption.mjs"], ["scripts/agent-adoption.test.mjs"]]) {
+    const [error, ...rest] = checkAgentFacing("Agent-facing: yes", paths);
+    assert.equal(rest.length, 0);
+    assert.match(error, /Adoption mode:/);
+    assert.ok(error.endsWith(RERUN), error);
+    assert.deepEqual(checkAgentFacing(yes("Adoption mode: none: web copy only"), paths), []);
+    assert.deepEqual(checkAgentFacing(yes("Adoption mode: refuse", "Adoption proof: scripts/agent-adoption.test.mjs"), [...paths, "scripts/agent-adoption.test.mjs"]), []);
+    assert.match(checkAgentFacing(yes("Adoption mode: refuse", "Adoption proof: scripts/agent-adoption.test.mjs"), paths.filter((p) => !p.endsWith("test.mjs")))[0] ?? "", /changed files/);
+  }
 });
 
 test("parseAdoptionMode reads the mode, its reason and its proof", () => {

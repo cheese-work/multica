@@ -118,8 +118,9 @@ function modeErrors(body, paths) {
 }
 
 export function checkAgentFacing(body, paths) {
-  if (!touchesAgentSurface(paths)) return [];
   const { agentFacing, adoptionItem } = parseAgentFacing(body);
+  // The path filter decides only whether the field is required; an explicit yes states a mode wherever the PR changes files.
+  if (!touchesAgentSurface(paths)) return agentFacing === "yes" ? modeErrors(body, paths).map((error) => `${error} ${RERUN}`) : [];
   const errors = !agentFacing
     ? ["This PR touches CLI commands, the agent brief or the daemon: add `Agent-facing: yes` or `Agent-facing: no` to the description."]
     : agentFacing === "yes" && !adoptionItem
