@@ -290,6 +290,13 @@ services:
       # Tool steps shown in the streamed reply: auto (default; details in
       # private chats, kind of work in groups), off, summary or detail.
       MULTICA_TELEGRAM_TOOL_PROGRESS: ${MULTICA_TELEGRAM_TOOL_PROGRESS:-}
+      # Browser lease signer and vote gate: documented in .env.example. Empty
+      # (the default) leaves each one off.
+      MULTICA_BROWSER_SIGNING_KEYS: ${MULTICA_BROWSER_SIGNING_KEYS:-}
+      MULTICA_BROWSER_GATEWAY_AUDIENCES: ${MULTICA_BROWSER_GATEWAY_AUDIENCES:-}
+      MULTICA_VOTE_GATE_LABS: ${MULTICA_VOTE_GATE_LABS:-}
+      MULTICA_VOTE_GATE_FIELDS: ${MULTICA_VOTE_GATE_FIELDS:-}
+      MULTICA_DM_PROGRESS_DELIVERY: ${MULTICA_DM_PROGRESS_DELIVERY:-}
       # Feature flags, documented in .env.example. Each is passed only when
       # set: an empty FF_ value would pin the flag off instead of leaving the
       # default. Workspace Docs is off until FF_DOCS_V1=true and live issue
