@@ -176,6 +176,8 @@ export function formatActivity(
           return t(($) => $.activity.environment_started, { name });
       }
     }
+    case "stop_not_confirmed":
+      return t(($) => $.activity.stop_not_confirmed, { taskId: details.task_id ?? "?" });
     default:
       return entry.action ?? "";
   }

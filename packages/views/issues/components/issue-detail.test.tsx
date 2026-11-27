@@ -2025,7 +2025,7 @@ describe("IssueDetail (shared)", () => {
     expect(screen.queryByText("pipeline_status")).not.toBeInTheDocument();
   });
 
-  it("opens a dialog with formatted JSON when the Metadata button is clicked", async () => {
+  it("lists the metadata entries when the Metadata section is opened", async () => {
     mockApiObj.getIssue.mockResolvedValue({
       ...mockIssue,
       metadata: {
@@ -2039,18 +2039,11 @@ describe("IssueDetail (shared)", () => {
     const button = await screen.findByRole("button", { name: /^Metadata\b/ });
     fireEvent.click(button);
 
-    // The dialog renders a <pre> containing the formatted JSON; checking the
-    // exact serialized payload also verifies the indent / structure.
-    const expected = JSON.stringify(
-      { pr_url: "https://example.com/pr/1", pipeline_status: "running" },
-      null,
-      2,
-    );
-    await waitFor(() => {
-      const pre = document.querySelector("pre");
-      expect(pre).not.toBeNull();
-      expect(pre!.textContent).toBe(expected);
-    });
+    // The section lists each entry as a key / value pair.
+    expect(await screen.findByText("pr_url")).toBeInTheDocument();
+    expect(screen.getByText("https://example.com/pr/1")).toBeInTheDocument();
+    expect(screen.getByText("pipeline_status")).toBeInTheDocument();
+    expect(screen.getByText("running")).toBeInTheDocument();
   });
 
   it("hides the Metadata button entirely when the bag is empty", async () => {
