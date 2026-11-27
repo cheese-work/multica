@@ -265,17 +265,19 @@ func (h *Handler) invokeOriginatorFromRequest(r *http.Request, actorType, actorI
 }
 
 // requestRepresentsUser reports whether a request may reach data private to
-// userID. Human credentials (JWT, mul_ PAT) carry no X-Actor-Source and always
-// do. A task token carries its runtime owner's user id whoever triggered the
-// run, so it qualifies only for a live task that this same user started, on a
-// runtime they still own. A cloud-node PAT has no task binding or human trigger
-// and never qualifies.
+// userID. Human credentials always do: an unstamped request, and the sources the
+// auth middleware stamps on a person's own credential (interactive_jwt, cli_jwt,
+// pat). The middleware rewrites the header from the verified credential, so a
+// client cannot forge one. A task token carries its runtime owner's user id
+// whoever triggered the run, so it qualifies only for a live task that this same
+// user started, on a runtime they still own. A cloud-node PAT has no task
+// binding or human trigger and never qualifies.
 //
 // A missing task or runtime is a plain (false, nil); any other lookup error is
 // returned so the caller can tell an outage from a denial.
 func (h *Handler) requestRepresentsUser(r *http.Request, userID string, workspaceID pgtype.UUID) (bool, error) {
 	switch r.Header.Get("X-Actor-Source") {
-	case "":
+	case "", "interactive_jwt", "cli_jwt", "pat":
 		return true, nil
 	case "task_token":
 	default:
