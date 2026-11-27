@@ -484,7 +484,8 @@ func TestDocCommentReplyGoesToTheAgentItAnswers(t *testing.T) {
 }
 
 // The run list shows each run's state to every doc reader, but its error and
-// the way to stop it only to those who can see the agent.
+// the agent's identity, failure reason and the way to stop it only to those
+// who can see the agent.
 func TestDocTaskRunsHideDetailsOfAgentsTheViewerCannotSee(t *testing.T) {
 	doc := createDocForTest(t)
 	t.Cleanup(func() {
@@ -515,7 +516,7 @@ func TestDocTaskRunsHideDetailsOfAgentsTheViewerCannotSee(t *testing.T) {
 		return out.Tasks
 	}
 	for _, run := range list(colleague) {
-		if run.Error != nil || run.CanCancel {
+		if run.Error != nil || run.CanCancel || run.AgentID != "" || run.FailureReason != "" {
 			t.Fatalf("a member who cannot see the agent got its details: %+v", run)
 		}
 		if run.Status == "" || run.DocThreadID != thread {
@@ -524,6 +525,9 @@ func TestDocTaskRunsHideDetailsOfAgentsTheViewerCannotSee(t *testing.T) {
 	}
 	var sawError, canStop bool
 	for _, run := range list(testUserID) {
+		if run.AgentID != private {
+			t.Fatalf("the agent's owner sees which agent ran: %+v", run)
+		}
 		sawError = sawError || run.Error != nil
 		canStop = canStop || (run.Status == "running" && run.CanCancel)
 	}
