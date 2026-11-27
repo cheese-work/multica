@@ -258,8 +258,8 @@ func TestRunBudgetIssueEnqueueFinishesOnOneConnectionPool(t *testing.T) {
 	}
 }
 
-// waitForLockWaiters blocks until n backends of this test database wait on a lock.
-func waitForLockWaiters(t *testing.T, n int) {
+// waitForAnyLockWaiters blocks until n backends of this test database wait on a lock.
+func waitForAnyLockWaiters(t *testing.T, n int) {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -294,7 +294,7 @@ func TestRunBudgetOverlappingRaisesCreditTheFinalCapOnce(t *testing.T) {
 	codes := make(chan int, 2)
 	for i, runs := range []int{50, 60} {
 		go func() { codes <- raiseBudget(t, c.issueID, map[string]any{"runs": runs}, nil).Code }()
-		waitForLockWaiters(t, i+1)
+		waitForAnyLockWaiters(t, i+1)
 	}
 	if err := hold.Rollback(ctx); err != nil {
 		t.Fatal(err)

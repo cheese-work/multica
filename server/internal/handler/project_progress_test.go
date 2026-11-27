@@ -16,7 +16,7 @@ func builtInCategory(status string) string {
 	return category
 }
 
-func day(s string) time.Time {
+func progressDay(s string) time.Time {
 	t, err := time.Parse("2006-01-02", s)
 	if err != nil {
 		panic(err)
@@ -25,22 +25,22 @@ func day(s string) time.Time {
 }
 
 func TestBuildProjectProgressHistoryReplaysStatusChanges(t *testing.T) {
-	now := day("2026-11-09").Add(15 * time.Hour)
+	now := progressDay("2026-11-09").Add(15 * time.Hour)
 	issues := []progressIssue{
 		// Done on Oct 20, after starting on Oct 14.
-		{status: "done", createdAt: day("2026-10-12"), changes: []progressStatusChange{
-			{at: day("2026-10-14").Add(time.Hour), from: "todo"},
-			{at: day("2026-10-20").Add(time.Hour), from: "in_progress"},
+		{status: "done", createdAt: progressDay("2026-10-12"), changes: []progressStatusChange{
+			{at: progressDay("2026-10-14").Add(time.Hour), from: "todo"},
+			{at: progressDay("2026-10-20").Add(time.Hour), from: "in_progress"},
 		}},
 		// Created on Oct 30, still open.
-		{status: "todo", createdAt: day("2026-10-30")},
+		{status: "todo", createdAt: progressDay("2026-10-30")},
 		// Cancelled on Nov 3: in scope before, out of scope after.
-		{status: "cancelled", createdAt: day("2026-10-12"), changes: []progressStatusChange{
-			{at: day("2026-11-03").Add(time.Hour), from: "backlog"},
+		{status: "cancelled", createdAt: progressDay("2026-10-12"), changes: []progressStatusChange{
+			{at: progressDay("2026-11-03").Add(time.Hour), from: "backlog"},
 		}},
 	}
 
-	got := buildProjectProgressHistory(issues, builtInCategory, day("2026-10-12"), now)
+	got := buildProjectProgressHistory(issues, builtInCategory, progressDay("2026-10-12"), now)
 	want := []ProjectProgressPoint{
 		{Date: "2026-10-12", Scope: 2, Started: 0, Completed: 0},
 		{Date: "2026-10-19", Scope: 2, Started: 1, Completed: 0},
@@ -59,20 +59,20 @@ func TestBuildProjectProgressHistoryReplaysStatusChanges(t *testing.T) {
 }
 
 func TestProjectProgressWindowStartCapsAtAYear(t *testing.T) {
-	now := day("2026-11-09")
-	if got := projectProgressWindowStart(day("2020-01-01"), now); !got.Equal(now.AddDate(0, 0, -7*projectProgressMaxWeeks)) {
+	now := progressDay("2026-11-09")
+	if got := projectProgressWindowStart(progressDay("2020-01-01"), now); !got.Equal(now.AddDate(0, 0, -7*projectProgressMaxWeeks)) {
 		t.Fatalf("old project window = %s", got)
 	}
-	if got := projectProgressWindowStart(day("2027-01-01"), now); !got.Equal(now) {
+	if got := projectProgressWindowStart(progressDay("2027-01-01"), now); !got.Equal(now) {
 		t.Fatalf("future start window = %s, want today", got)
 	}
-	if got := projectProgressWindowStart(day("2026-10-12").Add(9*time.Hour), now); !got.Equal(day("2026-10-12")) {
+	if got := projectProgressWindowStart(progressDay("2026-10-12").Add(9*time.Hour), now); !got.Equal(progressDay("2026-10-12")) {
 		t.Fatalf("window = %s, want start day", got)
 	}
 }
 
 func TestForecastProjectCompletion(t *testing.T) {
-	now := day("2026-11-09").Add(10 * time.Hour)
+	now := progressDay("2026-11-09").Add(10 * time.Hour)
 	history := []ProjectProgressPoint{
 		{Date: "2026-10-12", Scope: 6, Completed: 0},
 		{Date: "2026-10-19", Scope: 8, Completed: 1},
