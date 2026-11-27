@@ -40,15 +40,26 @@ type VerifiedSignersResult struct {
 // VerifiedSigners reads the distinct agents whose trusted PASS stands on c's
 // exact head, the PR author, and whether comment protection is on (CHE-10267).
 // The author comes from the workspace binding or the task that opened the PR,
-// as the merge facts read it; an unknown author is nil. It reads one
+// as the merge facts read it. An author that does not exist (no rows) is nil;
+// any other lookup error is returned, with no signer facts. It reads one
 // transaction and calls no network.
 func VerifiedSigners(ctx context.Context, tx pgx.Tx, q *db.Queries, c MergeCandidate, protection CommentProtection) (VerifiedSignersResult, error) {
 	var authorID pgtype.UUID
 	if q != nil {
-		if pull, err := q.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{WorkspaceID: c.WorkspaceID, RepoOwner: c.Owner, RepoName: c.Repo, PrNumber: c.Number}); err == nil {
-			if author, err := GitHubPullRequestAuthor(ctx, q, pull); err == nil {
+		pull, err := q.GetGitHubPullRequest(ctx, db.GetGitHubPullRequestParams{WorkspaceID: c.WorkspaceID, RepoOwner: c.Owner, RepoName: c.Repo, PrNumber: c.Number})
+		switch {
+		case err == nil:
+			author, aerr := GitHubPullRequestAuthor(ctx, q, pull)
+			switch {
+			case aerr == nil:
 				authorID = author.ID
+			case !errors.Is(aerr, pgx.ErrNoRows):
+				// A lookup fault is not an unknown author: counting signers without
+				// the author could count the author as a signer.
+				return VerifiedSignersResult{}, aerr
 			}
+		case !errors.Is(err, pgx.ErrNoRows):
+			return VerifiedSignersResult{}, err
 		}
 	}
 	out, err := verifiedSigners(ctx, tx, c.WorkspaceID, c.IssueID, c.HeadSHA, authorID)
