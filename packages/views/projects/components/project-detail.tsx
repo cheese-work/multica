@@ -494,7 +494,8 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           handleTabChange("activity");
         }}
       />
-      <ProjectWakeupsSection projectId={projectId} canManage={isWorkspaceAdmin} />
+      {/* A guest (MUL-9420) is refused project wakeup rules. */}
+      {!guest && <ProjectWakeupsSection projectId={projectId} canManage={isWorkspaceAdmin} />}
     </div>
   );
 

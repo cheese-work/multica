@@ -20,6 +20,8 @@ import { MachinePauseBanner } from "./machine-pause-banner";
 import { MachineBannerHeaderSlot } from "./machine-banner-toggle";
 import { WorkspacePauseBanner } from "./workspace-pause-banner";
 import { OpenDecisionsChip } from "./open-decisions-chip";
+import { useIsGuest } from "@multica/core/permissions";
+import { useCurrentWorkspace } from "@multica/core/paths";
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -41,6 +43,24 @@ export function AppShellCard({ children }: { children: ReactNode }) {
       <SpacePanel />
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">{children}</div>
     </main>
+  );
+}
+
+/**
+ * The shell's banners. A guest (MUL-9420) is refused the fork's affected-machine
+ * and open-decision endpoints, so the machine banner, its header toggle and the
+ * open-decisions chip stay out of a guest's shell.
+ */
+function MemberShellBanners({ children }: { children: ReactNode }) {
+  const guest = useIsGuest(useCurrentWorkspace()?.id);
+  return (
+    <>
+      {!guest && <MachinePauseBanner />}
+      <WorkspacePauseBanner />
+      {!guest && <OpenDecisionsChip />}
+      <WorkspaceTrialNotices />
+      {guest ? children : <MachineBannerHeaderSlot>{children}</MachineBannerHeaderSlot>}
+    </>
   );
 }
 
@@ -76,11 +96,7 @@ export function DashboardLayout({
               <div className="flex min-w-0 flex-1 flex-col">
                 <AppShellCard>
                   <NavigationProgress />
-                  <MachinePauseBanner />
-                  <WorkspacePauseBanner />
-                  <OpenDecisionsChip />
-                  <WorkspaceTrialNotices />
-                  <MachineBannerHeaderSlot>{children}</MachineBannerHeaderSlot>
+                  <MemberShellBanners>{children}</MemberShellBanners>
                   <ModalRegistry />
                   <SourceBackfillModal />
                   {extra}

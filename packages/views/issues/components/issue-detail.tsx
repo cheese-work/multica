@@ -5271,7 +5271,8 @@ export function IssueDetail({ issueId, onDelete, inbox, defaultSidebarOpen = tru
             );
           })()}
 
-          <IssueDecisionBanner issueId={id} status={issue.status} ownerAgentId={issue.assignee_type === "agent" ? issue.assignee_id : null} />
+          {/* A guest (MUL-9420) is refused the decision endpoints behind this banner. */}
+          {!guest && <IssueDecisionBanner issueId={id} status={issue.status} ownerAgentId={issue.assignee_type === "agent" ? issue.assignee_id : null} />}
 
           <div className="my-8 border-t" />
 
