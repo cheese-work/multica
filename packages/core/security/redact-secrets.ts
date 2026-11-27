@@ -12,6 +12,12 @@ const patterns = (
 ).map(({ pattern, flags, replacement }) => ({ re: new RegExp(pattern, `${flags}g`), replacement }));
 
 const genericCredentialPattern = /(?:API_KEY|API_SECRET|SECRET_KEY|SECRET|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL|PASSWORD|TOKEN)\s*[=:]\s*/gi;
+// Prose-safe subset of the keyword rule. Agent prose says "the password field" and
+// "| Token: input, output |", so a bare keyword never triggers. It needs an
+// assignment shape: compound names (API_KEY, DB_PASSWORD) with "=" or ":", a bare
+// keyword glued to "=", or a bare keyword with ":" followed by a secret-looking
+// token (8+ chars with a digit).
+const proseCredentialPattern = /(?:API_KEY|API_SECRET|SECRET_KEY|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL)[ \t]*[=:][ \t]*|(?:SECRET|PASSWORD|TOKEN)=|(?:SECRET|PASSWORD|TOKEN)[ \t]*:[ \t]*(?=\S*\d)(?=\S{8})/gi;
 const credentialReferencePattern = /^(?:\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})|<[A-Za-z_][A-Za-z0-9_-]*>|\*{3,})/;
 
 function credentialReferenceLength(value: string): number {
@@ -64,10 +70,10 @@ function isCredentialReference(input: string): boolean {
   return rest.length === 0 || " \t\r\n\f;|&".includes(rest[0]!);
 }
 
-function redactGenericCredentials(text: string): string {
+function redactGenericCredentials(text: string, pattern = genericCredentialPattern): string {
   const parts: string[] = [];
   let end = 0;
-  for (const match of text.matchAll(genericCredentialPattern)) {
+  for (const match of text.matchAll(pattern)) {
     if (match.index < end) continue;
     const value = text.slice(match.index + match[0].length);
     const literal = /^\S+/.exec(value)?.[0];
@@ -81,8 +87,7 @@ function redactGenericCredentials(text: string): string {
   return parts.join("");
 }
 
-/** Provider-token rules only: for agent prose, where a keyword rule would mangle ordinary sentences. */
-export function redactProse(text: string): string {
+function redactProviderTokens(text: string): string {
   let result = text;
   for (const { re, replacement } of patterns) {
     result = result.replace(re, replacement);
@@ -90,9 +95,14 @@ export function redactProse(text: string): string {
   return result;
 }
 
-/** Provider-token rules plus the keyword rule: for machine output (tool input, output, errors). */
+/** Provider-token rules plus the prose-safe credential rule: for agent prose, where the full keyword rule would mangle ordinary sentences. */
+export function redactProse(text: string): string {
+  return redactGenericCredentials(redactProviderTokens(text), proseCredentialPattern);
+}
+
+/** Provider-token rules plus the full keyword rule: for machine output (tool input, output, errors). */
 export function redactSecrets(text: string): string {
-  return redactGenericCredentials(redactProse(text));
+  return redactGenericCredentials(redactProviderTokens(text));
 }
 
 /** Pick the rule set by transcript item type; only `text` and `thinking` are agent prose. */
