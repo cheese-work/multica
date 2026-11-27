@@ -102,8 +102,9 @@ func (h *Handler) triggerDocCommentAgents(r *http.Request, doc db.Doc, root db.D
 }
 
 // DocTaskRunResponse is what a discussion shows of an agent's run on it: its
-// state, and whether the viewer may stop it. A run's error is shown only to
-// those who can see the agent, as its other run surfaces do.
+// state, and whether the viewer may stop it. A run's agent, failure reason and
+// error are shown only to those who can see the agent, as its other run
+// surfaces do; the others get an empty agent_id.
 type DocTaskRunResponse struct {
 	ID            string                 `json:"id"`
 	AgentID       string                 `json:"agent_id"`
@@ -145,19 +146,20 @@ func (h *Handler) ListDocTaskRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := make([]DocTaskRunResponse, len(rows))
 	for i, t := range rows {
+		agentID := uuidToString(t.AgentID)
 		run := DocTaskRunResponse{
 			ID:          uuidToString(t.ID),
-			AgentID:     uuidToString(t.AgentID),
 			DocThreadID: uuidToString(t.DocThreadID),
 			Status:      t.Status,
 			CancelledBy: taskCancellationActorToResponse(t),
 			CreatedAt:   timestampToString(t.CreatedAt),
 			CompletedAt: timestampToPtr(t.CompletedAt),
 		}
-		if t.FailureReason.Valid {
-			run.FailureReason = t.FailureReason.String
-		}
-		if canSee(run.AgentID) {
+		if canSee(agentID) {
+			run.AgentID = agentID
+			if t.FailureReason.Valid {
+				run.FailureReason = t.FailureReason.String
+			}
 			run.Error = textToPtr(t.Error)
 			switch t.Status {
 			case "queued", "dispatched", "running", "waiting_local_directory", "deferred":
