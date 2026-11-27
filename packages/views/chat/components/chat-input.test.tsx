@@ -7,6 +7,7 @@ import type { DraftUpload } from "@multica/core/drafts";
 import enCommon from "../../locales/en/common.json";
 import enChat from "../../locales/en/chat.json";
 import enEditor from "../../locales/en/editor.json";
+import enIssues from "../../locales/en/issues.json";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
 import type { ReplyAnnotation } from "@multica/core/drafts/reply-annotation";
 import type { ChatMessage } from "@multica/core/types";
@@ -72,7 +73,7 @@ function makeUpload(overrides: Partial<UploadResult> & { id: string; link: strin
   };
 }
 
-const TEST_RESOURCES = { en: { common: enCommon, chat: enChat, editor: enEditor } };
+const TEST_RESOURCES = { en: { common: enCommon, chat: enChat, editor: enEditor, issues: enIssues } };
 
 // Track drop-zone callbacks so the test can simulate a real drop.
 const dropHandlers = vi.hoisted(() => ({

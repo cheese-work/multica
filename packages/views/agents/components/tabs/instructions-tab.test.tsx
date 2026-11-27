@@ -139,12 +139,12 @@ describe("InstructionsTab", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const second = renderWithI18n(tab(agent, onSave));
     const user = userEvent.setup();
-    expect(screen.getByLabelText("System prompt")).toHaveValue("Half-written prompt");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Half-written prompt");
 
     await user.click(screen.getByRole("button", { name: "Save" }));
     second.unmount();
     renderWithI18n(tab(agent));
-    expect(screen.getByLabelText("System prompt")).toHaveValue("Review carefully.");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Review carefully.");
   });
 
   it("keeps the edit when the save fails, and drops it on discard", async () => {
@@ -156,11 +156,11 @@ describe("InstructionsTab", () => {
     first.unmount();
 
     const second = renderWithI18n(tab(agent));
-    expect(screen.getByLabelText("System prompt")).toHaveValue("Will not save");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Will not save");
     await user.click(screen.getByRole("button", { name: "Discard" }));
     second.unmount();
     renderWithI18n(tab(agent));
-    expect(screen.getByLabelText("System prompt")).toHaveValue("Review carefully.");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("Review carefully.");
   });
 
   it("keeps an edit typed while an earlier save is still in flight", async () => {
@@ -170,11 +170,11 @@ describe("InstructionsTab", () => {
     const first = renderWithI18n(tab(agent, onSave));
     const user = await typeInstructions("First version");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    await user.type(screen.getByLabelText("System prompt"), " plus newer");
+    await user.type(screen.getByLabelText("Instructions"), " plus newer");
     await act(async () => resolveSave());
     first.unmount();
 
     renderWithI18n(tab(agent));
-    expect(screen.getByLabelText("System prompt")).toHaveValue("First version plus newer");
+    expect(screen.getByLabelText("Instructions")).toHaveValue("First version plus newer");
   });
 });

@@ -53,6 +53,7 @@ export function WakeupFields({
   update,
   scope,
   assigneeAgentId,
+  runnableAgentsOnly = false,
   onBusy,
 }: {
   draft: WakeupDraft;
@@ -60,6 +61,8 @@ export function WakeupFields({
   scope: WakeupScope;
   /** The issue's agent assignee, when the scope is an issue that has one. */
   assigneeAgentId: string | null;
+  /** Offer only agents the member can wake (an issue wakeup is refused otherwise). */
+  runnableAgentsOnly?: boolean;
   onBusy?: (busy: boolean) => void;
 }) {
   const { t } = useT("issues");
@@ -81,6 +84,7 @@ export function WakeupFields({
             value={draft.agentId}
             onChange={(agentId) => update({ agentId })}
             placeholder={t(($) => $.wakeups.create.choose_agent)}
+            runnableOnly={runnableAgentsOnly}
           />
         </div>
       </div>

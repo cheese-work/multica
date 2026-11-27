@@ -14,6 +14,7 @@ vi.mock("@multica/core/api", () => ({ api: {
 } }));
 vi.mock("@multica/core/workspace/hooks", () => ({ useActorName: () => ({ getActorName: () => "Cheese" }) }));
 vi.mock("@multica/core/paths", () => ({
+  issueRouteRef: ({ id, identifier }: { id: string; identifier: string | null }) => identifier || id,
   useWorkspaceSlug: () => "cheese-work",
   paths: { workspace: () => ({ issueDetail: (issue: string) => `/cheese-work/issues/${issue}` }) },
 }));

@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { paths, useWorkspaceSlug } from "@multica/core/paths";
+import { issueRouteRef, paths, useWorkspaceSlug } from "@multica/core/paths";
 import { openDecisionRequestsOptions } from "@multica/core/chat/queries";
 import { useT } from "../i18n";
 import { AppLink, useNavigation } from "../navigation";
@@ -22,7 +22,7 @@ export function OpenDecisionsChip() {
   const oldest = [...data].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))[0]!;
   // The identifier, not the UUID: a UUID link is rewritten to the identifier
   // after load, which remounts the issue page and throws the landing away.
-  const issue = paths.workspace(slug).issueDetail(oldest.issue_identifier || oldest.issue_id);
+  const issue = paths.workspace(slug).issueDetail(issueRouteRef({ id: oldest.issue_id, identifier: oldest.issue_identifier }));
   const href = oldest.source_comment_id ? `${issue}#comment-${oldest.source_comment_id}` : issue;
   return (
     <AppLink

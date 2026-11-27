@@ -8,7 +8,10 @@ import type { HierarchyIssue } from "./hierarchy-model";
 
 const push = vi.hoisted(() => vi.fn());
 const state = vi.hoisted(() => ({ loading: false, levels: {} as Record<number, { nodes: unknown[]; status: string }>, expand: vi.fn() }));
-vi.mock("@multica/core/paths", () => ({ useWorkspacePaths: () => ({ issueDetail: (id: string) => `/issues/${id}` }) }));
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/paths")>()),
+  useWorkspacePaths: () => ({ issueDetail: (id: string) => `/issues/${id}` }),
+}));
 vi.mock("../../../navigation", () => ({
   useNavigation: () => ({ push }),
   AppLink: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => <a href={href} {...props}>{children}</a>,

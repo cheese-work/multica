@@ -158,7 +158,7 @@ describe("HelpLauncher", () => {
 
   it("links Change log to the brand site when no app URL is configured", () => {
     render(<HelpLauncher />);
-    expect(screen.getByRole("link", { name: /Change log/ })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /Changelog/ })).toHaveAttribute(
       "href",
       "https://multica.ai/changelog",
     );
@@ -169,7 +169,7 @@ describe("HelpLauncher", () => {
   it("links Change log to the origin the visitor is on, not the configured app URL", () => {
     configStore.setState({ daemonAppUrl: "https://multica.example.com:19443/" });
     render(<HelpLauncher />);
-    expect(screen.getByRole("link", { name: /Change log/ })).toHaveAttribute(
+    expect(screen.getByRole("link", { name: /Changelog/ })).toHaveAttribute(
       "href",
       `${window.location.origin}/changelog`,
     );

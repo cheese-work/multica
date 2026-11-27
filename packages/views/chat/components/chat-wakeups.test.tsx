@@ -213,7 +213,9 @@ describe("ChatQueue wakeup turns", () => {
           { task_id: "t-2", status: "queued", created_at: "", wakeup_id: "w-gone" },
         ]}
         wakeups={[wakeup({ id: "w-1", title: "PR #42 merged" })]}
-        onSendNow={vi.fn()}
+        headSupplement="capable"
+        onSteer={vi.fn()}
+        onStopAndSend={vi.fn()}
         onEdit={vi.fn()}
         onRemove={vi.fn()}
         onClear={vi.fn()}

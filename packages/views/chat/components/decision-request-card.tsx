@@ -11,6 +11,7 @@ import {
   decisionAnswerDraftKey,
   useDecisionAnswerDraftStore,
 } from "@multica/core/issues/stores/decision-answer-draft-store";
+import { useReducedMotion } from "@multica/core/appearance";
 import { usePersistedDraft, useUploadCancelledNotice } from "@multica/core/drafts";
 import { approvableConfigChange, approvablePreview, isConfigChangeActionType, isRunBudgetActionType } from "@multica/core/issues/decision-action-preview";
 import { useCurrentMember } from "@multica/core/permissions";
@@ -536,7 +537,6 @@ const SUMMARIZED = new Set(["approved", "rejected", "expired", "revoked"]);
 const COLLAPSE_MS = 240;
 const EXPAND_MS = 200;
 const RING_MS = 600;
-const reducedMotion = () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 // The folded row names the question: the first line of the ask, markdown marks dropped.
 // A proposal opens with the fixed "Proposed action" heading; its question is the template title below it.
@@ -563,7 +563,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   // first paint has nothing to animate; a later change of state runs the CSS transition.
   const [expanded, setExpanded] = useState(false);
   const folded = FOLDS.has(shown) && !expanded;
-  const reduced = reducedMotion();
+  const reduced = useReducedMotion();
   const toggleRef = useRef<HTMLButtonElement>(null);
   const [ring, setRing] = useState(false);
   const wasFolded = useRef(FOLDS.has(shown));
@@ -763,7 +763,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         <ul className="min-w-0 space-y-1 break-words border-b px-3 py-2 text-xs" data-testid="decision-request-covered-list">
           {card.covered_cards.map((covered) => (
             <li key={covered.id} data-testid="decision-request-covered-item">
-              <AppLink href={paths.issueDetail(covered.issue_id)} className="font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring">
+              <AppLink href={paths.issueDetail(issueRouteRef({ id: covered.issue_id, identifier: null }))} className="font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring">
                 {covered.issue_identifier || covered.issue_id}
               </AppLink>
               {covered.issue_title && <span className="text-muted-foreground">{` ${covered.issue_title}`}</span>}

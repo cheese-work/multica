@@ -1,5 +1,5 @@
 import { MessageSquareQuote } from "@multica/ui/icons";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useWorkspacePaths } from "@multica/core/paths";
 import type { DecisionRequestCard } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
@@ -7,7 +7,7 @@ import { AppLink } from "../../navigation";
 export function DecisionWithdrawalCard({ card }: { card: DecisionRequestCard }) {
   const { t } = useT("chat");
   const paths = useWorkspacePaths();
-  const issueHref = paths.issueDetail(card.issue_id);
+  const issueHref = paths.issueDetail(issueRouteRef({ id: card.issue_id, identifier: null }));
   const href = card.source_comment_id ? `${issueHref}#comment-${card.source_comment_id}` : issueHref;
   const label = t(($) => $.decision.withdrawn_in, { issue: card.issue_identifier || card.issue_id });
 

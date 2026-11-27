@@ -3,7 +3,7 @@
 import { Bell, BellOff, Clock3, Hourglass, ListChecks, RefreshCw, TriangleAlert } from "@multica/ui/icons";
 import { useQuery } from "@tanstack/react-query";
 import { issueTasksOptions } from "@multica/core/issues/queries";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useWorkspacePaths } from "@multica/core/paths";
 import type { TimelineEntry, WakeupCondition, WakeupPausedReason, WakeupPreview } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
@@ -305,7 +305,7 @@ export function WakeupActivityLinks({ entry, issueId, getActorName }: { entry: T
         </a>
       )}
       {commentId && (
-        <AppLink href={`${paths.issueDetail(issueId)}#comment-${commentId}`} className={link} data-testid="wakeup-activity-comment-link">
+        <AppLink href={`${paths.issueDetail(issueRouteRef({ id: issueId, identifier: null }))}#comment-${commentId}`} className={link} data-testid="wakeup-activity-comment-link">
           {t(($) => $.activity.wakeup_link_comment)}
         </AppLink>
       )}

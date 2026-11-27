@@ -31,6 +31,7 @@ vi.mock("@multica/core/api", async (importOriginal) => ({
     getAgentTaskSnapshot: vi.fn().mockResolvedValue([]),
     listMembers: vi.fn().mockResolvedValue([]),
     listRuntimeProfiles: vi.fn().mockResolvedValue([]),
+    getActiveUpdate: vi.fn().mockResolvedValue(null),
   },
 }));
 vi.mock("../../navigation", async (importOriginal) => ({

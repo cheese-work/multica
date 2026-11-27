@@ -87,6 +87,11 @@ const h = vi.hoisted(() => {
   };
 });
 
+const upsertMessage = vi.hoisted(() => vi.fn());
+vi.mock("@multica/core/chat/message-cache", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/chat/message-cache")>()),
+  upsertChatMessageToCaches: upsertMessage,
+}));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/platform", () => ({
   getCurrentWsId: () => "ws-1",
@@ -1327,21 +1332,23 @@ describe("useChatController.handleSend — compose target tracking", () => {
       created_at: "2026-01-01T00:00:00Z", message_created_at: "2026-01-01T00:01:00Z",
     });
     h.queryClient.setQueryData.mockClear();
+    upsertMessage.mockClear();
     const { send, commitInput } = sendFrom("sA");
     await send();
     expect(h.queryClient.setQueryData.mock.calls.filter(([key]) =>
       JSON.stringify(key) === JSON.stringify(chatKeys.pendingTask("sA"))))
       .toHaveLength(0);
-    const cacheWrite = h.queryClient.setQueryData.mock.calls.find(([key]) =>
-      JSON.stringify(key) === JSON.stringify(chatKeys.messages("sA")));
-    expect(cacheWrite).toBeDefined();
-    expect(cacheWrite![1](undefined)).toEqual([
+    // The fork writes through the message-cache door, keyed by the root input owner.
+    expect(upsertMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      "sA",
       expect.objectContaining({
         id: "guidance",
         task_id: "root-task",
         created_at: "2026-01-01T00:01:00Z",
       }),
-    ]);
+      expect.anything(),
+    );
     expect(commitInput).toHaveBeenCalled();
     expect(api.cancelTaskById).not.toHaveBeenCalled();
   });

@@ -110,6 +110,8 @@ describe("RouteDataPrefetch", () => {
 
   it("waits for the page's own requests, then for a quiet period", async () => {
     let finish: (value: string) => void = () => {};
+    // These tests need a real in-flight fetch, so undo the issue-fetch stub.
+    vi.mocked(qc.fetchQuery).mockRestore();
     renderLinks();
     void qc.fetchQuery({
       queryKey: ["page-data"],
@@ -137,6 +139,7 @@ describe("RouteDataPrefetch", () => {
     });
     vi.stubGlobal("cancelIdleCallback", (id: number) => idle.delete(id));
     let finish: (value: string) => void = () => {};
+    vi.mocked(qc.fetchQuery).mockRestore();
     renderLinks();
 
     // The quiet period ends: the idle callback is queued but has not run yet.

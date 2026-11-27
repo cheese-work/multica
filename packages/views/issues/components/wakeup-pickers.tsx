@@ -4,6 +4,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Bot, ChevronDown } from "@multica/ui/icons";
 import { isAgentRuntimeBound } from "@multica/core/agents";
+import { canAssignAgentToIssue, useCurrentMember } from "@multica/core/permissions";
 import { agentListOptions, memberListOptions, squadListOptions } from "@multica/core/workspace/queries";
 import { cn } from "@multica/ui/lib/utils";
 import {
@@ -95,23 +96,44 @@ function useMatches() {
   return { setFilter, matches };
 }
 
+/**
+ * Agents this member can wake. The server refuses a wakeup whose agent is
+ * archived, has no runtime, or that the member may not invoke; the assignee
+ * picker lists agents by the same rule.
+ */
+export function useRunnableAgents(workspaceId: string) {
+  const { data = [] } = useQuery(agentListOptions(workspaceId));
+  const { userId, role } = useCurrentMember(workspaceId);
+  return useMemo(
+    () =>
+      data.filter(
+        (a) => !a.archived_at && isAgentRuntimeBound(a) && canAssignAgentToIssue(a, { userId, role }).allowed,
+      ),
+    [data, userId, role],
+  );
+}
+
 export function AgentChoice({
   workspaceId,
   value,
   onChange,
   placeholder,
   allowAny = false,
+  runnableOnly = false,
 }: {
   workspaceId: string;
   value: string;
   onChange: (id: string) => void;
   placeholder: string;
   allowAny?: boolean;
+  /** List only agents this member can wake; otherwise any unarchived agent. */
+  runnableOnly?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const { setFilter, matches } = useMatches();
   const { data = [] } = useQuery(agentListOptions(workspaceId));
-  const agents = useMemo(() => data.filter((a) => !a.archived_at), [data]);
+  const runnable = useRunnableAgents(workspaceId);
+  const agents = useMemo(() => (runnableOnly ? runnable : data.filter((a) => !a.archived_at)), [runnableOnly, runnable, data]);
   const selected = agents.find((a) => a.id === value);
   const pick = (id: string) => {
     onChange(id);
@@ -153,7 +175,7 @@ export function AgentChoice({
             <PickerItem
               key={a.id}
               selected={a.id === value}
-              disabled={!allowAny && !isAgentRuntimeBound(a)}
+              disabled={!runnableOnly && !allowAny && !isAgentRuntimeBound(a)}
               onClick={() => pick(a.id)}
             >
               <ActorAvatar actorType="agent" actorId={a.id} size="sm" showStatusDot />
