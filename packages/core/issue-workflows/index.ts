@@ -1,6 +1,7 @@
 export {
   issueWorkflowKeys,
   issueWorkflowListOptions,
+  issueWorkflowLintOptions,
   resolveProjectWorkflow,
   resolveIssueWorkflow,
   NO_HANDOFF_BINDING,
@@ -47,3 +48,4 @@ export {
   useSetProjectWorkflow,
   useSetWorkflowHandoff,
 } from "./mutations";
+export { lintCounts, filterLint, groupLintByStep, type LintCounts, type LintFilter, type LintLevel } from "./lint";

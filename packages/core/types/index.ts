@@ -21,6 +21,8 @@ export type {
   IssueWorkflowMappingRequirement,
   IssueWorkflowMappingPlan,
   IssueWorkflowDryRunResponse,
+  IssueWorkflowLintFinding,
+  WorkflowLintResponse,
   SetProjectWorkflowRequest,
   IssueWorkflowStatusCount,
   WorkflowHandoffPreview,

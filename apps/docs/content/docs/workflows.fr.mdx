@@ -159,6 +159,12 @@ Les deux garde-fous échouent par défaut : une valeur illisible compte comme un
 
 `pr.none_open` est un troisième garde-fou d’entrée, qui lit les PR et non ce qu’un agent a écrit. Il est satisfait quand aucune PR ouverte ou en brouillon n’est liée au ticket, ni à ses enfants quand le workflow inclut les PR des enfants. Les PR fusionnées ou fermées ne le bloquent pas, et un ticket sans PR passe. Placez-le sur l’étape où un agent clôt (par exemple `agent_accepted`) et donnez à l’étape précédente une arête `agent_done` vers elle : un agent peut alors clore un ticket `in_review` sans rien à fusionner. Un agent ne peut jamais utiliser ce raccourci tant qu’une PR est ouverte : le refus liste chaque PR ouverte (par exemple `acme/widget#12 (draft)`) avec le correctif, qui est de la fusionner ou de la fermer. Comme les autres garde-fous d’entrée, il n’est pas accepté comme garde de transition, et `multica workflow lint` l’accepte dans `entry`.
 
+## Vérifier un workflow [#checks]
+
+Ouvrez un workflow enregistré et sélectionnez **Contrôles** pour voir ce que l'analyse du serveur y a trouvé. Le bouton affiche le nombre d'erreurs, d'avertissements et de notes. Chaque carte d'étape qui a un constat porte les mêmes marques, pour que vous voyiez quelle étape ouvrir. Le panneau liste les constats groupés par étape. Filtrez-les avec les onglets **Tout**, **Erreurs**, **Avertissements** et **Notes**. Chaque constat montre son message, une piste **Correction :** et l'identifiant de sa règle. **Aller à l’étape** sélectionne cette étape dans l'éditeur. **Relancer** revérifie le workflow enregistré. Un constat levé reste dans la liste, atténué, avec sa raison, et n'est pas compté.
+
+Les vérifications jugent le workflow enregistré, pas vos modifications non enregistrées. Le serveur juge les modifications à l'enregistrement. Si l'enregistrement contient des erreurs non levées, le serveur le refuse et l'éditeur ouvre **Enregistrement refusé : erreurs non résolues**. Corrigez les erreurs puis enregistrez de nouveau, ou saisissez une raison et sélectionnez **Enregistrer quand même**. La raison est envoyée comme `lint_override`, 500 caractères au plus, et un enregistrement sans raison est refusé. L'éditeur garde le texte saisi jusqu'à ce que l'enregistrement aboutisse. Si les vérifications échouent, l'enregistrement reste possible.
+
 ## Guides associés
 
 - [Projets](/projects) — regrouper les tâches qui suivent un workflow.

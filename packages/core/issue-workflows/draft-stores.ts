@@ -59,3 +59,19 @@ export const useWorkflowHandoffDraftStore = createKeyedDraftStore<WorkflowHandof
   emptyData: EMPTY_WORKFLOW_HANDOFF_DRAFT,
   hasMeaningful: (d) => d.step !== null,
 });
+
+/**
+ * The reason typed in the save-refused dialog, keyed by editor target. It
+ * lives until the save with that override succeeds or the edits are discarded.
+ */
+export interface WorkflowLintOverrideDraft {
+  reason: string;
+}
+
+export const EMPTY_WORKFLOW_LINT_OVERRIDE_DRAFT: WorkflowLintOverrideDraft = { reason: "" };
+
+export const useWorkflowLintOverrideDraftStore = createKeyedDraftStore<WorkflowLintOverrideDraft>({
+  storageKey: "multica_workflow_lint_override_drafts",
+  emptyData: EMPTY_WORKFLOW_LINT_OVERRIDE_DRAFT,
+  hasMeaningful: (d) => d.reason.length > 0,
+});

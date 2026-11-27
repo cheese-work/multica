@@ -125,6 +125,16 @@ export interface IssueWorkflowLintFinding {
   waive_reason?: string;
 }
 
+/** `GET /api/issue-workflows/{id}/lint`: the saved workflow, linted now. Counts skip waived findings. */
+export interface WorkflowLintResponse {
+  workflow_id: string;
+  workflow: string;
+  findings: IssueWorkflowLintFinding[];
+  errors: number;
+  warnings: number;
+  infos: number;
+}
+
 export interface ListIssueWorkflowsResponse {
   workflows: IssueWorkflow[];
   total: number;
