@@ -266,8 +266,9 @@ func TestEvaluateEntryPluginGateFollowsTheVerdict(t *testing.T) {
 	if got := EvaluateEntry(gates(EntryModeOff, guard), deny); len(got) != 0 {
 		t.Fatalf("off mode: %+v", got)
 	}
-	// No verdict at all fails closed.
-	if got := EvaluateEntry(gates(EntryModeBlock, guard), Facts{}); len(got) != 1 {
-		t.Fatalf("missing verdict must fail the gate: %+v", got)
+	// No verdict at all fails closed, and the gate default (overridable) does not
+	// apply: the hook's policy is unknown.
+	if got := EvaluateEntry(gates(EntryModeBlock, guard), Facts{}); len(got) != 1 || got[0].MemberOverride {
+		t.Fatalf("missing verdict must fail the gate and not be overridable: %+v", got)
 	}
 }

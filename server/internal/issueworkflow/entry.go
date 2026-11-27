@@ -170,11 +170,13 @@ func EvaluateEntry(gates []EntryGate, f Facts) []EntryFailure {
 		override := e.Overridable()
 		switch {
 		case g.Kind == GuardPlugin:
-			// A gate without a verdict fails closed.
+			// A gate without a verdict fails closed, and no one may override it:
+			// the hook's guard.overridable policy is unknown.
 			v, ok := f.Plugin[PluginGateKey(g)]
 			switch {
 			case !ok:
 				fact = "the guard plugin gave no verdict"
+				override = false
 			case !v.Allow:
 				fact = cmp.Or(v.Reason, "the guard plugin denied the move")
 				override = override && v.Overridable

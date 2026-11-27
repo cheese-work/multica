@@ -68,7 +68,8 @@ type pluginGateCall struct {
 	answered bool
 }
 
-// pluginGuardState is the pre-transaction part of a status write.
+// pluginGuardState is the pre-transaction part of a status write. A write that
+// has one was prepared: a plugin gate with no call in it is stale at the lock.
 type pluginGuardState struct {
 	calls map[string]pluginGateCall
 }
@@ -228,6 +229,11 @@ func (w *workflowWrite) prepareGuards(ctx context.Context, h *Handler) error {
 	if w.system || !to.Valid || to.String == w.prev.Status {
 		return nil
 	}
+	// From here the write has been prepared, even when no gate asks the plugin:
+	// a plugin gate that appears before the lock has no verdict, and the write
+	// restarts rather than answering from on_error without a call.
+	state := &pluginGuardState{calls: map[string]pluginGateCall{}}
+	w.guard = state
 	issue, err := h.Queries.GetIssueInWorkspace(ctx, db.GetIssueInWorkspaceParams{ID: w.prev.ID, WorkspaceID: w.prev.WorkspaceID})
 	if err != nil {
 		return err
@@ -244,7 +250,6 @@ func (w *workflowWrite) prepareGuards(ctx context.Context, h *Handler) error {
 	if len(gates) == 0 {
 		return nil
 	}
-	state := &pluginGuardState{calls: map[string]pluginGateCall{}}
 	for _, gate := range gates {
 		in, err := h.readPluginGuardInputs(ctx, h.Queries, false, issue, def, step, to.String, gate, w.entry)
 		if err != nil {
@@ -272,7 +277,6 @@ func (w *workflowWrite) prepareGuards(ctx context.Context, h *Handler) error {
 		}
 		state.calls[issueworkflow.PluginGateKey(gate)] = call
 	}
-	w.guard = state
 	return nil
 }
 
@@ -315,6 +319,9 @@ func (h *Handler) withPluginGuard(ctx context.Context, w *workflowWrite, write f
 	for attempt := 0; ; attempt++ {
 		if err := w.prepareGuards(ctx, h); err != nil {
 			return err
+		}
+		if h.guardPreparedForTest != nil {
+			h.guardPreparedForTest()
 		}
 		err := write()
 		if attempt > 0 || !errors.Is(err, errEntryGateStale) {

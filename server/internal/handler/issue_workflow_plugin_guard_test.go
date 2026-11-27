@@ -93,10 +93,19 @@ func (f pluginGuardFixture) move(t *testing.T, actor ...func(*http.Request) *htt
 	return putIssue(t, f.issueID, map[string]any{"status": "in_review"}, actor...)
 }
 
-func (f pluginGuardFixture) declare(t *testing.T, key, value string) {
+// declare writes a declared metadata key as the calling member, or as the actor
+// the options make the caller.
+func (f pluginGuardFixture) declare(t *testing.T, key, value string, actor ...func(*http.Request) *http.Request) {
 	t.Helper()
-	testutil.Call(t, testHandler.SetIssueMetadataKey,
-		mutationRequest(http.MethodPut, f.issueID, key, map[string]any{"value": value})).Want(http.StatusOK)
+	req := mutationRequest(http.MethodPut, f.issueID, key, map[string]any{"value": value})
+	for _, as := range actor {
+		req = as(req)
+	}
+	testutil.Call(t, testHandler.SetIssueMetadataKey, req).Want(http.StatusOK)
+}
+
+func asAgentTaskOpt(t *testing.T) func(*http.Request) *http.Request {
+	return func(r *http.Request) *http.Request { return asAgentTask(t, r) }
 }
 
 func failedFact(t *testing.T, res *testutil.Response) string {
@@ -270,10 +279,11 @@ func TestPluginGuardSystemWriteSkips(t *testing.T) {
 	}
 }
 
-// A declares post_close_work and asks to move; the guard allows at revision R.
-// B declares the same value again before A's transaction takes its locks. A's
-// old allow must not commit: the write restarts, the guard is asked again, sees
-// that the newest writer changed, and denies.
+// A (a member) declares post_close_work and asks to move; the guard allows at
+// revision R. B (an agent, a different actor) declares the same value again
+// before A's transaction takes its locks. A's old allow must not commit: the
+// write restarts, the guard is asked again, sees that the newest writer is B,
+// and denies.
 func TestPluginGuardInterleavedRedeclarationVoidsTheAllow(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -283,29 +293,30 @@ func TestPluginGuardInterleavedRedeclarationVoidsTheAllow(t *testing.T) {
 		// between runs after A's guard call answered, as B.
 		between func(t *testing.T, f pluginGuardFixture)
 	}{
-		{"revision bump", func(t *testing.T, f pluginGuardFixture) { f.declare(t, "post_close_work", "X") }},
+		{"revision bump", func(t *testing.T, f pluginGuardFixture) { f.declare(t, "post_close_work", "X", asAgentTaskOpt(t)) }},
 		// A defect that stops the revision from moving still changes the writer row.
 		{"revision bump stubbed out", func(t *testing.T, f pluginGuardFixture) {
 			var revision int64
 			if err := testPool.QueryRow(context.Background(), `SELECT revision FROM issue WHERE id=$1`, f.issueID).Scan(&revision); err != nil {
 				t.Fatal(err)
 			}
-			f.declare(t, "post_close_work", "X")
+			f.declare(t, "post_close_work", "X", asAgentTaskOpt(t))
 			dbfx.Exec(t, `UPDATE issue SET revision=$2 WHERE id=$1`, f.issueID, revision)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newPluginGuardCase(t, 1025610+int64(len(tc.name)), guardMetadataTestManifest, "block")
-			f.declare(t, "post_close_work", "X")
-			var first string
+			f.declare(t, "post_close_work", "X") // A
+			var first guardWriter
 			stub := stubGuard(t, func(n int, inv service.HookInvocation) service.GuardResult {
-				w := inv.Input.(guardSnapshotInput).MetadataWrites["post_close_work"].WriteID
+				w := inv.Input.(guardSnapshotInput).MetadataWrites["post_close_work"]
 				if n == 1 {
 					first = w
-					tc.between(t, f)
+					tc.between(t, f) // B
 					return allowGuard()
 				}
-				if w == first {
+				// The decision reads who wrote last, not only that a row exists.
+				if w.Actor == first.Actor {
 					return allowGuard()
 				}
 				return denyGuard("post_close_work was set by another actor")
@@ -317,8 +328,15 @@ func TestPluginGuardInterleavedRedeclarationVoidsTheAllow(t *testing.T) {
 			if stub.count() != 2 {
 				t.Fatalf("guard calls = %d, want 2: the old allow must not commit", stub.count())
 			}
-			if first == "" || stub.snapshot(2).MetadataWrites["post_close_work"].WriteID == first {
-				t.Fatalf("second snapshot must name the newer writer row, first=%q second=%+v", first, stub.snapshot(2).MetadataWrites)
+			if first.Actor.Type != "member" || first.Actor.ID != testUserID {
+				t.Fatalf("first snapshot writer = %+v, want the member A", first.Actor)
+			}
+			second := stub.snapshot(2).MetadataWrites["post_close_work"]
+			if second.WriteID == first.WriteID {
+				t.Fatalf("second snapshot must name the newer writer row, first=%+v second=%+v", first, second)
+			}
+			if second.Actor.Type != "agent" || second.Actor.ID != handlerTestAgentID(t) {
+				t.Fatalf("second snapshot writer = %+v, want the agent B", second.Actor)
 			}
 			if fact := failedFact(t, res); fact != "post_close_work was set by another actor" {
 				t.Fatalf("fact = %q, want the re-evaluated denial", fact)
@@ -403,4 +421,55 @@ func TestPluginGuardTwoMismatchesAreEntryGateStale(t *testing.T) {
 		t.Fatalf("guard calls = %d, want 2", stub.count())
 	}
 	wantIssueStatus(t, f.issueID, "in_progress")
+}
+
+// A plugin gate that appears after the pre-call found none has no verdict. The
+// write must restart and ask the plugin, not answer from an open on_error policy.
+func TestPluginGuardGateAddedBeforeTheLockRestartsAndAsks(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	manifest := strings.Replace(guardMetadataTestManifest, `"on_error": "closed"`, `"on_error": "open"`, 1)
+	f := newPluginGuardCase(t, 1025640, manifest, "off")
+	stub := stubGuard(t, func(int, service.HookInvocation) service.GuardResult { return denyGuard("asked after the edit") })
+	var once sync.Once
+	previous := testHandler.guardPreparedForTest
+	testHandler.guardPreparedForTest = func() {
+		once.Do(func() {
+			dbfx.Exec(t, `UPDATE issue_workflow SET steps=jsonb_set(steps, '{3,entry,0,mode}', '"block"'), updated_at=now() WHERE id=$1`, f.workflowID)
+		})
+	}
+	t.Cleanup(func() { testHandler.guardPreparedForTest = previous })
+
+	res := f.move(t)
+
+	res.Want(http.StatusConflict)
+	if stub.count() != 1 {
+		t.Fatalf("guard calls = %d, want 1: the restart must ask the plugin", stub.count())
+	}
+	if fact := failedFact(t, res); fact != "asked after the edit" {
+		t.Fatalf("fact = %q, want the plugin's denial", fact)
+	}
+	wantIssueStatus(t, f.issueID, "in_progress")
+}
+
+// With no installation there is no hook policy: the gate fails closed and a
+// member cannot override it.
+func TestPluginGuardMissingVerdictCannotBeOverridden(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	f := newPluginGuardCase(t, 1025641, guardMetadataTestManifest, "block")
+	stub := stubGuard(t, nil)
+	dbfx.Exec(t, `DELETE FROM plugin_installation WHERE id=$1`, f.installationID)
+
+	putIssue(t, f.issueID, map[string]any{"status": "in_review", "entry_gate_override_reason": "the plugin is gone"}).Want(http.StatusConflict)
+
+	if stub.count() != 0 {
+		t.Fatalf("guard calls = %d, want 0 without an installation", stub.count())
+	}
+	wantIssueStatus(t, f.issueID, "in_progress")
+	if got := activityCount(t, f.issueID, "entry_gate_override"); got != 0 {
+		t.Fatalf("entry_gate_override rows = %d, want 0", got)
+	}
 }
