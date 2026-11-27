@@ -417,6 +417,55 @@ func (h *Handler) deferHandoffRun(ctx context.Context, issue db.Issue, willRun b
 	return true, runReason
 }
 
+// assigneeHandlesStep reports whether the issue sits in a hands-off step of its
+// workflow that its current assignee handles.
+func (h *Handler) assigneeHandlesStep(ctx context.Context, issue db.Issue) bool {
+	if !issue.AssigneeID.Valid {
+		return false
+	}
+	def, _, err := issueworkflow.ForIssue(ctx, h.Queries, issue.WorkspaceID, issue.WorkflowID, issue.ProjectID)
+	if err != nil || def == nil {
+		return false
+	}
+	step, ok := def.Step(issue.Status)
+	return ok && step.HandsOff()
+}
+
+func assigneeOutcome(issue db.Issue, status DispatchStatus, reason DispatchReasonCode) CommentTriggerOutcome {
+	return CommentTriggerOutcome{TargetType: issue.AssigneeType.String, TargetID: uuidToString(issue.AssigneeID), Status: status, ReasonCode: reason}
+}
+
+// stageQueueDeferredOutcome tells the caller the handler's stage is full and the
+// run starts when a slot frees.
+func stageQueueDeferredOutcome(issue db.Issue) CommentTriggerOutcome {
+	return assigneeOutcome(issue, DispatchDeferred, ReasonStageQueueFull)
+}
+
+// stepRunOutcome says why naming the step's handler again starts no run: a run
+// for the step is already pending, or the PR head was already answered.
+func (h *Handler) stepRunOutcome(ctx context.Context, issue db.Issue) []CommentTriggerOutcome {
+	pending, answered := h.IssueService.StepRunCover(ctx, issue)
+	switch {
+	case pending:
+		return []CommentTriggerOutcome{assigneeOutcome(issue, DispatchCoalesced, ReasonCoalesced)}
+	case answered:
+		return []CommentTriggerOutcome{assigneeOutcome(issue, DispatchBlocked, ReasonReviewHeadAnswered)}
+	}
+	return nil
+}
+
+// reassertedRunOutcome is the caller's answer once the dispatch of a re-named
+// handler ran: queued, held by the stage queue, or failed.
+func (h *Handler) reassertedRunOutcome(ctx context.Context, issue db.Issue, started bool) []CommentTriggerOutcome {
+	if started {
+		return []CommentTriggerOutcome{assigneeOutcome(issue, DispatchQueued, ReasonQueued)}
+	}
+	if snap, err := service.LoadStageQueueSnapshot(ctx, h.Queries, issue); err == nil && snap.State == "queued" {
+		return []CommentTriggerOutcome{stageQueueDeferredOutcome(issue)}
+	}
+	return []CommentTriggerOutcome{assigneeOutcome(issue, DispatchBlocked, ReasonInternalError)}
+}
+
 // workflowStepMoved shares the step guard with the claim brief so a run is
 // never told to advance a step its status changes cannot act on.
 func workflowStepMoved(def *issueworkflow.Definition, status string, run *db.AgentTaskQueue) bool {
