@@ -1598,13 +1598,11 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	requests := h.decisionRequestsForMessages(ctx, workspaceID, messages)
 
 	wakeups := h.scheduledWakeupsForMessages(ctx, messages)
-	supplements := h.chatSupplementsForMessages(ctx, workspaceID, messages)
 
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
 		resp[i].ScheduledWakeup = wakeups[uuidToString(m.ID)]
-		resp[i].Supplement = supplements[uuidToString(m.ID)]
 		if cards := requests[uuidToString(m.ID)]; len(cards) > 0 {
 			if m.MessageKind == protocol.ChatMessageKindDecisionCancelNotice {
 				resp[i].DecisionRequests = cards
@@ -1662,7 +1660,7 @@ func (h *Handler) scheduledWakeupsForMessages(ctx context.Context, messages []db
 		}
 		out[uuidToString(m.ID)] = &ScheduledWakeupResponse{
 			ID: uuidToString(w.ID), AgentID: uuidToString(w.AgentID), Title: w.Title, Instruction: w.Instruction,
-			FireAt: timestampToString(w.FireAt), CreatedAt: timestampToString(w.CreatedAt),
+			FireAt: timestampToString(w.LastFiredAt), CreatedAt: timestampToString(w.CreatedAt),
 		}
 	}
 	return out
@@ -2187,7 +2185,6 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 		SupportsQueue:  true,
 		CanSupplement:  h.canSupplementChatTask(r, session, head.ID, head.Status),
 		QueuedTasks:    queued,
-		HeadSupplement: h.headSupplementState(r.Context(), head.ID, head.Status),
 	})
 }
 
@@ -2732,9 +2729,6 @@ type ChatMessageResponse struct {
 	// CarriedFromSessionID names the earlier DM a reply's run ran in, set only
 	// when a rollover wrote that reply into this DM (CHE-2119). Nil otherwise.
 	CarriedFromSessionID *string `json:"carried_from_session_id,omitempty"`
-	// Supplement is the delivery receipt of a user message steered into a
-	// running task. Absent for messages that were never steered.
-	Supplement *ChatSupplementResponse `json:"supplement,omitempty"`
 }
 
 type ScheduledWakeupResponse struct {
