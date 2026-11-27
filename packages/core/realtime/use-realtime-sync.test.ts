@@ -1,12 +1,13 @@
 import {
   QueryClient,
   QueryObserver,
+  InfiniteQueryObserver,
   type InfiniteData,
 } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
-import { chatKeys, chatWakeupsOptions, decisionActionKeys } from "../chat/queries";
+import { chatKeys, chatMessagesPageOptions, chatWakeupsOptions, decisionActionKeys } from "../chat/queries";
 import { inboxKeys } from "../inbox/queries";
 import { issueKeys } from "../issues/queries";
 import { runtimeKeys } from "../runtimes/queries";
@@ -1487,5 +1488,159 @@ describe("refreshRuntimesWhilePaused", () => {
     refreshRuntimesWhilePaused(qc, wsId);
 
     expect(invalidate).not.toHaveBeenCalled();
+  });
+});
+
+// CHE-10508: a fired DM wakeup's event row (role user + scheduled_wakeup) is
+// never written by applyChatMessageToCache (the payload lacks the wakeup data),
+// so it reaches the transcript only through the reconcile refetch. The reply
+// arrives through chat:done, which upserts directly. The transcript must hold
+// the wakeup row above its reply without a send or a reload.
+describe("fired DM wakeup keeps its event row above its reply (CHE-10508)", () => {
+  const WAKEUP_CONTENT = "[Scheduled wakeup — 16:54]\nInstruction: report";
+  const older: ChatMessage = {
+    id: "msg-older",
+    chat_session_id: sessionId,
+    role: "assistant",
+    content: "earlier reply",
+    task_id: "task-0",
+    created_at: "2026-05-13T04:00:00Z",
+  };
+  const wakeupRow: ChatMessage = {
+    id: "msg-wakeup",
+    chat_session_id: sessionId,
+    role: "user",
+    content: WAKEUP_CONTENT,
+    task_id: taskId,
+    created_at: "2026-05-13T05:00:00Z",
+    scheduled_wakeup: { id: "w1" },
+  } as ChatMessage;
+  const reply: ChatMessage = {
+    id: "msg-reply",
+    chat_session_id: sessionId,
+    role: "assistant",
+    content: "wakeup reply",
+    task_id: taskId,
+    created_at: "2026-05-13T05:01:00Z",
+  };
+  const pageKey = chatKeys.messagesPage(sessionId);
+  const rowIds = (qc: QueryClient) =>
+    qc.getQueryData<InfiniteData<ChatMessagesPage>>(pageKey)?.pages.flatMap((p) =>
+      p.messages.map((m) => m.id),
+    );
+  const pageOf = (messages: ChatMessage[]): ChatMessagesPage => ({
+    messages,
+    limit: 50,
+    has_more: false,
+    next_cursor: null,
+  });
+
+  afterEach(() => setApiInstance(undefined as unknown as ApiClient));
+
+  async function mount(serverRows: () => ChatMessage[], hold: () => Promise<void> = async () => {}) {
+    const qc = createQueryClient();
+    const listChatMessagesPage = vi.fn(async () => {
+      const rows = serverRows();
+      await hold();
+      return pageOf(rows);
+    });
+    setApiInstance({ listChatMessagesPage } as unknown as ApiClient);
+    const observer = new InfiniteQueryObserver(qc, { ...chatMessagesPageOptions(sessionId), gcTime: Infinity });
+    const unsub = observer.subscribe(() => {});
+    await vi.waitFor(() => expect(rowIds(qc)).toEqual(["msg-older"]));
+    return { qc, unsub, listChatMessagesPage };
+  }
+
+  it("chat:message then chat:done while the reconcile refetch is in flight", async () => {
+    let server: ChatMessage[] = [older];
+    let gate: Promise<void> = Promise.resolve();
+    const { qc, unsub } = await mount(() => server, () => gate);
+
+    // Wakeup fires: server has the event row, reply not yet.
+    server = [older, wakeupRow];
+    let release!: () => void;
+    gate = new Promise<void>((r) => (release = r));
+    applyChatMessageToCache(qc, {
+      chat_session_id: sessionId,
+      message_id: wakeupRow.id,
+      role: "user",
+      content: WAKEUP_CONTENT,
+      task_id: taskId,
+      created_at: wakeupRow.created_at,
+    });
+    await vi.waitFor(() => expect(qc.getQueryState(pageKey)?.fetchStatus).toBe("fetching"));
+
+    // Reply lands while that refetch is still in flight.
+    server = [older, wakeupRow, reply];
+    applyChatDoneToCache(qc, {
+      chat_session_id: sessionId,
+      task_id: taskId,
+      message_id: reply.id,
+      content: reply.content,
+      created_at: reply.created_at,
+    });
+    gate = Promise.resolve();
+    release();
+
+    await vi.waitFor(() => expect(qc.getQueryState(pageKey)?.fetchStatus).toBe("idle"));
+    expect(rowIds(qc)).toEqual(["msg-older", "msg-wakeup", "msg-reply"]);
+    unsub();
+  });
+
+  it("chat:message and chat:done while the surface is inactive: the wakeup row shows when it becomes active", async () => {
+    let server: ChatMessage[] = [older];
+    const { qc, unsub } = await mount(() => server);
+    unsub(); // surface leaves: no active observer, cache stays (gcTime Infinity)
+
+    server = [older, wakeupRow];
+    applyChatMessageToCache(qc, {
+      chat_session_id: sessionId,
+      message_id: wakeupRow.id,
+      role: "user",
+      content: WAKEUP_CONTENT,
+      task_id: taskId,
+      created_at: wakeupRow.created_at,
+    });
+    server = [older, wakeupRow, reply];
+    applyChatDoneToCache(qc, {
+      chat_session_id: sessionId,
+      task_id: taskId,
+      message_id: reply.id,
+      content: reply.content,
+      created_at: reply.created_at,
+    });
+    expect(rowIds(qc)).toEqual(["msg-older", "msg-reply"]);
+
+    // Surface becomes active again.
+    const observer = new InfiniteQueryObserver(qc, { ...chatMessagesPageOptions(sessionId), gcTime: Infinity });
+    const unsub2 = observer.subscribe(() => {});
+    await vi.waitFor(() => expect(rowIds(qc)).toEqual(["msg-older", "msg-wakeup", "msg-reply"]));
+    unsub2();
+  });
+
+  it("chat:done with no refetch in flight keeps the wakeup row", async () => {
+    let server: ChatMessage[] = [older];
+    const { qc, unsub } = await mount(() => server);
+    server = [older, wakeupRow];
+    applyChatMessageToCache(qc, {
+      chat_session_id: sessionId,
+      message_id: wakeupRow.id,
+      role: "user",
+      content: WAKEUP_CONTENT,
+      task_id: taskId,
+      created_at: wakeupRow.created_at,
+    });
+    await vi.waitFor(() => expect(rowIds(qc)).toEqual(["msg-older", "msg-wakeup"]));
+    server = [older, wakeupRow, reply];
+    applyChatDoneToCache(qc, {
+      chat_session_id: sessionId,
+      task_id: taskId,
+      message_id: reply.id,
+      content: reply.content,
+      created_at: reply.created_at,
+    });
+    await vi.waitFor(() => expect(qc.getQueryState(pageKey)?.fetchStatus).toBe("idle"));
+    expect(rowIds(qc)).toEqual(["msg-older", "msg-wakeup", "msg-reply"]);
+    unsub();
   });
 });
