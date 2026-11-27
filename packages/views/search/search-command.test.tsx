@@ -10,6 +10,7 @@ import {
   type CommandBarContext,
 } from "@multica/core/command-bar";
 import { chatSessionsOptions, openDecisionRequestsOptions } from "@multica/core/chat/queries";
+import { chatSearchKeys } from "@multica/core/chat/search";
 import { inboxUnreadSummaryOptions } from "@multica/core/inbox/queries";
 import { useActiveIssueViewStore } from "@multica/core/issue-views/active-view-store";
 import { issueViewEverywhereOptions } from "@multica/core/issue-views/queries";
@@ -161,8 +162,9 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
       const results = opts.queries.map((q) => ({ data: read(q) }));
       return opts.combine ? opts.combine(results) : results;
     },
-    useInfiniteQuery: (opts: { enabled?: boolean }) => {
+    useInfiniteQuery: (opts: { queryKey: readonly unknown[]; enabled?: boolean }) => {
       const idle = opts.enabled === false;
+      if (!idle) requestedKeys.add(JSON.stringify(opts.queryKey));
       return {
         data: idle ? undefined : { pages: [{ results: chatSearch.hits, next_cursor: null }] },
         error: chatSearch.error,
@@ -458,6 +460,10 @@ const renderedHeadings = () =>
 const selectedValue = () =>
   document.querySelector('[cmdk-item=""][aria-selected="true"]')?.getAttribute("data-value") ?? null;
 
+/** Waits past the chat message search debounce, so a started search is recorded. */
+const passChatSearchDebounce = () => act(() => new Promise((resolve) => setTimeout(resolve, 350)));
+const chatSearchKey = (q: string) => JSON.stringify(chatSearchKeys.query("ws-test", q));
+
 const rowText = (text: string) =>
   screen.findByText((_, el) => el?.textContent === text && el?.tagName === "SPAN");
 
@@ -599,6 +605,15 @@ describe("SearchCommand", () => {
       expect(requestedKeys).not.toContain(JSON.stringify(autopilotListOptions("ws-test").queryKey));
       expect(requestedKeys).not.toContain(JSON.stringify(skillListOptions("ws-test").queryKey));
       expect(requestedKeys).not.toContain(JSON.stringify(docTreeOptions("ws-test").queryKey));
+    });
+
+    it("does not search message content, which the server refuses a guest", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "sign-up");
+      await passChatSearchDebounce();
+
+      expect(requestedKeys).not.toContain(chatSearchKey("sign-up"));
     });
 
     it("drops Change status and New issue from a project's context commands", () => {
@@ -1087,6 +1102,25 @@ describe("SearchCommand", () => {
       updated_at: "2026-11-13T07:15:00Z",
       archived: false,
     };
+
+    it("searches message content for a member", async () => {
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "budget");
+      await passChatSearchDebounce();
+
+      expect(requestedKeys).toContain(chatSearchKey("budget"));
+    });
+
+    it("does not search message content while the viewer's role is still loading", async () => {
+      queryData.delete(JSON.stringify(memberListOptions("ws-test").queryKey));
+      const user = userEvent.setup();
+      renderSearch();
+      await user.type(input(), "budget");
+      await passChatSearchDebounce();
+
+      expect(requestedKeys).not.toContain(chatSearchKey("budget"));
+    });
 
     it("lists a content hit under Messages and opens the DM at that message", async () => {
       const user = userEvent.setup();

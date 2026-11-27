@@ -8,7 +8,7 @@ import { DOCS_V1_FLAG } from "@multica/core/feature-flags";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { WORKSPACE_PAGES, type WorkspacePageKey } from "@multica/core/paths";
 import { chatSessionsOptions, openDecisionRequestsOptions } from "@multica/core/chat/queries";
-import { useIsGuest } from "@multica/core/permissions";
+import { useIsGuest, useIsResolvedNonGuest } from "@multica/core/permissions";
 import { partitionAggregatedSearchResults } from "@multica/core/search/cancelled-rank";
 import type { ChatSession, SearchDocResult, SearchIssueResult, SearchProjectResult } from "@multica/core/types";
 import { useComposioAvailable } from "../common/use-composio-available";
@@ -231,7 +231,9 @@ export function useRootModel(
 
   const searching = active && scope !== "commands" && scope !== "people" ? text : "";
   const server = useServerSearch(searching, { projects: scope === "all" });
-  const rawMessages = useChatMessageSearch(text, active && scope === "all");
+  // The server refuses a guest chat search, so it starts only once the role is known.
+  const member = useIsResolvedNonGuest(useWorkspaceId());
+  const rawMessages = useChatMessageSearch(text, active && scope === "all" && member);
   const { chatFilter, filterMessages } = useChatChipFilter(options.chips ?? NO_CHIPS, active);
   const messages = useMemo(() => filterMessages(rawMessages), [filterMessages, rawMessages]);
   const docsEnabled = useFeatureEnabled(DOCS_V1_FLAG, false);
