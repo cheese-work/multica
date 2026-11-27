@@ -3478,6 +3478,16 @@ type PinnedItem struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type PluginGuardMetadataKey struct {
+	ID             pgtype.UUID        `json:"id"`
+	InstallationID pgtype.UUID        `json:"installation_id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	MetadataKey    string             `json:"metadata_key"`
+	Enabled        bool               `json:"enabled"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
+}
+
 type PluginHookSchedule struct {
 	ID             pgtype.UUID        `json:"id"`
 	InstallationID pgtype.UUID        `json:"installation_id"`
