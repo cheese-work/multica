@@ -71,6 +71,19 @@ const (
 	ReasonProjectAccessBlocked  = dispatch.ReasonProjectAccessBlocked
 	ReasonHandedToLeader        = dispatch.ReasonHandedToLeader
 	ReasonInternalError         = dispatch.ReasonInternalError
+
+	// Fork codes (kept from B; the fork-only callers still use them).
+	ReasonProjectInactive                     = dispatch.ReasonProjectInactive
+	ReasonIntakeHold                          = dispatch.ReasonIntakeHold
+	ReasonAgentCommentImplicitRouteSuppressed = dispatch.ReasonAgentCommentImplicitRouteSuppressed
+	ReasonAgentCommentRequiresAgentMention    = dispatch.ReasonAgentCommentRequiresAgentMention
+	ReasonCommentTriggerRateLimited           = dispatch.ReasonCommentTriggerRateLimited
+	ReasonRunBudgetExhausted                  = dispatch.ReasonRunBudgetExhausted
+	ReasonStageQueueFull                      = dispatch.ReasonStageQueueFull
+	ReasonReviewHeadAnswered                  = dispatch.ReasonReviewHeadAnswered
+	ReasonAgentPaused                         = dispatch.ReasonAgentPaused
+	ReasonAdmissionDeferred                   = dispatch.ReasonAdmissionDeferred
+	ReasonProviderHold                        = dispatch.ReasonProviderHold
 )
 
 // DispatchTarget is the caller-visible reference to an execution target. Name

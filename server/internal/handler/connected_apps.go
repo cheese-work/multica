@@ -513,7 +513,7 @@ func (h *Handler) ConnectPersonalApp(w http.ResponseWriter, r *http.Request) {
 	if _, remote := h.ConnectedApps.RemoteApp(req.ToolkitSlug); remote {
 		url, err = h.ConnectedApps.BeginRemoteConnect(r.Context(), req.ToolkitSlug, connectedapps.ScopePersonal, workspaceID, member.UserID, member.UserID, req.ReturnTo)
 	} else {
-		url, err = h.Composio.BeginConnectReturning(r.Context(), member.UserID, workspaceID, req.ToolkitSlug, req.ReturnTo)
+		url, err = h.Composio.BeginConnectReturning(r.Context(), member.UserID, workspaceID, req.ToolkitSlug, req.ReturnTo, util.RequestOrigin(r))
 	}
 	if err != nil {
 		writeConnectError(w, r, err)

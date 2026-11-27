@@ -196,7 +196,9 @@ func (h *Handler) callerCanInvokeIssueAssignee(r *http.Request, issue db.Issue, 
 	if err != nil {
 		return true
 	}
-	return h.invokeAgentDecision(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID)
+	// A failed lookup counts as not-a-member, as in canInvokeAgent.
+	allowed, _ := h.invokeAgentDecision(r.Context(), agent, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID), workspaceID)
+	return allowed
 }
 
 // dispatchIssueRun is dispatchIssueRunOutcome for callers that only need to

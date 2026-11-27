@@ -207,49 +207,55 @@ func (h *Handler) CreateInvitation(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:  pgtype.Timestamptz{Time: expiresAt, Valid: true},
 		ProjectIds: guestProjects,
 	}
+	// The fork writes the invitation.create audit row in the same transaction
+	// as the invitation, so every create runs in one; the member-limit lock and
+	// admit are no-ops when the limit is inactive.
 	var inv db.WorkspaceInvitation
 	var limitAdmission memberLimitAdmission
-	if reserveSeat || memberLimit.active() {
-		tx, txErr := h.TxStarter.Begin(r.Context())
-		if txErr != nil {
-			h.compensateCapacityIntent(r.Context(), invitationID)
-			writeError(w, http.StatusInternalServerError, "failed to create invitation")
-			return
-		}
-		defer tx.Rollback(r.Context())
-		qtx := h.Queries.WithTx(tx)
-		err = memberLimit.lock(r.Context(), qtx)
-		if err == nil {
-			limitAdmission, err = memberLimit.admit(r.Context(), qtx)
-		}
-		if err == nil {
-			inv, err = qtx.CreateInvitation(r.Context(), createParams)
-		}
-		if err == nil && reserveSeat {
-			err = qtx.DeleteSeatCapacityIntentForAction(r.Context(), db.DeleteSeatCapacityIntentForActionParams{
-				OperationToken: uuidToPG(invitationID), Action: seatcapacity.ActionReserveInvitation,
-			})
-		}
-		if err == nil {
-			err = tx.Commit(r.Context())
-		}
-		if err != nil {
-			// Release transaction locks before the out-of-transaction Cloud
-			// compensation below reads and transitions the durable intent.
-			_ = tx.Rollback(r.Context())
+	tx, txErr := h.TxStarter.Begin(r.Context())
+	if txErr != nil {
+		h.compensateCapacityIntent(r.Context(), invitationID)
+		writeError(w, http.StatusInternalServerError, "failed to create invitation")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+	err = memberLimit.lock(r.Context(), qtx)
+	if err == nil {
+		limitAdmission, err = memberLimit.admit(r.Context(), qtx)
+	}
+	if err == nil {
+		inv, err = qtx.CreateInvitation(r.Context(), createParams)
+	}
+	if err == nil && reserveSeat {
+		err = qtx.DeleteSeatCapacityIntentForAction(r.Context(), db.DeleteSeatCapacityIntentForActionParams{
+			OperationToken: uuidToPG(invitationID), Action: seatcapacity.ActionReserveInvitation,
+		})
+	}
+	if err == nil {
+		if auditErr := h.writeAudit(r.Context(), qtx, r, auditInput{
+			Kind: "invitation.create", WorkspaceID: inv.WorkspaceID, TargetID: inv.ID,
+			After: invitationAuditFields(inv),
+		}); auditErr != nil {
+			err = auditWriteError{auditErr}
 		}
 	}
 	if err == nil {
 		err = tx.Commit(r.Context())
 	}
-	if err == nil || errors.Is(err, errMemberLimitReached) {
-		limitAdmission.record(r.Context())
-	}
 	if err != nil {
 		// Release transaction locks before the out-of-transaction Cloud
 		// compensation below reads and transitions the durable intent.
 		_ = tx.Rollback(r.Context())
+	}
+	if err == nil || errors.Is(err, errMemberLimitReached) {
+		limitAdmission.record(r.Context())
+	}
+	if err != nil {
 		h.compensateCapacityIntent(r.Context(), invitationID)
+		if failedAudit(w, r, err, "invitation.create") {
+			return
+		}
 		if errors.Is(err, errMemberLimitReached) {
 			writeMemberLimitReached(w)
 			return

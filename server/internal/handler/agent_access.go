@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/projectaccess"
+	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -93,14 +94,19 @@ func (h *Handler) invokeAgentDecisionVia(ctx context.Context, queries *db.Querie
 	}
 
 	isWorkspaceMember := false
+	var lookupErr error
 	if effectiveUser != "" {
-		if m, err := h.getWorkspaceMember(ctx, effectiveUser, workspaceID); err == nil {
+		m, err := workspaceMemberVia(ctx, queries, effectiveUser, workspaceID)
+		switch {
+		case err == nil:
 			// Guests never run agents (MUL-9420), not even one they owned
 			// before becoming a guest.
 			if projectaccess.IsGuestRole(m.Role) {
-				return false
+				return false, nil
 			}
 			isWorkspaceMember = true
+		case !errors.Is(err, pgx.ErrNoRows):
+			lookupErr = err
 		}
 	}
 

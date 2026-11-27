@@ -922,9 +922,7 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := qtx.DeleteChatTaskSupplementsBySession(r.Context(), db.DeleteChatTaskSupplementsBySessionParams{
-		ChatSessionID: session.ID, WorkspaceID: session.WorkspaceID,
-	}); err != nil {
+	if err := qtx.DeleteChatTaskSupplementsBySession(r.Context(), session.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete chat supplements")
 		return
 	}
@@ -1626,32 +1624,40 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	return resp
 }
 
-// scheduledWakeupsForMessages maps message id to the fired wakeup that sent it,
-// in one query. A user message matches when its task is the wakeup's fired task
-// in the same session.
+// scheduledWakeupsForMessages maps message id to the wakeup that sent it. On
+// upstream's chat_wakeup schema (X, CHE-10195) a wakeup turn's input row
+// carries wakeup_id, so the fork's event-row payload is read by that id. Only
+// a row in the wakeup's own session matches.
 func (h *Handler) scheduledWakeupsForMessages(ctx context.Context, messages []db.ChatMessage) map[string]*ScheduledWakeupResponse {
-	var taskIDs []pgtype.UUID
+	byID := make(map[string]*db.ChatWakeup)
 	for _, m := range messages {
-		if m.Role == "user" && m.TaskID.Valid {
-			taskIDs = append(taskIDs, m.TaskID)
+		if !m.WakeupID.Valid {
+			continue
 		}
+		key := uuidToString(m.WakeupID)
+		if _, seen := byID[key]; seen {
+			continue
+		}
+		w, err := h.Queries.GetChatWakeup(ctx, m.WakeupID)
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				slog.Warn("load scheduled wakeup for chat message failed", "wakeup_id", key, "error", err)
+			}
+			byID[key] = nil
+			continue
+		}
+		byID[key] = &w
 	}
-	if len(taskIDs) == 0 {
+	if len(byID) == 0 {
 		return nil
-	}
-	rows, err := h.Queries.ListChatWakeupsByFiredTasks(ctx, taskIDs)
-	if err != nil {
-		slog.Warn("list scheduled wakeups for chat messages failed", "error", err)
-		return nil
-	}
-	byTask := make(map[string]db.ChatWakeup, len(rows))
-	for _, w := range rows {
-		byTask[uuidToString(w.FiredTaskID)] = w
 	}
 	out := make(map[string]*ScheduledWakeupResponse)
 	for _, m := range messages {
-		w, ok := byTask[uuidToString(m.TaskID)]
-		if !ok || m.Role != "user" || w.ChatSessionID != m.ChatSessionID {
+		if !m.WakeupID.Valid {
+			continue
+		}
+		w := byID[uuidToString(m.WakeupID)]
+		if w == nil || w.ChatSessionID != m.ChatSessionID {
 			continue
 		}
 		out[uuidToString(m.ID)] = &ScheduledWakeupResponse{
