@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { readFileSync, readdirSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { test } from "node:test"
 
 const workflow = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8")
@@ -73,4 +73,9 @@ test("dependency-review blocks a PR that adds a high or critical dependency and 
   const backend = source.match(/^  backend:\n(?:(?:    .*|)\n)+/m)[0]
   assert.match(backend, /needs: \[[^\]]*\bdependency-review\b/)
   assert.match(backend, /"dependency-review":"always"/)
+})
+
+test("the removed warning-budget job and its script stay gone (CHE-9821)", () => {
+  assert.doesNotMatch(workflow("ci.yml"), /^  warning-budget:/m)
+  assert.equal(existsSync(new URL("./warning-budget.mjs", import.meta.url)), false)
 })
