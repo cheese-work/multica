@@ -20,7 +20,8 @@ vi.mock("@multica/core/issues/decision-disclaim", async (importActual) => ({
     isPending: false,
   }),
 }));
-vi.mock("@multica/core/paths", () => ({
+vi.mock("@multica/core/paths", async (importActual) => ({
+  ...(await importActual<typeof import("@multica/core/paths")>()),
   useWorkspacePaths: () => ({ issueDetail: (id: string) => `/acme/issues/${id}`, chatSession: (id: string) => `/acme/chat?session=${id}` }),
 }));
 vi.mock("../../navigation", () => ({

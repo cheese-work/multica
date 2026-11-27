@@ -15,7 +15,7 @@ import { usePersistedDraft, useUploadCancelledNotice } from "@multica/core/draft
 import { approvableConfigChange, approvablePreview, isConfigChangeActionType, isRunBudgetActionType } from "@multica/core/issues/decision-action-preview";
 import { useCurrentMember } from "@multica/core/permissions";
 import { chatKeys } from "@multica/core/chat/queries";
-import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, isPlainShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
@@ -591,7 +591,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
     if (workspaceId) queryClient.invalidateQueries({ queryKey: chatKeys.issueDecisionCardsAll(workspaceId) });
   };
   const bodyId = useId();
-  const issueHref = paths.issueDetail(card.issue_id);
+  const issueHref = paths.issueDetail(issueRouteRef({ id: card.issue_id, identifier: null }));
   const [draft, setDraft, clearDraft] = usePersistedDraft(useDecisionAnswerDraftStore, decisionAnswerDraftKey(card.id), EMPTY_DRAFT);
   const [, setUploadCancelled] = useUploadCancelledNotice(decisionAnswerDraftKey(card.id));
   const [refused, setRefused] = useState(false);
