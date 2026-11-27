@@ -46,7 +46,7 @@ func TestChatLastMessagePreview(t *testing.T) {
 
 func TestBuildChatLastMessageCapsContent(t *testing.T) {
 	at := pgtype.Timestamptz{Valid: true}
-	msg := buildChatLastMessage(at, strings.Repeat("a", 20_000), "assistant", pgtype.Text{}, protocol.ChatMessageKindMessage)
+	msg := buildChatLastMessage(pgtype.UUID{}, pgtype.UUID{}, at, strings.Repeat("a", 20_000), "assistant", pgtype.Text{}, protocol.ChatMessageKindMessage)
 	if msg == nil {
 		t.Fatal("buildChatLastMessage returned nil")
 	}

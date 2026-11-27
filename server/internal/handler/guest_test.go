@@ -445,8 +445,3 @@ func guestProjectIDs(t *testing.T, userID string) []string {
 	sort.Strings(ids)
 	return ids
 }
-
-func sorted(ids ...string) []string {
-	sort.Strings(ids)
-	return ids
-}

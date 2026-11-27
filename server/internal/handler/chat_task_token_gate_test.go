@@ -167,16 +167,34 @@ func TestRecordChatTaintDoesNotRewriteAnUnchangedRow(t *testing.T) {
 	}
 }
 
+// claimTaintedChatGuidance steers a message into a running DM turn, taints the
+// chat after the turn started, and has the daemon claim the guidance. It
+// returns the running task.
+func claimTaintedChatGuidance(t *testing.T) string {
+	t.Helper()
+	sessionID, taskID, _ := newChatSupplementFixture(t, true)
+	sent := sendChatGuidance(t, sessionID, map[string]any{"steer": true, "content": "steer me"})
+	if !sent.Steered || sent.TaskID != taskID {
+		t.Fatalf("send = %+v, want guidance steered into %s", sent, taskID)
+	}
+	dbfx.Exec(t, `UPDATE chat_session SET taint_ids = '{t1}', taint_verified = true WHERE id = $1`, sessionID)
+	var wire map[string]any
+	req := withURLParam(newOwnerDaemonRequest(http.MethodPost, "/claim", nil), "taskId", taskID)
+	testutil.Call(t, testHandler.ClaimTaskSupplement, req).Want(http.StatusOK).JSON(&wire)
+	if wire["comment_id"] != sent.MessageID {
+		t.Fatalf("claimed = %+v, want message %s", wire, sent.MessageID)
+	}
+	return taskID
+}
+
 // CHE-3702 round 20: the supplement claim hands a chat message to a running
 // task, so that task takes the chat's taint and a delegate of it is restricted.
 func TestChatSupplementClaimTaintsTheTaskAndReachesDelegate(t *testing.T) {
-	f := steeredFixture(t)
-	dbfx.Exec(t, `UPDATE chat_session SET taint_ids = '{t1}', taint_verified = true WHERE id = $1`, f.sessionID)
-	claimSteer(t, newChatSupplementDaemonClient(t), f)
+	runningID := claimTaintedChatGuidance(t)
 	var stored []string
-	dbfx.QueryRow(t, `SELECT taint_ids FROM agent_task_queue WHERE id = $1`, f.runningID).Scan(&stored)
+	dbfx.QueryRow(t, `SELECT taint_ids FROM agent_task_queue WHERE id = $1`, runningID).Scan(&stored)
 	if !reflect.DeepEqual(stored, []string{"t1"}) {
 		t.Fatalf("claiming task taint = %v, want [t1]", stored)
 	}
-	delegateClaimsRestricted(t, f.runningID, "supplement", []string{"t1"})
+	delegateClaimsRestricted(t, runningID, "supplement", []string{"t1"})
 }
