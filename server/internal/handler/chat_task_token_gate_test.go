@@ -167,22 +167,24 @@ func TestRecordChatTaintDoesNotRewriteAnUnchangedRow(t *testing.T) {
 	}
 }
 
-// claimTaintedChatGuidance steers a message into a running DM turn, taints the
-// chat after the turn started, and has the daemon claim the guidance. It
-// returns the running task.
+// claimTaintedChatGuidance queues steered guidance for a running DM turn,
+// taints the chat after the turn started, and has the daemon claim the
+// guidance. It returns the running task. The guidance row is seeded directly
+// so the test exercises the claim alone.
 func claimTaintedChatGuidance(t *testing.T) string {
 	t.Helper()
 	sessionID, taskID, _ := newChatSupplementFixture(t, true)
-	sent := sendChatGuidance(t, sessionID, map[string]any{"steer": true, "content": "steer me"})
-	if !sent.Steered || sent.TaskID != taskID {
-		t.Fatalf("send = %+v, want guidance steered into %s", sent, taskID)
-	}
+	messageID := dbfx.Insert(t, "chat_message", testutil.Cols{
+		"chat_session_id": sessionID, "task_id": taskID, "role": "user", "content": "steer me",
+	})
+	dbfx.Exec(t, `INSERT INTO chat_task_supplement (task_id, message_id, chat_session_id, workspace_id, author_id, status)
+		VALUES ($1, $2, $3, $4, $5, 'pending')`, taskID, messageID, sessionID, testWorkspaceID, testUserID)
 	dbfx.Exec(t, `UPDATE chat_session SET taint_ids = '{t1}', taint_verified = true WHERE id = $1`, sessionID)
 	var wire map[string]any
 	req := withURLParam(newOwnerDaemonRequest(http.MethodPost, "/claim", nil), "taskId", taskID)
 	testutil.Call(t, testHandler.ClaimTaskSupplement, req).Want(http.StatusOK).JSON(&wire)
-	if wire["comment_id"] != sent.MessageID {
-		t.Fatalf("claimed = %+v, want message %s", wire, sent.MessageID)
+	if wire["comment_id"] != messageID {
+		t.Fatalf("claimed = %+v, want message %s", wire, messageID)
 	}
 	return taskID
 }

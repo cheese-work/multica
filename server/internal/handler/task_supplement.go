@@ -487,6 +487,12 @@ func (h *Handler) ClaimTaskSupplement(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, map[string]any{})
 		} else if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to claim chat guidance")
+		} else if err := h.recordChatTaint(r.Context(), &task, ""); err != nil {
+			// The claimed text is chat content. Take the chat's taint after the
+			// claim so a delegate this run starts later cannot be elevated
+			// (CHE-3702). Fail closed: the row stays delivering and settlement
+			// resolves it.
+			writeError(w, http.StatusInternalServerError, "failed to record chat taint")
 		} else {
 			// Keep the daemon wire contract: this opaque id names a chat message.
 			writeJSON(w, http.StatusOK, map[string]any{"comment_id": uuidToString(row.MessageID), "author_type": "member", "author_name": row.AuthorName, "content": row.Content})
