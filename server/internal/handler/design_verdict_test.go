@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -80,7 +81,10 @@ func newVerdictFixture(t *testing.T) *verdictFixture {
 	dbfx.QueryRow(t, `SELECT settings FROM workspace WHERE id = $1`, testWorkspaceID).Scan(&prev)
 	f.setGuard(t, map[string]any{"mode": "block", "doop_origin": verdictDoopOrigin, "design_url_property_id": verdictDesignPropertyID})
 	t.Cleanup(func() {
-		testPool.Exec(t.Context(), `UPDATE workspace SET settings = $2::jsonb WHERE id = $1`, testWorkspaceID, string(prev))
+		// t.Context() is already cancelled when a cleanup runs, so the restore needs its own context.
+		if _, err := testPool.Exec(context.Background(), `UPDATE workspace SET settings = $2::jsonb WHERE id = $1`, testWorkspaceID, string(prev)); err != nil {
+			t.Errorf("restore workspace settings: %v", err)
+		}
 	})
 	f.setDesignURL(t, verdictDoopOrigin+"/c/canvas-1?page=page-1&frame=frame-1")
 

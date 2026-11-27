@@ -54,7 +54,7 @@ func (h *Handler) deliverOwedStepNotices(ctx context.Context, limit int32) error
 	}
 }
 
-func stepNoticeContent(identifier, issuePath string, issue db.Issue, action db.IssueStepWatchdogAction, requester pgtype.UUID) string {
+func stepNoticeContent(identifier string, issue db.Issue, action db.IssueStepWatchdogAction, requester pgtype.UUID) string {
 	var d struct {
 		Status      string `json:"status"`
 		InStepSince string `json:"in_step_since"`
@@ -70,8 +70,8 @@ func stepNoticeContent(identifier, issuePath string, issue db.Issue, action db.I
 	if since, err := time.Parse(time.RFC3339, d.InStepSince); err == nil {
 		age = fmt.Sprintf(" for %d h", int(time.Since(since).Hours()))
 	}
-	return fmt.Sprintf("Step watchdog: [%s](mention://issue/%s) sat in `%s`%s with no run. Case: %s. %s\n\n[@requester](mention://member/%s) Open issue: %s",
-		identifier, uuidToString(issue.ID), d.Status, age, action.Action, did, uuidToString(requester), issuePath)
+	return fmt.Sprintf("Step watchdog: [%s](mention://issue/%s) sat in `%s`%s with no run. Case: %s. %s\n\n[@requester](mention://member/%s) %s",
+		identifier, uuidToString(issue.ID), d.Status, age, action.Action, did, uuidToString(requester), util.OpenIssueFooter(identifier, uuidToString(issue.ID)))
 }
 
 // deliverStepNotice writes one notify row and, when the requester can be
@@ -134,7 +134,7 @@ func (h *Handler) deliverStepNotice(ctx context.Context, action db.IssueStepWatc
 	if err != nil {
 		return err
 	}
-	content := stepNoticeContent(fmt.Sprintf("%s-%d", workspace.IssuePrefix, issue.Number), util.WorkspaceIssuePath(workspace.Slug, uuidToString(issue.ID)), issue, action, requester)
+	content := stepNoticeContent(fmt.Sprintf("%s-%d", workspace.IssuePrefix, issue.Number), issue, action, requester)
 	link := func(commentID, messageID, sessionID pgtype.UUID) (string, pgtype.UUID, error) {
 		id := dbid.NewV7()
 		err := claim(id, stepNoticeDelivered, map[string]any{"for": action.Action, "comment_id": uuidToString(commentID), "chat_message_id": uuidToString(messageID)})

@@ -1816,6 +1816,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// /v1 prevents the Public API from accepting session cookies.
 	// A5b: routes that change other runs' issues or tasks without naming them.
 	denyRunToken := h.DenyTaskTokenWrites(taskWriteScopeMode())
+	// A project workflow switch may open an owner card for a run's token (CHE-10137), never write.
+	runTokenCardOnly := h.TaskTokenCardOnly(taskWriteScopeMode())
 	// Human-only actions refuse a run's task token in every mode, not only under the rollout flag,
 	// and refuse a cloud-node credential (RequireHumanActor), which acts as its owner.
 	denyTaskToken := h.DenyTaskTokenWrites(handler.TaskWriteScopeOn)
@@ -2567,6 +2569,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Human-only: a machine credential carries its owner's user
 				// id and must not use the owner's way into private projects.
 				r.With(handler.RequireHumanActor).Get("/private", h.ListPrivateProjectsForOwner)
+				// CHE-10137: one owner card switches the workflow of many projects.
+				r.With(runTokenCardOnly).Post("/workflow", h.SetProjectsWorkflow)
 				r.Get("/", h.ListProjects)
 				r.Post("/", h.CreateProject)
 				r.Route("/{id}", func(r chi.Router) {
@@ -2576,7 +2580,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.With(handler.RequireHumanActor).Post("/join", h.JoinPrivateProject)
 					r.Post("/archive", h.ArchiveProject)
 					r.Post("/restore", h.RestoreProject)
-					r.With(denyRunToken).Post("/workflow", h.SetProjectWorkflow)
+					r.With(runTokenCardOnly).Post("/workflow", h.SetProjectWorkflow)
 					r.With(denyRunToken).Put("/workflow-split", h.SetProjectWorkflowSplit)
 					r.With(denyRunToken).Delete("/workflow-split", h.ClearProjectWorkflowSplit)
 					r.Get("/members", h.ListProjectMembers)

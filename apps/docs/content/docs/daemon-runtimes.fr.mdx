@@ -218,6 +218,7 @@ Le tableau liste les variables que les runtimes personnalisés peuvent utiliser 
 | `MULTICA_AGENT_NAME` | Nom affiché de l'agent assigné | Indicatif |
 | `MULTICA_DAEMON_PORT` | Port local de santé/API du daemon utilisé par les commandes réservées aux exécutions, comme `multica repo checkout` | Indicatif |
 | `MULTICA_TASK_SLOT` | Emplacement dans le pool de parallélisme global du daemon ; utile pour les ressources indexées par emplacement, comme les GPU | Indicatif |
+| `MULTICA_DOOP_TASK_ASSERTION` | Identité d'exécution signée à courte durée de vie pour l'en-tête MCP doop `X-Multica-Task-Assertion`. Définie uniquement si le serveur en signe une | Indicatif |
 | `MULTICA_REPO_CHECKOUT_MODE` | Vaut `isolated` uniquement dans les exécutions Codex sous Linux et Windows, pour que `multica repo checkout` crée un clone autonome avec `.git` dans le répertoire de travail ; absente des autres exécutions | Indicatif |
 | `TMPDIR` | Répertoire temporaire privé de l'exécution ; également fourni sous `TMP` et `TEMP`, sauf sous Windows, où les tâches héritent des chemins temporaires utilisateur pour le `/tmp` partagé de Git Bash ; Claude Code sous Windows utilise par défaut le répertoire temporaire de la tâche pour `CLAUDE_CODE_TMPDIR` | Indicatif |
 

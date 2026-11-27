@@ -97,3 +97,48 @@ func TestDecisionAskDescriptionNamesTheDesignOptionField(t *testing.T) {
 		}
 	}
 }
+
+// G4 (CHE-7064 S12): options[].design passes through the tool verbatim, and a
+// refusal of the design guard comes back to the agent as a tool error that
+// names the status and the code.
+func TestDecisionAskToolPassesDesignThroughAndShowsAGuardRefusal(t *testing.T) {
+	var gotBody string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"code":"design_attestation_stale","error":"the page changed after the attestation"}`))
+	}))
+	t.Cleanup(server.Close)
+	task := Task{ID: "task-1", IssueID: "issue-1", AuthToken: "mat_task", RemoteMCPDaemonToken: "daemon-secret"}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	_, set, err := startTaskPluginHookMCP(ctx, task.ID, taskHookTools(task, true), taskHookInvoker(task, NewClient(server.URL), nil), nil)
+	if err != nil || set == nil {
+		t.Fatalf("start hook MCP: set=%v err=%v", set, err)
+	}
+	t.Cleanup(set.Close)
+	mcp := set.server.Handler.(*pluginHookMCPServer)
+
+	call := `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"decision_ask","arguments":{"ask":{"options":[{"label":"A","design":{"frame_url":"https://doop.example.com/c/cv1?frame=f1","attestation_id":"run-1"}}]},"escalation_class":"product_direction"}}}`
+	result := callMCP(t, mcp, mcp.path, call)["result"].(map[string]any)
+	if result["isError"] != true {
+		t.Fatalf("result = %v, want a tool error", result)
+	}
+	text := result["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "409") || !strings.Contains(text, "design_attestation_stale") {
+		t.Fatalf("tool error = %q, want the 409 status and the design_attestation_stale code", text)
+	}
+	var sent struct {
+		Ask struct {
+			Options []struct {
+				Design map[string]any `json:"design"`
+			} `json:"options"`
+		} `json:"ask"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &sent); err != nil || len(sent.Ask.Options) != 1 ||
+		sent.Ask.Options[0].Design["frame_url"] != "https://doop.example.com/c/cv1?frame=f1" || sent.Ask.Options[0].Design["attestation_id"] != "run-1" {
+		t.Fatalf("server saw %s (err=%v), want options[].design verbatim", gotBody, err)
+	}
+}

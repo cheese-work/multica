@@ -73,7 +73,7 @@ page:
 			if message.ID == summary.ID {
 				break page
 			}
-			if skip[message.ID] || message.MessageKind == protocol.ChatMessageKindCompactNotice {
+			if skip[message.ID] || message.MessageKind == protocol.ChatMessageKindCompactNotice || message.MessageKind == protocol.ChatMessageKindModelChangeNotice {
 				continue
 			}
 			entry := strings.ReplaceAll(forkEntry(message), compactionRecentClose, `<\/recent_messages>`)
