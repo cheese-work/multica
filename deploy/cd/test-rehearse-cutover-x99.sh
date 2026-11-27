@@ -12,14 +12,30 @@ runner="$root_dir/deploy/cd/rehearse-cutover-x99.sh"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-mkdir -p "$work/bin" "$work/base"
+mkdir -p "$work/bin" "$work/base" "$work/unrelated"
 cat >"$work/bin/docker" <<'STUB'
 #!/usr/bin/env bash
-echo "$*" >>"$DOCKER_LOG"
-case "${1:-}" in build | buildx) exit 1 ;; esac
+# The runner calls Compose in an allowlisted environment, so this stub finds its logs
+# next to itself instead of in an inherited variable.
+here="$(cd "$(dirname "$0")/.." && pwd)"
+echo "$*" >>"$here/docker.log"
+# Per call: the working directory and the caller variables that must never reach Docker.
+echo "$* | cwd=$PWD | replica=${DATABASE_REPLICA_URL-unset} | image=${MULTICA_BACKEND_IMAGE-unset} | tag=${MULTICA_IMAGE_TAG-unset} | redis=${REDIS_URL-unset}" >>"$here/docker-env.log"
+# The harness fails at the first one-off Compose run (after the incumbent's Postgres came up).
+case " $* " in *" compose "*" run "*) exit 1 ;; esac
+# A file named leak next to the stub: the run's resources survive every removal attempt.
+if [ -e "$here/leak" ]; then
+  case "$*" in
+    "ps -aq --filter label=com.docker.compose.project="*) echo leaked-container; exit 0 ;;
+    "rm "* | "volume rm "* | "network rm "*) exit 1 ;;
+  esac
+fi
 exit 0
 STUB
 chmod +x "$work/bin/docker"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$work/bin/curl"
+chmod +x "$work/bin/curl"
+export DOCKER_ENV_LOG="$work/docker-env.log"
 export DOCKER_LOG="$work/docker.log"
 export REHEARSE_BASE="$work/base"
 # Default `ss` shows no listener; the router-port test swaps in a busy one.
@@ -35,8 +51,10 @@ run_runner() {
   local name=$1
   shift
   : >"$DOCKER_LOG"
+  : >"$DOCKER_ENV_LOG"
   rc=0
-  bash "$runner" "$@" >"$work/$name.out" 2>&1 || rc=$?
+  # An unrelated working directory with no Compose file: nothing may depend on it.
+  (cd "$work/unrelated" && bash "$runner" "$@" >"$work/$name.out" 2>&1) || rc=$?
 }
 
 # expect_refusal <name> <message fragment> <args...> (env set by the caller)
@@ -98,16 +116,40 @@ run_runner plan-default --dry-run
 grep -q '^project=multica-rehearsal-[a-z0-9-]\+$' "$work/plan-default.out" || fail "default run id is not a valid name"
 
 # --- cleanup: a failed run removes only its own artifacts, records df twice ---
-run_runner cleanup --run-id clean1
-[ "$rc" != 0 ] || fail "a failing build must fail the run"
+# The caller exports an external replica, Redis and image overrides, and runs from a
+# directory that has no Compose file (and a stray docker-compose.yml that must not be read).
+printf 'services: {}\n' >"$work/unrelated/docker-compose.yml"
+DATABASE_REPLICA_URL='postgres://u:p@external-db:5432/x' REDIS_URL='redis://external:6379' \
+  MULTICA_BACKEND_IMAGE=external/backend MULTICA_IMAGE_TAG=external-tag \
+  run_runner cleanup --run-id clean1
+[ "$rc" != 0 ] || fail "a failing run must fail the run"
 [ "$(grep -c '^df -B1 before: ' "$work/cleanup.out")" = 1 ] || fail "no df -B1 before record"
 [ "$(grep -c '^df -B1 after: ' "$work/cleanup.out")" = 1 ] || fail "no df -B1 after record"
 [ ! -e "$work/base/clean1" ] || fail "the run dir survived cleanup"
-grep -q 'compose -p multica-rehearsal-clean1 down' "$DOCKER_LOG" || fail "compose project not taken down by name"
-if grep -E '^(rm|image rm|rmi|volume rm|network rm|compose)' "$DOCKER_LOG" | grep -v 'multica-rehearsal-clean1\|org.multica.rehearsal.run=clean1' | grep -q .; then
-  fail "a cleanup call is not scoped to the run: $(grep -E '^(rm|image rm|rmi|volume rm|network rm|compose)' "$DOCKER_LOG" | grep -v 'multica-rehearsal-clean1\|org.multica.rehearsal.run=clean1' | head -1)"
+compose_calls="$(grep '^compose ' "$work/docker-env.log" || true)"
+[ -n "$compose_calls" ] || fail "the run never reached its Compose calls"
+# every Compose call (bootstrap, logs, teardown) uses the run's own files and directory
+echo "$compose_calls" | grep -q 'compose -p multica-rehearsal-clean1 -f docker-compose.selfhost.yml -f .*/clean1/tree/deploy/cd/docker-compose.ab.yml down -v --remove-orphans | cwd='"$work"'/base/clean1/compose ' ||
+  fail "teardown does not use the run's Compose files and directory: $(echo "$compose_calls" | grep ' down ' | head -1)"
+echo "$compose_calls" | grep -q ' logs ' || fail "failure logs were not read"
+echo "$compose_calls" | grep -v 'cwd='"$work"'/base/clean1/compose ' | grep -q . && fail "a Compose call ran outside the run's compose dir: $(echo "$compose_calls" | grep -v 'cwd='"$work"'/base/clean1/compose ' | head -1)"
+# the caller's external database, Redis and image settings reach no Docker call
+echo "$compose_calls" | grep -v 'replica=unset | image=unset | tag=unset | redis=unset' | grep -q . &&
+  fail "a caller variable reached Compose: $(echo "$compose_calls" | grep -v 'replica=unset | image=unset | tag=unset | redis=unset' | head -1)"
+grep -q 'ps -aq --filter label=com.docker.compose.project=multica-rehearsal-clean1' "$DOCKER_LOG" || fail "removal was not verified by project label"
+if grep -E '^(rm|image rm|rmi|compose)' "$DOCKER_LOG" | grep -v 'multica-rehearsal-clean1\|org.multica.rehearsal.run=clean1' | grep -q .; then
+  fail "a cleanup call is not scoped to the run: $(grep -E '^(rm|image rm|rmi|compose)' "$DOCKER_LOG" | grep -v 'multica-rehearsal-clean1\|org.multica.rehearsal.run=clean1' | head -1)"
 fi
 grep -qE 'prune|system|builder' "$DOCKER_LOG" && fail "cleanup made a broad docker call"
+grep -q 'cleanup incomplete' "$work/cleanup.out" && fail "a clean run reported leftovers"
+
+# surviving resources are reported and fail the run, even when the harness itself succeeded
+touch "$work/leak"
+run_runner leak --run-id leak1
+rm -f "$work/leak"
+[ "$rc" != 0 ] || fail "leftover artifacts must fail the run"
+grep -q 'cleanup incomplete: artifacts of run leak1 survive' "$work/leak.out" || fail "leftovers were not reported"
+rm -f "$work/unrelated/docker-compose.yml"
 
 # --- fixture: one marked contract migration that sorts after every real one ---
 fixture_dir="$root_dir/deploy/cd/fixtures/contract"

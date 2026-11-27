@@ -81,6 +81,7 @@ if [ "$dry_run" = 0 ]; then
   done
 fi
 
+src="$run_dir/tree"
 compose_dir="$run_dir/compose"
 state_dir="$run_dir/cutover-state"
 router_state_dir="$run_dir/router-state"
@@ -112,20 +113,56 @@ fi
 # ---------------------------------------------------------------------------
 df_line() { df -B1 --output=target,used,avail "$base" / | tail -n +2 | tr -s ' ' | paste -sd';'; }
 
+# Every Compose call and the controller run in an ALLOWLISTED environment
+# (env -i): nothing else the caller exported (DATABASE_REPLICA_URL, REDIS_URL,
+# MULTICA_BACKEND_IMAGE, MULTICA_IMAGE_TAG, ...) reaches Compose or the
+# controller, so the stack uses only its own database and images.
+iso_env=()
+for v in HOME PATH USER LANG TMPDIR DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG XDG_RUNTIME_DIR XDG_CONFIG_HOME; do
+  [ -z "${!v:-}" ] || iso_env+=("$v=${!v}")
+done
+# The run's exact Compose configuration, from the run's own directory: logs and
+# teardown must not depend on the caller's working directory or compose files.
+rc_compose() {
+  (cd "$compose_dir" && env -i "${iso_env[@]}" "COMPOSE_PROJECT_NAME=$project" \
+    docker compose -p "$project" -f docker-compose.selfhost.yml -f "$src/deploy/cd/docker-compose.ab.yml" "$@")
+}
+by_project=(--filter "label=com.docker.compose.project=$project")
+# Everything of this run that still exists, by label (independent of any Compose file).
+leftovers() {
+  docker ps -aq "${by_project[@]}" 2>&1
+  docker volume ls -q "${by_project[@]}" 2>&1
+  docker network ls -q "${by_project[@]}" 2>&1
+  docker ps -aq --filter "label=$run_label" 2>&1
+}
+
 cleanup() {
-  local rc=$? ref
+  local rc=$? ref out left have_stack=0
   trap - EXIT
   set +e
-  if [ "$rc" != 0 ]; then
+  [ -f "$compose_dir/.env" ] && [ -f "$src/deploy/cd/docker-compose.ab.yml" ] && have_stack=1
+  if [ "$rc" != 0 ] && [ "$have_stack" = 1 ]; then
     echo "==> harness failed (exit $rc); last log lines of this run's containers"
-    docker compose -p "$project" logs --no-color --tail 25 2>&1 | sed 's/^/  | /'
+    rc_compose logs --no-color --tail 25 2>&1 | sed 's/^/  | /'
   fi
   echo "==> cleanup: removing only artifacts of run $run_id"
-  docker compose -p "$project" down -v --remove-orphans >/dev/null 2>&1
+  if [ "$have_stack" = 1 ]; then
+    out="$(rc_compose down -v --remove-orphans 2>&1)" || echo "!! compose down failed: $(echo "$out" | tr '\n' ' ')" >&2
+  fi
   docker rm -fv "$project-router" "$project-registry" >/dev/null 2>&1
   while IFS= read -r ref; do
     [ -n "$ref" ] && docker image rm "$ref" >/dev/null 2>&1
   done < <(docker image ls --format '{{.Repository}}:{{.Tag}}' 2>/dev/null | grep -F "/$project/")
+  # Verify by label: remove what is left of this run (only this run), then
+  # report anything that still exists.
+  { docker ps -aq "${by_project[@]}"; docker ps -aq --filter "label=$run_label"; } 2>/dev/null | xargs -r docker rm -fv >/dev/null 2>&1
+  docker volume ls -q "${by_project[@]}" 2>/dev/null | xargs -r docker volume rm >/dev/null 2>&1
+  docker network ls -q "${by_project[@]}" 2>/dev/null | xargs -r docker network rm >/dev/null 2>&1
+  left="$(leftovers | tr '\n' ' ')"
+  if [ -n "${left//[[:space:]]/}" ]; then
+    echo "!! cleanup incomplete: artifacts of run $run_id survive: $left" >&2
+    [ "$rc" != 0 ] || rc=3
+  fi
   rm -rf "$run_dir"
   echo "df -B1 after: $(df_line)"
   exit "$rc"
@@ -160,7 +197,6 @@ registry="127.0.0.1:$registry_port"
 
 # --- tree copy: the controller's own root_dir, so it reads this copy's
 # server/migrations and compose files ---
-src="$run_dir/tree"
 mkdir "$src"
 git -C "$tree" ls-files -z --cached --others --exclude-standard | tar -C "$tree" --null -T - -cf - | tar -C "$src" -xf -
 candidate_sha="$(git -C "$tree" rev-parse HEAD)"
@@ -217,11 +253,9 @@ MULTICA_IMAGE_TAG=sha-$previous_sha
 EOF
 chmod 600 "$compose_dir/.env"
 
-export COMPOSE_PROJECT_NAME="$project"
-rc_compose() { (cd "$compose_dir" && docker compose -f docker-compose.selfhost.yml -f "$src/deploy/cd/docker-compose.ab.yml" "$@"); }
-for x in BACKEND_BLUE_PORT=$backend_blue BACKEND_GREEN_PORT=$backend_green FRONTEND_BLUE_PORT=$frontend_blue FRONTEND_GREEN_PORT=$frontend_green; do
-  export "$x"
-done
+slot_ports=("BACKEND_BLUE_PORT=$backend_blue" "BACKEND_GREEN_PORT=$backend_green" "FRONTEND_BLUE_PORT=$frontend_blue" "FRONTEND_GREEN_PORT=$frontend_green")
+# The generated .env pins the images and ports; the isolated environment (above)
+# keeps the caller's exports from overriding them.
 
 echo "==> bootstrapping the incumbent (blue, previous image) and the router"
 rc_compose up -d --wait postgres
@@ -230,7 +264,7 @@ MULTICA_SKIP_MIGRATIONS=1 rc_compose up -d --no-deps backend-blue frontend-blue
 for _ in $(seq 60); do curl -fsS "http://127.0.0.1:$backend_blue/readyz" >/dev/null 2>&1 && break; sleep 2; done
 curl -fsS "http://127.0.0.1:$backend_blue/readyz" >/dev/null
 router_image="${ROUTER_NGINX_IMAGE:-nginx:alpine}"
-ROUTER_NGINX_IMAGE="$router_image" ROUTER_RELOAD_CMD=true bash "$src/deploy/cd/router.sh" select --colour blue --state-dir "$router_state_dir" >/dev/null
+env -i "${iso_env[@]}" "${slot_ports[@]}" ROUTER_NGINX_IMAGE="$router_image" ROUTER_RELOAD_CMD=true bash "$src/deploy/cd/router.sh" select --colour blue --state-dir "$router_state_dir" >/dev/null
 docker run -d --name "$project-router" --label "$run_label" --network host \
   -v "$src/deploy/cd/router/nginx.conf:/etc/nginx/nginx.conf:ro" -v "$router_state_dir:/etc/nginx/router-state:ro" \
   "$router_image" >/dev/null
@@ -277,6 +311,7 @@ node "$src/deploy/cd/release-packet.mjs" create --manifest "$run_dir/manifest.js
 
 # --- the rehearsal: the real controller, nothing stubbed ---
 controller_env=(
+  "COMPOSE_PROJECT_NAME=$project"
   "CUTOVER_DATABASE_URL=postgres://multica:$pg_password@127.0.0.1:5432/multica?sslmode=disable"
   "ROUTER_STATE_DIR=$router_state_dir"
   "ROUTER_CONTAINER_NAME=$project-router"
@@ -290,7 +325,7 @@ if [ -n "$fault" ]; then
 fi
 run_controller() {
   local rc=0
-  env "${controller_env[@]}" PATH="$controller_path" bash "$src/deploy/cd/cutover.sh" "$@" || rc=$?
+  env -i "${iso_env[@]}" "${slot_ports[@]}" "${controller_env[@]}" PATH="$controller_path" bash "$src/deploy/cd/cutover.sh" "$@" || rc=$?
   return "$rc"
 }
 
