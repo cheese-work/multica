@@ -63,14 +63,26 @@ func TestIssueCommentAddWarnsOnBlockedTriggers_CHE1418(test *testing.T) {
 func TestWarnTriggerOutcomes_StageQueueFullPrintsQueuedNote(t *testing.T) {
 	const agentID = "33333333-3333-4333-8333-333333333333"
 	var out strings.Builder
-	warnBlockedTriggerOutcomes(&out, map[string]any{"trigger_outcomes": []any{
+	warnBlockedTriggerOutcomes(&out, map[string]any{"identifier": "MUL-7", "status": "agent_review", "trigger_outcomes": []any{
 		map[string]any{"target_type": "agent", "target_id": agentID, "status": "deferred", "reason_code": "stage_queue_full"},
 		map[string]any{"target_type": "agent", "target_id": "other", "status": "deferred", "reason_code": "deferred"},
 	}})
 	got := out.String()
-	want := "Note: review of agent " + agentID + " is queued behind a full stage and starts by itself; do not re-mention.\n"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
+	for _, want := range []string{
+		"Note: review of agent " + agentID + " is queued behind a full stage",
+		"multica issue assign MUL-7 --to-id " + agentID,
+		"starts no second run",
+		"Do not use a status wakeup",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, "wakeup create") {
+		t.Fatalf("a status wakeup bypasses the stage queue and must not be advised: %q", got)
+	}
+	if strings.Contains(got, "other") {
+		t.Fatalf("an unrelated deferral must stay silent: %q", got)
 	}
 	if strings.Contains(got, "started no run") {
 		t.Fatalf("must not print the started-no-run warning:\n%s", got)

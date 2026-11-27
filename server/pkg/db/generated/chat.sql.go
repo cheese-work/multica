@@ -1206,6 +1206,67 @@ func (q *Queries) CreateMikaOnboardingOpening(ctx context.Context, arg CreateMik
 	return i, err
 }
 
+const createModelChangeNoticeIdempotent = `-- name: CreateModelChangeNoticeIdempotent :one
+INSERT INTO chat_message (id, chat_session_id, role, content, message_kind, sent_via, created_at)
+VALUES (
+    $1, $2, 'assistant', $3,
+    'model_change_notice', 'system',
+    GREATEST($4::timestamptz,
+             COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $2), $4::timestamptz))
+)
+ON CONFLICT (id) DO NOTHING
+RETURNING id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id, reanchored_at
+`
+
+type CreateModelChangeNoticeIdempotentParams struct {
+	ID            pgtype.UUID        `json:"id"`
+	ChatSessionID pgtype.UUID        `json:"chat_session_id"`
+	Content       string             `json:"content"`
+	EventAt       pgtype.Timestamptz `json:"event_at"`
+}
+
+// One model change notice per native model transition (CHE-10140). The caller
+// derives id from the native event identity, so a replay conflicts and inserts
+// nothing: no row comes back and the caller publishes nothing. Same placement
+// rules as CreateCompactNoticeIdempotent: at the event time, clamped above the
+// segment floor, no task_id.
+func (q *Queries) CreateModelChangeNoticeIdempotent(ctx context.Context, arg CreateModelChangeNoticeIdempotentParams) (ChatMessage, error) {
+	row := q.db.QueryRow(ctx, createModelChangeNoticeIdempotent,
+		arg.ID,
+		arg.ChatSessionID,
+		arg.Content,
+		arg.EventAt,
+	)
+	var i ChatMessage
+	err := row.Scan(
+		&i.ID,
+		&i.ChatSessionID,
+		&i.Role,
+		&i.Content,
+		&i.TaskID,
+		&i.CreatedAt,
+		&i.FailureReason,
+		&i.ElapsedMs,
+		&i.MessageKind,
+		&i.ChannelMediaPendingUntil,
+		&i.ChannelIngested,
+		&i.QuickActions,
+		&i.ChannelContextRevision,
+		&i.ChannelOutboundType,
+		&i.ChannelOutboundInstallationID,
+		&i.ChannelOutboundChatID,
+		&i.ChannelOutboundMessageIds,
+		&i.ChannelTypingSettled,
+		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
+		&i.ClientMessageID,
+		&i.ReanchoredAt,
+	)
+	return i, err
+}
+
 const dMTitleJobExists = `-- name: DMTitleJobExists :one
 SELECT EXISTS (
     SELECT 1 FROM agent_task_queue

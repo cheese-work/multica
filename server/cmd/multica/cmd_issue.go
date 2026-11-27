@@ -2583,6 +2583,7 @@ func printWorkflowApprovalCard(cmd *cobra.Command, card map[string]any) error {
 }
 
 func printIssueUpdateResult(cmd *cobra.Command, result map[string]any) error {
+	warnBlockedTriggerOutcomes(os.Stderr, result)
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
 		headers := []string{"KEY", "TITLE", "STATUS", "PRIORITY"}
@@ -2662,6 +2663,7 @@ func runIssueAssign(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "Issue %s assigned to %s.\n", issueDisplayKey(result), displayTarget)
 	}
+	warnBlockedTriggerOutcomes(os.Stderr, result)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
@@ -2781,6 +2783,7 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "Issue %s status changed to %s.\n", issueDisplayKey(result), status)
 	}
+	warnBlockedTriggerOutcomes(os.Stderr, result)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "json" {

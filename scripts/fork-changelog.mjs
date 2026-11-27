@@ -22,6 +22,8 @@ const DEFAULT_START = "2026-10-11";
 const DEFAULT_SYNC_PREFIX = "upstream-sync/";
 const MAX_CODE_POINTS = 140;
 const ICT_OFFSET_MS = 7 * 60 * 60 * 1000;
+// CHE-10395: pr-guards starts only on opened, synchronize, reopened and ready_for_review, so a description edit alone never re-runs it.
+const RERUN_NOTE = "Editing the description does not re-run this check; push a commit or mark the PR ready for review.";
 
 const LINE = /^Changelog(?:\((feat|fix|perf)\))?:\s?([^\n]*)$/;
 const SECTIONS = { feat: "New Features", fix: "Bug Fixes", perf: "Improvements" };
@@ -214,7 +216,11 @@ export function evaluatePr(pr, options = {}) {
 // files: changed paths, or null when the list could not be read.
 export function formatCheck(evaluation, files = null) {
   if (evaluation.kind === "entry") {
-    return { line: `Entry: [${evaluation.section}] "${evaluation.text}"`, failing: evaluation.overLimit, warnings: evaluation.warnings };
+    const check = { line: `Entry: [${evaluation.section}] "${evaluation.text}"`, failing: evaluation.overLimit, warnings: evaluation.warnings };
+    if (evaluation.overLimit) {
+      check.error = `The Changelog line is ${[...evaluation.text].length} characters; the cap is ${MAX_CODE_POINTS}. Shorten it to one short sentence.`;
+    }
+    return check;
   }
   if (evaluation.reason === "none" && REQUIRES_LINE.has(evaluation.type)) {
     const line = `Hidden: none — add "Changelog: <sentence>" to publish`;
@@ -395,7 +401,8 @@ function runCheck(eventPath, filesPath, options, env) {
   console.log(check.line.replace(/[\r\n]+/g, " "));
   for (const message of check.warnings) console.log(`::warning::${escapeAnnotation(message)}`);
   if (check.failing) {
-    console.log(`::error::${escapeAnnotation(check.error ?? 'This PR has no valid Changelog line (feat/fix/perf need one; any line over 140 characters fails). Add "Changelog: <sentence>" or "Changelog: none" (none is only for internal-only changes).')}`);
+    const message = check.error ?? 'This PR has no valid Changelog line (feat/fix/perf need one; any line over 140 characters fails). Add "Changelog: <sentence>" or "Changelog: none" (none is only for internal-only changes).';
+    console.log(`::error::${escapeAnnotation(`${message} ${RERUN_NOTE}`)}`);
   }
   if (env.GITHUB_STEP_SUMMARY) {
     const lines = ["### Fork changelog", "", "```text", check.line.replace(/`/g, "'"), "```"];

@@ -100,18 +100,18 @@ test("non-migration PRs avoid main and open-PR scans", async () => {
   assert.equal(calls.length, 1);
 });
 
-test("all PR and file pages are scanned, including drafts and other base branches", async () => {
+test("all open PR pages are scanned, including drafts and other base branches", async () => {
   const filler = Array.from({ length: 100 }, () => ({ status: "modified", filename: "README.md" }));
-  const pulls = Array.from({ length: 100 }, (_, index) => ({ number: index + 10 }));
+  const pulls = Array.from({ length: 100 }, (_, index) => ({ number: index + 10, head: { sha: `h${index + 10}` } }));
   const routes = {
     "pulls/10/files?per_page=100&page=1": filler,
-    "pulls/10/files?per_page=100&page=2": [fileEntry(691)],
+    "git/trees/h10?recursive=1": { truncated: false, tree: [...pair(690, "main"), ...pair(691, "candidate")].map((path) => ({ type: "blob", path })) },
     "git/trees/main?recursive=1": { truncated: false, tree: [{ type: "blob", path: pair(690, "main")[0] }] },
     "pulls?state=open&per_page=100&page=1": pulls,
-    "pulls?state=open&per_page=100&page=2": [{ number: 424, draft: true, base: { ref: "stack" } }],
+    "pulls?state=open&per_page=100&page=2": [{ number: 424, draft: true, base: { ref: "stack" }, head: { sha: "h424" } }],
     ...Object.fromEntries(pulls.slice(1).map((pull) => [`pulls/${pull.number}/files?per_page=100&page=1`, []])),
     "pulls/424/files?per_page=100&page=1": filler,
-    "pulls/424/files?per_page=100&page=2": [fileEntry(691, "reserved")],
+    "git/trees/h424?recursive=1": { truncated: false, tree: [{ type: "blob", path: pair(691, "reserved")[0] }] },
   };
   const result = checkMigrationPrefixes(await collectMigrations({ ...options, fetcher: mockAPI(routes) }));
   assert.match(result.collisions.join("\n"), /PR #424/);
@@ -128,7 +128,81 @@ test("API failures, truncated trees, changed heads and file caps fail closed", a
   await assert.rejects(collectMigrations({ ...options, fetcher: mockAPI(routes) }), /Incomplete origin\/main/);
   routes["git/trees/main?recursive=1"].truncated = false;
   await assert.rejects(collectMigrations({ ...options, expectedHead: "old", fetcher: mockAPI(routes) }), /head changed/);
-  await assert.rejects(collectMigrations({ ...options, fetcher: async () => ({ ok: true, json: async () => Array(100).fill(fileEntry(691)) }) }), /3000-file limit/);
+});
+
+// CHE-10381: another open PR over the 3000-file list cap (draft sync slices) must not fail the check.
+// Its migrations come from its head git tree, new versus the main tree. Exact: no skip, no allowlist.
+function cappedRoutes({ headTree, headTruncated = false, headSha = "capsha" }) {
+  const filler = Array.from({ length: 100 }, () => ({ status: "modified", filename: "README.md" }));
+  const routes = {
+    "pulls/10/files?per_page=100&page=1": [fileEntry(691)],
+    "git/trees/main?recursive=1": { truncated: false, tree: pair(690, "main").map((path) => ({ type: "blob", path })) },
+    "pulls?state=open&per_page=100&page=1": [{ number: 424, draft: true, head: { sha: headSha } }],
+    [`git/trees/${headSha}?recursive=1`]: { truncated: headTruncated, tree: headTree.map((path) => ({ type: "blob", path })) },
+  };
+  // CHE-10381 round 1: a full first page is enough to switch to the head tree. Page 2 is not a route, so
+  // paging on (30 sequential requests per big PR, 38 s live) fails with "Unexpected request".
+  routes["pulls/424/files?per_page=100&page=1"] = filler;
+  return routes;
+}
+
+test("a capped open PR reads migrations from its head tree and a collision still fails", async () => {
+  const calls = [];
+  const routes = cappedRoutes({ headTree: [...pair(690, "main"), ...pair(691, "reserved"), "README.md"] });
+  const input = await collectMigrations({ ...options, fetcher: mockAPI(routes, calls) });
+  assert.deepEqual(input.pulls, [{ number: 424, files: pair(691, "reserved") }]);
+  assert.ok(calls.includes("git/trees/capsha?recursive=1"));
+  const result = checkMigrationPrefixes(input);
+  assert.deepEqual(result.collisions, ["691_candidate collides with PR #424 (691_reserved)"]);
+});
+
+test("a capped open PR without a colliding migration passes", async () => {
+  const routes = cappedRoutes({ headTree: [...pair(690, "main"), ...pair(692, "reserved")] });
+  const result = checkMigrationPrefixes(await collectMigrations({ ...options, fetcher: mockAPI(routes) }));
+  assert.deepEqual(result.collisions, []);
+  assert.equal(result.nextFree, 693);
+});
+
+test("a capped open PR fails closed on a truncated or missing head tree", async () => {
+  const truncated = cappedRoutes({ headTree: pair(691, "reserved"), headTruncated: true });
+  await assert.rejects(collectMigrations({ ...options, fetcher: mockAPI(truncated) }), /Incomplete head tree of PR #424/);
+  const noHead = cappedRoutes({ headTree: [] });
+  noHead["pulls?state=open&per_page=100&page=1"] = [{ number: 424, draft: true }];
+  await assert.rejects(collectMigrations({ ...options, fetcher: mockAPI(noHead) }), /no head commit/);
+});
+
+// CHE-10449: the PR under check over the 3000-file list cap (the upstream sync PR) reads its own migrations
+// from its head git tree, new versus the main tree, the same way as another capped open PR.
+function selfCappedRoutes({ headTree, headTruncated = false, openPulls }) {
+  const filler = Array.from({ length: 100 }, () => ({ status: "modified", filename: "README.md" }));
+  const routes = {
+    "git/trees/main?recursive=1": { truncated: false, tree: pair(690, "main").map((path) => ({ type: "blob", path })) },
+    "pulls?state=open&per_page=100&page=1": openPulls ?? [{ number: 10, head: { sha: "selfsha" } }],
+    "git/trees/selfsha?recursive=1": { truncated: headTruncated, tree: headTree.map((path) => ({ type: "blob", path })) },
+  };
+  routes["pulls/10/files?per_page=100&page=1"] = filler; // page 2 is not a route: paging on fails.
+  return routes;
+}
+
+test("the PR under check over the 3000-file cap reads migrations from its head tree", async () => {
+  const calls = [];
+  const routes = selfCappedRoutes({ headTree: [...pair(690, "main"), ...pair(691, "candidate"), "README.md"] });
+  const input = await collectMigrations({ ...options, expectedHead: "selfsha", fetcher: mockAPI(routes, calls) });
+  assert.deepEqual(input.files, pair(691, "candidate"));
+  assert.ok(calls.includes("git/trees/selfsha?recursive=1"));
+  assert.deepEqual(checkMigrationPrefixes(input).collisions, []);
+});
+
+test("the capped PR under check still collides with main and fails closed on a bad head tree", async () => {
+  const colliding = selfCappedRoutes({ headTree: pair(690, "candidate") });
+  const input = await collectMigrations({ ...options, fetcher: mockAPI(colliding) });
+  assert.deepEqual(checkMigrationPrefixes(input).collisions, ["690_candidate collides with origin/main (690_main)"]);
+  const truncated = selfCappedRoutes({ headTree: pair(691, "candidate"), headTruncated: true });
+  await assert.rejects(collectMigrations({ ...options, fetcher: mockAPI(truncated) }), /Incomplete head tree of PR #10/);
+  const noHead = selfCappedRoutes({ headTree: [], openPulls: [{ number: 10 }] });
+  await assert.rejects(collectMigrations({ ...options, fetcher: mockAPI(noHead) }), /no head commit/);
+  const gone = selfCappedRoutes({ headTree: [], openPulls: [] });
+  await assert.rejects(collectMigrations({ ...options, fetcher: mockAPI(gone) }), /no head commit/);
 });
 
 test("one deadline bounds the entire API scan", async () => {

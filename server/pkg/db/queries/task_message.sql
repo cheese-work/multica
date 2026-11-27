@@ -136,3 +136,9 @@ ORDER BY seq ASC;
 SELECT id, created_at, input FROM task_message
 WHERE task_id = $1 AND type = 'context_compacted'
 ORDER BY seq ASC;
+
+-- name: ListTaskModelChangeMessages :many
+-- The run messages a model change notice is projected from (CHE-10140).
+SELECT id, created_at, input FROM task_message
+WHERE task_id = $1 AND type = 'model_change'
+ORDER BY seq ASC;

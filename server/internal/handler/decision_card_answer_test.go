@@ -62,6 +62,9 @@ func TestCardOptionAnswerRecordsOnThatCardWithoutDMRun(test *testing.T) {
 	if role != "user" || sentVia != "interactive_jwt" || !taskless {
 		test.Fatalf("answer message = %s/%s/taskless=%v", role, sentVia, taskless)
 	}
+	var issueKey string
+	dbfx.QueryRow(test, `SELECT workspace.issue_prefix || '-' || issue.number::text FROM issue JOIN workspace ON workspace.id = issue.workspace_id WHERE issue.id = $1`, fixture.issueID).Scan(&issueKey)
+	requireOpenIssueFooter(test, result.Message.Content, issueKey, fixture.issueID)
 	if runs := dbfx.Count(test, `SELECT count(*) FROM agent_task_queue WHERE chat_session_id = $1`, fixture.sessionID); runs != runsBefore {
 		test.Fatalf("DM runs went %d -> %d", runsBefore, runs)
 	}

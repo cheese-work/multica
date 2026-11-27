@@ -22,6 +22,7 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/plugincontract"
+	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
 
 // PluginService owns plugin publishing, installation, configuration, and
@@ -63,6 +64,9 @@ type PluginService struct {
 	// a public endpoint always goes through the SSRF-guarded client and this
 	// field cannot widen what a deployment can reach.
 	HookClient *http.Client
+	// HookResolver resolves a public hook endpoint's host before the call. Nil
+	// uses the system resolver; only tests set it.
+	HookResolver remotemcp.Resolver
 }
 
 func NewPluginService(queries *db.Queries, txStarter TxStarter) *PluginService {
@@ -427,6 +431,9 @@ func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID p
 		if scheduleErr := s.reconcilePluginHookSchedules(ctx, queries, installation, manifest); scheduleErr != nil {
 			return db.PluginInstallation{}, scheduleErr
 		}
+		if keyErr := s.reconcilePluginGuardMetadataKeys(ctx, queries, installation, manifest); keyErr != nil {
+			return db.PluginInstallation{}, keyErr
+		}
 		if auditErr := audit.run(ctx, queries, PluginChange{After: &installation}); auditErr != nil {
 			return db.PluginInstallation{}, auditErr
 		}
@@ -487,6 +494,9 @@ func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID p
 		return db.PluginInstallation{}, err
 	}
 	if err := s.reconcilePluginHookSchedules(ctx, queries, updated, manifest); err != nil {
+		return db.PluginInstallation{}, err
+	}
+	if err := s.reconcilePluginGuardMetadataKeys(ctx, queries, updated, manifest); err != nil {
 		return db.PluginInstallation{}, err
 	}
 	if err := audit.run(ctx, queries, PluginChange{Before: &existing, After: &updated}); err != nil {
@@ -748,6 +758,9 @@ func (s *PluginService) SetEnabled(ctx context.Context, installation db.PluginIn
 	if err := s.setPluginHookSchedulesEnabled(ctx, queries, installation.ID, enabled); err != nil {
 		return db.PluginInstallation{}, err
 	}
+	if err := s.setPluginGuardMetadataKeysEnabled(ctx, queries, installation.ID, enabled); err != nil {
+		return db.PluginInstallation{}, err
+	}
 	if err := audit.run(ctx, queries, PluginChange{Before: &installation, After: &updated}); err != nil {
 		return db.PluginInstallation{}, err
 	}
@@ -771,6 +784,9 @@ func (s *PluginService) Uninstall(ctx context.Context, installation db.PluginIns
 	queries := s.Queries.WithTx(tx)
 	if err := queries.DeletePluginHookSchedulesByInstallation(ctx, installation.ID); err != nil {
 		return &PluginError{Kind: PluginErrorUnavailable, Message: "delete plugin hook schedules", Err: err}
+	}
+	if err := queries.DeletePluginGuardMetadataKeysByInstallation(ctx, installation.ID); err != nil {
+		return &PluginError{Kind: PluginErrorUnavailable, Message: "delete plugin guard metadata keys", Err: err}
 	}
 	if err := queries.DeletePluginStorageByInstallation(ctx, installation.ID); err != nil {
 		return &PluginError{Kind: PluginErrorUnavailable, Message: "delete plugin storage", Err: err}

@@ -160,7 +160,7 @@ func withLocalPluginSourceIn(t *testing.T, root string, manifest string) string 
 	testHandler.PluginService.LocalDir = root
 	testHandler.PluginService.Host = plugincontract.Capabilities{
 		SurfaceTypes:  map[string]bool{plugincontract.SurfaceIssuePanel: true, plugincontract.SurfaceSidebarPanel: true, plugincontract.SurfaceModal: true},
-		HookTriggers:  map[string]bool{plugincontract.TriggerUI: true, plugincontract.TriggerManual: true, plugincontract.TriggerAgent: true, plugincontract.TriggerEvent: true, plugincontract.TriggerSchedule: true},
+		HookTriggers:  map[string]bool{plugincontract.TriggerUI: true, plugincontract.TriggerManual: true, plugincontract.TriggerAgent: true, plugincontract.TriggerEvent: true, plugincontract.TriggerSchedule: true, plugincontract.TriggerGuard: true},
 		HookTransport: map[string]bool{plugincontract.TransportHTTP: true, plugincontract.TransportMCP: true},
 		ResourceTypes: map[string]bool{plugincontract.ResourceSkill: true},
 	}
@@ -207,6 +207,7 @@ func cleanupPluginInstallations(t *testing.T) {
 		ctx := context.Background()
 		testPool.Exec(ctx, `DELETE FROM plugin_invocation WHERE installation_id IN (SELECT id FROM plugin_installation WHERE workspace_id = $1)`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM plugin_hook_schedule WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM plugin_guard_metadata_key WHERE workspace_id = $1`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM plugin_storage WHERE installation_id IN (SELECT id FROM plugin_installation WHERE workspace_id = $1)`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM plugin_secret WHERE installation_id IN (SELECT id FROM plugin_installation WHERE workspace_id = $1)`, testWorkspaceID)
 		testPool.Exec(ctx, `DELETE FROM plugin_installation WHERE workspace_id = $1`, testWorkspaceID)

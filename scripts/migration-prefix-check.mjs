@@ -58,18 +58,22 @@ export async function collectMigrations({ repository, number, token, expectedHea
     if (!response.ok) throw new Error(`GitHub ${endpoint}: HTTP ${response.status}`);
     return response.json();
   }
-  async function pages(endpoint, limit = Infinity) {
+  async function pages(endpoint) {
     const entries = [];
     for (let page = 1; ; page++) {
       const batch = await request(`${endpoint}${endpoint.includes("?") ? "&" : "?"}per_page=100&page=${page}`);
       if (!Array.isArray(batch)) throw new Error(`Invalid GitHub list: ${endpoint}`);
       entries.push(...batch);
-      if (entries.length >= limit) throw new Error(`GitHub ${endpoint} reached its ${limit}-file limit; cannot verify all migrations`);
       if (batch.length < 100) return entries;
     }
   }
-  const files = addedMigrations(await pages(`pulls/${number}/files`, 3000));
-  if (files.length === 0) return { files, main: [], pulls: [] };
+  // A full first page means 100 or more changed files. GitHub caps the files list at 3000 and paging to the cap
+  // is too slow for the CI deadline (CHE-10449), so a PR with a full first page is read from its head tree.
+  const first = await request(`pulls/${number}/files?per_page=100&page=1`);
+  if (!Array.isArray(first)) throw new Error(`Invalid GitHub list: pulls/${number}/files`);
+  const large = first.length >= 100;
+  let files = addedMigrations(first);
+  if (!large && files.length === 0) return { files, main: [], pulls: [] };
   const [tree, openPulls] = await Promise.all([
     request("git/trees/main?recursive=1"),
     pages("pulls?state=open"),
@@ -78,15 +82,31 @@ export async function collectMigrations({ repository, number, token, expectedHea
   if (expectedHead && openPulls.find((pull) => pull.number === number)?.head?.sha !== expectedHead) {
     throw new Error("PR head changed or closed; rerun the check on the current head");
   }
+  const mainPaths = new Set(tree.tree.filter((entry) => entry.type === "blob").map((entry) => entry.path));
+  // CHE-10381: GitHub caps the PR files list at 3000. For another open PR with a large file list, read
+  // its migrations from its head git tree, new versus the main tree. Never skip the PR.
+  async function headTreeMigrations(pull) {
+    if (!pull.head?.sha) throw new Error(`PR #${pull.number} has no head commit; cannot verify all migrations`);
+    const head = await request(`git/trees/${pull.head.sha}?recursive=1`);
+    if (head.truncated !== false || !Array.isArray(head.tree)) throw new Error(`Incomplete head tree of PR #${pull.number}; cannot verify all migrations`);
+    return head.tree.filter((entry) => entry.type === "blob" && !mainPaths.has(entry.path)).map((entry) => entry.path)
+      .filter((path) => MIGRATION.test(path));
+  }
+  if (large) files = await headTreeMigrations(openPulls.find((pull) => pull.number === number) ?? { number });
   const pending = openPulls.filter((pull) => pull.number !== number);
   const pulls = [];
   await Promise.all(Array.from({ length: Math.min(8, pending.length) }, async () => {
     for (let pull = pending.shift(); pull; pull = pending.shift()) {
-      pulls.push({ number: pull.number, files: addedMigrations(await pages(`pulls/${pull.number}/files`, 3000)) });
+      // A full first page means 100 or more changed files. Paging on costs up to 30 sequential requests per
+      // PR (38 s live, over the 25 s CI deadline), so read the head tree instead: one request, exact.
+      const first = await request(`pulls/${pull.number}/files?per_page=100&page=1`);
+      if (!Array.isArray(first)) throw new Error(`Invalid GitHub list: pulls/${pull.number}/files`);
+      const added = first.length < 100 ? addedMigrations(first) : await headTreeMigrations(pull);
+      pulls.push({ number: pull.number, files: added });
     }
   }));
   pulls.sort((left, right) => left.number - right.number);
-  return { files, main: tree.tree.filter((entry) => entry.type === "blob").map((entry) => entry.path), pulls };
+  return { files, main: [...mainPaths], pulls };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

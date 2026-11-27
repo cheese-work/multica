@@ -4293,6 +4293,26 @@ func (h *Handler) resolveMentionedAgentCommentTriggers(ctx context.Context, issu
 	return triggers, targets
 }
 
+// CanModifyComment reports whether an actor may edit or delete a comment.
+// Authors always may. A human owner or admin may modify anyone's comment. An
+// agent run never gets that override: its task token carries the owner's
+// workspace role, so honouring the role would let any agent rewrite or remove
+// another agent's comment, verdicts included.
+func CanModifyComment(actorType string, isAuthor bool, memberRole string) bool {
+	if isAuthor {
+		return true
+	}
+	return actorType != "agent" && roleAllowed(memberRole, "owner", "admin")
+}
+
+// CommentProtectionOn reports whether comment protection is in force: an agent
+// run that did not write a comment cannot modify it, even with an owner role.
+// It evaluates CanModifyComment on that synthetic case and is the probe the
+// service layer's VerifiedSigners takes (CHE-10267).
+func CommentProtectionOn() bool {
+	return !CanModifyComment("agent", false, "owner")
+}
+
 func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	r = h.withWakeupActor(r)
 	commentId := chi.URLParam(r, "commentId")
@@ -4341,8 +4361,7 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	isAuthor := existing.AuthorType == actorType && uuidToString(existing.AuthorID) == actorID
-	isAdmin := roleAllowed(member.Role, "owner", "admin")
-	if !isAuthor && !isAdmin {
+	if !CanModifyComment(actorType, isAuthor, member.Role) {
 		writeError(w, http.StatusForbidden, "only comment author or admin can edit")
 		return
 	}
@@ -4671,8 +4690,7 @@ func (h *Handler) DeleteComment(w http.ResponseWriter, r *http.Request) {
 
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 	isAuthor := comment.AuthorType == actorType && uuidToString(comment.AuthorID) == actorID
-	isAdmin := roleAllowed(member.Role, "owner", "admin")
-	if !isAuthor && !isAdmin {
+	if !CanModifyComment(actorType, isAuthor, member.Role) {
 		writeError(w, http.StatusForbidden, "only comment author or admin can delete")
 		return
 	}
