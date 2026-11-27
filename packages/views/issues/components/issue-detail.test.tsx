@@ -563,6 +563,9 @@ vi.mock("@multica/core/issues/stores", async () => ({
       const state = {
         drafts,
         getDraft: () => undefined,
+        getPendingAnnotation: () => undefined,
+        setPendingAnnotation: () => {},
+        clearPendingAnnotation: () => {},
         getAnnotations: (draftKey: string) => drafts[draftKey]?.annotations ?? emptyDraftAttachments,
         getAttachments: () => emptyDraftAttachments,
         getUploads: () => emptyDraftAttachments,
@@ -582,6 +585,9 @@ vi.mock("@multica/core/issues/stores", async () => ({
       getState: () => ({
         drafts: mockDraftStoreState.getDrafts(),
         getDraft: () => undefined,
+        getPendingAnnotation: () => undefined,
+        setPendingAnnotation: () => {},
+        clearPendingAnnotation: () => {},
         getAnnotations: (draftKey: string) => mockDraftStoreState.getDrafts()[draftKey]?.annotations ?? emptyDraftAttachments,
         updateAnnotation: (draftKey: string, annotationId: string, note: string) => {
           const draft = mockDraftStoreState.getDrafts()[draftKey];
