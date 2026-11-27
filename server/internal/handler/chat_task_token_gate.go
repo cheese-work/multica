@@ -65,6 +65,9 @@ var chatRouteClasses = map[string]chatRouteClass{
 
 	// Chat wakeups. The agent-facing routes are scoped to the token's own DM;
 	// my-wakeups lists every chat of the owner, which no agent-side caller needs.
+	// The member-facing /sessions/{id}/wakeups/{id} routes are denied: a token
+	// carries the runtime owner's id, and those handlers let the wakeup's
+	// requester act, so a run another member started would act as the owner.
 	"GET /api/chat/my-wakeups":                                      chatRouteDeny,
 	"GET /api/chat/wakeups/":                                        chatRouteMetadata,
 	"POST /api/chat/wakeups/":                                       chatRouteWrite,
@@ -72,16 +75,16 @@ var chatRouteClasses = map[string]chatRouteClass{
 	"POST /api/chat/wakeups/{wakeupId}/cancel":                      chatRouteWrite,
 	"POST /api/chat/wakeups/{wakeupId}/finish":                      chatRouteWrite,
 	"POST /api/chat/wakeups/{wakeupId}/checkin":                     chatRouteWrite,
-	"PATCH /api/chat/sessions/{sessionId}/wakeups/{wakeupId}":       chatRouteWrite,
-	"POST /api/chat/sessions/{sessionId}/wakeups/{wakeupId}/cancel": chatRouteWrite,
-	"POST /api/chat/sessions/{sessionId}/wakeups/{wakeupId}/retry":  chatRouteWrite,
+	"PATCH /api/chat/sessions/{sessionId}/wakeups/{wakeupId}":       chatRouteDeny,
+	"POST /api/chat/sessions/{sessionId}/wakeups/{wakeupId}/cancel": chatRouteDeny,
+	"POST /api/chat/sessions/{sessionId}/wakeups/{wakeupId}/retry":  chatRouteDeny,
 
 	"POST /api/chat/sessions/":                                             chatRouteWrite,
 	"PATCH /api/chat/sessions/{sessionId}/":                                chatRouteWrite,
 	"DELETE /api/chat/sessions/{sessionId}/":                               chatRouteWrite,
 	"PATCH /api/chat/sessions/{sessionId}/pin":                             chatRouteWrite,
 	"PATCH /api/chat/sessions/{sessionId}/archive":                         chatRouteWrite,
-	"DELETE /api/chat/sessions/{sessionId}/wakeups/{wakeupId}":             chatRouteWrite,
+	"DELETE /api/chat/sessions/{sessionId}/wakeups/{wakeupId}":             chatRouteDeny,
 	"POST /api/chat/sessions/{sessionId}/messages":                         chatRouteWrite,
 	"POST /api/chat/sessions/{sessionId}/continue":                         chatRouteWrite,
 	"POST /api/chat/sessions/{sessionId}/fork":                             chatRouteWrite,
