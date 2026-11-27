@@ -5889,21 +5889,25 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	var issue db.Issue
 	attachmentsChanged := false
-	if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 || issueBlockerGraphTouched(rawFields) {
-		var lockedPrev db.Issue
-		issue, lockedPrev, attachmentsChanged, err = h.updateIssueAtomically(
-			writeCtx, prevIssue.WorkspaceID, params, withWorkflowAssignee(rawFields, handoff), blockers, req.TitleBase, req.DescriptionBase, req.DescriptionBaseRevision, attachmentIDs, statusKeyForGuard, workflowWrite,
-		)
-		if lockedPrev.ID.Valid {
-			prevIssue = lockedPrev
+	err = h.withPluginGuard(writeCtx, workflowWrite, func() error {
+		var writeErr error
+		if req.Description != nil || req.TitleBase != nil || req.DescriptionBase != nil || len(attachmentIDs) > 0 || issueBlockerGraphTouched(rawFields) {
+			var lockedPrev db.Issue
+			issue, lockedPrev, attachmentsChanged, writeErr = h.updateIssueAtomically(
+				writeCtx, prevIssue.WorkspaceID, params, withWorkflowAssignee(rawFields, handoff), blockers, req.TitleBase, req.DescriptionBase, req.DescriptionBaseRevision, attachmentIDs, statusKeyForGuard, workflowWrite,
+			)
+			if lockedPrev.ID.Valid {
+				prevIssue = lockedPrev
+			}
+		} else {
+			var lockedPrev db.Issue
+			issue, lockedPrev, writeErr = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite, rawFields, handoff != nil)
+			if lockedPrev.ID.Valid {
+				prevIssue = lockedPrev
+			}
 		}
-	} else {
-		var lockedPrev db.Issue
-		issue, lockedPrev, err = h.updateIssueWithStatusGuard(writeCtx, prevIssue.WorkspaceID, statusKeyForGuard, params, workflowWrite, rawFields, handoff != nil)
-		if lockedPrev.ID.Valid {
-			prevIssue = lockedPrev
-		}
-	}
+		return writeErr
+	})
 	if err != nil {
 		h.flushRefusedIntakeCall(r.Context(), workflowWrite)
 		if writeIssueBlockerError(w, err) || writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeHandoffCommentError(w, err) || h.writeHandoffOperationError(r.Context(), w, err) || writeIssueWorkflowError(r.Context(), w, err) || writeBudgetRebindingError(w, err) {

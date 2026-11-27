@@ -79,6 +79,9 @@ type workflowWrite struct {
 	// Step entry gates bind explicit status writes only.
 	system bool
 	entry  entryWrite
+	// guard holds the verdicts of the step's plugin gates, got before the
+	// transaction and consumed by checkEntry only when their fingerprint holds.
+	guard *pluginGuardState
 	// capped is set when the write moved the issue to need_decision because its
 	// review rounds ran out; the card opens after the commit (CHE-6192).
 	capped *roundsCap

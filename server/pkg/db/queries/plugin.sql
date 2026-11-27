@@ -378,3 +378,19 @@ UPDATE plugin_installation
 SET mcp_approvals = $2, updated_at = now()
 WHERE id = $1
 RETURNING *;
+
+-- name: GetWorkspacePluginInstallationByKeyForShare :one
+-- Read inside a status write under the issue lock: a concurrent upgrade, disable
+-- or uninstall of the installation waits for the write, or the write waits for it.
+SELECT * FROM plugin_installation
+WHERE workspace_id = $1 AND plugin_key = $2
+FOR SHARE;
+
+-- name: GetNewestMetadataWriteForKey :one
+-- The newest metadata_written row of one declared key on an issue: who wrote it
+-- last. Its id is part of the guard verdict fingerprint, so a rewrite of the
+-- same value by another actor is a different row.
+SELECT * FROM activity_log
+WHERE issue_id = $1 AND action = 'metadata_written' AND details->>'key' = sqlc.arg(key)::text
+ORDER BY created_at DESC, id DESC
+LIMIT 1;

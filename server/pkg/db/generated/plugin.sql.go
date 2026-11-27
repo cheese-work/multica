@@ -549,6 +549,37 @@ func (q *Queries) DisablePluginHookSchedules(ctx context.Context, installationID
 	return err
 }
 
+const getNewestMetadataWriteForKey = `-- name: GetNewestMetadataWriteForKey :one
+SELECT id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at FROM activity_log
+WHERE issue_id = $1 AND action = 'metadata_written' AND details->>'key' = $2::text
+ORDER BY created_at DESC, id DESC
+LIMIT 1
+`
+
+type GetNewestMetadataWriteForKeyParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	Key     string      `json:"key"`
+}
+
+// The newest metadata_written row of one declared key on an issue: who wrote it
+// last. Its id is part of the guard verdict fingerprint, so a rewrite of the
+// same value by another actor is a different row.
+func (q *Queries) GetNewestMetadataWriteForKey(ctx context.Context, arg GetNewestMetadataWriteForKeyParams) (ActivityLog, error) {
+	row := q.db.QueryRow(ctx, getNewestMetadataWriteForKey, arg.IssueID, arg.Key)
+	var i ActivityLog
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.IssueID,
+		&i.ActorType,
+		&i.ActorID,
+		&i.Action,
+		&i.Details,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getPluginHookSchedule = `-- name: GetPluginHookSchedule :one
 SELECT id, installation_id, workspace_id, hook_key, cron_expression, timezone, generation, activated_at, next_run_at, enabled, created_at, updated_at FROM plugin_hook_schedule WHERE id = $1
 `
@@ -790,6 +821,42 @@ type GetWorkspacePluginInstallationByKeyParams struct {
 
 func (q *Queries) GetWorkspacePluginInstallationByKey(ctx context.Context, arg GetWorkspacePluginInstallationByKeyParams) (PluginInstallation, error) {
 	row := q.db.QueryRow(ctx, getWorkspacePluginInstallationByKey, arg.WorkspaceID, arg.PluginKey)
+	var i PluginInstallation
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PluginKey,
+		&i.Version,
+		&i.Manifest,
+		&i.GrantedScopes,
+		&i.Config,
+		&i.Enabled,
+		&i.InstalledBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.TokenHash,
+		&i.TokenRotatedAt,
+		&i.McpApprovals,
+		&i.PackageVersionID,
+	)
+	return i, err
+}
+
+const getWorkspacePluginInstallationByKeyForShare = `-- name: GetWorkspacePluginInstallationByKeyForShare :one
+SELECT id, workspace_id, plugin_key, version, manifest, granted_scopes, config, enabled, installed_by, created_at, updated_at, token_hash, token_rotated_at, mcp_approvals, package_version_id FROM plugin_installation
+WHERE workspace_id = $1 AND plugin_key = $2
+FOR SHARE
+`
+
+type GetWorkspacePluginInstallationByKeyForShareParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	PluginKey   string      `json:"plugin_key"`
+}
+
+// Read inside a status write under the issue lock: a concurrent upgrade, disable
+// or uninstall of the installation waits for the write, or the write waits for it.
+func (q *Queries) GetWorkspacePluginInstallationByKeyForShare(ctx context.Context, arg GetWorkspacePluginInstallationByKeyForShareParams) (PluginInstallation, error) {
+	row := q.db.QueryRow(ctx, getWorkspacePluginInstallationByKeyForShare, arg.WorkspaceID, arg.PluginKey)
 	var i PluginInstallation
 	err := row.Scan(
 		&i.ID,
