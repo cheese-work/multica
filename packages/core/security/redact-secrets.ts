@@ -13,11 +13,11 @@ const patterns = (
 
 const genericCredentialPattern = /(?:API_KEY|API_SECRET|SECRET_KEY|SECRET|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL|PASSWORD|TOKEN)\s*[=:]\s*/gi;
 // Prose-safe subset of the keyword rule. Agent prose says "the password field" and
-// "| Token: input, output |", so a bare keyword never triggers. It needs an
+// "| Token: input, output |", so a bare keyword never triggers on its own. It needs an
 // assignment shape: compound names (API_KEY, DB_PASSWORD) with "=" or ":", a bare
-// keyword glued to "=", or a bare keyword with ":" followed by a secret-looking
-// token (8+ chars with a digit).
-const proseCredentialPattern = /(?:API_KEY|API_SECRET|SECRET_KEY|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL)[ \t]*[=:][ \t]*|(?:SECRET|PASSWORD|TOKEN)=|(?:SECRET|PASSWORD|TOKEN)[ \t]*:[ \t]*(?=\S*\d)(?=\S{8})/gi;
+// keyword with "=" (spaces allowed), or a bare keyword with ":" followed by a
+// secret-looking token (6+ chars with a digit).
+const proseCredentialPattern = /(?:API_KEY|API_SECRET|SECRET_KEY|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL)[ \t]*[=:][ \t]*|(?:SECRET|PASSWORD|TOKEN)[ \t]*=[ \t]*|(?:SECRET|PASSWORD|TOKEN)[ \t]*:[ \t]*(?=\S*\d)(?=\S{6})/gi;
 const credentialReferencePattern = /^(?:\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})|<[A-Za-z_][A-Za-z0-9_-]*>|\*{3,})/;
 
 function credentialReferenceLength(value: string): number {

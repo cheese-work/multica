@@ -152,6 +152,9 @@ describe("redactProse and redactForType", () => {
   it("redactProse masks generic credentials written as assignments", () => {
     const cases: [string, string][] = [
       ["password=hunter2", "password=[REDACTED]"],
+      ["password = hunter2", "password = [REDACTED]"],
+      ["password: hunter2", "password: [REDACTED]"],
+      ["token = abc", "token = [REDACTED]"],
       ["Set DB_PASSWORD=hunter2 and retry", "Set DB_PASSWORD=[REDACTED] and retry"],
       ["api_key: abc123xyz", "api_key: [REDACTED]"],
       ["API_KEY = abc123xyz.", "API_KEY = [REDACTED]"],
@@ -173,6 +176,8 @@ describe("redactProse and redactForType", () => {
       "The token: input, output, cache read",
       "Your secret is safe with us",
       "password: required",
+      "Token: 12 per hour",
+      "the password is stored in the vault",
       "Set API_KEY=$API_KEY in the shell",
       "Use DB_PASSWORD=<your-password> here",
       "api_key: ***",
