@@ -73,6 +73,7 @@ export function ChatSessionHeader({
   onCompact,
   onSetPreset,
   leading,
+  attention,
 }: {
   session: ChatSession;
   agent: Agent | null;
@@ -102,6 +103,8 @@ export function ChatSessionHeader({
    * back to the list at compact widths. Nothing renders there without one.
    */
   leading?: ReactNode;
+  /** The Needs you drawer button; the page renders it only below 1280px. */
+  attention?: ReactNode;
 }) {
   const { t } = useT("chat");
   const { t: tCommon } = useT("common");
@@ -288,6 +291,7 @@ export function ChatSessionHeader({
         leaf={leaf}
         actions={
           <>
+            {attention}
             <OpenDecisionsBadge />
             {isArchived ? null : (
               <ScheduledWakeupsChip sessionId={session.id} agentName={agent?.name} />

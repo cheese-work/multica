@@ -92,6 +92,7 @@ vi.mock("@multica/ui/components/ui/resizable", () => ({
 vi.mock("@multica/ui/hooks/use-mobile", () => ({
   useIsMobile: () => layout.width < 768,
   useIsCompact: () => layout.width < 1024,
+  useIsBelowDock: () => layout.width < 1280,
 }));
 vi.mock("@multica/core/paths", () => ({
   useRequiredWorkspaceSlug: () => "acme",

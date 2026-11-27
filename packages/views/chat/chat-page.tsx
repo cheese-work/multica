@@ -30,6 +30,8 @@ import { useT } from "../i18n";
 import { ChatMessageList, ChatMessageSkeleton } from "./components/chat-message-list";
 import { ChatInput } from "./components/chat-input";
 import { ChatQueue } from "./components/chat-queue";
+import { AttentionDock, AttentionDrawer } from "./components/attention-dock";
+import { useAttentionRefresh } from "./components/use-attention-refresh";
 import { ChatThreadList } from "./components/chat-thread-list";
 import { ChatSessionHeader } from "./components/chat-session-header";
 import { useChatRename } from "./components/use-chat-rename";
@@ -412,6 +414,9 @@ export function ChatPage() {
   );
 
   const compactConversation = isCompact && (!!c.activeSessionId || composingNew);
+  // The compact conversation unmounts the thread list, the usual refresh owner,
+  // so the page keeps one running: a due `/later` reminder lands without navigation.
+  useAttentionRefresh(c.sessions, compactConversation);
   // Nothing to talk to and nothing to reread: the composer would only be a
   // disabled box, so the page explains the prerequisite instead.
   const noAgentPage = c.noAgent && c.sessions.length === 0;
@@ -478,6 +483,7 @@ export function ChatPage() {
               <CollapsedNavTrigger />
             ) : undefined
           }
+          attention={<AttentionDrawer sessions={c.sessions} agents={c.agents} />}
           session={c.currentSession}
           agent={c.activeAgent}
           onArchive={handleArchive}
@@ -661,18 +667,21 @@ export function ChatPage() {
         {listHeader}
         <div className="min-h-0 flex-1 overflow-y-auto">{listBody}</div>
       </ListColumn>
-      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
-        {listCollapsed && !c.currentSession && <PageHeader>{newChatButton}</PageHeader>}
-        {hasTarget ? (
-          conversation
-        ) : noAgentPage ? (
-          noAgentState
-        ) : (
-          <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
-            <MessageSquare className="h-10 w-10 text-faint-foreground" />
-            <p className="text-body">{t(($) => $.page.select_prompt)}</p>
-          </div>
-        )}
+      <div className="flex h-full min-h-0 min-w-0 flex-1">
+        <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
+          {listCollapsed && !c.currentSession && <PageHeader>{newChatButton}</PageHeader>}
+          {hasTarget ? (
+            conversation
+          ) : noAgentPage ? (
+            noAgentState
+          ) : (
+            <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
+              <MessageSquare className="h-10 w-10 text-faint-foreground" />
+              <p className="text-body">{t(($) => $.page.select_prompt)}</p>
+            </div>
+          )}
+        </div>
+        {hasTarget && <AttentionDock sessions={c.sessions} agents={c.agents} />}
       </div>
     </div>
   );
