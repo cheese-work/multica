@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
@@ -192,7 +193,7 @@ func TestRuntimeMemberSharingDecidesOnLockedRow(t *testing.T) {
 	shared := []string{memberID}
 	req := UpdateAgentRuntimeRequest{SharedWith: &shared, sharedWithIDs: []pgtype.UUID{mustTestUUID(t, memberID)}}
 	sharing := testHandler.paidFeature(context.Background(), stale.WorkspaceID, entitlement.FeatureRuntimeMemberSharing)
-	_, _, _, _, err = testHandler.updateRuntimeAccessIfNoDependencies(context.Background(), stale, owner, req, sharing)
+	_, _, _, _, err = testHandler.updateRuntimeAccessIfNoDependencies(context.Background(), httptest.NewRequest(http.MethodPatch, "/", nil), stale, owner, req, sharing)
 	if !errors.Is(err, errRuntimeFeatureLocked) {
 		t.Fatalf("stale re-add err = %v, want errRuntimeFeatureLocked", err)
 	}

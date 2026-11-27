@@ -633,7 +633,7 @@ func (h *Handler) UpdateAgentRuntime(w http.ResponseWriter, r *http.Request) {
 		if runtimeShareRequestMayAdd(req) {
 			sharing = h.paidFeature(r.Context(), rt.WorkspaceID, entitlement.FeatureRuntimeMemberSharing)
 		}
-		updated, plan, didChange, admission, err := h.updateRuntimeAccessIfNoDependencies(r.Context(), rt, member, req, sharing)
+		updated, plan, didChange, admission, err := h.updateRuntimeAccessIfNoDependencies(r.Context(), r, rt, member, req, sharing)
 		if err != nil {
 			if failedAudit(w, r, err, "runtime.access.update") || writeRuntimeRevocationBusy(w, err) {
 				return
@@ -866,7 +866,7 @@ func (p runtimeWorkspaceAccessRevocationPlan) hasDependencies() bool {
 // sharing is runtime_member_sharing read before the lock. An addition is
 // decided against the locked row, after the owner check; an admitted one is
 // returned for the caller to record once committed.
-func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, rt db.AgentRuntime, member db.Member, req UpdateAgentRuntimeRequest, sharing paidFeature) (db.AgentRuntime, runtimeWorkspaceAccessRevocationPlan, bool, featureAdmission, error) {
+func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, r *http.Request, rt db.AgentRuntime, member db.Member, req UpdateAgentRuntimeRequest, sharing paidFeature) (db.AgentRuntime, runtimeWorkspaceAccessRevocationPlan, bool, featureAdmission, error) {
 	tx, err := h.TxStarter.Begin(ctx)
 	if err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, featureAdmission{}, fmt.Errorf("begin transaction: %w", err)
@@ -933,6 +933,12 @@ func (h *Handler) updateRuntimeAccessIfNoDependencies(ctx context.Context, rt db
 	})
 	if err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, featureAdmission{}, fmt.Errorf("update runtime visibility: %w", err)
+	}
+	if err := h.writeAudit(ctx, qtx, r, auditInput{
+		Kind: "runtime.access.update", WorkspaceID: lockedRuntime.WorkspaceID, TargetID: lockedRuntime.ID,
+		Before: runtimeAccessAuditFields(lockedRuntime), After: runtimeAccessAuditFields(updated),
+	}); err != nil {
+		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, featureAdmission{}, auditWriteError{err}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.AgentRuntime{}, runtimeWorkspaceAccessRevocationPlan{}, false, featureAdmission{}, fmt.Errorf("commit transaction: %w", err)

@@ -1682,6 +1682,15 @@ func (h *Handler) AddAutopilotCollaborator(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to grant access")
 		return
 	}
+	if err := h.writeAudit(r.Context(), qtx, r, auditInput{
+		Kind:        "autopilot.collaborator.add",
+		WorkspaceID: ap.WorkspaceID,
+		TargetID:    ap.ID,
+		After:       map[string]any{"user_id": req.UserID},
+	}); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.collaborator.add")
+		return
+	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to grant access")
 		return
@@ -2744,6 +2753,12 @@ func (h *Handler) TriggerAutopilot(w http.ResponseWriter, r *http.Request) {
 	}
 	if idempotencyKey == "" {
 		idempotencyKey = service.NewRequestIdempotencyKey()
+	}
+	// The dispatcher owns its transactions, so the request is audited first: when
+	// the audit insert fails nothing is dispatched.
+	if err := h.auditManualAutopilotRun(r, autopilot); err != nil {
+		writeAuditFailure(w, r, err, "autopilot.trigger.manual")
+		return
 	}
 	startedBy := service.ManualRunStartedByMember
 	if actorType, _ := h.resolveActor(r, requestUserID(r), workspaceID); actorType == "agent" {

@@ -2721,6 +2721,11 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 	if !checkSkillBaseRevision(w, r, qtx, skill.ID, req.BaseRevision) {
 		return
 	}
+	beforeFiles, err := qtx.ListSkillFiles(r.Context(), skill.ID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list skill files")
+		return
+	}
 	sf, err := qtx.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
 		SkillID: skill.ID,
 		Path:    sanitizeNullBytes(req.Path),
@@ -2746,6 +2751,9 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 	}); err != nil {
 		slog.Warn("record skill version failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to upsert skill file")
+		return
+	}
+	if !h.auditSkillFileChange(w, r, qtx, skill, beforeFiles, resp) {
 		return
 	}
 	if err := tx.Commit(r.Context()); err != nil {
