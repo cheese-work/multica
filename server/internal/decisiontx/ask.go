@@ -458,6 +458,9 @@ func (ask Ask) Validate() error {
 	if err := ask.validateHumanSteps(); err != nil {
 		return err
 	}
+	if err := ask.validateAgentOwnedQuestion(); err != nil {
+		return err
+	}
 	if err := ask.validateArtifacts(); err != nil {
 		return err
 	}
