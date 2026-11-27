@@ -339,7 +339,8 @@
       "running": "업데이트 중...",
       "completed": "업데이트 완료. 데몬을 다시 시작하는 중...",
       "failed": "업데이트 실패",
-      "timeout": "시간 초과"
+      "timeout": "시간 초과",
+      "cancelled": "취소됨"
     },
     "phase": {
       "download": "다운로드 중",

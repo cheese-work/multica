@@ -339,7 +339,8 @@
       "running": "更新中...",
       "completed": "更新完成。守護程序正在重啟...",
       "failed": "更新失敗",
-      "timeout": "超時"
+      "timeout": "超時",
+      "cancelled": "已取消"
     },
     "phase": {
       "download": "下載中",

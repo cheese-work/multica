@@ -350,7 +350,8 @@
       "running": "Updating...",
       "completed": "Update complete. Daemon is restarting...",
       "failed": "Update failed",
-      "timeout": "Timeout"
+      "timeout": "Timeout",
+      "cancelled": "Cancelled"
     },
     "phase": {
       "download": "Downloading",
