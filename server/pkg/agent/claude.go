@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/pkg/runbinding"
 
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -130,6 +131,37 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		cancel()
 		return nil, err
 	}
+	// CHE-9773: same launcher-published binding the Codex backend gives its
+	// child. The ID is minted here per launch; a caller-supplied value in
+	// cfg.Env is dropped so a run can never carry another run's binding.
+	var binding *runbinding.Publisher
+	if b.cfg.RunBinding != nil {
+		if b.cfg.CredentialBoundary != nil || b.cfg.RequireCredentialIsolation {
+			cancel()
+			return nil, fmt.Errorf("managed local binding cannot cross credential isolation; R1 required")
+		}
+		var err error
+		binding, err = runbinding.New(runCtx, *b.cfg.RunBinding)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		env := cmd.Env[:0:0]
+		for _, entry := range cmd.Env {
+			if !strings.HasPrefix(entry, "MULTICA_RUN_BINDING_ID=") {
+				env = append(env, entry)
+			}
+		}
+		env = append(env, "MULTICA_RUN_BINDING_ID="+binding.ID)
+		cmd.Env = env
+	}
+	// Any return before the lifecycle goroutine owns the binding revokes it.
+	bindingOwned := false
+	defer func() {
+		if !bindingOwned && binding != nil {
+			binding.Close()
+		}
+	}()
 
 	var usageSnapshot *claudeUsageSnapshot
 	if opts.ResumeSessionID != "" && b.cfg.CredentialBoundary == nil {
@@ -182,6 +214,18 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		cancel()
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
+	if binding != nil {
+		if err := binding.Publish(cmd.Process.Pid); err != nil {
+			binding.Close()
+			closeStdin()
+			cancel()
+			signalProcessGroup(cmd, syscall.SIGKILL)
+			_ = cmd.Wait()
+			releaseProcessGroup(cmd)
+			return nil, fmt.Errorf("publish managed host binding: %w", err)
+		}
+		bindingOwned = true
+	}
 
 	b.cfg.Logger.Info("claude started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
 
@@ -232,6 +276,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		defer cancel()
 		defer close(msgCh)
 		defer close(resCh)
+		if binding != nil {
+			defer binding.Close()
+		}
 		if mcpConfigPath != "" {
 			defer cleanupMcpConfigTemp(mcpConfigPath)
 		}
@@ -321,6 +368,22 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}()
 
 		scanner := newAgentStreamScanner(stdout)
+		var fallbackWatch *claudeFallbackWatch
+		// A result frame without model evidence books its usage to a fallback
+		// model. Once the runtime announced a main-thread change, neither the
+		// requested model nor a response from before the change is evidence of
+		// what served: only a main-thread response after the change is, and
+		// without one the attribution stays unknown (CHE-10140). A run served by
+		// two models books its whole total to the later one; that is the
+		// evidence the result frame leaves.
+		mainThreadChanged := false
+		var postChangeModel string
+		usageFallbackModel := func() string {
+			if mainThreadChanged {
+				return postChangeModel
+			}
+			return opts.Model
+		}
 
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
@@ -338,10 +401,17 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			switch msg.Type {
 			case "assistant":
 				assistantEventCount++
+				if confirmed, ok := claudeFallbackConfirmed(fallbackWatch, msg); ok {
+					fallbackWatch = nil
+					sendReliable(runCtx, msgCh, confirmed)
+				}
 				turn := b.handleAssistant(msg, msgCh, usage, seenUsage, cacheSplit)
 				toolUseCount += turn.toolUses
 				if turn.callModel != "" {
 					contextModel, contextTokens = turn.callModel, turn.callTokens
+					if mainThreadChanged {
+						postChangeModel = turn.callModel
+					}
 				}
 				if !turn.understood {
 					unreadableAssistantCount++
@@ -359,12 +429,26 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					cm := msg.CompactMetadata
 					sendReliable(runCtx, msgCh, NewContextCompactedMessage(cm.Trigger, cm.PreTokens, cm.PostTokens))
 				}
+				if change, next, ok := claudeModelChange(msg, fallbackWatch); ok {
+					fallbackWatch = next
+					if change.Input["scope"] == "session" {
+						mainThreadChanged = true
+						postChangeModel = ""
+					}
+					sendReliable(runCtx, msgCh, change)
+				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
 				if (msg.ResultIndex != nil || msg.UserMessageUUID != "" || msg.UserMessageUUIDs != nil) &&
 					msg.UserMessageUUID != promptUUID && !slices.Contains(msg.UserMessageUUIDs, promptUUID) {
 					b.cfg.Logger.Debug("ignoring result for another Claude turn", "user_message_uuid", msg.UserMessageUUID)
 					continue
+				}
+				if msg.IsError {
+					if failed, ok := claudeFallbackFailed(fallbackWatch); ok {
+						fallbackWatch = nil
+						sendReliable(runCtx, msgCh, failed)
+					}
 				}
 				sawResult = true
 				finalResultText = msg.ResultText
@@ -385,7 +469,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				if usageSnapshot != nil {
 					baseline = usageSnapshot.baseline
 				}
-				if resultUsage, authoritative := claudeResultUsageSince(msg, opts.Model, baseline); authoritative {
+				if resultUsage, authoritative := claudeResultUsageSince(msg, usageFallbackModel(), baseline); authoritative {
 					usageMsg := msg
 					lastUsageResult = &usageMsg
 					if !unverifiableBaseline {
@@ -549,7 +633,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			// A rejected resume may emit usage for a newly-created session. Its
 			// totals do not share the requested session's baseline.
 			if lastUsageResult != nil {
-				if resultUsage, authoritative := claudeResultUsageSince(*lastUsageResult, opts.Model, nil); authoritative {
+				if resultUsage, authoritative := claudeResultUsageSince(*lastUsageResult, usageFallbackModel(), nil); authoritative {
 					usage = applyClaudeCacheSplit(resultUsage, cacheSplit, len(lastUsageResult.ModelUsage) > 0)
 				}
 			}
@@ -798,6 +882,16 @@ type claudeSDKMessage struct {
 
 	// compact_boundary fields (system frame, one per compaction)
 	CompactMetadata *claudeCompactMetadata `json:"compact_metadata,omitempty"`
+
+	// model_refusal_fallback / model_fallback / model_refusal_no_fallback
+	// fields (system frames; Claude Code 2.1.318 schema)
+	UUID               string `json:"uuid,omitempty"`
+	Trigger            string `json:"trigger,omitempty"`
+	Direction          string `json:"direction,omitempty"`
+	Scope              string `json:"scope,omitempty"`
+	OriginalModel      string `json:"original_model,omitempty"`
+	FallbackModel      string `json:"fallback_model,omitempty"`
+	APIRefusalCategory string `json:"api_refusal_category,omitempty"`
 
 	// log fields
 	Log *claudeLogEntry `json:"log,omitempty"`

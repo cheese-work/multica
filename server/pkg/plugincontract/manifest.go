@@ -49,14 +49,31 @@ const (
 
 // Hook triggers. Declaring a trigger says who may invoke the hook, never what
 // the hook does. `event` and `schedule` are asynchronous, and neither blocks a
-// user-facing host request.
+// user-facing host request. `guard` is the one synchronous trigger: the host
+// asks the plugin to allow or deny a write and waits, bounded by the hook's
+// guard.timeout_ms.
 const (
 	TriggerUI       = "ui"
 	TriggerManual   = "manual"
 	TriggerAgent    = "agent"
 	TriggerEvent    = "event"
 	TriggerSchedule = "schedule"
+	TriggerGuard    = "guard"
 )
+
+// Guard policy bounds. The timeout cap keeps a guarded write from waiting on a
+// plugin for longer than a person would notice as a hang.
+const (
+	GuardOnErrorClosed = "closed"
+	GuardOnErrorOpen   = "open"
+
+	MinGuardTimeoutMs       = 100
+	MaxGuardTimeoutMs       = 3000
+	MaxGuardMetadataWriters = 8
+)
+
+// guardMetadataKeyPattern mirrors the issue metadata key rule in the handler.
+var guardMetadataKeyPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$`)
 
 // Scheduled hooks are a polling primitive, not a high-frequency timer. The
 // floor keeps one installation from turning its manifest into an unbounded
@@ -218,6 +235,7 @@ type Hook struct {
 	Triggers    []string        `json:"triggers"`
 	Events      []string        `json:"events,omitempty"`
 	Schedule    *HookSchedule   `json:"schedule,omitempty"`
+	Guard       *HookGuard      `json:"guard,omitempty"`
 	Transport   HookTransport   `json:"transport"`
 	TimeoutMs   int             `json:"timeout_ms,omitempty"`
 }
@@ -228,6 +246,16 @@ type Hook struct {
 type HookSchedule struct {
 	Cron     string `json:"cron"`
 	Timezone string `json:"timezone"`
+}
+
+// HookGuard is the policy of a guard hook: how long the host waits, what a
+// failed call means, whether a member may override a deny, and which issue
+// metadata keys this plugin declares it writes.
+type HookGuard struct {
+	TimeoutMs       int      `json:"timeout_ms"`
+	OnError         string   `json:"on_error"`
+	Overridable     bool     `json:"overridable,omitempty"`
+	MetadataWriters []string `json:"metadata_writers,omitempty"`
 }
 
 type HookTransport struct {
@@ -628,7 +656,7 @@ func (m Manifest) validateContributions() error {
 		triggerSeen := map[string]bool{}
 		for _, trigger := range hook.Triggers {
 			switch trigger {
-			case TriggerUI, TriggerManual, TriggerAgent, TriggerEvent, TriggerSchedule:
+			case TriggerUI, TriggerManual, TriggerAgent, TriggerEvent, TriggerSchedule, TriggerGuard:
 			default:
 				return fmt.Errorf("%s.triggers contains unsupported trigger %q", field, trigger)
 			}
@@ -676,6 +704,25 @@ func (m Manifest) validateContributions() error {
 		} else if hook.Schedule != nil {
 			return fmt.Errorf("%s.schedule requires the schedule trigger", field)
 		}
+		if triggerSeen[TriggerGuard] {
+			if len(hook.Triggers) != 1 {
+				return fmt.Errorf("%s.triggers: guard must be the only trigger of a hook", field)
+			}
+			if hook.Guard == nil {
+				return fmt.Errorf("%s.guard is required when the guard trigger is declared", field)
+			}
+			if hook.Transport.Type != TransportHTTP {
+				return fmt.Errorf("%s.guard only supports the http transport", field)
+			}
+			if hook.TimeoutMs != 0 {
+				return fmt.Errorf("%s.timeout_ms must not be set on a guard hook; use guard.timeout_ms", field)
+			}
+			if err := validateHookGuard(field+".guard", *hook.Guard); err != nil {
+				return err
+			}
+		} else if hook.Guard != nil {
+			return fmt.Errorf("%s.guard requires the guard trigger", field)
+		}
 		if err := m.validateHookTransport(field, hook.Transport); err != nil {
 			return err
 		}
@@ -703,6 +750,31 @@ func (m Manifest) validateContributions() error {
 		if want := "skills/" + resource.Key + "/SKILL.md"; resource.Entry != want {
 			return fmt.Errorf("%s.entry must be %q", field, want)
 		}
+	}
+	return nil
+}
+
+func validateHookGuard(field string, guard HookGuard) error {
+	if guard.TimeoutMs < MinGuardTimeoutMs || guard.TimeoutMs > MaxGuardTimeoutMs {
+		return fmt.Errorf("%s.timeout_ms must be between %d and %d", field, MinGuardTimeoutMs, MaxGuardTimeoutMs)
+	}
+	switch guard.OnError {
+	case GuardOnErrorClosed, GuardOnErrorOpen:
+	default:
+		return fmt.Errorf("%s.on_error must be %q or %q", field, GuardOnErrorClosed, GuardOnErrorOpen)
+	}
+	if len(guard.MetadataWriters) > MaxGuardMetadataWriters {
+		return fmt.Errorf("%s.metadata_writers lists more than %d keys", field, MaxGuardMetadataWriters)
+	}
+	seen := map[string]bool{}
+	for _, key := range guard.MetadataWriters {
+		if !guardMetadataKeyPattern.MatchString(key) {
+			return fmt.Errorf("%s.metadata_writers contains invalid key %q", field, key)
+		}
+		if seen[key] {
+			return fmt.Errorf("%s.metadata_writers contains duplicate key %q", field, key)
+		}
+		seen[key] = true
 	}
 	return nil
 }

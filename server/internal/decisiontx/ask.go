@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -470,6 +471,9 @@ func (ask Ask) Content(workspaceSlug string) string {
 	var options strings.Builder
 	for _, option := range ask.Options {
 		fmt.Fprintf(&options, "- **%s**: %s\n", option.Label, option.WhatHappens)
+		if option.Design != nil && option.Design.FrameUpdatedAt != 0 {
+			fmt.Fprintf(&options, "  - Frame: %s · version %s\n", option.Design.FrameURL, designVersionTime(option.Design.FrameUpdatedAt))
+		}
 		for _, pro := range option.Pros {
 			fmt.Fprintf(&options, "  - Pro: %s\n", pro)
 		}
@@ -480,6 +484,14 @@ func (ask Ask) Content(workspaceSlug string) string {
 	}
 	return fmt.Sprintf("**Context**\n%s\n\n**Decision**\n%s\n\n**What is at stake**\n%s\n\n**Options**\n%s\n**Recommendation**\n%s\n\n**Default if no reply**\n%s%s\n\n%s<details>\n<summary>Details</summary>\n\n%s**Agent did**\n%s\n\n%s</details>\n\nInvestigate in issue: [Issue](mention://issue/%s) · [Comment](%s#comment-%s)",
 		ask.ContextELI10, ask.Decision, ask.StakesIfWrong, options.String(), ask.Recommendation, ask.DefaultIfNoReply, ask.artifactsContent(), ask.humanStepSections(), ask.askedByLine(), ask.AgentDid, ask.stateClaimsContent(), ask.SourceIssueID, util.WorkspaceIssuePath(workspaceSlug, ask.SourceIssueID), ask.SourceCommentID)
+}
+
+// ictZone is the time zone people read card times in.
+var ictZone = time.FixedZone("ICT", 7*60*60)
+
+// designVersionTime renders a doop frame version (Unix milliseconds) in ICT.
+func designVersionTime(millis int64) string {
+	return time.UnixMilli(millis).In(ictZone).Format("2006-01-02 15:04") + " ICT"
 }
 
 func (ask Ask) askedByLine() string {

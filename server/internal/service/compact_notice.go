@@ -54,6 +54,34 @@ func compactNoticeText(input []byte) string {
 // cancel settles a task before the daemon flushes its transcript, and a late
 // event still gets its notice. Channel-bound DMs and compaction tasks get none.
 func (s *TaskService) ReconcileCompactNotices(ctx context.Context, taskID pgtype.UUID) ([]db.ChatMessage, error) {
+	return s.reconcileRunNotices(ctx, taskID, func(qtx *db.Queries, sessionID pgtype.UUID) ([]db.ChatMessage, error) {
+		runMessages, err := qtx.ListTaskContextCompactedMessages(ctx, taskID)
+		if err != nil {
+			return nil, fmt.Errorf("list context_compacted messages: %w", err)
+		}
+		var created []db.ChatMessage
+		for _, event := range runMessages {
+			notice, err := qtx.CreateCompactNoticeIdempotent(ctx, db.CreateCompactNoticeIdempotentParams{
+				ID:            compactNoticeID(event.ID),
+				ChatSessionID: sessionID,
+				Content:       compactNoticeText(event.Input),
+				EventAt:       event.CreatedAt,
+			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				continue // already written by an earlier or concurrent call
+			} else if err != nil {
+				return nil, fmt.Errorf("write compact notice: %w", err)
+			}
+			created = append(created, notice)
+		}
+		return created, nil
+	})
+}
+
+// reconcileRunNotices runs write inside the DM-write lock for a web DM's chat
+// task and publishes the rows it reports as newly created. write is skipped for
+// channel-bound DMs and compaction tasks, which get no notices.
+func (s *TaskService) reconcileRunNotices(ctx context.Context, taskID pgtype.UUID, write func(qtx *db.Queries, sessionID pgtype.UUID) ([]db.ChatMessage, error)) ([]db.ChatMessage, error) {
 	var (
 		task    db.AgentTaskQueue
 		created []db.ChatMessage
@@ -64,7 +92,7 @@ func (s *TaskService) ReconcileCompactNotices(ctx context.Context, taskID pgtype
 		}
 		var err error
 		if task, err = qtx.GetAgentTask(ctx, taskID); err != nil {
-			return fmt.Errorf("get task for compact notices: %w", err)
+			return fmt.Errorf("get task for run notices: %w", err)
 		}
 		if !task.ChatSessionID.Valid || task.TaskKind.String == CompactTaskKind {
 			return nil
@@ -76,25 +104,8 @@ func (s *TaskService) ReconcileCompactNotices(ctx context.Context, taskID pgtype
 		if _, err := qtx.GetChannelChatSessionBindingBySessionAny(ctx, sessionID); !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		runMessages, err := qtx.ListTaskContextCompactedMessages(ctx, taskID)
-		if err != nil {
-			return fmt.Errorf("list context_compacted messages: %w", err)
-		}
-		for _, event := range runMessages {
-			notice, err := qtx.CreateCompactNoticeIdempotent(ctx, db.CreateCompactNoticeIdempotentParams{
-				ID:            compactNoticeID(event.ID),
-				ChatSessionID: sessionID,
-				Content:       compactNoticeText(event.Input),
-				EventAt:       event.CreatedAt,
-			})
-			if errors.Is(err, pgx.ErrNoRows) {
-				continue // already written by an earlier or concurrent call
-			} else if err != nil {
-				return fmt.Errorf("write compact notice: %w", err)
-			}
-			created = append(created, notice)
-		}
-		return nil
+		created, err = write(qtx, sessionID)
+		return err
 	})
 	if err != nil {
 		return nil, err

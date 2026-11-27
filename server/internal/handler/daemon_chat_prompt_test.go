@@ -77,6 +77,15 @@ func TestTrailingUserMessages(t *testing.T) {
 			want: []string{},
 		},
 		{
+			name: "a model change notice is not a reply",
+			in: []db.ChatMessage{
+				msg("user", "hi"),
+				{Role: "assistant", Content: "Runtime is retrying Opus 5.5 → Opus 4.8.", MessageKind: "model_change_notice"},
+				msg("user", "still there?"),
+			},
+			want: []string{"hi", "still there?"},
+		},
+		{
 			name: "empty history",
 			in:   []db.ChatMessage{},
 			want: []string{},

@@ -371,6 +371,11 @@ const (
 	// failed to be) automatically compacted. It is an assistant row that never
 	// enters a prompt.
 	ChatMessageKindCompactNotice = "compact_notice"
+	// ChatMessageKindModelChangeNotice is the server-authored note that the
+	// runtime changed, or tried to change, the model serving a turn
+	// (CHE-10140). Like a compact notice it is an assistant row that never
+	// enters a prompt.
+	ChatMessageKindModelChangeNotice = "model_change_notice"
 	// ChatMessageKindNoResponse marks a direct-chat turn the agent completed
 	// without any text reply — a visible, deliberate terminal outcome rather
 	// than a silently-dropped turn (MUL-4351).

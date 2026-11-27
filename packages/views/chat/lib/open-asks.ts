@@ -55,7 +55,7 @@ export function openAsksBefore(messages: readonly ChatMessage[], index: number):
       if (replies.length < MAX_REPLIES) replies.push(normalize(m.content.slice(0, MAX_REPLY_CHARS)));
       continue;
     }
-    if (m.role !== "assistant" || m.message_kind === "compact_notice" || m.message_kind === "compaction_summary") continue;
+    if (m.role !== "assistant" || m.message_kind === "compact_notice" || m.message_kind === "model_change_notice" || m.message_kind === "compaction_summary") continue;
     const cards = m.decision_requests ?? (m.decision_request ? [m.decision_request] : []);
     const asks = cards.filter((card) => card.state === "open").map((card) => ({ messageId: m.id, ask: card.ask }));
     const seen = new Set(asks.map((a) => a.ask));

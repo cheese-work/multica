@@ -177,3 +177,44 @@ func (r *ConfigSyncReader) PostComment(ctx context.Context, number int, body str
 	_, err := r.client.restPost(ctx, r.installID, r.path("/issues/%d/comments", number), map[string]string{"body": body})
 	return err
 }
+
+// PRCommit is one commit of a pull request: its SHA, the author and committer
+// emails, and the message (for Co-authored-by trailers).
+type PRCommit struct {
+	SHA            string
+	AuthorEmail    string
+	CommitterEmail string
+	Message        string
+}
+
+// PRCommits lists the commits of a pull request. A PR at the API's list cap is
+// an error: the list may be incomplete, and a reader must not treat it as whole.
+func (client *Client) PRCommits(ctx context.Context, installationID int64, owner, repo string, number int32) ([]PRCommit, error) {
+	if !client.Enabled() {
+		return nil, errors.New("ghsnapshot: client not configured")
+	}
+	r := NewConfigSyncReader(client, installationID, owner, repo)
+	items, err := pages[struct {
+		SHA    string `json:"sha"`
+		Commit struct {
+			Message string `json:"message"`
+			Author  struct {
+				Email string `json:"email"`
+			} `json:"author"`
+			Committer struct {
+				Email string `json:"email"`
+			} `json:"committer"`
+		} `json:"commit"`
+	}](ctx, r, r.path("/pulls/%d/commits", int(number)))
+	if err != nil {
+		return nil, err
+	}
+	if len(items) >= prCommitsAPICap {
+		return nil, fmt.Errorf("github REST: PR %d has %d or more commits, past the API's list cap", number, prCommitsAPICap)
+	}
+	out := make([]PRCommit, len(items))
+	for i, it := range items {
+		out[i] = PRCommit{SHA: it.SHA, AuthorEmail: it.Commit.Author.Email, CommitterEmail: it.Commit.Committer.Email, Message: it.Commit.Message}
+	}
+	return out, nil
+}

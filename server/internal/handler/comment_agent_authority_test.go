@@ -88,6 +88,27 @@ func TestAgentCannotPruneAnotherAgentsTombstoneThroughReplyDelete(t *testing.T) 
 	}
 }
 
+// Deleting the agent's own last reply also prunes the already-deleted
+// tombstone above it, even when another author wrote that tombstone. The
+// tombstone holds no content; the agent removes only its own live comment.
+func TestAgentDeletingItsOwnReplyPrunesAnotherAuthorsEmptyTombstone(t *testing.T) {
+	f := newCommentAuthorityFixture(t)
+	tombstone := dbfx.Comment(t, f.issueID, "", testutil.Cols{"author_type": "agent", "author_id": f.agentB})
+	dbfx.Exec(t, `UPDATE comment SET deleted_at = now() WHERE id = $1`, tombstone)
+	reply := dbfx.Comment(t, f.issueID, "reply by a", testutil.Cols{"author_type": "agent", "author_id": f.agentA, "parent_id": tombstone})
+	req := asAgent(newRequest(http.MethodDelete, "/api/comments/"+reply, nil), f.agentA, f.taskA)
+	deleteComment(t, req, reply).Want(http.StatusNoContent)
+	if got := loadCommentRowState(t, reply); got.exists {
+		t.Fatal("own reply still exists")
+	}
+	if got := loadCommentRowState(t, tombstone); got.exists {
+		t.Fatal("empty tombstone with no replies left was not pruned")
+	}
+	if got := loadCommentRowState(t, f.verdictByB); !got.exists {
+		t.Fatal("another author's live comment was removed")
+	}
+}
+
 func TestAgentCannotModifyAHumansComment(t *testing.T) {
 	f := newCommentAuthorityFixture(t)
 	human := dbfx.Comment(t, f.issueID, "human note")

@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/reviewindependence"
 	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
@@ -225,5 +227,162 @@ func TestDerivedPassEditedIntoPassCannotBackdateTheVetoWindow(t *testing.T) {
 	m.tick(t)
 	if n := m.runs(t); n != 0 {
 		t.Fatalf("%d runs for a gate path whose verdict became PASS by an edit just now, want 0", n)
+	}
+}
+
+// CHE-9319: with the review_independence setting present the PASS rule judges
+// agents by the setting's values (keyed by runtime provider/model), not LabOf.
+func (m *mergeFix) setProvider(t *testing.T, agentID, provider string) {
+	t.Helper()
+	m.f.Exec(t, "UPDATE agent_runtime SET provider=$2 WHERE id=(SELECT runtime_id FROM agent WHERE id=$1)", agentID, provider)
+}
+
+func (m *mergeFix) reviewIndependence(t *testing.T, agentValues string) {
+	t.Helper()
+	m.f.Exec(t, `UPDATE workspace SET settings=settings || jsonb_build_object('review_independence',
+		jsonb_build_object('attribute','team','rule','reviewer_value_not_in_author_values','agent_values',$2::jsonb)) WHERE id=$1`, m.f.WorkspaceID, agentValues)
+}
+
+func TestDerivedPassUsesTheConfiguredValues(t *testing.T) {
+	for name, tc := range map[string]struct {
+		values   string
+		wantRuns int
+	}{
+		"signer of another value":             {`{"prov-a/*":"x","prov-b/*":"y"}`, 1},
+		"signer of the author's value":        {`{"prov-a/*":"x","prov-b/*":"x"}`, 0},
+		"signer the setting does not list":    {`{"prov-a/*":"x"}`, 0},
+		"author the setting does not list":    {`{"prov-b/*":"y"}`, 0},
+		"exact model beats provider wildcard": {`{"prov-a/*":"x","prov-b/*":"x","prov-b/gpt-6.1-terra":"y"}`, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := passFixture(t)
+			terra := m.signer(t, "terra", "gpt-6.1-terra")
+			m.setProvider(t, m.author, "prov-a")
+			m.setProvider(t, terra, "prov-b")
+			m.reviewIndependence(t, tc.values)
+			m.say(t, "agent", terra, verdictLine("PASS", "a"), m.clock.Add(-time.Hour))
+			for i := 0; i < 3; i++ {
+				m.tick(t)
+			}
+			if n := m.runs(t); n != tc.wantRuns {
+				t.Fatalf("%d runs, want %d", n, tc.wantRuns)
+			}
+		})
+	}
+}
+
+// CHE-9319: the gate judges a signer against every value the PR's commits name,
+// as routing does. The commits come from the PR snapshot the refresher stored;
+// the gate calls no network.
+func (m *mergeFix) storeCommits(t *testing.T, head string, commits ...reviewindependence.PRCommit) {
+	t.Helper()
+	raw, err := json.Marshal(reviewindependence.NewStoredCommits(head, commits))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.f.Exec(t, "UPDATE github_pull_request SET commit_identities=$2::jsonb WHERE id=$1", m.pr, string(raw))
+}
+
+func (m *mergeFix) commitSetting(t *testing.T) {
+	t.Helper()
+	m.f.Exec(t, `UPDATE workspace SET settings=settings || jsonb_build_object('review_independence',
+		jsonb_build_object('attribute','team','rule','reviewer_value_not_in_author_values',
+			'agent_values','{"prov-a/*":"x","prov-b/*":"y","prov-c/*":"z"}'::jsonb,
+			'commit_identities','{"vendor-x.example":"x","vendor-y.example":"y"}'::jsonb)) WHERE id=$1`, m.f.WorkspaceID)
+}
+
+func TestDerivedPassJudgesTheSignerAgainstEveryCommitValue(t *testing.T) {
+	byX := reviewindependence.PRCommit{SHA: "1111111111111111", AuthorEmail: "a@vendor-x.example", CommitterEmail: "a@vendor-x.example"}
+	byY := reviewindependence.PRCommit{SHA: "2222222222222222", AuthorEmail: "b@vendor-y.example", CommitterEmail: "b@vendor-y.example"}
+	unmapped := reviewindependence.PRCommit{SHA: "3333333333333333", AuthorEmail: "c@elsewhere.example", CommitterEmail: "c@elsewhere.example"}
+	for name, tc := range map[string]struct {
+		head     string
+		commits  []reviewindependence.PRCommit
+		signerOn string
+		wantRuns int
+	}{
+		// The PR's author agent is valued x; a commit by y makes y an author too.
+		"signer of a second commit value is refused":     {"a", []reviewindependence.PRCommit{byX, byY}, "prov-b", 0},
+		"signer of the first commit value is refused":    {"a", []reviewindependence.PRCommit{byX, byY}, "prov-a", 0},
+		"signer of a third value passes":                 {"a", []reviewindependence.PRCommit{byX, byY}, "prov-c", 1},
+		"an unmapped commit keeps the run rule, y free":  {"a", []reviewindependence.PRCommit{byX, unmapped}, "prov-b", 1},
+		"an unmapped commit keeps the run rule, x held":  {"a", []reviewindependence.PRCommit{byX, unmapped}, "prov-a", 0},
+		"commits stored for another head are not used":   {"old", []reviewindependence.PRCommit{byX, byY}, "prov-b", 1},
+		"commits never stored keep the run rule, y free": {"", nil, "prov-b", 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := passFixture(t)
+			terra := m.signer(t, "terra", "gpt-6.1-terra")
+			m.setProvider(t, m.author, "prov-a")
+			m.setProvider(t, terra, tc.signerOn)
+			m.commitSetting(t)
+			if tc.head != "" {
+				m.storeCommits(t, tc.head, tc.commits...)
+			}
+			m.say(t, "agent", terra, verdictLine("PASS", "a"), m.clock.Add(-time.Hour))
+			for i := 0; i < 3; i++ {
+				m.tick(t)
+			}
+			if n := m.runs(t); n != tc.wantRuns {
+				t.Fatalf("%d runs, want %d", n, tc.wantRuns)
+			}
+		})
+	}
+}
+
+// linkSiblingPR links a second PR to the wakeup's issue (a stacked PR) with the
+// commits stored for storedHead, while its current head is head.
+func (m *mergeFix) linkSiblingPR(t *testing.T, head, storedHead string, commits ...reviewindependence.PRCommit) {
+	t.Helper()
+	pr := m.f.Insert(t, "github_pull_request", testutil.Cols{
+		"workspace_id": m.f.WorkspaceID, "installation_id": 1,
+		"repo_owner": "fixture", "repo_name": "merge", "pr_number": 10,
+		"title": "PR B", "state": "open", "html_url": "https://example.test/pr/10",
+		"pr_created_at": "2026-01-01T00:00:00Z", "pr_updated_at": "2026-01-01T00:00:00Z",
+		"head_sha": head, "snapshot_head_sha": head, "snapshot_base_ref": "main",
+	})
+	m.f.Cleanup(t, "DELETE FROM issue_pull_request WHERE pull_request_id=$1", pr)
+	m.f.Exec(t, "INSERT INTO issue_pull_request(issue_id,pull_request_id) SELECT issue_id,$2 FROM issue_pull_request WHERE pull_request_id=$1", m.pr, pr)
+	if storedHead != "" {
+		raw, err := json.Marshal(reviewindependence.NewStoredCommits(storedHead, commits))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.f.Exec(t, "UPDATE github_pull_request SET commit_identities=$2::jsonb WHERE id=$1", pr, string(raw))
+	}
+}
+
+// CHE-9319: the gate's author set covers every linked PR, as routing's does. A
+// linked PR whose commits are missing or stale for its head keeps the run rule.
+func TestDerivedPassJudgesTheSignerAgainstEveryLinkedPR(t *testing.T) {
+	byX := reviewindependence.PRCommit{SHA: "1111111111111111", AuthorEmail: "a@vendor-x.example", CommitterEmail: "a@vendor-x.example"}
+	byY := reviewindependence.PRCommit{SHA: "2222222222222222", AuthorEmail: "b@vendor-y.example", CommitterEmail: "b@vendor-y.example"}
+	for name, tc := range map[string]struct {
+		siblingHead, storedHead string
+		signerOn                string
+		wantRuns                int
+	}{
+		"signer of a sibling PR's value is refused":       {"s1", "s1", "prov-b", 0},
+		"signer of a third value passes":                  {"s1", "s1", "prov-c", 1},
+		"sibling commits stale for its head keep runs":    {"s2", "s1", "prov-b", 1},
+		"sibling commits never stored keep the run rule":  {"s1", "", "prov-b", 1},
+		"stale sibling still holds the PR author's value": {"s2", "s1", "prov-a", 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := passFixture(t)
+			terra := m.signer(t, "terra", "gpt-6.1-terra")
+			m.setProvider(t, m.author, "prov-a")
+			m.setProvider(t, terra, tc.signerOn)
+			m.commitSetting(t)
+			m.storeCommits(t, "a", byX)
+			m.linkSiblingPR(t, tc.siblingHead, tc.storedHead, byY)
+			m.say(t, "agent", terra, verdictLine("PASS", "a"), m.clock.Add(-time.Hour))
+			for i := 0; i < 3; i++ {
+				m.tick(t)
+			}
+			if n := m.runs(t); n != tc.wantRuns {
+				t.Fatalf("%d runs, want %d", n, tc.wantRuns)
+			}
+		})
 	}
 }
