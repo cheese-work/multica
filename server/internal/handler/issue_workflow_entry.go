@@ -533,8 +533,9 @@ func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
 			"error":        notIndependent.Error(),
 			"code":         reviewIndependenceCode,
 			"reason":       notIndependent.Reason,
-			"author_labs":  notIndependent.AuthorLabs,
-			"reviewer_lab": notIndependent.ReviewerLab,
+			"attribute":    notIndependent.Attribute,
+			"author_labs":  notIndependent.AuthorValues,
+			"reviewer_lab": notIndependent.ReviewerValue,
 			"reviewer_id":  notIndependent.ReviewerID,
 		})
 		return true

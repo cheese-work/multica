@@ -67,6 +67,39 @@ func (q *Queries) CountRecentPluginInvocations(ctx context.Context, arg CountRec
 	return count, err
 }
 
+const createPluginGuardMetadataKey = `-- name: CreatePluginGuardMetadataKey :one
+INSERT INTO plugin_guard_metadata_key (installation_id, workspace_id, metadata_key, enabled)
+VALUES ($1, $2, $3, $4)
+RETURNING id, installation_id, workspace_id, metadata_key, enabled, created_at, updated_at
+`
+
+type CreatePluginGuardMetadataKeyParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	MetadataKey    string      `json:"metadata_key"`
+	Enabled        bool        `json:"enabled"`
+}
+
+func (q *Queries) CreatePluginGuardMetadataKey(ctx context.Context, arg CreatePluginGuardMetadataKeyParams) (PluginGuardMetadataKey, error) {
+	row := q.db.QueryRow(ctx, createPluginGuardMetadataKey,
+		arg.InstallationID,
+		arg.WorkspaceID,
+		arg.MetadataKey,
+		arg.Enabled,
+	)
+	var i PluginGuardMetadataKey
+	err := row.Scan(
+		&i.ID,
+		&i.InstallationID,
+		&i.WorkspaceID,
+		&i.MetadataKey,
+		&i.Enabled,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const createPluginHookSchedule = `-- name: CreatePluginHookSchedule :one
 INSERT INTO plugin_hook_schedule (
     installation_id, workspace_id, hook_key, cron_expression, timezone,
@@ -335,6 +368,24 @@ func (q *Queries) DeleteExpiredPluginInvocations(ctx context.Context, createdAt 
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const deletePluginGuardMetadataKey = `-- name: DeletePluginGuardMetadataKey :exec
+DELETE FROM plugin_guard_metadata_key WHERE id = $1
+`
+
+func (q *Queries) DeletePluginGuardMetadataKey(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deletePluginGuardMetadataKey, id)
+	return err
+}
+
+const deletePluginGuardMetadataKeysByInstallation = `-- name: DeletePluginGuardMetadataKeysByInstallation :exec
+DELETE FROM plugin_guard_metadata_key WHERE installation_id = $1
+`
+
+func (q *Queries) DeletePluginGuardMetadataKeysByInstallation(ctx context.Context, installationID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deletePluginGuardMetadataKeysByInstallation, installationID)
+	return err
 }
 
 const deletePluginHookSchedule = `-- name: DeletePluginHookSchedule :exec
@@ -837,6 +888,27 @@ func (q *Queries) GetWorkspacePluginPackageVersion(ctx context.Context, arg GetW
 	return i, err
 }
 
+const isIssueMetadataKeyDeclared = `-- name: IsIssueMetadataKeyDeclared :one
+SELECT EXISTS (
+    SELECT 1 FROM plugin_guard_metadata_key
+    WHERE workspace_id = $1 AND metadata_key = $2 AND enabled
+) AS declared
+`
+
+type IsIssueMetadataKeyDeclaredParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	MetadataKey string      `json:"metadata_key"`
+}
+
+// A key is declared while an enabled installation lists it in
+// guard.metadata_writers. Read inside the metadata write transaction.
+func (q *Queries) IsIssueMetadataKeyDeclared(ctx context.Context, arg IsIssueMetadataKeyDeclaredParams) (bool, error) {
+	row := q.db.QueryRow(ctx, isIssueMetadataKeyDeclared, arg.WorkspaceID, arg.MetadataKey)
+	var declared bool
+	err := row.Scan(&declared)
+	return declared, err
+}
+
 const listEnabledPluginHookSchedules = `-- name: ListEnabledPluginHookSchedules :many
 SELECT id, installation_id, workspace_id, hook_key, cron_expression, timezone, generation, activated_at, next_run_at, enabled, created_at, updated_at FROM plugin_hook_schedule
 WHERE enabled
@@ -864,6 +936,40 @@ func (q *Queries) ListEnabledPluginHookSchedules(ctx context.Context) ([]PluginH
 			&i.Generation,
 			&i.ActivatedAt,
 			&i.NextRunAt,
+			&i.Enabled,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPluginGuardMetadataKeysByInstallation = `-- name: ListPluginGuardMetadataKeysByInstallation :many
+SELECT id, installation_id, workspace_id, metadata_key, enabled, created_at, updated_at FROM plugin_guard_metadata_key
+WHERE installation_id = $1
+ORDER BY metadata_key ASC
+`
+
+func (q *Queries) ListPluginGuardMetadataKeysByInstallation(ctx context.Context, installationID pgtype.UUID) ([]PluginGuardMetadataKey, error) {
+	rows, err := q.db.Query(ctx, listPluginGuardMetadataKeysByInstallation, installationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PluginGuardMetadataKey{}
+	for rows.Next() {
+		var i PluginGuardMetadataKey
+		if err := rows.Scan(
+			&i.ID,
+			&i.InstallationID,
+			&i.WorkspaceID,
+			&i.MetadataKey,
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
@@ -1272,6 +1378,38 @@ func (q *Queries) ReactivatePluginHookSchedule(ctx context.Context, arg Reactiva
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const setPluginGuardMetadataKeyEnabled = `-- name: SetPluginGuardMetadataKeyEnabled :exec
+UPDATE plugin_guard_metadata_key
+SET enabled = $2, updated_at = now()
+WHERE id = $1 AND enabled <> $2
+`
+
+type SetPluginGuardMetadataKeyEnabledParams struct {
+	ID      pgtype.UUID `json:"id"`
+	Enabled bool        `json:"enabled"`
+}
+
+func (q *Queries) SetPluginGuardMetadataKeyEnabled(ctx context.Context, arg SetPluginGuardMetadataKeyEnabledParams) error {
+	_, err := q.db.Exec(ctx, setPluginGuardMetadataKeyEnabled, arg.ID, arg.Enabled)
+	return err
+}
+
+const setPluginGuardMetadataKeysEnabled = `-- name: SetPluginGuardMetadataKeysEnabled :exec
+UPDATE plugin_guard_metadata_key
+SET enabled = $2, updated_at = now()
+WHERE installation_id = $1 AND enabled <> $2
+`
+
+type SetPluginGuardMetadataKeysEnabledParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	Enabled        bool        `json:"enabled"`
+}
+
+func (q *Queries) SetPluginGuardMetadataKeysEnabled(ctx context.Context, arg SetPluginGuardMetadataKeysEnabledParams) error {
+	_, err := q.db.Exec(ctx, setPluginGuardMetadataKeysEnabled, arg.InstallationID, arg.Enabled)
+	return err
 }
 
 const setPluginInstallationEnabled = `-- name: SetPluginInstallationEnabled :one
