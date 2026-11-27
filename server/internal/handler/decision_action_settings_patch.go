@@ -19,6 +19,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/designguard"
 	"github.com/multica-ai/multica/server/internal/intakehold"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/reviewindependence"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -177,6 +178,8 @@ func validateSettingsPatchValue(key string, raw json.RawMessage) error {
 		err = issueworkflow.ValidateWorkflowByType(raw)
 	case key == capabilityrouting.SettingsKey:
 		err = capabilityrouting.Validate(raw)
+	case key == reviewindependence.SettingsKey:
+		err = reviewindependence.Validate(raw)
 	case key == agentrolescope.SettingsKey:
 		_, err = agentrolescope.Parse(raw)
 	case key == intakehold.SettingKey:

@@ -1,10 +1,13 @@
 package handler
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/reviewindependence"
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
@@ -19,7 +22,7 @@ type reviewerCase struct {
 }
 
 // reviewerAgent is a ready agent on its own runtime of the given provider and
-// model. Its lab comes from service.LabOf through that pair.
+// model. Its lab comes from the resolver (LabOf while review_independence is absent).
 func reviewerAgent(t *testing.T, provider, model string) string {
 	t.Helper()
 	runtimeID := dbfx.Runtime(t, "reviewer runtime "+workflowTestSuffix(), testutil.Cols{"provider": provider})
@@ -30,10 +33,20 @@ func reviewerAgent(t *testing.T, provider, model string) string {
 // handler, with capability_routing for type feat naming reviewers in order.
 func newReviewerCase(t *testing.T, authorAgentID string, reviewers ...string) reviewerCase {
 	t.Helper()
+	return newReviewerCaseWith(t, nil, authorAgentID, reviewers...)
+}
+
+// newReviewerCaseWith adds workspace settings, such as review_independence.
+func newReviewerCaseWith(t *testing.T, extra map[string]any, authorAgentID string, reviewers ...string) reviewerCase {
+	t.Helper()
 	seedTestCatalog(t)
-	setWorkspaceSettings(t, mustJSON(t, map[string]any{
+	settings := map[string]any{
 		"capability_routing": map[string]any{"feat": map[string]any{"author": authorAgentID, "reviewers": reviewers}},
-	}))
+	}
+	for k, v := range extra {
+		settings[k] = v
+	}
+	setWorkspaceSettings(t, mustJSON(t, settings))
 	projectID := createWorkflowTestProject(t, "Reviewer handler project "+workflowTestSuffix())
 	setColumnHandoff(t, projectID, "in_review", map[string]any{
 		"handler": map[string]any{"type": "reviewer"}, "instructions": "Review the PR.",
@@ -358,4 +371,113 @@ func TestReviewerHandler_PRAuthorWithOnlyAWakeupRunIsStillRefused(t *testing.T) 
 
 	wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress",
 		"the reviewer is an author of this issue")
+}
+
+// linkPR links a PR with no branch to the issue and makes the handler read the
+// given commits for it. A nil error with nil commits is an empty PR.
+func linkCommitPR(t *testing.T, issueID string, number int, commits []reviewindependence.PRCommit, readErr error) {
+	t.Helper()
+	var prID string
+	dbfx.QueryRow(t, `INSERT INTO github_pull_request (workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, pr_created_at, pr_updated_at)
+		VALUES ($1, 1, 'multica-ai', 'multica-fixture', $2, 'che-9319 pr', 'open', 'https://example.test/pr', now(), now())
+		RETURNING id::text`, testWorkspaceID, number).Scan(&prID)
+	dbfx.Cleanup(t, `DELETE FROM github_pull_request WHERE id = $1::uuid`, prID)
+	dbfx.Cleanup(t, `DELETE FROM issue_pull_request WHERE pull_request_id = $1::uuid`, prID)
+	dbfx.Exec(t, `INSERT INTO issue_pull_request (issue_id, pull_request_id) VALUES ($1, $2::uuid)`, issueID, prID)
+	testHandler.readPRCommits = func(context.Context, int64, string, string, int32) ([]reviewindependence.PRCommit, error) {
+		return commits, readErr
+	}
+	t.Cleanup(func() { testHandler.readPRCommits = nil })
+}
+
+var (
+	anthropicCommit = reviewindependence.PRCommit{SHA: "fe81d960b4a5c0ffee", AuthorEmail: "claude@vendor-a.example", CommitterEmail: "noreply@github.com"}
+	openaiCommit    = reviewindependence.PRCommit{SHA: "0123456789abcdef", Message: "fix\n\nCo-authored-by: Codex <codex@vendor-b.example>"}
+)
+
+// workspace configuration of the replay: the values and identities are the
+// workspace's, not the server's.
+var reviewIndependenceTestSetting = map[string]any{"review_independence": map[string]any{
+	"attribute": "lab", "rule": reviewindependence.Rule,
+	"agent_values":      map[string]any{"claude/*": "anthropic", "codex/*": "openai"},
+	"commit_identities": map[string]any{"vendor-a.example": "anthropic", "codex@vendor-b.example": "openai"},
+}}
+
+func commitReviewerCase(t *testing.T, author, terra string) reviewerCase {
+	return newReviewerCaseWith(t, reviewIndependenceTestSetting, reviewerAgent(t, "claude", "claude-sonnet-5-5"), author, terra)
+}
+
+// CHE-9319 replay of CHE-7731: the only commit is Anthropic's; the OpenAI agent
+// ran only status moves (a run at in_progress, no code). It is not an author, so
+// it can review.
+func TestReviewerHandler_StatusOnlyRunIsNotAnAuthorWhenCommitsAreKnown(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	terra := reviewerAgent(t, "codex", "gpt-5.5")
+	c := commitReviewerCase(t, author, terra)
+	issueID := c.issue(t)
+	roleTask(t, issueID, author, "agent", "in_progress")
+	roleTask(t, issueID, terra, "agent", "in_progress")
+	linkCommitPR(t, issueID, 990101, []reviewindependence.PRCommit{anthropicCommit}, nil)
+
+	updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}).Want(http.StatusOK)
+
+	if _, _, id := issueStatusAndAssignee(t, issueID); id != terra {
+		t.Fatalf("assignee = %s, want the OpenAI agent %s that never committed", id, terra)
+	}
+}
+
+// The same replay with the setting absent keeps today's rule: both run, both
+// labs are authors, and the move is refused.
+func TestReviewerHandler_SettingAbsentKeepsTheRunRule(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	terra := reviewerAgent(t, "codex", "gpt-5.5")
+	c := newReviewerCase(t, reviewerAgent(t, "claude", "claude-sonnet-5-5"), author, terra)
+	issueID := c.issue(t)
+	roleTask(t, issueID, author, "agent", "in_progress")
+	roleTask(t, issueID, terra, "agent", "in_progress")
+	linkCommitPR(t, issueID, 990100, []reviewindependence.PRCommit{anthropicCommit}, nil)
+
+	wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress",
+		"anthropic", "openai", "run ")
+}
+
+// A commit of the second value still makes it an author value, and the refusal
+// names the attribute and the commits behind each value.
+func TestReviewerHandler_CommitOfAValueMakesItAnAuthorValue(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	terra := reviewerAgent(t, "codex", "gpt-5.5")
+	c := commitReviewerCase(t, author, terra)
+	issueID := c.issue(t)
+	roleTask(t, issueID, author, "agent", "in_progress")
+	roleTask(t, issueID, terra, "agent", "in_progress")
+	linkCommitPR(t, issueID, 990102, []reviewindependence.PRCommit{anthropicCommit, openaiCommit}, nil)
+
+	wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress",
+		"author lab values", "anthropic", "openai", "commit fe81d960b4a5", "commit 0123456789ab")
+}
+
+// Commit evidence that cannot be read, or that has a commit with no mapped
+// identity (including a look-alike domain), keeps the run rule (fail closed).
+func TestReviewerHandler_UnreadableOrUnmappedCommitsKeepTheRunRule(t *testing.T) {
+	author := reviewerAgent(t, "claude", "claude-sonnet-5-5")
+	terra := reviewerAgent(t, "codex", "gpt-5.5")
+	for name, tc := range map[string]struct {
+		commits []reviewindependence.PRCommit
+		err     error
+	}{
+		"read error":      {err: errors.New("github down")},
+		"unmapped commit": {commits: []reviewindependence.PRCommit{anthropicCommit, {SHA: "aaaaaaaaaaaa", Message: "plain"}}},
+		"look-alike":      {commits: []reviewindependence.PRCommit{{SHA: "bbbbbbbbbbbb", AuthorEmail: "x@sub.vendor-a.example"}}},
+		"no commits read": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := commitReviewerCase(t, author, terra)
+			issueID := c.issue(t)
+			roleTask(t, issueID, author, "agent", "in_progress")
+			roleTask(t, issueID, terra, "agent", "in_progress")
+			linkCommitPR(t, issueID, 990103, tc.commits, tc.err)
+			wantReviewerRefusal(t, updateIssueForTest(t, issueID, map[string]any{"status": "in_review"}), issueID, "in_progress",
+				"run ", "anthropic", "openai")
+		})
+	}
 }

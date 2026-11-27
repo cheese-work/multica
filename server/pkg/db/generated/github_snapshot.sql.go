@@ -191,7 +191,7 @@ func (q *Queries) DeleteGitHubPRCheckRuns(ctx context.Context, prID pgtype.UUID)
 }
 
 const getGitHubPullRequestByID = `-- name: GetGitHubPullRequestByID :one
-SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha, base_ref, default_branch FROM github_pull_request WHERE id = $1
+SELECT id, workspace_id, installation_id, repo_owner, repo_name, pr_number, title, state, html_url, branch, author_login, author_avatar_url, merged_at, closed_at, pr_created_at, pr_updated_at, created_at, updated_at, head_sha, mergeable_state, additions, deletions, changed_files, api_mergeable, api_merge_state_status, checks_rollup_state, snapshot_head_sha, snapshot_fetched_at, snapshot_base_ref, snapshot_recheck_at, head_repo_same, review_state, review_head_sha, review_id, review_at, merge_commit_sha, base_ref, default_branch, commit_identities FROM github_pull_request WHERE id = $1
 `
 
 func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) (GithubPullRequest, error) {
@@ -236,8 +236,31 @@ func (q *Queries) GetGitHubPullRequestByID(ctx context.Context, id pgtype.UUID) 
 		&i.MergeCommitSha,
 		&i.BaseRef,
 		&i.DefaultBranch,
+		&i.CommitIdentities,
 	)
 	return i, err
+}
+
+const gitHubPRNeedsCommitIdentities = `-- name: GitHubPRNeedsCommitIdentities :one
+SELECT (w.settings ? 'review_independence') AND COALESCE(p.commit_identities->>'head', '') <> $1::text
+FROM github_pull_request p
+JOIN workspace w ON w.id = p.workspace_id
+WHERE p.id = $2
+`
+
+type GitHubPRNeedsCommitIdentitiesParams struct {
+	HeadSha string      `json:"head_sha"`
+	PrID    pgtype.UUID `json:"pr_id"`
+}
+
+// CHE-9319: true when the PR's workspace has the review_independence setting and
+// the stored commit identities are not those of this head, so the refresher reads
+// the PR's commits once per head and only for a workspace that uses the rule.
+func (q *Queries) GitHubPRNeedsCommitIdentities(ctx context.Context, arg GitHubPRNeedsCommitIdentitiesParams) (pgtype.Bool, error) {
+	row := q.db.QueryRow(ctx, gitHubPRNeedsCommitIdentities, arg.HeadSha, arg.PrID)
+	var column_1 pgtype.Bool
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const insertGitHubPRCheckRun = `-- name: InsertGitHubPRCheckRun :exec
@@ -894,6 +917,28 @@ func (q *Queries) MarkGitHubPRClosedReplayPending(ctx context.Context, arg MarkG
 		arg.PrNumber,
 	)
 	return err
+}
+
+const setGitHubPRCommitIdentities = `-- name: SetGitHubPRCommitIdentities :execrows
+UPDATE github_pull_request
+SET commit_identities = $1::jsonb
+WHERE id = $2 AND head_sha = $3::text
+`
+
+type SetGitHubPRCommitIdentitiesParams struct {
+	CommitIdentities []byte      `json:"commit_identities"`
+	PrID             pgtype.UUID `json:"pr_id"`
+	HeadSha          string      `json:"head_sha"`
+}
+
+// Stores the identities named on the commits of a head. Guarded on the row's
+// head, so commits of a head the PR has moved past are never written.
+func (q *Queries) SetGitHubPRCommitIdentities(ctx context.Context, arg SetGitHubPRCommitIdentitiesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, setGitHubPRCommitIdentities, arg.CommitIdentities, arg.PrID, arg.HeadSha)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const updateGitHubPRSnapshot = `-- name: UpdateGitHubPRSnapshot :execrows

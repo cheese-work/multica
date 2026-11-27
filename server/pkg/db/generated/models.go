@@ -1890,6 +1890,7 @@ type GithubPullRequest struct {
 	MergeCommitSha      string             `json:"merge_commit_sha"`
 	BaseRef             string             `json:"base_ref"`
 	DefaultBranch       string             `json:"default_branch"`
+	CommitIdentities    []byte             `json:"commit_identities"`
 }
 
 type GithubPullRequestCheckRun struct {
