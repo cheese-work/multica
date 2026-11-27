@@ -210,6 +210,10 @@ func taskMulticaEnvironment(task Task, provider, agentName, token, configRoot, w
 		"TMP":                  tempDir,
 		"TEMP":                 tempDir,
 	}
+	if task.DoopTaskAssertion != "" {
+		// The doop MCP client sends this as X-Multica-Task-Assertion (CHE-7064 D1.6).
+		env["MULTICA_DOOP_TASK_ASSERTION"] = task.DoopTaskAssertion
+	}
 	if task.QuickCreatePrompt != "" {
 		assigneeType, assigneeID := "agent", task.AgentID
 		if task.SquadID != "" {

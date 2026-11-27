@@ -218,6 +218,7 @@ Codex のネイティブサブエージェントも既定でオフです。Multi
 | `MULTICA_AGENT_NAME` | 割り当てられたエージェントの表示名 | 参考情報 |
 | `MULTICA_DAEMON_PORT` | `multica repo checkout` など作業専用コマンドが使うローカルデーモンのヘルス/API ポート | 参考情報 |
 | `MULTICA_TASK_SLOT` | デーモン全体の同時実行プール内のスロット。GPU などスロット番号付きリソースに使用可能 | 参考情報 |
+| `MULTICA_DOOP_TASK_ASSERTION` | doop MCP ヘッダー `X-Multica-Task-Assertion` 用の、短命で署名された作業 ID。サーバーが署名した場合のみ設定される | 参考情報 |
 | `MULTICA_REPO_CHECKOUT_MODE` | Linux と Windows の Codex 実行でだけ `isolated` になり、`multica repo checkout` が作業ディレクトリ内に `.git` を持つ独立したクローンを作る。ほかの実行では設定されない | 参考情報 |
 | `TMPDIR` | 実行中の作業専用の一時ディレクトリ。`TMP` と `TEMP` でも提供しますが、Windows では Git Bash の共有 `/tmp` のため作業はユーザーの一時パスを継承します。Windows の Claude Code は `CLAUDE_CODE_TMPDIR` の既定値を作業の一時ディレクトリに設定 | 参考情報 |
 

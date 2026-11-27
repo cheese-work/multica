@@ -601,6 +601,31 @@ func TestTaskMulticaEnvironmentIncludesPrivateConfigRoot(t *testing.T) {
 	}
 }
 
+func TestTaskMulticaEnvironmentDoopTaskAssertion(t *testing.T) {
+	t.Parallel()
+
+	const assertion = "mta1.cA.c2ln"
+	var task Task
+	if err := json.Unmarshal([]byte(`{"id":"task-test","agent_id":"agent-test","workspace_id":"workspace-test","doop_task_assertion":"`+assertion+`"}`), &task); err != nil {
+		t.Fatalf("decode claim: %v", err)
+	}
+	if task.DoopTaskAssertion != assertion {
+		t.Fatalf("Task.DoopTaskAssertion = %q, want %q", task.DoopTaskAssertion, assertion)
+	}
+
+	env := taskMulticaEnvironment(task, "claude", "agent-name", "mat_fixture", "/task/config", "/task/workspaces", "https://task.example", 19514, 3, "/task/tmp")
+	if got := env["MULTICA_DOOP_TASK_ASSERTION"]; got != assertion {
+		t.Fatalf("MULTICA_DOOP_TASK_ASSERTION = %q, want %q", got, assertion)
+	}
+
+	// Absent (old server, or no signing key): the variable is not exported at all.
+	task.DoopTaskAssertion = ""
+	env = taskMulticaEnvironment(task, "claude", "agent-name", "mat_fixture", "/task/config", "/task/workspaces", "https://task.example", 19514, 3, "/task/tmp")
+	if _, set := env["MULTICA_DOOP_TASK_ASSERTION"]; set {
+		t.Fatalf("MULTICA_DOOP_TASK_ASSERTION exported without an assertion: %q", env["MULTICA_DOOP_TASK_ASSERTION"])
+	}
+}
+
 func TestHermesTaskEnvPassthroughCoversTaskEnvironment(t *testing.T) {
 	t.Parallel()
 	names := execenv.HermesTaskEnvPassthroughNames()
@@ -611,7 +636,7 @@ func TestHermesTaskEnvPassthroughCoversTaskEnvironment(t *testing.T) {
 		}
 		seen[name] = true
 	}
-	env := taskMulticaEnvironment(Task{ID: "task-test", AgentID: "agent-test", WorkspaceID: "workspace-test", QuickCreatePrompt: "create work"},
+	env := taskMulticaEnvironment(Task{ID: "task-test", AgentID: "agent-test", WorkspaceID: "workspace-test", QuickCreatePrompt: "create work", DoopTaskAssertion: "mta1.cA.c2ln"},
 		"hermes", "agent-name", "mat_fixture", "/task/config", "/task/workspaces", "https://task.example", 19514, 3, "/task/tmp")
 	for name := range env {
 		if strings.HasPrefix(name, "MULTICA_") && !seen[name] {

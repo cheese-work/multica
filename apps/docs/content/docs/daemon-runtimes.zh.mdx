@@ -219,6 +219,7 @@ Codex 原生子智能体同样默认关闭：父线程结束时，Multica 就把
 | `MULTICA_AGENT_NAME` | 被指派智能体的显示名称 | 仅供参考 |
 | `MULTICA_DAEMON_PORT` | 本地守护进程的健康检查/API 端口，供 `multica repo checkout` 等仅限 task 的命令使用 | 仅供参考 |
 | `MULTICA_TASK_SLOT` | 守护进程全局并发池中的槽位，可用于 GPU 等按槽位编号的资源 | 仅供参考 |
+| `MULTICA_DOOP_TASK_ASSERTION` | 供 doop MCP 请求头 `X-Multica-Task-Assertion` 使用的短时效已签名 task 身份。仅在服务器签发时设置 | 仅供参考 |
 | `MULTICA_REPO_CHECKOUT_MODE` | 只在 Linux 和 Windows 的 Codex 运行中设为 `isolated`，让 `multica repo checkout` 生成 `.git` 在工作目录内的独立克隆；其他运行不设置 | 仅供参考 |
 | `TMPDIR` | 当前 task 的私有临时目录；也会以 `TMP` 和 `TEMP` 提供，但在 Windows 上 task 会继承用户临时路径以维持 Git Bash 的共享 `/tmp`；Windows 上的 Claude Code 会将 `CLAUDE_CODE_TMPDIR` 默认设为 task 临时目录 | 仅供参考 |
 
