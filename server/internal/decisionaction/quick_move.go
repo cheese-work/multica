@@ -14,11 +14,17 @@ const (
 	IssueProjectQuickSet = "issue.project.quick_set"
 	// ProjectWorkflowQuickSet switches a project to Quick and remaps its issues.
 	ProjectWorkflowQuickSet = "project.workflow.quick_set"
+	// ProjectWorkflowSet switches many projects to one workflow when the switch
+	// widens a run budget, and remaps their issues, all or none (CHE-10137).
+	ProjectWorkflowSet = "project.workflow.set"
+	// MaxProjectWorkflowSetProjects caps the projects one card covers.
+	MaxProjectWorkflowSetProjects = 50
 )
 
 func init() {
 	Register(&Definition{Type: IssueProjectQuickSet, Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Move an issue into a Quick project", Summary: "Moves the issue to a project that follows the Quick workflow, which gives it the Quick steps and run budget."}, MinClass: "spend", Target: TargetIssue, Normalize: normalizeIssueProjectQuickSet})
 	Register(&Definition{Type: ProjectWorkflowQuickSet, Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Switch a project to Quick", Summary: "Switches the project to the Quick workflow and moves its issues to the statuses listed."}, MinClass: "spend", Target: TargetNone, Normalize: normalizeProjectWorkflowQuickSet})
+	Register(&Definition{Type: ProjectWorkflowSet, Version: 1, Passkey: PasskeyRequired, Template: Template{Title: "Switch projects to a workflow", Summary: "Switches each listed project to the workflow and moves its issues to the statuses listed. Every project changes, or none does."}, MinClass: "spend", Target: TargetNone, Normalize: normalizeProjectWorkflowSet})
 }
 
 // IssueProjectQuickParams is the issue.project.quick_set payload. IssueID and
@@ -97,19 +103,28 @@ func normalizeProjectWorkflowQuickSet(raw json.RawMessage, slots []SecretSlot) (
 	if err := decodeStrict(raw, &params); err != nil {
 		return nil, nil, err
 	}
+	if err := normalizeProjectSwitch(&params); err != nil {
+		return nil, nil, err
+	}
+	out, err := json.Marshal(params)
+	return out, nil, err
+}
+
+// normalizeProjectSwitch canonicalizes one project's sealed switch in place.
+func normalizeProjectSwitch(params *ProjectWorkflowQuickParams) error {
 	var err error
 	if params.ProjectID, err = canonicalUUID("project_id", params.ProjectID); err != nil {
-		return nil, nil, err
+		return err
 	}
 	if params.WorkflowID != nil {
 		canonical, err := canonicalUUID("workflow_id", *params.WorkflowID)
 		if err != nil {
-			return nil, nil, err
+			return err
 		}
 		params.WorkflowID = &canonical
 	}
 	if params.TotalIssues < 0 {
-		return nil, nil, invalid("total_issues must not be negative")
+		return invalid("total_issues must not be negative")
 	}
 	if params.StatusMapping == nil {
 		params.StatusMapping = map[string]string{}
@@ -122,10 +137,10 @@ func normalizeProjectWorkflowQuickSet(raw json.RawMessage, slots []SecretSlot) (
 	sort.Slice(params.Required, func(i, j int) bool { return params.Required[i].StatusKey < params.Required[j].StatusKey })
 	for _, required := range params.Required {
 		if required.StatusKey == "" || required.IssueCount < 1 {
-			return nil, nil, invalid("required needs a status key and a positive issue count")
+			return invalid("required needs a status key and a positive issue count")
 		}
 		if params.StatusMapping[required.StatusKey] == "" {
-			return nil, nil, invalid("status_mapping has no destination for %q", required.StatusKey)
+			return invalid("status_mapping has no destination for %q", required.StatusKey)
 		}
 	}
 	if params.Overrides == nil {
@@ -134,15 +149,60 @@ func normalizeProjectWorkflowQuickSet(raw json.RawMessage, slots []SecretSlot) (
 	sort.Slice(params.Overrides, func(i, j int) bool { return params.Overrides[i] < params.Overrides[j] })
 	for _, override := range params.Overrides {
 		if override < 0 {
-			return nil, nil, invalid("overrides must not be negative")
+			return invalid("overrides must not be negative")
 		}
 	}
 	if err := normalizeWorkflowSetBinding("before", &params.Before); err != nil {
+		return err
+	}
+	return normalizeWorkflowSetBinding("after", &params.After)
+}
+
+// ProjectWorkflowSetParams is the project.workflow.set payload: one target
+// workflow for 1 to MaxProjectWorkflowSetProjects projects. Each entry seals
+// the project, the workflow it follows now (Before.ProjectWorkflowID), the
+// budget binding before and after, and the status mapping, as quick_set does.
+// Every entry's WorkflowID is the top-level one.
+type ProjectWorkflowSetParams struct {
+	WorkflowID *string                      `json:"workflow_id"`
+	Projects   []ProjectWorkflowQuickParams `json:"projects"`
+}
+
+func normalizeProjectWorkflowSet(raw json.RawMessage, slots []SecretSlot) (json.RawMessage, []SecretSlot, error) {
+	if len(slots) > 0 {
+		return nil, nil, invalid("%s takes no secret slots", ProjectWorkflowSet)
+	}
+	var params ProjectWorkflowSetParams
+	if err := decodeStrict(raw, &params); err != nil {
 		return nil, nil, err
 	}
-	if err := normalizeWorkflowSetBinding("after", &params.After); err != nil {
-		return nil, nil, err
+	if params.WorkflowID != nil {
+		canonical, err := canonicalUUID("workflow_id", *params.WorkflowID)
+		if err != nil {
+			return nil, nil, err
+		}
+		params.WorkflowID = &canonical
 	}
+	if n := len(params.Projects); n < 1 || n > MaxProjectWorkflowSetProjects {
+		return nil, nil, invalid("projects takes 1 to %d entries, got %d", MaxProjectWorkflowSetProjects, n)
+	}
+	seen := map[string]bool{}
+	for i := range params.Projects {
+		entry := &params.Projects[i]
+		if err := normalizeProjectSwitch(entry); err != nil {
+			return nil, nil, err
+		}
+		if seen[entry.ProjectID] {
+			return nil, nil, invalid("project %s is listed twice", entry.ProjectID)
+		}
+		seen[entry.ProjectID] = true
+		if (entry.WorkflowID == nil) != (params.WorkflowID == nil) || (entry.WorkflowID != nil && *entry.WorkflowID != *params.WorkflowID) {
+			return nil, nil, invalid("every project entry must carry the target workflow_id")
+		}
+	}
+	// Sorted by project, so the same set always hashes the same and the
+	// approval takes its locks in one order.
+	sort.Slice(params.Projects, func(i, j int) bool { return params.Projects[i].ProjectID < params.Projects[j].ProjectID })
 	out, err := json.Marshal(params)
 	return out, nil, err
 }

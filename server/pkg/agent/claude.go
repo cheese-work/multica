@@ -79,10 +79,11 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// pooled spawn must outlive runCtx so it can be parked after the turn; a
 	// one-shot spawn is bound to it.
 	// A warm process is shared across turns and keyed by a fingerprint that
-	// omits the credential boundary and the output-only launch line, so those
-	// runs always get a one-shot process.
+	// omits the credential boundary, the output-only launch line and the
+	// managed run binding, so those runs always get a one-shot process.
 	pooled := b.cfg.WarmPool != nil && !opts.OutputOnly &&
-		b.cfg.CredentialBoundary == nil && !b.cfg.RequireCredentialIsolation
+		b.cfg.CredentialBoundary == nil && !b.cfg.RequireCredentialIsolation &&
+		b.cfg.RunBinding == nil
 	var proc *claudeProcess
 	var fingerprint string
 	if pooled {
@@ -251,6 +252,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		lastAssistantText := turn.lastAssistantText
 		finalResultText := turn.finalResultText
 		lastUsageResult := turn.lastUsageResult
+		usageFallbackModel := turn.usageFallbackModelLocked()
 		lastRawModelUsage := turn.lastRawModelUsage
 		usage := turn.usage
 		cacheSplit := turn.cacheSplit
@@ -383,7 +385,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			// A rejected resume may emit usage for a newly-created session. Its
 			// totals do not share the requested session's baseline.
 			if lastUsageResult != nil {
-				if resultUsage, authoritative := claudeResultUsageSince(*lastUsageResult, opts.Model, nil); authoritative {
+				if resultUsage, authoritative := claudeResultUsageSince(*lastUsageResult, usageFallbackModel, nil); authoritative {
 					usage = applyClaudeCacheSplit(resultUsage, cacheSplit, len(lastUsageResult.ModelUsage) > 0)
 				}
 			}
@@ -472,6 +474,25 @@ type claudeTurn struct {
 	assistantEventCount      int
 	toolUseCount             int
 	unreadableAssistantCount int
+	// Model change tracking (CHE-10140). A result frame without model
+	// evidence books its usage to a fallback model. Once the runtime
+	// announced a main-thread change, neither the requested model nor a
+	// response from before the change is evidence of what served: only a
+	// main-thread response after the change is, and without one the
+	// attribution stays unknown. A run served by two models books its whole
+	// total to the later one; that is the evidence the result frame leaves.
+	fallbackWatch     *claudeFallbackWatch
+	mainThreadChanged bool
+	postChangeModel   string
+}
+
+// usageFallbackModelLocked is the model a result without model evidence books
+// its usage to. Callers hold t.mu.
+func (t *claudeTurn) usageFallbackModelLocked() string {
+	if t.mainThreadChanged {
+		return t.postChangeModel
+	}
+	return t.opts.Model
 }
 
 func (t *claudeTurn) handleMessage(msg claudeSDKMessage) {
@@ -485,10 +506,22 @@ func (t *claudeTurn) handleMessage(msg claudeSDKMessage) {
 		t.mu.Unlock()
 	case "assistant":
 		t.assistantEventCount++
+		confirmed, fallbackConfirmed := claudeFallbackConfirmed(t.fallbackWatch, msg)
+		if fallbackConfirmed {
+			t.fallbackWatch = nil
+		}
+		t.mu.Unlock()
+		if fallbackConfirmed {
+			sendReliable(t.runCtx, t.msgCh, confirmed)
+		}
+		t.mu.Lock()
 		turn := t.backend.handleAssistantSplit(msg, t.msgCh, t.usage, t.seenUsage, t.coalescer, t.cacheSplit)
 		t.toolUseCount += turn.toolUses
 		if turn.callModel != "" {
 			t.contextModel, t.contextTokens = turn.callModel, turn.callTokens
+			if t.mainThreadChanged {
+				t.postChangeModel = turn.callModel
+			}
 		}
 		if !turn.understood {
 			t.unreadableAssistantCount++
@@ -521,10 +554,21 @@ func (t *claudeTurn) handleMessage(msg claudeSDKMessage) {
 		if msg.Subtype == claudeSubtypeModelRefusalNoFallback && msg.ParentToolUseID == "" {
 			t.sawRefusalNoFallback = true
 		}
+		change, next, modelChanged := claudeModelChange(msg, t.fallbackWatch)
+		if modelChanged {
+			t.fallbackWatch = next
+			if change.Input["scope"] == "session" {
+				t.mainThreadChanged = true
+				t.postChangeModel = ""
+			}
+		}
 		sid := t.sessionID
 		t.mu.Unlock()
 		if compact != nil {
 			sendReliable(t.runCtx, t.msgCh, NewContextCompactedMessage(compact.Trigger, compact.PreTokens, compact.PostTokens))
+		}
+		if modelChanged {
+			sendReliable(t.runCtx, t.msgCh, change)
 		}
 		trySend(t.msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sid})
 	case "command_lifecycle":
@@ -561,6 +605,19 @@ func (t *claudeTurn) handleMessage(msg claudeSDKMessage) {
 			)
 			return
 		}
+		var fallbackFailed Message
+		sendFallbackFailed := false
+		if msg.IsError {
+			if failedMsg, ok := claudeFallbackFailed(t.fallbackWatch); ok {
+				t.fallbackWatch = nil
+				fallbackFailed, sendFallbackFailed = failedMsg, true
+			}
+		}
+		if sendFallbackFailed {
+			t.mu.Unlock()
+			sendReliable(t.runCtx, t.msgCh, fallbackFailed)
+			t.mu.Lock()
+		}
 		t.sawResult = true
 		t.finalResultText = msg.ResultText
 		t.resultIsError = msg.IsError
@@ -587,7 +644,7 @@ func (t *claudeTurn) handleMessage(msg claudeSDKMessage) {
 		if baseline == nil && t.usageSnapshot != nil {
 			baseline = t.usageSnapshot.baseline
 		}
-		if resultUsage, authoritative := claudeResultUsageSince(msg, t.opts.Model, baseline); authoritative {
+		if resultUsage, authoritative := claudeResultUsageSince(msg, t.usageFallbackModelLocked(), baseline); authoritative {
 			usageMsg := msg
 			t.lastUsageResult = &usageMsg
 			if !unverifiableBaseline {
@@ -1097,6 +1154,16 @@ type claudeSDKMessage struct {
 
 	// compact_boundary fields (system frame, one per compaction)
 	CompactMetadata *claudeCompactMetadata `json:"compact_metadata,omitempty"`
+
+	// model_refusal_fallback / model_fallback / model_refusal_no_fallback
+	// fields (system frames; Claude Code 2.1.318 schema)
+	UUID               string `json:"uuid,omitempty"`
+	Trigger            string `json:"trigger,omitempty"`
+	Direction          string `json:"direction,omitempty"`
+	Scope              string `json:"scope,omitempty"`
+	OriginalModel      string `json:"original_model,omitempty"`
+	FallbackModel      string `json:"fallback_model,omitempty"`
+	APIRefusalCategory string `json:"api_refusal_category,omitempty"`
 
 	// log fields
 	Log *claudeLogEntry `json:"log,omitempty"`

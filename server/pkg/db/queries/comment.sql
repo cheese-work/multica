@@ -1299,3 +1299,22 @@ WHERE comment.id IN (SELECT id FROM descendants)
   AND comment.deleted_at IS NULL
 ORDER BY comment.created_at DESC, comment.id DESC
 LIMIT @row_limit;
+
+-- name: GetTimeoutCheckpointComment :one
+-- CHE-9761: the checkpoint comment the server posted for one timed-out task.
+-- The failure notice shares (author, type, source_task_id), so the checkpoint
+-- is told apart by its first line, which always starts with the word Coverage.
+SELECT * FROM comment
+WHERE issue_id = sqlc.arg('issue_id')
+  AND source_task_id = sqlc.arg('source_task_id')
+  AND author_type = 'agent'
+  AND type = 'system'
+  AND content LIKE 'Coverage:%'
+  AND deleted_at IS NULL
+ORDER BY created_at ASC
+LIMIT 1;
+
+-- name: LockTimeoutCheckpoint :exec
+-- CHE-9761: serializes concurrent duplicate FailTask posts for one task so
+-- the check-then-insert of the checkpoint comment cannot double-post.
+SELECT pg_advisory_xact_lock(hashtextextended(sqlc.arg('source_task_id')::uuid::text || ':timeout_checkpoint', 0));

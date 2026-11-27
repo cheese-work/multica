@@ -124,7 +124,7 @@ multica project member add <project-id> carol@example.com
 
 ## 暂停、取消和完成
 
-状态为 `paused`、`cancelled` 或 `completed` 的项目不再启动新的智能体运行，智能体也不能在其中创建任务或把任务移入其中。
+状态为 `paused`、`cancelled` 或 `completed` 的项目不再启动新的智能体运行。智能体仍可在 `paused` 项目中创建任务，但这些任务在项目恢复前不会启动运行；智能体不能在 `cancelled` 或 `completed` 项目中创建任务。智能体不能把任务移入这三种状态的项目。
 
 | 状态 | 排队中的运行 | 正在进行的运行 | 智能体对其任务的编辑和评论 |
 |---|---|---|---|

@@ -287,6 +287,11 @@ type TaskFailRequest struct {
 	RetiredSessionID string `json:"retired_session_id,omitempty"`
 	// Older daemons and incomplete transcripts leave this proof unset.
 	NoToolCallsStarted bool `json:"no_tool_calls_started,omitempty"`
+	// TimeoutCheckpoint (CHE-9761): the daemon's facts about a run that hit its
+	// time cap. Raw on purpose: a malformed field is dropped by the service
+	// validator, never turned into a 400 for the fail report itself. Older
+	// daemons omit it.
+	TimeoutCheckpoint json.RawMessage `json:"timeout_checkpoint,omitempty"`
 }
 
 // TaskCompletedPayload is sent from daemon to server when a task finishes.
@@ -405,6 +410,11 @@ const (
 	// failed to be) automatically compacted. It is an assistant row that never
 	// enters a prompt.
 	ChatMessageKindCompactNotice = "compact_notice"
+	// ChatMessageKindModelChangeNotice is the server-authored note that the
+	// runtime changed, or tried to change, the model serving a turn
+	// (CHE-10140). Like a compact notice it is an assistant row that never
+	// enters a prompt.
+	ChatMessageKindModelChangeNotice = "model_change_notice"
 	// ChatMessageKindNoResponse marks a direct-chat turn the agent completed
 	// without any text reply — a visible, deliberate terminal outcome rather
 	// than a silently-dropped turn (MUL-4351).

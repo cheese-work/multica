@@ -53,6 +53,25 @@ var (
 // member-facing recovery guidance describe the actual failure.
 const concurrentRequestLimitWitness = "concurrent request limit"
 
+// claudeCodeModelNotFoundWitnesses are the two phrases of Claude Code's text
+// for an HTTP 404 model_not_found: "There's an issue with the selected model
+// (X). It may not exist or you may not have access to it. Run --model to pick
+// a different model." The second phrase contains rule 3's "you may not have
+// access", so these must be checked before the auth rule or the member is told
+// to sign in for a model that simply is not there. The apostrophe is left out
+// of the first phrase so both quote forms match. Mirror into the MUL-1949
+// offline backfill SQL, ahead of its auth branch.
+var claudeCodeModelNotFoundWitnesses = []string{
+	"issue with the selected model",
+	"may not exist or you may not have access",
+}
+
+// isClaudeCodeModelNotFound is shared by Classify and NormalizeDaemonReason so
+// new and old daemons land on the same reason.
+func isClaudeCodeModelNotFound(lower string) bool {
+	return containsAny(lower, claudeCodeModelNotFoundWitnesses...)
+}
+
 var httpForbiddenCodeRe = regexp.MustCompile(`(^|[^0-9a-z])403([^0-9a-z]|$)`)
 
 // isUsageLimit403 is shared by Classify and NormalizeDaemonReason so new and
@@ -202,6 +221,11 @@ func classifyAgentErrorText(lower string) Reason {
 		strings.Contains(lower, providerUnconfiguredPhrase),
 		strings.Contains(lower, "no provider configured"):
 		return ReasonAgentMissingConfig
+
+	// 2b. Claude Code's 404 model_not_found text embeds "you may not have
+	//    access", so it must be claimed before the auth rule below.
+	case isClaudeCodeModelNotFound(lower):
+		return ReasonAgentModelNotFoundOrUnavailable
 
 	// 3. Auth / access. 401 / 403 / "Not logged in" / invalid token
 	//    / lacks access to the model. Status codes use an alphanumeric
@@ -717,6 +741,15 @@ var legacyTokenRateLimitReasons = map[string]bool{
 	string(ReasonAgentContextOverflow): true,
 }
 
+// legacyClaudeCodeModelNotFoundReasons are the buckets an older daemon lands
+// Claude Code's 404 model text in: the auth rule (via "you may not have
+// access") or the catchalls.
+var legacyClaudeCodeModelNotFoundReasons = map[string]bool{
+	string(ReasonAgentProviderAuthOrAccess): true,
+	string(ReasonAgentUnknown):              true,
+	"agent_error":                           true,
+}
+
 // NormalizeDaemonReason upgrades a failure_reason reported by an older daemon
 // onto the taxonomy this server understands, using the raw error text as the
 // witness. It returns the reason unchanged when nothing applies.
@@ -757,6 +790,10 @@ func NormalizeDaemonReason(reason, rawError string) Reason {
 	if rawLower := strings.ToLower(rawError); legacyTokenRateLimitReasons[reason] &&
 		isTokenQuotaRejection(rawLower) && !explicitContextOverflow(rawLower) {
 		return ReasonAgentProviderCapacityOrRateLimit
+	}
+	if legacyClaudeCodeModelNotFoundReasons[reason] &&
+		isClaudeCodeModelNotFound(strings.ToLower(rawError)) {
+		return ReasonAgentModelNotFoundOrUnavailable
 	}
 	if legacySkillBundleReasons[reason] &&
 		strings.HasPrefix(strings.TrimSpace(rawError), legacySkillBundlePrefix) {

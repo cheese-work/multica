@@ -527,6 +527,7 @@ Daemon behavior is configured via flags or environment variables:
 | Daemon log max age (days) | — | `MULTICA_DAEMON_LOG_MAX_AGE_DAYS` | `30` (or persist per profile with `daemon_log_max_age_days`) |
 | Agent timeout | `--agent-timeout` | `MULTICA_AGENT_TIMEOUT` | `0` (no cap; bounded by the watchdogs) |
 | Codex agent timeout | — | `MULTICA_CODEX_AGENT_TIMEOUT` | `0` (off). Positive value caps Codex runs only and overrides the global agent timeout for them; other providers are unaffected |
+| Near-limit warning | — | `MULTICA_AGENT_NEAR_LIMIT_WARNING` | `10m`. Sends the agent one warning this long before the run timeout (commit and push WIP, post one checkpoint comment, continue). Only sent when the effective timeout is more than 2x this value and the provider accepts mid-run messages; `0` turns it off. A timed-out run also reports a git and last-actions checkpoint with the failure |
 | Agent idle watchdog | — | `MULTICA_AGENT_IDLE_WATCHDOG` | `2h` (`0` disables the whole watchdog suite) |
 | Agent tool watchdog | — | `MULTICA_AGENT_TOOL_WATCHDOG` | same as the idle watchdog (`0` = never force-stop during a tool call) |
 | Silence warn tier | — | `MULTICA_AGENT_SILENCE_WARN_AFTER` | `15m` (`0` = off; marks the transcript when a run has no message and no tool in flight; also marks a tool call running this long. Never stops the run) |

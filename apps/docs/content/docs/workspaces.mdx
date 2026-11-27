@@ -60,6 +60,8 @@ A close needs every check below. If one fails or cannot be read, the step's agen
 
 A PR that is still open at the head the PASS names does not keep the run when the step has a `pr.merged` edge to `done` and the issue's own watcher: the server starts no run and records one `auto_close_pending_merge` activity row. The merge then closes the issue, with no run. When the merge arrives, the server reads every predicate again. If one no longer holds (a new head without a PASS, a new live wakeup), it starts the step's run instead of closing and drops the watcher.
 
+In `warn` and `block`, a close that is rejected records one `auto_close_skipped` activity row. It names the first predicate that did not hold (`first_failure`) and holds the inputs the predicates read: the mode and where it came from (workspace or step), the issue's `post_close_work`, the done edges, the PASS row and the head it names, the linked PRs, the open children and decisions, the wakeup counts, the parent's `delivery_stop` and the check time. `multica issue close-check <issue>` shows every predicate on the issue as it is now; `multica issue close-check <issue> --activity <row>` runs the same predicates over the stored inputs, so the answer is the one the server gave at that moment even after the issue changed. Both are read-only.
+
 Set the mode with `multica workspace update --auto-close-mode off|warn|block`. An unreadable value counts as `off`.
 
 ### Blocked-run skip

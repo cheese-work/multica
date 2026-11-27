@@ -1,7 +1,7 @@
 -- name: GetLatestIssueVerdict :one
 -- CHE-6969: the verdict of record is the newest verdict row; its details carry
 -- the findings, the reviewed pull request and the head it names.
-SELECT action, details, created_at, actor_id FROM activity_log
+SELECT id, action, details, created_at, actor_id FROM activity_log
 WHERE issue_id = $1 AND action IN ('review_passed', 'review_changes_requested')
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
@@ -62,3 +62,13 @@ SELECT id FROM agent_task_queue
 WHERE issue_id = $1 AND agent_id = $2
 ORDER BY created_at DESC, id DESC
 LIMIT 1;
+
+-- name: GetIssueLastReviewExit :one
+-- When the issue last left agent_review (CHE-9318): the newest status_changed
+-- row naming agent_review as the source; null when it never did. Later moves
+-- do not change it, so it fixes the issue's rollout cohort through close.
+SELECT (max(created_at))::timestamptz AS left_at
+FROM activity_log
+WHERE issue_id = sqlc.arg('issue_id')
+  AND action = 'status_changed'
+  AND details->>'from' = 'agent_review';

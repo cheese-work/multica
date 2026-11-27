@@ -3,6 +3,8 @@
 # While the gate is off this workflow runs no verdict logic: its one step posts commit status `security-gate` = `success`
 # with the description `security gate off (CHE-5126)`, so no PR or queue commit stays yellow.
 # Switch the gate back on by reverting the CHE-5148 PR: the verdict logic and the comment trigger come back with it.
+# CHE-9846: security-gate-queue.yml and the queue-handoff job are removed (27 of 27 runs skipped while the gate is off);
+# revert the CHE-9846 PR with CHE-5148 to bring the queue path back.
 #
 # Runs: `workflow_call` (pr-guards.yml, once per PR event), `workflow_dispatch` (input `pr`) and `merge_group`.
 # No `issue_comment` trigger: a comment cannot change a status that is always `success`, and a skipped run still counts
@@ -31,8 +33,6 @@ jobs:
   security-gate:
     # Job name differs from the status context on purpose: the context is posted by the step, not by the job name.
     name: security-gate-eval
-    # CHE-4251: once SECURITY_GATE_QUEUE_TRUSTED is true, security-gate-queue.yml posts the queue status and this job skips `merge_group`.
-    if: github.event_name != 'merge_group' || vars.SECURITY_GATE_QUEUE_TRUSTED != 'true'
     # CHE-3604: GitHub-hosted runner.
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -52,17 +52,6 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/statuses/$sha" -f state=success -f context=security-gate \
             -f "description=security gate off (CHE-5126)" \
             -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-
-  # CHE-4251: a queue run that holds no secret. Its completion triggers security-gate-queue.yml, which runs from the
-  # default branch. This definition comes from the queue commit, so it must never name an environment or a secret.
-  queue-handoff:
-    name: queue-handoff
-    if: github.event_name == 'merge_group'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions: {}
-    steps:
-      - run: echo "queue commit ${{ github.event.merge_group.head_sha }} handed to security-gate-queue"
 
   # CHE-4385: a verdict that lands after CI changes required-check evidence, so a dispatched run refreshes the receipt
   # in this same run (no `workflow_run` cascade, no separate run). While CI is still running its receipt is stale by

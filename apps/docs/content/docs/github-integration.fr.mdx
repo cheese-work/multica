@@ -225,6 +225,38 @@ Chaque résultat est ajouté à l'activité de chaque tâche associée à la PR,
 
 L'API des piles est en préversion chez GitHub : un changement de forme apparaît donc comme `schema`, jamais comme un webhook en échec.
 
+## Créer un dépôt avec une carte d'approbation [#repo-create]
+
+Un agent ne peut pas créer seul un dépôt GitHub. Il prépare un fichier d'action, et le propriétaire de l'espace de travail l'approuve avec une clé d'accès. Le serveur crée ensuite le dépôt avec un identifiant d'administrateur d'organisation que l'agent ne voit jamais.
+
+```bash
+multica github repo-create --org tevo-studio --name we006 \
+  --template tevo-studio/code-android-template --private \
+  --description "WE-006 app" --out repo-create.json
+multica decision request <issue> --action-file repo-create.json
+```
+
+| Option | Sens |
+|---|---|
+| `--org` | L'organisation. Seules `tevo-studio` et `cheese-work` sont acceptées. |
+| `--name` | Le nom du dépôt. |
+| `--template` | Modèle `owner/repo` facultatif. Son propriétaire doit aussi être une organisation approuvée. L'API de génération de GitHub n'accepte pas de référence : la branche par défaut du modèle est utilisée. |
+| `--private`, `--visibility` | `private` (par défaut), `internal` ou `public`. Un dépôt public est une publication : demandez avec `--class publish`. |
+| `--description` | Une ligne, 290 caractères au plus. Le serveur ajoute un marqueur `[multica-action:<id>]` à la description du dépôt. |
+| `--out`, `--dry-run`, `--expires-in` | Écrire le fichier d'action, seulement l'afficher, ou fixer la durée d'ouverture de la carte. |
+
+À l'approbation, le serveur crée le dépôt, le relit, puis l'ajoute au registre des dépôts de l'espace de travail. Si l'organisation a déjà une entrée dans `guard_policy.repository_allowlist`, il y ajoute aussi le dépôt. Une organisation sans entrée reste sans restriction, car en ajouter une exclurait le reste de l'organisation. Une carte rejetée ou expirée ne crée rien. Si GitHub refuse la demande, l'action se termine en échec et les lignes de l'espace de travail restent inchangées.
+
+### Auto-hébergement
+
+Définissez l'identifiant sur le serveur d'API uniquement. C'est un objet JSON qui associe chaque organisation à un jeton autorisé à y créer des dépôts :
+
+```dotenv
+MULTICA_GITHUB_REPO_ADMIN_TOKENS={"tevo-studio":"<token>","cheese-work":"<token>"}
+```
+
+Le daemon retire cette variable de tout environnement d'agent, et aucune carte, aucun résultat ni aucun journal ne la contient. Sans elle, une carte approuvée se termine en échec avec `credential_not_configured`. L'application GitHub elle-même n'a besoin d'aucune permission Administration pour cela.
+
 ## Déconnecter
 
 Dans **Paramètres → Code**, choisissez **Déconnecter** à côté du compte à retirer. Seule la connexion de cette installation à l’espace courant est supprimée ; les autres continuent de recevoir des événements. L’App reste installée sur GitHub et les PR et liens existants sont conservés.

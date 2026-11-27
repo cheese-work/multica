@@ -107,6 +107,27 @@ WHERE m.chat_session_id = sqlc.arg('chat_session_id')
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT sqlc.arg('row_limit');
 
+-- name: ListChatEarlierHumanMessages :many
+-- Carry-over block, earlier human messages (CHE-10002): the human's ordinary
+-- messages before the boundary (the segment floor, or the latest summary row),
+-- newest first. Same exclusions as ListChatCarryOverMessages: a queued
+-- follow-up is not delivered yet, and the claiming task's own input batch is
+-- delivered by the claim. The source message of a withdrawn decision stays out,
+-- as the withdrawn decision does (CHE-4447).
+SELECT m.* FROM chat_message m
+WHERE m.chat_session_id = sqlc.arg('chat_session_id')
+  AND m.role = 'user'
+  AND m.message_kind = 'message'
+  AND (m.created_at, m.id) < (sqlc.arg('before_created_at')::timestamptz, sqlc.arg('before_id')::uuid)
+  AND NOT (m.id = ANY(sqlc.arg('excluded_ids')::uuid[]))
+  AND NOT EXISTS (
+      SELECT 1 FROM agent_task_queue t WHERE t.id = m.task_id AND t.status = 'queued')
+  AND NOT EXISTS (
+      SELECT 1 FROM decision_answer da
+      WHERE da.disclaimed_at IS NOT NULL AND m.id = ANY(da.chat_message_ids))
+ORDER BY m.created_at DESC, m.id DESC
+LIMIT sqlc.arg('row_limit');
+
 -- name: ListChatSegmentTail :many
 -- Carry-over fallback when the current segment holds no assistant message yet:
 -- the last assistant message of the previous segment and the messages after it,
@@ -988,6 +1009,39 @@ VALUES (
     GREATEST(now(), COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = $1), now())),
     sqlc.narg(wakeup_id)::uuid
 )
+RETURNING *;
+
+-- name: CreateCompactNoticeIdempotent :one
+-- One mid-turn compaction notice per context_compacted run message (CHE-9935).
+-- The caller derives id from the run message id, so a replay conflicts and
+-- inserts nothing: no row comes back and the caller publishes nothing. The
+-- notice sits at the event time, clamped above the segment floor (Rule W, see
+-- CreateChatMessage). It carries no task_id: like the layer B notice, it is not
+-- a reply of the task.
+INSERT INTO chat_message (id, chat_session_id, role, content, message_kind, sent_via, created_at)
+VALUES (
+    sqlc.arg('id'), sqlc.arg('chat_session_id'), 'assistant', sqlc.arg('content'),
+    'compact_notice', 'system',
+    GREATEST(sqlc.arg('event_at')::timestamptz,
+             COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = sqlc.arg('chat_session_id')), sqlc.arg('event_at')::timestamptz))
+)
+ON CONFLICT (id) DO NOTHING
+RETURNING *;
+
+-- name: CreateModelChangeNoticeIdempotent :one
+-- One model change notice per native model transition (CHE-10140). The caller
+-- derives id from the native event identity, so a replay conflicts and inserts
+-- nothing: no row comes back and the caller publishes nothing. Same placement
+-- rules as CreateCompactNoticeIdempotent: at the event time, clamped above the
+-- segment floor, no task_id.
+INSERT INTO chat_message (id, chat_session_id, role, content, message_kind, sent_via, created_at)
+VALUES (
+    sqlc.arg('id'), sqlc.arg('chat_session_id'), 'assistant', sqlc.arg('content'),
+    'model_change_notice', 'system',
+    GREATEST(sqlc.arg('event_at')::timestamptz,
+             COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = sqlc.arg('chat_session_id')), sqlc.arg('event_at')::timestamptz))
+)
+ON CONFLICT (id) DO NOTHING
 RETURNING *;
 
 -- name: BindChatMessageDecisionAnswer :one

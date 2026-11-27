@@ -413,7 +413,7 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 		}
 	}
 	if p.CreatorType == "agent" {
-		if err := RequireActiveProject(ctx, qtx, p.WorkspaceID, projectID); err != nil {
+		if err := RequireProjectIntake(ctx, qtx, p.WorkspaceID, projectID); err != nil {
 			return IssueCreateResult{}, err
 		}
 	}
@@ -1302,6 +1302,11 @@ func (s *IssueService) shouldEnqueueAgentTaskWithQueries(ctx context.Context, q 
 	}
 	blocked, err := q.HasOpenIssueBlockers(ctx, db.HasOpenIssueBlockersParams{WorkspaceID: issue.WorkspaceID, IssueID: issue.ID})
 	if err != nil || blocked {
+		return false
+	}
+	// A paused project takes new issues, but the DB fence refuses their runs;
+	// inserting one here would abort the create transaction. Fail closed.
+	if err := RequireActiveProject(ctx, q, issue.WorkspaceID, issue.ProjectID); err != nil {
 		return false
 	}
 	return isAgentAssigneeReadyWithQueries(ctx, s.runtimeLookup(q), issue)

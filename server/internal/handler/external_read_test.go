@@ -171,9 +171,10 @@ func TestDaemonMarksTaskExternalRead(t *testing.T) {
 	}
 }
 
-// An admin-path edit clears source_task_id, so the comment trigger cannot
-// inherit the writer's mark. The edit itself must carry it (Sol review, P1).
-func TestMarkedTaskEditOfOthersCommentStoresMark(t *testing.T) {
+// An agent re-editing its own comment re-stamps the lineage, and the edit
+// carries the acting task's external_read mark. Agent runs can no longer edit
+// another author's comment (CHE-10266), so this is the only agent edit path.
+func TestMarkedTaskEditOfOwnCommentStoresMark(t *testing.T) {
 	chain := newCrossIssueChain(t, testUserID, testUserID)
 	marked := markedTask(t, chain.CoordinatorID, true)
 	clean := markedTask(t, chain.CoordinatorID, false)
@@ -183,24 +184,29 @@ func TestMarkedTaskEditOfOthersCommentStoresMark(t *testing.T) {
 			"commentId", commentID,
 		)).Want(http.StatusOK)
 	}
+	own := func() string {
+		var c CommentResponse
+		agentComments(t, chain.CoordinatorID, clean, chain.IssueX, "own comment", "").Want(http.StatusCreated).JSON(&c)
+		return c.ID
+	}
 	const q = `SELECT external_read FROM comment WHERE id = $1`
 
-	byMember := dbfx.Comment(t, chain.IssueX, "member")
-	edit(byMember, clean, "edited by a clean task")
-	if flag(t, q, byMember) {
+	byAgent := own()
+	edit(byAgent, clean, "edited by a clean task")
+	if flag(t, q, byAgent) {
 		t.Fatalf("edit by clean task is marked")
 	}
-	edit(byMember, marked, "edited by a marked task")
-	if !flag(t, q, byMember) {
-		t.Errorf("edit of another author's comment by marked task: external_read = false")
+	edit(byAgent, marked, "edited by a marked task")
+	if !flag(t, q, byAgent) {
+		t.Errorf("edit of own comment by marked task: external_read = false")
 	}
-	edit(byMember, clean, "edited again by a clean task")
-	if !flag(t, q, byMember) {
+	edit(byAgent, clean, "edited again by a clean task")
+	if !flag(t, q, byAgent) {
 		t.Errorf("clean edit cleared the comment mark")
 	}
 
 	// An unchanged save by a marked task writes no new text: no mark.
-	unchanged := dbfx.Comment(t, chain.IssueX, "member")
+	unchanged := own()
 	var existing string
 	dbfx.QueryRow(t, `SELECT content FROM comment WHERE id = $1`, unchanged).Scan(&existing)
 	edit(unchanged, marked, existing)

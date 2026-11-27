@@ -305,6 +305,8 @@ type terminalTaskReport struct {
 	// run on the issue or chat can select it again, however many clean rows
 	// still reference it.
 	retiredSessionID string
+	// timeoutCheckpoint: see TaskResult. Fail reports only.
+	timeoutCheckpoint *timeoutCheckpoint
 	// contextTokens / contextWindow: see TaskResult. Complete reports only.
 	contextTokens int64
 	contextWindow int64
@@ -840,6 +842,11 @@ type Daemon struct {
 	taskSupplementSignals       taskSupplementSignals
 	taskSupplementPollInterval  time.Duration
 	taskSupplementReadyInterval time.Duration
+	// Test seams for the near-limit warning and timeout checkpoint (CHE-9762);
+	// zero values mean the production defaults.
+	nearLimitRetryInterval time.Duration
+	timeoutProbeBudget     time.Duration
+	gitProbe               gitProbeFunc
 	// envRootBusyWait is how long a task that is entitled to a prior env root
 	// waits for the previous run to let go of it before giving up and preparing
 	// a fresh one. New() sets it; the zero value means "do not wait", which is
@@ -7356,6 +7363,7 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 			noToolCallsStarted:    result.NoToolCallsStarted,
 			sessionRolloutMissing: result.SessionRolloutMissing,
 			retiredSessionID:      result.RetiredSessionID,
+			timeoutCheckpoint:     result.TimeoutCheckpoint,
 		}); err != nil {
 			taskLog.Error("report failed task failed", "error", err)
 		}
@@ -8881,6 +8889,9 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	}
 	phaseRecorder := taskPhaseRecorderFromContext(ctx)
 	phaseRecorder.Mark(taskPhasePrepareStarted)
+	// Per-run facts for the near-limit warning and timeout checkpoint.
+	runCP := newRunCheckpoint()
+	ctx = withRunCheckpoint(ctx, runCP)
 	// A claim carries the task-row agent id both at the top level and inside
 	// the expanded agent configuration. The top-level id is authoritative
 	// because it is also bound into the task-scoped token. Never prepare or
@@ -10111,9 +10122,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if hook := contain.Hook(); hook != nil {
 		backendConfig.Launch = hook
 	}
-	if provider == "codex" && d.cfg.RunBindingsDir != "" && task.IssueIdentifier != "" {
-		backendConfig.RunBinding = &runbinding.Spec{Dir: d.cfg.RunBindingsDir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}
-	}
+	backendConfig.RunBinding = runBindingSpec(provider, d.cfg.RunBindingsDir, task)
 	if hermesOverlayActive {
 		// Retire an owner left by a crashed/interrupted daemon before it can
 		// execute tools with the preceding task's frozen environment.
@@ -10667,26 +10676,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// in sync even when the agent times out after building a session.
 		// We mark as "blocked" (not a hard error return) so handleTask
 		// goes through the FailTask path that forwards session info.
-		comment := result.Error
-		if comment == "" {
-			comment = fmt.Sprintf("%s timed out after %s", provider, d.cfg.agentTimeoutFor(provider))
-		}
-		failureReason := "timeout"
-		if reason, ok := classifyResumeUnsafeTimeout(provider, comment); ok {
-			taskLog.Warn("agent timed out with resume-unsafe session, classifying as blocked",
-				"failure_reason", reason,
-			)
-			failureReason = reason
-		}
-		return TaskResult{
-			Status:        "blocked",
-			Comment:       comment,
-			SessionID:     result.SessionID,
-			WorkDir:       env.WorkDir,
-			EnvRoot:       env.RootDir,
-			FailureReason: failureReason,
-			Usage:         usageEntries,
-		}, nil
+		return d.timeoutTaskResult(ctx, provider, result, env.WorkDir, env.RootDir, usageEntries, runCP, taskLog), nil
 	case "idle_watchdog":
 		// The idle watchdog force-stopped the run because the backend
 		// went silent (e.g. claude blocked on a tool call against a
@@ -11199,6 +11189,10 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		taskLog.Debug("backend execute returned error", "error", err)
 		return agent.Result{}, 0, err
 	}
+	// Near-limit warning (CHE-9762): once per run, a steer asking the agent to
+	// push WIP and post a checkpoint before the wall-clock cap fires.
+	runCP := runCheckpointFromContext(ctx)
+	d.startNearLimitWarning(agentCtx, runCP, session, opts.Timeout, taskLog)
 	// This counter intentionally starts at the narrower provider-session
 	// boundary, not at the earlier server-side StartTask transition.
 	d.runningTasks.Add(1)
@@ -11505,6 +11499,8 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					n := toolCount.Add(1)
 					inFlightTools.Add(1)
 					taskLog.Info(fmt.Sprintf("tool #%d: %s", n, msg.Tool))
+					redactedInput := redact.InputMap(msg.Input)
+					runCP.recordToolCall(msg.Tool, redactedInput, observedAt)
 					mu.Lock()
 					sealPendingLocked()
 					if msg.CallID != "" {
@@ -11527,7 +11523,7 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 						// credential) to a peer that does not scrub nested
 						// values yet. Deployment order is not a control we
 						// have, so this side has to be safe on its own.
-						Input: redact.InputMap(msg.Input),
+						Input: redactedInput,
 					})
 					mu.Unlock()
 					flushFirstVisible()
@@ -11589,6 +11585,13 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					mu.Lock()
 					sealPendingLocked()
 					batch = append(batch, contextCompactedTaskMessage(msg, int(msgSeq.Add(1)), observedAt))
+					mu.Unlock()
+					flushFirstVisible()
+				case agent.MessageModelChange:
+					taskLog.Info("model change", "input", msg.Input)
+					mu.Lock()
+					sealPendingLocked()
+					batch = append(batch, modelChangeTaskMessage(msg, int(msgSeq.Add(1)), observedAt))
 					mu.Unlock()
 					flushFirstVisible()
 				case agent.MessageError:
@@ -12629,6 +12632,16 @@ func selectTaskWarmPool(pool *agent.WarmSessionPool, usesCustomProfileCommand bo
 // credentials.
 // Failure is fatal: launching with an unowned or malformed policy could either
 // drop the task-scoped token again or expose inherited daemon credentials.
+// runBindingSpec returns the managed run binding for providers whose backend
+// publishes one (Codex, and Claude since CHE-9773), or nil when the registry is
+// not configured or the task has no issue identity.
+func runBindingSpec(provider, dir string, task Task) *runbinding.Spec {
+	if (provider != "codex" && provider != "claude") || dir == "" || task.IssueIdentifier == "" {
+		return nil
+	}
+	return &runbinding.Spec{Dir: dir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}
+}
+
 func configureCodexTaskShellEnvironment(provider, codexHome string, inherited []string, agentEnv, agentCustomEnv map[string]string, logger *slog.Logger) error {
 	if provider != "codex" {
 		return nil
@@ -12711,4 +12724,32 @@ func managedHarnessProfile(agentData *AgentData, provider string) (string, error
 		return "", fmt.Errorf("runtime profile %q is not implemented for provider %q; refusing to launch with the personal config", agentData.HarnessProfile, provider)
 	}
 	return "", fmt.Errorf("unknown runtime profile %q; refusing to launch with the personal config", agentData.HarnessProfile)
+}
+
+// timeoutTaskResult builds the blocked result for a run that hit its cap. The
+// checkpoint rides beside the comment, never inside it: the failure classifier
+// and the resume guards pattern-match the comment text.
+func (d *Daemon) timeoutTaskResult(ctx context.Context, provider string, result agent.Result, workDir, envRoot string, usage []TaskUsageEntry, rc *runCheckpoint, taskLog *slog.Logger) TaskResult {
+	comment := result.Error
+	if comment == "" {
+		comment = fmt.Sprintf("%s timed out after %s", provider, d.cfg.agentTimeoutFor(provider))
+	}
+	// Classify on the original message, before anything else touches it.
+	failureReason := "timeout"
+	if reason, ok := classifyResumeUnsafeTimeout(provider, comment); ok {
+		taskLog.Warn("agent timed out with resume-unsafe session, classifying as blocked",
+			"failure_reason", reason,
+		)
+		failureReason = reason
+	}
+	return TaskResult{
+		Status:            "blocked",
+		Comment:           comment,
+		SessionID:         result.SessionID,
+		WorkDir:           workDir,
+		EnvRoot:           envRoot,
+		FailureReason:     failureReason,
+		Usage:             usage,
+		TimeoutCheckpoint: d.buildTimeoutCheckpoint(ctx, rc, workDir),
+	}
 }

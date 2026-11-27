@@ -193,6 +193,14 @@ func (h *Handler) pluginTokenCaller(w http.ResponseWriter, r *http.Request, toke
 			writePluginActionError(w, r, err, "failed to authorize the Plugin call")
 			return service.PluginActionCaller{}, pluginActor{}, false
 		}
+		// A guard call decides allow or deny; it never changes anything. Its
+		// token reads and nothing else, whatever the installation's scopes
+		// say, and the refusal sits before the scope check so no write route
+		// can be reached by a route that forgot to ask.
+		if grant.Trigger == plugincontract.TriggerGuard && r.Method != http.MethodGet && r.Method != http.MethodHead {
+			publicapiv1.WriteProblem(w, r, http.StatusForbidden, "guard_read_only", "a guard call's callback token is read-only")
+			return service.PluginActionCaller{}, pluginActor{}, false
+		}
 		installationID = grant.InstallationID
 		issueScope = grant.IssueID
 		if grant.Actor.Type == "member" {

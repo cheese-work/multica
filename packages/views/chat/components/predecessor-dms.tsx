@@ -21,7 +21,7 @@ import { AnnotatableAnswer } from "./annotatable-answer";
 import { useChatAnnotationScope } from "./chat-annotation-context";
 
 /** Rows that are chrome of the earlier DM, not something the person or agent said. */
-const HIDDEN_KINDS = new Set(["continuation_summary", "compact_notice", "onboarding_kickoff", "decision_reference"]);
+const HIDDEN_KINDS = new Set(["continuation_summary", "compact_notice", "model_change_notice", "onboarding_kickoff", "decision_reference"]);
 
 const isQuotable = (message: ChatMessage) =>
   !message.failure_reason && message.message_kind !== "no_response" && message.content.trim().length > 0;

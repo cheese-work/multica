@@ -941,10 +941,11 @@ func (c *Client) ReportTaskUsageSnapshot(ctx context.Context, taskID string, usa
 	}, nil)
 }
 
-func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string) error {
+func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDir, branchName, failureReason string, sessionRolloutMissing bool, retiredSessionID, durableWorkDir string, checkpoint *timeoutCheckpoint) error {
 	return c.failTaskWithRetrySchedule(ctx, terminalTaskReport{
 		taskID: taskID, errorMessage: errMsg, sessionID: sessionID, workDir: workDir, branchName: branchName,
 		failureReason: failureReason, sessionRolloutMissing: sessionRolloutMissing, retiredSessionID: retiredSessionID, durableWorkDir: durableWorkDir,
+		timeoutCheckpoint: checkpoint,
 	}, defaultTerminalRetrySchedule)
 }
 
@@ -964,6 +965,12 @@ func (c *Client) failTaskWithRetrySchedule(ctx context.Context, report terminalT
 	// original server-error label on the wire when the turn cannot be verified.
 	if !body.NoToolCallsStarted && body.FailureReason == taskfailure.ReasonAgentProviderNetwork.String() && taskfailure.IsTraePromptStreamDisconnect(body.Error) {
 		body.FailureReason = taskfailure.ReasonAgentProviderServerError.String()
+	}
+	// Optional: an older server ignores the unknown field.
+	if report.timeoutCheckpoint != nil {
+		if raw, err := json.Marshal(report.timeoutCheckpoint); err == nil {
+			body.TimeoutCheckpoint = raw
+		}
 	}
 	return c.postJSONWithRetry(ctx, fmt.Sprintf("/api/daemon/tasks/%s/fail", report.taskID), body, nil, schedule)
 }

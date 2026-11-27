@@ -4771,6 +4771,11 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 		return false
 	}
 	s.publishRequeuedChatTasks(ctx, queuedChat)
+	if changed {
+		// Backstop for a notice whose ingestion-time write failed. It inserts
+		// nothing for events already noticed, so a replayed ack stays silent.
+		s.reconcileCompactNoticesBestEffort(ctx, taskID)
+	}
 	if !settled || payload.Outcome == "" {
 		return changed
 	}
@@ -4848,6 +4853,14 @@ func agentBlockedByProviderHold(ctx context.Context, qtx *db.Queries, metrics *o
 // offline candidate on runtime A from causing the same agent's task on runtime
 // B to be dispatched and then dropped by the caller's runtime guard.
 func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.UUID, scope claimScope) (*db.AgentTaskQueue, error) {
+	task, _, err := s.claimTaskOutcome(ctx, agentID, runtimeID, scope)
+	return task, err
+}
+
+// claimTaskOutcome is claimTask that also reports the attempt's outcome, so a
+// poll loop can tell "this agent has nothing claimable up to the bound"
+// (no_tasks) from a fence that holds the whole agent or runtime.
+func (s *TaskService) claimTaskOutcome(ctx context.Context, agentID, runtimeID pgtype.UUID, scope claimScope) (_ *db.AgentTaskQueue, finalOutcome string, _ error) {
 	start := time.Now()
 	outcome := "unknown"
 	var getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs int64
@@ -4858,6 +4871,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		s.maybeLogClaimSlow(agentID, outcome, start, getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs)
 		s.recordClaimDecision(agentID, runtimeID, outcome, scope, decisionDetail)
 		scope.tally.note(outcome, scope)
+		finalOutcome = outcome
 	}()
 
 	err := s.runInTx(ctx, func(qtx *db.Queries) error {
@@ -4998,14 +5012,21 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 
 		t0 = time.Now()
 		reclaimCheckAfter = t0.Add(claimResponseRecoveryWindow + ReclaimCheckHintSafetyMargin)
-		task, err := qtx.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{
+		claimParams := db.ClaimAgentTaskParams{
 			AgentID:          agentID,
 			RuntimeID:        claimRuntimeID,
 			PrepareLeaseSecs: prepareLeaseDuration.Seconds(),
 			RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
 			MinPriority:      minPriority,
 			ChatOnly:         scope.chatOnly,
-		})
+			AgingStepSecs:    queueAgingStep.Seconds(),
+		}
+		if b := scope.upto; b != nil {
+			claimParams.UptoPriority = pgtype.Int4{Int32: b.priority, Valid: true}
+			claimParams.UptoCreatedAt = b.createdAt
+			claimParams.UptoID = b.id
+		}
+		task, err := qtx.ClaimAgentTask(ctx, claimParams)
 		claimAgentMs = time.Since(t0).Milliseconds()
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -5087,19 +5108,19 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		return nil
 	})
 	if errors.Is(err, errProviderBreakerCanaryTaken) {
-		return nil, nil // another claim owns the canary; the rollback left this task queued
+		return nil, outcome, nil // another claim owns the canary; the rollback left this task queued
 	}
 	if errors.Is(err, errChatDMBusy) {
-		return nil, nil // no task this poll; the rollback left the candidate queued
+		return nil, outcome, nil // no task this poll; the rollback left the candidate queued
 	}
 	if err != nil {
 		if outcome == "unknown" {
 			outcome = "error_transaction"
 		}
-		return nil, err
+		return nil, outcome, err
 	}
 	if claimed == nil {
-		return nil, nil
+		return nil, outcome, nil
 	}
 	s.trackTaskForReclaim(*claimed, reclaimCheckAfter)
 
@@ -5120,7 +5141,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 	dispatchMs = time.Since(t0).Milliseconds()
 
 	outcome = "claimed"
-	return claimed, nil
+	return claimed, outcome, nil
 }
 
 // ClaimTaskForRuntime claims the next runnable task for a runtime while
@@ -5230,7 +5251,7 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 	preSelectVersion := s.EmptyClaim.CurrentVersion(ctx, runtimeKey)
 
 	t0 := time.Now()
-	tasks, err := s.Queries.ListQueuedClaimCandidatesByRuntime(ctx, runtimeID)
+	tasks, err := s.Queries.ListQueuedClaimCandidatesByRuntime(ctx, db.ListQueuedClaimCandidatesByRuntimeParams{RuntimeID: runtimeID, AgingStepSecs: queueAgingStep.Seconds()})
 	listMs = time.Since(t0).Milliseconds()
 	listCount = len(tasks)
 	if err != nil {
@@ -5247,7 +5268,13 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 	}
 
 	loopStart := time.Now()
-	triedAgents := map[string]struct{}{}
+	// Walk candidates in claim order and attempt one claim per run of
+	// consecutive same-agent candidates, bounded to that run's last key, so the
+	// oldest claimable row on the runtime starts first (CHE-10088). An agent
+	// with nothing claimable up to its bound (no_tasks) is tried again at its
+	// next run; any other outcome ends the agent for this poll. There is no
+	// attempt ceiling: every run gets its attempt.
+	skippedAgents := map[string]struct{}{}
 	// Candidate rows per agent, counted before the loop so each claimTask call
 	// can report whether the runtime saw work for that agent (the #8551
 	// attribution split between candidates_blocked and no_candidates).
@@ -5256,18 +5283,21 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 		candidatesByAgent[util.UUIDToString(tasks[i].AgentID)]++
 	}
 	var claimed *db.AgentTaskQueue
-	for _, candidate := range tasks {
-		agentKey := util.UUIDToString(candidate.AgentID)
-		if _, seen := triedAgents[agentKey]; seen {
+	for i := 0; i < len(tasks); {
+		end := claimGroupEnd(tasks, i)
+		agentKey := util.UUIDToString(tasks[i].AgentID)
+		group := tasks[i]
+		i = end + 1
+		if _, skip := skippedAgents[agentKey]; skip {
 			continue
 		}
-		triedAgents[agentKey] = struct{}{}
 		tried++
 
-		task, err := s.claimTask(ctx, candidate.AgentID, runtimeID, claimScope{
+		task, claimOutcome, err := s.claimTaskOutcome(ctx, group.AgentID, runtimeID, claimScope{
 			claimPath:  claimPathRuntime,
 			candidates: candidatesByAgent[agentKey],
 			tally:      tally,
+			upto:       claimBoundOf(tasks[end]),
 		})
 		if err != nil {
 			loopMs = time.Since(loopStart).Milliseconds()
@@ -5278,7 +5308,20 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 			claimed = task
 			break
 		}
+		if claimOutcome == claimOutcomeRuntimeNoCapacity {
+			// The runtime is full: every later attempt would fail the same way.
+			break
+		}
+		if claimOutcome != claimOutcomeNoTasks {
+			skippedAgents[agentKey] = struct{}{}
+		}
 	}
+	slog.Debug("claim poll attempts",
+		"runtime_id", runtimeKey,
+		"candidates", len(tasks),
+		"attempts", tried,
+		"claimed", claimed != nil,
+	)
 	loopMs = time.Since(loopStart).Milliseconds()
 	if claimed != nil {
 		claimedFlag = true
@@ -5295,6 +5338,20 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 	}
 
 	return claimed, nil
+}
+
+// claimGroupEnd returns the index of the last candidate in the run of
+// consecutive candidates, starting at i, that belong to the same agent on the
+// same runtime. No other agent's candidate sits inside a run, so a claim bounded
+// to the run's last key cannot start a row newer than another agent's candidate.
+func claimGroupEnd(candidates []db.AgentTaskQueue, i int) int {
+	j := i
+	for j+1 < len(candidates) &&
+		candidates[j+1].AgentID == candidates[i].AgentID &&
+		candidates[j+1].RuntimeID == candidates[i].RuntimeID {
+		j++
+	}
+	return j
 }
 
 // ErrClaimDeliveryAuthz signals that the final delivery gate rejected the
@@ -5678,7 +5735,7 @@ func (s *TaskService) ClaimTasksForRuntimesWithNonDMLimit(ctx context.Context, r
 	}
 
 	// 4. One candidate SELECT across the non-empty set.
-	candidates, err := s.Queries.ListQueuedClaimCandidatesByRuntimes(ctx, nonEmpty)
+	candidates, err := s.Queries.ListQueuedClaimCandidatesByRuntimes(ctx, db.ListQueuedClaimCandidatesByRuntimesParams{RuntimeIds: nonEmpty, AgingStepSecs: queueAgingStep.Seconds()})
 	if err != nil {
 		s.recordClaimDecision(pgtype.UUID{}, pgtype.UUID{}, "error_list", claimScope{claimPath: claimPathBatch}, claimDecisionDetail{})
 		// Steps 2/6 commit reclaimed/claimed tasks in their own transactions,
@@ -5731,9 +5788,15 @@ func (s *TaskService) ClaimTasksForRuntimesWithNonDMLimit(ctx context.Context, r
 		return claimed, forceRechecked, nil
 	}
 
-	// 6. Claim per distinct agent through the runtime-scoped helper, preserving
-	// per-(issue, agent) serialization, capacity caps, and dispatch side effects.
-	triedAgents := make(map[string]struct{}, len(candidates))
+	// 6. Claim in candidate order through the runtime-scoped helper, preserving
+	// per-(issue, agent) serialization, capacity caps, and dispatch side
+	// effects. One claim attempt per run of consecutive same-agent candidates,
+	// bounded to the run's last key, so the oldest claimable row starts first
+	// across agents (CHE-10088). An agent with nothing claimable up to its bound
+	// (no_tasks) is tried again at its next run; any other outcome ends the agent
+	// for this poll, and runtime_no_capacity ends the runtime. No attempt ceiling.
+	skippedAgents := make(map[string]struct{}, len(candidates))
+	fullRuntimes := make(map[string]struct{})
 	// Candidate rows per agent for the claim-decision scope; see the singular
 	// path above for why it is counted before the loop.
 	candidatesByAgent := make(map[string]int, len(candidates))
@@ -5748,10 +5811,20 @@ func (s *TaskService) ClaimTasksForRuntimesWithNonDMLimit(ctx context.Context, r
 			}
 		}
 	}
-	for i := range candidates {
+	attempts := 0
+	defer func() {
+		slog.Debug("batch claim poll attempts",
+			"runtimes", len(nonEmpty),
+			"candidates", len(candidates),
+			"attempts", attempts,
+			"claimed", len(claimed),
+		)
+	}()
+	for i := 0; i < len(candidates); {
 		nonDMBudgetSpent := maxNonDMTasks != nil && nonDMClaimed >= *maxNonDMTasks
 		if nonDMBudgetSpent && !candidates[i].ChatSessionID.Valid {
-			// Not marked tried: the same agent's chat task may follow.
+			// Not marked skipped: the same agent's chat task may follow.
+			i++
 			continue
 		}
 		if len(claimed) >= maxTasks {
@@ -5761,17 +5834,26 @@ func (s *TaskService) ClaimTasksForRuntimesWithNonDMLimit(ctx context.Context, r
 			)
 			break
 		}
-		agentKey := util.UUIDToString(candidates[i].AgentID)
-		if _, tried := triedAgents[agentKey]; tried {
+		end := claimGroupEnd(candidates, i)
+		group := candidates[i]
+		agentKey := util.UUIDToString(group.AgentID)
+		runtimeKey := util.UUIDToString(group.RuntimeID)
+		last := candidates[end]
+		i = end + 1
+		if _, skip := skippedAgents[agentKey]; skip {
 			continue
 		}
-		triedAgents[agentKey] = struct{}{}
+		if _, full := fullRuntimes[runtimeKey]; full {
+			continue
+		}
+		attempts++
 
-		task, err := s.claimTask(ctx, candidates[i].AgentID, candidates[i].RuntimeID, claimScope{
+		task, claimOutcome, err := s.claimTaskOutcome(ctx, group.AgentID, group.RuntimeID, claimScope{
 			claimPath:  claimPathBatch,
 			candidates: candidatesByAgent[agentKey],
 			tally:      tally,
 			chatOnly:   nonDMBudgetSpent,
+			upto:       claimBoundOf(last),
 		})
 		if err != nil {
 			// Each scoped claim commits in its own transaction, so earlier
@@ -5787,6 +5869,12 @@ func (s *TaskService) ClaimTasksForRuntimesWithNonDMLimit(ctx context.Context, r
 				return claimed, forceRechecked, nil
 			}
 			return nil, nil, fmt.Errorf("claim task: %w", err)
+		}
+		if claimOutcome == claimOutcomeRuntimeNoCapacity {
+			fullRuntimes[runtimeKey] = struct{}{}
+		}
+		if claimOutcome != claimOutcomeNoTasks {
+			skippedAgents[agentKey] = struct{}{}
 		}
 		if task == nil {
 			continue
@@ -6407,6 +6495,9 @@ func (s *TaskService) CompleteTaskWithRunContext(ctx context.Context, taskID pgt
 			replyTask.ChatSessionID = chatAssistantMsg.ChatSessionID
 		}
 		suggest := s.chatQuickActionsEligible(ctx, replyTask, chatAssistantMsg)
+		// Backstop for a notice whose ingestion-time write failed; clients
+		// refetch on chat:done, so the notice is stored before it fires.
+		s.reconcileCompactNoticesBestEffort(ctx, task.ID)
 		s.broadcastChatDone(ctx, replyTask, chatAssistantMsg, suggest)
 		dmnotify.Publish(s.Bus, dmNotified)
 		if suggest {
@@ -6981,7 +7072,7 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			// Defer this attempt when the reason's schedule calls for a backoff
 			// (provider_network's final attempt waits ~5s); a zero delay leaves
 			// fire_at NULL so the child is created immediately-claimable.
-			if delay := retryDelayForAttempt(failureReason, parent.Attempt); delay > 0 {
+			if delay := retryDelayForFailure(failureReason, errMsg, parent.Attempt); delay > 0 {
 				retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
 			}
 			if agent, aerr := s.Queries.GetAgent(ctx, parent.AgentID); aerr != nil {
@@ -7401,6 +7492,11 @@ func (s *TaskService) failTask(ctx context.Context, guard *db.LockAgentTaskStart
 			s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, *retried)
 			s.NotifyTaskEnqueued(ctx, *retried)
 		}
+		// Other retries stay silent; this one is logged so a reader of the issue
+		// sees the account limit and the backoff, not a missing run (CHE-9849).
+		if task.IssueID.Valid && failureReason == string(taskfailure.ReasonAgentProviderNetwork) && taskfailure.IsConcurrencyLimit(errMsg) {
+			s.createAgentComment(ctx, task.IssueID, task.AgentID, concurrencyLimitRetryNotice(retried), "system", task.TriggerCommentID, task.ID)
+		}
 	}
 
 	// A delegated task that has reached a terminal failure must hand control
@@ -7584,6 +7680,29 @@ func retryDelayForAttempt(reason string, failedAttempt int32) time.Duration {
 		return providerCapacityRetryWait
 	}
 	return 0
+}
+
+// concurrencyLimitRetryWaits is the backoff after the first and second failure
+// of a provider account concurrency rejection (CHE-9849). The cap reuses
+// gatewayFailureCooldown, the longest wait any provider failure already has.
+var concurrencyLimitRetryWaits = [...]time.Duration{2 * time.Minute, gatewayFailureCooldown}
+
+// retryDelayForFailure is retryDelayForAttempt with the failure text in view:
+// an account concurrency rejection (provider_network by reason) waits through
+// a growing backoff, because the immediate and 5s retries all land while the
+// account is still saturated. Other failures keep their reason schedule.
+func retryDelayForFailure(reason, errMsg string, failedAttempt int32) time.Duration {
+	if reason == string(taskfailure.ReasonAgentProviderNetwork) && taskfailure.IsConcurrencyLimit(errMsg) {
+		i := int(failedAttempt) - 1
+		if i < 0 {
+			i = 0
+		}
+		if i >= len(concurrencyLimitRetryWaits) {
+			i = len(concurrencyLimitRetryWaits) - 1
+		}
+		return concurrencyLimitRetryWaits[i]
+	}
+	return retryDelayForAttempt(reason, failedAttempt)
 }
 
 func resumeUnsafeFailureReason(reason string) bool {
@@ -7902,7 +8021,7 @@ func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// NULL for an immediate child), and write the reason-aware ceiling into the
 	// child's max_attempts so the retry chain stays self-consistent.
 	var retryFireAt pgtype.Timestamptz
-	if delay := retryDelayForAttempt(reason, parent.Attempt); delay > 0 {
+	if delay := retryDelayForFailure(reason, parent.Error.String, parent.Attempt); delay > 0 {
 		retryFireAt = pgtype.Timestamptz{Time: time.Now().Add(delay), Valid: true}
 	}
 	// Same advisory slot check as FailTask's path, for the same reason: skip the
@@ -8065,6 +8184,11 @@ func (s *TaskService) maybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	if child.Status == "queued" {
 		s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, child)
 		s.NotifyTaskEnqueued(ctx, child)
+	}
+	// Same notice as FailTask's in-tx retry (CHE-9849): budget-resume and the
+	// sweeper retry through here, so the account limit must show on the issue.
+	if parent.IssueID.Valid && reason == string(taskfailure.ReasonAgentProviderNetwork) && taskfailure.IsConcurrencyLimit(parent.Error.String) {
+		s.createAgentComment(ctx, parent.IssueID, parent.AgentID, concurrencyLimitRetryNotice(&child), "system", parent.TriggerCommentID, parent.ID)
 	}
 	return &child, nil
 }
@@ -10164,6 +10288,11 @@ func urgentReservedSlotEnabled(runtimeConfig []byte) bool {
 	return *cfg.Enabled
 }
 
+// queueAgingStep is how long a queued run waits to gain one effective priority
+// level in claim order (CHE-9926). Aging is capped at high, so urgent still
+// wins; the urgent reserved slot reads the stored priority, not the aged one.
+const queueAgingStep = 30 * time.Minute
+
 func priorityToInt(p string) int32 {
 	switch p {
 	case "urgent":
@@ -10665,13 +10794,22 @@ func (s *TaskService) failureNoticeText(ctx context.Context, agentID pgtype.UUID
 var nonIssueMentionScheme = regexp.MustCompile(`\]\(mention://(member|agent|squad|all)/`)
 
 func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID) {
+	if _, err := s.createAgentCommentGuarded(ctx, issueID, agentID, content, commentType, parentID, sourceTaskID, nil); err != nil {
+		slog.Warn("create agent comment failed", "error", err, "issue_id", util.UUIDToString(issueID), "agent_id", util.UUIDToString(agentID))
+	}
+}
+
+// createAgentCommentGuarded is createAgentComment with a duplicate guard that
+// runs inside the comment transaction: when it reports true the comment is not
+// created. It reports whether a comment was created.
+func (s *TaskService) createAgentCommentGuarded(ctx context.Context, issueID, agentID pgtype.UUID, content, commentType string, parentID, sourceTaskID pgtype.UUID, skip func(*db.Queries) (bool, error)) (bool, error) {
 	if content == "" {
-		return
+		return false, nil
 	}
 	// Look up issue to get workspace ID for mention expansion and broadcasting.
 	issue, err := s.Queries.GetIssue(ctx, issueID)
 	if err != nil {
-		return
+		return false, nil
 	}
 	// Resolve the thread root for thread-level side effects without overwriting
 	// parentID. The stored parent_id must remain the exact comment being replied
@@ -10691,7 +10829,18 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	// comment:unresolved EVENT publish waits until after commit.
 	var clearedResolution []db.Comment
 	var created db.CreateCommentRow
+	var skipped bool
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if skip != nil {
+			dup, err := skip(qtx)
+			if err != nil {
+				return err
+			}
+			if dup {
+				skipped = true
+				return nil
+			}
+		}
 		if err := qtx.SetWakeupMutationSource(ctx, db.SetWakeupMutationSourceParams{
 			ActorType: "agent", ActorID: util.UUIDToString(agentID), SourceTaskID: util.UUIDToString(sourceTaskID),
 		}); err != nil {
@@ -10715,8 +10864,10 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 		})
 		return err
 	}); err != nil {
-		slog.Warn("create agent comment failed", "error", err, "issue_id", util.UUIDToString(issueID), "agent_id", util.UUIDToString(agentID))
-		return
+		return false, err
+	}
+	if skipped {
+		return false, nil
 	}
 	comment := created.Comment()
 	commentFields := commentEventFields(comment)
@@ -10734,6 +10885,7 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 		},
 	})
 	s.PublishThreadUnresolvedOnReply(clearedResolution, util.UUIDToString(issue.WorkspaceID), "agent", util.UUIDToString(agentID))
+	return true, nil
 }
 
 // PublishThreadUnresolvedOnReply broadcasts one comment:unresolved event per
@@ -11295,4 +11447,14 @@ func (s *TaskService) RevokeTaskTokens(ctx context.Context, task db.AgentTaskQue
 		slog.Error("task end: failed to record token deletion failure",
 			"task_id", util.UUIDToString(task.ID), "error", mergeErr)
 	}
+}
+
+// concurrencyLimitRetryNotice is the issue comment logged for a retry of an
+// account concurrency rejection.
+func concurrencyLimitRetryNotice(retry *db.AgentTaskQueue) string {
+	when := "now"
+	if retry.FireAt.Valid {
+		when = fmt.Sprintf("in about %d min", int(time.Until(retry.FireAt.Time).Round(time.Minute)/time.Minute))
+	}
+	return fmt.Sprintf("The provider account hit its concurrency limit. Retrying automatically (attempt %d of %d, %s).", retry.Attempt, retry.MaxAttempts, when)
 }

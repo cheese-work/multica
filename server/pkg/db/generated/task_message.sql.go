@@ -225,6 +225,40 @@ func (q *Queries) DeleteTaskMessages(ctx context.Context, taskID pgtype.UUID) er
 	return err
 }
 
+const listTaskContextCompactedMessages = `-- name: ListTaskContextCompactedMessages :many
+SELECT id, created_at, input FROM task_message
+WHERE task_id = $1 AND type = 'context_compacted'
+ORDER BY seq ASC
+`
+
+type ListTaskContextCompactedMessagesRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Input     []byte             `json:"input"`
+}
+
+// The run messages a mid-turn compaction notice is projected from (CHE-9935).
+// Only the columns the notice needs; output is never read.
+func (q *Queries) ListTaskContextCompactedMessages(ctx context.Context, taskID pgtype.UUID) ([]ListTaskContextCompactedMessagesRow, error) {
+	rows, err := q.db.Query(ctx, listTaskContextCompactedMessages, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTaskContextCompactedMessagesRow{}
+	for rows.Next() {
+		var i ListTaskContextCompactedMessagesRow
+		if err := rows.Scan(&i.ID, &i.CreatedAt, &i.Input); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listTaskMessages = `-- name: ListTaskMessages :many
 SELECT id, task_id, seq, type, tool, content, input, output, created_at, output_truncated, call_id FROM task_message
 WHERE task_id = $1
@@ -296,6 +330,39 @@ func (q *Queries) ListTaskMessagesSince(ctx context.Context, arg ListTaskMessage
 			&i.OutputTruncated,
 			&i.CallID,
 		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listTaskModelChangeMessages = `-- name: ListTaskModelChangeMessages :many
+SELECT id, created_at, input FROM task_message
+WHERE task_id = $1 AND type = 'model_change'
+ORDER BY seq ASC
+`
+
+type ListTaskModelChangeMessagesRow struct {
+	ID        pgtype.UUID        `json:"id"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	Input     []byte             `json:"input"`
+}
+
+// The run messages a model change notice is projected from (CHE-10140).
+func (q *Queries) ListTaskModelChangeMessages(ctx context.Context, taskID pgtype.UUID) ([]ListTaskModelChangeMessagesRow, error) {
+	rows, err := q.db.Query(ctx, listTaskModelChangeMessages, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListTaskModelChangeMessagesRow{}
+	for rows.Next() {
+		var i ListTaskModelChangeMessagesRow
+		if err := rows.Scan(&i.ID, &i.CreatedAt, &i.Input); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

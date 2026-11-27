@@ -225,6 +225,38 @@ multica github stack-autolink set [--repo owner/repo] --mode off|report|link
 
 堆栈 API 在 GitHub 上还是预览版，格式变化会表现为 `schema`，不会变成 webhook 失败。
 
+## 通过审批卡片创建仓库 [#repo-create]
+
+智能体不能自己创建 GitHub 仓库。智能体准备好操作文件,由工作区所有者用通行密钥批准。批准后,服务器使用智能体看不到的组织管理员凭据创建仓库。
+
+```bash
+multica github repo-create --org tevo-studio --name we006 \
+  --template tevo-studio/code-android-template --private \
+  --description "WE-006 app" --out repo-create.json
+multica decision request <issue> --action-file repo-create.json
+```
+
+| 参数 | 含义 |
+|---|---|
+| `--org` | 组织。只接受 `tevo-studio` 和 `cheese-work`。 |
+| `--name` | 仓库名称。 |
+| `--template` | 可选的 `owner/repo` 模板。其所有者也必须是已批准的组织。GitHub 的 generate API 不接受 ref,因此使用模板的默认分支。 |
+| `--private`、`--visibility` | `private`(默认)、`internal` 或 `public`。公开仓库属于公开发布,请用 `--class publish` 提出请求。 |
+| `--description` | 一行,最多 290 个字符。服务器会在仓库描述末尾加上 `[multica-action:<id>]` 标记。 |
+| `--out`、`--dry-run`、`--expires-in` | 写出操作文件、只打印、或设置卡片保持开放的时长。 |
+
+批准后,服务器创建仓库并回读确认,然后把它加入工作区的仓库登记。如果该组织在 `guard_policy.repository_allowlist` 中已有条目,也会把仓库加到那里。没有条目的组织保持不受限制,因为新增条目会把该组织的其他仓库挡在外面。被拒绝或已过期的卡片不会创建任何内容。如果 GitHub 拒绝请求,该操作以失败结束,工作区的数据保持不变。
+
+### 自托管
+
+只在 API 服务器上设置该凭据。它是一个 JSON 对象,把每个组织映射到有权在该组织创建仓库的令牌:
+
+```dotenv
+MULTICA_GITHUB_REPO_ADMIN_TOKENS={"tevo-studio":"<token>","cheese-work":"<token>"}
+```
+
+守护进程会从所有智能体环境中移除该变量,卡片、结果和日志中也都不会出现它。未设置时,已批准的卡片会以 `credential_not_configured` 失败。GitHub App 本身不需要为此增加 Administration 权限。
+
 ## 断开连接
 
 在 **设置 → 代码** 中，点击目标账号旁的 **断开**。这只移除该安装与当前工作区的连接，其他连接继续接收事件。App 仍安装在 GitHub，已有 PR 记录与关联会保留。

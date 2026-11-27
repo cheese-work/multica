@@ -105,6 +105,7 @@
       "local_directory_missing": "La carpeta local vinculada a este proyecto ya no existe en la máquina que ejecuta el agente, así que la ejecución nunca arrancó. Restaura la carpeta y vuelve a intentarlo. Para usar otra carpeta, abre el proyecto en la app de escritorio de esa máquina, quita la carpeta anterior en Recursos y vincula la nueva con Añadir → Carpeta local...: el navegador no puede elegir carpetas.",
       "provider_network": "La conexión con el proveedor del modelo se perdió antes de que terminara la respuesta. Comprueba tu red e inténtalo de nuevo.",
       "provider_auth_or_access": "El proveedor rechazó las credenciales o el acceso de este agente. Comprueba la clave de API o la cuenta: puede haber caducado o perdido el acceso.",
+      "model_not_found_or_unavailable": "El modelo que usa este agente no está disponible: puede que no exista o que esta cuenta no tenga acceso. Elige otro modelo o pide a tu administrador que lo habilite, y reintenta.",
       "provider_quota_limit": "La cuenta de modelo del agente se ha quedado sin crédito. Recárgala o cambia de cuenta, y reintenta.",
       "provider_capacity_or_rate_limit": "El proveedor del modelo está ocupado o limitando la cuenta. Inténtalo de nuevo en un momento.",
       "context_overflow": "Este chat se volvió demasiado largo para el modelo. Inicia un chat nuevo para continuar.",

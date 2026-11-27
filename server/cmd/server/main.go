@@ -1012,6 +1012,9 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.IdleStartedGuardJob(h)); err != nil {
 		slog.Error("scheduler: register idle started guard", "error", err)
 	}
+	if err := schedulerMgr.Register(scheduler.IncidentResponseJob(h)); err != nil {
+		slog.Error("scheduler: register incident response", "error", err)
+	}
 	if err := schedulerMgr.Register(scheduler.BlockedEntryLinkSweepJob(h)); err != nil {
 		slog.Error("scheduler: register blocked entry link sweep", "error", err)
 	}

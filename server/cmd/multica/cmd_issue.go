@@ -819,7 +819,7 @@ func init() {
 	// issue status
 	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run, including a workflow step handler's run.")
 	issueStatusCmd.Flags().String("duplicate-of", "", "Mark the issue as a duplicate of this original issue (key like MUL-123, or full UUID); the status must be cancelled")
-	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1")
+	issueStatusCmd.Flags().StringArray("finding", nil, "Review finding as <P0-P3>@<category>[@revision]:<summary>; repeatable. A changes-requested verdict needs at least one P0 or P1; from round 2 a new P0/P1 needs @revision (the revision introduced it)")
 	issueStatusCmd.Flags().String("blocked-on", "", "With status blocked: what the issue waits for (see the forms in --help)")
 	issueStatusCmd.Flags().String("waiting-on", "", "With status in_review, blocked or need_decision: who acts next, member:<member-id> or none")
 	issueStatusCmd.Flags().String("override-reason", "", "Reason (1-500 characters) to pass a block entry gate of the target step; honored for a person's own login only")
@@ -2646,6 +2646,7 @@ func printWorkflowApprovalCard(cmd *cobra.Command, card map[string]any) error {
 }
 
 func printIssueUpdateResult(cmd *cobra.Command, result map[string]any) error {
+	warnBlockedTriggerOutcomes(os.Stderr, result)
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
 		headers := []string{"KEY", "TITLE", "STATUS", "PRIORITY"}
@@ -2821,6 +2822,7 @@ func runIssueAssign(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Issue %s assigned to %s.\n", issueDisplayKey(result), displayTarget)
 	}
 	reportIssueRunOutcome(os.Stderr, result, noStart)
+	warnBlockedTriggerOutcomes(os.Stderr, result)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "table" {
@@ -2829,18 +2831,30 @@ func runIssueAssign(cmd *cobra.Command, args []string) error {
 	return cli.PrintJSON(os.Stdout, result)
 }
 
-// findingFlags parses repeatable --finding "<P0-P3>:<summary>" values; the
-// server owns the severity rules, the CLI only splits and rejects a missing part.
-func findingFlags(cmd *cobra.Command) ([]map[string]string, error) {
+// findingFlags parses repeatable --finding "<P0-P3>@<category>[@revision]:<summary>"
+// values; the server owns the severity and category rules, the CLI only splits
+// and rejects a missing part. "@revision" marks a blocker the author's revision
+// introduced (allowed from round 2 on).
+func findingFlags(cmd *cobra.Command) ([]map[string]any, error) {
 	raw, _ := cmd.Flags().GetStringArray("finding")
-	findings := make([]map[string]string, 0, len(raw))
+	findings := make([]map[string]any, 0, len(raw))
 	for _, f := range raw {
-		severity, summary, ok := strings.Cut(f, ":")
-		severity, summary = strings.TrimSpace(severity), strings.TrimSpace(summary)
-		if !ok || severity == "" || summary == "" {
-			return nil, fmt.Errorf("--finding %q: want <P0-P3>:<summary>", f)
+		head, summary, ok := strings.Cut(f, ":")
+		parts := strings.Split(head, "@")
+		severity, summary := strings.TrimSpace(parts[0]), strings.TrimSpace(summary)
+		if !ok || severity == "" || summary == "" || len(parts) > 3 || (len(parts) == 3 && parts[2] != "revision") {
+			return nil, fmt.Errorf("--finding %q: want <P0-P3>@<category>[@revision]:<summary>", f)
 		}
-		findings = append(findings, map[string]string{"severity": severity, "summary": summary})
+		item := map[string]any{"severity": severity, "summary": summary}
+		// A finding without @<category> is the form existing reviewer step text
+		// sends; the server accepts it until the workspace requires categories.
+		if len(parts) > 1 {
+			item["category"] = strings.TrimSpace(parts[1])
+		}
+		if len(parts) == 3 {
+			item["introduced_by_revision"] = true
+		}
+		findings = append(findings, item)
 	}
 	return findings, nil
 }
@@ -2929,6 +2943,7 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Issue %s status changed to %s.\n", issueDisplayKey(result), status)
 	}
 	reportIssueRunOutcome(os.Stderr, result, noStart)
+	warnBlockedTriggerOutcomes(os.Stderr, result)
 
 	output, _ := cmd.Flags().GetString("output")
 	if output == "json" {

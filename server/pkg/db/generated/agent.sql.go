@@ -2853,7 +2853,25 @@ WHERE id = (
               WHERE ctd.task_id = atq.id AND ctd.chat_type = 'group'
           )
       ))
-    ORDER BY atq.priority DESC, atq.created_at ASC, atq.id ASC
+      -- CHE-10088: optional upper bound in claim order (aged priority DESC,
+      -- created_at ASC, id ASC). A runtime poll that walks candidates across
+      -- agents passes the last candidate key of this agent's consecutive group,
+      -- so the claim cannot take a row that is newer than another agent's
+      -- candidate. upto_priority is the bound row's stored priority; its aged
+      -- priority is recomputed here with the same now() as the row's own, so the
+      -- bound row compares equal to itself. All three params NULL means no bound.
+      AND (
+          $7::int IS NULL
+          OR GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($8::double precision, 0))::int, 0), 3)) > GREATEST($7::int, LEAST($7::int + COALESCE(floor(extract(epoch FROM now() - $9::timestamptz) / NULLIF($8::double precision, 0))::int, 0), 3))
+          OR (GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($8::double precision, 0))::int, 0), 3)) = GREATEST($7::int, LEAST($7::int + COALESCE(floor(extract(epoch FROM now() - $9::timestamptz) / NULLIF($8::double precision, 0))::int, 0), 3)) AND (
+              atq.created_at < $9::timestamptz
+              OR (atq.created_at = $9::timestamptz
+                  AND atq.id <= $10::uuid)
+          ))
+      )
+    -- capped at 3 (high) so it never outranks an urgent row; 0 turns aging off. Keep the three
+    -- claim orderings (ClaimAgentTask and both candidate lists) identical.
+    ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($8::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
@@ -2861,12 +2879,16 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 `
 
 type ClaimAgentTaskParams struct {
-	PrepareLeaseSecs float64     `json:"prepare_lease_secs"`
-	AgentID          pgtype.UUID `json:"agent_id"`
-	RuntimeID        pgtype.UUID `json:"runtime_id"`
-	MinPriority      int32       `json:"min_priority"`
-	RuntimeStaleSecs float64     `json:"runtime_stale_secs"`
-	ChatOnly         bool        `json:"chat_only"`
+	PrepareLeaseSecs float64            `json:"prepare_lease_secs"`
+	AgentID          pgtype.UUID        `json:"agent_id"`
+	RuntimeID        pgtype.UUID        `json:"runtime_id"`
+	MinPriority      int32              `json:"min_priority"`
+	RuntimeStaleSecs float64            `json:"runtime_stale_secs"`
+	ChatOnly         bool               `json:"chat_only"`
+	UptoPriority     pgtype.Int4        `json:"upto_priority"`
+	AgingStepSecs    float64            `json:"aging_step_secs"`
+	UptoCreatedAt    pgtype.Timestamptz `json:"upto_created_at"`
+	UptoID           pgtype.UUID        `json:"upto_id"`
 }
 
 // Claims the next queued task for an agent on one healthy runtime, enforcing
@@ -2881,6 +2903,7 @@ type ClaimAgentTaskParams struct {
 // "any other quick-create-shaped task" (all four FKs NULL) for the same agent —
 // otherwise a user mashing the create button could fire concurrent quick-creates
 // whose completion lookup would race over "most recent issue by this agent".
+// CHE-9926 aging: a queued row gains one level per @aging_step_secs of wait,
 func (q *Queries) ClaimAgentTask(ctx context.Context, arg ClaimAgentTaskParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, claimAgentTask,
 		arg.PrepareLeaseSecs,
@@ -2889,6 +2912,10 @@ func (q *Queries) ClaimAgentTask(ctx context.Context, arg ClaimAgentTaskParams) 
 		arg.MinPriority,
 		arg.RuntimeStaleSecs,
 		arg.ChatOnly,
+		arg.UptoPriority,
+		arg.AgingStepSecs,
+		arg.UptoCreatedAt,
+		arg.UptoID,
 	)
 	var i AgentTaskQueue
 	err := row.Scan(
@@ -6250,6 +6277,7 @@ SET coalesced_comment_ids = (
     runtime_connected_apps = src.runtime_connected_apps
 FROM agent_task_queue src
 WHERE t.id = $1 AND t.status = 'queued' AND src.id = $2
+  AND t.trigger_comment_id IS NOT NULL AND t.trigger_kind IS DISTINCT FROM 'status_handoff'
 RETURNING t.id
 `
 
@@ -7504,11 +7532,8 @@ WHERE context->>'wakeup_id' IS NULL AND issue_id = $1 AND agent_id = $2
     COALESCE($3::text, '') = ''
     OR context->>'head_sha' = $3::text
   )
-  AND NOT (
-    trigger_comment_id IS NULL
-    AND workflow_step IS NOT NULL
-    AND workflow_step <> $4::text
-  )
+  AND (trigger_comment_id IS NULL OR trigger_kind = 'status_handoff')
+  AND (workflow_step IS NULL OR workflow_step = $4::text)
 `
 
 type HasPendingTaskForIssueAndAgentAtStepParams struct {
@@ -7518,10 +7543,11 @@ type HasPendingTaskForIssueAndAgentAtStepParams struct {
 	Step    string      `json:"step"`
 }
 
-// HasPendingTaskForIssueAndAgent for a workflow handoff (MUL-7420): an
-// assignment-level run stamped for a step the issue has left does not count,
-// because its status changes would be refused as workflow_step_moved and it
-// cannot finish the step being entered. Runs tied to a comment keep counting.
+// HasPendingTaskForIssueAndAgent for a workflow handoff (MUL-7420): only a step
+// run counts (CHE-9605), an assignment-level run or a status handoff run. A step
+// run stamped for a step the issue has left does not count, because its status
+// changes would be refused as workflow_step_moved and it cannot finish the step
+// being entered. A run that answers a comment never stands in for the step run.
 func (q *Queries) HasPendingTaskForIssueAndAgentAtStep(ctx context.Context, arg HasPendingTaskForIssueAndAgentAtStepParams) (bool, error) {
 	row := q.db.QueryRow(ctx, hasPendingTaskForIssueAndAgentAtStep,
 		arg.IssueID,
@@ -9336,8 +9362,13 @@ WHERE atq.runtime_id = $1
             OR r.visibility = 'private'
         )
   )
-ORDER BY atq.priority DESC, atq.created_at ASC
+ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($2::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC
 `
+
+type ListQueuedClaimCandidatesByRuntimeParams struct {
+	RuntimeID     pgtype.UUID `json:"runtime_id"`
+	AgingStepSecs float64     `json:"aging_step_secs"`
+}
 
 // Returns rows the runtime is authorized to attempt to claim. Status is restricted to
 // 'queued' (in contrast to ListPendingTasksByRuntime which also includes
@@ -9347,8 +9378,8 @@ ORDER BY atq.priority DESC, atq.created_at ASC
 // ClaimAgentTask, wasting CPU and a SELECT every poll cycle when the
 // runtime is busy on a long-running task. Backed by the partial index
 // idx_agent_task_queue_claim_candidates so the warm path is cheap.
-func (q *Queries) ListQueuedClaimCandidatesByRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, listQueuedClaimCandidatesByRuntime, runtimeID)
+func (q *Queries) ListQueuedClaimCandidatesByRuntime(ctx context.Context, arg ListQueuedClaimCandidatesByRuntimeParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listQueuedClaimCandidatesByRuntime, arg.RuntimeID, arg.AgingStepSecs)
 	if err != nil {
 		return nil, err
 	}
@@ -9487,8 +9518,13 @@ WHERE atq.runtime_id = ANY($1::uuid[])
             OR r.visibility = 'private'
         )
   )
-ORDER BY atq.priority DESC, atq.created_at ASC
+ORDER BY GREATEST(atq.priority, LEAST(atq.priority + COALESCE(floor(extract(epoch FROM now() - atq.created_at) / NULLIF($2::double precision, 0))::int, 0), 3)) DESC, atq.created_at ASC, atq.id ASC
 `
+
+type ListQueuedClaimCandidatesByRuntimesParams struct {
+	RuntimeIds    []pgtype.UUID `json:"runtime_ids"`
+	AgingStepSecs float64       `json:"aging_step_secs"`
+}
 
 // Batch variant of ListQueuedClaimCandidatesByRuntime (MUL-4257): returns
 // queued claim candidates across every runtime_id in the input set in ONE round
@@ -9500,8 +9536,8 @@ ORDER BY atq.priority DESC, atq.created_at ASC
 // a sort step (each runtime's slice is index-ordered, but merging several
 // runtimes' rows into one priority/FIFO order is not). The per-machine
 // candidate set is small, so this is cheap in practice.
-func (q *Queries) ListQueuedClaimCandidatesByRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, listQueuedClaimCandidatesByRuntimes, runtimeIds)
+func (q *Queries) ListQueuedClaimCandidatesByRuntimes(ctx context.Context, arg ListQueuedClaimCandidatesByRuntimesParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listQueuedClaimCandidatesByRuntimes, arg.RuntimeIds, arg.AgingStepSecs)
 	if err != nil {
 		return nil, err
 	}
@@ -11211,6 +11247,7 @@ SELECT t.id FROM agent_task_queue t
 JOIN agent_task_queue m ON m.id = $1
 WHERE t.issue_id = m.issue_id AND t.agent_id = m.agent_id AND t.id <> m.id
   AND t.status = 'queued' AND t.context->>'wakeup_id' IS NULL
+  AND t.trigger_comment_id IS NOT NULL AND t.trigger_kind IS DISTINCT FROM 'status_handoff'
   AND t.is_leader_task = m.is_leader_task
   AND t.squad_id IS NOT DISTINCT FROM m.squad_id
   AND COALESCE(t.context->>'head_sha', '') = COALESCE(m.context->>'head_sha', '')
@@ -11224,7 +11261,8 @@ FOR UPDATE OF t
 // enqueue, the caller (holding the (issue, agent) enqueue lock) looks for an
 // older queued sibling with the same squad role and reviewed head, and locks
 // it so a claim cannot take it mid-collapse. A sibling claimed first is
-// re-checked by FOR UPDATE and no longer matches.
+// re-checked by FOR UPDATE and no longer matches. A step run is never a sibling
+// (CHE-9605): the fresh comment run is not folded into it.
 func (q *Queries) LockQueuedSiblingTask(ctx context.Context, taskID pgtype.UUID) (pgtype.UUID, error) {
 	row := q.db.QueryRow(ctx, lockQueuedSiblingTask, taskID)
 	var id pgtype.UUID
@@ -11550,6 +11588,9 @@ WHERE id = (
           OR (NOT t.is_leader_task AND t.squad_id IS NULL)
       )
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($1::uuid)
+      -- CHE-9605: never retarget a step run (an assignment-level run or a status
+      -- handoff run); it keeps its trigger, kind, note and attribution.
+      AND t.trigger_comment_id IS NOT NULL AND t.trigger_kind IS DISTINCT FROM 'status_handoff'
       AND (
           t.status = 'queued'
           OR (t.status = 'deferred' AND t.context->>'channel_issue_media_pending' = 'true')
@@ -11775,6 +11816,9 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = $12
       AND t.agent_id = $13
       AND t.status = 'queued'
+      -- CHE-9605: never retarget a step run (an assignment-level run or a status
+      -- handoff run); it keeps its trigger, kind, note and attribution.
+      AND t.trigger_comment_id IS NOT NULL AND t.trigger_kind IS DISTINCT FROM 'status_handoff'
       AND ($14::uuid IS NULL OR t.id = $14::uuid)
       AND t.is_leader_task = ($15::uuid IS NOT NULL)
       AND t.squad_id IS NOT DISTINCT FROM $15::uuid
@@ -11823,6 +11867,7 @@ type MergeCommentIntoQueuedIssueTaskRow struct {
 // the per-thread unique index is free there. A race that fills it surfaces as a
 // unique violation and the caller falls back to the per-thread path. Arrivals
 // that miss each other here are collapsed after insert (LockQueuedSiblingTask).
+// A step run is never the target (CHE-9605): the comment keeps its own run.
 // The squad role must match: a leader-role comment never folds into the same
 // agent's worker task (or the reverse), since the claim briefing differs.
 // Re-checked on the row this UPDATE locks: a claim that committed while the
@@ -11867,6 +11912,9 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = $3
       AND t.agent_id = $4
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($1::uuid)
+      -- CHE-9605: never retarget a step run (an assignment-level run or a status
+      -- handoff run); it keeps its trigger, kind, note and attribution.
+      AND t.trigger_comment_id IS NOT NULL AND t.trigger_kind IS DISTINCT FROM 'status_handoff'
       AND (
           t.status = 'queued'
           OR (t.status = 'deferred' AND t.context->>'channel_issue_media_pending' = 'true')
@@ -13556,7 +13604,10 @@ WHERE id = (
     WHERE t.context->>'wakeup_id' IS NULL AND t.issue_id = $2
       AND t.agent_id = $3
       AND t.comment_thread_id IS NOT DISTINCT FROM comment_thread_root_id($1::uuid)
-      AND t.status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND (
+          t.status IN ('dispatched', 'running', 'waiting_local_directory')
+          OR (t.status = 'queued' AND t.trigger_kind = 'status_handoff')
+      )
       AND ($4::uuid IS NULL OR t.id = $4::uuid)
       AND (
           COALESCE($5::text, '') = ''
@@ -13565,7 +13616,10 @@ WHERE id = (
     ORDER BY t.created_at DESC
     LIMIT 1
 )
-AND status IN ('dispatched', 'running', 'waiting_local_directory')
+AND (
+    status IN ('dispatched', 'running', 'waiting_local_directory')
+    OR (status = 'queued' AND trigger_kind = 'status_handoff')
+)
 RETURNING id, coalesced_comment_ids
 `
 
@@ -13605,6 +13659,12 @@ type RegisterPlannedCommentForActiveTaskRow struct {
 // could execute under the first member's identity/connected-apps (MUL-4302).
 // Only claim-receipt statuses (already-built delivered set) are safe planned-id
 // targets.
+//
+// One queued exception (CHE-9605): a status-handoff step run holding the thread's
+// slot. MergeCommentIntoPendingTask never retargets it, so the comment is only
+// appended to its planned set. Its trigger, kind, note and attribution stay, the
+// claim does not receipt the id (the step prompt renders no coalesced comment),
+// and completion reconcile replays the comment under its own attribution.
 // Recheck status on the UPDATE target after a concurrent row-lock wait. The
 // subquery can see an active snapshot while completion commits; appending to
 // that completed row would be too late for its completion replay to see it.

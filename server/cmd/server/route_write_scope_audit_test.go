@@ -81,7 +81,8 @@ var deniedRunTokenRoutes = []string{
 	"PATCH /api/chat/sessions/{sessionId}/archive",
 	"POST /api/agents/{id}/archive",
 	"POST /api/agents/{id}/cancel-tasks",
-	"POST /api/projects/{id}/workflow",
+	"POST /api/projects/{id}/workflow", // card-only: TaskTokenCardOnly
+	"POST /api/projects/workflow",      // card-only: TaskTokenCardOnly
 	"PUT /api/projects/{id}/",
 	"POST /api/runtimes/{runtimeId}/archive-agents-and-delete",
 	"POST /api/runtimes/{runtimeId}/revoke-workspace-access",

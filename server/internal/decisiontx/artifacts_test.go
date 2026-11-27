@@ -36,7 +36,8 @@ func TestDecodeAskArtifacts(test *testing.T) {
 		{name: "artifacts without subject", mutate: func(ask map[string]any) { ask["artifacts"] = []any{artifactMap()} }},
 		{name: "artifact_approval without artifacts", mutate: func(ask map[string]any) { ask["subject"] = "artifact_approval" }, want: "ask.artifacts requires at least one artifact when subject is artifact_approval"},
 		{name: "artifact_approval with empty list", mutate: func(ask map[string]any) { ask["subject"] = "artifact_approval"; ask["artifacts"] = []any{} }, want: "ask.artifacts requires at least one artifact when subject is artifact_approval"},
-		{name: "unknown subject", mutate: func(ask map[string]any) { ask["subject"] = "other" }, want: "ask.subject must be artifact_approval when set"},
+		{name: "discovery_brief needs no artifacts", mutate: func(ask map[string]any) { ask["subject"] = "discovery_brief" }},
+		{name: "unknown subject", mutate: func(ask map[string]any) { ask["subject"] = "other" }, want: "ask.subject must be artifact_approval or discovery_brief when set"},
 		{name: "artifacts not a list", mutate: func(ask map[string]any) { ask["artifacts"] = "x" }, want: "ask.artifacts must be a list"},
 		{name: "unknown artifact field", mutate: func(ask map[string]any) { a := artifactMap(); a["url"] = "x"; ask["artifacts"] = []any{a} }, want: "ask.artifacts[0].url is not a known field"},
 		{name: "bad attachment id", mutate: func(ask map[string]any) { a := artifactMap(); a["attachment_id"] = "nope"; ask["artifacts"] = []any{a} }, want: "ask.artifacts[0].attachment_id must be a UUID"},
@@ -210,5 +211,31 @@ func TestSupersedesSignatureIsStored(test *testing.T) {
 	stored, _ := json.Marshal(decoded)
 	if !strings.Contains(string(stored), `"supersedes_signed_by":{"reviewer":"x99-codex-sol"`) {
 		test.Fatalf("previous signature is not stored: %s", stored)
+	}
+}
+
+func TestAskIsDiscoveryBrief(t *testing.T) {
+	opts := func(labels ...string) []AskOption {
+		var out []AskOption
+		for _, label := range labels {
+			out = append(out, AskOption{Label: label})
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name string
+		ask  Ask
+		want bool
+	}{
+		{"brief", Ask{Subject: SubjectDiscoveryBrief, Options: opts("Tiếp tục", "Dừng")}, true},
+		{"brief, stop first", Ask{Subject: SubjectDiscoveryBrief, Options: opts("Dừng", "Tiếp tục")}, true},
+		{"no subject", Ask{Options: opts("Tiếp tục", "Dừng")}, false},
+		{"ordinary options", Ask{Subject: SubjectDiscoveryBrief, Options: opts("Proceed", "Hold")}, false},
+		{"third option", Ask{Subject: SubjectDiscoveryBrief, Options: opts("Tiếp tục", "Dừng", "Hold")}, false},
+		{"artifacts", Ask{Subject: SubjectDiscoveryBrief, Options: opts("Tiếp tục", "Dừng"), Artifacts: []Artifact{{Label: "f"}}}, false},
+	} {
+		if got := tc.ask.IsDiscoveryBrief(); got != tc.want {
+			t.Errorf("%s: IsDiscoveryBrief = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }

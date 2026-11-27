@@ -498,6 +498,28 @@ test("PR check: a feat PR without a line writes Hidden and fails", () => {
   assert.match(summary, /Hidden: missing — add "Changelog: <sentence>" to publish/);
 });
 
+test("CHE-10395: the Changelog error says an edit does not re-run the check, and an over-limit line shows its length", () => {
+  const rerun = /Editing the description does not re-run this check; push a commit or mark the PR ready for review\./;
+  const missing = checkEvent({ title: "feat(a): b", body: "nothing" });
+  assert.equal(missing.res.status, 1);
+  assert.match(missing.res.stdout, /::error::This PR has no valid Changelog line/);
+  assert.match(missing.res.stdout, rerun);
+
+  const long = checkEvent({ title: "fix(a): b", body: `Changelog: ${"z".repeat(150)}` });
+  assert.equal(long.res.status, 1);
+  assert.match(long.res.stdout, /::error::[^\n]*150 characters[^\n]*140/);
+  assert.match(long.res.stdout, rerun);
+
+  // the measured length counts code points, as the 140 cap does
+  const emoji = checkEvent({ title: "docs: b", body: `Changelog: ${"\u{1F600}".repeat(145)}` });
+  assert.match(emoji.res.stdout, /::error::[^\n]*145 characters/);
+
+  // a passing line prints no error
+  const ok = checkEvent({ title: "fix(a): b", body: "Changelog: It works." });
+  assert.equal(ok.res.status, 0);
+  assert.doesNotMatch(ok.res.stdout, /::error::/);
+});
+
 test("PR check: an over-limit line fails with an annotation, a closed PR is skipped, a sync head passes", () => {
   const warn = checkEvent({ title: "fix(a): b", body: `Changelog: ${"y".repeat(200)}` });
   assert.equal(warn.res.status, 1);

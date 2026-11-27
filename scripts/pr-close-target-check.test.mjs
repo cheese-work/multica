@@ -42,6 +42,15 @@ test("an agent name token in the branch prefix is not an issue key", async () =>
   );
 });
 
+test("a non-issue word-number token in the title is not an issue key", async () => {
+  assert.deepEqual(
+    await strayKeys(pullRequest({
+      title: "fix(x): round-2 changes (CHE-1926) [squash]",
+    })),
+    [],
+  );
+});
+
 test("an issue key inside the agent segment of the branch still counts", async () => {
   assert.deepEqual(
     await strayKeys(pullRequest({

@@ -305,6 +305,13 @@ func (s *IssueService) hasPendingStepRun(ctx context.Context, issue db.Issue, ag
 	return pending
 }
 
+// StepRunCover says why a hands-off step's handler gets no new run for the
+// issue: a run already pending for this step covers it, or the PR head was
+// already answered. Both false means neither applies.
+func (s *IssueService) StepRunCover(ctx context.Context, issue db.Issue) (pending, answered bool) {
+	return s.hasPendingStepRun(ctx, issue, issue.AssigneeID), s.headAlreadyReviewed(ctx, issue)
+}
+
 // CancelStaleStepRuns cancels the agent's pending runs on the issue that are
 // stamped for a step the issue has left, before the run for the step it
 // entered is queued. The pending-run unique index admits one per issue and

@@ -36,6 +36,13 @@ const (
 	AutoCompactMaxTokens200k     = 200_000
 	AutoCompactMaxTokens1M       = 400_000
 
+	// CHE-10000: the DM run cap is its own setting. A larger-window DM run may
+	// be capped anywhere up to the window itself; the default is today's cap.
+	AutoCompactDefaultRunCap200k = AutoCompactDefaultTokens200k
+	AutoCompactDefaultRunCap1M   = AutoCompactMaxTokens1M
+	AutoCompactMaxRunCap200k     = AutoCompactMaxTokens200k
+	AutoCompactMaxRunCap1M       = 1_000_000
+
 	// CompactTaskKind marks a compaction run, manual or automatic.
 	CompactTaskKind = "compact"
 )
@@ -49,9 +56,10 @@ type AutoCompact struct {
 	ThresholdPct int
 	Tokens200k   int64
 	Tokens1M     int64
-	// Tokens1MSet is true when a layer saved threshold_tokens_1m; runs use the
-	// 400k cap instead of the DM's idle default otherwise.
-	Tokens1MSet bool
+	// DMRunCap200k and DMRunCap1M are the Claude run caps of a DM (chat) task,
+	// in tokens (CHE-10000). They never move the DM compaction threshold.
+	DMRunCap200k int64
+	DMRunCap1M   int64
 }
 
 // ValidAutoCompactTokens reports whether v is a whole token count within
@@ -69,7 +77,10 @@ func ValidAutoCompactPct(v float64) bool {
 // out-of-range stored values are skipped: both are validated on write, so this
 // only guards legacy data.
 func ResolveAutoCompact(workspaceSettings, agentConfig []byte) AutoCompact {
-	rule := AutoCompact{Enabled: true, Tokens200k: AutoCompactDefaultTokens200k, Tokens1M: AutoCompactDefaultTokens1M}
+	rule := AutoCompact{
+		Enabled: true, Tokens200k: AutoCompactDefaultTokens200k, Tokens1M: AutoCompactDefaultTokens1M,
+		DMRunCap200k: AutoCompactDefaultRunCap200k, DMRunCap1M: AutoCompactDefaultRunCap1M,
+	}
 	for _, raw := range [][]byte{workspaceSettings, agentConfig} {
 		var layer struct {
 			AutoCompact *struct {
@@ -77,6 +88,8 @@ func ResolveAutoCompact(workspaceSettings, agentConfig []byte) AutoCompact {
 				ThresholdPct *float64 `json:"threshold_pct"`
 				Tokens200k   *float64 `json:"threshold_tokens_200k"`
 				Tokens1M     *float64 `json:"threshold_tokens_1m"`
+				RunCap200k   *float64 `json:"dm_run_cap_tokens_200k"`
+				RunCap1M     *float64 `json:"dm_run_cap_tokens_1m"`
 			} `json:"auto_compact"`
 		}
 		if json.Unmarshal(raw, &layer) != nil || layer.AutoCompact == nil {
@@ -93,7 +106,15 @@ func ResolveAutoCompact(workspaceSettings, agentConfig []byte) AutoCompact {
 			rule.Tokens200k, tokenSet = int64(*l.Tokens200k), true
 		}
 		if l.Tokens1M != nil && ValidAutoCompactTokens(*l.Tokens1M, AutoCompactMaxTokens1M) {
-			rule.Tokens1M, tokenSet, rule.Tokens1MSet = int64(*l.Tokens1M), true, true
+			rule.Tokens1M, tokenSet = int64(*l.Tokens1M), true
+		}
+		// A run cap is not a threshold: it neither clears a saved percent nor
+		// marks Tokens1MSet. A null (inherit) leaves the earlier layer's value.
+		if l.RunCap200k != nil && ValidAutoCompactTokens(*l.RunCap200k, AutoCompactMaxRunCap200k) {
+			rule.DMRunCap200k = int64(*l.RunCap200k)
+		}
+		if l.RunCap1M != nil && ValidAutoCompactTokens(*l.RunCap1M, AutoCompactMaxRunCap1M) {
+			rule.DMRunCap1M = int64(*l.RunCap1M)
 		}
 		if tokenSet {
 			rule.ThresholdPct = 0

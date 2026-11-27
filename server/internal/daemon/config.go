@@ -63,7 +63,10 @@ const (
 	// real work short, so this is 2h.
 	//
 	// Set MULTICA_AGENT_IDLE_WATCHDOG=0 to disable the whole watchdog suite.
-	DefaultAgentIdleWatchdog              = 2 * time.Hour
+	DefaultAgentIdleWatchdog = 2 * time.Hour
+	// DefaultAgentNearLimitWarning is how long before the run cap the agent is
+	// told to commit, push and post a checkpoint.
+	DefaultAgentNearLimitWarning          = 10 * time.Minute
 	DefaultAgentSilenceWarnAfter          = 15 * time.Minute
 	DefaultAgentSilenceAlertAfter         = time.Hour
 	DefaultRuntimeName                    = "Local Agent"
@@ -124,7 +127,7 @@ type Config struct {
 	ContainmentRoot                string                // MULTICA_CONTAINMENT_ROOT: runs cgroup holding the leaves; empty derives it from the daemon's own cgroup
 	ContainmentStateDir            string                // MULTICA_CONTAINMENT_STATE_DIR: attempt records; empty is <profile dir>/containment/attempts
 	ContainmentCharge              int64                 // MULTICA_CONTAINMENT_CHARGE_BYTES: memory charge recorded per attempt; required when containment is on until admission supplies it
-	RunBindingsDir                 string                // MULTICA_RUN_BINDINGS_DIR: opt-in private host registry for cooperative Codex task bindings
+	RunBindingsDir                 string                // MULTICA_RUN_BINDINGS_DIR: opt-in private host registry for cooperative Codex and Claude task bindings
 	SandboxHomeTemplate            string                // MULTICA_SANDBOX_HOME_TEMPLATE: optional read-only config template copied into each per-run HOME
 	GCEnabled                      bool                  // enable periodic workspace garbage collection (default: true)
 	GCInterval                     time.Duration         // how often the GC loop runs (default: 2h)
@@ -148,6 +151,7 @@ type Config struct {
 	AgentTimeout                   time.Duration
 	ScriptTimeout                  time.Duration // hard cap for one script-mode task (0 = agent.ScriptDefaultTimeout)
 	CodexAgentTimeout              time.Duration // MULTICA_CODEX_AGENT_TIMEOUT: wall-clock cap for Codex runs only (default 0 = off); 0 falls back to AgentTimeout
+	AgentNearLimitWarning          time.Duration // MULTICA_AGENT_NEAR_LIMIT_WARNING: how long before the run cap the agent is told to checkpoint (default 10m; 0 = off; only fires when the cap is more than 2x this value)
 	CodexSemanticInactivityTimeout time.Duration
 	// CodexFirstTurnNoProgressTimeout is an explicit override for the Codex
 	// first-turn no-progress ceiling (MULTICA_CODEX_FIRST_TURN_TIMEOUT). 0 means
@@ -370,6 +374,11 @@ func LoadConfig(overrides Overrides) (Config, error) {
 	}
 
 	codexAgentTimeout, err := durationFromEnv("MULTICA_CODEX_AGENT_TIMEOUT", 0)
+	if err != nil {
+		return Config{}, err
+	}
+
+	agentNearLimitWarning, err := durationFromEnv("MULTICA_AGENT_NEAR_LIMIT_WARNING", DefaultAgentNearLimitWarning)
 	if err != nil {
 		return Config{}, err
 	}
@@ -754,6 +763,7 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		HeartbeatInterval:               heartbeatInterval,
 		AgentTimeout:                    agentTimeout,
 		CodexAgentTimeout:               codexAgentTimeout,
+		AgentNearLimitWarning:           agentNearLimitWarning,
 		CodexSemanticInactivityTimeout:  codexSemanticInactivityTimeout,
 		CodexFirstTurnNoProgressTimeout: codexFirstTurnNoProgressTimeout,
 		CodexHandshakeTimeout:           codexHandshakeTimeout,

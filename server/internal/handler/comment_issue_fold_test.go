@@ -137,18 +137,28 @@ func TestCommentInNewThreadFoldsIntoQueuedRun_CHE1418(t *testing.T) {
 }
 
 // Seed 6 / CHE-955 shape: an assignment run is queued, then the dispatch
-// comment mentions the same agent.
-func TestCommentFoldsIntoQueuedAssignmentRun_CHE1418(t *testing.T) {
+// comment mentions the same agent. The assignment run is a step run, so it is
+// never rewritten (CHE-9605): the comment gets its own run beside it.
+func TestCommentKeepsQueuedAssignmentRunSeparate_CHE9605(t *testing.T) {
 	fx := newIssueFoldFixture(t, "fold assignment")
-	dbfx.Task(t, fx.agentID, testutil.Cols{"runtime_id": fx.runtime, "issue_id": fx.issueID, "status": "queued"})
+	assignment := dbfx.Task(t, fx.agentID, testutil.Cols{"runtime_id": fx.runtime, "issue_id": fx.issueID, "status": "queued"})
 	dispatch := dbfx.Comment(t, fx.issueID, "dispatch: please implement")
 
-	if got := fx.enqueue(t, dispatch, commentAgentTrigger{Source: commentTriggerSourceMentionAgent}); got != DispatchCoalesced {
-		t.Fatalf("got %s, want coalesced into the assignment run", got)
+	if got := fx.enqueue(t, dispatch, commentAgentTrigger{Source: commentTriggerSourceMentionAgent}); got != DispatchQueued {
+		t.Fatalf("got %s, want a separate queued comment run", got)
 	}
 	queued := fx.tasks(t, "queued")
-	if len(queued) != 1 || uuidToString(queued[0].TriggerCommentID) != dispatch {
-		t.Fatalf("want one queued run carrying the dispatch comment, got %d", len(queued))
+	if len(queued) != 2 {
+		t.Fatalf("got %d queued runs, want the assignment run and the comment run", len(queued))
+	}
+	for _, task := range queued {
+		isAssignment := uuidToString(task.ID) == assignment
+		if isAssignment == task.TriggerCommentID.Valid {
+			t.Fatalf("run %s: trigger valid=%v; the assignment run must stay untriggered and the comment run carry the dispatch", uuidToString(task.ID), task.TriggerCommentID.Valid)
+		}
+		if !isAssignment && uuidToString(task.TriggerCommentID) != dispatch {
+			t.Fatalf("comment run trigger = %s, want %s", uuidToString(task.TriggerCommentID), dispatch)
+		}
 	}
 }
 

@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/multica-ai/multica/server/pkg/runbinding"
 )
 
 // claudeProcess is one Claude Code stream-json process. A run either spawns
@@ -35,6 +37,7 @@ type claudeProcess struct {
 	stderrBuf                *stderrTail
 	procDone                 chan struct{}
 	mcpConfigPath            string
+	binding                  *runbinding.Publisher
 	sessionDir               string
 	taskEnvFile              string
 	logger                   *slog.Logger
@@ -119,6 +122,9 @@ func (p *claudeProcess) Close() bool {
 			<-p.procDone
 		}
 
+		if p.binding != nil {
+			p.binding.Close()
+		}
 		if p.mcpConfigPath != "" {
 			cleanupMcpConfigTemp(p.mcpConfigPath)
 		}
@@ -248,6 +254,39 @@ func (b *claudeBackend) spawnClaudeProcess(ctx context.Context, execPath string,
 		cleanupOnErr()
 		return nil, nil, err
 	}
+	// CHE-9773: same launcher-published binding the Codex backend gives its
+	// child. The ID is minted here per launch; a caller-supplied value in
+	// cfg.Env is dropped so a run can never carry another run's binding. A run
+	// with a binding never uses the warm pool (Execute), so the process lives
+	// exactly as long as the run.
+	var binding *runbinding.Publisher
+	if b.cfg.RunBinding != nil {
+		if b.cfg.CredentialBoundary != nil || b.cfg.RequireCredentialIsolation {
+			cleanupOnErr()
+			return nil, nil, fmt.Errorf("managed local binding cannot cross credential isolation; R1 required")
+		}
+		var bindErr error
+		binding, bindErr = runbinding.New(ctx, *b.cfg.RunBinding)
+		if bindErr != nil {
+			cleanupOnErr()
+			return nil, nil, bindErr
+		}
+		env := cmd.Env[:0:0]
+		for _, entry := range cmd.Env {
+			if !strings.HasPrefix(entry, "MULTICA_RUN_BINDING_ID=") {
+				env = append(env, entry)
+			}
+		}
+		cmd.Env = append(env, "MULTICA_RUN_BINDING_ID="+binding.ID)
+	}
+	// Startup errors revoke the binding. On success ownership passes to the
+	// process, which revokes it once the process is reaped or closed.
+	launched := false
+	defer func() {
+		if !launched && binding != nil {
+			binding.Close()
+		}
+	}()
 
 	var usageSnapshot *claudeUsageSnapshot
 	if opts.ResumeSessionID != "" && b.cfg.CredentialBoundary == nil {
@@ -288,6 +327,17 @@ func (b *claudeBackend) spawnClaudeProcess(ctx context.Context, execPath string,
 		cleanupOnErr()
 		return nil, nil, fmt.Errorf("start claude: %w", err)
 	}
+	if binding != nil {
+		if err := binding.Publish(cmd.Process.Pid); err != nil {
+			_ = stdin.Close()
+			signalProcessGroup(cmd, syscall.SIGKILL)
+			_ = cmd.Wait()
+			releaseProcessGroup(cmd)
+			cleanupOnErr()
+			return nil, nil, fmt.Errorf("publish managed host binding: %w", err)
+		}
+	}
+	launched = true
 
 	b.cfg.Logger.Info("claude started", "warm_pool", pooled, "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
 
@@ -301,6 +351,7 @@ func (b *claudeBackend) spawnClaudeProcess(ctx context.Context, execPath string,
 		stderrBuf:     stderrBuf,
 		procDone:      make(chan struct{}),
 		mcpConfigPath: mcpConfigPath,
+		binding:       binding,
 		sessionDir:    sessionDir,
 		taskEnvFile:   taskEnvFile,
 		logger:        b.cfg.Logger,
@@ -339,6 +390,9 @@ func (p *claudeProcess) readStdout() {
 	// Object, which kills anything still inside it — precisely what should
 	// happen to a descendant that outlived the CLI (GH #7522).
 	releaseProcessGroup(p.cmd)
+	if p.binding != nil {
+		p.binding.Close()
+	}
 	p.turnMu.Lock()
 	p.scanErr = scanErr
 	p.exitErr = exitErr

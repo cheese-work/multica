@@ -124,7 +124,7 @@ Cliquez sur **Rejoindre** et confirmez pour vous ajouter à la liste des membres
 
 ## Mettre en pause, annuler et terminer
 
-Un projet `paused`, `cancelled` ou `completed` ne démarre aucune nouvelle exécution d'agent, et les agents ne peuvent ni y créer de tâches ni y déplacer des tâches.
+Un projet `paused`, `cancelled` ou `completed` ne démarre aucune nouvelle exécution d'agent. Les agents peuvent encore créer des tâches dans un projet `paused`, mais ces tâches ne lancent aucune exécution tant que le projet n'est pas repris ; ils ne peuvent pas créer de tâches dans un projet `cancelled` ou `completed`. Les agents ne peuvent déplacer aucune tâche vers l'un des trois.
 
 | Statut | Exécutions en file d'attente | Exécutions en cours | Modifications et commentaires d'un agent sur ses tâches |
 |---|---|---|---|

@@ -110,108 +110,40 @@ func TestResolveAppURL(t *testing.T) {
 }
 
 func TestResolveCallbackBinding(t *testing.T) {
-	// Fake outbound detector: pretends the CLI has a fixed LAN IP regardless
-	// of which server it dials.
-	fixed := func(ip string) func(string) net.IP {
-		return func(string) net.IP { return net.ParseIP(ip).To4() }
-	}
-	failing := func(string) net.IP { return nil }
-
-	type bindingCase struct {
+	loopbackCases := []struct {
 		name         string
 		flagHost     string
-		serverURL    string
-		appURL       string
-		detect       func(string) net.IP
 		wantCallback string
-		wantBind     string
-		wantError    bool
+	}{
+		{"default stays on loopback", "", "localhost"},
+		{"blank flag stays on loopback", "  ", "localhost"},
+		{"--callback-host localhost", "localhost", "localhost"},
+		{"--callback-host 127.0.0.1", "127.0.0.1", "127.0.0.1"},
 	}
-	cases := []bindingCase{
-		{
-			name:         "IPv6 app URL uses a supported loopback callback",
-			appURL:       "http://[fd00::1]:3000",
-			detect:       failing,
-			wantCallback: "localhost",
-			wantBind:     "127.0.0.1",
-		},
-
-		{
-			name:         "public app URL stays on loopback",
-			appURL:       "https://multica.ai",
-			serverURL:    "https://api.multica.ai",
-			detect:       failing,
-			wantCallback: "localhost",
-			wantBind:     "127.0.0.1",
-		},
-		{
-			name:         "localhost app URL stays on loopback",
-			appURL:       "http://localhost:3000",
-			serverURL:    "http://localhost:8080",
-			detect:       failing,
-			wantCallback: "localhost",
-			wantBind:     "127.0.0.1",
-		},
-		{
-			name:         "same-machine self-host uses loopback (CLI IP matches app IP)",
-			appURL:       "http://192.168.0.28:3000",
-			serverURL:    "http://192.168.0.28:8080",
-			detect:       fixed("192.168.0.28"),
-			wantCallback: "localhost",
-			wantBind:     "127.0.0.1",
-		},
-		{
-			name:         "cross-machine self-host points callback at CLI's LAN IP",
-			appURL:       "http://192.168.0.28:3000",
-			serverURL:    "http://192.168.0.28:8080",
-			detect:       fixed("192.168.0.47"),
-			wantCallback: "192.168.0.47",
-			wantBind:     "0.0.0.0",
-		},
-		{
-			name:         "outbound detection failure falls back to app IP",
-			appURL:       "http://192.168.0.28:3000",
-			serverURL:    "http://192.168.0.28:8080",
-			detect:       failing,
-			wantCallback: "192.168.0.28",
-			wantBind:     "0.0.0.0",
-		},
-		{
-			name:         "--callback-host flag overrides everything",
-			flagHost:     "10.0.0.5",
-			appURL:       "https://multica.ai",
-			serverURL:    "https://api.multica.ai",
-			detect:       fixed("10.0.0.5"),
-			wantCallback: "10.0.0.5",
-			wantBind:     "0.0.0.0",
-		},
-	}
-
-	for _, host := range []string{"198.18.0.1", "8.8.8.8", "100.64.0.1", "169.254.1.1", "::1", "fd00::1", "::ffff:192.168.0.1", "cli.internal.example", "localhost:1234", "127.0.0.1@evil.example"} {
-		cases = append(cases, bindingCase{name: "unsupported explicit host " + host, flagHost: host, wantError: true})
-	}
-	for _, ip := range []string{"198.18.0.1", "8.8.8.8", "100.64.0.1", "169.254.1.1"} {
-		cases = append(cases, bindingCase{name: "unsupported outbound IP " + ip, appURL: "http://192.168.0.28:3000", detect: fixed(ip), wantError: true})
-	}
-
-	for _, tc := range cases {
+	for _, tc := range loopbackCases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			gotCallback, gotBind, err := resolveCallbackBinding(tc.flagHost, tc.serverURL, tc.appURL, tc.detect)
-			if tc.wantError {
-				if err == nil || !strings.Contains(err.Error(), "--callback-host") {
-					t.Fatalf("expected actionable callback error, got %v", err)
-				}
-				return
-			}
+			gotCallback, gotBind, err := resolveCallbackBinding(tc.flagHost)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if gotCallback != tc.wantCallback {
 				t.Errorf("callback host = %q, want %q", gotCallback, tc.wantCallback)
 			}
-			if gotBind != tc.wantBind {
-				t.Errorf("bind addr = %q, want %q", gotBind, tc.wantBind)
+			if ip := net.ParseIP(gotBind); ip == nil || !ip.IsLoopback() {
+				t.Errorf("bind addr %q is not a loopback address; the login JWT must never cross the network in clear text", gotBind)
+			}
+		})
+	}
+
+	// RFC 1918 hosts used to bind 0.0.0.0 so a LAN browser could reach the CLI.
+	// The JWT travels in the callback URL over plain HTTP, so they are refused.
+	for _, host := range []string{"10.0.0.5", "172.16.0.1", "192.168.0.47", "0.0.0.0", "198.18.0.1", "8.8.8.8", "100.64.0.1", "169.254.1.1", "::1", "fd00::1", "::ffff:192.168.0.1", "cli.internal.example", "localhost:1234", "127.0.0.1@evil.example"} {
+		host := host
+		t.Run("unsupported explicit host "+host, func(t *testing.T) {
+			_, bind, err := resolveCallbackBinding(host)
+			if err == nil || !strings.Contains(err.Error(), "ssh -L") || !strings.Contains(err.Error(), "--callback-host") {
+				t.Fatalf("expected actionable callback error naming ssh -L, got bind=%q err=%v", bind, err)
 			}
 		})
 	}

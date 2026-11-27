@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/multica-ai/multica/server/internal/util"
@@ -11,6 +12,27 @@ import (
 
 // SubjectArtifactApproval marks an ask that approves a file; it needs artifacts.
 const SubjectArtifactApproval = "artifact_approval"
+
+// SubjectDiscoveryBrief marks the Discovery brief card (Plan step 13, CHE-6107 A5). It is
+// class reversible by contract; the reversible ask guard exempts this subject and no other (CHE-10271).
+const SubjectDiscoveryBrief = "discovery_brief"
+
+// Discovery brief answer labels (Plan step 13): the brief offers exactly these two.
+const (
+	BriefOptionContinue = "Tiếp tục"
+	BriefOptionStop     = "Dừng"
+)
+
+// IsDiscoveryBrief reports whether the ask has the Discovery brief shape: subject
+// discovery_brief, no artifacts, and exactly the two options "Tiếp tục" and "Dừng".
+// A relabelled ordinary approval has other options or artifacts and does not match.
+func (ask Ask) IsDiscoveryBrief() bool {
+	if ask.Subject != SubjectDiscoveryBrief || len(ask.Artifacts) != 0 || len(ask.Options) != 2 {
+		return false
+	}
+	labels := []string{ask.Options[0].Label, ask.Options[1].Label}
+	return slices.Contains(labels, BriefOptionContinue) && slices.Contains(labels, BriefOptionStop)
+}
 
 var (
 	artifactFields  = []string{"attachment_id", "label", "sha256", "supersedes_attachment_id", "signed_by", "supersedes_signed_by"}
@@ -83,9 +105,9 @@ func decodeSignature(prefix string, raw json.RawMessage) (*ArtifactSignature, er
 
 func (ask Ask) validateArtifacts() error {
 	switch ask.Subject {
-	case "", SubjectArtifactApproval:
+	case "", SubjectArtifactApproval, SubjectDiscoveryBrief:
 	default:
-		return &AskError{"ask.subject", "must be " + SubjectArtifactApproval + " when set"}
+		return &AskError{"ask.subject", "must be " + SubjectArtifactApproval + " or " + SubjectDiscoveryBrief + " when set"}
 	}
 	if ask.Subject == SubjectArtifactApproval && len(ask.Artifacts) == 0 {
 		return &AskError{"ask.artifacts", "requires at least one artifact when subject is " + SubjectArtifactApproval}

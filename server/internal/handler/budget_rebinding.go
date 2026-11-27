@@ -41,6 +41,13 @@ func writeBudgetRebindingRefused(w http.ResponseWriter) {
 		"widening a run budget or binding work into Quick needs an interactive sign-in (web or desktop app) or an owner-approved issue.workflow decision of class spend (answered with a passkey while the gate blocks); an agent run's `multica issue update <id> --workflow <workflow-id>` opens an approval card for the owners instead. For a decision, run `multica issue update <id> --workflow <workflow-id> --print-hash`, submit it with `multica decision request`, then repeat the command with --decision-id")
 }
 
+// writeProjectSwitchRefused is the refusal of a project workflow switch: the
+// same code, with the owner card path an agent run has (CHE-10137).
+func writeProjectSwitchRefused(w http.ResponseWriter) {
+	writeErrorCode(w, http.StatusForbidden, budgetRebindingCode,
+		"widening a run budget or binding work into Quick needs an interactive sign-in (web or desktop app). An agent run's `multica project workflow set <project-id>... <workflow>` opens one owner passkey approval card that covers every project listed; nothing changes until an owner approves it. A personal access token or CLI session cannot make this switch")
+}
+
 // writeBudgetRebindingError renders errBudgetRebinding and reports whether it
 // handled the error.
 func writeBudgetRebindingError(w http.ResponseWriter, err error) bool {
