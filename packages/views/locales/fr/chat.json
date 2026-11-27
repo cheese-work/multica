@@ -518,7 +518,7 @@
     "in_progress_other": "{{count}} exécutions en cours — les totaux se mettent à jour à leur fin",
     "runs": "Exécutions",
     "runs_value": "{{completed}} terminées · {{failed}} en échec",
-    "runs_cancelled": " · {{cancelled}} annulées",
+    "runs_cancelled": " · {{runs}} annulées",
     "run_time": "Durée d’exécution de l’agent",
     "messages": "Messages",
     "messages_value": "Vous {{user}} · Agent {{agent}}",

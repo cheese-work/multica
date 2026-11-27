@@ -184,7 +184,7 @@
     "outcome": {
       "cap_applied": "Cap applied",
       "run_queued": "Run queued",
-      "still_blocked": "Still blocked: {{reason}}"
+      "still_blocked": "Всё ещё заблокировано: {{reason}}"
     },
     "panel": {
       "title": "Run-budget request",
@@ -205,9 +205,9 @@
       "run_queued": "Run queued.",
       "run_started": "Run started.",
       "status_restored": "Status restored.",
-      "still_blocked_runs": "Still blocked: no runs left.",
-      "still_blocked_tokens": "Still blocked: token budget used up.",
-      "still_blocked": "Still blocked.",
+      "still_blocked_runs": "Всё ещё заблокировано: запусков не осталось.",
+      "still_blocked_tokens": "Всё ещё заблокировано: токенный бюджет исчерпан.",
+      "still_blocked": "Всё ещё заблокировано.",
       "later_window": "Not resumed: a newer budget window replaced this one.",
       "status_moved": "Not resumed: the issue moved to another status.",
       "window_changed": "Not resumed: the budget window changed.",

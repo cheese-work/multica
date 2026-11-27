@@ -2735,7 +2735,7 @@
       },
       "routing": {
         "label": "라우팅",
-        "hint": "라우팅 전용 워크플로 단계를 처리합니다: todo, blocked, merged, need decision.",
+        "hint": "라우팅 전용 워크플로 단계를 처리합니다: `todo`, `blocked`, `merged`, `need decision`.",
         "no_agent": "에이전트 없음: 각 단계가 자체 에이전트를 유지합니다."
       }
     }

@@ -160,12 +160,12 @@ describe("PlanRevisionViewer", () => {
     mount();
     await screen.findByRole("article");
     fireEvent.click(screen.getByRole("switch", { name: "Diff" }));
-    expect(await screen.findByText("Loading comparison…")).toBeVisible();
+    expect(await screen.findByText("Loading comparison...")).toBeVisible();
     expect(screen.getByRole("switch", { name: "Diff" })).not.toBeChecked();
     expect(screen.queryByTestId("revision-diff")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("switch", { name: "Diff" }));
     resolveBase(document.join("\n"));
-    await waitFor(() => expect(screen.queryByText("Loading comparison…")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Loading comparison...")).not.toBeInTheDocument());
     expect(screen.getByRole("article")).toBeVisible();
     expect(screen.queryByTestId("revision-diff")).not.toBeInTheDocument();
   });

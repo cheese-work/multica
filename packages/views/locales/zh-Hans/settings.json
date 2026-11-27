@@ -54,7 +54,7 @@
     },
     "category_change_dialog": {
       "title": "修改分类？",
-      "description_other": "该状态下的 {{count}} 个任务将从“{{from}}”变为“{{to}}”。",
+      "description_other": "该状态下的 {{count}} 个任务将从\"{{from}}\"变为\"{{to}}\"。",
       "cancel": "取消",
       "confirm": "修改分类"
     },
@@ -98,7 +98,7 @@
     "workflow_usage_none": "未被工作流使用"
   },
   "wakeups": {
-    "description": "平台对所有任务生效的规则。每个任务可以在自己的「唤醒」区域单独修改。",
+    "description": "平台对所有任务生效的规则。每个任务可以在自己的\"唤醒\"区域单独修改。",
     "child_done_title": "子任务结束时",
     "child_done_description": "某个阶段的子任务全部结束、且后面还有阶段在等待时，唤醒父任务的负责人；全部子任务结束时再唤醒一次。负责人是成员时，改为发送收件箱通知。",
     "enabled": "默认开启",
@@ -108,7 +108,7 @@
     "builtin": "内置指令",
     "instruction_invalid": "指令最多 4,000 字节。",
     "save": "保存",
-    "saving": "保存中…",
+    "saving": "保存中...",
     "save_error": "无法保存默认值。",
     "customized_other": "{{count}} 个进行中的任务使用了自己的设置，不跟随此默认值。",
     "admin_only": "只有所有者和管理员可以修改默认值。",
@@ -129,9 +129,9 @@
       "delete": "删除 {{name}}",
       "delete_error": "无法删除该规则。请刷新后重试。",
       "preview": "预览",
-      "previewing": "检查中…",
+      "previewing": "检查中...",
       "create": "创建规则",
-      "creating": "创建中…",
+      "creating": "创建中...",
       "preview_ok": "目前没有匹配的未关闭事项；规则只会对新的动态触发。",
       "preview_met": "{{examined}} 个事项中已有 {{satisfied}} 个满足条件；启用规则后会立即对它们触发。",
       "preview_met_truncated": "前 {{examined}} 个事项中已有 {{satisfied}} 个满足条件；启用规则后会立即对它们触发。",
@@ -153,7 +153,7 @@
       "conflict_error": "其他人已修改此规则。请取消后重新打开，查看他们的更改。",
       "cancel": "取消",
       "save": "保存规则",
-      "saving": "保存中…"
+      "saving": "保存中..."
     }
   },
   "quick_actions": {
@@ -1204,7 +1204,7 @@
     "title": "导出隐私",
     "description": "控制来源导出会脱敏哪些内容，以及审计清单的保留时长。",
     "section_title": "导出策略",
-    "loading": "正在加载导出隐私设置…",
+    "loading": "正在加载导出隐私设置...",
     "mode_label": "脱敏模式",
     "mode_hint": "严格脱敏尚不可用，暂不可选。",
     "mode_small_label": "基础（屏蔽密钥和凭据）",
@@ -2524,7 +2524,7 @@
     "reset_description": "熔断器立即关闭，新任务会再次发往 {{provider}}。如果服务商仍在失败，熔断器会再次触发。重置会记录到审计日志。",
     "reset_cancel": "取消",
     "reset_confirm": "重置熔断器",
-    "resetting": "正在重置…",
+    "resetting": "正在重置...",
     "reset_success": "熔断器已重置。",
     "reset_error": "无法重置熔断器。"
   },
@@ -2569,7 +2569,7 @@
     "defaults": "内置默认值",
     "plugins_heading": "插件 · {{count}} 个 · 最近 {{days}} 天",
     "review_heading": "评审策略 · {{count}} 个仓库",
-    "loading": "正在加载 Guard…",
+    "loading": "正在加载 Guard...",
     "load_error": "无法加载 Guard 统计。",
     "retry": "重试",
     "empty_title": "还没有 Guard 插件",
@@ -2626,7 +2626,7 @@
     "edit_save": "用通行密钥保存",
     "edit_done": "完成",
     "edit_cancel": "取消",
-    "edit_saving": "正在等待你的通行密钥…",
+    "edit_saving": "正在等待你的通行密钥...",
     "edit_saved": "已保存。策略 {{version}} 已生效。",
     "edit_load_error": "无法读取当前策略。请关闭后重试。",
     "edit_cancelled": "通行密钥已取消或超时。没有保存任何内容。",
@@ -2682,7 +2682,7 @@
     "cap_error": "请输入 0 到 100000 的整数。",
     "list_error": "每行一项，最多 50 项，每项不超过 200 个字符。",
     "save": "保存更改",
-    "saving": "保存中…",
+    "saving": "保存中...",
     "discard": "放弃更改",
     "unsaved": "有未保存的更改",
     "events_title": "最近 50 个事件",
@@ -2715,7 +2715,7 @@
     "toast_save_failed": "无法保存后台智能体。",
     "load_error": "无法加载后台智能体。",
     "retry": "重试",
-    "loading": "正在加载设置…",
+    "loading": "正在加载设置...",
     "conflict_title": "你编辑期间，另一位所有者保存了更改。",
     "conflict_body": "你的更改未保存。请对比后，保留对方的版本或重新应用你的更改。",
     "conflict_mine": "你的更改（未保存）",
@@ -2735,7 +2735,7 @@
       },
       "routing": {
         "label": "路由",
-        "hint": "处理仅路由的工作流步骤：todo、blocked、merged 和 need decision。",
+        "hint": "处理仅路由的工作流步骤：`todo`、`blocked`、`merged` 和 `need decision`。",
         "no_agent": "无智能体：每个步骤保持自己的智能体。"
       }
     }

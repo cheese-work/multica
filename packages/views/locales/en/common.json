@@ -149,7 +149,7 @@
     "approve": "Approve with passkey",
     "reject": "Reject",
     "reject_error": "Rejecting did not complete. Try again.",
-    "waiting": "Waiting for your passkey…",
+    "waiting": "Waiting for your passkey...",
     "state": {
       "executed": "Applied",
       "failed": "Not applied",

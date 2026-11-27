@@ -2005,7 +2005,7 @@ describe("ChatInput compacting placeholder", () => {
   it("names the compaction instead of the archived-session reason", () => {
     renderInput({ disabled: true, compacting: true } as Partial<React.ComponentProps<typeof ChatInput>>);
 
-    expect(editorProps.last?.placeholder).toBe("Compacting…");
+    expect(editorProps.last?.placeholder).toBe("Compacting...");
   });
 
   it("keeps the draft and does not send while compacting", async () => {

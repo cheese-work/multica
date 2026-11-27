@@ -2735,7 +2735,7 @@
       },
       "routing": {
         "label": "路由",
-        "hint": "處理僅路由的工作流程步驟：todo、blocked、merged 和 need decision。",
+        "hint": "處理僅路由的工作流程步驟：`todo`、`blocked`、`merged` 和 `need decision`。",
         "no_agent": "無智慧體：每個步驟保持自己的智慧體。"
       }
     }

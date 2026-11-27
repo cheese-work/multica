@@ -9,7 +9,7 @@
   "hierarchy": {
     "title": "Hierarchy",
     "expand": "Expand hierarchy",
-    "loading": "Loading hierarchy…",
+    "loading": "Loading hierarchy...",
     "load_failed": "Could not load the hierarchy.",
     "retry": "Try again",
     "you_are_here": "you are here",
@@ -36,8 +36,8 @@
     "depth": "Depth {{depth}} / {{max}}",
     "depth_announce": "Depth {{depth}} of {{max}}, {{count}} cards, {{withChildren}} with children",
     "more_cards": "+{{count}} more",
-    "more_cards_pending": "+{{count}}… more loading",
-    "chain_folded": "… {{count}}",
+    "more_cards_pending": "+{{count}}... more loading",
+    "chain_folded": "... {{count}}",
     "focus_hint": "+ / − step depth · arrows move · Enter opens · Space steps in or out · Esc steps out",
     "canvas_focus": "Hierarchy canvas, depth {{depth}}",
     "zoom_in": "Zoom in",
@@ -493,7 +493,7 @@
     "load_more": "Load more",
     "no_lane": "No value",
     "timeline_failed": "Could not load the timeline.",
-    "loading": "Loading timeline…"
+    "loading": "Loading timeline..."
   },
   "gantt2": {
     "clipped_start": "Started before this window",
@@ -1782,7 +1782,7 @@
       "edit": "Edit override",
       "reset": "Reset to default",
       "save": "Save override",
-      "saving": "Saving…",
+      "saving": "Saving...",
       "cancel": "Cancel",
       "save_error": "Could not save the override.",
       "reset_error": "Could not reset the rule.",
@@ -2220,7 +2220,7 @@
     "answered_in_dm": "Answered in DM",
     "private_dm": "from a private DM",
     "disclaim_action": "Disclaim",
-    "disclaiming": "Disclaiming…",
+    "disclaiming": "Disclaiming...",
     "disclaim_title": "Disclaim this decision?",
     "disclaim_desc": "The agent is told the decision is withdrawn and the request reopens. This cannot be undone.",
     "keep_action": "Keep decision",

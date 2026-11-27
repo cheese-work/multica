@@ -1190,7 +1190,7 @@
     "impact_queued": "{{count}} queued",
     "impact_issues": "{{count}} open issues",
     "impact_wakeups": "{{count}} enabled wakeups",
-    "impact_loading": "Checking what this leaves waiting…",
+    "impact_loading": "Checking what this leaves waiting...",
     "impact_failed": "Could not read the impact. You can still pause.",
     "cancel_active": "Also cancel active runs now",
     "cancel_active_hint": "Off: running runs finish. On: running and queued runs are cancelled after the pause.",

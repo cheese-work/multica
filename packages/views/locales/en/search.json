@@ -173,7 +173,7 @@
   "untitled_doc": "Untitled",
   "messages": {
     "untitled": "Untitled chat",
-    "searching": "Searching messages…",
+    "searching": "Searching messages...",
     "error_title": "Couldn't search message content",
     "error_failed": "The server returned an error. Chats still filter by title.",
     "error_timed_out": "The search took too long. Chats still filter by title.",

@@ -2735,7 +2735,7 @@
       },
       "routing": {
         "label": "ルーティング",
-        "hint": "ルーティングのみのワークフローステップを処理します: todo、blocked、merged、need decision。",
+        "hint": "ルーティングのみのワークフローステップを処理します: `todo`、`blocked`、`merged`、`need decision`。",
         "no_agent": "エージェントなし: 各ステップは自分のエージェントのままです。"
       }
     }
