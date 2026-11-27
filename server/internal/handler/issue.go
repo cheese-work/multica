@@ -6007,6 +6007,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			service.IssueTriggerInput{Issue: issue, PrevStatus: prevIssue.Status, AssigneeChanged: true, EnteredHandoffStep: true},
 			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 		)
+		// The dispatch below reads runDecided; without this the re-asserted
+		// run is decided here and never started.
+		runDecided = willRun
 	}
 	var runOutcomes []CommentTriggerOutcome
 	if reasserted && !willRun {
