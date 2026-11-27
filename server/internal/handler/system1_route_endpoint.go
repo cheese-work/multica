@@ -253,7 +253,9 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		keepLockedFields(&params, locked, handoff != nil || ownerGiven)
-		if updated, cancelledWakeups, err = h.writeIssueLocked(writeCtx, q, prev.WorkspaceID, params, workflowWrite); err != nil {
+		// keepLockedFields already copied the untouched fields from the locked row;
+		// an owner or handoff assignee is an intended write (workflowAssignee).
+		if updated, _, cancelledWakeups, err = h.writeIssueLocked(writeCtx, q, prev.WorkspaceID, params, workflowWrite, nil, handoff != nil || ownerGiven); err != nil {
 			return err
 		}
 		// The record spends its pre-assigned id; the status_changed row carries it.
