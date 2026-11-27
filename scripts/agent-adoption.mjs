@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Agent-facing PR field and the daily adoption issue (CHE-5717, replaces CHE-2794's per-deploy job).
-//   PR check (pr-guards.yml): node scripts/agent-adoption.mjs check --event "$GITHUB_EVENT_PATH" --files <list>
+//   PR check (pr-guards.yml): node scripts/agent-adoption.mjs check --event "$GITHUB_EVENT_PATH" --files <list> [--body <file>]
 //     <list> is the PR's changed files, one per line, read through the API (the job never checks out the PR). Fails a PR that touches CLI commands, the agent brief or the daemon without `Agent-facing:`
-//     (and an `Adoption item:` when the answer is yes).
+//     (and an `Adoption item:` and an `Adoption mode:` when the answer is yes, CHE-7712 S1). `--body` is the live PR body read through the API;
+//     it replaces the body saved in the event, so a re-run after a body edit judges the edit.
 //   Daily (autopilot, on X99; needs `gh`, `multica`, tailnet access to C00; no checkout needed):
 //     node scripts/agent-adoption.mjs daily --repo <owner/repo> --project <id> --assignee-id <id> --initial-sha <sha> [--dry-run]
 //     Reads the revision C00 runs (C00_API_URL /api/config, the same readback as deploy/cd/check-deploy-freshness.py),
@@ -28,6 +29,8 @@ import { liveLines } from "./fork-changelog.mjs";
 
 const FIELD = /^Agent-facing:\s*(.*)$/i;
 const ITEM = /^Adoption item:\s*(.*)$/i;
+const MODE = /^Adoption mode:\s*(.*)$/i;
+const PROOF = /^Adoption proof:\s*(.*)$/i;
 const SIGNAL = /^Adoption signal:\s*(.*)$/i;
 const BASE = /^Adoption base:\s*(.*)$/i;
 const TARGET = /^Adoption target:\s*(.*)$/i;
@@ -76,12 +79,53 @@ export function parseAdoptionSpec(body) {
 
 export const touchesAgentSurface = (paths) => paths.some((path) => AGENT_SURFACE.some((re) => re.test(path)));
 
+// How agents get the new path (CHE-7712 S1): one `Adoption mode:` line and, for default and refuse, the `Adoption proof:` path.
+// A placeholder or an empty line counts as missing; filled mode lines are counted so the check can refuse a second one.
+export function parseAdoptionMode(body) {
+  const found = { mode: null, proof: null, count: 0 };
+  for (const line of liveLines(typeof body === "string" ? body : "")) {
+    const mode = MODE.exec(line)?.[1].trim();
+    if (mode && !/^<.*>$/.test(mode)) {
+      found.count += 1;
+      found.mode = mode;
+    }
+    const proof = PROOF.exec(line)?.[1].trim().replace(/^`(.*)`$/, "$1");
+    if (proof && !/^<.*>$/.test(proof)) found.proof = proof;
+  }
+  return found;
+}
+
+const RERUN = "Edit the PR body, then re-run this failed job (it reads the live body), or push.";
+const MODES = "`default`, `refuse`, `none: <reason>` or `instruction: <skill name> — <why the product cannot use default or refuse>`";
+
+function modeErrors(body, paths) {
+  const { mode, proof, count } = parseAdoptionMode(body);
+  if (count > 1) return ["A yes PR carries one `Adoption mode:` line; remove the extra lines."];
+  if (!mode) return [`\`Agent-facing: yes\` needs an \`Adoption mode:\` line (${MODES}).`];
+  if (mode === "default" || mode === "refuse") {
+    if (!proof) return [`\`Adoption mode: ${mode}\` needs an \`Adoption proof: <path>\` line naming the test or file that shows it.`];
+    if (!paths.includes(proof)) return [`\`Adoption proof: ${proof}\` is not in this PR's changed files; name a file this PR changes.`];
+    return [];
+  }
+  if (/^none:/i.test(mode)) return /^none:\s*\S/i.test(mode) ? [] : ["`Adoption mode: none` needs a reason: `none: <reason>`."];
+  const instruction = /^instruction:\s*(\S+)\s+(?:—|–|--?)\s*(\S.*)$/i.exec(mode);
+  if (/^instruction:/i.test(mode)) {
+    if (!instruction) return ["`Adoption mode: instruction` needs `instruction: <skill name> — <why the product cannot use default or refuse>`."];
+    if (/[/\\~]/.test(instruction[1])) return ["This repo is public: name the skill by its name in `Adoption mode: instruction`, never a path."];
+    return [];
+  }
+  return [`\`Adoption mode: ${mode}\` is not a mode; use ${MODES}.`];
+}
+
 export function checkAgentFacing(body, paths) {
   if (!touchesAgentSurface(paths)) return [];
   const { agentFacing, adoptionItem } = parseAgentFacing(body);
-  if (!agentFacing) return ["This PR touches CLI commands, the agent brief or the daemon: add `Agent-facing: yes` or `Agent-facing: no` to the description."];
-  if (agentFacing === "yes" && !adoptionItem) return ["`Agent-facing: yes` needs an `Adoption item:` line saying what agents must change."];
-  return [];
+  const errors = !agentFacing
+    ? ["This PR touches CLI commands, the agent brief or the daemon: add `Agent-facing: yes` or `Agent-facing: no` to the description."]
+    : agentFacing === "yes" && !adoptionItem
+      ? ["`Agent-facing: yes` needs an `Adoption item:` line saying what agents must change."]
+      : agentFacing === "yes" ? modeErrors(body, paths) : [];
+  return errors.map((error) => `${error} ${RERUN}`);
 }
 
 // Added `<recv>.Flags()` / `.PersistentFlags()` lines of a Go diff. A `fooBarCmd` receiver names its
@@ -335,7 +379,6 @@ function arg(argv, name) {
 export function main(argv, env) {
   const [mode] = argv;
   if (mode === "check") {
-    const { pull_request: pr } = JSON.parse(readFileSync(arg(argv, "event"), "utf8"));
     let paths;
     try {
       paths = readFileSync(arg(argv, "files"), "utf8").split("\n").filter(Boolean);
@@ -343,7 +386,19 @@ export function main(argv, env) {
       console.log(`::error::Could not read the changed-file list (${error.code ?? error.message}); re-run the check.`);
       return 1;
     }
-    const errors = checkAgentFacing(pr.body ?? "", paths);
+    // The job passes the live body: the event body is frozen at trigger time, so a re-run after an edit would judge the old text.
+    let body;
+    if (argv.includes("--body")) {
+      try {
+        body = readFileSync(arg(argv, "body"), "utf8");
+      } catch (error) {
+        console.log(`::error::Could not read the live PR body; re-run the check (${error.code ?? error.message}).`);
+        return 1;
+      }
+    } else {
+      body = JSON.parse(readFileSync(arg(argv, "event"), "utf8")).pull_request.body ?? "";
+    }
+    const errors = checkAgentFacing(body, paths);
     for (const error of errors) console.log(`::error::${error}`);
     if (errors.length === 0) console.log("Agent-facing field: ok");
     return errors.length === 0 ? 0 : 1;
@@ -376,7 +431,7 @@ export function main(argv, env) {
     if (out.created) console.log(`opened ${out.created}`);
     return 0;
   }
-  console.error("usage: agent-adoption.mjs check --event <file> --files <list> | daily --repo <owner/repo> --project <id> --assignee-id <id> --initial-sha <sha> [--dry-run]");
+  console.error("usage: agent-adoption.mjs check --event <file> --files <list> [--body <file>] | daily --repo <owner/repo> --project <id> --assignee-id <id> --initial-sha <sha> [--dry-run]");
   return 2;
 }
 
