@@ -32,7 +32,8 @@
     "my_agents": "My agents' work",
     "unknown": "Unknown page",
     "doc": "Doc",
-    "docFolder": "Folder"
+    "docFolder": "Folder",
+    "media": "Media"
   },
   "help": {
     "trigger": "Help",

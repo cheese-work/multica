@@ -43,6 +43,8 @@ export type TabSubject =
   | { kind: "runtime"; machineId: string; runtimeId: string }
   /** An attachment preview. `filename` is the `?name=` hint, or null. */
   | { kind: "attachment"; id: string; filename: string | null }
+  /** A standalone media page (`/media/:type/:sourceId/:kind/:mediaId`). */
+  | { kind: "media"; mediaId: string }
   /**
    * The Inbox container; `selectedKey` is the `?issue=` selection or null,
    * `view` the `?view=` tab: the live Inbox, Snoozed, or Archived (each its
@@ -139,6 +141,8 @@ export function parseTabSubject(url: string): TabSubject {
       return id
         ? { kind: "attachment", id, filename: query.get("name") || null }
         : { kind: "unknown" };
+    case "media":
+      return segments[5] ? { kind: "media", mediaId: segments[5] } : { kind: "unknown" };
     default: {
       // A bare `/{slug}` (no route segment) is normalized to the default
       // surface elsewhere; treat any other unknown segment as unknown so it
@@ -182,6 +186,8 @@ export function tabSubjectKey(subject: TabSubject): string {
       return `runtime:${subject.machineId}:${subject.runtimeId}`;
     case "attachment":
       return `attachment:${subject.id}:${subject.filename ?? ""}`;
+    case "media":
+      return `media:${subject.mediaId}`;
     case "inbox":
       return `inbox:${subject.view}:${subject.selectedKey ?? ""}`;
     case "chat":

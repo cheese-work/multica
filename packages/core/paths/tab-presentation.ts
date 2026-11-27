@@ -41,6 +41,7 @@ export type TabVisual =
 /** Localization keys under the `layout.tab` namespace for tab type labels. */
 export type TabLabelKey =
   | "issue"
+  | "media"
   | "project"
   | "autopilot"
   | "agent"
@@ -226,6 +227,11 @@ export function resolveTabPresentation(
         title: subject.filename
           ? { kind: "text", text: subject.filename }
           : { kind: "tab", tabKey: "attachment" },
+      };
+    case "media":
+      return {
+        visual: { kind: "icon", icon: "File" },
+        title: { kind: "tab", tabKey: "media" },
       };
     case "inbox": {
       // The container icon never changes; only the title tracks the selection.
