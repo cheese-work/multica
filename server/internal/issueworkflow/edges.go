@@ -46,6 +46,10 @@ const (
 	// merged and none is open. It is an agent exit: the agent asks for the move
 	// and the guard is checked then, so the engine never moves on it.
 	GuardPRAllMerged = "pr.all_merged"
+	// GuardPlugin is plugin(<plugin key>, <hook key>): an entry gate whose
+	// verdict a guard hook gives. It is entry only; the host calls the hook
+	// before the write transaction and consumes the verdict under the locks.
+	GuardPlugin = "plugin"
 )
 
 // GuardIntakeSimple and GuardQAProof are in intake.go.
@@ -69,7 +73,7 @@ var guardArity = map[string]int{
 	GuardAgentDone: 0, GuardAgentVerdict: 1, GuardPRChecksGreen: 0, GuardPRChecksRed: 0, GuardPRChecksInfraRed: 0, GuardPRChecksFlaky: 0, GuardPRReady: 0,
 	GuardPRMerged: 0, GuardPRClosedUnmerged: 0, GuardPRReviewChanges: 0, GuardPRReviewApproved: 0, GuardPRNoneOpen: 0, GuardChildrenDone: 0, GuardIssueStatus: 2,
 	GuardWebhook: 1, GuardAdoptionLinked: 0, GuardUpstreamChecked: 0,
-	GuardIntakeSimple: 0, GuardQAProof: 0, GuardRootIssue: 0, GuardHumanDone: 0, GuardPRAllMerged: 0,
+	GuardIntakeSimple: 0, GuardQAProof: 0, GuardRootIssue: 0, GuardHumanDone: 0, GuardPRAllMerged: 0, GuardPlugin: 2,
 }
 
 // webhookNameRe is the endpoint name a webhook guard may reference.
@@ -181,7 +185,7 @@ func validateEdges(s Step, def Definition) error {
 		if err != nil {
 			return invalid("%v", err)
 		}
-		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked || g.Kind == GuardIntakeSimple || g.Kind == GuardQAProof || g.Kind == GuardPRNoneOpen || g.Kind == GuardRootIssue {
+		if g.Kind == GuardAdoptionLinked || g.Kind == GuardUpstreamChecked || g.Kind == GuardIntakeSimple || g.Kind == GuardQAProof || g.Kind == GuardPRNoneOpen || g.Kind == GuardRootIssue || g.Kind == GuardPlugin {
 			return invalid("%s is an entry gate, not an edge guard", g.Kind)
 		}
 		if g.Kind == GuardPRChecksGreen && !CanAdvanceOnCIGreen(s.StatusKey) {
@@ -254,6 +258,9 @@ type Facts struct {
 	QA     *QAFacts
 	// HasParent is what the root_issue entry gate reads (CHE-6831).
 	HasParent bool
+	// Plugin holds the verdict of each plugin entry gate, keyed by
+	// PluginGateKey. The host fills it from the guard hook's answer.
+	Plugin map[string]PluginVerdict
 	// HumanDone is what the human_done guard reads: a member's live decision on
 	// this issue chose done.
 	HumanDone bool
