@@ -40,7 +40,10 @@ func mediaTransferTimeout(size int64) time.Duration {
 // cdnTransport carries CDN uploads over HTTP/1.1, as the provider's reference
 // client does. Over HTTP/2 the CDN grants a 64 KiB stream window, and uploads
 // ran far below what the same network path achieves to the iLink API.
-var cdnTransport http.RoundTripper = http1Transport(http.DefaultTransport.(*http.Transport))
+var cdnTransport http.RoundTripper = func() http.RoundTripper {
+	base, _ := http.DefaultTransport.(*http.Transport) // the stdlib default is always a *http.Transport
+	return http1Transport(base)
+}()
 
 func http1Transport(base *http.Transport) *http.Transport {
 	tr := base.Clone()

@@ -66,7 +66,7 @@ func SupportedContentType(contentType string) bool {
 func Generate(data []byte) (Thumbnail, error) {
 	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return Thumbnail{}, fmt.Errorf("%w: %v", ErrUnsupported, err)
+		return Thumbnail{}, fmt.Errorf("%w: %w", ErrUnsupported, err)
 	}
 	switch format {
 	case "jpeg", "png", "webp":

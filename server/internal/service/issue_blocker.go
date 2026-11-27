@@ -14,27 +14,6 @@ import (
 const SystemRuleBlockersDone = "blockers_done"
 const BlockersDoneInstruction = "All tasks this issue was waiting for have ended or were removed from its dependencies. The trigger facts list their statuses. Check cancelled or deleted work before continuing. Start the current assignee's work, using the current project workflow step when present. The platform has not changed this issue's status; if it is blocked, check whether any external wait still applies."
 
-// Ordinary admission consumes the release in the task's insert transaction.
-// Its completion before the scheduler's next pass must not create another run.
-func (s *TaskService) createIssueTaskWithBlockerRelease(ctx context.Context, origin RunOrigin, create func(*db.Queries) (db.AgentTaskQueue, error)) (db.AgentTaskQueue, error) {
-	if origin == OriginNamed {
-		return create(s.Queries)
-	}
-	var task db.AgentTaskQueue
-	err := s.runInTx(ctx, func(q *db.Queries) error {
-		var err error
-		task, err = create(q)
-		if err != nil {
-			return err
-		}
-		if err = q.AcknowledgeIssueBlockerRelease(ctx, task.ID); err != nil {
-			return fmt.Errorf("acknowledge blocker release: %w", err)
-		}
-		return nil
-	})
-	return task, err
-}
-
 func evaluateIssueBlockers(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.IssueWakeup) (bool, string, map[string]any, error) {
 	blocked, err := q.HasOpenIssueBlockers(ctx, db.HasOpenIssueBlockersParams{WorkspaceID: w.WorkspaceID, IssueID: w.IssueID})
 	if err != nil {
@@ -58,7 +37,7 @@ func evaluateIssueBlockers(ctx context.Context, tx pgx.Tx, q *db.Queries, w db.I
 	blockers := []json.RawMessage{}
 	for rows.Next() {
 		var raw json.RawMessage
-		if err = rows.Scan(&raw); err != nil {
+		if err := rows.Scan(&raw); err != nil {
 			return false, "", nil, err
 		}
 		blockers = append(blockers, raw)
@@ -95,7 +74,7 @@ func (s *IssueWakeupService) backfillBlockerRules(ctx context.Context) error {
 		pairs = append(pairs, p)
 	}
 	rows.Close()
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return err
 	}
 	for _, p := range pairs {
@@ -103,7 +82,7 @@ func (s *IssueWakeupService) backfillBlockerRules(ctx context.Context) error {
 			return fmt.Errorf("arm staged blocker: %w", err)
 		}
 	}
-	if err = tx.Commit(ctx); err != nil {
+	if err := tx.Commit(ctx); err != nil {
 		return err
 	}
 	if len(pairs) < 100 {

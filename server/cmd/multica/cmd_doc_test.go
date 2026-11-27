@@ -645,7 +645,7 @@ func TestRunDocCommentListGroupsThreadsAndHidesResolved(t *testing.T) {
 			map[string]any{"id": "c-open", "author_type": "member", "author_id": "m1", "content": "Cite the source\nhere",
 				"anchor_quote": "growth doubled"},
 			map[string]any{"id": "c-done", "author_type": "member", "author_id": "m1", "content": "typo",
-				"anchor_quote": "teh", "resolved_at": "2026-11-22T00:00:00Z"},
+				"anchor_quote": "typo here", "resolved_at": "2026-11-22T00:00:00Z"},
 			map[string]any{"id": "c-reply", "parent_id": "c-open", "author_type": "member", "author_id": "m2", "content": "agreed"},
 			map[string]any{"id": "c-done-reply", "parent_id": "c-done", "author_type": "member", "author_id": "m2", "content": "fixed"},
 		}})

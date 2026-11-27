@@ -117,7 +117,7 @@ func migrateBinary(t *testing.T) string {
 		}
 		out, err := exec.Command("go", "build", "-o", filepath.Join(migrateBinDir, "migrate"), ".").CombinedOutput()
 		if err != nil {
-			migrateBinErr = fmt.Errorf("go build: %v\n%s", err, out)
+			migrateBinErr = fmt.Errorf("go build: %w\n%s", err, out)
 		}
 	})
 	if migrateBinErr != nil {

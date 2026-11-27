@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -99,7 +100,7 @@ func TestInMemoryUpdateStore_RejectsConcurrentActiveUntilTerminal(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := store.Create(ctx, "rt-1", "", "v1.2.4", "user-1", false); err != errUpdateInProgress {
+	if _, err := store.Create(ctx, "rt-1", "", "v1.2.4", "user-1", false); !errors.Is(err, errUpdateInProgress) {
 		t.Fatalf("second create error = %v, want errUpdateInProgress", err)
 	}
 	if err := store.Complete(ctx, req.ID, "done"); err != nil {

@@ -235,12 +235,7 @@ func TestExposeSharedCodexBundledMarketplacesSpellingVariants(t *testing.T) {
 			bundledRoot, _ := writeSharedBundledMarketplace(t, sharedHome)
 			sharedSource := filepath.Join(bundledRoot, "openai-bundled")
 
-			var sourceLine string
-			if strings.Contains(tc.sourceLineFormat, "%s") {
-				sourceLine = fmt.Sprintf(tc.sourceLineFormat, sharedSource)
-			} else {
-				sourceLine = fmt.Sprintf(tc.sourceLineFormat, sharedSource)
-			}
+			sourceLine := fmt.Sprintf(tc.sourceLineFormat, sharedSource)
 			config := tc.header + "\nsource_type = \"local\"\n" + sourceLine + "\n"
 			configPath := filepath.Join(codexHome, "config.toml")
 			if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {

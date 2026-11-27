@@ -182,8 +182,8 @@ func TestStatusMapRoutesATerminalStatusOnlyAsConfigured(t *testing.T) {
 		Instructions: "Confirm it should be dropped.", BackStatusKey: "in_progress",
 	}})
 	brief := Brief(in)
-	entry := brief[strings.Index(brief, "- `wont_fix`"):]
-	entry = entry[:strings.Index(entry, "\n- `blocked`")]
+	_, entry, _ := strings.Cut(brief, "- `wont_fix`")
+	entry, _, _ = strings.Cut(entry, "\n- `blocked`")
 	if !strings.Contains(entry, "    Routes: send back `in_progress`.") || strings.Contains(entry, "next `") {
 		t.Fatalf("terminal status must route only its configured send-back:\n%s", brief)
 	}

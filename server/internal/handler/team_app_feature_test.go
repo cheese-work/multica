@@ -11,7 +11,6 @@ import (
 	"sync"
 	"testing"
 
-
 	"github.com/multica-ai/multica/server/internal/connectedapps"
 	"github.com/multica-ai/multica/server/internal/entitlement"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
@@ -434,4 +433,3 @@ func TestTeamAppAccountsClassification(t *testing.T) {
 		}
 	}
 }
-

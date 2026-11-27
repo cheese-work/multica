@@ -95,7 +95,7 @@ func TestForPrincipals(t *testing.T) {
 		if got := hidden.CanSeeProject(p2); got != tc.seeP2 {
 			t.Errorf("%s: p2 visible = %v, want %v", tc.name, got, tc.seeP2)
 		}
-		if tc.principals != nil && tc.principals[0] == p1Guest {
+		if len(tc.principals) > 0 && tc.principals[0] == p1Guest {
 			continue
 		}
 		if !hidden.CanSeeProject(pgtype.UUID{}) {

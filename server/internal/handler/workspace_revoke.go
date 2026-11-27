@@ -169,10 +169,10 @@ func (h *Handler) revokeMember(ctx context.Context, r *http.Request, auditKind s
 		for _, task := range result.CancelledTasks {
 			cancelledIDs = append(cancelledIDs, task.ID)
 		}
-		if err = qtx.WithdrawChatTaskSupplementsByTasks(ctx, cancelledIDs); err != nil {
+		if err := qtx.WithdrawChatTaskSupplementsByTasks(ctx, cancelledIDs); err != nil {
 			return empty, err
 		}
-		if err = service.SettleTerminalTaskState(ctx, qtx, result.CancelledTasks...); err != nil {
+		if err := service.SettleTerminalTaskState(ctx, qtx, result.CancelledTasks...); err != nil {
 			return empty, err
 		}
 

@@ -196,7 +196,7 @@ func RefuseGuest(w http.ResponseWriter, r *http.Request) {
 		if read.route.matches(r.Method, segments) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(read.body))
+			_, _ = w.Write([]byte(read.body))
 			return
 		}
 	}

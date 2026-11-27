@@ -80,10 +80,9 @@ func supplementUpFiles(t *testing.T, from, through string) []string {
 }
 
 type supplementRun struct {
-	pool   *pgxpool.Pool
-	lock   int64
-	hooks  map[string]preMigrationHook
-	ledger string
+	pool  *pgxpool.Pool
+	lock  int64
+	hooks map[string]preMigrationHook
 }
 
 func newSupplementRun(pool *pgxpool.Pool) *supplementRun {

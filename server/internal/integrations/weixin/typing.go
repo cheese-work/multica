@@ -66,8 +66,10 @@ func (n *TypingNotifier) Start(ctx context.Context) {
 
 func (n *TypingNotifier) wait() {
 	// Shutdown cancels ctx first; synchronize with an ingest already adding work.
-	n.mu.Lock()
-	n.mu.Unlock()
+	func() {
+		n.mu.Lock()
+		defer n.mu.Unlock()
+	}()
 	n.wg.Wait()
 }
 

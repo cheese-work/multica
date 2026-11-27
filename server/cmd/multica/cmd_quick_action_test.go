@@ -28,12 +28,12 @@ type quickActionTestServer struct {
 }
 
 const (
-	qaTestIDMerge   = "11111111-1111-4111-8111-111111111111"
-	qaTestIDReview  = "22222222-2222-4222-8222-222222222222"
-	qaTestIDOld     = "33333333-3333-4333-8333-333333333333"
-	qaTestIDAgent   = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-	qaTestIDSquad   = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-	qaTestIDIssue   = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	qaTestIDMerge  = "11111111-1111-4111-8111-111111111111"
+	qaTestIDReview = "22222222-2222-4222-8222-222222222222"
+	qaTestIDOld    = "33333333-3333-4333-8333-333333333333"
+	qaTestIDAgent  = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	qaTestIDSquad  = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	qaTestIDIssue  = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
 )
 
 func newQuickActionTestServer(t *testing.T) *quickActionTestServer {

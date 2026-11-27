@@ -684,7 +684,11 @@ func (h *Handler) UnreadInboxSummary(w http.ResponseWriter, r *http.Request) {
 	// account-wide summary; a task credential takes only its bound
 	// workspace's row from it, into a new slice, so the shared value stays
 	// whole for every other caller of the same coalesced query.
-	rows := value.([]db.CountUnreadInboxByWorkspaceRow)
+	rows, ok := value.([]db.CountUnreadInboxByWorkspaceRow)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "failed to summarize unread inbox")
+		return
+	}
 	resp := make([]InboxWorkspaceUnreadResponse, 0, len(rows))
 	for _, row := range rows {
 		if boundWorkspace.Valid && row.WorkspaceID != boundWorkspace {

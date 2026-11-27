@@ -498,7 +498,7 @@ func TestDocTaskRunsHideDetailsOfAgentsTheViewerCannotSee(t *testing.T) {
 	colleague := dbfx.User(t, "He Yu", fmt.Sprintf("he-yu-%d@example.test", stamp))
 	dbfx.Member(t, testWorkspaceID, colleague, "member")
 	thread := "01a20000-0000-7000-8000-000000000001"
-	docContext := testutil.Raw(fmt.Sprintf(`'{"type":"doc_comment","workspace_id":"%s"}'::jsonb`, testWorkspaceID))
+	docContext := testutil.Raw(fmt.Sprintf(`'{"type":"doc_comment","workspace_id":%q}'::jsonb`, testWorkspaceID))
 	failedRun := dbfx.Task(t, private, testutil.Cols{"doc_id": doc.ID, "doc_thread_id": thread, "doc_comment_id": thread,
 		"status": "failed", "error": "secret path /home/owner/work", "failure_reason": "timeout",
 		"runtime_id": handlerTestRuntimeID(t), "completed_at": testutil.Raw("now()"), "context": docContext})

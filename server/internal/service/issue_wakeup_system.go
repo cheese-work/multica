@@ -1370,7 +1370,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 		if blocked || w.SystemRule.String == SystemRuleBlockersDone {
 			// Dependency completion owns the continuation of a blocked parent.
 			// Retaining old completion inputs would retry the same queue gate.
-			if err = q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+			if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
 				return err
 			}
 			state = ""
@@ -1394,7 +1394,7 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 			return err
 		}
 		if w.SystemRule.String == SystemRuleBlockersDone && !met {
-			if err = q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
+			if err := q.DiscardWakeupReceipts(ctx, w.ID); err != nil {
 				return err
 			}
 		}
@@ -1708,15 +1708,15 @@ func (s *IssueWakeupService) dispatchSystem(ctx context.Context, prev db.IssueWa
 	}
 	if w.SystemRule.String == SystemRuleBlockersDone {
 		var running bool
-		if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status IN ('queued','deferred','dispatched','running','waiting_local_directory'))", issue.ID, agent.ID).Scan(&running); err != nil {
+		if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM agent_task_queue WHERE issue_id=$1 AND agent_id=$2 AND status IN ('queued','deferred','dispatched','running','waiting_local_directory'))", issue.ID, agent.ID).Scan(&running); err != nil {
 			return err
 		}
 		if running {
-			if err = q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
+			if err := q.ConsumeWakeupReceipts(ctx, db.ConsumeWakeupReceiptsParams{Ids: ids}); err != nil {
 				return err
 			}
 			facts["outcome"] = wakeupOutcomeAcknowledged
-			if err = note(wakeupActivityTriggered, facts); err != nil {
+			if err := note(wakeupActivityTriggered, facts); err != nil {
 				return err
 			}
 			return commit()

@@ -262,7 +262,7 @@ func TestAutopilotQuotaPerLimitNoticeRearmsAfterTheLimitGrows(t *testing.T) {
 				<-start
 				var quotaErr *AutopilotQuotaExceededError
 				if err := scheduleRun(ctx, fixture.service, fixture, fmt.Sprintf("%s-%d", prefix, i)); !errors.As(err, &quotaErr) {
-					errs <- fmt.Errorf("%s %d = %v, want quota error", prefix, i, err)
+					errs <- fmt.Errorf("%s %d = %w, want quota error", prefix, i, err)
 				}
 			}()
 		}

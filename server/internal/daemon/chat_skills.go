@@ -209,7 +209,8 @@ func chatRuntimePrompt(task Task, source memberSkillText, selected map[string]st
 	invocation.Prompt = BuildPrompt(task, provider, options...)
 	options = append(options, func(o *promptOpts) { o.omitChatMessage = true })
 	invocation.PlatformPrompt = BuildPrompt(task, provider, options...)
-	return invocation.FallbackPrompt(), invocation
+	fallback := invocation.FallbackPrompt()
+	return fallback, invocation
 }
 
 // issueRuntimePrompt finishes a comment-triggered issue turn's invocation.
@@ -264,7 +265,8 @@ func issueRuntimePrompt(task Task, texts []memberSkillText, selected map[string]
 	invocation.UserMessage = strings.Join(user, "\n\n")
 	invocation.Prompt = BuildPrompt(task, provider, options...)
 	invocation.PlatformPrompt = invocation.Prompt
-	return invocation.FallbackPrompt(), invocation
+	fallback := invocation.FallbackPrompt()
+	return fallback, invocation
 }
 
 func replaceSelectedSkillLinks(message string, matches []slashSkillMatch, selected map[string]string) string {

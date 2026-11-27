@@ -469,7 +469,7 @@ func (s *IssueWakeupService) evaluateCondition(ctx context.Context, tx pgx.Tx, q
 				if !githubChecks {
 					var hasVCS bool
 					if c.Event == "checks_finished" {
-						if err = tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM vcs_connection WHERE workspace_id=$1)", w.WorkspaceID).Scan(&hasVCS); err != nil {
+						if err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM vcs_connection WHERE workspace_id=$1)", w.WorkspaceID).Scan(&hasVCS); err != nil {
 							return false, "", nil, err
 						}
 					}
@@ -552,7 +552,7 @@ func consumeConditionHints(ctx context.Context, tx pgx.Tx, id pgtype.UUID) (hint
 	for rows.Next() {
 		var eventType string
 		var raw []byte
-		if err = rows.Scan(&eventType, &raw); err != nil {
+		if err := rows.Scan(&eventType, &raw); err != nil {
 			return false, nil, false, err
 		}
 		hinted = true
@@ -580,7 +580,7 @@ func consumeConditionHints(ctx context.Context, tx pgx.Tx, id pgtype.UUID) (hint
 			}
 		}
 	}
-	if err = rows.Err(); err != nil {
+	if err := rows.Err(); err != nil {
 		return false, nil, false, err
 	}
 	if !complete {

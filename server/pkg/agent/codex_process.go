@@ -116,12 +116,6 @@ func (c *codexClient) flushAgentMessageDeltasLocked() {
 	c.hookMu.Unlock()
 }
 
-func (c *codexClient) turnUsage() TokenUsage {
-	c.usageMu.Lock()
-	defer c.usageMu.Unlock()
-	return c.usage
-}
-
 // turnUsageContext returns the turn's usage together with the latest context
 // snapshot (prompt tokens and model window), read under one lock.
 func (c *codexClient) turnUsageContext() (TokenUsage, int64, int64) {

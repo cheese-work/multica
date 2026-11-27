@@ -211,7 +211,7 @@ func (r *mediaResolver) ingest(ctx context.Context, inst engine.ResolvedInstalla
 	link := r.store.ObjectURL(key)
 	owned, err := r.ledger.RecordPendingMediaObject(ctx, engine.RecordPendingMediaObjectParams{StorageKey: key, WorkspaceID: inst.WorkspaceID, ChatMessageID: messageID, StorageURL: link, InstallationID: inst.ID})
 	if err != nil || !owned {
-		return channel.MediaRef{}, fmt.Errorf("weixin: media intent unavailable: %v", err)
+		return channel.MediaRef{}, fmt.Errorf("weixin: media intent unavailable: %w", err)
 	}
 	if _, err := r.store.Upload(ctx, key, data, contentType, name); err != nil {
 		return channel.MediaRef{}, errors.New("weixin: media storage failed")
