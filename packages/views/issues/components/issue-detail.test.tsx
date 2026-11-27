@@ -4392,7 +4392,10 @@ describe("IssueDetail (shared)", () => {
       // — offscreen bodies are not mounted — holds more strongly under the fold.
       expect(document.getElementById("comment-offscreen-reply-0")).toBeNull();
       expect(screen.queryByText("Offscreen body 0")).toBeNull();
-      expect(readonlyContentRenders.filter((body) => body.startsWith("Offscreen body")).length).toBeLessThan(10);
+      // Count distinct mounted bodies, not render calls: the folded tail
+      // re-renders as the deep-link landing frame settles, which is not mounting.
+      const mountedBodies = new Set(readonlyContentRenders.filter((body) => body.startsWith("Offscreen body")));
+      expect(mountedBodies.size).toBeLessThan(10);
     } finally { vi.unstubAllGlobals(); }
   });
 
