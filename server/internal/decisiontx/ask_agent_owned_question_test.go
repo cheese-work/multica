@@ -4,7 +4,7 @@ import "testing"
 
 // CHE-10344 (CHE-7035 R3): the question and the options may not hand a human a
 // merge-queue, re-queue, rebase or re-run-checks step. These are the four asks
-// that reached Cheese in the S8 window although an agent owns the step.
+// that reached a human in the S8 window although an agent owns the step.
 var agentOwnedQuestions = []struct{ name, decision, what string }{
 	{"che8760 requeue", "Do you re-queue PR 2022 for merge now?", "You add PR 2022 to the merge queue again on the same head."},
 	{"che8760 requeue same head", "Do you re-queue PR 2022 for merge now, on the same head?", "You add PR 2022 to the merge queue again on the same head."},
