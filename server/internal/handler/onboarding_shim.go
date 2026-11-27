@@ -181,6 +181,10 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusForbidden, "not a member of this workspace")
 		return
 	}
+	if projectaccess.IsGuestRole(member.Role) {
+		middleware.RefuseGuest(w, r)
+		return
+	}
 
 	runtime, err := qtx.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
 		ID:          runtimeUUID,
@@ -388,11 +392,16 @@ func (h *Handler) BootstrapOnboardingNoRuntime(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	if _, err := qtx.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
+	member, err := qtx.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
 		UserID:      parseUUID(userID),
 		WorkspaceID: wsUUID,
-	}); err != nil {
+	})
+	if err != nil {
 		writeError(w, http.StatusForbidden, "not a member of this workspace")
+		return
+	}
+	if projectaccess.IsGuestRole(member.Role) {
+		middleware.RefuseGuest(w, r)
 		return
 	}
 
