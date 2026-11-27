@@ -38,7 +38,7 @@ func (c routeWriteCase) memberWrite(t *testing.T, mutate func(*db.UpdateIssuePar
 	t.Helper()
 	params := db.UpdateIssueParams{ID: parseUUID(c.issueID)}
 	mutate(&params)
-	_, err := testHandler.updateIssueWithStatusGuard(withMemberRouteOverride(context.Background()), parseUUID(testWorkspaceID), "", params, nil)
+	_, _, err := testHandler.updateIssueWithStatusGuard(withMemberRouteOverride(context.Background()), parseUUID(testWorkspaceID), "", params, nil, nil, false)
 	return err
 }
 
@@ -95,7 +95,7 @@ func TestUnarmedWriteKeepsTheRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	params := db.UpdateIssueParams{ID: parseUUID(c.issueID), Status: pgtype.Text{String: "in_review", Valid: true}}
-	if _, err := testHandler.updateIssueWithStatusGuard(context.Background(), parseUUID(testWorkspaceID), "", params, nil); err != nil {
+	if _, _, err := testHandler.updateIssueWithStatusGuard(context.Background(), parseUUID(testWorkspaceID), "", params, nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	wantReversed(t, c.issueID, false)
@@ -165,7 +165,7 @@ func TestMemberWriteDoesNotReverseItsOwnRoute(t *testing.T) {
 	c.hook.used, c.hook.DecisionSource, c.hook.Caller = false, "human", workflowCaller{}
 	ctx := withMemberRouteOverride(withRouteCapture(withStatusRecord(context.Background(), c.rec), c.hook))
 	params := db.UpdateIssueParams{ID: parseUUID(c.issueID), Status: pgtype.Text{String: "in_review", Valid: true}}
-	if _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil); err != nil {
+	if _, _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	wantReversed(t, c.issueID, true, false)
@@ -179,7 +179,7 @@ func TestMemberOverrideRollsBackWithAFailedWrite(t *testing.T) {
 	c.hook.used, c.hook.DecisionSource = false, "bogus" // the capture CHECK fails after the mark
 	ctx := withMemberRouteOverride(withRouteCapture(withStatusRecord(context.Background(), c.rec), c.hook))
 	params := db.UpdateIssueParams{ID: parseUUID(c.issueID), Status: pgtype.Text{String: "in_review", Valid: true}}
-	if _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil); err == nil {
+	if _, _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil, nil, false); err == nil {
 		t.Fatal("capture failure must fail the write")
 	}
 	wantReversed(t, c.issueID, false)
@@ -191,7 +191,7 @@ func TestMemberOverrideOnTheAtomicBranch(t *testing.T) {
 		t.Fatal(err)
 	}
 	params := db.UpdateIssueParams{ID: parseUUID(c.issueID), Status: pgtype.Text{String: "in_review", Valid: true}, Description: pgtype.Text{String: "d", Valid: true}}
-	if _, _, _, err := testHandler.updateIssueAtomically(withMemberRouteOverride(context.Background()), parseUUID(testWorkspaceID), params, nil, nil, nil, nil, "", nil); err != nil {
+	if _, _, _, err := testHandler.updateIssueAtomically(withMemberRouteOverride(context.Background()), parseUUID(testWorkspaceID), params, nil, issueBlockerEdit{}, nil, nil, nil, nil, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	wantReversed(t, c.issueID, true)
@@ -232,7 +232,7 @@ func TestMemberOverrideBindsToThePriorRouteUnderTheLock(t *testing.T) {
 	go func() {
 		ctx := withMemberRouteOverride(withIssueMoveGuard(context.Background(), guard))
 		params := db.UpdateIssueParams{ID: parseUUID(c.issueID), Status: pgtype.Text{String: "in_review", Valid: true}}
-		_, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil)
+		_, _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil, nil, false)
 		memberDone <- err
 	}()
 	<-locked
