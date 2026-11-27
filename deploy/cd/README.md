@@ -1177,6 +1177,62 @@ stand-in `docker`: the candidate start renders the fault, the migrator, the
 recovery start and a run without the switch render the real database. It does
 not run `cutover.sh` or touch C00.
 
+## Cutover rehearsal (CHE-7614)
+
+`deploy/cd/rehearse-cutover.sh` runs the real, unmodified
+`deploy/cd/cutover.sh` of a tree against a throwaway A/B stack on the build host. It
+builds, so run it on the build host only, never on the deploy host.
+
+```bash
+bash deploy/cd/rehearse-cutover.sh --run-id kr1                  # plain cutover
+bash deploy/cd/rehearse-cutover.sh --run-id kr2 --fault readyz   # candidate fails /readyz
+bash deploy/cd/rehearse-cutover.sh --run-id kr3 --then rollback  # cutover, then rollback
+bash deploy/cd/rehearse-cutover.sh --dry-run                     # print the plan only
+```
+
+`--tree DIR` rehearses another checkout's `cutover.sh` and migrations
+(default: the tree the script lives in). Exit 0 means the rehearsal ran: read
+the `==> evidence` block, because the controller's own result is data. Exit 2
+is a refusal; any other exit is a harness failure (the run's container logs
+are printed before cleanup).
+
+- **Stack.** Compose project `multica-rehearsal-<run id>`, own Postgres volume,
+  slot ports, state directories and loopback `registry:2`, all under
+  `$REHEARSE_BASE/<run id>` (default `~/.local/state/multica-rehearsal`). The
+  runner refuses any `C00_*` variable, `GHCR_PULL_TOKEN`, `DATABASE_URL` and
+  `CUTOVER_DATABASE_URL`, so it cannot reach C00, GHCR or another database.
+- **Images.** Both are built from the tree and carry
+  `org.multica.rehearsal.role=previous|candidate` and
+  `org.multica.rehearsal.run=<run id>`. *Previous* is the tree as is and is the
+  incumbent (blue). *Candidate* is the tree plus the contract migration in
+  `deploy/cd/fixtures/contract/` (`-- rehearsal:contract`), which sorts after
+  every real migration. The web image is a stand-in (nginx on :3000): the
+  controller only needs `/` to answer.
+- **Packet.** The runner writes the release manifest directly (the repository
+  script forces `ghcr.io` images) and builds the packet with the real
+  `release-packet.mjs`. The loopback registry has a port, and `bare_repo`
+  strips at the first `:`, so the recorded `image_tuple` carries a harmless
+  `127.0.0.1` artifact.
+- **Fault.** `--fault readyz` layers `docker-compose.fault-readyz.yml` over the
+  candidate start through the drill shim (`deploy/cd/drill/docker`).
+- **Router limit.** The router template and controller fix host ports 8081
+  (API) and 3000 (web). The runner refuses when either is busy and serialises
+  runs with a lock on `$REHEARSE_BASE/.lock`, so two runs never overlap.
+- **Cleanup.** An exit trap takes down only this run's Compose project,
+  router, registry, images named `/<project>/` and run directory, and prints
+  `df -B1 before:` and `df -B1 after:`. No prune. The pulled `registry:2` and
+  base-image layers stay.
+- **Evidence.** `controller_tree_head`, `fault`, `cutover_exit`,
+  `rollback_exit`, `ledger_head`, `contract_row_present`, `running_services`,
+  `router_colour`, `state_active_colour`. `observed:` lines record what the
+  controller did, for example an incumbent restarted with the contract row
+  present. A wrong outcome is a finding about the controller, not a runner
+  failure.
+
+`deploy/cd/test-rehearse-cutover.sh` covers the refusals, the isolation
+plan, the cleanup scope and the fixture with a stub `docker`. The real drills
+are run by hand on the build host.
+
 ## C00 image maintenance (`c00-image-gc.py`, CHE-7139)
 
 A no-model replacement for the prompt-driven image cleanup. Dry run by default;
