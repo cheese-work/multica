@@ -200,3 +200,42 @@ func TestChatSupplementClaimTaintsTheTaskAndReachesDelegate(t *testing.T) {
 	}
 	delegateClaimsRestricted(t, runningID, "supplement", []string{"t1"})
 }
+
+// The agent-facing chat wakeup routes (mounted with Route + "/") stay open to
+// a task token; the owner-wide my-wakeups list stays closed.
+func TestChatTaskTokenGateOpensAgentChatWakeupRoutes(t *testing.T) {
+	ctx := context.Background()
+	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+	chatID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "wakeup gate"})
+	taskID := dbfx.Task(t, agentID, testutil.Cols{"status": "running", "runtime_id": runtimeID, "chat_session_id": chatID})
+	reached := func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("reached")) }
+	router := chi.NewRouter()
+	router.Use(testHandler.ChatTaskTokenGate)
+	router.Get("/api/chat/my-wakeups", reached)
+	router.Route("/api/chat/wakeups", func(r chi.Router) {
+		r.Get("/", reached)
+		r.Post("/", reached)
+		r.Put("/{wakeupId}", reached)
+		r.Post("/{wakeupId}/finish", reached)
+		r.Post("/{wakeupId}/checkin", reached)
+	})
+	for _, tc := range []struct {
+		method, target string
+		want           int
+	}{
+		{http.MethodGet, "/api/chat/wakeups/", http.StatusOK},
+		{http.MethodPost, "/api/chat/wakeups/", http.StatusOK},
+		{http.MethodPut, "/api/chat/wakeups/w1", http.StatusOK},
+		{http.MethodPost, "/api/chat/wakeups/w1/finish", http.StatusOK},
+		{http.MethodPost, "/api/chat/wakeups/w1/checkin", http.StatusOK},
+		{http.MethodGet, "/api/chat/my-wakeups", http.StatusForbidden},
+	} {
+		req := taskActorReq(tc.target, taskID)
+		req.Method = tc.method
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, withChatTestWorkspaceCtx(t, req))
+		if w.Code != tc.want {
+			t.Errorf("task token %s %s = %d %q, want %d", tc.method, tc.target, w.Code, w.Body.String(), tc.want)
+		}
+	}
+}

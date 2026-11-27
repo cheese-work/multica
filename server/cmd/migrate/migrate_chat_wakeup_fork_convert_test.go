@@ -354,19 +354,15 @@ func seedForkDatabase(t *testing.T, pool *pgxpool.Pool) []forkRow {
 
 // ---- run helpers ------------------------------------------------------------
 
-// upgradeFixture builds the pre-X fork database, seeds it (or not), applies a
-// stand-in for the S1 rename (CHE-7535, not in this base) and returns the pool.
+// upgradeFixture builds the pre-X fork database (S1's conversion,
+// 99zzz00_chat_task_supplement_fork_convert, sorts before X and runs in it),
+// seeds it (or not) and returns the pool.
 func upgradeFixture(t *testing.T, seed bool) (*pgxpool.Pool, string) {
 	t.Helper()
 	pool, name := wakeupScratchDatabase(t)
 	applyUpFiles(t, pool, wakeupUpFiles(t, chatWakeupXStem))
 	if seed {
 		seedForkDatabase(t, pool)
-	}
-	// Stand-in for S1's conversion (CHE-7535 owns it): the fork's
-	// chat_task_supplement would stop 99zzz01 before the chat_wakeup files.
-	if _, err := pool.Exec(context.Background(), `ALTER TABLE chat_task_supplement RENAME TO chat_task_supplement_fork`); err != nil {
-		t.Fatalf("S1 stand-in: %v", err)
 	}
 	return pool, name
 }
@@ -960,11 +956,12 @@ func TestChatWakeupForkConvertDownRestoresForkTable(t *testing.T) {
 		t.Fatalf("migrate down --to %s: %v\n%s", to, err, tail(out, 4000))
 	}
 	var applied int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version LIKE '99zzz%'`).Scan(&applied); err != nil {
+	// S1's conversion sorts before X and stays applied; only X and newer go.
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version LIKE '99zzz%' AND version > $1`, to).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
 	if applied != 0 {
-		t.Fatalf("%d 99zzz ledger rows left after down", applied)
+		t.Fatalf("%d 99zzz ledger rows newer than %s left after down", applied, to)
 	}
 
 	gotRows, gotShape, gotKinds := forkStateSnapshot(t, pool)
