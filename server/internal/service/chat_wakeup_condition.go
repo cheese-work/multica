@@ -60,7 +60,9 @@ var errChatConditionHidden = errors.New("chat wakeup condition is in a private p
 
 // chatConditionProjects lists the projects whose content a condition reads.
 // children_done reports only counts of sub-issues, so the parent's project is
-// the one that matters there.
+// the one that matters there. An issue outside any project yields an invalid
+// id, which stands for "no project". An empty list means nothing project-bound
+// is read.
 func chatConditionProjects(ctx context.Context, q *db.Queries, workspaceID pgtype.UUID, c ChatWakeupCondition) ([]pgtype.UUID, error) {
 	switch c.Type {
 	case "issue", "children_done", "issue_reply":
@@ -104,17 +106,17 @@ func checkChatConditionAccess(ctx context.Context, q *db.Queries, workspaceID, r
 	if err != nil {
 		return err
 	}
-	if !slices.ContainsFunc(projects, func(p pgtype.UUID) bool { return p.Valid }) {
+	if len(projects) == 0 {
 		return nil
 	}
 	hidden, err := projectaccess.ForPrincipals(ctx, q, workspaceID, requesterID, agentOwnerID)
 	if err != nil {
 		return fmt.Errorf("resolve project access: %w", err)
 	}
-	for _, p := range projects {
-		if p.Valid && !hidden.CanSeeProject(p) {
-			return errChatConditionHidden
-		}
+	// An invalid id is an issue outside any project: guests hide those, so it
+	// still needs the check rather than counting as visible.
+	if !hidden.CanSeeProjects(projects) {
+		return errChatConditionHidden
 	}
 	return nil
 }
