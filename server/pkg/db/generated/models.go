@@ -967,6 +967,73 @@ type ChatTurnOutcome struct {
 }
 
 type ChatWakeup struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	RequesterID       pgtype.UUID        `json:"requester_id"`
+	SourceTaskID      pgtype.UUID        `json:"source_task_id"`
+	SourceMessageID   pgtype.UUID        `json:"source_message_id"`
+	Title             string             `json:"title"`
+	Instruction       string             `json:"instruction"`
+	Kind              string             `json:"kind"`
+	Condition         json.RawMessage    `json:"condition"`
+	ConditionState    string             `json:"condition_state"`
+	IntervalSeconds   pgtype.Int8        `json:"interval_seconds"`
+	FireAt            pgtype.Timestamptz `json:"fire_at"`
+	NextEvalAt        pgtype.Timestamptz `json:"next_eval_at"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	Status            string             `json:"status"`
+	EndReason         pgtype.Text        `json:"end_reason"`
+	EndedAt           pgtype.Timestamptz `json:"ended_at"`
+	CheckCount        int32              `json:"check_count"`
+	LastCheckNote     pgtype.Text        `json:"last_check_note"`
+	LastCheckedAt     pgtype.Timestamptz `json:"last_checked_at"`
+	LastCheckinTaskID pgtype.UUID        `json:"last_checkin_task_id"`
+	LastTaskID        pgtype.UUID        `json:"last_task_id"`
+	LastFiredAt       pgtype.Timestamptz `json:"last_fired_at"`
+	LastError         pgtype.Text        `json:"last_error"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+}
+
+type ChatWakeupForkConversion struct {
+	ID          int64              `json:"id"`
+	AttemptID   pgtype.Text        `json:"attempt_id"`
+	ConvertedAt pgtype.Timestamptz `json:"converted_at"`
+	ForkRows    int32              `json:"fork_rows"`
+	ForkDigest  string             `json:"fork_digest"`
+}
+
+type ChatWakeupForkSaved struct {
+	ConversionID    int64              `json:"conversion_id"`
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
+	AgentID         pgtype.UUID        `json:"agent_id"`
+	Instruction     string             `json:"instruction"`
+	FireAt          pgtype.Timestamptz `json:"fire_at"`
+	Status          string             `json:"status"`
+	CreatedByTaskID pgtype.UUID        `json:"created_by_task_id"`
+	FiredTaskID     pgtype.UUID        `json:"fired_task_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ResolvedAt      pgtype.Timestamptz `json:"resolved_at"`
+	Title           string             `json:"title"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	EventType       string             `json:"event_type"`
+	FilterActorType string             `json:"filter_actor_type"`
+	FilterActorID   pgtype.UUID        `json:"filter_actor_id"`
+	UntilStatus     string             `json:"until_status"`
+	OnTimeout       string             `json:"on_timeout"`
+}
+
+type ChatWakeupForkSavedInput struct {
+	ConversionID int64       `json:"conversion_id"`
+	MessageID    pgtype.UUID `json:"message_id"`
+	MessageKind  string      `json:"message_kind"`
+}
+
+type ChatWakeupSqlcForkShape struct {
 	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
 	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
