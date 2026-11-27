@@ -5,6 +5,11 @@
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/server/internal/handler/testdata/quick_action_bodies.json",
+        // issue-workflows/graph-edit.guard-cases.test.ts shares the server's guard cases.
+        "$TURBO_ROOT$/server/internal/issueworkflow/testdata/guard_cases.json",
+        // security/redact-secrets.test.ts shares the server's redact fixtures.
+        "$TURBO_ROOT$/server/pkg/redact/testdata/generic-credentials.json",
+        "$TURBO_ROOT$/server/pkg/redact/testdata/provider-tokens.json",
         // appearance/theme-check.test.ts checks themes against the shipped palette.
         "$TURBO_ROOT$/packages/ui/styles/tokens.css"
       ]

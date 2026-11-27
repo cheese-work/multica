@@ -7,6 +7,8 @@
     "packages/**",
     "server/internal/handler/testdata/quick_action_bodies.json",
     "server/internal/issueworkflow/testdata/guard_cases.json",
+    "server/pkg/redact/testdata/generic-credentials.json",
+    "server/pkg/redact/testdata/provider-tokens.json",
     "docs/theming.md",
     "apps/*/package.json",
     "package.json",
