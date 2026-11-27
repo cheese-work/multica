@@ -347,7 +347,7 @@ If the problem persists, see [Troubleshooting](/troubleshooting).
 
 ## Managed local run bindings
 
-`MULTICA_RUN_BINDINGS_DIR` is off by default. On Linux, an owner can select an existing 0700, owner-only directory outside task writable roots. Codex launches publish a 0600 `<binding_id>.json` record after start and expose only `MULTICA_RUN_BINDING_ID` to shell tools. Each retry has a fresh ID. Exit, cancellation and startup failure revoke it.
+`MULTICA_RUN_BINDINGS_DIR` is off by default. On Linux, an owner can select an existing 0700, owner-only directory outside task writable roots. Codex and Claude launches publish a 0600 `<binding_id>.json` record after start and expose only `MULTICA_RUN_BINDING_ID` to the run and its shell tools. Each retry has a fresh ID. Exit, cancellation and startup failure revoke it.
 
 The version 1 record contains `binding_id`, `agent_id`, `principal` (agent ID), `task_id`, `issue_id`, host `pid`, Linux `process_start`, `boot_id` and `pid_namespace`. A broker must share the launcher PID namespace, validate the association, and independently check host liveness. Exec wrappers retain the holder PID; waiting wrappers count only while alive. Detached children cannot extend the binding.
 

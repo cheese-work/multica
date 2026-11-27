@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/pkg/runbinding"
 
 	"github.com/multica-ai/multica/server/pkg/taskfailure"
 )
@@ -130,6 +131,37 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		cancel()
 		return nil, err
 	}
+	// CHE-9773: same launcher-published binding the Codex backend gives its
+	// child. The ID is minted here per launch; a caller-supplied value in
+	// cfg.Env is dropped so a run can never carry another run's binding.
+	var binding *runbinding.Publisher
+	if b.cfg.RunBinding != nil {
+		if b.cfg.CredentialBoundary != nil || b.cfg.RequireCredentialIsolation {
+			cancel()
+			return nil, fmt.Errorf("managed local binding cannot cross credential isolation; R1 required")
+		}
+		var err error
+		binding, err = runbinding.New(runCtx, *b.cfg.RunBinding)
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		env := cmd.Env[:0:0]
+		for _, entry := range cmd.Env {
+			if !strings.HasPrefix(entry, "MULTICA_RUN_BINDING_ID=") {
+				env = append(env, entry)
+			}
+		}
+		env = append(env, "MULTICA_RUN_BINDING_ID="+binding.ID)
+		cmd.Env = env
+	}
+	// Any return before the lifecycle goroutine owns the binding revokes it.
+	bindingOwned := false
+	defer func() {
+		if !bindingOwned && binding != nil {
+			binding.Close()
+		}
+	}()
 
 	var usageSnapshot *claudeUsageSnapshot
 	if opts.ResumeSessionID != "" && b.cfg.CredentialBoundary == nil {
@@ -182,6 +214,18 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		cancel()
 		return nil, fmt.Errorf("start claude: %w", err)
 	}
+	if binding != nil {
+		if err := binding.Publish(cmd.Process.Pid); err != nil {
+			binding.Close()
+			closeStdin()
+			cancel()
+			signalProcessGroup(cmd, syscall.SIGKILL)
+			_ = cmd.Wait()
+			releaseProcessGroup(cmd)
+			return nil, fmt.Errorf("publish managed host binding: %w", err)
+		}
+		bindingOwned = true
+	}
 
 	b.cfg.Logger.Info("claude started", "pid", cmd.Process.Pid, "cwd", opts.Cwd, "model", opts.Model)
 
@@ -232,6 +276,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		defer cancel()
 		defer close(msgCh)
 		defer close(resCh)
+		if binding != nil {
+			defer binding.Close()
+		}
 		if mcpConfigPath != "" {
 			defer cleanupMcpConfigTemp(mcpConfigPath)
 		}
