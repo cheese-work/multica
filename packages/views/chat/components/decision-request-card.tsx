@@ -16,7 +16,7 @@ import { approvableConfigChange, approvablePreview, isConfigChangeActionType, is
 import { useCurrentMember } from "@multica/core/permissions";
 import { chatKeys } from "@multica/core/chat/queries";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
-import { formatShortcut, isPlainShortcut, useShortcut } from "@multica/core/shortcuts";
+import { formatShortcut, formatShortcutKeycap, isPlainShortcut, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionRequestCard as RequestCard } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import type { ContentEditorRef } from "../../editor/content-editor";
@@ -95,6 +95,8 @@ function DecisionAnswerForm({
   const handoff = needsPasskey && isDesktopShell();
   const sendChord = useShortcut("send");
   const sendShortcut = formatShortcut(sendChord);
+  // The lock writes a decision card's key as text: "(⌘ + ⏎)".
+  const sendKeycap = formatShortcutKeycap(sendChord);
   const { text } = draft;
   const mode = decide?.choice ?? "";
   const label = decide
@@ -213,7 +215,7 @@ function DecisionAnswerForm({
         </p>
       )}
       {decide && (
-        <div role="radiogroup" aria-label={t(($) => $.decision.choice_label)} className="inline-flex overflow-hidden rounded-lg border border-surface-border">
+        <div role="radiogroup" data-testid="decision-request-choice" aria-label={t(($) => $.decision.choice_label)} className="inline-flex overflow-hidden rounded-lg border border-surface-border">
           {CHOICES.filter((value) => value !== "approve" || !approveHidden).map((value) => {
             const selected = mode === value;
             const blocked = value === "approve" && decide.controls.approveDisabled;
@@ -302,6 +304,8 @@ function DecisionAnswerForm({
           {t(($) => $.decision.answer_hint, { shortcut: sendShortcut })}
         </p>
       )}
+      {/* The lock's whitespace between the composer and the button row is text in its blocks. */}
+      {decide && " "}
       {uploadCancelled && <p role="status" className="text-caption text-destructive">{t(($) => $.decision.answer_upload_cancelled)}</p>}
       {tooLong && <p role="alert" className="text-caption text-destructive">{t(($) => $.decision.answer_too_long)}</p>}
       <div className="flex flex-wrap items-center gap-2">
@@ -309,9 +313,14 @@ function DecisionAnswerForm({
           {answer.isPending && <Loader2 className="size-4 animate-spin" aria-hidden />}
           {mode === "approve" && <KeyRound className="size-4" aria-hidden />}
           {decide
-            ? t(($) => (mode === "approve" ? $.decision.send_approve : mode === "reject" ? $.decision.send_reject : $.decision.send_discuss), { shortcut: sendShortcut })
+            ? t(($) => (mode === "approve" ? $.decision.send_approve : mode === "reject" ? $.decision.send_reject : $.decision.send_discuss), { shortcut: sendKeycap })
             : t(($) => (needsPasskey ? $.decision.answer_send_passkey : $.decision.answer_send))}
         </Button>
+        {decide && mode === "" && (
+          <span className="text-caption text-muted-foreground">
+            {t(($) => (text.trim() ? $.decision.discuss_hint_typed : $.decision.discuss_hint_empty))}
+          </span>
+        )}
         {draft.option !== "" && (
           <Button type="button" size="sm" variant="ghost" disabled={!canSubmit} className="max-sm:h-11" onClick={() => onDraftChange({ option: "" })}>
             {t(($) => $.decision.answer_clear)}
@@ -357,11 +366,14 @@ function ActionPreview({
   action,
   issueId,
   hideControls,
+  composing,
   handle,
   onControls,
 }: {
   action: CardAction;
   issueId: string;
+  /** A message, note or reason is being typed: the lock leaves the rows out, the approval stays mounted. */
+  composing: boolean;
   /** The card's own button presses Approve and Reject. */
   hideControls: boolean;
   handle: RefObject<ApprovalHandle | null>;
@@ -410,8 +422,8 @@ function ActionPreview({
           <div id={detailsId} hidden={!showDetails}>{showDetails && <ConfigChangeViewer change={configChange} />}</div>
         </div>
       )}
-      {pending && isRunBudgetActionType(action.action_type) && <DecisionRecentRuns issueId={issueId} />}
-      {fields && (
+      {pending && !composing && isRunBudgetActionType(action.action_type) && <DecisionRecentRuns issueId={issueId} />}
+      {fields && !composing && (
         <dl data-testid="decision-request-action-preview" aria-label={t(($) => $.decision.action_preview)} className="space-y-1 rounded-lg border border-surface-border px-2 py-1.5 text-label">
           {fields.map((field) => (
             <div key={field.label} className="flex flex-wrap items-baseline gap-x-2">
@@ -437,6 +449,16 @@ function splitAgentNote(ask: string): { facts: string; note: string } {
   if (at < 0) return { facts: ask, note: "" };
   const note = ask.slice(at + AGENT_NOTE_HEADING.length).split("\n").map((line) => line.replace(/^> ?/, "")).join("\n");
   return { facts: ask.slice(0, at), note };
+}
+
+// An open action card draws the question alone in its ask block. The paragraph under it ("If you do nothing, ...")
+// is the effect block, which the lock leaves out while a message, note or reason is typed (CHE-9096).
+// A heading, list or quote in the first paragraph is not a one-line question: the ask stays whole.
+function splitEffect(facts: string): { question: string; effect: string } {
+  const paragraphs = facts.trim().split(/\n[ \t]*\n/);
+  const question = paragraphs[0] ?? "";
+  if (paragraphs.length !== 2 || question.includes("\n") || /^[#>*+-]/.test(question)) return { question: facts, effect: "" };
+  return { question, effect: paragraphs[1]!.trim() };
 }
 
 function AgentNote({ note }: { note: string }) {
@@ -648,6 +670,8 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
   }
 
   const keptDraft = (refused || card.state !== "open") && hasDraft(draft) && !answer.isPending;
+  const composing = draft.text.trim() !== "";
+  const { question, effect } = card.state === "open" && !!card.action && !card.batch_id ? splitEffect(facts) : { question: facts, effect: "" };
   const formShown = card.state === "open" && !keptDraft && !coveredCardsMissing;
   const decide: Decide | undefined = formShown && undecided ? { choice, onChoice: setChoice, approvalRef, controls } : undefined;
   // One card for the whole batch: each item is decided on its own line, so the single-action controls stay away.
@@ -701,13 +725,16 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         )}
       >
       <div className={cn("min-h-0 min-w-0", FOLDS.has(shown) && "overflow-hidden")}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-surface-border px-3 py-2 text-label">
+      <div data-testid="decision-request-asker" className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-surface-border px-3 py-2 text-label">
         <MessageSquareQuote className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-        <span className="font-medium">{t(($) => $.decision.request_title)}</span>
+        {/* The lock draws this heading on an open card only; a decided card draws its fold row instead. */}
+        <b data-testid={FOLDS.has(shown) ? undefined : "decision-request-title"} className="font-medium">{t(($) => $.decision.request_title)}</b>
         {card.asking_agent_name && (
-          <span className="text-muted-foreground" data-testid="decision-request-asker">
-            {t(($) => $.decision.asked_by, { agent: card.asking_agent_name })}
-          </span>
+          <>
+            {" "}
+            <span className="text-muted-foreground">{t(($) => $.decision.asked_by, { agent: card.asking_agent_name })}</span>
+            {" "}
+          </>
         )}
         <span className={cn(
           "rounded-full px-2 py-0.5 text-micro font-medium",
@@ -727,17 +754,13 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
           href={issueHref}
           className="inline-flex min-h-9 max-w-full items-center break-all rounded-md border border-surface-border px-2 font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring"
           data-testid="decision-request-source-issue"
+          title={card.issue_title || undefined}
         >
           {card.issue_identifier || card.issue_id}
         </AppLink>
         {card.covers_request_ids && card.covers_request_ids.length > 0 && (
           <span className="text-muted-foreground" data-testid="decision-request-covers">
             {t(($) => $.decision.covers_batch, { count: card.covers_request_ids.length })}
-          </span>
-        )}
-        {card.issue_title && (
-          <span className="min-w-0 break-words text-muted-foreground" data-testid="decision-request-source-title">
-            {card.issue_title}
           </span>
         )}
         {card.source_comment_id && (
@@ -787,12 +810,19 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
         <div data-testid="decision-request-ask">
           <AnnotatableAnswer messageId={`${DECISION_REQUEST_SOURCE_PREFIX}${card.id}`} readOnly={card.state !== "open"}>
             <CompactIssueChipsProvider>
-              <RichContent content={facts} density="compact" phase="settled" />
+              <RichContent content={question} density="compact" phase="settled" />
             </CompactIssueChipsProvider>
           </AnnotatableAnswer>
         </div>
+        {effect && !composing && (
+          <div data-testid="decision-request-effect">
+            <CompactIssueChipsProvider>
+              <RichContent content={effect} density="compact" phase="settled" />
+            </CompactIssueChipsProvider>
+          </div>
+        )}
         {note && <AgentNote note={note} />}
-        {card.action && !batched && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} issueId={card.issue_id} hideControls={!!decide} handle={approvalRef} onControls={setControls} />}
+        {card.action && !batched && (card.state === "open" || (card.action.state && card.action.state !== "pending")) && <ActionPreview action={card.action} issueId={card.issue_id} hideControls={!!decide} composing={composing} handle={approvalRef} onControls={setControls} />}
         {batched ? (
           <DecisionBatchForm batchId={card.batch_id!} items={card.batch_items!} />
         ) : keptDraft ? (
@@ -817,7 +847,7 @@ export function DecisionRequestCard({ card, inIssue = false }: { card: RequestCa
             </AppLink>
           </p>
         )}
-        {validDate && (
+        {validDate && shown !== "open" && (
           <time dateTime={timestamp} className="block text-caption text-muted-foreground">{ictText}</time>
         )}
       </div>

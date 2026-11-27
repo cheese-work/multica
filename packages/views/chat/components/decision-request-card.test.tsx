@@ -155,8 +155,8 @@ describe("DecisionRequestCard accessibility", () => {
     expect(screen.getByRole("link", { name: "CHE-2088" })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole("link", { name: "Source comment" })).toHaveFocus();
-    expect(screen.getByRole("region", { name: "Decision request: Open" })).toHaveTextContent("27 Oct 2026, 06:30 ICT");
-    expect(document.querySelector("time")).toHaveAttribute("datetime", card.created_at);
+    // An open card draws no timestamp (the lock's open states have none); a decided card keeps it.
+    expect(document.querySelector("time")).toBeNull();
   });
 
   it("names the asking agent in the header and omits it when the name is missing", () => {
@@ -164,7 +164,7 @@ describe("DecisionRequestCard accessibility", () => {
     expect(screen.getByTestId("decision-request-asker")).toHaveTextContent("from x99-claude-sonnet");
     view.unmount();
     renderWithI18n(<QueryClientProvider client={new QueryClient()}><WorkspaceSlugProvider slug="acme"><DecisionRequestCard card={card} /></WorkspaceSlugProvider></QueryClientProvider>);
-    expect(screen.queryByTestId("decision-request-asker")).toBeNull();
+    expect(screen.getByTestId("decision-request-asker")).not.toHaveTextContent("from");
   });
 
   it("links an answered card to the issue comment that recorded it", () => {

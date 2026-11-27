@@ -59,10 +59,13 @@ describe("DecisionRequestCard compact issue chips", () => {
     expect(chip?.closest('[data-slot="hover-card-trigger"]')).not.toBeNull();
   });
 
-  it("shows the issue title next to the identifier in the Source row", () => {
+  it("names the issue title on the identifier chip, not as header text (the lock's header has none)", () => {
     renderCard({ issue_title: "Decision cards stay readable" });
-    expect(screen.getByTestId("decision-request-source-issue")).toHaveTextContent("CHE-2204");
-    expect(screen.getByTestId("decision-request-source-title")).toHaveTextContent("Decision cards stay readable");
+    const chip = screen.getByTestId("decision-request-source-issue");
+    expect(chip).toHaveTextContent("CHE-2204");
+    expect(chip).toHaveAttribute("title", "Decision cards stay readable");
+    expect(screen.queryByTestId("decision-request-source-title")).toBeNull();
+    expect(screen.getByTestId("decision-request-asker")).not.toHaveTextContent("Decision cards stay readable");
   });
 
   it("folds a card a batch answer closed into one row", () => {

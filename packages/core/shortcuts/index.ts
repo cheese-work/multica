@@ -7,6 +7,7 @@ export {
   shortcutMatchesEvent,
   isPlainShortcut,
   formatShortcut,
+  formatShortcutKeycap,
   isEditableShortcutTarget,
   isPortalLayerShortcutTarget,
   isReservedShortcut,

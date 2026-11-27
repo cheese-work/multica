@@ -539,6 +539,8 @@
     "composer_note": "備註（選填）",
     "composer_reason": "原因（選填）",
     "send_discuss": "繼續討論（{{shortcut}}）",
+    "discuss_hint_empty": "未輸入內容時，游標會移到訊息框。",
+    "discuss_hint_typed": "不會核准或拒絕。",
     "send_approve": "用通行金鑰核准（{{shortcut}}）",
     "send_reject": "確認拒絕（{{shortcut}}）",
     "choice_item": "{{issue}} 的決定",
