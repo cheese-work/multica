@@ -8,8 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/multica-ai/multica/server/pkg/plugincontract"
 )
 
 const guardMetadataTestManifest = `{
@@ -79,9 +77,6 @@ func TestPluginGuardMetadataKeysFollowTheInstallationLifecycle(t *testing.T) {
 	cleanupPluginInstallations(t)
 	root := t.TempDir()
 	versionID := withLocalPluginSourceIn(t, root, guardMetadataTestManifest)
-	// The host does not ship the guard trigger yet; the projection must not
-	// depend on that, so the test enables it on its own copy of the host.
-	testHandler.PluginService.Host.HookTriggers[plugincontract.TriggerGuard] = true
 
 	recorder := installGuardPlugin(t, versionID)
 	if recorder.Code != http.StatusCreated {
