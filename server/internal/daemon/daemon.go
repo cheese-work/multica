@@ -11276,6 +11276,13 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					batch = append(batch, contextCompactedTaskMessage(msg, int(msgSeq.Add(1)), observedAt))
 					mu.Unlock()
 					flushFirstVisible()
+				case agent.MessageModelChange:
+					taskLog.Info("model change", "input", msg.Input)
+					mu.Lock()
+					sealPendingLocked()
+					batch = append(batch, modelChangeTaskMessage(msg, int(msgSeq.Add(1)), observedAt))
+					mu.Unlock()
+					flushFirstVisible()
 				case agent.MessageError:
 					taskLog.Error("agent error", "content", msg.Content)
 					mu.Lock()

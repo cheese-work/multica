@@ -5055,7 +5055,7 @@ func trailingUserMessages(msgs []db.ChatMessage) []db.ChatMessage {
 	// A compact notice is server-authored context for the reader, not a turn: it
 	// never ends the unanswered run and never reaches a prompt (CHE-1807).
 	msgs = slices.DeleteFunc(slices.Clone(msgs), func(m db.ChatMessage) bool {
-		return m.MessageKind == protocol.ChatMessageKindCompactNotice
+		return m.MessageKind == protocol.ChatMessageKindCompactNotice || m.MessageKind == protocol.ChatMessageKindModelChangeNotice
 	})
 	start := 0
 	for i := len(msgs) - 1; i >= 0; i-- {
@@ -6525,6 +6525,16 @@ func sealsChatText(rows []db.CreateTaskMessagesRow) bool {
 	return false
 }
 
+// batchHasModelChange reports whether a batch holds a runtime model transition.
+func batchHasModelChange(messages []TaskMessageRequest) bool {
+	for _, m := range messages {
+		if m.Type == string(agent.MessageModelChange) {
+			return true
+		}
+	}
+	return false
+}
+
 // batchHasContextCompacted reports whether a batch holds a compaction event.
 func batchHasContextCompacted(messages []TaskMessageRequest) bool {
 	for _, m := range messages {
@@ -6721,6 +6731,17 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		if _, err := h.TaskService.ReconcileCompactNotices(ctx, task.ID); err != nil {
 			slog.Warn("write compact notices failed", "task_id", taskID, "error", err)
+		}
+	}
+
+	// A runtime model change gets its DM notice the same way, so the member sees
+	// an automatic fallback during the turn and it persists after reload
+	// (CHE-10140). Best-effort for the same reason as the compaction notice.
+	if task.ChatSessionID.Valid && batchHasModelChange(req.Messages) {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+		defer cancel()
+		if _, err := h.TaskService.ReconcileModelChangeNotices(ctx, task.ID); err != nil {
+			slog.Warn("write model change notices failed", "task_id", taskID, "error", err)
 		}
 	}
 
