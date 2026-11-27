@@ -73,7 +73,9 @@ func VerifiedSigners(ctx context.Context, tx pgx.Tx, q *db.Queries, c MergeCandi
 // A verdict takes effect when it was written or last edited, whichever is
 // later (comment_content_edit), so editing an old comment cannot reorder it
 // behind a newer one. An edited verdict is never a PASS, but it still ends the
-// signer's earlier PASS: an edit can only withdraw, never grant.
+// signer's earlier PASS: an edit can only withdraw, never grant. That holds when
+// the edit removes the verdict line or the head too: a comment edited after the
+// PASS was written, no longer a verdict on this head, also ends that PASS.
 //
 // The trust rests on where a comment came from: author_id is stamped from the
 // task token, and source_task_id must name a task of that same agent. A member's
@@ -92,7 +94,7 @@ func verifiedSigners(ctx context.Context, tx pgx.Tx, workspaceID, issueID pgtype
 			e.comment_id IS NOT NULL AS edited,
 			c.source_task_id IS NOT NULL AND EXISTS (SELECT 1 FROM agent_task_queue t WHERE t.id = c.source_task_id AND t.agent_id = c.author_id) AS from_own_task
 		FROM comment c LEFT JOIN comment_content_edit e ON e.comment_id = c.id
-		WHERE c.workspace_id=$1 AND c.issue_id=$2 AND c.author_type='agent' AND c.type='comment' AND c.deleted_at IS NULL AND position($3 in c.content) > 0
+		WHERE c.workspace_id=$1 AND c.issue_id=$2 AND c.author_type='agent' AND c.type='comment' AND c.deleted_at IS NULL AND (position($3 in c.content) > 0 OR e.comment_id IS NOT NULL)
 		ORDER BY effective_at, c.id`, workspaceID, issueID, head)
 	if err != nil {
 		return out, err
@@ -114,6 +116,11 @@ func verifiedSigners(ctx context.Context, tx pgx.Tx, workspaceID, issueID pgtype
 		}
 		if word, h, ok := parseVerdict(content); ok && h == head {
 			bySigner[signer] = latest{pass: word == "PASS" && ownTask && !edited, commentID: id, at: created}
+		} else if prev, seen := bySigner[signer]; edited && seen && prev.pass && created.After(prev.at) {
+			// The edit store keeps no prior text, so an edited comment that no
+			// longer reads as a verdict on this head may have been a FAIL when it
+			// was posted. Written after the PASS, it withdraws it.
+			bySigner[signer] = latest{pass: false, commentID: id, at: created}
 		}
 	}
 	rows.Close()
