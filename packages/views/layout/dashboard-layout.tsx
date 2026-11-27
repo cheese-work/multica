@@ -20,7 +20,7 @@ import { MachinePauseBanner } from "./machine-pause-banner";
 import { MachineBannerHeaderSlot } from "./machine-banner-toggle";
 import { WorkspacePauseBanner } from "./workspace-pause-banner";
 import { OpenDecisionsChip } from "./open-decisions-chip";
-import { useIsGuest } from "@multica/core/permissions";
+import { useIsResolvedNonGuest } from "@multica/core/permissions";
 import { useCurrentWorkspace } from "@multica/core/paths";
 
 interface DashboardLayoutProps {
@@ -52,14 +52,17 @@ export function AppShellCard({ children }: { children: ReactNode }) {
  * open-decisions chip stay out of a guest's shell.
  */
 function MemberShellBanners({ children }: { children: ReactNode }) {
-  const guest = useIsGuest(useCurrentWorkspace()?.id);
+  const wsId = useCurrentWorkspace()?.id;
+  // Mount the member-only banners only once the role is known: while the member
+  // list loads `guest` is false, and their queries would start and be refused.
+  const memberKnown = useIsResolvedNonGuest(wsId);
   return (
     <>
-      {!guest && <MachinePauseBanner />}
+      {memberKnown && <MachinePauseBanner />}
       <WorkspacePauseBanner />
-      {!guest && <OpenDecisionsChip />}
+      {memberKnown && <OpenDecisionsChip />}
       <WorkspaceTrialNotices />
-      {guest ? children : <MachineBannerHeaderSlot>{children}</MachineBannerHeaderSlot>}
+      <MachineBannerHeaderSlot enabled={memberKnown}>{children}</MachineBannerHeaderSlot>
     </>
   );
 }

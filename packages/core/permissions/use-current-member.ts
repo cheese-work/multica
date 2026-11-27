@@ -45,3 +45,17 @@ export function useIsGuest(wsId: string | null | undefined): boolean {
   });
   return !!members?.some((m) => m.user_id === userId && m.role === "guest");
 }
+
+/**
+ * Whether the viewer is known to be a non-guest. Unlike `!useIsGuest`, it stays
+ * false until the member list has loaded, so a member-only query gated on it
+ * never starts while the role is still unknown (a guest would be refused it).
+ */
+export function useIsResolvedNonGuest(wsId: string | null | undefined): boolean {
+  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const { data: members } = useQuery({
+    ...memberListOptions(wsId ?? ""),
+    enabled: !!wsId && !!userId,
+  });
+  return !!members && !members.some((m) => m.user_id === userId && m.role === "guest");
+}
