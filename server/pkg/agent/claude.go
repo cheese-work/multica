@@ -321,6 +321,22 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}()
 
 		scanner := newAgentStreamScanner(stdout)
+		var fallbackWatch *claudeFallbackWatch
+		// A result frame without model evidence books its usage to a fallback
+		// model. Once the runtime announced a main-thread change, neither the
+		// requested model nor a response from before the change is evidence of
+		// what served: only a main-thread response after the change is, and
+		// without one the attribution stays unknown (CHE-10140). A run served by
+		// two models books its whole total to the later one; that is the
+		// evidence the result frame leaves.
+		mainThreadChanged := false
+		var postChangeModel string
+		usageFallbackModel := func() string {
+			if mainThreadChanged {
+				return postChangeModel
+			}
+			return opts.Model
+		}
 
 		for scanner.Scan() {
 			line := strings.TrimSpace(scanner.Text())
@@ -338,10 +354,17 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			switch msg.Type {
 			case "assistant":
 				assistantEventCount++
+				if confirmed, ok := claudeFallbackConfirmed(fallbackWatch, msg); ok {
+					fallbackWatch = nil
+					sendReliable(runCtx, msgCh, confirmed)
+				}
 				turn := b.handleAssistant(msg, msgCh, usage, seenUsage, cacheSplit)
 				toolUseCount += turn.toolUses
 				if turn.callModel != "" {
 					contextModel, contextTokens = turn.callModel, turn.callTokens
+					if mainThreadChanged {
+						postChangeModel = turn.callModel
+					}
 				}
 				if !turn.understood {
 					unreadableAssistantCount++
@@ -359,12 +382,26 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					cm := msg.CompactMetadata
 					sendReliable(runCtx, msgCh, NewContextCompactedMessage(cm.Trigger, cm.PreTokens, cm.PostTokens))
 				}
+				if change, next, ok := claudeModelChange(msg, fallbackWatch); ok {
+					fallbackWatch = next
+					if change.Input["scope"] == "session" {
+						mainThreadChanged = true
+						postChangeModel = ""
+					}
+					sendReliable(runCtx, msgCh, change)
+				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
 				if (msg.ResultIndex != nil || msg.UserMessageUUID != "" || msg.UserMessageUUIDs != nil) &&
 					msg.UserMessageUUID != promptUUID && !slices.Contains(msg.UserMessageUUIDs, promptUUID) {
 					b.cfg.Logger.Debug("ignoring result for another Claude turn", "user_message_uuid", msg.UserMessageUUID)
 					continue
+				}
+				if msg.IsError {
+					if failed, ok := claudeFallbackFailed(fallbackWatch); ok {
+						fallbackWatch = nil
+						sendReliable(runCtx, msgCh, failed)
+					}
 				}
 				sawResult = true
 				finalResultText = msg.ResultText
@@ -385,7 +422,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				if usageSnapshot != nil {
 					baseline = usageSnapshot.baseline
 				}
-				if resultUsage, authoritative := claudeResultUsageSince(msg, opts.Model, baseline); authoritative {
+				if resultUsage, authoritative := claudeResultUsageSince(msg, usageFallbackModel(), baseline); authoritative {
 					usageMsg := msg
 					lastUsageResult = &usageMsg
 					if !unverifiableBaseline {
@@ -549,7 +586,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			// A rejected resume may emit usage for a newly-created session. Its
 			// totals do not share the requested session's baseline.
 			if lastUsageResult != nil {
-				if resultUsage, authoritative := claudeResultUsageSince(*lastUsageResult, opts.Model, nil); authoritative {
+				if resultUsage, authoritative := claudeResultUsageSince(*lastUsageResult, usageFallbackModel(), nil); authoritative {
 					usage = applyClaudeCacheSplit(resultUsage, cacheSplit, len(lastUsageResult.ModelUsage) > 0)
 				}
 			}
@@ -798,6 +835,16 @@ type claudeSDKMessage struct {
 
 	// compact_boundary fields (system frame, one per compaction)
 	CompactMetadata *claudeCompactMetadata `json:"compact_metadata,omitempty"`
+
+	// model_refusal_fallback / model_fallback / model_refusal_no_fallback
+	// fields (system frames; Claude Code 2.1.318 schema)
+	UUID               string `json:"uuid,omitempty"`
+	Trigger            string `json:"trigger,omitempty"`
+	Direction          string `json:"direction,omitempty"`
+	Scope              string `json:"scope,omitempty"`
+	OriginalModel      string `json:"original_model,omitempty"`
+	FallbackModel      string `json:"fallback_model,omitempty"`
+	APIRefusalCategory string `json:"api_refusal_category,omitempty"`
 
 	// log fields
 	Log *claudeLogEntry `json:"log,omitempty"`

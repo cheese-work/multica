@@ -1027,6 +1027,22 @@ VALUES (
 ON CONFLICT (id) DO NOTHING
 RETURNING *;
 
+-- name: CreateModelChangeNoticeIdempotent :one
+-- One model change notice per native model transition (CHE-10140). The caller
+-- derives id from the native event identity, so a replay conflicts and inserts
+-- nothing: no row comes back and the caller publishes nothing. Same placement
+-- rules as CreateCompactNoticeIdempotent: at the event time, clamped above the
+-- segment floor, no task_id.
+INSERT INTO chat_message (id, chat_session_id, role, content, message_kind, sent_via, created_at)
+VALUES (
+    sqlc.arg('id'), sqlc.arg('chat_session_id'), 'assistant', sqlc.arg('content'),
+    'model_change_notice', 'system',
+    GREATEST(sqlc.arg('event_at')::timestamptz,
+             COALESCE((SELECT cs.segment_floor_at + interval '1 microsecond' FROM chat_session cs WHERE cs.id = sqlc.arg('chat_session_id')), sqlc.arg('event_at')::timestamptz))
+)
+ON CONFLICT (id) DO NOTHING
+RETURNING *;
+
 -- name: BindChatMessageDecisionAnswer :one
 UPDATE chat_message message
 SET decision_answer_id = sqlc.arg('answer_id')
