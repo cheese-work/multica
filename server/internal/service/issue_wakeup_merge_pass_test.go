@@ -25,12 +25,28 @@ func (m *mergeFix) signer(t *testing.T, label, model string) string {
 	return id
 }
 
-// say posts a comment on the wakeup's issue as the given author.
+// say posts a comment on the wakeup's issue as the given author. An agent's
+// comment carries the task that wrote it, as a comment posted through an agent
+// run does (CHE-10267).
 func (m *mergeFix) say(t *testing.T, authorType, authorID, content string, at time.Time) string {
+	t.Helper()
+	var task any
+	if authorType == "agent" {
+		task = m.f.Task(t, authorID, testutil.Cols{"issue_id": util.UUIDToString(m.issue), "status": "completed", "completed_at": testutil.Raw("now()")})
+		// A run with no workflow step counts as authorship; this one is a review run.
+		m.f.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details) VALUES ($1, $2, 'system', 'workflow_role', jsonb_build_object('task_id', $3::text, 'role', 'reviewer', 'status', 'agent_review'))`,
+			m.f.WorkspaceID, util.UUIDToString(m.issue), task)
+	}
+	return m.sayFrom(t, authorType, authorID, content, at, task)
+}
+
+// sayFrom posts a comment with an explicit source_task_id (nil for none).
+func (m *mergeFix) sayFrom(t *testing.T, authorType, authorID, content string, at time.Time, sourceTask any) string {
 	t.Helper()
 	return m.f.Insert(t, "comment", testutil.Cols{
 		"workspace_id": m.f.WorkspaceID, "issue_id": util.UUIDToString(m.issue),
 		"author_type": authorType, "author_id": authorID, "content": content, "type": "comment", "created_at": at, "updated_at": at,
+		"source_task_id": sourceTask,
 	})
 }
 
@@ -85,6 +101,17 @@ func TestDerivedPassHoldsWithoutAValidSignedPass(t *testing.T) {
 		},
 		"PASS quoted below the first line": func(t *testing.T, m *mergeFix) {
 			m.say(t, "agent", m.signer(t, "terra", "gpt-6.1-terra"), "Notes.\n"+verdictLine("PASS", "a"), m.clock.Add(-time.Hour))
+		},
+		"PASS comment with no source task": func(t *testing.T, m *mergeFix) {
+			m.sayFrom(t, "agent", m.signer(t, "terra", "gpt-6.1-terra"), verdictLine("PASS", "a"), m.clock.Add(-time.Hour), nil)
+		},
+		"PASS comment whose task belongs to another agent": func(t *testing.T, m *mergeFix) {
+			other := m.f.Task(t, m.author, testutil.Cols{"issue_id": util.UUIDToString(m.issue), "status": "completed", "completed_at": testutil.Raw("now()")})
+			m.sayFrom(t, "agent", m.signer(t, "terra", "gpt-6.1-terra"), verdictLine("PASS", "a"), m.clock.Add(-time.Hour), other)
+		},
+		"PASS comment edited after it was written": func(t *testing.T, m *mergeFix) {
+			id := m.say(t, "agent", m.signer(t, "terra", "gpt-6.1-terra"), verdictLine("PASS", "a"), m.clock.Add(-2*time.Hour))
+			m.edit(t, id, verdictLine("PASS", "a")+"\nTypo fixed.")
 		},
 		"signer whose lab is unknown": func(t *testing.T, m *mergeFix) {
 			m.say(t, "agent", m.signer(t, "mystery", "some-local-model"), verdictLine("PASS", "a"), m.clock.Add(-time.Hour))
