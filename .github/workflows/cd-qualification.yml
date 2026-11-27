@@ -94,6 +94,7 @@ jobs:
           bash deploy/cd/test-record-checks.sh
           bash deploy/cd/test-resolve-candidate.sh
           bash deploy/cd/test-resolve-scheduled.sh
+          bash deploy/cd/test-rehearse-cutover-x99.sh
           python3 deploy/cd/test-github-api-retry.py
           python3 deploy/cd/test-build-cache.py
           python3 .github/scripts/test_cache_policy.py
