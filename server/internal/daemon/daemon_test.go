@@ -6883,7 +6883,7 @@ func TestHandleTask_PartitionThenReconnectInterruptsAndAcksWithProof(t *testing.
 		IssueID:        "issue-partition",
 		CancelAckProof: "proof-from-claim",
 		Agent:          &AgentData{Name: "test-agent"},
-	}, 0)
+	}, newTestTaskSlot(0))
 
 	mu.Lock()
 	defer mu.Unlock()
