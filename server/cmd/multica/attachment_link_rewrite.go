@@ -211,7 +211,9 @@ func (p *attachmentLinkParser) Parse(parent ast.Node, reader text.Reader, pc par
 }
 
 func (p *attachmentLinkParser) CloseBlock(parent ast.Node, reader text.Reader, pc parser.Context) {
-	p.InlineParser.(parser.CloseBlocker).CloseBlock(parent, reader, pc)
+	if cb, ok := p.InlineParser.(parser.CloseBlocker); ok {
+		cb.CloseBlock(parent, reader, pc)
+	}
 }
 
 // rewriteAttachmentLinks replaces every inline link/image destination in body

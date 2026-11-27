@@ -119,19 +119,10 @@ type IssueRunOutcome struct {
 	ReasonCode DispatchReasonCode `json:"reason_code"`
 }
 
-// resolveIssueRun starts the run an issue write decided on and reports the
+// resolveIssueRunCtx starts the run an issue write decided on and reports the
 // result. willRun is the predicate's decision before suppress_run; a write
-// that could not have started a run (no reason either) reports nothing.
-//
-// The write probe admits every caller, so a promotion can start a private
-// agent the caller may not invoke. Its outcome would then expose that agent's
-// readiness, so the caller gets no outcome; the server log keeps the cause.
-func (h *Handler) resolveIssueRun(r *http.Request, issue db.Issue, trigger service.IssueRunTrigger, willRun, suppressRun bool, actorType, actorID, workspaceID, handoffNote string) *IssueRunOutcome {
-	outcome, _ := h.resolveIssueRunCtx(r.Context(), r, issue, trigger, willRun, suppressRun, actorType, actorID, workspaceID, handoffNote)
-	return outcome
-}
-
-// resolveIssueRunCtx is resolveIssueRun with the context the run starts under,
+// that could not have started a run (no reason either) reports nothing. It runs
+// under the context the run starts under,
 // which carries the workflow handoff intent and the status handoff comments.
 // started reports whether an executable run now carries the write (see
 // dispatchIssueRunOutcome); it is true even when the caller gets no outcome.

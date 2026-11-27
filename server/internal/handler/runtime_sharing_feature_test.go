@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"testing"
 
@@ -192,7 +193,7 @@ func TestRuntimeMemberSharingDecidesOnLockedRow(t *testing.T) {
 	req := UpdateAgentRuntimeRequest{SharedWith: &shared, sharedWithIDs: []pgtype.UUID{mustTestUUID(t, memberID)}}
 	sharing := testHandler.paidFeature(context.Background(), stale.WorkspaceID, entitlement.FeatureRuntimeMemberSharing)
 	_, _, _, _, err = testHandler.updateRuntimeAccessIfNoDependencies(context.Background(), stale, owner, req, sharing)
-	if err != errRuntimeFeatureLocked {
+	if !errors.Is(err, errRuntimeFeatureLocked) {
 		t.Fatalf("stale re-add err = %v, want errRuntimeFeatureLocked", err)
 	}
 	wantRuntimeShare(t, rtID, "private")

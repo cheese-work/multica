@@ -148,7 +148,7 @@ func (c *Client) Revalidate(ctx context.Context, req RevalidateRequest) error {
 	httpReq.Header.Set(SecretHeader, c.secret)
 	resp, err := c.http.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -172,7 +172,7 @@ func (c *Client) call(ctx context.Context, document, op string, body any) (Resul
 	req.Header.Set(SecretHeader, c.secret)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return Result{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
@@ -180,7 +180,7 @@ func (c *Client) call(ctx context.Context, document, op string, body any) (Resul
 	case http.StatusOK, http.StatusConflict, http.StatusRequestEntityTooLarge:
 		var result Result
 		if err := json.Unmarshal(data, &result); err != nil {
-			return Result{}, fmt.Errorf("%w: decode %s response: %v", ErrUnavailable, op, err)
+			return Result{}, fmt.Errorf("%w: decode %s response: %w", ErrUnavailable, op, err)
 		}
 		if op == "flush" {
 			result.Status = StatusOK
@@ -194,7 +194,7 @@ func (c *Client) call(ctx context.Context, document, op string, body any) (Resul
 	// database directly. A request it refused would be refused again, and
 	// writing around a running service would leave its live copy behind.
 	if resp.StatusCode >= 500 {
-		return Result{}, fmt.Errorf("%w: %v", ErrUnavailable, err)
+		return Result{}, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	return Result{}, err
 }

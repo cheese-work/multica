@@ -165,7 +165,11 @@ func loadAttachmentThumbnail(ctx context.Context, store storage.Storage, att db.
 		if res.Err != nil {
 			return thumbnail.Thumbnail{}, res.Err
 		}
-		return res.Val.(thumbnail.Thumbnail), nil
+		thumb, ok := res.Val.(thumbnail.Thumbnail)
+		if !ok {
+			return thumbnail.Thumbnail{}, errThumbnailUnavailable
+		}
+		return thumb, nil
 	case <-ctx.Done():
 		return thumbnail.Thumbnail{}, ctx.Err()
 	}
@@ -216,7 +220,7 @@ func generateAttachmentThumbnail(ctx context.Context, store storage.Storage, obj
 
 	thumb, err := thumbnail.Generate(data)
 	if errors.Is(err, thumbnail.ErrUnsupported) {
-		return thumbnail.Thumbnail{}, fmt.Errorf("%w: %v", errThumbnailUnavailable, err)
+		return thumbnail.Thumbnail{}, fmt.Errorf("%w: %w", errThumbnailUnavailable, err)
 	}
 	if err != nil {
 		return thumbnail.Thumbnail{}, err

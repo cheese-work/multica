@@ -336,7 +336,9 @@ func TestSquadInheritanceAndDaemonClaimSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnqueueTaskForMention: %v", err)
 	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, uuidToString(delegatedTask.ID)) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, uuidToString(delegatedTask.ID))
+	})
 
 	if uuidToString(delegatedTask.UsageSquadID) != squadID {
 		t.Fatalf("delegated task usage_squad_id = %q, want %q", uuidToString(delegatedTask.UsageSquadID), squadID)
@@ -435,7 +437,9 @@ func TestSquadInheritanceAndDaemonClaimSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnqueueTaskForIssue(child): %v", err)
 	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, uuidToString(childTask.ID)) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, uuidToString(childTask.ID))
+	})
 	if uuidToString(childTask.UsageSquadID) != squadID {
 		t.Fatalf("sub-issue task usage_squad_id = %q, want %q", uuidToString(childTask.UsageSquadID), squadID)
 	}
@@ -468,7 +472,9 @@ func TestSquadInheritanceAndDaemonClaimSafety(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EnqueueTaskForMention(%s): %v", agentID, err)
 		}
-		t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, uuidToString(task.ID)) })
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, uuidToString(task.ID))
+		})
 		return task
 	}
 	outsiderTask := mentionByMember(outsiderID)
@@ -493,7 +499,9 @@ func TestSquadInheritanceAndDaemonClaimSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnqueueTaskForMention(second outsider): %v", err)
 	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, uuidToString(handoffTask.ID)) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, uuidToString(handoffTask.ID))
+	})
 	if handoffTask.UsageSquadID.Valid {
 		t.Fatalf("outside agent handing on to another outside agent usage_squad_id = %q, want NULL (source %q)",
 			uuidToString(handoffTask.UsageSquadID), handoffTask.OriginatorSource.String)
@@ -513,7 +521,9 @@ func TestSquadInheritanceAndDaemonClaimSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EnqueueTaskForIssue(standalone): %v", err)
 	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, uuidToString(standaloneTask.ID)) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, uuidToString(standaloneTask.ID))
+	})
 	if standaloneTask.SquadID.Valid || standaloneTask.UsageSquadID.Valid {
 		t.Fatalf("standalone task must have NULL squad_id and usage_squad_id, got squad=%q usage_squad=%q",
 			uuidToString(standaloneTask.SquadID), uuidToString(standaloneTask.UsageSquadID))

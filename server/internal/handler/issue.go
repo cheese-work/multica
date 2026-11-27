@@ -5329,7 +5329,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 	}
 
 	for _, blocker := range blockers.remove {
-		if err = qtx.RemoveIssueBlocker(ctx, db.RemoveIssueBlockerParams{WorkspaceID: workspaceID, IssueID: issue.ID, BlockerIssueID: blocker}); err != nil {
+		if err := qtx.RemoveIssueBlocker(ctx, db.RemoveIssueBlockerParams{WorkspaceID: workspaceID, IssueID: issue.ID, BlockerIssueID: blocker}); err != nil {
 			return db.Issue{}, current, false, err
 		}
 	}
@@ -5338,7 +5338,7 @@ func (h *Handler) updateIssueAtomically(ctx context.Context, workspaceID pgtype.
 		blockerActor = wakeupActor{kind: issue.CreatorType, id: uuidToString(issue.CreatorID)}
 	}
 	for _, blocker := range blockers.add {
-		if err = service.AddIssueBlocker(ctx, qtx, workspaceID, issue.ID, blocker, blockerActor.kind, parseUUID(blockerActor.id)); err != nil {
+		if err := service.AddIssueBlocker(ctx, qtx, workspaceID, issue.ID, blocker, blockerActor.kind, parseUUID(blockerActor.id)); err != nil {
 			return db.Issue{}, current, false, err
 		}
 	}
@@ -6007,6 +6007,9 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			service.IssueTriggerInput{Issue: issue, PrevStatus: prevIssue.Status, AssigneeChanged: true, EnteredHandoffStep: true},
 			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
 		)
+		// The dispatch below reads runDecided; without this the re-asserted
+		// run is decided here and never started.
+		runDecided = willRun
 	}
 	var runOutcomes []CommentTriggerOutcome
 	if reasserted && !willRun {
@@ -6509,7 +6512,7 @@ func (h *Handler) deleteIssuesAndCollectAttachmentURLs(ctx context.Context, issu
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 	if len(issues) > 0 {
-		if err = qtx.LockIssueBlockerGraph(ctx, issues[0].WorkspaceID); err != nil {
+		if err := qtx.LockIssueBlockerGraph(ctx, issues[0].WorkspaceID); err != nil {
 			return issueDeleteResult{}, err
 		}
 	}

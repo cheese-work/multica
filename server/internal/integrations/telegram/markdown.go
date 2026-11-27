@@ -318,7 +318,6 @@ func (sl *starLookup) query(stars []starRun, startIdx, endIdx, from, end, initSt
 			tailK := end - tailPos
 			tailCanClose := stars[endIdx].canClose
 			if tailK == sl.other && tailCanClose && stateAtEnd == 1 {
-				stateAtEnd = 0
 				fallbackIdx = -1
 			} else if tailK == sl.want && tailCanClose {
 				if stateAtEnd == 0 {

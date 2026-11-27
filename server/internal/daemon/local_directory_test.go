@@ -512,7 +512,7 @@ func TestLocalPathLockerRejectsCancelledAcquireOnFreePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire for next task: %v", err)
 	}
-	defer release()
+	release()
 }
 
 func TestLocalPathLockerDistinctPathsParallel(t *testing.T) {

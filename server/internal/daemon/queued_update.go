@@ -40,7 +40,7 @@ func (d *Daemon) handleQueuedUpdate(ctx context.Context, runtimeID string, updat
 	if held != nil && held.installing {
 		// A re-offer of the installing update is ignored, not refused.
 		if held.id != update.ID {
-			d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+			_ = d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
 				"status": "failed",
 				"error":  errAnotherUpdateQueued,
 			})
@@ -51,7 +51,7 @@ func (d *Daemon) handleQueuedUpdate(ctx context.Context, runtimeID string, updat
 		// The held update may have been cancelled or expired since; a
 		// refused "scheduled" report says so and frees the slot.
 		if !isUpdateWithdrawn(d.reportQueuedUpdateWaiting(ctx, held)) {
-			d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+			_ = d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
 				"status": "failed",
 				"error":  errAnotherUpdateQueued,
 			})
@@ -61,7 +61,7 @@ func (d *Daemon) handleQueuedUpdate(ctx context.Context, runtimeID string, updat
 	}
 	if held == nil {
 		if d.updating.Load() {
-			d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
+			_ = d.reportUpdateResult(ctx, runtimeID, update.ID, map[string]any{
 				"status": "failed",
 				"error":  errAnotherUpdateQueued,
 			})

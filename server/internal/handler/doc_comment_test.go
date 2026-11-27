@@ -49,7 +49,7 @@ func TestDocCommentsDiscussNotifyAndResolve(t *testing.T) {
 
 	var root DocCommentResponse
 	testutil.Call(t, testHandler.CreateDocComment, post(map[string]any{
-		"content":       "Can index-only migrations rehearse the same day? [@Li Ran](mention://member/" + other + ") " +
+		"content": "Can index-only migrations rehearse the same day? [@Li Ran](mention://member/" + other + ") " +
 			"[@Zhou Kai](mention://member/" + guest + ") [@Chen Yu](mention://member/" + outsider + ")",
 		"anchor_quote":  "Original",
 		"anchor_prefix": "# First\n\n",

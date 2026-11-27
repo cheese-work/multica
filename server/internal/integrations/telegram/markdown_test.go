@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"encoding/xml"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -14,7 +15,7 @@ func assertValidTelegramHTML(t *testing.T, rendered string) {
 	var stack []string
 	for {
 		tok, err := dec.Token()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

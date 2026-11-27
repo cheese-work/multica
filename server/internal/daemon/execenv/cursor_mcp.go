@@ -651,7 +651,7 @@ var cursorMcpAuthTargetLocks sync.Map
 
 func lockCursorMcpAuthTarget(target string) func() {
 	v, _ := cursorMcpAuthTargetLocks.LoadOrStore(filepath.Clean(target), &sync.Mutex{})
-	mu := v.(*sync.Mutex)
+	mu, _ := v.(*sync.Mutex) // LoadOrStore only ever holds *sync.Mutex
 	mu.Lock()
 	return mu.Unlock
 }

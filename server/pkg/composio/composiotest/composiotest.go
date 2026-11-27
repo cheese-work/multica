@@ -288,7 +288,8 @@ func (c checker) visit(rawSchema, v any, at string, out *[]string) {
 	if !c.fields {
 		required, _ := s["required"].([]any)
 		for _, name := range required {
-			if _, present := obj[name.(string)]; !present {
+			key, _ := name.(string)
+			if _, present := obj[key]; !present {
 				*out = append(*out, fmt.Sprintf("%s: misses required field %s", at, name))
 			}
 		}

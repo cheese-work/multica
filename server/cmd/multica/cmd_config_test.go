@@ -486,7 +486,8 @@ func TestApplyConfigSetRejectsBadValues(t *testing.T) {
 func TestApplyConfigSetNormalizesLogLevel(t *testing.T) {
 	t.Parallel()
 
-	for value, want := range map[string]string{"INFO": "info", " Debug ": "debug", "warning": "warn", "ERROR": "error", "": ""} {
+	for _, c := range [][2]string{{"INFO", "info"}, {" Debug ", "debug"}, {"warning", "warn"}, {"ERROR", "error"}, {"", ""}} {
+		value, want := c[0], c[1]
 		cfg := cli.CLIConfig{LogLevel: "info"}
 		if err := applyConfigSet(&cfg, "log_level", value); err != nil {
 			t.Fatalf("applyConfigSet(log_level, %q): %v", value, err)

@@ -277,7 +277,8 @@ func (b *claudeBackend) spawnClaudeProcess(ctx context.Context, execPath string,
 				env = append(env, entry)
 			}
 		}
-		cmd.Env = append(env, "MULTICA_RUN_BINDING_ID="+binding.ID)
+		env = append(env, "MULTICA_RUN_BINDING_ID="+binding.ID)
+		cmd.Env = env
 	}
 	// Startup errors revoke the binding. On success ownership passes to the
 	// process, which revokes it once the process is reaped or closed.

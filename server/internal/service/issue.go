@@ -365,7 +365,7 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 		}
 	}
 	if len(p.BlockedBy) > 0 || p.Stage.Valid {
-		if err = qtx.LockIssueBlockerGraph(ctx, p.WorkspaceID); err != nil {
+		if err := qtx.LockIssueBlockerGraph(ctx, p.WorkspaceID); err != nil {
 			return IssueCreateResult{}, err
 		}
 	}
@@ -753,7 +753,7 @@ func (s *IssueService) createOnce(ctx context.Context, p IssueCreateParams, opts
 	}
 
 	for _, blockerID := range p.BlockedBy {
-		if err = AddIssueBlocker(ctx, qtx, p.WorkspaceID, issue.ID, blockerID, p.CreatorType, p.CreatorID); err != nil {
+		if err := AddIssueBlocker(ctx, qtx, p.WorkspaceID, issue.ID, blockerID, p.CreatorType, p.CreatorID); err != nil {
 			return IssueCreateResult{}, err
 		}
 	}

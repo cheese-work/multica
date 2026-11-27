@@ -5540,7 +5540,7 @@ func (d *Daemon) runAcquiredServerUpdateWithin(ctx, reportCtx context.Context, r
 	// Report running status. A queued update was already accepted as running
 	// before it got here, so it does not report twice.
 	if reportRunning {
-		d.reportUpdateResult(reportCtx, runtimeID, update.ID, map[string]any{
+		_ = d.reportUpdateResult(reportCtx, runtimeID, update.ID, map[string]any{
 			"status": "running",
 		})
 	}
@@ -5706,6 +5706,7 @@ func (d *Daemon) runUpdate(ctx context.Context, targetVersion string) (string, e
 // Overridable for tests to avoid real sleeps.
 var updateReportBackoffs = []time.Duration{0, 500 * time.Millisecond, 2 * time.Second, 4 * time.Second}
 
+// reportUpdateResult logs every failed delivery; callers that cannot act on it discard the error.
 func (d *Daemon) reportUpdateResult(ctx context.Context, runtimeID, updateID string, payload map[string]any) error {
 	return d.reportUpdateResultWithRetry(ctx, runtimeID, updateID, func(ctx context.Context) error {
 		return d.client.ReportUpdateResult(ctx, runtimeID, updateID, payload)

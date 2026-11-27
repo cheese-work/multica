@@ -406,7 +406,7 @@ func routeParams(pattern string) []routeParamRef {
 	literal := ""
 	for _, segment := range strings.Split(strings.Trim(pattern, "/"), "/") {
 		m := chiRouteParam.FindStringSubmatch(segment)
-		if m == nil || m[0] != segment {
+		if len(m) == 0 || m[0] != segment {
 			literal = segment
 			continue
 		}

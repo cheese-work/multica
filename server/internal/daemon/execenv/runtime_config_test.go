@@ -2471,6 +2471,7 @@ func TestBriefBatchesTheOpeningReads(t *testing.T) {
 		}
 	}
 }
+
 // TestBriefIssuePointerFollowsTheInstalledSkill ensures the sub-issue pointer
 // names the platform skill only when installed. The retired legacy skill is
 // no longer a fallback, even when an older backend still supplies it.

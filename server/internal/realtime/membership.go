@@ -137,7 +137,7 @@ func (h *Hub) stopClient(client *Client, notice []byte, deadline time.Time) {
 	// on return, racing with both TryLock() and WriteMessage() here.
 	if client.conn != nil {
 		if firstStop && len(notice) != 0 && time.Now().Before(deadline) && client.writeMu.TryLock() {
-			client.conn.SetWriteDeadline(deadline)
+			_ = client.conn.SetWriteDeadline(deadline)
 			_ = client.conn.WriteMessage(websocket.TextMessage, notice)
 			_ = client.conn.WriteMessage(
 				websocket.CloseMessage,

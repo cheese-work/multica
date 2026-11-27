@@ -55,6 +55,7 @@ func TestConcurrentUpdateKeepsFieldsItDoesNotName(t *testing.T) {
 			}
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return w
 			}
 			return w
 		},
