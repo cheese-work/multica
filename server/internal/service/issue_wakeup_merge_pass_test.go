@@ -33,6 +33,9 @@ func (m *mergeFix) say(t *testing.T, authorType, authorID, content string, at ti
 	var task any
 	if authorType == "agent" {
 		task = m.f.Task(t, authorID, testutil.Cols{"issue_id": util.UUIDToString(m.issue), "status": "completed", "completed_at": testutil.Raw("now()")})
+		// A run with no workflow step counts as authorship; this one is a review run.
+		m.f.Exec(t, `INSERT INTO activity_log (workspace_id, issue_id, actor_type, action, details) VALUES ($1, $2, 'system', 'workflow_role', jsonb_build_object('task_id', $3::text, 'role', 'reviewer', 'status', 'agent_review'))`,
+			m.f.WorkspaceID, util.UUIDToString(m.issue), task)
 	}
 	return m.sayFrom(t, authorType, authorID, content, at, task)
 }
