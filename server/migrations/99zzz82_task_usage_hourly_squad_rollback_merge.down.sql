@@ -14,9 +14,13 @@
 -- under one MVCC snapshot and collides with uq_task_usage_hourly_squad_key_idx
 -- when a standalone (squad_id = NULL) row already shares the 7-column key.
 --
--- Unprocessed task_usage_hourly_dirty rows carrying a non-NULL squad_id are
--- discarded here so 741 down can rebuild uq_task_usage_hourly_dirty_key; those
--- buckets will recompute on the next triggering touch or watermark backfill.
+-- Pending task_usage_hourly_dirty rows carrying a non-NULL squad_id are folded
+-- into their legacy key (squad_id = NULL) before the squad rows are deleted, so
+-- 741 down can rebuild uq_task_usage_hourly_dirty_key without a uniqueness
+-- error and no pending recompute is lost. Dropping them instead is NOT safe:
+-- a task delete queues only its old bucket, and with no later touch nothing
+-- would ever correct the stale hourly total. Each 7-column key keeps one row
+-- with the latest enqueued_at, merged with any NULL-squad row already pending.
 CREATE TEMP TABLE _tmp_merged_task_usage_hourly ON COMMIT DROP AS
 SELECT
     bucket_hour, workspace_id, runtime_id, agent_id, project_id, provider, model,
@@ -60,5 +64,17 @@ SELECT
     uncosted_cache_read_tokens, uncosted_cache_write_tokens,
     task_count, event_count, updated_at
   FROM _tmp_merged_task_usage_hourly;
+
+INSERT INTO task_usage_hourly_dirty (
+    bucket_hour, workspace_id, runtime_id, agent_id, project_id, squad_id, provider, model, enqueued_at
+)
+SELECT
+    bucket_hour, workspace_id, runtime_id, agent_id, project_id, NULL, provider, model,
+    MAX(enqueued_at)
+  FROM task_usage_hourly_dirty
+ WHERE squad_id IS NOT NULL
+ GROUP BY bucket_hour, workspace_id, runtime_id, agent_id, project_id, provider, model
+ON CONFLICT (bucket_hour, workspace_id, runtime_id, agent_id, project_id, squad_id, provider, model) DO UPDATE
+    SET enqueued_at = GREATEST(task_usage_hourly_dirty.enqueued_at, EXCLUDED.enqueued_at);
 
 DELETE FROM task_usage_hourly_dirty WHERE squad_id IS NOT NULL;
