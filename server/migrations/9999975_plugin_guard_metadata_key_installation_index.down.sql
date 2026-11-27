@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_plugin_guard_metadata_key_installation;

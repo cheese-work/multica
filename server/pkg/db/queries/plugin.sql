@@ -208,6 +208,40 @@ DELETE FROM plugin_hook_schedule WHERE id = $1;
 -- name: DeletePluginHookSchedulesByInstallation :exec
 DELETE FROM plugin_hook_schedule WHERE installation_id = $1;
 
+-- name: CreatePluginGuardMetadataKey :one
+INSERT INTO plugin_guard_metadata_key (installation_id, workspace_id, metadata_key, enabled)
+VALUES ($1, $2, $3, $4)
+RETURNING *;
+
+-- name: ListPluginGuardMetadataKeysByInstallation :many
+SELECT * FROM plugin_guard_metadata_key
+WHERE installation_id = $1
+ORDER BY metadata_key ASC;
+
+-- name: SetPluginGuardMetadataKeysEnabled :exec
+UPDATE plugin_guard_metadata_key
+SET enabled = $2, updated_at = now()
+WHERE installation_id = $1 AND enabled <> $2;
+
+-- name: SetPluginGuardMetadataKeyEnabled :exec
+UPDATE plugin_guard_metadata_key
+SET enabled = $2, updated_at = now()
+WHERE id = $1 AND enabled <> $2;
+
+-- name: DeletePluginGuardMetadataKey :exec
+DELETE FROM plugin_guard_metadata_key WHERE id = $1;
+
+-- name: DeletePluginGuardMetadataKeysByInstallation :exec
+DELETE FROM plugin_guard_metadata_key WHERE installation_id = $1;
+
+-- name: IsIssueMetadataKeyDeclared :one
+-- A key is declared while an enabled installation lists it in
+-- guard.metadata_writers. Read inside the metadata write transaction.
+SELECT EXISTS (
+    SELECT 1 FROM plugin_guard_metadata_key
+    WHERE workspace_id = $1 AND metadata_key = $2 AND enabled
+) AS declared;
+
 -- name: UpsertPluginStorageValue :one
 INSERT INTO plugin_storage (installation_id, scope_type, scope_id, key, value)
 VALUES ($1, $2, $3, $4, $5)

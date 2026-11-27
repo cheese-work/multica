@@ -280,6 +280,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"pinned_item":                        workspaceDelete,
 	"plugin_installation":                workspaceDelete,
 	"plugin_hook_schedule":               workspaceDelete,
+	"plugin_guard_metadata_key":          workspaceDelete,
 	"plugin_invocation":                  workspaceDelete,
 	"plugin_storage":                     workspaceDelete,
 	"plugin_secret":                      workspaceDelete,
