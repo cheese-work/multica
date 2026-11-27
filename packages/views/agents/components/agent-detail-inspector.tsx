@@ -32,7 +32,6 @@ import {
   type SettingsSaveStatus,
 } from "../../settings/components/settings-layout";
 import { useAutoSave } from "../../settings/components/use-auto-save";
-import { useEditedValue } from "../../settings/components/use-edited-value";
 import { useT } from "../../i18n";
 import { CharCounter } from "./char-counter";
 import { ConversationStartersEditor } from "./conversation-starters-editor";

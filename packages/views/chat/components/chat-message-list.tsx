@@ -30,7 +30,7 @@ import {
 import { CopyCheckIcon } from "@multica/ui/components/common/copy-check-icon";
 import { TruncatedTooltip } from "@multica/ui/components/common/truncated-tooltip";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
-import { useReducedMotion } from "@multica/core/appearance";
+import { prefersReducedMotion, useReducedMotion } from "@multica/core/appearance";
 import { isTaskMessageTaskId, taskMessagesOptions } from "@multica/core/chat/queries";
 import { RichContent } from "../../rich-content";
 import { MediaSourceProvider } from "../../media/media-context";
@@ -793,9 +793,7 @@ export function ChatMessageList({
     );
     if (index >= 0) {
       settledJumpRef.current = jumpToMessageId;
-      const reduceMotion =
-        typeof window.matchMedia === "function" &&
-        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const reduceMotion = prefersReducedMotion();
       // The live-end follow would pull the list straight back to the newest
       // message; and while the list is still hidden waiting for that, the jump
       // is the first thing the reader should see, so it lands without animation.

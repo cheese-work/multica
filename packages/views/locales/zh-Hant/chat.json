@@ -664,7 +664,7 @@
     "in_progress_other": "{{count}} 次執行進行中——完成後合計會更新",
     "runs": "執行",
     "runs_value": "已完成 {{completed}} 次 · 失敗 {{failed}} 次",
-    "runs_cancelled": " · 已取消 {{cancelled}} 次",
+    "runs_cancelled": " · 已取消 {{runs}} 次",
     "run_time": "智慧代理執行時長",
     "messages": "訊息",
     "messages_value": "你 {{user}} · 智慧代理 {{agent}}",

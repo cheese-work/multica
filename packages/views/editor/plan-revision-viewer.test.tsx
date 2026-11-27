@@ -14,6 +14,7 @@ vi.mock("@multica/core/api", () => ({ api: {
 } }));
 vi.mock("@multica/core/workspace/hooks", () => ({ useActorName: () => ({ getActorName: () => "Cheese" }) }));
 vi.mock("@multica/core/paths", () => ({
+  issueRouteRef: ({ id, identifier }: { id: string; identifier: string | null }) => identifier || id,
   useWorkspaceSlug: () => "cheese-work",
   paths: { workspace: () => ({ issueDetail: (issue: string) => `/cheese-work/issues/${issue}` }) },
 }));
@@ -159,12 +160,12 @@ describe("PlanRevisionViewer", () => {
     mount();
     await screen.findByRole("article");
     fireEvent.click(screen.getByRole("switch", { name: "Diff" }));
-    expect(await screen.findByText("Loading comparison…")).toBeVisible();
+    expect(await screen.findByText("Loading comparison...")).toBeVisible();
     expect(screen.getByRole("switch", { name: "Diff" })).not.toBeChecked();
     expect(screen.queryByTestId("revision-diff")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("switch", { name: "Diff" }));
     resolveBase(document.join("\n"));
-    await waitFor(() => expect(screen.queryByText("Loading comparison…")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.queryByText("Loading comparison...")).not.toBeInTheDocument());
     expect(screen.getByRole("article")).toBeVisible();
     expect(screen.queryByTestId("revision-diff")).not.toBeInTheDocument();
   });

@@ -1259,7 +1259,7 @@
     "impact_loading": "Checking what this leaves waiting…",
     "impact_failed": "Could not read the impact. You can still pause.",
     "cancel_active": "Also cancel active runs now",
-    "cancel_active_hint": "Off: running runs finish. On: running and queued runs are cancelled after the pause.",
+    "cancel_active_hint": "Выкл.: выполняющиеся запуски завершатся. Вкл.: выполняющиеся и ожидающие запуски будут отменены после паузы.",
     "resume_title": "Resume {{name}}?",
     "resume_description": "The agent claims runs again, including work queued while it was paused.",
     "keep": "Keep as is",

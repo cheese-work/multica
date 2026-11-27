@@ -1198,7 +1198,7 @@ export function ChatInput({
                 ? placeholder
                 : undefined}
             tooltip={isRunning && !isForkInput
-              ? t(($) => $.input.queue_send_tooltip)
+              ? t(($) => $.input.send_tooltip)
               : sendShortcut
                 ? (
                   <>
@@ -1209,8 +1209,6 @@ export function ChatInput({
                 : t(($) => $.input.send_tooltip)}
             ariaLabel={gate.uploading
               ? tEditor(($) => $.upload.in_progress)
-              : isRunning && !isForkInput
-                ? t(($) => $.input.queue_send_tooltip)
               : t(($) => $.input.send_tooltip)}
             stopTooltip={t(($) => $.input.stop_tooltip)}
             stopAriaLabel={t(($) => $.input.stop_tooltip)}

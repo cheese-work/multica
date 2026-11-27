@@ -9,6 +9,10 @@ import { WakeupCreate } from "./wakeup-create";
 // Pins the payload of every trigger kind the issue form can build, so the form
 // can be split into shared fields without changing what it sends.
 const create = vi.fn();
+vi.mock("@multica/core/permissions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/permissions")>()),
+  useCurrentMember: () => ({ userId: "u1", role: "admin" }),
+}));
 vi.mock("./wakeup-condition-names", () => ({
   useConditionNames: () => ({ status: (key: string) => key, label: () => undefined, property: () => undefined, actor: (_type: string, id: string) => id }),
 }));
@@ -17,6 +21,7 @@ vi.mock("@multica/core/issues", () => ({
   childIssuesOptions: () => ({ queryKey: ["children"] }),
   issueDetailOptions: () => ({ queryKey: ["issue-detail"] }),
 }));
+const shared = { owner_id: "user-o", permission_mode: "public_to", invocation_targets: [{ target_type: "workspace", target_id: null }] };
 const data: Record<string, unknown> = {
   members: [{ user_id: "user-j", name: "Jiayuan" }],
   squads: [{ id: "squad-1", name: "Dev team" }],
@@ -37,8 +42,8 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
       data: hit
         ? data[hit]
         : [
-            { id: "emacs", name: "Emacs", archived_at: null, runtime_id: "rt" },
-            { id: "grok", name: "Grok", archived_at: null, runtime_id: "rt" },
+            { id: "emacs", name: "Emacs", archived_at: null, runtime_id: "rt", ...shared },
+            { id: "grok", name: "Grok", archived_at: null, runtime_id: "rt", ...shared },
           ],
     };
   },

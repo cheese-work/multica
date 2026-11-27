@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { commentPreviewOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useWorkspacePaths } from "@multica/core/paths";
 import { AppLink } from "../../navigation";
 import { ISSUE_CHIP_CLASS } from "./issue-chip";
 
@@ -44,7 +44,7 @@ export function CommentMentionCard({
   const author = data.author_name ? `${data.author_name}: ` : "";
   return (
     <AppLink
-      href={`${p.issueDetail(data.issue_id)}#comment-${data.comment_id}`}
+      href={`${p.issueDetail(issueRouteRef({ id: data.issue_id, identifier: null }))}#comment-${data.comment_id}`}
       newTabTitle={data.issue_identifier}
       className="issue-mention align-middle"
     >

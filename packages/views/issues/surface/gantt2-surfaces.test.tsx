@@ -38,6 +38,7 @@ vi.mock("../../navigation", () => ({
   useNavigation: () => ({ push: vi.fn(), pathname: "/" }),
   resolveClickIntent: () => "push",
   useIntentNavigate: () => () => {},
+  useWarmRoute: () => {},
 }));
 vi.mock("@multica/core/paths", async () => {
   const actual = await vi.importActual<typeof import("@multica/core/paths")>("@multica/core/paths");

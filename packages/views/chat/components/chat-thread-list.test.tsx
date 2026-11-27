@@ -491,7 +491,7 @@ describe("ChatThreadList filter chips", () => {
 
   it("shows skeleton rows while loading, hiding unknown counts", () => {
     renderList(null, { renderedSessions: [], loadState: "loading" });
-    expect(screen.getByRole("status", { name: "Loading chats…" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading chats..." })).toBeInTheDocument();
     expect(chip("Decisions")).toBeInTheDocument();
     expect(screen.queryByText("No chats yet")).not.toBeInTheDocument();
   });

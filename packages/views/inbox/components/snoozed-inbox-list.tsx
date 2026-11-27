@@ -7,7 +7,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { issueDetailOptions } from "@multica/core/issues/queries";
 import { useIssueStatuses } from "@multica/core/issue-statuses/hooks";
 import type { SnoozedInboxIssue } from "@multica/core/types";
-import { StatusIcon } from "../../issues/components";
+import { StatusIcon } from "../../issues/components/status-icon";
 import { useLocale, useT } from "../../i18n";
 import { formatSnoozeTime } from "./inbox-snooze-time";
 

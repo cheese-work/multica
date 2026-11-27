@@ -530,8 +530,6 @@ function shallowEqualEntries(a: TimelineEntry[], b: TimelineEntry[]): boolean {
   return true;
 }
 
-const EMPTY_COLLAPSED_IDS: string[] = [];
-
 // Flat per-item shape consumed by <Virtuoso>. Virtuoso needs a flat array
 // where each entry is one rendered row; we keep the grouping logic from
 // `timelineView.groups` (consecutive same-actor activities still collapse
@@ -632,14 +630,6 @@ function TimelineSkeleton() {
 const TIMELINE_ROW_ESTIMATED_HEIGHT = 610;
 
 const LAST_ACTIVITY_BLOCK_VISIBLE_LIMIT = 8;
-/** Rows Virtuoso keeps mounted beyond the viewport, in px each way. */
-const TIMELINE_OVERSCAN = { top: 800, bottom: 800 };
-/** Upper bound on a deep link holding the overscan back (see landingOverscanStep). */
-const LANDING_OVERSCAN_HOLD_MAX_MS = 3000;
-/** Upper bound on a deep link holding the sidebar, composer and thread rail back. */
-const LANDING_CHROME_HOLD_MAX_MS = 500;
-/** Overscan while a deep link lands, then on each idle step after it, before TIMELINE_OVERSCAN. */
-const LANDING_OVERSCAN_STEPS = [0, 200, 400];
 
 // Collapsible wrapper for an activity block. Older blocks default to a single
 // "N activities" summary line so the timeline isn't dominated by status /
@@ -1444,6 +1434,9 @@ export function IssueDetailSkeleton({
 
 // IssueDetail
 
+/** Upper bound on a deep link holding the sidebar, composer and thread rail back. */
+const LANDING_CHROME_HOLD_MAX_MS = 500;
+
 export function IssueDetail({ issueId, onDelete, inbox, defaultSidebarOpen = true, layoutId = ISSUE_DETAIL_LAYOUT_ID, highlightCommentId: linkedCommentId, highlightRequestToken: linkedRequestToken, highlightRequestPending = false, onHighlightLanded, highlightAppRequestId, authoritative, leadingAction, variant = "page", trailingActions, readsInbox = true, skipInitialRefetch = false, openDeliverable, onDeliverableLinkDone }: IssueDetailProps) {
   const isPeek = variant === "peek";
   const { t } = useT("issues");
@@ -1859,6 +1852,35 @@ export function IssueDetail({ issueId, onDelete, inbox, defaultSidebarOpen = tru
   } = useIssueTimeline(id, user?.id, activeDeliverableJump?.commentId);
 
   const { data: commentTasks, isLoading: commentTasksLoading } = useQuery({ ...issueTasksOptions(id), enabled: !guest });
+
+  // A deep link's landing frame leaves out what is off the reading path: the
+  // properties sidebar, the composer and the thread rail. They mount once the
+  // target has painted, a frame or two after it (MUL-9538). An Inbox click
+  // marks its landing pending before the page mounts; the comment it names
+  // arrives a render later on web, with the URL's fragment.
+  const [landingChromeHeld, setLandingChromeHeld] = useState(
+    () => highlightRequestPending || (!!highlightCommentId && !highlightConsumed),
+  );
+  const releaseLandingChrome = useCallback(() => setLandingChromeHeld(false), []);
+  // A landing request whose link names no comment has nothing to land on; the
+  // fragment is in by the next frame, so a hold still without a target then is let go.
+  const holdingWithoutTarget = landingChromeHeld && !highlightCommentId;
+  useEffect(() => {
+    if (!holdingWithoutTarget) return;
+    const frame = requestAnimationFrame(releaseLandingChrome);
+    return () => cancelAnimationFrame(frame);
+  }, [holdingWithoutTarget, releaseLandingChrome]);
+  // Bounded in case the landing never runs (a target that is gone).
+  useEffect(() => {
+    if (!landingChromeHeld) return;
+    const timer = window.setTimeout(releaseLandingChrome, LANDING_CHROME_HOLD_MAX_MS);
+    return () => window.clearTimeout(timer);
+  }, [landingChromeHeld, releaseLandingChrome]);
+  // Only a landing on data already in hand is worth holding the chrome for;
+  // while the timeline is still on its way, the chrome renders in the wait.
+  useEffect(() => {
+    if (timelineLoading || commentTasksLoading) releaseLandingChrome();
+  }, [timelineLoading, commentTasksLoading, releaseLandingChrome]);
   const handoffRound = useMemo(() => latestSquadHandoffRound(timeline), [timeline]);
   const enteringRunIds = useNewRunIds(id, commentTasks);
   const previousCommentRuns = useRef(new Map<string, CommentRun[]>());
@@ -3387,6 +3409,8 @@ export function IssueDetail({ issueId, onDelete, inbox, defaultSidebarOpen = tru
         didHighlightRef.current = highlightCommentId;
         writeViewState(issueHighlightMementoKey(id), highlightCommentId);
         onHighlightLandedRef.current?.();
+        // After the frame that paints the target, not inside it.
+        requestAnimationFrame(() => window.setTimeout(releaseLandingChrome, 0));
         setHighlightedId(landingId);
         if (jumpFlashTimerRef.current !== null) window.clearTimeout(jumpFlashTimerRef.current);
         jumpFlashTimerRef.current = window.setTimeout(() => setHighlightedId(null), 2500);
@@ -3425,7 +3449,7 @@ export function IssueDetail({ issueId, onDelete, inbox, defaultSidebarOpen = tru
         interruptedLandingRef.current = highlightCommentId;
       }
     };
-  }, [highlightCommentId, highlightTargetId, highlightRequestToken, activeDeliverableJump, timelineLoading, commentTasksLoading, id, writeViewState, wsId, items, targetIdx, scrollContainerEl, highlightRootId, targetRootId, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token]);
+  }, [highlightCommentId, highlightTargetId, highlightRequestToken, activeDeliverableJump, timelineLoading, commentTasksLoading, id, writeViewState, wsId, items, targetIdx, scrollContainerEl, highlightRootId, targetRootId, expandedResolved, timelineView, toggleResolvedExpand, isDisclosureRevealCommitted, revealKey, disclosureReveal.token, releaseLandingChrome]);
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const descriptionEditingRef = useRef(false);
@@ -4379,7 +4403,7 @@ export function IssueDetail({ issueId, onDelete, inbox, defaultSidebarOpen = tru
     metadata: <MetadataSection metadata={issue.metadata ?? {}} />,
   };
 
-  const sidebarContent = (
+  const sidebarContent = landingChromeHeld ? null : (
     <div className="space-y-5">
       {/* Hierarchy minimap — parent, siblings and children at a glance; replaces
           the Parent issue section and the Relations graph button. Guests keep
@@ -5498,14 +5522,16 @@ export function IssueDetail({ issueId, onDelete, inbox, defaultSidebarOpen = tru
             {stickyComposer && (
               <ComposerDock className="bottom-full mb-3" inboxBar={inboxBar} jump={jumpToLatestButton} />
             )}
-            <CommentInput
-              key={id}
-              issueId={id}
-              onSubmit={submitComment}
-              annotationComposer={descriptionAnnotations.composer}
-              onAccepted={scrollToTimelineBottom}
-              onEditAnnotation={(annotationId) => descriptionAnnotations.editAnnotation(annotationId, true)}
-            />
+            {!landingChromeHeld && (
+              <CommentInput
+                key={id}
+                issueId={id}
+                onSubmit={submitComment}
+                annotationComposer={descriptionAnnotations.composer}
+                onAccepted={scrollToTimelineBottom}
+                onEditAnnotation={(annotationId) => descriptionAnnotations.editAnnotation(annotationId, true)}
+              />
+            )}
           </div>
         </div>
         </div>
@@ -5523,7 +5549,7 @@ export function IssueDetail({ issueId, onDelete, inbox, defaultSidebarOpen = tru
             previews a comment, click jumps to it. Hidden on mobile: no
             hover, and the gutter is too tight. */}
         <NextSelfMention scrollEl={scrollContainerEl} flags={selfMentionFlags} onJump={jumpToSelfMention} />
-        {!isMobile && !isPeek && (
+        {!isMobile && !isPeek && !landingChromeHeld && (
           <ThreadMinimap
             threads={minimapThreads}
             scrollContainerEl={scrollContainerEl}

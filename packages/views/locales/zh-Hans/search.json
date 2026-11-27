@@ -133,7 +133,7 @@
     "no_labels": "没有标签",
     "type_to_find_issue": "输入关键词查找任务",
     "type_to_find_people": "输入关键词查找成员和智能体",
-    "no_results_for": "没有“{{query}}”的结果",
+    "no_results_for": "没有\"{{query}}\"的结果",
     "no_results_hint": "试试其他关键词。"
   },
   "delegate": {
@@ -170,7 +170,7 @@
   "untitled_doc": "未命名",
   "messages": {
     "untitled": "未命名对话",
-    "searching": "正在搜索消息…",
+    "searching": "正在搜索消息...",
     "error_title": "无法搜索消息内容",
     "error_failed": "服务器返回错误。仍可按标题筛选对话。",
     "error_timed_out": "搜索耗时过长。仍可按标题筛选对话。",

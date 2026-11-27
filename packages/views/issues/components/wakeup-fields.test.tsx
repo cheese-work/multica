@@ -12,6 +12,10 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
 vi.mock("@multica/core/issues", () => ({ childIssuesOptions: () => ({ queryKey: ["children"] }) }));
 vi.mock("@multica/core/issue-statuses/hooks", () => ({ useIssueStatuses: () => ({ activeStatuses: [] }) }));
 vi.mock("../utils/status-label", () => ({ useStatusLabel: () => (key: string) => key }));
+vi.mock("@multica/core/permissions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/permissions")>()),
+  useCurrentMember: () => ({ userId: "u1", role: "admin" }),
+}));
 vi.mock("./wakeup-condition-names", () => ({
   useConditionNames: () => ({ status: (key: string) => key, label: () => undefined, property: () => undefined, actor: (_type: string, id: string) => id }),
 }));
@@ -41,7 +45,7 @@ const PARAMS: [WakeupCondition, RegExp][] = [
   ["field", /Field: Status/],
   ["run_end", /Any agent/],
   ["children", /Sub-issues finish: All sub-issues/],
-  ["pull_request", /A linked PR's CI finishes: CI finishes/],
+  ["pull_request", /A linked PR updates: CI finishes/],
   ["other_issue", /Choose an issue/],
   ["custom", /0 events/],
 ];

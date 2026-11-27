@@ -2728,7 +2728,7 @@
       },
       "routing": {
         "label": "Routing",
-        "hint": "Handles routing-only workflow steps: todo, blocked, merged and need decision.",
+        "hint": "Обрабатывает шаги рабочего процесса только с маршрутизацией: `todo`, `blocked`, `merged` и `need decision`.",
         "no_agent": "No agent: each step keeps its own agent."
       }
     }

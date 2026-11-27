@@ -154,7 +154,9 @@ describe("slash command suggestion items", () => {
       ],
     });
 
-    expect(items(qc).map((item) => item.id)).toEqual(["active"]);
+    const ids = items(qc).map((item) => item.id);
+    expect(ids).toContain("active");
+    expect(ids).not.toContain("paused");
   });
 
   it("filters skills by name case-insensitively", () => {

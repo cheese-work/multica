@@ -13,6 +13,7 @@ import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useT } from "../../i18n";
 import { useReopenOnReveal } from "./use-sidebar-reveal-motion";
 import { WakeupFields } from "./wakeup-fields";
+import { useRunnableAgents } from "./wakeup-pickers";
 import { useWakeupForm } from "./use-wakeup-form";
 
 /**
@@ -100,10 +101,12 @@ export function WakeupCreateForm({
   const create = useCreateIssueWakeup(workspaceId, issueId);
   const sendShortcut = useShortcut("send");
   const { data: issue } = useQuery(issueDetailOptions(workspaceId, issueId));
+  const runnableAgents = useRunnableAgents(workspaceId);
   const { draft, update, error, pending, submit } = useWakeupForm({
     workspaceId,
     defaultAgentId,
     draftKey: issueId,
+    runnableAgents,
     save: create.mutateAsync,
     onSaved: onClose,
     onBusy,
@@ -131,6 +134,7 @@ export function WakeupCreateForm({
         update={update}
         scope={{ workspaceId, issueId }}
         assigneeAgentId={issue?.assignee_type === "agent" ? (issue.assignee_id ?? null) : null}
+        runnableAgentsOnly
         onBusy={onBusy}
       />
       {error && (

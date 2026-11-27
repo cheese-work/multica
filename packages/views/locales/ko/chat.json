@@ -499,7 +499,7 @@
     "in_progress_other": "실행 중 {{count}}건 — 끝나면 합계가 업데이트됩니다",
     "runs": "실행",
     "runs_value": "완료 {{completed}}건 · 실패 {{failed}}건",
-    "runs_cancelled": " · 취소 {{cancelled}}건",
+    "runs_cancelled": " · 취소 {{runs}}건",
     "run_time": "Agent 실행 시간",
     "messages": "메시지",
     "messages_value": "나 {{user}} · Agent {{agent}}",

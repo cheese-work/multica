@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { openDecisionRequestsOptions } from "@multica/core/chat/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useWorkspacePaths } from "@multica/core/paths";
 import type { OpenDecisionRequest } from "@multica/core/types";
 import { Gauge } from "@multica/ui/icons";
 import { useT } from "../i18n";
@@ -48,7 +48,7 @@ function Banner({ request }: { request: OpenDecisionRequest }) {
           ? t(($) => $.workflows.editor.budget_request_pending)
           : t(($) => $.workflows.editor.budget_request_pending_cap, { cap })}{" "}
         <AppLink
-          href={`${paths.issueDetail(request.issue_id)}#issue-decision-banner`}
+          href={`${paths.issueDetail(issueRouteRef({ id: request.issue_id, identifier: null }))}#issue-decision-banner`}
           className="font-medium underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-ring"
         >
           {issue}
