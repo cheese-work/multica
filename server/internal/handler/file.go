@@ -995,6 +995,9 @@ func (h *Handler) loadAttachmentForDownload(w http.ResponseWriter, r *http.Reque
 		return db.Attachment{}, false
 	}
 	h.cacheMembership(r.Context(), member)
+	if h.denyWithheldAttachment(w, r, att) {
+		return db.Attachment{}, false
+	}
 	if !h.requireAttachmentVisible(w, r, workspaceID, att) {
 		return db.Attachment{}, false
 	}
