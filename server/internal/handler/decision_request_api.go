@@ -162,6 +162,21 @@ func (handler *Handler) RequestDecision(writer http.ResponseWriter, request *htt
 		writeDecisionError(writer, err, "decision request")
 		return
 	}
+	if input.Action == nil && kind == decisiontx.KindDecision && parsed.Topic == "" {
+		guardHints, stamped, ok := handler.guardDesignCard(writer, request, issue, workspace, &parsed, input.EscalationClass)
+		if !ok {
+			return
+		}
+		hints = append(hints, guardHints...)
+		if stamped {
+			// The stamped versions add Frame lines, so the ask is rendered and measured again.
+			ask = parsed.Content(workspace.Slug)
+			if len(decisionAskContent(decisionRequestInput{Ask: ask, Footer: input.Footer})) > maxCommentContentBytes {
+				writeError(writer, http.StatusBadRequest, "ask is too long")
+				return
+			}
+		}
+	}
 	if input.NewDM && (input.SessionID != "" || input.For == "") {
 		writeError(writer, http.StatusBadRequest, "new_dm takes for and no session_id")
 		return
