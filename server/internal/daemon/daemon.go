@@ -210,6 +210,10 @@ func taskMulticaEnvironment(task Task, provider, agentName, token, configRoot, w
 		"TMP":                  tempDir,
 		"TEMP":                 tempDir,
 	}
+	if task.DoopTaskAssertion != "" {
+		// The doop MCP client sends this as X-Multica-Task-Assertion (CHE-7064 D1.6).
+		env["MULTICA_DOOP_TASK_ASSERTION"] = task.DoopTaskAssertion
+	}
 	if task.QuickCreatePrompt != "" {
 		assigneeType, assigneeID := "agent", task.AgentID
 		if task.SquadID != "" {
@@ -9871,9 +9875,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	if hook := contain.Hook(); hook != nil {
 		backendConfig.Launch = hook
 	}
-	if provider == "codex" && d.cfg.RunBindingsDir != "" && task.IssueIdentifier != "" {
-		backendConfig.RunBinding = &runbinding.Spec{Dir: d.cfg.RunBindingsDir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}
-	}
+	backendConfig.RunBinding = runBindingSpec(provider, d.cfg.RunBindingsDir, task)
 	if hermesOverlayActive {
 		// Retire an owner left by a crashed/interrupted daemon before it can
 		// execute tools with the preceding task's frozen environment.
@@ -12308,6 +12310,16 @@ func codexShellAuthorizedCustomEnvNames(customEnv map[string]string) []string {
 // credentials.
 // Failure is fatal: launching with an unowned or malformed policy could either
 // drop the task-scoped token again or expose inherited daemon credentials.
+// runBindingSpec returns the managed run binding for providers whose backend
+// publishes one (Codex, and Claude since CHE-9773), or nil when the registry is
+// not configured or the task has no issue identity.
+func runBindingSpec(provider, dir string, task Task) *runbinding.Spec {
+	if (provider != "codex" && provider != "claude") || dir == "" || task.IssueIdentifier == "" {
+		return nil
+	}
+	return &runbinding.Spec{Dir: dir, AgentID: task.AgentID, TaskID: task.ID, IssueID: task.IssueIdentifier}
+}
+
 func configureCodexTaskShellEnvironment(provider, codexHome string, inherited []string, agentEnv, agentCustomEnv map[string]string, logger *slog.Logger) error {
 	if provider != "codex" {
 		return nil

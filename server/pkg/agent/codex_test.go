@@ -6871,6 +6871,73 @@ func TestRenderCodexMcpServersBlockMapsBearerEnvReference(t *testing.T) {
 	}
 }
 
+func TestRenderCodexMcpServersBlockMapsEnvHeaderReference(t *testing.T) {
+	t.Parallel()
+
+	// A non-Authorization header whose value is exactly ${VAR} becomes Codex
+	// env_http_headers; Codex does not expand ${...} in http_headers.
+	block, _, err := renderCodexMcpServersBlock(json.RawMessage(`{"mcpServers":{"doop":{"type":"http","url":"https://doop.example.test/mcp","headers":{"Authorization":"Bearer ${DOOP_AGENT_KEY}","X-Multica-Task-Assertion":"${MULTICA_DOOP_TASK_ASSERTION}","x-api-key":"secret"}}}}`))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		`env_http_headers = { X-Multica-Task-Assertion = "MULTICA_DOOP_TASK_ASSERTION" }`,
+		`bearer_token_env_var = "DOOP_AGENT_KEY"`,
+		`http_headers = { x-api-key = "secret" }`,
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("expected %q in:\n%s", want, block)
+		}
+	}
+	if strings.Contains(block, "${") {
+		t.Fatalf("literal ${...} reference must not be rendered:\n%s", block)
+	}
+
+	// Sole env-reference header: no empty http_headers table is left behind.
+	block, _, err = renderCodexMcpServersBlock(json.RawMessage(`{"mcpServers":{"doop":{"url":"https://doop.example.test/mcp","headers":{"X-Multica-Task-Assertion":"${MULTICA_DOOP_TASK_ASSERTION}"}}}}`))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(block, `env_http_headers = { X-Multica-Task-Assertion = "MULTICA_DOOP_TASK_ASSERTION" }`) {
+		t.Fatalf("expected env_http_headers, got:\n%s", block)
+	}
+	if strings.Count(block, "http_headers") != 1 {
+		t.Fatalf("expected no plain http_headers table, got:\n%s", block)
+	}
+}
+
+func TestRenderCodexMcpServersBlockEnvHeaderMappingKeepsLiteralsAndAuthorizationBearer(t *testing.T) {
+	t.Parallel()
+
+	// Partial or literal values are not references: they stay in http_headers.
+	block, _, err := renderCodexMcpServersBlock(json.RawMessage(`{"mcpServers":{"doop":{"url":"https://doop.example.test/mcp","headers":{"X-A":"prefix-${VAR}","X-B":"plain"}}}}`))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(block, "env_http_headers") {
+		t.Fatalf("only an exact ${VAR} value may map to env_http_headers:\n%s", block)
+	}
+
+	// An Authorization header still takes the bearer path, never env_http_headers.
+	block, _, err = renderCodexMcpServersBlock(json.RawMessage(`{"mcpServers":{"doop":{"url":"https://doop.example.test/mcp","headers":{"Authorization":"Bearer ${DOOP_AGENT_KEY}"}}}}`))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(block, `bearer_token_env_var = "DOOP_AGENT_KEY"`) || strings.Contains(block, "env_http_headers") {
+		t.Fatalf("Authorization must use the bearer path only:\n%s", block)
+	}
+
+	// A bare ${VAR} Authorization value is not a Bearer reference; it is left
+	// alone rather than silently moved to env_http_headers.
+	block, _, err = renderCodexMcpServersBlock(json.RawMessage(`{"mcpServers":{"doop":{"url":"https://doop.example.test/mcp","headers":{"Authorization":"${DOOP_AGENT_KEY}"}}}}`))
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if strings.Contains(block, "env_http_headers") {
+		t.Fatalf("Authorization must never map to env_http_headers:\n%s", block)
+	}
+}
+
 func TestRenderCodexMcpServersBlockKeepsExistingBearerTokenEnvVar(t *testing.T) {
 	t.Parallel()
 

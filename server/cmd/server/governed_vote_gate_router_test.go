@@ -153,7 +153,8 @@ func TestVoteGateRouter_HonestVotesWrite(t *testing.T) {
 	}
 }
 
-// F2: an owner/admin-backed writer edits other agents' comments into votes.
+// F2: an owner/admin-backed writer cannot edit other agents' comments into
+// votes. Agent runs may edit only their own comments (CHE-10266).
 func TestVoteGateRouter_EditedCommentsAreNotVotes(t *testing.T) {
 	r := newVoteRig(t)
 	label, after := "instructions:"+r.targetSquad, rigDigest(rigNext)
@@ -161,12 +162,12 @@ func TestVoteGateRouter_EditedCommentsAreNotVotes(t *testing.T) {
 	leaderVote := r.post(r.leaderTok, "ack")
 	peerVote := r.post(r.peerTok, "ack")
 	r.must(http.StatusOK, "PUT", "/api/comments/"+proposal, r.writerTok, map[string]any{"content": "Proposal: " + label + " " + after})
-	r.must(http.StatusOK, "PUT", "/api/comments/"+leaderVote, r.writerTok, map[string]any{"content": "Vote: PASS " + label + " " + after})
-	r.must(http.StatusOK, "PUT", "/api/comments/"+peerVote, r.writerTok, map[string]any{"content": "Vote: PASS " + label + " " + after})
+	r.must(http.StatusForbidden, "PUT", "/api/comments/"+leaderVote, r.writerTok, map[string]any{"content": "Vote: PASS " + label + " " + after})
+	r.must(http.StatusForbidden, "PUT", "/api/comments/"+peerVote, r.writerTok, map[string]any{"content": "Vote: PASS " + label + " " + after})
 	r.wantDenied(r.writeSquad(rigBefore, rigNext))
 }
 
-// F2: the same authority removes or rewrites an existing BLOCK.
+// F2: the same authority cannot remove or rewrite an existing BLOCK.
 func TestVoteGateRouter_BlockSurvivesDeleteAndEdit(t *testing.T) {
 	for _, tc := range []struct{ name, method string }{{"deleted", "DELETE"}, {"rewritten", "PUT"}} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,9 +176,9 @@ func TestVoteGateRouter_BlockSurvivesDeleteAndEdit(t *testing.T) {
 			r.honestVotes(label, after)
 			block := r.post(r.peerTok, "Vote: BLOCK "+label+" "+after)
 			if tc.method == "DELETE" {
-				r.must(http.StatusNoContent, "DELETE", "/api/comments/"+block, r.writerTok, nil)
+				r.must(http.StatusForbidden, "DELETE", "/api/comments/"+block, r.writerTok, nil)
 			} else {
-				r.must(http.StatusOK, "PUT", "/api/comments/"+block, r.writerTok, map[string]any{"content": "withdrawn"})
+				r.must(http.StatusForbidden, "PUT", "/api/comments/"+block, r.writerTok, map[string]any{"content": "withdrawn"})
 			}
 			r.wantDenied(r.writeSquad(rigBefore, rigNext))
 		})

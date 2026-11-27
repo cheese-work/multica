@@ -111,6 +111,9 @@ type Task struct {
 	// RemoteMCPDaemonToken stays inside the daemon and authenticates the local
 	// broker's credential-resolution calls. It must never enter agent env/config.
 	RemoteMCPDaemonToken string `json:"remote_mcp_daemon_token,omitempty"`
+	// DoopTaskAssertion is the server-signed, short-lived task identity doop
+	// verifies (CHE-7064 D1.6). Absent when the server has no signing key.
+	DoopTaskAssertion string `json:"doop_task_assertion,omitempty"`
 	// PluginHookTools are this workspace's agent-trigger plugin hooks, which
 	// the local MCP server presents to the agent as tools. Resolved by the
 	// server at claim time; the daemon never reads plugin state itself.
