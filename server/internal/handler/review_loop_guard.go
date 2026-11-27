@@ -13,7 +13,10 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/designguard"
 	"github.com/multica-ai/multica/server/internal/issueworkflow"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/buildinfo"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
 )
@@ -115,17 +118,61 @@ func (e *reviewIndependenceError) Error() string {
 	return "the reviewer is not independent of the issue's authors (" + e.code + "); a verdict on a reviewer step needs a reviewer of another lab that did not author this issue"
 }
 
-func writeReviewLoopError(w http.ResponseWriter, err error) bool {
+// minReviewFindingRevisionCLI is the first CLI build whose --finding accepts
+// "<severity>@<category>@revision:<summary>" (the stamp of commit 079af87397,
+// PR #2139). An older CLI cannot send introduced_by_revision, so a round-2
+// refusal tells it to update.
+const minReviewFindingRevisionCLI = "0.10.0-20261125-1520"
+
+// CLI forms of a --finding value, named in the refusal text and as cli_form.
+const (
+	cliFindingForm         = `--finding "P1@<category>:<summary>"`
+	cliFindingRevisionForm = `--finding "P1@<category>@revision:<summary>"`
+)
+
+// cliOutdatedForReviewFinding reports whether the client CLI version is older
+// than minReviewFindingRevisionCLI. known is false for any version that is not
+// a stamped release (dev, git-describe, plain semver, empty): never "outdated".
+func cliOutdatedForReviewFinding(clientVersion string) (outdated, known bool) {
+	core, stamp := buildinfo.Split(clientVersion)
+	if stamp == "" {
+		return false, false
+	}
+	minCore, minStamp := buildinfo.Split(minReviewFindingRevisionCLI)
+	cmp, ok := agent.CompareVersionCores(core, minCore)
+	if !ok {
+		return false, false
+	}
+	if cmp == 0 {
+		// YYYYMMDD-HHMM orders as a string.
+		cmp = strings.Compare(stamp, minStamp)
+	}
+	return cmp < 0, true
+}
+
+func writeReviewLoopError(ctx context.Context, w http.ResponseWriter, err error) bool {
 	var independence *reviewIndependenceError
 	switch {
 	case errors.As(err, &independence):
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "code": independence.code})
 	case errors.Is(err, errFindingsRequired):
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "review_verdict_findings_required"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error() + "; CLI form: " + cliFindingForm, "code": "review_verdict_findings_required", "cli_form": cliFindingForm})
 	case errors.Is(err, errCategoryRequired):
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "review_finding_category_required"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error() + "; CLI form: " + cliFindingForm, "code": "review_finding_category_required", "cli_form": cliFindingForm})
 	case errors.Is(err, errNewBlockerLate):
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "code": "review_round_new_blocker"})
+		msg := err.Error() + "; CLI form: " + cliFindingRevisionForm
+		body := map[string]any{"code": "review_round_new_blocker", "cli_form": cliFindingRevisionForm}
+		// The client version is client-controlled and only shapes advice text.
+		if _, version, _ := middleware.ClientMetadataFromContext(ctx); version != "" {
+			if outdated, known := cliOutdatedForReviewFinding(version); known {
+				body["client_version"], body["min_client_version"], body["client_outdated"] = version, minReviewFindingRevisionCLI, outdated
+				if outdated {
+					msg += "; your CLI " + version + " is older than " + minReviewFindingRevisionCLI + "; update the multica CLI"
+				}
+			}
+		}
+		body["error"] = msg
+		writeJSON(w, http.StatusBadRequest, body)
 	case errors.Is(err, errVerdictNeedsRun):
 		writeJSON(w, http.StatusForbidden, map[string]any{"error": err.Error(), "code": "review_verdict_run_required"})
 	default:

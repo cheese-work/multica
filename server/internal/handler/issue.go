@@ -4257,7 +4257,7 @@ func (h *Handler) resolveCreateWorkflow(w http.ResponseWriter, r *http.Request, 
 			return overrideID, nil, project, false
 		}
 	}
-	if writeIssueWorkflowError(w, err) {
+	if writeIssueWorkflowError(r.Context(), w, err) {
 		return overrideID, nil, project, false
 	}
 	if err != nil {
@@ -4589,7 +4589,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			status = issueworkflow.DiscoveryFallback(outside, status)
 		}
 		if err := issueworkflow.CheckStatusOutsideProject(outside, status); err != nil {
-			writeIssueWorkflowError(w, err)
+			writeIssueWorkflowError(r.Context(), w, err)
 			return
 		}
 	}
@@ -4602,7 +4602,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			status = issueworkflow.DiscoveryFallback(createWorkflow, status)
 		}
 		if err := issueworkflow.CheckStatus(createWorkflow, status); err != nil {
-			writeIssueWorkflowError(w, err)
+			writeIssueWorkflowError(r.Context(), w, err)
 			return
 		}
 		// A named assignee is left alone here: the service swaps in the handler
@@ -4922,7 +4922,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			"the target status was archived while this request was in flight; reload the status list and retry")
 		return
 	}
-	if writeIssueWorkflowError(w, err) {
+	if writeIssueWorkflowError(r.Context(), w, err) {
 		return
 	}
 	if writeIssueCreatePropertyError(w, err) {
@@ -5609,7 +5609,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err != nil {
-		if writeIssueWorkflowError(w, err) {
+		if writeIssueWorkflowError(r.Context(), w, err) {
 			return
 		}
 		slog.Error("update issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
@@ -5793,7 +5793,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		h.flushRefusedIntakeCall(r.Context(), workflowWrite)
-		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeHandoffCommentError(w, err) || h.writeHandoffOperationError(r.Context(), w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err) {
+		if writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeHandoffCommentError(w, err) || h.writeHandoffOperationError(r.Context(), w, err) || writeIssueWorkflowError(r.Context(), w, err) || writeBudgetRebindingError(w, err) {
 			return
 		}
 		var approval quickMoveApproval

@@ -138,7 +138,7 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 	// The workflow the issue would follow, whether the override or, once
 	// cleared, the project's.
 	next, _, err := issueworkflow.ForIssue(ctx, qtx, issue.WorkspaceID, target, issue.ProjectID)
-	if writeIssueWorkflowError(w, err) {
+	if writeIssueWorkflowError(r.Context(), w, err) {
 		return
 	}
 	if err != nil {
@@ -174,7 +174,7 @@ func (h *Handler) SetIssueWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := issueworkflow.CheckStatus(next, issue.Status); err != nil {
-		writeIssueWorkflowError(w, err)
+		writeIssueWorkflowError(r.Context(), w, err)
 		return
 	}
 	if openCard {

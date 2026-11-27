@@ -159,6 +159,10 @@ import { WorkflowDemo } from "@/components/demos/workflow-demo";
 
 `pr.none_open` 是第三个进入关卡，它读取的是 PR，而不是智能体写下的内容。当事项没有关联任何打开或草稿状态的 PR（工作流包含子事项 PR 时，子事项也一并检查）时通过。已合并或已关闭的 PR 不会阻止它，没有 PR 的事项可以通过。把它放在智能体用来关闭事项的步骤上（例如 `agent_accepted`），并给前一个步骤添加指向该步骤的 `agent_done` 边，智能体就能关闭没有可合并内容的 `in_review` 事项。只要有 PR 处于打开状态，智能体就不能使用这条捷径：拒绝信息会逐个列出打开的 PR（例如 `acme/widget#12 (draft)`）和修复方法，即合并或关闭它。与其他进入关卡一样，它不能用作流转守卫，`multica workflow lint` 接受它出现在 `entry` 中。
 
+## 被拒绝的评审结论 [#refused-verdicts]
+
+服务器会用 `400` 和三个代码之一拒绝评审者的结论：`review_verdict_findings_required`（要求修改的结论需要 P0 或 P1 问题）、`review_finding_category_required`（每个问题都需要类别）和 `review_round_new_blocker`（第 2 轮起，新的 P0 或 P1 需要 `@revision`）。拒绝信息在 `error` 和 `cli_form` 中给出 CLI 写法：`--finding "P1@<category>:<summary>"`，`review_round_new_blocker` 则是 `--finding "P1@<category>@revision:<summary>"`。如果你的 CLI 早于 `0.10.0-20261125-1520`，`review_round_new_blocker` 还会说明这一点，并加上 `client_version`、`min_client_version` 和 `client_outdated`；请更新 multica CLI。服务器无法比较的 CLI 版本（`dev`、未提供）不会被判为过旧。
+
 ## 相关指引
 
 - [项目](/projects) — 组织使用同一套流程的任务。

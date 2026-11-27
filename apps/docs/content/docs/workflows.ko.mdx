@@ -159,6 +159,10 @@ Quick 워크플로에 연결될 때마다 이슈의 활동에 `quick_entry` 행�
 
 `pr.none_open`은 세 번째 진입 게이트로, 에이전트가 쓴 내용이 아니라 PR을 읽습니다. 이슈에, 그리고 워크플로가 하위 이슈의 PR을 포함하면 하위 이슈에도 열린 PR이나 초안 PR이 연결되어 있지 않을 때 충족됩니다. 병합되었거나 닫힌 PR은 방해하지 않으며, PR이 없는 이슈는 통과합니다. 에이전트가 닫는 단계(예: `agent_accepted`)에 두고 그 앞 단계에서 해당 단계로 가는 `agent_done` 간선을 만들면, 에이전트가 병합할 것이 남지 않은 `in_review` 이슈를 닫을 수 있습니다. PR이 열려 있는 동안에는 이 지름길을 쓸 수 없습니다. 거부 메시지는 열린 PR을 하나씩(예: `acme/widget#12 (draft)`) 해결 방법과 함께 알려 주며, 해결 방법은 그 PR을 병합하거나 닫는 것입니다. 다른 진입 게이트와 마찬가지로 전환 가드로는 받아들여지지 않으며, `multica workflow lint`는 `entry`에서 받아들입니다.
 
+## 거부된 리뷰 판정 [#refused-verdicts]
+
+서버는 리뷰어의 판정을 `400`과 세 가지 코드 중 하나로 거부합니다. `review_verdict_findings_required`(변경 요청 판정에는 P0 또는 P1 지적이 필요), `review_finding_category_required`(모든 지적에 카테고리가 필요), `review_round_new_blocker`(2회차부터 새 P0 또는 P1에는 `@revision`이 필요)입니다. 거부 응답의 `error`와 `cli_form`에 CLI 형식이 담깁니다. `--finding "P1@<category>:<summary>"`, `review_round_new_blocker`는 `--finding "P1@<category>@revision:<summary>"`입니다. CLI가 `0.10.0-20261125-1520`보다 오래되면 `review_round_new_blocker`가 이를 알리고 `client_version`, `min_client_version`, `client_outdated`를 더합니다. multica CLI를 업데이트하세요. 서버가 비교할 수 없는 CLI 버전(`dev`, 없음)은 오래된 것으로 보고되지 않습니다.
+
 ## 관련 가이드
 
 - [프로젝트](/projects) — 같은 절차를 따르는 태스크를 모읍니다.

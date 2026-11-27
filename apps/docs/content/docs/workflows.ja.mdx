@@ -159,6 +159,10 @@ Quick ワークフローへの紐付けのたびに、課題のアクティビ�
 
 `pr.none_open` は 3 つ目の入場ゲートで、エージェントが書いた内容ではなく PR を読みます。課題に、またワークフローが子の PR を含む場合は子にも、オープンまたはドラフトの PR が紐づいていないときに成立します。マージ済み・クローズ済みの PR は妨げにならず、PR のない課題は通ります。エージェントが完了にするステップ（例: `agent_accepted`）に置き、その前のステップからそのステップへの `agent_done` エッジを設定すると、マージするものが残っていない `in_review` の課題をエージェントが閉じられます。PR が開いている間は近道を使えません。拒否メッセージは開いている PR を 1 件ずつ（例: `acme/widget#12 (draft)`）修正方法とともに示します。修正方法は、その PR をマージするかクローズすることです。ほかの入場ゲートと同様に遷移ガードとしては受け付けられず、`multica workflow lint` は `entry` 内で受け付けます。
 
+## 拒否されたレビュー判定 [#refused-verdicts]
+
+サーバーはレビュアーの判定を `400` と次の3つのコードのいずれかで拒否します。`review_verdict_findings_required`（変更依頼の判定には P0 または P1 の指摘が必要）、`review_finding_category_required`（すべての指摘にカテゴリが必要）、`review_round_new_blocker`（2回目以降の新しい P0 または P1 には `@revision` が必要）です。拒否の `error` と `cli_form` に CLI の形式が示されます。`--finding "P1@<category>:<summary>"`、`review_round_new_blocker` では `--finding "P1@<category>@revision:<summary>"` です。CLI が `0.10.0-20261125-1520` より古い場合、`review_round_new_blocker` はそれも伝え、`client_version`、`min_client_version`、`client_outdated` を加えます。multica CLI を更新してください。サーバーが比較できない CLI バージョン（`dev`、未送信）は、古いとは判定されません。
+
 ## 関連ガイド
 
 - [プロジェクト](/projects) — 同じ流れで進むタスクをまとめます。

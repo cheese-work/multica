@@ -822,7 +822,7 @@ func (h *Handler) createManualCommentSubIssue(w http.ResponseWriter, r *http.Req
 		writeError(w, handoffErr.status, handoffErr.message)
 		return errSourceContextResponseWritten
 	}
-	if writeIssueWorkflowError(w, err) {
+	if writeIssueWorkflowError(r.Context(), w, err) {
 		return errSourceContextResponseWritten
 	}
 	if err != nil {

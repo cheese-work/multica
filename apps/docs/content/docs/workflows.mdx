@@ -159,6 +159,10 @@ Both gates fail closed: a value they cannot read counts as a failure. Neither is
 
 `pr.none_open` is a third entry gate that reads PRs, not what an agent wrote. It holds when no open or draft PR is linked to the issue, or to its children when the workflow includes child PRs. Merged and closed PRs do not hold it back, and an issue with no PR passes. Put it on the step an agent closes into (for example `agent_accepted`) and give the step before it an `agent_done` edge to that step, so an agent can close an `in_review` issue that has nothing left to merge. An agent can never use the shortcut while a PR is open: the refusal lists each open PR (for example `acme/widget#12 (draft)`) with the fix, which is to merge or close it. Like the other entry gates it is not accepted as a transition guard, and `multica workflow lint` accepts it in `entry`.
 
+## Refused verdicts [#refused-verdicts]
+
+The server refuses a reviewer's verdict with `400` and one of three codes: `review_verdict_findings_required` (a changes verdict needs a P0 or P1 finding), `review_finding_category_required` (every finding needs a category) and `review_round_new_blocker` (from round 2 on, a new P0 or P1 needs `@revision`). The refusal names the CLI form in `error` and in `cli_form`: `--finding "P1@<category>:<summary>"`, or `--finding "P1@<category>@revision:<summary>"` for `review_round_new_blocker`. When your CLI is older than `0.10.0-20261125-1520`, `review_round_new_blocker` also says so, and adds `client_version`, `min_client_version` and `client_outdated`; update the multica CLI. A CLI version the server cannot compare (`dev`, no version) is never reported as outdated.
+
 ## Related guides
 
 - [Projects](/projects) — organize the issues that follow a workflow.

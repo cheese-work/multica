@@ -494,8 +494,8 @@ func workflowHandoffPayload(issue db.Issue, hand *workflowHandoff, note string, 
 
 // writeIssueWorkflowError answers a workflow rejection. It reports false when
 // err is not one, so the caller can fall through to its generic 500.
-func writeIssueWorkflowError(w http.ResponseWriter, err error) bool {
-	if writeReviewLoopError(w, err) {
+func writeIssueWorkflowError(ctx context.Context, w http.ResponseWriter, err error) bool {
+	if writeReviewLoopError(ctx, w, err) {
 		return true
 	}
 	if errors.Is(err, issueworkflow.ErrOverrideMissing) {
