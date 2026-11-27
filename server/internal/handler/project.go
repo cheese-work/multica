@@ -926,6 +926,13 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if delegatesKeyPresent {
+		delegates, ok := h.parseDecisionDelegates(w, r, wsUUID, userID, req.DecisionDelegates)
+		if !ok {
+			return
+		}
+		params.DecisionDelegatesSet, params.DecisionDelegates = true, delegates
+	}
 	var admission featureAdmission
 	if access.privateAddition != "" {
 		if admission, ok = h.requireFeatureAddition(w, r, prevProject.WorkspaceID, entitlement.FeaturePrivateProjects, access.privateAddition); !ok {
@@ -938,9 +945,49 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	project, ok := h.writeProjectUpdate(w, r, params, access, userID)
-	if !ok {
+	// The access update (visibility, members) runs inside the same transaction
+	// as the update and its audit row, so a rejected member list leaves the
+	// project untouched.
+	var updatedProject db.Project
+	project, err := h.TaskService.UpdateProject(r.Context(), wsUUID, params, actorType == "agent",
+		func(ctx context.Context, q *db.Queries, previous, updated db.Project) error {
+			updatedProject = updated
+			if !access.empty() {
+				var accessErr error
+				if updatedProject, accessErr = h.applyProjectAccessUpdate(w, r, q, updated, access, userID); accessErr != nil {
+					return accessErr
+				}
+			}
+			if err := h.writeAudit(ctx, q, r, auditInput{
+				Kind: "project.update", WorkspaceID: updated.WorkspaceID, TargetID: updated.ID,
+				Before: projectAuditFields(previous), After: projectAuditFields(updatedProject),
+			}); err != nil {
+				return auditWriteError{err}
+			}
+			return nil
+		})
+	if err != nil {
+		if errors.Is(err, errProjectAccessRejected) {
+			return // applyProjectAccessUpdate already wrote the response
+		}
+		var auditErr auditWriteError
+		if errors.As(err, &auditErr) {
+			writeAuditFailure(w, r, auditErr.err, "project.update")
+			return
+		}
+		if writeProjectAdmissionError(w, err) {
+			return
+		}
+		h.writeProjectWriteError(w, r, err, "update")
 		return
+	}
+	project = updatedProject
+	if access.visibility != "" {
+		slog.Info("project visibility changed", append(logger.RequestAttrs(r),
+			"project_id", uuidToString(project.ID), "visibility", project.Visibility)...)
+	}
+	if len(access.addIDs) > 0 {
+		h.publishProjectMembersChanged(project, parseUUIDOrInvalid(userID))
 	}
 	admission.admitted(r.Context())
 	guestAdmission.admitted(r.Context())

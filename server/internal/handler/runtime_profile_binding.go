@@ -24,13 +24,26 @@ type profileMachineBindingResult struct {
 // Binding and retirement are atomic. The profile lock also prevents a stale
 // daemon from recreating a removed instance before the binding commits.
 func (h *Handler) bindRuntimeProfileMachine(ctx context.Context, params db.UpdateRuntimeProfileParams) (profileMachineBindingResult, error) {
-	var result profileMachineBindingResult
 	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return profileMachineBindingResult{}, err
+	}
+	defer tx.Rollback(ctx)
+	result, err := bindRuntimeProfileMachineTx(ctx, h.Queries.WithTx(tx), params)
 	if err != nil {
 		return result, err
 	}
-	defer tx.Rollback(ctx)
-	qtx := h.Queries.WithTx(tx)
+	if err := tx.Commit(ctx); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// bindRuntimeProfileMachineTx runs the binding on the caller's transaction, so
+// the fork's UpdateRuntimeProfile writes its audit row in the same one
+// (CHE-9434 integration).
+func bindRuntimeProfileMachineTx(ctx context.Context, qtx *db.Queries, params db.UpdateRuntimeProfileParams) (profileMachineBindingResult, error) {
+	var result profileMachineBindingResult
 	profile, err := qtx.LockRuntimeProfileForDelete(ctx, db.LockRuntimeProfileForDeleteParams{ID: params.ID, WorkspaceID: params.WorkspaceID})
 	if err != nil {
 		return result, err
@@ -81,9 +94,6 @@ func (h *Handler) bindRuntimeProfileMachine(ctx context.Context, params db.Updat
 	}
 	result.profile, err = qtx.UpdateRuntimeProfile(ctx, params)
 	if err != nil {
-		return result, err
-	}
-	if err := tx.Commit(ctx); err != nil {
 		return result, err
 	}
 	return result, nil

@@ -2716,29 +2716,9 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 
+	// beginSkillFileWrite (fork) already took the skill lock, stamped the
+	// version baseline and touched the parent, in UpdateSkill's lock order.
 	if !checkSkillBaseRevision(w, r, qtx, skill.ID, req.BaseRevision) {
-		return
-	}
-	// The baseline runs before TouchSkill: it locks the skill row (the same
-	// lock TouchSkill and UpdateSkill take, so lock order is unchanged) and
-	// stamps a pre-versioning skill's baseline with its real updated_at.
-	if err := ensureSkillVersionBaseline(r.Context(), qtx, skill.ID); err != nil {
-		slog.Warn("skill version baseline failed", append(logger.RequestAttrs(r), "error", err)...)
-		writeError(w, http.StatusInternalServerError, "failed to upsert skill file")
-		return
-	}
-	// Touch the parent first so its row lock is taken before the file write,
-	// in the same order UpdateSkill takes them.
-	skill, err = qtx.TouchSkill(r.Context(), db.TouchSkillParams{
-		ID:          skill.ID,
-		WorkspaceID: skill.WorkspaceID,
-	})
-	if errors.Is(err, pgx.ErrNoRows) {
-		writeError(w, http.StatusNotFound, "skill not found")
-		return
-	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to list skill files")
 		return
 	}
 	sf, err := qtx.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
@@ -2819,6 +2799,7 @@ func (h *Handler) DeleteSkillFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
 
 	if !checkSkillBaseRevision(w, r, qtx, skill.ID, baseRevision) {
 		return

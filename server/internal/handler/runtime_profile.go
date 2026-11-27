@@ -219,7 +219,15 @@ func (h *Handler) CreateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	profile, err := h.Queries.CreateRuntimeProfile(r.Context(), db.CreateRuntimeProfileParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create runtime profile")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	profile, err := qtx.CreateRuntimeProfile(r.Context(), db.CreateRuntimeProfileParams{
 		WorkspaceID:    wsUUID,
 		DaemonID:       machines[0],
 		DisplayName:    req.DisplayName,
@@ -384,20 +392,42 @@ func (h *Handler) UpdateRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		params.Enabled = pgtype.Bool{Bool: *req.Enabled, Valid: true}
 	}
 
-	var profile db.RuntimeProfile
-	var err error
-	var binding profileMachineBindingResult
+	var machine string
 	if req.DaemonID != nil {
-		machine := strings.TrimSpace(*req.DaemonID)
+		machine = strings.TrimSpace(*req.DaemonID)
 		if machine == "" {
 			writeError(w, http.StatusBadRequest, "daemon_id cannot be empty")
 			return
 		}
 		params.DaemonID = strToText(machine)
-		binding, err = h.bindRuntimeProfileMachine(r.Context(), params)
+	}
+
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to update runtime profile")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	// The row lock makes the audited before-state the one this update replaces.
+	before, err := qtx.LockRuntimeProfileForDelete(r.Context(), db.LockRuntimeProfileForDeleteParams{ID: profileUUID, WorkspaceID: wsUUID})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "runtime profile not found")
+			return
+		}
+		slog.Error("UpdateRuntimeProfile lock failed", "error", err, "profile_id", uuidToString(profileUUID))
+		writeError(w, http.StatusInternalServerError, "failed to update runtime profile")
+		return
+	}
+	var profile db.RuntimeProfile
+	var binding profileMachineBindingResult
+	if req.DaemonID != nil {
+		binding, err = bindRuntimeProfileMachineTx(r.Context(), qtx, params)
 		profile = binding.profile
 	} else {
-		profile, err = h.Queries.UpdateRuntimeProfile(r.Context(), params)
+		profile, err = qtx.UpdateRuntimeProfile(r.Context(), params)
 	}
 	if err != nil {
 		if errors.Is(err, errProfileMachineUnavailable) {

@@ -175,6 +175,7 @@ func (h *Handler) ListIssueDuplicates(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
+	readFilter := h.newReadFilter(r)
 	fill := h.newStatusCategoryFiller(r.Context(), issue.WorkspaceID, hidden, nil)
 
 	var duplicateOf *IssueResponse
