@@ -849,6 +849,18 @@ WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
   AND metadata ? sqlc.arg('key')::text
 RETURNING id, workspace_id, metadata, revision;
 
+-- name: DeclareIssueMetadataKeyDelete :one
+-- Delete for a key a guard plugin declared. Unlike DeleteIssueMetadataKey it
+-- has no `metadata ? key` condition: an absent key still bumps revision, so
+-- the writer record and the revision stay in step.
+UPDATE issue SET
+    metadata = metadata - sqlc.arg('key')::text,
+    revision = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at = now()
+WHERE id = sqlc.arg('id') AND workspace_id = sqlc.arg('workspace_id')
+RETURNING id, workspace_id, metadata, revision;
+
 -- name: MarkIssueFirstExecuted :one
 -- Flips first_executed_at from NULL to now() atomically. Returns the row if
 -- this was the first time the issue was executed; no rows otherwise. The

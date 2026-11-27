@@ -126,12 +126,30 @@ func TestDeclaredMetadataKeyDeleteRecordsWriter(t *testing.T) {
 		t.Fatalf("metadata_written rows = %+v, want one delete row", rows)
 	}
 
-	// Deleting a key that is already absent changes nothing, declared or not.
+	// A declared key is recorded even when it is already absent: the revision
+	// moves and a second writer row says who asked.
+	testutil.Call(t, testHandler.DeleteIssueMetadataKey,
+		mutationRequest(http.MethodDelete, issueID, "declared_deleted", nil)).
+		Want(http.StatusOK).JSON(&body)
+	if body.IssueRevision != 3 {
+		t.Fatalf("revision after deleting an absent declared key = %d, want 3", body.IssueRevision)
+	}
+	if rows := metadataWrittenRows(t, issueID); len(rows) != 2 || !rows[1].Deleted {
+		t.Fatalf("metadata_written rows = %+v, want two delete rows", rows)
+	}
+}
+
+// An undeclared key keeps today's no-op on delete of an absent key.
+func TestUndeclaredMetadataKeyDeleteOfAbsentKeyStaysNoop(t *testing.T) {
+	issueID := dbfx.Issue(t, "undeclared absent delete", testutil.Cols{
+		"metadata": testutil.Raw(`'{"other":"x"}'::jsonb`),
+		"revision": 4,
+	})
 	before := readMetadataRowState(t, issueID)
 	testutil.Call(t, testHandler.DeleteIssueMetadataKey,
-		mutationRequest(http.MethodDelete, issueID, "declared_deleted", nil)).Want(http.StatusOK)
-	if after := readMetadataRowState(t, issueID); after != before || len(metadataWrittenRows(t, issueID)) != 1 {
-		t.Fatalf("delete of an absent declared key changed state or wrote a row")
+		mutationRequest(http.MethodDelete, issueID, "never_declared", nil)).Want(http.StatusOK)
+	if after := readMetadataRowState(t, issueID); after != before || len(metadataWrittenRows(t, issueID)) != 0 {
+		t.Fatalf("delete of an absent undeclared key changed state or wrote a row")
 	}
 }
 

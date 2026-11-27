@@ -566,6 +566,44 @@ func (q *Queries) DeclareIssueMetadataKey(ctx context.Context, arg DeclareIssueM
 	return i, err
 }
 
+const declareIssueMetadataKeyDelete = `-- name: DeclareIssueMetadataKeyDelete :one
+UPDATE issue SET
+    metadata = metadata - $1::text,
+    revision = revision + 1,
+    last_activity_at = GREATEST(COALESCE(last_activity_at, updated_at), now()),
+    updated_at = now()
+WHERE id = $2 AND workspace_id = $3
+RETURNING id, workspace_id, metadata, revision
+`
+
+type DeclareIssueMetadataKeyDeleteParams struct {
+	Key         string      `json:"key"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type DeclareIssueMetadataKeyDeleteRow struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Metadata    []byte      `json:"metadata"`
+	Revision    int64       `json:"revision"`
+}
+
+// Delete for a key a guard plugin declared. Unlike DeleteIssueMetadataKey it
+// has no `metadata ? key` condition: an absent key still bumps revision, so
+// the writer record and the revision stay in step.
+func (q *Queries) DeclareIssueMetadataKeyDelete(ctx context.Context, arg DeclareIssueMetadataKeyDeleteParams) (DeclareIssueMetadataKeyDeleteRow, error) {
+	row := q.db.QueryRow(ctx, declareIssueMetadataKeyDelete, arg.Key, arg.ID, arg.WorkspaceID)
+	var i DeclareIssueMetadataKeyDeleteRow
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Metadata,
+		&i.Revision,
+	)
+	return i, err
+}
+
 const deleteIssue = `-- name: DeleteIssue :exec
 WITH target AS (
     SELECT issue.id FROM issue WHERE issue.id = $1 AND issue.workspace_id = $2

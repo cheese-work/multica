@@ -360,18 +360,18 @@ func (h *Handler) DeleteIssueMetadataKey(w http.ResponseWriter, r *http.Request)
 		if err != nil {
 			return db.DeleteIssueMetadataKeyRow{}, err
 		}
-		row, err := q.DeleteIssueMetadataKey(r.Context(), db.DeleteIssueMetadataKeyParams{
-			ID:          issue.ID,
-			WorkspaceID: issue.WorkspaceID,
-			Key:         key,
-		})
-		if err != nil || !declared {
-			return row, err
+		params := db.DeleteIssueMetadataKeyParams{ID: issue.ID, WorkspaceID: issue.WorkspaceID, Key: key}
+		if !declared {
+			return q.DeleteIssueMetadataKey(r.Context(), params)
+		}
+		row, err := q.DeclareIssueMetadataKeyDelete(r.Context(), db.DeclareIssueMetadataKeyDeleteParams(params))
+		if err != nil {
+			return db.DeleteIssueMetadataKeyRow{}, err
 		}
 		if err := recordEntryActivity(r.Context(), q, issue, actorType, actorID, activityMetadataWritten, map[string]any{"key": key, "deleted": true}); err != nil {
 			return db.DeleteIssueMetadataKeyRow{}, err
 		}
-		return row, nil
+		return db.DeleteIssueMetadataKeyRow(row), nil
 	})
 	queryDuration := time.Since(queryStarted)
 	if err != nil {
