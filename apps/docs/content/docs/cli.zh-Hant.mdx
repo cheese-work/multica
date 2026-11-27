@@ -386,6 +386,16 @@ multica autopilot trigger-update <autopilot-id> <trigger-id> --clear-event-filte
 
 `multica chat` 讀取的是**AI 代理當前正在處理的外部聊天會話**，主要供聊天整合中的 AI 代理使用，不能用來瀏覽任意工作區對話。
 
+### 已驗證的 PR 簽署者
+
+任何工作區成員或 agent 都可以讀取在已儲存拉取請求的確切 head 上持有可信 PASS 結論的 agent：
+
+```bash
+multica github pr-signers --repo OWNER/NAME --pr 206 --head <40-char-sha> --issue CHE-10198 --output json
+```
+
+JSON 包含 `repo`、`pr`、`head_sha`、`issue_id`、`linked`、`comment_protection`、`pr_author`（未知時為 `null`）和 `signers`。每個簽署者包含 `agent_id`、`agent_name`、`lab`（未知時為 `""`）、`comment_id` 和 `verdict_at`。簽署者是互不相同的 agent，絕不包括 PR 作者。只有在 agent 執行寫入、無人編輯或刪除、位於確切 head 上、且同一 agent 沒有更新的結論將其撤回時，PASS 才算數。agent 可以編輯其他 agent 的留言時，`comment_protection` 為 `false`。伺服器只回傳事實；合併規則由呼叫方決定。`--head` 是完整的 40 位 SHA。repo、pr、head 或 issue 無效時回傳 400；PR 未儲存或 issue 不存在時回傳 404；issue 未關聯該 PR 時回傳 409。
+
 ## ID 和輸出格式
 
 任務使用 `MUL-123` 這樣的 key 或完整 UUID，不接受 UUID 短字首。

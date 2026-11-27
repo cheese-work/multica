@@ -785,6 +785,16 @@ multica system1 report [--scope <scope>] --output json
 
 `--scope` is `test_first_waiver` or `ci:<repo>:<protocol>`. Each row covers the latest epoch of one predictor version. Only observations created at or after the epoch start count, and a new predictor version opens its own epoch. A case is one prediction with a label of record (the newest label that is not superseded). `denominator` counts cases with a non-abstaining prediction and a mapped label, `agreed` those where they match, `abstained` labelled cases the predictor skipped, and `unmapped` free-text answers. `status` is `qualified` at 7 days, a denominator of at least 20 and agreement of at least 90%. It is `insufficient_data` after 4 weeks with fewer than 20 counted cases, `demoted` once an epoch is demoted, and `collecting` otherwise.
 
+### Verified PR signers
+
+Any workspace member or agent reads the agents whose trusted PASS verdict stands on the exact head of a stored pull request:
+
+```bash
+multica github pr-signers --repo OWNER/NAME --pr 206 --head <40-char-sha> --issue CHE-10198 --output json
+```
+
+The JSON holds `repo`, `pr`, `head_sha`, `issue_id`, `linked`, `comment_protection`, `pr_author` (`null` when unknown) and `signers`. Each signer has `agent_id`, `agent_name`, `lab` (`""` when unknown), `comment_id` and `verdict_at`. A signer is a distinct agent, never the PR author. A PASS counts only when an agent run wrote it, nobody edited or deleted it, it is on the exact head and no newer verdict from the same agent withdrew it. `comment_protection` is `false` when agents can edit another agent's comment. The server returns facts only; the merge rule lives in the caller. `--head` is the full 40-character SHA. The server answers 400 for a bad repo, pr, head or issue, 404 when the PR is not stored or the issue does not exist, and 409 when the issue is not linked to the PR.
+
 ## IDs and output formats
 
 Issues use keys like `MUL-123` or full UUIDs; short UUID prefixes are not accepted.

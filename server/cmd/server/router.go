@@ -2322,6 +2322,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.With(humanOnly, middleware.RequireWorkspaceRole(queries, "owner", "admin")).Delete("/api/github/merge-vetoes", h.DeleteMergeVeto)
 			// GitHub intake delivery metadata (CHE-2669): read-only, any member.
 			r.Get("/api/github/intake", h.ListGitHubIntake)
+			// Verified PR signers (CHE-10268): facts only, any member or agent token reads.
+			r.Get("/api/github/pull-requests/signers", h.GetPullRequestSigners)
 
 			// Local search index sync for Web/Desktop (MUL-7754). Human clients
 			// only: agents search through /api/issues/search.
