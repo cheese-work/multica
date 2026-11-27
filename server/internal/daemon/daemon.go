@@ -858,6 +858,39 @@ type profileLaunchSpec struct {
 	fixedArgs []string
 }
 
+// logResolvedConfig logs the effective daemon configuration at debug level.
+func (d *Daemon) logResolvedConfig() {
+	d.logger.Debug("daemon config resolved",
+		"daemon_id", d.cfg.DaemonID,
+		"device_name", d.cfg.DeviceName,
+		"workspaces_root", d.cfg.WorkspacesRoot,
+		"health_port", d.cfg.HealthPort,
+		"poll_interval", d.cfg.PollInterval,
+		"ws_claim_poll_interval", d.cfg.WSClaimPollInterval,
+		"heartbeat_interval", d.cfg.HeartbeatInterval,
+		"agent_timeout", d.cfg.AgentTimeout,
+		"codex_agent_timeout", d.cfg.CodexAgentTimeout,
+		"idle_watchdog", d.cfg.AgentIdleWatchdog,
+		"silence_warn_after", d.cfg.AgentSilenceWarnAfter,
+		"silence_alert_after", d.cfg.AgentSilenceAlertAfter,
+		// Logged explicitly because it is normally derived from idle_watchdog:
+		// without it an operator cannot read the tool budget actually in effect.
+		"tool_watchdog", d.cfg.AgentToolWatchdog,
+		"opencode_idle_watchdog", d.cfg.OpenCodeIdleWatchdog,
+		// Derived from the watchdog budget too (Codex's own timer is not
+		// tool-aware), so it needs the same treatment as tool_watchdog: without
+		// it the effective Codex budget is invisible until a timeout fires.
+		"codex_semantic_inactivity", d.cfg.CodexSemanticInactivityTimeout,
+		// 0 = near-limit warning off. Logged so smoke evidence can read the
+		// effective MULTICA_AGENT_NEAR_LIMIT_WARNING value directly.
+		"near_limit_warning", d.cfg.AgentNearLimitWarning,
+		"max_concurrent_tasks", d.cfg.MaxConcurrentTasks,
+		"gc_enabled", d.cfg.GCEnabled,
+		"auto_update", d.cfg.AutoUpdateEnabled,
+		"launched_by", d.cfg.LaunchedBy,
+	)
+}
+
 // New creates a new Daemon instance.
 func New(cfg Config, logger *slog.Logger) *Daemon {
 	cacheRoot := filepath.Join(cfg.WorkspacesRoot, ".repos")
@@ -2264,32 +2297,7 @@ func (d *Daemon) run(ctx context.Context, healthLn net.Listener) error {
 	if n := agent.CleanupStaleZcodeProviderSnapshots(); n > 0 {
 		d.logger.Info("removed stale ZCode provider credential snapshots", "count", n)
 	}
-	d.logger.Debug("daemon config resolved",
-		"daemon_id", d.cfg.DaemonID,
-		"device_name", d.cfg.DeviceName,
-		"workspaces_root", d.cfg.WorkspacesRoot,
-		"health_port", d.cfg.HealthPort,
-		"poll_interval", d.cfg.PollInterval,
-		"ws_claim_poll_interval", d.cfg.WSClaimPollInterval,
-		"heartbeat_interval", d.cfg.HeartbeatInterval,
-		"agent_timeout", d.cfg.AgentTimeout,
-		"codex_agent_timeout", d.cfg.CodexAgentTimeout,
-		"idle_watchdog", d.cfg.AgentIdleWatchdog,
-		"silence_warn_after", d.cfg.AgentSilenceWarnAfter,
-		"silence_alert_after", d.cfg.AgentSilenceAlertAfter,
-		// Logged explicitly because it is normally derived from idle_watchdog:
-		// without it an operator cannot read the tool budget actually in effect.
-		"tool_watchdog", d.cfg.AgentToolWatchdog,
-		"opencode_idle_watchdog", d.cfg.OpenCodeIdleWatchdog,
-		// Derived from the watchdog budget too (Codex's own timer is not
-		// tool-aware), so it needs the same treatment as tool_watchdog: without
-		// it the effective Codex budget is invisible until a timeout fires.
-		"codex_semantic_inactivity", d.cfg.CodexSemanticInactivityTimeout,
-		"max_concurrent_tasks", d.cfg.MaxConcurrentTasks,
-		"gc_enabled", d.cfg.GCEnabled,
-		"auto_update", d.cfg.AutoUpdateEnabled,
-		"launched_by", d.cfg.LaunchedBy,
-	)
+	d.logResolvedConfig()
 
 	// Mark the daemon-owned workspaces tree before any task runs. A sandbox
 	// fault can strip every MULTICA_* env var from an agent subprocess; the
