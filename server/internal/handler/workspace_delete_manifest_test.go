@@ -306,6 +306,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_taint_clear":                  workspaceDelete,
 	"issue_run_taint":                    workspaceDelete,
 	"runtime_profile":                    workspaceDelete,
+	"schema_contracts":                   workspaceDeleteKeep, // CHE-7486 N5r runner-created fence row per contract migration, no workspace_id.
 	"schema_migrations":                  workspaceDeleteKeep,
 	"search_index_change":                workspaceDelete,
 	"search_index_prune_mark":            workspaceDeleteKeep,

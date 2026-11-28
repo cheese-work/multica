@@ -375,3 +375,17 @@ CI job `migration-checks` (required through `backend-tests`, on `pull_request` a
 
 - **Order.** Runs only when the change adds `server/cmd/migrate/renumber-map.json`: a JSON array of `{"from": "<upstream stem>", "to": "<stem on this tree>"}` in upstream order. It fails when a `to` stem does not sort after every unmapped `up` file (byte order of the file name, as the runner sorts), when the `to` stems leave array order, when a `down` file is missing, or when a stem in this file's registries names no migration. Use a letter-suffix prefix after `999j_`: the numeric suggestion of `scripts/migration-prefix-check.mjs` sorts before it. Run locally: `node scripts/migration-order-check.mjs`.
 - **Parity.** Runs when the change touches `server/migrations` or this directory. `scripts/migration-parity.sh <base>` applies the tree to an empty database, applies the base commit and then the tree to a second one, and fails on any difference in normalized `pg_dump --schema-only`. When the map exists it also rolls back the `down` files of every stem the change adds over the base (the PR's own migrations, plus the mapped set when the base predates the map), rolls the same stems back on a copy of the base, and lists schema differences between the two (CHE-10205). A base that already holds the mapped stems is not rolled back past them. `scripts/migration-parity.test.sh` covers a clean and a leaking `down` file. Schema parity does not prove data preservation.
+
+## Contract migrations
+
+An up file whose first line is `-- multica:contract snapshot=<t1>[,<t2>] restore=<repo path>` is a contract migration (CHE-7486 N5r). Table names match `^[a-z_][a-z0-9_]*$`; the path is relative and has no `..`. A first line that starts with `-- multica:contract` and does not parse fails the run; it is never treated as "no contract". `server/internal/migrations/testdata/contract-lines.txt` lists valid and invalid lines.
+
+The runner applies a contract file in one transaction: `set_config('multica.contract_attempt', $MULTICA_CONTRACT_ATTEMPT or '', true)`, the file, the ledger row and the `schema_contracts` row (`version`, `attempt_id`, `snapshot_tables`, `restore`, `applied_at`; `attempt_id` is NULL without the variable). The down runs the down file, the ledger delete and the `schema_contracts` delete in one transaction. The runner creates `schema_contracts` beside the ledger table, in the same schema.
+
+Limits, checked before any statement runs:
+
+- A contract file cannot hold `CREATE INDEX CONCURRENTLY` (Postgres refuses it in a transaction). Put its indexes in the next plain migration files.
+- A contract file, up or down, cannot hold `BEGIN`, `COMMIT`, `ROLLBACK`, `END`, `ABORT` or `START`; the runner owns the transaction.
+- A contract version cannot have a registered condition.
+
+A file without the line runs as before.
