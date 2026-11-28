@@ -170,6 +170,12 @@ BEGIN
     END IF;
     LOCK TABLE chat_wakeup IN ACCESS EXCLUSIVE MODE;
 
+    -- X must have run.
+    EXECUTE 'SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)' INTO x_applied USING x_version;
+    IF NOT x_applied THEN
+        RAISE EXCEPTION 'restore: % has no schema_migrations row; there is nothing to restore', x_version;
+    END IF;
+
     -- Attempt id A.
     a := nullif(current_setting('multica.restore_attempt', true), '');
     IF to_regclass('schema_contracts') IS NOT NULL THEN
@@ -192,11 +198,7 @@ BEGIN
     snap := format('%I', 'chat_wakeup_fork_snapshot_' || a);
     saved := format('%I', 'chat_wakeup_upstream_saved_' || a);
 
-    -- X must have run, and the live table must be X's output.
-    EXECUTE 'SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)' INTO x_applied USING x_version;
-    IF NOT x_applied THEN
-        RAISE EXCEPTION 'restore: % has no schema_migrations row; there is nothing to restore', x_version;
-    END IF;
+    -- ... and the live table must be X's output.
     IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'chat_wakeup'::regclass AND attname = 'kind' AND NOT attisdropped)
        OR EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid = 'chat_wakeup'::regclass AND attname = 'created_by_task_id' AND NOT attisdropped) THEN
         RAISE EXCEPTION 'restore: chat_wakeup does not have the upstream shape; refusing';

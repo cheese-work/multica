@@ -980,6 +980,12 @@ func TestChatWakeupForkRestoreRefusals(t *testing.T) {
 		return s
 	}
 	before := state()
+	// With schema_contracts present (the N5r stack) X's row names the attempt: a
+	// setting must match it, and the "no attempt id" case cannot happen. The
+	// binding test covers those. Here the row follows the case, so each check
+	// below is reached.
+	hasContracts, _ := queryStrings(ctx, fx.pool, `SELECT coalesce(to_regclass('schema_contracts')::text, '')`)
+	withRow := len(hasContracts) == 1 && hasContracts[0] != ""
 	cases := []struct {
 		name, attempt string
 		setup         string
@@ -992,6 +998,12 @@ func TestChatWakeupForkRestoreRefusals(t *testing.T) {
 		{"snapshot has another column list", restoreAttempt, `UPDATE chat_wakeup_fork_snapshot_meta SET rows = rows - 1; ALTER TABLE ` + fx.snap + ` ADD COLUMN extra text`, "fork chat_wakeup columns"},
 	}
 	for _, c := range cases {
+		if withRow && c.attempt == "" {
+			continue
+		}
+		if withRow {
+			fx.exec(t, `UPDATE schema_contracts SET attempt_id = $1 WHERE version = '99zzz00_chat_wakeup_fork_convert'`, c.attempt)
+		}
 		if c.setup != "" {
 			fx.exec(t, c.setup)
 		}
