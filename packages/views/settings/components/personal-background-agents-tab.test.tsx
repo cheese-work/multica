@@ -138,7 +138,7 @@ describe("PersonalBackgroundAgentsTab", () => {
     mount();
     expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't load your background agents.");
     expect(screen.getByRole("alert")).toHaveTextContent("Nothing was changed.");
-    expect(screen.queryByText("Loading settings…")).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading settings...")).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByRole("combobox", { name: "DM title: Agent" })).toBeInTheDocument();

@@ -17,6 +17,7 @@
     "autopilots": "Automatizaciones",
     "chats": "Chats",
     "skills": "Skills",
+    "docs": "Documentos",
     "new": "Nuevo",
     "best_match": "Mejor coincidencia",
     "actions": "Acciones",
@@ -143,7 +144,7 @@
   },
   "delegate": {
     "row": "Encargar a un agente: «{{prompt}}»",
-    "hint": "Creación rápida"
+    "hint": "Crear con agente"
   },
   "best": {
     "assign": "Asignar {{subject}} a {{name}}",
@@ -169,6 +170,7 @@
     "add_filter": "Add filter",
     "remove_filter": "Remove filter"
   },
+  "untitled_doc": "Sin título",
   "messages": {
     "untitled": "Untitled chat",
     "searching": "Searching messages…",

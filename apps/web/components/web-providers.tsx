@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import { CoreProvider } from "@multica/core/platform";
 import type { WSClient } from "@multica/core/api/ws-client";
 import { installUserTimingCap } from "@multica/core/diagnostics";
+import { registerEE } from "@multica/ee";
 import { createBrowserCookieLocaleAdapter } from "@multica/core/i18n/browser";
 import type { SupportedLocale } from "@multica/core/i18n";
 import packageJson from "../package.json";
@@ -17,6 +18,7 @@ import {
 } from "@/features/auth/auth-cookie";
 import { detectWebOS } from "@/platform/client-os";
 import { useUserLocaleSyncEnabled } from "@/platform/user-locale-sync";
+import { MotionProvider } from "@multica/views/common/motion-provider";
 
 function watchWSLifecycle(client: WSClient) {
   const onVisible = () => {
@@ -73,6 +75,8 @@ function deriveWsUrl(): string | undefined {
 const WEB_VERSION =
   process.env.NEXT_PUBLIC_APP_VERSION || packageJson.version || "dev";
 
+registerEE();
+
 export function WebProviders({
   children,
   locale,
@@ -102,29 +106,31 @@ export function WebProviders({
     if (process.env.NODE_ENV === "development") installUserTimingCap();
   }, []);
   return (
-    <LocaleBundle locale={locale}>
-      {(resources) => (
-        <CoreProvider
-          apiBaseUrl={apiBaseUrl}
-          wsUrl={wsUrl || deriveWsUrl()}
-          cookieAuth={cookieAuth}
-          onLogin={setLoggedInCookie}
-          onLogout={clearLoggedInCookie}
-          identity={identity}
-          locale={locale}
-          resources={resources}
-          localeAdapter={localeAdapter}
-          syncUserLocale={syncUserLocale}
-          onWSClientReady={watchWSLifecycle}
-        >
-          <WebNavigationProvider>
-            <WebScrollRestorationProvider>{children}</WebScrollRestorationProvider>
-            {process.env.NODE_ENV === "development" && devToolbarApiUrl && (
-              <WebDevToolbar apiUrl={devToolbarApiUrl} />
-            )}
-          </WebNavigationProvider>
-        </CoreProvider>
-      )}
-    </LocaleBundle>
+    <MotionProvider>
+      <LocaleBundle locale={locale}>
+        {(resources) => (
+          <CoreProvider
+            apiBaseUrl={apiBaseUrl}
+            wsUrl={wsUrl || deriveWsUrl()}
+            cookieAuth={cookieAuth}
+            onLogin={setLoggedInCookie}
+            onLogout={clearLoggedInCookie}
+            identity={identity}
+            locale={locale}
+            resources={resources}
+            localeAdapter={localeAdapter}
+            syncUserLocale={syncUserLocale}
+            onWSClientReady={watchWSLifecycle}
+          >
+            <WebNavigationProvider>
+              <WebScrollRestorationProvider>{children}</WebScrollRestorationProvider>
+              {process.env.NODE_ENV === "development" && devToolbarApiUrl && (
+                <WebDevToolbar apiUrl={devToolbarApiUrl} />
+              )}
+            </WebNavigationProvider>
+          </CoreProvider>
+        )}
+      </LocaleBundle>
+    </MotionProvider>
   );
 }

@@ -872,7 +872,7 @@ func (q *Queries) LockDecisionSessionNowait(ctx context.Context, arg LockDecisio
 }
 
 const lockDecisionSquadNowait = `-- name: LockDecisionSquadNowait :one
-SELECT id, workspace_id, name, description, leader_id, creator_id, created_at, updated_at, archived_at, archived_by, avatar_url, instructions FROM squad
+SELECT id, workspace_id, name, description, leader_id, creator_id, created_at, updated_at, archived_at, archived_by, avatar_url, instructions, handoff_mode FROM squad
 WHERE workspace_id = $1 AND id = $2
 FOR UPDATE NOWAIT
 `
@@ -899,6 +899,7 @@ func (q *Queries) LockDecisionSquadNowait(ctx context.Context, arg LockDecisionS
 		&i.ArchivedBy,
 		&i.AvatarUrl,
 		&i.Instructions,
+		&i.HandoffMode,
 	)
 	return i, err
 }
@@ -1248,7 +1249,7 @@ UPDATE issue SET project_id = $1::uuid, status = $2::text,
   revision = revision + 1, updated_at = now()
 WHERE id = $3::uuid AND workspace_id = $4::uuid
   AND project_id IS NOT DISTINCT FROM $5::uuid
-RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via, requester_user_id
+RETURNING id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at, start_date, metadata, stage, properties, revision, last_activity_at, triage_state, duplicate_of_issue_id, workflow_id, requested_by_id, max_runs_override, description_external_read, created_via, requester_user_id, description_revision
 `
 
 type SetIssueProjectFromDecisionParams struct {
@@ -1308,6 +1309,7 @@ func (q *Queries) SetIssueProjectFromDecision(ctx context.Context, arg SetIssueP
 		&i.DescriptionExternalRead,
 		&i.CreatedVia,
 		&i.RequesterUserID,
+		&i.DescriptionRevision,
 	)
 	return i, err
 }

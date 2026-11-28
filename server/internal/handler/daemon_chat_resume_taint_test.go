@@ -755,12 +755,7 @@ func TestEveryChatContentPathRestrictsADelegate(t *testing.T) {
 					"chat_session_id": chatID, "role": "assistant", "message_kind": "continuation_summary", "content": "summary",
 				})
 			})},
-		{"supplement claim", func(t *testing.T, _, _ string) string {
-			f := steeredFixture(t)
-			dbfx.Exec(t, `UPDATE chat_session SET taint_ids = '{t1}', taint_verified = true WHERE id = $1`, f.sessionID)
-			claimSteer(t, newChatSupplementDaemonClient(t), f)
-			return f.runningID
-		}},
+		{"supplement claim", func(t *testing.T, _, _ string) string { return claimTaintedChatGuidance(t) }},
 		{"history read", read("/api/chat/history?limit=10")},
 		{"thread read", read("/api/chat/thread")},
 		{"history read, tainted turn commits mid-read", readMidCommit("/api/chat/history?limit=10", false)},
@@ -770,8 +765,8 @@ func TestEveryChatContentPathRestrictsADelegate(t *testing.T) {
 	} {
 		t.Run(p.name, func(t *testing.T) {
 			var agentID, runtimeID string
-			// The supplement row builds its own agent (steeredFixture), which would
-			// collide on name with the one created here.
+			// The supplement row builds its own agent and runtime
+			// (claimTaintedChatGuidance).
 			if p.name != "supplement claim" {
 				agentID, runtimeID, _ = createRuntimeGuardAgent(t, context.Background())
 			}

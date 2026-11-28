@@ -4,6 +4,7 @@ import {
   type InvalidateQueryFilters,
   type Query,
 } from "@tanstack/react-query";
+import { inboxQueryRetry, inboxQueryRetryDelay } from "./inbox/retry";
 import { setWorkspaceSlugLookup } from "./paths/workspace-slugs";
 import { workspaceKeys } from "./workspace/queries";
 import type { Workspace } from "./types";
@@ -44,7 +45,7 @@ function deferInvalidationWhenHidden(qc: QueryClient): QueryClient {
 }
 
 export function createQueryClient(): QueryClient {
-  return deferInvalidationWhenHidden(new QueryClient({
+  const client = new QueryClient({
     defaultOptions: {
       queries: {
         staleTime: Infinity,
@@ -57,7 +58,16 @@ export function createQueryClient(): QueryClient {
         retry: false,
       },
     },
-  }));
+  });
+  // Keep the policy on the app client so custom clients and explicit query
+  // overrides retain their retry settings. A busy server (503 + Retry-After)
+  // is tried again a few times with backoff instead of leaving the Inbox
+  // looking empty (MUL-9635); see ./inbox/retry.
+  client.setQueryDefaults(["inbox"], {
+    retry: inboxQueryRetry,
+    retryDelay: (failureCount, error) => inboxQueryRetryDelay(failureCount, error),
+  });
+  return deferInvalidationWhenHidden(client);
 }
 
 /**

@@ -94,7 +94,10 @@ func (h *Handler) moveIssueOnEdgeTxAs(ctx context.Context, q *db.Queries, issue 
 	if handoff != nil {
 		rec.handoffWorkflow = handoff.def.Name
 	}
-	updated, cancelledWakeups, err := h.writeIssueLocked(withStatusRecord(ctx, rec), q, issue.WorkspaceID, params, write)
+	// params carries every field from the revision-checked snapshot. Upstream's
+	// writeIssueLocked takes untouched nullable fields from the locked row (nil
+	// rawFields), which is the same row here; a handoff's assignee is kept.
+	updated, _, cancelledWakeups, err := h.writeIssueLocked(withStatusRecord(ctx, rec), q, issue.WorkspaceID, params, write, nil, handoff != nil)
 	if err != nil {
 		return edgeMove{}, fmt.Errorf("status write failed: %w", err)
 	}

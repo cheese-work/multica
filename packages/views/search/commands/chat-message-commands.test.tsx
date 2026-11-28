@@ -107,7 +107,7 @@ describe("⌘K message search states", () => {
   it("shows the searching state while the request is in flight", async () => {
     searchChats.mockReturnValue(new Promise(() => {}));
     renderHarness("budget");
-    expect(await screen.findByRole("status")).toHaveTextContent("Searching messages…");
+    expect(await screen.findByRole("status")).toHaveTextContent("Searching messages...");
   });
 
   it("shows the error copy and Retry refetches; Retry has a 2px focus ring", async () => {

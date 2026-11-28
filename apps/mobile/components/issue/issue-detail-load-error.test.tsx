@@ -59,6 +59,7 @@ vi.mock("@/data/workspace-store", () => ({
   useWorkspaceStore: (sel: (s: { currentWorkspaceId: string }) => unknown) =>
     sel({ currentWorkspaceId: "ws1" }),
 }));
+vi.mock("@/lib/use-is-guest", () => ({ useIsGuest: () => false }));
 vi.mock("@/data/viewed-issues-store", () => ({ useViewedIssuesStore: { getState: () => ({ push: vi.fn() }) } }));
 vi.mock("@/data/comment-select-store", () => ({ useCommentSelectStore: { getState: () => ({ clear: vi.fn() }) } }));
 

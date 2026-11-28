@@ -398,6 +398,7 @@ func TestBuildClaudeArgsInheritsMCPByDefault(t *testing.T) {
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--verbose",
+		"--include-partial-messages",
 		"--permission-mode", "bypassPermissions",
 		"--disallowedTools", "AskUserQuestion",
 	}
@@ -631,7 +632,7 @@ func TestBuildClaudeInputEncodesUserMessage(t *testing.T) {
 	t.Parallel()
 
 	promptUUID := "b60ccafe-dc53-4479-a651-11063fa3ed32"
-	data, err := buildClaudeInput("say pong", promptUUID)
+	data, err := buildClaudeInput(promptUUID, "say pong")
 	if err != nil {
 		t.Fatalf("buildClaudeInput: %v", err)
 	}
@@ -1424,6 +1425,7 @@ func TestBuildClaudeArgs_AppendSystemPromptFile(t *testing.T) {
 
 // Golden captured from origin/main 86b9d79 (before the runtime-profile
 // change). Pins the `personal` launch args; passes on base and head.
+// --include-partial-messages was added by upstream v0.13.0 (incremental deltas).
 func TestBuildClaudeArgs_PersonalGolden(t *testing.T) {
 	rich := ExecOptions{
 		Model: "claude-x", MaxTurns: 7, SystemPrompt: "sys", ResumeSessionID: "sess-1",
@@ -1436,12 +1438,68 @@ func TestBuildClaudeArgs_PersonalGolden(t *testing.T) {
 		opts ExecOptions
 		want []string
 	}{
-		{"rich", rich, []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools", "AskUserQuestion", "--strict-mcp-config", "--model", "claude-x", "--max-turns", "7", "--resume", "sess-1", "--foo", "bar", "--settings", "/tmp/s.json"}},
-		{"empty", ExecOptions{}, []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools", "AskUserQuestion"}},
+		{"rich", rich, []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "bypassPermissions", "--disallowedTools", "AskUserQuestion", "--strict-mcp-config", "--model", "claude-x", "--max-turns", "7", "--resume", "sess-1", "--foo", "bar", "--settings", "/tmp/s.json"}},
+		{"empty", ExecOptions{}, []string{"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "bypassPermissions", "--disallowedTools", "AskUserQuestion"}},
 	}
 	for _, c := range cases {
 		if got := buildClaudeArgs(c.opts, slog.New(slog.NewTextHandler(io.Discard, nil))); !slices.Equal(got, c.want) {
 			t.Errorf("%s: personal args drifted from origin/main golden\n got: %q\nwant: %q", c.name, got, c.want)
 		}
+	}
+}
+
+func TestClaudeExecuteReportsRateLimits(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	fakePath := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\n" +
+		"IFS= read -r _\n" +
+		"printf '%s\\n' '{\"type\":\"system\",\"session_id\":\"sess-rate-limits\"}'\n" +
+		"printf '%s\\n' '{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\",\"unifiedWindows\":{\"five_hour\":{\"utilization\":0.25,\"resetsAt\":1795327200},\"seven_day\":{\"utilization\":0.5,\"resetsAt\":1795568400}}},\"session_id\":\"sess-rate-limits\"}'\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"sess-rate-limits\",\"result\":\"done\"}'\n"
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	backend, err := New("claude", Config{
+		ExecutablePath: fakePath,
+		Env:            map[string]string{"IS_SANDBOX": "1"},
+		Logger:         slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("new claude backend: %v", err)
+	}
+
+	snapshots := make(chan RateLimitSnapshot, 4)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "prompt-ignored", ExecOptions{
+		Timeout:      5 * time.Second,
+		OnRateLimits: func(s RateLimitSnapshot) { snapshots <- s },
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+	select {
+	case <-session.Result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	select {
+	case snap := <-snapshots:
+		if snap.Status != RateLimitStatusAllowed || len(snap.Windows) != 2 {
+			t.Fatalf("snapshot = %+v", snap)
+		}
+		if snap.Windows[0].Kind != RateLimitWindowSession || *snap.Windows[0].UsedPercent != 25 {
+			t.Fatalf("session window = %+v", snap.Windows[0])
+		}
+	default:
+		t.Fatal("rate_limit_event did not reach OnRateLimits")
 	}
 }

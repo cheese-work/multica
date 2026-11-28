@@ -299,7 +299,7 @@ func TestRoutingFailoverGivesTheFallbackTheStepBrief(t *testing.T) {
 	if !queued.ID.Valid {
 		t.Fatal("no run queued for the fallback agent")
 	}
-	got := testHandler.claimProjectWorkflow(ctx, issue, &queued)
+	got := testHandler.claimProjectWorkflow(ctx, issue, &queued, false, false)
 	if got == nil {
 		t.Fatal("fallback claim carries no workflow")
 	}

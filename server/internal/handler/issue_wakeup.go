@@ -134,6 +134,8 @@ func wakeupError(w http.ResponseWriter, err error) {
 		writeErrorCode(w, 409, "wakeup_head_unchanged", err.Error())
 	case errors.Is(err, service.ErrWakeupInput):
 		writeError(w, 400, err.Error())
+	case errors.Is(err, service.ErrWakeupAgentNotInvocable):
+		writeErrorCode(w, 403, "wakeup_agent_not_invocable", err.Error())
 	case errors.Is(err, service.ErrWakeupForbidden):
 		writeError(w, 403, "wakeup permission denied")
 	case errors.Is(err, pgx.ErrNoRows):
@@ -406,6 +408,8 @@ func (h *Handler) TriggerIssueWakeup(w http.ResponseWriter, r *http.Request) {
 		wakeupError(w, err)
 		return
 	}
+	actorType, actorID := h.resolveActor(r, requestUserID(r), uuidToString(issue.WorkspaceID))
+	h.archiveActorInboxOnAgentTrigger(r.Context(), uuidToString(issue.WorkspaceID), uuidToString(issue.ID), actorType, actorID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

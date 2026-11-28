@@ -9,6 +9,10 @@
  *     session, `sending` flips true and we replace the Send button slot
  *     with a Stop affordance (filled foreground bg + stop glyph). Tap →
  *     `onStop()` cancels the in-flight task.
+ *   - **Send during a reply**: when the server accepts follow-ups
+ *     (`allowSendWhileSending`), typed content swaps Stop for Send, which
+ *     asks to add the message to the running reply, plus a Queue action
+ *     for the next turn. Mirrors web's ChatInput action slot.
  *   - **Mention picker mode=chat**: chat is user ↔ single agent so
  *     @member / @agent / @squad / @all are noise + would notify the
  *     wrong people. Picker route honors `?mode=chat` and surfaces only
@@ -47,7 +51,11 @@ interface Props {
   /** Send the serialised markdown content + the completed attachments'
    *  server ids. Caller resets the input by setting `value=""` after a
    *  successful send. */
-  onSend: (content: string, attachmentIds: string[]) => Promise<void> | void;
+  onSend: (
+    content: string,
+    attachmentIds: string[],
+    options?: { queue?: boolean },
+  ) => Promise<void> | void;
   /** Keep the submitted text on disk until the send settles (see
    *  `useChatDraftsStore.beginSend`). */
   onSendStart?: (text: string) => string;
@@ -59,6 +67,9 @@ interface Props {
   sending: boolean;
   /** Queued tasks remain busy, but do not expose Stop without draft restore. */
   allowStop?: boolean;
+  /** The server accepts sends while `sending` (queue-capable). Older
+   *  servers keep the composer stop-only during a run. */
+  allowSendWhileSending?: boolean;
   /** Hard-disable typing + send. Used when there's no usable agent in the
    *  workspace or an archive/unarchive mutation is in flight. */
   disabled?: boolean;
@@ -81,6 +92,7 @@ export function ChatComposer({
   onStop,
   sending,
   allowStop = true,
+  allowSendWhileSending = false,
   disabled = false,
   disabledReason,
   archived = false,
@@ -92,13 +104,15 @@ export function ChatComposer({
     async ({
       content,
       attachmentIds,
+      queue,
     }: {
       content: string;
       attachmentIds: string[];
+      queue: boolean;
     }) => {
       // `onSend` may be sync or async; await is safe in both cases. If it
       // throws, MessageComposer's catch restores text + chips.
-      await onSend(content, attachmentIds);
+      await onSend(content, attachmentIds, queue ? { queue: true } : undefined);
     },
     [onSend],
   );
@@ -127,7 +141,11 @@ export function ChatComposer({
           pathname: "/[workspace]/mention-picker",
           params: { workspace: wsSlug ?? "", mode: "chat" },
         }}
-        placeholder={sending ? t("composer.working") : idlePrompt}
+        placeholder={
+          sending && !allowSendWhileSending
+            ? t("composer.working")
+            : idlePrompt
+        }
         pillLabel={
           sending
             ? t("composer.working")
@@ -140,6 +158,8 @@ export function ChatComposer({
         disabledReason={disabledReason}
         isSending={sending}
         renderStop={allowStop ? () => <StopButton onPress={handleStop} /> : undefined}
+        allowSubmitWhileSending={allowSendWhileSending}
+        queueAction={{ accessibilityLabel: t("composer.queue") }}
         manageKeyboard={false}
       />
     </View>

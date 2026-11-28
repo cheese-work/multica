@@ -88,7 +88,7 @@ func TestApproveRunGuardCardIgnoresAClaimQueuedOnTheRuntime(test *testing.T) {
 	}
 	claimed := make(chan error, 1)
 	go func() { _, err := testHandler.TaskService.ClaimTask(ctx, agentID); claimed <- err }()
-	waitForLockWaiters(test, 1)
+	waitForLockWaiters(test, queue.Conn().PgConn().PID(), 1)
 	verify := func(context.Context, *db.Queries, ApprovalClaim) (pgtype.UUID, error) { return pgtype.UUID{}, nil }
 	// The approval's own post-commit work needs the runtime lock too, so the
 	// queue is released once the action has committed (or the click was refused).

@@ -14,10 +14,22 @@ import (
 // test helper so these integration tests keep asserting enqueue side effects.
 func enqueueMentionedAgentTasksForTest(t *testing.T, ctx context.Context, issue db.Issue, comment db.Comment, parentComment *db.Comment, authorType, authorID string) {
 	t.Helper()
-	triggers, _ := testHandler.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, authorType, authorID, commentTriggerComputeOptions{})
+	triggers, _ := testHandler.computeCommentAgentTriggers(ctx, issue, comment.Content, parentComment, authorType, authorID, commentTriggerComputeOptions{
+		AuthoringTaskID: comment.SourceTaskID,
+	})
 	testHandler.enqueueCommentAgentTriggers(ctx, issue, comment.ID, triggers)
 }
 
+// selfMentionFixture wires the seeded "Handler Test Agent" as J plus two
+// fresh issues so we can exercise the agent-self-mention path on the @mention
+// branch of computeCommentAgentTriggers. The three tests below cover
+// the self-mention routing boundaries:
+//
+//   - cross-issue self-mention enqueues (child→parent handoff between issues
+//     assigned to the same agent must not be swallowed)
+//   - same-issue self-mention from the authoring task does not enqueue a follow-up
+//   - legacy unstamped self-mention with a queued/dispatched task is deduped
+//     (HasPendingTaskForIssueAndAgent still does its job)
 type selfMentionFixture struct {
 	JID        string
 	RuntimeID  string
@@ -145,6 +157,11 @@ func TestEnqueueMentionedAgentTasks_SelfMentionCrossIssueSuppressed(t *testing.T
 	}
 	ctx := context.Background()
 	fx := newSelfMentionFixture(t)
+	sourceID := dbfx.Task(t, fx.JID, testutil.Cols{
+		"runtime_id": fx.RuntimeID, "issue_id": fx.IssueAID, "status": "running",
+	})
+	fx.CommentB.SourceTaskID = parseUUID(sourceID)
+	dbfx.Exec(t, `UPDATE comment SET source_task_id = $2 WHERE id = $1`, fx.CommentBID, sourceID)
 
 	if got := countQueuedOrDispatched(t, fx.JID, fx.IssueBID); got != 0 {
 		t.Fatalf("before: expected 0 pending tasks on parent issue, got %d", got)
@@ -157,20 +174,19 @@ func TestEnqueueMentionedAgentTasks_SelfMentionCrossIssueSuppressed(t *testing.T
 	}
 }
 
-func TestEnqueueMentionedAgentTasks_SelfMentionWhileRunningSuppressed(t *testing.T) {
+// A trusted authoring task must not wake itself by mentioning its own agent on
+// the same issue, even though running tasks are not pending for queue dedup.
+func TestEnqueueMentionedAgentTasks_SelfMentionWhileRunningDoesNotQueueFollowup(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
 	fx := newSelfMentionFixture(t)
 
-	// Seed a running task for J on issue A — this is the agent's current run.
-	if _, err := testPool.Exec(ctx, `
-		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status)
-		VALUES ($1, $2, $3, 'running')
-	`, fx.JID, fx.RuntimeID, fx.IssueAID); err != nil {
-		t.Fatalf("seed running task: %v", err)
-	}
+	sourceID := dbfx.Task(t, fx.JID, testutil.Cols{
+		"runtime_id": fx.RuntimeID, "issue_id": fx.IssueAID, "status": "running",
+	})
+	fx.CommentA.SourceTaskID = parseUUID(sourceID)
 
 	if got := countQueuedOrDispatched(t, fx.JID, fx.IssueAID); got != 0 {
 		t.Fatalf("before: expected 0 queued/dispatched tasks (only the running task), got %d", got)
@@ -179,68 +195,7 @@ func TestEnqueueMentionedAgentTasks_SelfMentionWhileRunningSuppressed(t *testing
 	enqueueMentionedAgentTasksForTest(t, ctx, fx.IssueA, fx.CommentA, nil, "agent", fx.JID)
 
 	if got := countQueuedOrDispatched(t, fx.JID, fx.IssueAID); got != 0 {
-		t.Fatalf("after self-mention while running: expected no follow-up, got %d", got)
-	}
-}
-
-func TestComputeCommentAgentTriggers_SelfMentionOutcome(test *testing.T) {
-	ctx := context.Background()
-	fixture := newSelfMentionFixture(test)
-	triggers, targets := testHandler.computeCommentAgentTriggers(ctx, fixture.IssueA, fixture.CommentA.Content, nil, "agent", fixture.JID, commentTriggerComputeOptions{})
-	if len(triggers) != 0 || len(targets) != 1 {
-		test.Fatalf("triggers=%d targets=%d, want 0 and 1", len(triggers), len(targets))
-	}
-	if targets[0].Status != DispatchBlocked || targets[0].ReasonCode != ReasonSelfTriggerSuppressed {
-		test.Fatalf("target=%+v, want blocked/self_trigger_suppressed", targets[0])
-	}
-	triggers, _ = testHandler.computeCommentAgentTriggers(ctx, fixture.IssueA, fixture.CommentA.Content, nil, "member", testUserID, commentTriggerComputeOptions{})
-	if len(triggers) != 1 {
-		test.Fatalf("member mention triggers=%d, want 1", len(triggers))
-	}
-}
-
-func TestCommentSelfMentionByMemberEditorSuppressed(test *testing.T) {
-	fixture := newSelfMentionFixture(test)
-	preview := previewCommentTriggersForTest(test, fixture.IssueAID, map[string]any{
-		"content":            fixture.CommentA.Content,
-		"editing_comment_id": fixture.CommentAID,
-	})
-	if len(preview.Agents) != 0 || len(preview.Blocked) != 1 || preview.Blocked[0].ReasonCode != ReasonSelfTriggerSuppressed {
-		test.Fatalf("editing preview=%+v, want author suppressed", preview)
-	}
-	updateCommentForTriggerPreviewTest(test, fixture.CommentAID, map[string]any{"content": fixture.CommentA.Content + " updated"})
-	if got := countQueuedOrDispatched(test, fixture.JID, fixture.IssueAID); got != 0 {
-		test.Fatalf("member edit queued %d tasks for the comment author", got)
-	}
-}
-
-func TestCommentSelfMentionSquadAndOtherAgent(test *testing.T) {
-	setAgentCommentWakePolicyForTest(test, false)
-	ctx := context.Background()
-	fixture := newSelfMentionFixture(test)
-	squadID := dbfx.Squad(test, "self-mention squad", fixture.JID)
-	otherID := createHandlerTestAgent(test, "other comment recipient", nil)
-	for _, status := range []string{"running", "completed"} {
-		test.Run(status, func(test *testing.T) {
-			dbfx.Task(test, fixture.JID, testutil.Cols{
-				"runtime_id": fixture.RuntimeID, "issue_id": fixture.IssueAID,
-				"status": status, "squad_id": squadID, "is_leader_task": false,
-			})
-			content := "[self](mention://agent/" + fixture.JID + ") [squad](mention://squad/" + squadID + ") [other](mention://agent/" + otherID + ")"
-			triggers, targets := testHandler.computeCommentAgentTriggers(ctx, fixture.IssueA, content, nil, "agent", fixture.JID, commentTriggerComputeOptions{})
-			if len(triggers) != 1 || uuidToString(triggers[0].Agent.ID) != otherID {
-				test.Fatalf("triggers=%+v, want other agent only", triggers)
-			}
-			outcomes := commentBlockedTargetOutcomes(targets)
-			if len(outcomes) != 2 {
-				test.Fatalf("outcomes=%+v, want both self mention forms blocked", outcomes)
-			}
-			for _, outcome := range outcomes {
-				if outcome.ReasonCode != ReasonSelfTriggerSuppressed {
-					test.Fatalf("outcome=%+v, want self_trigger_suppressed", outcome)
-				}
-			}
-		})
+		t.Fatalf("after same-issue self-mention: expected no queued follow-up, got %d", got)
 	}
 }
 

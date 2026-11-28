@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowDownToLine, ArrowDown, ArrowUp, Ellipsis, ExternalLink, X } from "@multica/ui/icons";
 import { api } from "@multica/core/api";
 import { defaultPlanBase, diffRevisionLines, earlierPlanRevisions, planRevisionNumber, revisionSegments, type RevisionLine } from "@multica/core/attachments";
-import { paths, useWorkspaceSlug } from "@multica/core/paths";
+import { issueRouteRef, paths, useWorkspaceSlug } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import type { Attachment } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
@@ -103,7 +103,7 @@ export function PlanRevisionViewer({ attachment, onDownload, onClose, onOpenInNe
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate text-label font-medium" title={attachment.filename}>{attachment.filename}</span>
         {titleAccessory}
-        {slug && attachment.issue_id && <AppLink className="shrink-0 text-caption text-muted-foreground hover:underline max-[999px]:hidden" href={paths.workspace(slug).issueDetail(attachment.issue_id)}>{issue.data?.identifier ?? t(($) => $.plan_revision.issue)}</AppLink>}
+        {slug && attachment.issue_id && <AppLink className="shrink-0 text-caption text-muted-foreground hover:underline max-[999px]:hidden" href={paths.workspace(slug).issueDetail(issueRouteRef({ id: attachment.issue_id, identifier: null }))}>{issue.data?.identifier ?? t(($) => $.plan_revision.issue)}</AppLink>}
         <span className="shrink-0 text-caption text-muted-foreground max-[1199px]:hidden">{t(($) => $.plan_revision.revision, { number: planRevisionNumber(attachment.filename) })}</span>
         <span className="shrink-0 rounded-sm border px-1.5 text-caption text-muted-foreground max-[1199px]:hidden">{t(($) => $.plan_revision.readonly)}</span>
       </div>

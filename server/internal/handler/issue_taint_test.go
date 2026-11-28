@@ -296,7 +296,7 @@ func TestPlannedCommentRegistrationAndAuthorizeShareOneLockOrder(t *testing.T) {
 	}
 	authorized := make(chan *testutil.Response, 1)
 	go func() { authorized <- f.authorize(t, 1, "repo_write:1234", hashA) }()
-	waitForLockWaiters(t, 1)
+	waitForLockWaiters(t, gate.Conn().PgConn().PID(), 1)
 
 	type registered struct {
 		ok  bool
@@ -309,7 +309,7 @@ func TestPlannedCommentRegistrationAndAuthorizeShareOneLockOrder(t *testing.T) {
 	}()
 	// Authorization waits on the elevation row; the registration waits on the
 	// issue row (taken first) or, unfixed, on it through the run's trigger.
-	waitForLockWaiters(t, 2)
+	waitForLockWaiters(t, gate.Conn().PgConn().PID(), 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("gate commit: %v", err)
 	}
@@ -358,7 +358,7 @@ func TestWorkspaceTeardownDetachAndAuthorizeShareOneLockOrder(t *testing.T) {
 	}
 	authorized := make(chan *testutil.Response, 1)
 	go func() { authorized <- f.authorize(t, 1, "repo_write:1234", hashA) }()
-	waitForLockWaiters(t, 1)
+	waitForLockWaiters(t, gate.Conn().PgConn().PID(), 1)
 
 	teardown := make(chan error, 1)
 	go func() {
@@ -385,7 +385,7 @@ func TestWorkspaceTeardownDetachAndAuthorizeShareOneLockOrder(t *testing.T) {
 	}()
 	// Authorization waits on the elevation row; the teardown waits on the issue
 	// row (taken first) or, unfixed, on it through the run's trigger.
-	waitForLockWaiters(t, 2)
+	waitForLockWaiters(t, gate.Conn().PgConn().PID(), 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("gate commit: %v", err)
 	}
@@ -443,7 +443,7 @@ func TestWorkspaceTeardownTaskPageAndAuthorizeShareOneLockOrder(t *testing.T) {
 		}
 		teardown <- tx.Commit(ctx)
 	}()
-	waitForLockWaiters(t, 2)
+	waitForLockWaiters(t, gate.Conn().PgConn().PID(), 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("gate commit: %v", err)
 	}
@@ -489,7 +489,7 @@ func holdAuthorizationAtElevationRow(t *testing.T, f elevatedFixture) (gate pgx.
 	}
 	authorized = make(chan *testutil.Response, 1)
 	go func() { authorized <- f.authorize(t, 1, "repo_write:1234", hashA) }()
-	waitForLockWaiters(t, 1)
+	waitForLockWaiters(t, gate.Conn().PgConn().PID(), 1)
 	return gate, authorized
 }
 
@@ -512,7 +512,7 @@ func TestCommentDeleteAndAuthorizeShareOneLockOrder(t *testing.T) {
 	}()
 	// Authorization waits on the elevation row; the delete waits on the run's
 	// issue (taken first) or, unfixed, on it through the run's trigger.
-	waitForLockWaiters(t, 2)
+	waitForLockWaiters(t, gate.Conn().PgConn().PID(), 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("gate commit: %v", err)
 	}
@@ -551,7 +551,7 @@ func TestIssueDeleteAndAuthorizeShareOneLockOrder(t *testing.T) {
 		_, err := testHandler.deleteIssueAndCollectAttachmentURLs(ctx, issue, nil)
 		deleted <- err
 	}()
-	waitForLockWaiters(t, 2)
+	waitForLockWaiters(t, gate.Conn().PgConn().PID(), 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("gate commit: %v", err)
 	}
@@ -595,7 +595,7 @@ func finishDeleteAgainstHeldAuthorization(t *testing.T, f elevatedFixture, del f
 	gate, authorized := holdAuthorizationAtElevationRow(t, f)
 	deleted := make(chan error, 1)
 	go func() { deleted <- del() }()
-	waitForLockWaiters(t, 2)
+	waitForLockWaiters(t, gate.Conn().PgConn().PID(), 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("gate commit: %v", err)
 	}
@@ -729,7 +729,7 @@ VALUES ($1, $2, 'member', $3, 'trigger') RETURNING id`,
 		}
 		teardown <- tx.Commit(ctx)
 	}()
-	waitForLockWaiters(t, 2)
+	waitForLockWaiters(t, gate.Conn().PgConn().PID(), 2)
 	if err := gate.Commit(ctx); err != nil {
 		t.Fatalf("gate commit: %v", err)
 	}

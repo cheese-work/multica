@@ -47,7 +47,7 @@ export {
   unfoldAllCommentThreads,
 } from "./thread-fold-coordinator";
 export { useCommentComposerStore, type CommentImageLayout, type RunningAgentReply } from "./comment-composer-store";
-export { useCommentDraftStore, type CommentDraftKey } from "./comment-draft-store";
+export { useCommentDraftStore, type CommentDraftKey, type PendingAnnotationDraft } from "./comment-draft-store";
 export {
   myIssuesViewStore,
   type MyIssuesViewState,
@@ -105,3 +105,10 @@ export {
   type TextEditDraft,
   type WakeupFormDraft,
 } from "./unsent-edit-drafts";
+export {
+  useAssigneePicksStore,
+  selectAssigneePicks,
+  rankAssigneePicks,
+  type AssigneePick,
+  type RankedAssignee,
+} from "./assignee-picks-store";

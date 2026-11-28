@@ -91,7 +91,7 @@ func (q *Queries) CreateProviderFailureOwnerNotice(ctx context.Context, arg Crea
 }
 
 const findActiveScheduledAutopilotRunForTrigger = `-- name: FindActiveScheduledAutopilotRunForTrigger :one
-SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, webhook_delivery_id, quota_reservation_id, reason_code FROM autopilot_run
+SELECT id, autopilot_id, trigger_id, source, status, issue_id, task_id, triggered_at, completed_at, failure_reason, trigger_payload, result, created_at, squad_id, planned_at, webhook_delivery_id, quota_reservation_id, reason_code, idempotency_key FROM autopilot_run
 WHERE trigger_id = $1
   AND source = 'schedule'
   AND status IN ('pending', 'issue_created', 'running')
@@ -127,6 +127,7 @@ func (q *Queries) FindActiveScheduledAutopilotRunForTrigger(ctx context.Context,
 		&i.WebhookDeliveryID,
 		&i.QuotaReservationID,
 		&i.ReasonCode,
+		&i.IdempotencyKey,
 	)
 	return i, err
 }

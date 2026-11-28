@@ -32,16 +32,18 @@ export function MyIssuesPage() {
           modes={MY_ISSUE_MODES}
           batchToolbar="list"
           renderHeader={({ controller }) => <IssueViewHeader controller={controller} base={MY_BASE} />}
-          renderEmpty={({ controller }) => (
+          renderEmpty={({ controller, canCreate }) => (
             <CollectionPageState
               icon={CircleUser}
               title={t(($) => $.page.empty_title)}
               description={t(($) => $.page.empty_description)}
               actions={
-                <Button size="sm" onClick={() => controller.openCreateIssue()}>
-                  <Plus aria-hidden="true" />
-                  {tIssues(($) => $.views.new_issue)}
-                </Button>
+                canCreate && (
+                  <Button size="sm" onClick={() => controller.openCreateIssue()}>
+                    <Plus aria-hidden="true" />
+                    {tIssues(($) => $.views.new_issue)}
+                  </Button>
+                )
               }
             />
           )}

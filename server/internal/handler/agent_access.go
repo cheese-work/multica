@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/projectaccess"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -92,6 +93,23 @@ func (h *Handler) invokeAgentDecisionVia(ctx context.Context, queries *db.Querie
 		effectiveUser = originatorUserID
 	}
 
+	isWorkspaceMember := false
+	var lookupErr error
+	if effectiveUser != "" {
+		m, err := workspaceMemberVia(ctx, queries, effectiveUser, workspaceID)
+		switch {
+		case err == nil:
+			// Guests never run agents (MUL-9420), not even one they owned
+			// before becoming a guest.
+			if projectaccess.IsGuestRole(m.Role) {
+				return false, nil
+			}
+			isWorkspaceMember = true
+		case !errors.Is(err, pgx.ErrNoRows):
+			lookupErr = err
+		}
+	}
+
 	// The agent owner may always invoke their own agent.
 	if effectiveUser != "" && uuidToString(agent.OwnerID) == effectiveUser {
 		return true, nil
@@ -119,17 +137,6 @@ func (h *Handler) invokeAgentDecisionVia(ctx context.Context, queries *db.Querie
 	// member-/team-scoped private-ish allow-list and can never smuggle itself
 	// onto someone's specific-people grant.
 	workspaceBroad := actorType == "agent" || actorType == "system"
-	isWorkspaceMember := false
-	var lookupErr error
-	if effectiveUser != "" {
-		_, err := workspaceMemberVia(ctx, queries, effectiveUser, workspaceID)
-		switch {
-		case err == nil:
-			isWorkspaceMember = true
-		case !errors.Is(err, pgx.ErrNoRows):
-			lookupErr = err
-		}
-	}
 
 	for _, t := range targets {
 		switch t.TargetType {
@@ -255,6 +262,53 @@ func (h *Handler) invokeOriginatorFromRequest(r *http.Request, actorType, actorI
 		}
 	}
 	return ""
+}
+
+// requestRepresentsUser reports whether a request may reach data private to
+// userID. Human credentials always do: an unstamped request, and the sources the
+// auth middleware stamps on a person's own credential (interactive_jwt, cli_jwt,
+// pat). The middleware rewrites the header from the verified credential, so a
+// client cannot forge one. A task token carries its runtime owner's user id
+// whoever triggered the run, so it qualifies only for a live task that this same
+// user started, on a runtime they still own. A cloud-node PAT has no task
+// binding or human trigger and never qualifies.
+//
+// A missing task or runtime is a plain (false, nil); any other lookup error is
+// returned so the caller can tell an outage from a denial.
+func (h *Handler) requestRepresentsUser(r *http.Request, userID string, workspaceID pgtype.UUID) (bool, error) {
+	switch r.Header.Get("X-Actor-Source") {
+	case "", "interactive_jwt", "cli_jwt", "pat":
+		return true, nil
+	case "task_token":
+	default:
+		return false, nil
+	}
+	notFound := func(err error) (bool, error) {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil
+		}
+		return false, err
+	}
+	taskID, err := util.ParseUUID(r.Header.Get("X-Task-ID"))
+	if err != nil {
+		return false, nil
+	}
+	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
+	if err != nil {
+		return notFound(err)
+	}
+	if isTerminalTaskStatus(task.Status) ||
+		!task.OriginatorUserID.Valid || uuidToString(task.OriginatorUserID) != userID ||
+		uuidToString(task.AgentID) != r.Header.Get("X-Agent-ID") {
+		return false, nil
+	}
+	runtime, err := h.Queries.GetAgentRuntimeForWorkspace(r.Context(), db.GetAgentRuntimeForWorkspaceParams{
+		ID: task.RuntimeID, WorkspaceID: workspaceID,
+	})
+	if err != nil {
+		return notFound(err)
+	}
+	return runtime.OwnerID.Valid && uuidToString(runtime.OwnerID) == userID, nil
 }
 
 // isTerminalTaskStatus reports whether a task has finished, in any of the three

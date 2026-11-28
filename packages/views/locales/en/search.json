@@ -17,6 +17,7 @@
     "chats": "Chats",
     "messages": "Messages",
     "skills": "Skills",
+    "docs": "Docs",
     "cancelled": "Cancelled",
     "recent": "Recent",
     "workspaces": "Workspaces",
@@ -140,7 +141,7 @@
   },
   "delegate": {
     "row": "Hand to agent: “{{prompt}}”",
-    "hint": "Quick create"
+    "hint": "Create with agent"
   },
   "best": {
     "assign": "Assign {{subject}} to {{name}}",
@@ -169,9 +170,10 @@
   "trigger": {
     "label": "Search..."
   },
+  "untitled_doc": "Untitled",
   "messages": {
     "untitled": "Untitled chat",
-    "searching": "Searching messages…",
+    "searching": "Searching messages...",
     "error_title": "Couldn't search message content",
     "error_failed": "The server returned an error. Chats still filter by title.",
     "error_timed_out": "The search took too long. Chats still filter by title.",

@@ -11,7 +11,7 @@ import type { Issue, Project,
 import { formatDateOnly } from "@multica/core/issues/date";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { PropertyIcon } from "../../common/property-icon";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { useWorkspacePaths, issueRouteRef } from "@multica/core/paths";
 import { useQuery } from "@tanstack/react-query";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -25,6 +25,7 @@ import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { CustomStatusChip } from "./custom-status-chip";
 import { RunBudgetChip } from "./run-budget-chip";
+import { IssueBlockedMarker } from "./issue-blockers";
 import { IssueDuplicateOfMarker } from "./issue-duplicates";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
 import { IssuePullRequestChips, useIssuePullRequestSummaries } from "./pull-request-chips";
@@ -80,7 +81,7 @@ function ListRowContent({
   const { t } = useT("issues");
   const selection = useIssueSurfaceSelection();
   const peeked = useIsIssuePeeked(issue.id);
-  const peekLinkProps = useIssuePeekLinkProps(issue.id);
+  const peekLinkProps = useIssuePeekLinkProps(issue);
   const selected = selection.selectedIds.has(issue.id);
   const toggle = selection.toggle;
   const p = useWorkspacePaths();
@@ -118,7 +119,7 @@ function ListRowContent({
         data-peeked={peeked ? "" : undefined}
         style={containerStyle}
         {...containerProps}
-        className={`group/row flex h-[var(--issue-row-height)] items-center gap-2 px-[var(--issue-row-padding-x,1rem)] text-body transition-colors ${
+        className={`group/row flex h-[var(--issue-row-height)] items-center gap-2 px-[var(--issue-row-padding-x,1rem)] text-body transition-[background-color,color,opacity] duration-150 ease-[cubic-bezier(0.23,1,0.32,1)] motion-reduce:transition-none ${
           selected
             ? "bg-issue-row-selected hover:not-data-[popup-open]:bg-issue-row-selected data-[popup-open]:bg-issue-row-selected"
             : "hover:not-data-[popup-open]:bg-issue-row-hover data-[popup-open]:bg-issue-row-hover"
@@ -131,20 +132,26 @@ function ListRowContent({
           {storeProperties.priority && issue.priority !== "none" && (
             <PriorityIcon
               priority={issue.priority}
-              className={selected ? "hidden" : "group-hover/row:hidden"}
+              className={`transition-opacity duration-100 motion-reduce:transition-none ${
+                selected
+                  ? "opacity-0"
+                  : "group-hover/row:opacity-0 group-focus-within/row:opacity-0"
+              }`}
             />
           )}
           <input
             type="checkbox"
             checked={selected}
             onChange={() => toggle(issue.id)}
-            className={`absolute inset-0 cursor-pointer accent-primary ${
-              selected ? "" : "hidden group-hover/row:block"
+            className={`absolute inset-0 cursor-pointer accent-primary transition-opacity duration-100 motion-reduce:transition-none ${
+              selected
+                ? "opacity-100"
+                : "opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100"
             }`}
           />
         </div>
         <AppLink
-          href={p.issueDetail(issue.id)}
+          href={p.issueDetail(issueRouteRef(issue))}
           newTabTitle={issue.identifier}
           className={`flex flex-1 items-center gap-2 min-w-0 ${isDragging ? "pointer-events-none" : ""}`}
           {...peekLinkProps}
@@ -169,6 +176,7 @@ function ListRowContent({
             {/* Keep custom names visible when this row appears outside a status section. */}
             <CustomStatusChip status={issue.status} className="shrink-0" />
             <RunBudgetChip issue={issue} className="shrink-0" />
+            <IssueBlockedMarker issue={issue} />
             <IssueDuplicateOfMarker issue={issue} insideLink />
             {showChildProgress && (
               <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5">

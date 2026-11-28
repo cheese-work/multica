@@ -47,7 +47,7 @@ func TestClaimBriefShowsRunBudget(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := testHandler.claimProjectWorkflow(ctx, issue, &db.AgentTaskQueue{AgentID: util.MustParseUUID(agentID)})
+	got := testHandler.claimProjectWorkflow(ctx, issue, &db.AgentTaskQueue{AgentID: util.MustParseUUID(agentID)}, false, false)
 	if got == nil {
 		t.Fatal("claim carries no workflow")
 	}
@@ -82,7 +82,7 @@ func TestClaimBriefShowsRunBudgetForDefaultWithoutHandoffs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := testHandler.claimProjectWorkflow(ctx, issue, nil)
+	got := testHandler.claimProjectWorkflow(ctx, issue, nil, false, false)
 	if got == nil {
 		t.Fatal("a budgeted Default workflow must carry its budget line")
 	}

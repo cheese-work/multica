@@ -8,7 +8,7 @@ import { signPasskeyChallenge } from "@multica/core/auth/webauthn";
 import { chatKeys } from "@multica/core/chat/queries";
 import { usePersistedDraft } from "@multica/core/drafts";
 import { type DecisionBatchChoices, useDecisionBatchChoicesStore } from "@multica/core/issues/stores/decision-batch-choices-store";
-import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { formatShortcut, isPlainShortcut, shortcutMatchesEvent, useShortcut } from "@multica/core/shortcuts";
 import type { DecisionBatchItem } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
@@ -134,7 +134,7 @@ export function DecisionBatchForm({ batchId, items }: { batchId: string; items: 
           return (
             <li key={item.action_id} className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
               <span className="min-w-0 break-words text-label">
-                <AppLink href={paths.issueDetail(item.issue_id)} className="font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring">{issue}</AppLink>
+                <AppLink href={paths.issueDetail(issueRouteRef({ id: item.issue_id, identifier: null }))} className="font-medium hover:underline focus-visible:outline-2 focus-visible:outline-ring">{issue}</AppLink>
                 {item.issue_title && <span className="text-muted-foreground">{` ${item.issue_title}`}</span>}
               </span>
               {choosable ? (

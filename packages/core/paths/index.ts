@@ -2,10 +2,11 @@ export {
   paths,
   isGlobalPath,
   isMyAgentsSearch,
+  issueRouteRef,
   AGENT_FOCUS_CONVERSATION_STARTERS,
   FOCUS_WAKEUPS,
 } from "./paths";
-export type { WorkspacePaths } from "./paths";
+export type { IssueRouteRef, WorkspacePaths } from "./paths";
 export { RESERVED_SLUGS, isReservedSlug } from "./reserved-slugs";
 export {
   WORKSPACE_PAGES,

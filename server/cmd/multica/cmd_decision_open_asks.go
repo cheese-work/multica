@@ -8,7 +8,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/spf13/cobra"
@@ -120,12 +119,4 @@ func waitingSection(asks []openAsk, now time.Time, olderThan time.Duration, maxL
 		fmt.Fprintf(&out, "- +%d omitted\n", len(old)-shown)
 	}
 	return out.String()
-}
-
-func oneLine(text string, limit int) string {
-	text = strings.Join(strings.Fields(text), " ")
-	if utf8.RuneCountInString(text) <= limit {
-		return text
-	}
-	return string([]rune(text)[:limit-1]) + "…"
 }

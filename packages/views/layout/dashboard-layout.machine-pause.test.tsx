@@ -16,10 +16,18 @@ vi.mock("./navigation-progress", () => ({ NavigationProgress: () => null }));
 vi.mock("./route-data-prefetch", () => ({
   ShellRouteDataPrefetch: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
+vi.mock("../billing/trial-notices", () => ({ WorkspaceTrialNotices: () => null }));
+vi.mock("../common/appearance-sync", () => ({ AppearanceSync: () => null }));
+vi.mock("./machine-banner-toggle", () => ({ MachineBannerHeaderSlot: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 vi.mock("./space-panel", () => ({ SpacePanel: () => null }));
 vi.mock("./workspace-presence-prefetch", () => ({ WorkspacePresencePrefetch: () => null }));
 vi.mock("./global-shortcuts", () => ({ GlobalShortcuts: () => null }));
 vi.mock("./open-decisions-chip", () => ({ OpenDecisionsChip: () => null }));
+vi.mock("@multica/core/permissions", () => ({ useIsResolvedNonGuest: () => true }));
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/paths")>()),
+  useCurrentWorkspace: () => null,
+}));
 vi.mock("./app-shell-context", () => ({
   AppShellProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));

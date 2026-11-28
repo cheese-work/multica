@@ -17,6 +17,7 @@
     "chats": "チャット",
     "messages": "メッセージ",
     "skills": "スキル",
+    "docs": "ドキュメント",
     "cancelled": "キャンセル済み",
     "recent": "最近の項目",
     "workspaces": "ワークスペース",
@@ -137,7 +138,7 @@
   },
   "delegate": {
     "row": "エージェントに依頼：「{{prompt}}」",
-    "hint": "クイック作成"
+    "hint": "エージェントで作成"
   },
   "best": {
     "assign": "{{subject}} を {{name}} に割り当て",
@@ -166,6 +167,7 @@
   "trigger": {
     "label": "検索..."
   },
+  "untitled_doc": "無題",
   "messages": {
     "untitled": "無題のチャット",
     "searching": "メッセージを検索中…",

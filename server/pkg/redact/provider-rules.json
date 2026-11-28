@@ -54,6 +54,12 @@
     "replacement": "[REDACTED GITLAB TOKEN]"
   },
   {
+    "note": "Multica user PATs, daemon tokens, task tokens and cloud-node PATs (upstream v0.13.0); a short JSON control escape (\\b \\f \\n \\r \\t) before the token is kept; the space-free placeholder lets the generic TOKEN= rule replace it in one piece",
+    "pattern": "(?:\\b|(\\\\[bfnrt]))(?:mat|mul|mdt|mcn)_[0-9a-fA-F]{40}\\b",
+    "flags": "",
+    "replacement": "${1}[REDACTED_MULTICA_TOKEN]"
+  },
+  {
     "note": "Google API keys (AIza + 35 chars); the trailing delimiter is captured and restored so keys ending in - are still redacted",
     "pattern": "\\bAIza[0-9A-Za-z_-]{35}([^0-9A-Za-z_-]|$)",
     "flags": "",

@@ -171,7 +171,8 @@ func (c routeWriteCase) write(t *testing.T, to string, mutate func(*db.UpdateIss
 	if mutate != nil {
 		mutate(&params)
 	}
-	return testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil)
+	issue, _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil, nil, false)
+	return issue, err
 }
 
 func TestCaptureRouteLabelEventIDSharedWithStatusChange(t *testing.T) {
@@ -257,11 +258,11 @@ func TestCaptureRouteLabelHookIsSingleUse(t *testing.T) {
 	c := newRouteWriteCase(t)
 	ctx := withRouteCapture(withStatusRecord(context.Background(), c.rec), c.hook)
 	params := db.UpdateIssueParams{ID: parseUUID(c.issueID), Status: pgtype.Text{String: "in_progress", Valid: true}}
-	if _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil); err != nil {
+	if _, _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	params.Status = pgtype.Text{String: "in_review", Valid: true}
-	if _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil); err != nil {
+	if _, _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM system1_observation WHERE kind = 'route' AND subject_id = $1`, c.issueID); n != 1 {
@@ -274,7 +275,7 @@ func TestCaptureRouteLabelNeedsStatusRecordAndStatusChange(t *testing.T) {
 	// No statusRecord: the hook is not armed (decision 11).
 	ctx := withRouteCapture(context.Background(), c.hook)
 	params := db.UpdateIssueParams{ID: parseUUID(c.issueID), Status: pgtype.Text{String: "in_progress", Valid: true}}
-	if _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil); err != nil {
+	if _, _, err := testHandler.updateIssueWithStatusGuard(ctx, parseUUID(testWorkspaceID), "", params, nil, nil, false); err != nil {
 		t.Fatal(err)
 	}
 	if n := dbfx.Count(t, `SELECT count(*) FROM system1_observation WHERE kind = 'route' AND subject_id = $1`, c.issueID); n != 0 {
@@ -331,7 +332,7 @@ func TestCaptureRouteLabelOnTheAtomicBranch(t *testing.T) {
 	desc := "new description"
 	issue, _, _, err := testHandler.updateIssueAtomically(ctx, parseUUID(testWorkspaceID),
 		db.UpdateIssueParams{ID: parseUUID(c.issueID), Status: pgtype.Text{String: "in_progress", Valid: true}, Description: pgtype.Text{String: desc, Valid: true}},
-		nil, nil, nil, nil, "", nil)
+		nil, issueBlockerEdit{}, nil, nil, nil, nil, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +370,7 @@ func (c routeWriteCase) writeOnBranch(t *testing.T, atomic bool) error {
 	ctx := withRouteCapture(withStatusRecord(context.Background(), c.rec), c.hook)
 	_, _, _, err := testHandler.updateIssueAtomically(ctx, parseUUID(testWorkspaceID),
 		db.UpdateIssueParams{ID: parseUUID(c.issueID), Status: pgtype.Text{String: "in_progress", Valid: true}, Description: pgtype.Text{String: "fallback description", Valid: true}},
-		nil, nil, nil, nil, "", nil)
+		nil, issueBlockerEdit{}, nil, nil, nil, nil, "", nil)
 	return err
 }
 

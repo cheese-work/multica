@@ -292,15 +292,19 @@ func TestElevatedTokenCannotReadMarkedAttachment(t *testing.T) {
 		}
 	}
 	// the by-id download route resolves the workspace from the attachment
-	dl := func() *http.Request {
-		return withURLParam(newRequest("GET", "/api/attachments/"+marked+"/download", nil), "id", marked)
+	dl := func(id string) *http.Request {
+		return withURLParam(newRequest("GET", "/api/attachments/"+id+"/download", nil), "id", id)
 	}
 	for name, route := range map[string]http.HandlerFunc{"download-meta": testHandler.GetAttachmentForDownload, "download": testHandler.DownloadAttachment} {
-		res := testutil.Call(t, route, asElevatedToken(dl(), f.taskID)).Want(http.StatusForbidden)
+		res := testutil.Call(t, route, asElevatedToken(dl(marked), f.taskID)).Want(http.StatusForbidden)
 		if !strings.Contains(res.Text(), "attachment withheld") {
 			t.Errorf("%s: elevated token not denied by the read filter: %s", name, res.Text())
 		}
 	}
+	// The denial is for marked bytes only: an unmarked attachment still
+	// downloads for the elevated run, and a member still downloads a marked one.
+	testutil.Call(t, testHandler.GetAttachmentForDownload, asElevatedToken(dl(clean), f.taskID)).Want(http.StatusOK)
+	testutil.Call(t, testHandler.GetAttachmentForDownload, dl(marked)).Want(http.StatusOK)
 }
 
 func TestElevatedTokenTimelineWithholdsActivityDetails(t *testing.T) {

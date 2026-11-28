@@ -11,7 +11,9 @@ import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@multica/
 import { DialogTitle } from "@multica/ui/components/ui/dialog";
 import { ShortcutKeycaps } from "../../common/shortcut-keycaps";
 import { useT } from "../../i18n";
+import { useReopenOnReveal } from "./use-sidebar-reveal-motion";
 import { WakeupFields } from "./wakeup-fields";
+import { useRunnableAgents } from "./wakeup-pickers";
 import { useWakeupForm } from "./use-wakeup-form";
 
 /**
@@ -22,14 +24,23 @@ export function WakeupCreate({
   workspaceId,
   issueId,
   defaultAgentId,
+  defaultOpen = false,
+  onOpenChange,
 }: {
   workspaceId: string;
   issueId: string;
   defaultAgentId?: string;
+  defaultOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
 }) {
   const { t } = useT("issues");
-  const [open, setOpen] = useState(false);
+  const [open, setOpenState] = useState(defaultOpen);
+  useReopenOnReveal(defaultOpen, () => setOpenState(true));
   const busy = useRef(false);
+  const setOpen = (next: boolean) => {
+    setOpenState(next);
+    onOpenChange?.(next);
+  };
   return (
     <Popover
       open={open}
@@ -90,10 +101,12 @@ export function WakeupCreateForm({
   const create = useCreateIssueWakeup(workspaceId, issueId);
   const sendShortcut = useShortcut("send");
   const { data: issue } = useQuery(issueDetailOptions(workspaceId, issueId));
+  const runnableAgents = useRunnableAgents(workspaceId);
   const { draft, update, error, pending, submit } = useWakeupForm({
     workspaceId,
     defaultAgentId,
     draftKey: issueId,
+    runnableAgents,
     save: create.mutateAsync,
     onSaved: onClose,
     onBusy,
@@ -121,6 +134,7 @@ export function WakeupCreateForm({
         update={update}
         scope={{ workspaceId, issueId }}
         assigneeAgentId={issue?.assignee_type === "agent" ? (issue.assignee_id ?? null) : null}
+        runnableAgentsOnly
         onBusy={onBusy}
       />
       {error && (
@@ -143,7 +157,6 @@ export function WakeupCreateForm({
               shortcut={sendShortcut}
               decorative
               className="ml-1 max-sm:hidden"
-              keyClassName="border-background/30 bg-background/15 text-primary-foreground shadow-none"
             />
           ) : null}
         </Button>

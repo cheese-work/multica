@@ -9,7 +9,10 @@ import { IssueHierarchy } from "./hierarchy-minimap";
 import { ISSUE_MODES, type IssueMode } from "./issue-modes";
 
 // CHE-4358 (D5, premise 5): the sidebar card and the dialog share one N-mode switch, driven by a registry.
-vi.mock("@multica/core/paths", () => ({ useWorkspacePaths: () => ({ issueDetail: (id: string) => `/issues/${id}` }) }));
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/paths")>()),
+  useWorkspacePaths: () => ({ issueDetail: (id: string) => `/issues/${id}` }),
+}));
 vi.mock("../../../navigation", () => ({
   useNavigation: () => ({ push: vi.fn() }),
   AppLink: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => <a href={href} {...props}>{children}</a>,

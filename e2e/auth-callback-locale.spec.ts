@@ -13,7 +13,7 @@ for (const scenario of [
     name: "same account language",
     language: "zh-Hans",
     htmlLang: "zh-CN",
-    continueLabel: "在 web 端继续",
+    continueLabel: "在网页端继续",
   },
 ]) {
   test(`Google callback keeps its single-use code while synchronizing ${scenario.name}`, async ({
@@ -28,9 +28,10 @@ for (const scenario of [
     // A managed worktree env points NEXT_PUBLIC_API_URL at the backend port, so
     // the page calls the API cross-origin. That origin is part of the HTTP
     // boundary this test controls, not a third party.
-    const apiOrigin = process.env.NEXT_PUBLIC_API_URL
-      ? new URL(process.env.NEXT_PUBLIC_API_URL).origin
-      : origin;
+    const apiBase =
+      process.env.NEXT_PUBLIC_API_URL || `http://localhost:${process.env.PORT || "8080"}`;
+    const apiOrigin = new URL(apiBase).origin;
+    const allowedOrigins = new Set([origin, apiOrigin]);
     const cors = apiOrigin === origin
       ? {}
       : {
@@ -91,7 +92,7 @@ for (const scenario of [
     await context.route("**/*", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
-      if (url.origin !== origin && url.origin !== apiOrigin) {
+      if (!allowedOrigins.has(url.origin)) {
         if (
           /(^|\.)(google\.com|googleapis\.com|googleusercontent\.com)$/.test(url.hostname)
         ) {

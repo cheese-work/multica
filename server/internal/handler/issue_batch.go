@@ -52,6 +52,9 @@ type batchIssueResult struct {
 	Outcome    string `json:"outcome"`
 	Code       string `json:"code,omitempty"`
 	Message    string `json:"message,omitempty"`
+	// RunOutcome is set on an updated item whose write could have started a
+	// run; see IssueRunOutcome.
+	RunOutcome *IssueRunOutcome `json:"run_outcome,omitempty"`
 }
 
 // batchSkipError ends one issue's write with a reason the caller can act on,
@@ -239,6 +242,7 @@ func (h *Handler) resolveBatchPropertyPlan(w http.ResponseWriter, r *http.Reques
 
 type batchIssueWrite struct {
 	issue             db.Issue
+	prev              db.Issue
 	labelsChanged     bool
 	propertiesChanged bool
 }
@@ -246,8 +250,8 @@ type batchIssueWrite struct {
 // writeBatchIssue applies one issue's field update, label operations and
 // property operations in a single transaction, so an issue is either written
 // in full or skipped in full. params is nil when the batch changes no field.
-func (h *Handler) writeBatchIssue(ctx context.Context, workspaceID pgtype.UUID, prev db.Issue, params *db.UpdateIssueParams, statusKey string, labels *batchLabelPlan, properties *batchPropertyPlan, wf *workflowWrite) (batchIssueWrite, error) {
-	out := batchIssueWrite{issue: prev}
+func (h *Handler) writeBatchIssue(ctx context.Context, workspaceID pgtype.UUID, prev db.Issue, params *db.UpdateIssueParams, rawFields map[string]json.RawMessage, workflowAssignee bool, statusKey string, labels *batchLabelPlan, properties *batchPropertyPlan, wf *workflowWrite) (batchIssueWrite, error) {
+	out := batchIssueWrite{issue: prev, prev: prev}
 	tx, err := h.beginWakeupWrite(ctx)
 	if err != nil {
 		return out, err
@@ -270,13 +274,7 @@ func (h *Handler) writeBatchIssue(ctx context.Context, workspaceID pgtype.UUID, 
 
 	var cancelled []db.AgentTaskQueue
 	if params != nil {
-		// Fork: the same locked write as the single-issue path (project lock,
-		// workflow re-check and entry gates under the issue row lock, move
-		// guards), so a label or property in the batch cannot step past a
-		// blocked gate. Lock order: property locks, status catalog, project,
-		// issue row. A gate failure returns here and the deferred Rollback
-		// drops the label and property writes below with it.
-		out.issue, cancelled, err = h.writeIssueLocked(ctx, q, workspaceID, *params, wf)
+		out.issue, out.prev, cancelled, err = h.writeIssueLocked(ctx, q, workspaceID, *params, wf, rawFields, workflowAssignee)
 		if err != nil {
 			return out, err
 		}

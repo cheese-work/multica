@@ -2,12 +2,6 @@ import type { CommentAuthorType, CommentSupersedeLink, CommentSupplementReceipt,
 import type { Attachment } from "./attachment";
 import type { DecisionCommentFields } from "./decision";
 
-export interface AssigneeFrequencyEntry {
-  assignee_type: string;
-  assignee_id: string;
-  frequency: number;
-}
-
 export interface TimelineEntry extends DecisionCommentFields {
   type: "activity" | "comment";
   id: string;

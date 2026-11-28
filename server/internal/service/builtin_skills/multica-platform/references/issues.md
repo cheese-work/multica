@@ -14,7 +14,7 @@ Product contracts the runtime brief does not fully encode.
 - [Incorrect to correct](#incorrect-to-correct)
 - [Comments: update, delete, resolve, search, subscribers](#comments-update-delete-resolve-search-subscribers)
 
-To attach a local file to an existing issue description, use `multica issue update <id> --attachment <local-path>`. The CLI appends the file's Markdown reference to the end of the description; to replace an image, also use `--description-file` to remove the old reference. Do not put local filesystem paths in the description.
+To attach a local file to an existing issue description, use `multica issue update <id> --attachment <local-path>`. The CLI appends the file's Markdown reference to the end of the description; to replace an image, also remove the old reference with `multica issue edit-description <id> --old <old reference> --new ""`. Do not put local filesystem paths in the description.
 
 ## PR linking
 
@@ -411,8 +411,7 @@ with.
 ## Sub-issues: todo starts work now, backlog parks it
 
 On an agent-assigned issue, create status decides whether the assignee fires
-immediately. A non-backlog status (e.g. `todo`) enqueues the agent at create
-time; `backlog` sets the assignee without triggering.
+immediately. A non-backlog status (e.g. `todo`) enqueues the agent when no unfinished blockers remain; `backlog` sets the assignee without triggering, even after blockers end.
 
 Parallel children — all start now:
 
@@ -427,7 +426,13 @@ multica issue create --title "Step 2: ..." --parent <issue-id> --assignee <agent
 multica issue status <child-id> todo   # promote when the previous step is truly done
 ```
 
-Creating every serial step as `todo` enqueues the whole chain at once.
+For automatic serial work, create later tasks as `todo` with repeatable
+`--blocked-by <issue>` flags. They start after all blockers enter done or closed
+categories (including cancellation). `issue get` lists `blocked_by` references,
+each with `via: manual|stage`, and `issue list --blocked` finds waiting work.
+`issue update --remove-blocked-by <issue>` removes a manual dependency.
+Blockers never change issue status; use the manual `blocked` status for missing
+information or external conditions. Explicit mentions and replies still run.
 
 ### Stages: order sub-issues into barrier groups
 

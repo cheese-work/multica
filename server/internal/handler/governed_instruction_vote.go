@@ -554,7 +554,7 @@ func (h *Handler) voteUpdateProject(w http.ResponseWriter, r *http.Request, work
 		return
 	}
 	resp := projectToResponse(project)
-	resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(r.Context(), wsUUID, project.ID)
+	h.fillProjectIssueStats(r.Context(), &resp, project)
 	resp.ResourceCount = h.loadProjectResourceCount(r.Context(), project.ID)
 	h.publish(protocol.EventProjectUpdated, workspaceID, "agent", actorID, map[string]any{"project": resp})
 	writeJSON(w, http.StatusOK, struct {
