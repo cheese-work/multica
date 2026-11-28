@@ -2,18 +2,6 @@
   "apps/web/features/landing/components/provider-marks.tsx": {
     "person-name": 1
   },
-  "apps/web/features/landing/i18n/en.ts": {
-    "person-name": 35
-  },
-  "apps/web/features/landing/i18n/ja.ts": {
-    "person-name": 30
-  },
-  "apps/web/features/landing/i18n/ko.ts": {
-    "person-name": 30
-  },
-  "apps/web/features/landing/i18n/zh.ts": {
-    "person-name": 34
-  },
   "apps/web/features/landing/site/demo/mock-kit.tsx": {
     "person-name": 1
   },

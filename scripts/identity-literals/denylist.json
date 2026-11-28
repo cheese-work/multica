@@ -15,6 +15,7 @@
     {
       "id": "person-name",
       "pattern": "Cheese|Jev|Hermes",
+      "exemptMatches": ["Hermes"],
       "wholeWord": true
     }
   ]

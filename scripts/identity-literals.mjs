@@ -4,7 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Refuses workspace identity literals (agent and member UUIDs, host tokens, people names) in fork
 // runtime code. It reads a git tree object with `git grep` and `git show`: it never checks out,
-// installs or runs the code under test. The denylist and the count baseline are base-owned files,
+// installs or runs the code under test. The denylist, the count baseline and the exempt-literal list are base-owned files,
 // read from the trusted checkout (default: next to this script), never from the tree.
 
 const DEFAULT_DIR = fileURLToPath(new URL("./identity-literals/", import.meta.url));
@@ -73,6 +73,17 @@ export function loadDenylist(path) {
   return list;
 }
 
+// CHE-10231: exact literals of upstream text that name the upstream runtime product, per file:
+// {file: [literal text]}. Only a match listed in a pattern's `exemptMatches` is exempt, and only in a
+// literal whose full text is listed. Any other literal, including a new one in the same file, is counted.
+export function loadExempt(path) {
+  const exempt = JSON.parse(readFileSync(path, "utf8"));
+  const valid = exempt && typeof exempt === "object" && !Array.isArray(exempt)
+    && Object.values(exempt).every((texts) => Array.isArray(texts) && texts.every((text) => typeof text === "string"));
+  if (!valid) throw new Error(`${path}: expected {file: [literal text]}`);
+  return Object.fromEntries(Object.entries(exempt).map(([file, texts]) => [file, new Set(texts)]));
+}
+
 export function loadBaseline(path) {
   const baseline = JSON.parse(readFileSync(path, "utf8"));
   const valid = baseline && typeof baseline === "object" && !Array.isArray(baseline)
@@ -114,8 +125,8 @@ function readBlobs(cwd, sha, paths) {
   return blobs;
 }
 
-// Every denylisted literal in the scoped files of a tree: [{file, line, id}].
-export function scanTree({ tree, denylist, cwd = process.cwd() }) {
+// Every denylisted literal in the scoped files of a tree: [{file, line, id}], minus the exempt literals.
+export function scanTree({ tree, denylist, exempt = {}, cwd = process.cwd() }) {
   const sha = resolveTree(tree, cwd);
   const files = new Set();
   for (const pattern of denylist.patterns) {
@@ -131,7 +142,10 @@ export function scanTree({ tree, denylist, cwd = process.cwd() }) {
     for (const pattern of denylist.patterns) {
       const regex = matcher(pattern);
       for (const literal of literals) {
-        for (const _ of literal.text.matchAll(regex)) hits.push({ file, line: literal.line, id: pattern.id });
+        for (const match of literal.text.matchAll(regex)) {
+          if (pattern.exemptMatches?.includes(match[0]) && exempt[file]?.has(literal.text)) continue;
+          hits.push({ file, line: literal.line, id: pattern.id });
+        }
       }
     }
   }
@@ -172,11 +186,11 @@ export function compare(hits, baseline, fix) {
 }
 
 function parseArgs(argv) {
-  const options = { tree: "FETCH_HEAD", denylist: `${DEFAULT_DIR}denylist.json`, baseline: `${DEFAULT_DIR}baseline.json`, printBaseline: false };
+  const options = { tree: "FETCH_HEAD", denylist: `${DEFAULT_DIR}denylist.json`, baseline: `${DEFAULT_DIR}baseline.json`, exempt: `${DEFAULT_DIR}exempt-literals.json`, printBaseline: false };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === "--print-baseline") options.printBaseline = true;
-    else if (["--tree", "--denylist", "--baseline"].includes(flag) && argv[i + 1] !== undefined) options[flag.slice(2)] = argv[++i];
+    else if (["--tree", "--denylist", "--baseline", "--exempt"].includes(flag) && argv[i + 1] !== undefined) options[flag.slice(2)] = argv[++i];
     else throw new Error(`Unknown argument ${flag}`);
   }
   return options;
@@ -186,7 +200,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     const options = parseArgs(process.argv.slice(2));
     const denylist = loadDenylist(options.denylist);
-    const hits = scanTree({ tree: options.tree, denylist });
+    const hits = scanTree({ tree: options.tree, denylist, exempt: loadExempt(options.exempt) });
     if (options.printBaseline) {
       console.log(JSON.stringify(countHits(hits), null, 2));
     } else {
