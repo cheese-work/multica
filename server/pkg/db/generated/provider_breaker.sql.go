@@ -536,7 +536,8 @@ WITH target AS MATERIALIZED (
     SELECT t.id, (t.context->>'wakeup_id' IS NULL OR (
         EXISTS (SELECT 1 FROM issue_wakeup w WHERE w.id = (t.context->>'wakeup_id')::uuid
                 AND w.disabled_at IS NULL AND w.revision = (t.context->>'wakeup_revision')::bigint)
-        AND NOT EXISTS (SELECT 1 FROM workspace ws WHERE ws.id = $2 AND ws.scheduling_paused_at IS NOT NULL)
+        AND NOT EXISTS (SELECT 1 FROM workspace ws WHERE ws.id = $2
+                AND (ws.scheduling_paused_at IS NOT NULL OR ws.settings->>'wakeups_paused' = 'true'))
     )) AS live
     FROM agent_task_queue t JOIN agent a ON a.id = t.agent_id
     WHERE t.id = $3 AND a.workspace_id = $2 AND t.issue_id IS NOT NULL

@@ -496,6 +496,37 @@ func (q *Queries) GetRecoveryLineageFacts(ctx context.Context, taskID pgtype.UUI
 	return i, err
 }
 
+const getWakeupHeldRetryFence = `-- name: GetWakeupHeldRetryFence :one
+SELECT (
+    COALESCE(t.context->>'wakeup_id', '') = ''
+    OR (
+        EXISTS (
+            SELECT 1 FROM issue_wakeup w
+            WHERE w.id = (t.context->>'wakeup_id')::uuid AND w.disabled_at IS NULL
+              AND w.revision = (t.context->>'wakeup_revision')::bigint
+        )
+        AND NOT EXISTS (
+            SELECT 1 FROM workspace ws
+            WHERE ws.id = a.workspace_id
+              AND (ws.settings->>'wakeups_paused' = 'true' OR ws.scheduling_paused_at IS NOT NULL)
+        )
+    )
+)::boolean AS allowed
+FROM agent_task_queue t
+JOIN agent a ON a.id = t.agent_id
+WHERE t.id = $1
+`
+
+// CHE-1754 M1b: a wakeup-bound failed run gets a held retry only while its
+// wakeup exists, is enabled, is at the run's revision and the workspace is not
+// paused (CHE-1727). Mirrors the release statement's fence. Other tasks pass.
+func (q *Queries) GetWakeupHeldRetryFence(ctx context.Context, taskID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, getWakeupHeldRetryFence, taskID)
+	var allowed bool
+	err := row.Scan(&allowed)
+	return allowed, err
+}
+
 const recordProviderFailureRecovery = `-- name: RecordProviderFailureRecovery :execrows
 INSERT INTO provider_failure_recovery (
     failed_task_id, trigger_kind, trigger_id, condition_key, failed_at,
