@@ -22,3 +22,21 @@ for (const dockerfile of ["Dockerfile.web", "Dockerfile.docs"]) {
     });
   }
 }
+
+// CHE-10703: the docs `postinstall` runs fumadocs-mdx, which loads source.config.ts and
+// its relative imports. The deps stage must COPY each of them before `pnpm install`.
+{
+  const text = read("Dockerfile.docs");
+  const beforeInstall = text.slice(0, text.indexOf("pnpm install"));
+  const copied = [...beforeInstall.matchAll(/^COPY\s+(\S+)\s+\S+\s*$/gm)].map((m) => m[1]);
+  const imports = [...read("apps/docs/source.config.ts").matchAll(/from "\.\/([^"]+)"/g)];
+  for (const [, rel] of imports) {
+    const path = `apps/docs/${rel}.ts`;
+    test(`Dockerfile.docs copies ${path} before pnpm install`, () => {
+      assert.ok(
+        copied.some((src) => src === path || (src.endsWith("/") && path.startsWith(src))),
+        `Dockerfile.docs does not COPY ${path} before its first pnpm install`,
+      );
+    });
+  }
+}

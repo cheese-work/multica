@@ -6,8 +6,11 @@ WORKDIR /app
 
 COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json .npmrc ./
 COPY apps/docs/package.json apps/docs/
-# postinstall runs fumadocs-mdx, which reads the source config
+# postinstall runs fumadocs-mdx, which loads the source config and its lib imports
 COPY apps/docs/source.config.ts apps/docs/source.config.ts
+COPY apps/docs/lib/markdown-export.ts apps/docs/lib/markdown-export.ts
+COPY apps/docs/lib/remark-included-title.ts apps/docs/lib/remark-included-title.ts
+COPY apps/docs/lib/i18n.ts apps/docs/lib/i18n.ts
 # Root pnpm patchedDependencies is read even without the mobile workspace.
 COPY patches/ patches/
 COPY apps/mobile/patches/ apps/mobile/patches/
