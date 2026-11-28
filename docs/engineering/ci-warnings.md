@@ -1,53 +1,6 @@
-# CI warning regressions
+# CI warning sources
 
-The `warning-budget` CI job waits for build, test, lint and supporting jobs.
-It reads their completed job logs and GitHub warning/notice annotations with
-read-only permissions. It compares warning signatures and occurrence counts
-against each job's latest successful execution in a successful `main` run of
-the same workflow that predates the candidate run. The search includes pushes,
-scheduled full runs and manual main runs, with pagination through up to 1000
-successful main runs when newer runs skipped a job. Missing evidence beyond
-that history bound fails closed. Pull-request runs cannot provide trusted baseline evidence.
-The candidate cannot supply its own baseline. Missing main job evidence,
-unavailable logs and incomplete candidate jobs fail the check.
-
-The script's own unit tests (`scripts/warning-budget.test.mjs`) run only on pull requests that change `scripts/warning-budget*` or `scripts/fixtures/warnings/**`, and on non-PR runs. A broken script change on `main` then cannot turn this check red on unrelated PRs (CHE-7342). The budget comparison runs on every PR.
-
-Decision: the PR-only `migration-prefix-check`, `image-budget` and `go-lint`
-jobs have a strict zero-warning baseline. The Go job's tool steps run only
-on PRs, so its otherwise empty main executions are not meaningful baselines.
-These jobs do not inherit allowances from another job or an earlier PR.
-
-The report artifact records each job's baseline run URL and SHA in
-`job_baselines`, including the original baseline job name. The runner pin
-renames `cursor-background-lifecycle (ubuntu-latest)` and
-`installer (ubuntu-latest)` to their `ubuntu-24.04` matrix names. Only these
-two legacy names are aliases when selecting job evidence. Their warning
-counts retain the candidate job name; no diagnostics are discarded.
-The report records the strict-zero jobs in `zero_baseline_jobs`, warning counts,
-regressions and the candidate's annotation list. `baseline_run` identifies the
-newest trusted main run searched, not necessarily every job's baseline.
-Existing warnings may decrease; a new
-signature or an increased count fails. There is no suppression list or
-candidate-editable allowance file. PID, ANSI, timestamp and BuildKit progress
-noise are normalized. Test names and runner command-header metadata are not
-diagnostics. Grouped output from the tools themselves is still counted.
-Raw log downloads explicitly allow terminal escapes in `gh`; Node strips VT
-control sequences before warning detection.
-ESLint signatures use the repository-relative file and rule, not `line:col`
-or line numbers embedded in the message. Counts still catch an additional
-warning for the same file and rule. File-specific annotations retain their
-path and match the corresponding lint log signature when available.
-Every timestamped Go application `WARN` event matching
-`YYYY/MM/DD HH:MM:SS[.fraction] WARN` is a runtime log event in every job,
-not only in negative-path fixtures. These events are not counted;
-all GitHub warning/notice annotations are still counted regardless of source.
-
-Run the local regression fixtures with:
-
-```sh
-node --test scripts/warning-budget.test.mjs scripts/ci-warning-config.test.mjs
-```
+The `warning-budget` CI job was removed (CHE-9821): it timed out on large sync PRs and was not a required check.
 
 ## CD warning sources
 

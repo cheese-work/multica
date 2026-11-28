@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { readFileSync, readdirSync } from "node:fs"
+import { existsSync, readFileSync, readdirSync } from "node:fs"
 import { test } from "node:test"
 
 const workflow = (name) => readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), "utf8")
@@ -27,14 +27,6 @@ test("qualification stops only its persistent builder without removing cache sta
   assert.match(source, /docker container stop --time 120 "buildx_buildkit_\$\{BUILDER_NAME\}0"/)
   assert.match(source, /cleanup: false/)
   assert.doesNotMatch(source, /docker buildx rm/)
-})
-
-test("the warning gate waits for build, test and lint jobs and has read-only permissions", () => {
-  const source = workflow("ci.yml").split("  migration-prefix-check:")[0]
-  for (const job of ["frontend-build", "frontend-test", "frontend-views-test", "backend-tests", "backend-agent-tests", "go-lint"]) assert.ok(source.includes(job))
-  assert.match(source, /actions: read\n      checks: read/)
-  assert.doesNotMatch(source, /: write|secrets\.(?!GITHUB_TOKEN)/)
-  assert.match(source, /node scripts\/warning-budget.mjs/)
 })
 
 test("pull-request path filtering does not supply inputs ignored by the action", () => {
@@ -68,18 +60,6 @@ test("runner pinning preserves historical probe and floating-image cache comment
   assert.match(source, /when ubuntu-latest moves to a new/)
 })
 
-test("a CI job that is new on a PR has a zero warning baseline until main runs it", () => {
-  const budget = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
-  const zero = budget.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
-  assert.match(zero, /"locale-parity"/)
-})
-
-test("the gitleaks job folded into CI by CHE-4385 has a zero warning baseline until main runs it", () => {
-  const budget = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8")
-  const zero = budget.match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
-  assert.match(zero, /"gitleaks"/)
-})
-
 test("dependency-review blocks a PR that adds a high or critical dependency and prints nothing about existing ones (CHE-4666)", () => {
   const source = workflow("ci.yml")
   const job = source.match(/^  dependency-review:\n(?:(?:    .*|)\n)+/m)?.[0] ?? ""
@@ -93,22 +73,9 @@ test("dependency-review blocks a PR that adds a high or critical dependency and 
   const backend = source.match(/^  backend:\n(?:(?:    .*|)\n)+/m)[0]
   assert.match(backend, /needs: \[[^\]]*\bdependency-review\b/)
   assert.match(backend, /"dependency-review":"always"/)
-  const zero = readFileSync(new URL("./warning-budget.mjs", import.meta.url), "utf8").match(/zeroBaselineJobs = new Set\(\[([^\]]*)\]\)/)?.[1] ?? ""
-  assert.match(zero, /"dependency-review"/)
 })
 
-// CHE-7342: a warning-budget script change must not turn the check red on unrelated PRs.
-test("warning-budget unit tests run only when a PR touches the script, its tests or fixtures", () => {
-  const job = workflow("ci.yml").split("  warning-budget:")[1].split("\n  # CHE-2696")[0]
-  const step = job.split("      - name: ").find((s) => s.startsWith("Test warning regression fixtures"))
-  assert.match(step, /if: .*steps\.wb_scope\.outputs\.unit == 'true'/)
-  assert.match(job, /id: wb_scope/)
-  assert.match(job, /pull-requests: read/)
-  // The budget comparison is never gated.
-  const compare = job.split("      - name: ").find((s) => s.startsWith("Compare CI logs"))
-  assert.doesNotMatch(compare, /\n\s+if:/)
-  // The path pattern in the workflow selects exactly the script, its tests and its fixtures.
-  const pattern = new RegExp(job.match(/grep -Eq '([^']+)'/)[1])
-  for (const f of ["scripts/warning-budget.mjs", "scripts/warning-budget.test.mjs", "scripts/fixtures/warnings/new-warning.json"]) assert.match(f, pattern, f)
-  for (const f of ["server/main.go", "scripts/ci-scope.mjs", "docs/engineering/ci-warnings.md"]) assert.doesNotMatch(f, pattern, f)
+test("the removed warning-budget job and its script stay gone (CHE-9821)", () => {
+  assert.doesNotMatch(workflow("ci.yml"), /^  warning-budget:/m)
+  assert.equal(existsSync(new URL("./warning-budget.mjs", import.meta.url)), false)
 })
