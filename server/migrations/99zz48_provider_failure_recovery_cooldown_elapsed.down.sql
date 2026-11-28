@@ -1,9 +1,11 @@
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM provider_failure_recovery WHERE changed_condition = 'provider_cooldown_elapsed_unprobed') THEN
-        RAISE EXCEPTION 'cannot downgrade while cooldown-elapsed recoveries exist';
-    END IF;
-END $$;
+-- Rollback-safe (CHE-10039): keep cooldown-elapsed rows instead of refusing.
+-- The failed_task_id key is what bounds recovery to one run, so deleting a row
+-- would let that task recover again. provider_success_after_failure has the
+-- same column shape (probe_at set, probe_status NULL, one run or task), so the
+-- older constraint accepts the re-labelled row.
+UPDATE provider_failure_recovery
+SET changed_condition = 'provider_success_after_failure'
+WHERE changed_condition = 'provider_cooldown_elapsed_unprobed';
 
 ALTER TABLE provider_failure_recovery
     DROP CONSTRAINT provider_failure_recovery_effect_shape_check,
