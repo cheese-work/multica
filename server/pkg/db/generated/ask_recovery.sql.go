@@ -260,6 +260,25 @@ func (q *Queries) MarkAskRecoveryNoticeAnswered(ctx context.Context, id pgtype.U
 	return err
 }
 
+const serveAskGuardEvent = `-- name: ServeAskGuardEvent :execrows
+UPDATE ask_guard_event SET cleared_at = clock_timestamp()
+WHERE id = $1 AND workspace_id = $2 AND cleared_at IS NULL
+`
+
+type ServeAskGuardEventParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Closes an open event whose ask already reached the member, without marking a notice delivered.
+func (q *Queries) ServeAskGuardEvent(ctx context.Context, arg ServeAskGuardEventParams) (int64, error) {
+	result, err := q.db.Exec(ctx, serveAskGuardEvent, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const setAskGuardEventRepair = `-- name: SetAskGuardEventRepair :exec
 UPDATE ask_guard_event SET repair_reason = $3
 WHERE id = $1 AND workspace_id = $2 AND cleared_at IS NULL AND repair_reason IS NULL
@@ -274,4 +293,33 @@ type SetAskGuardEventRepairParams struct {
 func (q *Queries) SetAskGuardEventRepair(ctx context.Context, arg SetAskGuardEventRepairParams) error {
 	_, err := q.db.Exec(ctx, setAskGuardEventRepair, arg.ID, arg.WorkspaceID, arg.RepairReason)
 	return err
+}
+
+const taskAskedMemberOnIssue = `-- name: TaskAskedMemberOnIssue :one
+SELECT EXISTS (
+  SELECT 1 FROM decision_request request
+  JOIN decision_intent intent ON intent.id = request.decision_intent_id AND intent.workspace_id = request.workspace_id
+  WHERE request.workspace_id = $1 AND request.issue_id = $2 AND request.human_user_id = $3 AND intent.task_id = $4
+) AS asked
+`
+
+type TaskAskedMemberOnIssueParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	HumanUserID pgtype.UUID `json:"human_user_id"`
+	TaskID      pgtype.UUID `json:"task_id"`
+}
+
+// Whether the run that left the event already sent a decision request to the
+// member on the issue: the ask reached them, so a recovery notice would repeat it.
+func (q *Queries) TaskAskedMemberOnIssue(ctx context.Context, arg TaskAskedMemberOnIssueParams) (bool, error) {
+	row := q.db.QueryRow(ctx, taskAskedMemberOnIssue,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.HumanUserID,
+		arg.TaskID,
+	)
+	var asked bool
+	err := row.Scan(&asked)
+	return asked, err
 }

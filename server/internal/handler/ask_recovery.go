@@ -89,6 +89,21 @@ func (handler *Handler) deliverAskRecovery(ctx context.Context, listed db.AskGua
 		}
 		return transaction.Commit(ctx)
 	}
+	// The run already asked this member on this issue: the ask reached them, so a
+	// notice would repeat it. An event that opened after the request (a refused
+	// edit) was not served when the request was created, so close it here.
+	if event.MemberID.Valid {
+		asked, err := queries.TaskAskedMemberOnIssue(ctx, db.TaskAskedMemberOnIssueParams{WorkspaceID: event.WorkspaceID, IssueID: event.IssueID, HumanUserID: event.MemberID, TaskID: event.TaskID})
+		if err != nil {
+			return err
+		}
+		if asked {
+			if _, err := queries.ServeAskGuardEvent(ctx, db.ServeAskGuardEventParams{ID: event.ID, WorkspaceID: event.WorkspaceID}); err != nil {
+				return err
+			}
+			return transaction.Commit(ctx)
+		}
+	}
 	source, err := queries.GetAskGuardEventSource(ctx, db.GetAskGuardEventSourceParams{ID: event.ID, WorkspaceID: event.WorkspaceID})
 	if err != nil {
 		return err
