@@ -356,6 +356,14 @@ if [ "\$1" = "compose" ]; then
       printf 'migrate-run direction=%s attempt=%s passed=%s\n' "\$direction" "\${MULTICA_CONTRACT_ATTEMPT:-}" "\$passed" >>"\$control_dir/events.log"
       printf 'migrate %s\n' "\$(resolve_ref "\${MULTICA_BACKEND_IMAGE:-}:\${MULTICA_IMAGE_TAG:-}")" >>"\$control_dir/run-image-ids.log"
       fail_if_flagged fail-migrate
+      # CHE-7486 N5b-2: migrate-applies-contract=<version>:<attempt> makes an
+      # "up" run record that contract (ledger and schema_contracts rows).
+      if [ "\$direction" = "up" ] && [ -f "\$control_dir/migrate-applies-contract" ]; then
+        spec="\$(cat "\$control_dir/migrate-applies-contract")"
+        : >"\$control_dir/schema-contracts-table"
+        : >"\$control_dir/ledger-row-\${spec%%:*}"
+        printf '%s' "\${spec#*:}" >"\$control_dir/contract-row-\${spec%%:*}"
+      fi
       # Genuinely advance the mock ledger on a real "up" run, so the
       # rollback compatibility guard is exercised against a schema state
       # that actually changed — not a static fixture value a test hand-
@@ -382,7 +390,11 @@ if [ "\$1" = "compose" ]; then
       bb="\$(render_port BACKEND_BLUE_PORT 18081)"; bg="\$(render_port BACKEND_GREEN_PORT 18082)"
       fb="\$(render_port FRONTEND_BLUE_PORT 13001)"; fg="\$(render_port FRONTEND_GREEN_PORT 13002)"
       printf 'backend-blue=%s\nbackend-green=%s\nfrontend-blue=%s\nfrontend-green=%s\n' "\$bb" "\$bg" "\$fb" "\$fg" >"\$control_dir/rendered-ports"
-      printf '{"services":{"backend-blue":{"ports":[{"target":8080,"published":"%s"}]},"backend-green":{"ports":[{"target":8080,"published":"%s"}]},"frontend-blue":{"environment":{"MULTICA_APP_URL":""},"ports":[{"target":3000,"published":"%s"}]},"frontend-green":{"environment":{"MULTICA_APP_URL":""},"ports":[{"target":3000,"published":"%s"}]}}}\n' "\$bb" "\$bg" "\$fb" "\$fg"
+      # image: what the service would start from under the caller's
+      # environment (CHE-7486 N5b-2: the pinned reference).
+      bi="\${MULTICA_BACKEND_IMAGE:-ghcr.io/cheese-work/multica-backend}:\${MULTICA_IMAGE_TAG:-latest}"
+      wi="\${MULTICA_WEB_IMAGE:-ghcr.io/cheese-work/multica-web}:\${MULTICA_IMAGE_TAG:-latest}"
+      printf '{"services":{"backend-blue":{"image":"%s","ports":[{"target":8080,"published":"%s"}]},"backend-green":{"image":"%s","ports":[{"target":8080,"published":"%s"}]},"frontend-blue":{"image":"%s","environment":{"MULTICA_APP_URL":""},"ports":[{"target":3000,"published":"%s"}]},"frontend-green":{"image":"%s","environment":{"MULTICA_APP_URL":""},"ports":[{"target":3000,"published":"%s"}]}}}\n' "\$bi" "\$bb" "\$bi" "\$bg" "\$wi" "\$fb" "\$wi" "\$fg"
       exit 0
       ;;
     port)
@@ -397,7 +409,28 @@ if [ "\$1" = "compose" ]; then
       exit 0
       ;;
     up | start)
+      # CHE-7486 N5b-2: kill-controller-at-candidate-up kills the controller
+      # (the nearest ancestor running cutover.sh) at the candidate's
+      # "compose up -d --no-deps backend-<colour> frontend-<colour>".
+      if [ "\$sub" = up ] && [ -f "\$control_dir/kill-controller-at-candidate-up" ] && [[ "\$*" == *"--no-deps backend-"* ]]; then
+        p="\$PPID"
+        while [ "\$p" -gt 1 ]; do
+          if tr '\0' ' ' <"/proc/\$p/cmdline" | grep -qE '(^|[ /])cutover\.sh( |\$)'; then
+            echo "mock docker: controller \$p killed at the candidate start" >&2
+            kill -9 "\$p"
+            exit 137
+          fi
+          p="\$(ps -o ppid= -p "\$p" | tr -d ' ')"
+        done
+      fi
       [ "\$sub" = up ] && fail_if_flagged fail-container-start
+      # start-image-<service>: "compose start" leaves that image id on the
+      # container (a container that was not what the controller proved).
+      if [ "\$sub" = start ]; then
+        for a in "\$@"; do
+          [ ! -f "\$control_dir/start-image-\$a" ] || cp "\$control_dir/start-image-\$a" "\$control_dir/image-\$a"
+        done
+      fi
       [ "\$sub" = start ] && printf '%s\n' "\$*" >>"\$control_dir/start-calls.log"
       for a in "\$@"; do
         case "\$a" in
@@ -481,6 +514,7 @@ if [ "\$1" = "compose" ]; then
       if [ "\$1" = "--all" ] && [ "\$2" = "-q" ]; then
         if [ -f "\$control_dir/running-\$3" ] || [ -f "\$control_dir/flags-mount-\$3" ] || [ -f "\$control_dir/exists-\$3" ]; then
           printf 'cid-%s\n' "\$3"
+          [ ! -f "\$control_dir/extra-container-\$3" ] || printf 'cid-extra-%s\n' "\$3"
         fi
         exit 0
       fi
@@ -2410,6 +2444,236 @@ grep -q 'backend-blue' "$n5b1_dir/control/start-calls.log" || n5b1_fail n5b1-qui
 ! grep -q 'proof-run' "$n5b1_dir/control/events.log" || n5b1_fail n5b1-quiescence-denial "a proof ran with no contract applied"
 contract_end
 echo "n5b1 contract guard scenarios passed"
+
+# ---------------------------------------------------------------------------
+# CHE-7486 N5b-2: with a contract applied, `rollback` starts only the exact
+# stopped containers whose image id it proved. Any doubt refuses before the
+# drain with exit 3 and "rollback refused: <reason>"; nothing is stopped or
+# started. The start is `compose start` (never `compose up`), and the started
+# image ids must equal the proven ones. With no contract applied the path is
+# today's, call for call (golden file).
+#   migrate-applies-contract=<version>:<attempt>   the mock migrator records it
+#   kill-controller-at-candidate-up                the controller dies at the
+#       candidate's `compose up -d --no-deps backend-<to> frontend-<to>`
+#   exists-<service>, image-<service>=<id>         a stopped container
+#   ref-backend / ref-web                          what the pinned reference resolves to
+#   start-image-<service>=<id>                     the image `compose start` leaves
+#   extra-container-<service>                      a second container for the service
+# ---------------------------------------------------------------------------
+n5b2_pin_tag="sha-n5b2-pin"
+
+# n5b2_stopped COLOUR: the colour's two containers exist, stopped, and the
+# pinned reference resolves to the images they hold.
+n5b2_stopped() {
+  local c=$1
+  : >"$n5b1_dir/control/exists-backend-$c"
+  : >"$n5b1_dir/control/exists-frontend-$c"
+  [ -f "$n5b1_dir/control/image-backend-$c" ] || printf 'imgid-incumbent-old-backend-%s' "$c" >"$n5b1_dir/control/image-backend-$c"
+  [ -f "$n5b1_dir/control/image-frontend-$c" ] || printf 'imgid-incumbent-old-web-%s' "$c" >"$n5b1_dir/control/image-frontend-$c"
+  cp "$n5b1_dir/control/image-backend-$c" "$n5b1_dir/control/ref-backend"
+  cp "$n5b1_dir/control/image-frontend-$c" "$n5b1_dir/control/ref-web"
+}
+
+# n5b2_completed NAME [SPEC]...: a contract applied, a completed cutover to
+# green, blue stopped as the retained predecessor.
+n5b2_completed() {
+  local name=$1
+  shift
+  n5b1_setup "$name" "$@"
+  n5b1_applied "$n5b1_version_2" "$n5b1_attempt_1"
+  n5b1_cutover
+  expect_exit 0 "$n5b1_status" "$name"
+  n5b2_stopped blue
+}
+
+# n5b2_rollback: run `rollback` the way the wrapper does (pinned environment).
+n5b2_rollback() {
+  export CUTOVER_TEST_CONTROL_DIR="$n5b1_dir/control" ROUTER_STATE_DIR="$n5b1_dir/router-state"
+  export MOCK_BACKEND_DIGEST="$backend_digest" MOCK_WEB_DIGEST="$web_digest" MOCK_EXPECTED_COMMIT="$source_sha"
+  export MOCK_INCUMBENT_BACKEND_DIGEST="$incumbent_backend_digest" MOCK_INCUMBENT_WEB_DIGEST="$incumbent_web_digest"
+  export CUTOVER_DATABASE_URL="postgres://multica:multica@127.0.0.1:5432/multica?sslmode=disable"
+  n5b2_mark="$(wc -l <"$n5b1_dir/control/docker-calls.log")"
+  rm -f "$n5b1_dir/control/stop-calls.log" "$n5b1_dir/control/start-calls.log"
+  set +e
+  n5b1_output="$(MULTICA_BACKEND_IMAGE=ghcr.io/cheese-work/multica-backend MULTICA_WEB_IMAGE=ghcr.io/cheese-work/multica-web \
+    MULTICA_IMAGE_TAG="$n5b2_pin_tag" bash deploy/cd/cutover.sh rollback --compose-dir "$compose_dir" --state-dir "$n5b1_dir" 2>&1)"
+  n5b1_status=$?
+  set -e
+}
+# n5b2_calls: the docker calls the rollback made.
+n5b2_calls() { tail -n +"$((n5b2_mark + 1))" "$n5b1_dir/control/docker-calls.log"; }
+
+# n5b2_ctl SPEC...: control files set after the cutover, so they do not
+# touch it. The read counters restart, so contract-read-fails-from=1 means
+# the rollback's first read.
+n5b2_ctl() {
+  local spec
+  rm -f "$n5b1_dir/control/contract-reads" "$n5b1_dir/control/ledger-reads"
+  for spec in "$@"; do
+    case "$spec" in
+      *=*) printf '%s' "${spec#*=}" >"$n5b1_dir/control/${spec%%=*}" ;;
+      *) : >"$n5b1_dir/control/$spec" ;;
+    esac
+  done
+}
+
+# n5b2_expect_refused NAME REASON-TEXT [ACTIVE-COLOUR]: exit 3 before the
+# drain; no stop, no start, no create; the active colour (when it was serving)
+# still serves; no outage alert.
+n5b2_expect_refused() {
+  local name=$1 want=$2 colour=${3-green}
+  expect_exit 3 "$n5b1_status" "$name"
+  expect_contains "$n5b1_output" "rollback refused: $want" "$name"
+  ! n5b2_calls | grep -qE '^compose .* (stop|start|up|run) ' || n5b1_fail "$name" "rollback drained, started or created a container: $(n5b2_calls | grep -E '^compose .* (stop|start|up|run) ')"
+  [ ! -s "$n5b1_dir/control/stop-calls.log" ] || n5b1_fail "$name" "a container was stopped"
+  [ ! -s "$n5b1_dir/control/start-calls.log" ] || n5b1_fail "$name" "a container was started"
+  [ ! -f "$n5b1_dir/outage-alert.json" ] || n5b1_fail "$name" "an outage alert was raised for a refusal before the drain"
+  [ -z "$colour" ] || [ -f "$n5b1_dir/control/running-backend-$colour" ] || n5b1_fail "$name" "the active colour $colour was stopped"
+}
+
+# n5b2_interrupted NAME PROOF-EXIT: an interrupted contract cutover. The
+# migrator records the contract and the controller dies at the candidate's
+# start (cutover.sh `compose up -d --no-deps backend-green frontend-green`);
+# the state file still names blue, which the cutover had already drained.
+# green's stopped containers hold images the proof answers PROOF-EXIT for.
+n5b2_interrupted() {
+  local name=$1 proof=$2
+  n5b1_setup "$name" kill-controller-at-candidate-up "migrate-applies-contract=$n5b1_version_2:$n5b1_attempt_1"
+  n5b1_cutover
+  [ "$n5b1_status" -eq 137 ] || n5b1_fail "$name" "the controller was not killed at the candidate start (exit $n5b1_status)"
+  grep -q 'up -d --no-deps backend-green frontend-green' "$n5b1_dir/control/docker-calls.log" || n5b1_fail "$name" "no candidate start call"
+  [ -f "$n5b1_dir/control/contract-row-$n5b1_version_2" ] || n5b1_fail "$name" "the migrator did not record the contract"
+  [ ! -f "$n5b1_dir/cutover-state.json" ] || n5b1_fail "$name" "a state file was written"
+  cat >"$n5b1_dir/cutover-state.json" <<JSON
+{"active_colour": "blue", "image_tuple": {"backend": "ghcr.io/cheese-work/multica-backend@$incumbent_backend_digest", "web": "ghcr.io/cheese-work/multica-web@$incumbent_web_digest"},
+ "migration_ledger_version": "$pre_cutover_baseline", "minimum_rollback_version": "$packet_minimum_rollback", "router_generation_colour": "blue"}
+JSON
+  rm -f "$n5b1_dir/control/kill-controller-at-candidate-up"
+  n5b2_stopped green
+  n5b2_ctl "proof-exit-incumbent=$proof"
+}
+
+# Red 1: the other colour's stopped container holds an image without the
+# contract file.
+n5b2_interrupted n5b2-interrupted-lacks-file 10
+n5b2_rollback
+n5b2_expect_refused n5b2-interrupted-lacks-file "backend-green image imgid-incumbent-old-backend-green does not hold contract migration $n5b1_version_2 (attempt $n5b1_attempt_1)" ""
+grep -q 'proof-run role=incumbent image=imgid-incumbent-old-backend-green' "$n5b1_dir/control/events.log" || n5b1_fail n5b2-interrupted-lacks-file "no proof run on the stopped container's image id"
+
+# The new candidate's container is in the other colour and holds the file:
+# rollback proves it and starts it with `compose start`; no `compose up`.
+n5b2_interrupted n5b2-interrupted-candidate-proven 0
+n5b2_rollback
+expect_exit 0 "$n5b1_status" n5b2-interrupted-candidate-proven
+expect_contains "$n5b1_output" "rollback complete: green restored and healthy" n5b2-interrupted-candidate-proven
+grep -qx 'backend-green frontend-green' "$n5b1_dir/control/start-calls.log" || n5b1_fail n5b2-interrupted-candidate-proven "no compose start of the exact containers"
+! n5b2_calls | grep -qE '^compose .* up ' || n5b1_fail n5b2-interrupted-candidate-proven "compose up was called"
+grep -q 'proof-run role=incumbent image=imgid-incumbent-old-backend-green' "$n5b1_dir/control/events.log" || n5b1_fail n5b2-interrupted-candidate-proven "no proof run on the stopped container's image id"
+
+# Red 2: a completed cutover, then rollback; the predecessor's image lacks the
+# contract file.
+n5b2_completed n5b2-completed-lacks-file
+n5b2_ctl proof-exit-incumbent=10
+n5b2_rollback
+n5b2_expect_refused n5b2-completed-lacks-file "backend-blue image imgid-incumbent-backend-blue does not hold contract migration $n5b1_version_2 (attempt $n5b1_attempt_1)"
+
+# A proof that cannot run, an unreadable contract state, a ledger that cannot
+# be read: refused before the drain, never guessed.
+n5b2_completed n5b2-proof-uncertain
+n5b2_ctl proof-exit-incumbent=125
+n5b2_rollback
+n5b2_expect_refused n5b2-proof-uncertain "contract state unreadable (the image proof on imgid-incumbent-backend-blue could not run)"
+
+n5b2_completed n5b2-read-fails
+n5b2_ctl contract-read-fails-from=1
+n5b2_rollback
+n5b2_expect_refused n5b2-read-fails "contract state unreadable (cannot read schema_contracts)"
+
+n5b2_completed n5b2-ledger-read-fails
+n5b2_ctl fail-ledger-read
+n5b2_rollback
+n5b2_expect_refused n5b2-ledger-read-fails "contract state unreadable (cannot read the ledger)"
+
+# Red 3: a re-pointed tag. The stopped container holds an image with the file
+# (the proof passes); the pinned reference now resolves to another image.
+n5b2_completed n5b2-repointed-backend
+printf 'imgid-repointed-backend' >"$n5b1_dir/control/ref-backend"
+n5b2_rollback
+n5b2_expect_refused n5b2-repointed-backend "backend-blue pinned reference ghcr.io/cheese-work/multica-backend:$n5b2_pin_tag resolves to imgid-repointed-backend, but the stopped container holds imgid-incumbent-backend-blue"
+grep -q 'proof-run role=incumbent' "$n5b1_dir/control/events.log" || n5b1_fail n5b2-repointed-backend "the proof did not pass first"
+
+n5b2_completed n5b2-repointed-web
+printf 'imgid-repointed-web' >"$n5b1_dir/control/ref-web"
+n5b2_rollback
+n5b2_expect_refused n5b2-repointed-web "frontend-blue pinned reference ghcr.io/cheese-work/multica-web:$n5b2_pin_tag resolves to imgid-repointed-web, but the stopped container holds imgid-incumbent-frontend-blue"
+
+# A missing stopped container, and a second container for one service, refuse.
+n5b2_completed n5b2-container-missing
+rm -f "$n5b1_dir/control/exists-frontend-blue"
+n5b2_rollback
+n5b2_expect_refused n5b2-container-missing "frontend-blue has no stopped container (want exactly one)"
+
+n5b2_completed n5b2-container-twice
+n5b2_ctl extra-container-backend-blue
+n5b2_rollback
+n5b2_expect_refused n5b2-container-twice "backend-blue has 2 containers (want exactly one)"
+
+# Green: a completed cutover with the file in the predecessor's image: proven,
+# started with `compose start` (the exact containers), never `compose up`, and
+# the proof precedes the drain.
+n5b2_completed n5b2-completed-proven
+n5b2_rollback
+expect_exit 0 "$n5b1_status" n5b2-completed-proven
+expect_contains "$n5b1_output" "rollback complete: blue restored and healthy" n5b2-completed-proven
+grep -qx 'backend-blue frontend-blue' "$n5b1_dir/control/start-calls.log" || n5b1_fail n5b2-completed-proven "no compose start of the exact containers"
+! n5b2_calls | grep -qE '^compose .* up ' || n5b1_fail n5b2-completed-proven "compose up was called"
+proof_line="$(n5b2_calls | grep -n -- "--network none" | head -1 | cut -d: -f1 || true)"
+stop_line="$(n5b2_calls | grep -n "stop backend-green" | head -1 | cut -d: -f1 || true)"
+[ -n "$proof_line" ] && [ -n "$stop_line" ] && [ "$proof_line" -lt "$stop_line" ] \
+  || n5b1_fail n5b2-completed-proven "the proof (line ${proof_line:-none}) did not precede the drain (line ${stop_line:-none})"
+[ "$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$n5b1_dir/cutover-state.json")" = blue ] \
+  || n5b1_fail n5b2-completed-proven "active_colour is not blue after the rollback"
+
+# After the start the container's image id must equal the proven one;
+# otherwise both are stopped again and the alert is raised, exit 1.
+for role in backend frontend; do
+  n5b2_completed "n5b2-start-other-image-$role"
+  printf 'imgid-other-started' >"$n5b1_dir/control/start-image-$role-blue"
+  n5b2_rollback
+  expect_exit 1 "$n5b1_status" "n5b2-start-other-image-$role"
+  expect_contains "$n5b1_output" "rollback started an image other than the proven one" "n5b2-start-other-image-$role"
+  expect_contains "$(cat "$n5b1_dir/outage-alert.json")" "rollback started an image other than the proven one (" "n5b2-start-other-image-$role"
+  expect_contains "$(cat "$n5b1_dir/outage-alert.json")" "imgid-other-started" "n5b2-start-other-image-$role"
+  expect_contains "$(cat "$n5b1_dir/outage-alert.json")" "stopped again" "n5b2-start-other-image-$role"
+  grep -qx 'backend-blue frontend-blue' "$n5b1_dir/control/stop-calls.log" || n5b1_fail "n5b2-start-other-image-$role" "the started containers were not stopped again"
+  [ ! -f "$n5b1_dir/control/running-backend-blue" ] && [ ! -f "$n5b1_dir/control/running-frontend-blue" ] \
+    || n5b1_fail "n5b2-start-other-image-$role" "the other image is still running"
+  [ "$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).active_colour)' "$n5b1_dir/cutover-state.json")" = green ] \
+    || n5b1_fail "n5b2-start-other-image-$role" "the state file was rewritten"
+done
+
+# The contract row is absent (the restore ran): rollback takes today's path,
+# `compose up`, with no proof container.
+n5b2_completed n5b2-contract-row-absent
+rm -f "$n5b1_dir/control/contract-row-$n5b1_version_2"
+n5b2_rollback
+expect_exit 0 "$n5b1_status" n5b2-contract-row-absent
+n5b2_calls | grep -qE '^compose .* up -d --no-deps backend-blue frontend-blue' || n5b1_fail n5b2-contract-row-absent "today's compose up was not used"
+[ ! -s "$n5b1_dir/control/start-calls.log" ] || n5b1_fail n5b2-contract-row-absent "compose start was used with no contract applied"
+! n5b2_calls | grep -q -- '--network none' || n5b1_fail n5b2-contract-row-absent "a proof container ran with no contract applied"
+
+# No contract applied: the docker calls equal today's, call for call (golden
+# file taken before this change). The contract reads are new and read-only,
+# so they are left out of both.
+n5b1_setup n5b2-none-applied-golden
+n5b1_cutover
+expect_exit 0 "$n5b1_status" n5b2-none-applied-golden
+n5b2_rollback
+expect_exit 0 "$n5b1_status" n5b2-none-applied-golden
+n5b2_calls | grep -vE "to_regclass\('schema_contracts'\)|FROM schema_contracts|count\(\*\) FROM schema_migrations" | sed -E "s#$root_dir#<root>#g; s#-v [^ ]*/generations/[^ ]*:#-v <generation>:#" >"$n5b1_dir/rollback-calls.actual"
+diff -u "$real_root/deploy/cd/fixtures/rollback-no-contract-calls.golden" "$n5b1_dir/rollback-calls.actual" \
+  || n5b1_fail n5b2-none-applied-golden "the docker calls differ from the golden file"
+echo "n5b2 rollback binding scenarios passed"
 
 fi
 

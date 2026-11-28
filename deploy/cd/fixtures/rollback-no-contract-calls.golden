@@ -1,0 +1,29 @@
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml ps --all -q backend-green
+inspect --format {{json .Mounts}} cid-backend-green
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml ps -q postgres
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml config --format json
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml config --format json
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml config --format json
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml config --format json
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml images backend-green --format json
+inspect --format {{if .RepoDigests}}{{index .RepoDigests 0}}{{end}} ghcr.io/cheese-work/multica-backend:sha-incumbent
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml images frontend-green --format json
+inspect --format {{if .RepoDigests}}{{index .RepoDigests 0}}{{end}} ghcr.io/cheese-work/multica-web:sha-incumbent
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml ps -q backend-green
+inspect --format {{.Image}} cid-backend-green
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml ps -q frontend-green
+inspect --format {{.Image}} cid-frontend-green
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml exec -T postgres psql -U multica -d multica -tA -c SELECT coalesce(max(version), '') FROM schema_migrations
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml stop backend-green frontend-green
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml ps --status running --format {{.Service}} backend-green frontend-green
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml exec -T postgres psql -U multica -d multica -tA -c SELECT coalesce(max(version), '') FROM schema_migrations
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml up -d --no-deps backend-blue frontend-blue
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml port backend-blue 8080
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml port frontend-blue 3000
+run --rm -v <generation>:ro nginx:1.27-alpine nginx -t
+exec multica-ab-router nginx -s reload
+exec multica-ab-router nginx -T
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml images backend-blue --format json
+inspect --format {{if .RepoDigests}}{{index .RepoDigests 0}}{{end}} ghcr.io/cheese-work/multica-backend:sha-incumbent
+compose -f docker-compose.selfhost.yml -f <root>/deploy/cd/docker-compose.ab.yml images frontend-blue --format json
+inspect --format {{if .RepoDigests}}{{index .RepoDigests 0}}{{end}} ghcr.io/cheese-work/multica-web:sha-incumbent
