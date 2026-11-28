@@ -332,6 +332,7 @@ bash deploy/cd/test-deploy.sh
 bash deploy/cd/test-router.sh
 bash deploy/cd/test-release-packet.sh
 bash deploy/cd/test-cutover.sh
+bash deploy/cd/test-contract-snapshot.sh
 bash deploy/cd/test-artifact-controller.sh
 node --test deploy/cd/drift-receipt.test.mjs
 (cd server && go test ./internal/dbstartup/...)
@@ -640,6 +641,55 @@ nonzero, failing the cutover (incumbent recovery), when any of these differ:
 - the candidate containers' env key names vs the released compose render plus
   the image's own env (names only, never values);
 - the candidate containers' image digests vs the manifest.
+
+### Contract migrations
+
+A contract migration is an up file whose first line is
+
+```
+-- multica:contract snapshot=<table>[,<table>] restore=<repo path>
+```
+
+`snapshot` lists the tables the migration changes destructively. `restore` is
+a repo-relative SQL file that puts them back.
+
+- **Packet.** `release-packet.mjs create` adds
+  `contract_migrations: [{version, snapshot_tables, restore}]` for every marked
+  up file with no ledger row, in runner order. `verify` recomputes the list
+  and fails on any difference. The packet tool does not check that the
+  `restore` file exists yet (deferred to B3c-1). The cutover bundle carries
+  each restore file at the same relative path and verifies with
+  `--repo-root <bundle>`.
+- **Gate.** `cutover.sh cutover` runs the gate after the quiescence
+  final-gate and before the migrator. No contract migration: nothing happens
+  and `MULTICA_CONTRACT_ATTEMPT` stays unset.
+  1. Every contract version must have no `schema_migrations` row and no
+     `schema_contracts` row. Otherwise `recover_incumbent`.
+  2. Each table is streamed with `COPY <table> TO STDOUT` into
+     `<state-dir>/contract-snapshots/<attempt_id>/<table>.copy`. The directory
+     is 0700, files are 0600, nothing is overwritten. A missing table is
+     recorded as `rows: 0, absent: true`.
+  3. `manifest.json` records `attempt_id, source_sha, taken_at, ledger`, and per
+     table `contract_version, columns, rows, sha256`. The gate re-reads every
+     copy: the line count must equal `rows` and a fresh SHA-256 must equal the
+     manifest's.
+  4. The attempt record `<state-dir>/contract-attempts/<attempt_id>.json`
+     holds `attempt_id, source_sha, contract_versions, snapshot_dir`, the
+     manifest SHA-256, the incumbent backend image id and digest, the
+     candidate backend digest and `written_at`. It is written to a temporary
+     file, synced, renamed, then the directory is synced. Mode 0600.
+  5. The migrator runs with `MULTICA_CONTRACT_ATTEMPT=<attempt_id>`.
+- **Failure.** Any failure in steps 1 to 4 calls `recover_incumbent` with
+  `contract snapshot or attempt record failed (no migration ran)`: the
+  migrator never starts and the incumbent restarts.
+- **Attempts.** Each attempt gets a new random id, directory and record. An
+  earlier attempt's files are never touched.
+- **Restore.** Not performed here. The attempt record is the pointer a restore
+  procedure starts from.
+
+`COPY` text format escapes tab, newline, carriage return and backslash, so one
+row is one line. `test-contract-snapshot.sh` round-trips those characters and
+non-ASCII text through a throwaway Postgres (skipped without Docker).
 
 ### What this unit does NOT cover
 
