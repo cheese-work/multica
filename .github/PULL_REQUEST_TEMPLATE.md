@@ -96,10 +96,20 @@ Changelog: <one user-facing sentence, or none>
      - `Adoption base:` the activity base and its minimum, for example `issues created by agents in 7 days, at least 20`.
      - `Adoption target:` for example `3 or more issues by 2 or more agents in 7 days`.
      - `Adoption old-path:` optional. An old-path count never gives PASS alone: 0 calls can mean no activity.
-     A yes PR without a signal, base or target line gets the result `unknown` in the adoption issue. -->
+     A yes PR without a signal, base or target line gets the result `unknown` in the adoption issue.
+     On yes, also state how agents get the new path (CHE-7712). One `Adoption mode:` line with one value:
+     - `default`: the product makes the new path the default. Needs `Adoption proof:`.
+     - `refuse`: the product refuses the old path. Needs `Adoption proof:`.
+     - `none: <reason>`: agents need no change.
+     - `instruction: <skill name> — <why the product cannot use default or refuse>`.
+     `Adoption proof:` is a path (a test or a file) that is in this PR's changed files.
+     This repo is public: name a skill by its name, never a private path.
+     The check reads the live PR body: edit the body, then re-run the failed job, or push. -->
 
 Agent-facing: yes | no
 Adoption item:
+Adoption mode:
+Adoption proof:
 Adoption signal:
 Adoption base:
 Adoption target:

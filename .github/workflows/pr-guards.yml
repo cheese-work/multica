@@ -83,8 +83,8 @@ jobs:
         run: node scripts/fork-changelog.mjs --event "$GITHUB_EVENT_PATH" --files "$RUNNER_TEMP/files.txt"
 
   # CHE-5717: a PR that touches CLI commands, the agent brief or the daemon says whether agents need an instruction
-  # update (`Agent-facing: yes | no`, plus `Adoption item:` on yes). The daily adoption issue is built from the answers.
-  # The PR body comes from the event payload and the file list from the read-only token; the script is the trusted
+  # update (`Agent-facing: yes | no`, plus `Adoption item:` and `Adoption mode:` on yes). The daily adoption issue is built from the answers.
+  # The PR body and the file list come from the read-only token (the live body, so a re-run after an edit works); the script is the trusted
   # base copy. upstream-sync heads and upstream-main bases carry no field and are skipped. Making this check required
   # is Cheese's call.
   agent-facing:
@@ -110,9 +110,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: gh api --paginate "repos/$REPO/pulls/${PR_NUMBER}/files" --jq '.[].filename' > "$RUNNER_TEMP/files.txt"
+        run: |
+          gh api --paginate "repos/$REPO/pulls/${PR_NUMBER}/files" --jq '.[].filename' > "$RUNNER_TEMP/files.txt"
+          # The live body, not the event's: a re-run after a body edit judges the edit (CHE-7712 S1).
+          gh api "repos/$REPO/pulls/${PR_NUMBER}" --jq '.body // ""' > "$RUNNER_TEMP/body.md"
       - name: Check the Agent-facing field
-        run: node scripts/agent-adoption.mjs check --event "$GITHUB_EVENT_PATH" --files "$RUNNER_TEMP/files.txt"
+        run: node scripts/agent-adoption.mjs check --event "$GITHUB_EVENT_PATH" --files "$RUNNER_TEMP/files.txt" --body "$RUNNER_TEMP/body.md"
 
   fork-sync-guard:
     name: Fork sync preservation

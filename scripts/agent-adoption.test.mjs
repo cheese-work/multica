@@ -13,6 +13,7 @@ import {
   lastAdoption,
   main,
   newCliFlags,
+  parseAdoptionMode,
   parseAdoptionSpec,
   parseAgentFacing,
   touchesAgentSurface,
@@ -60,8 +61,103 @@ test("checkAgentFacing requires the field only when the PR touches an agent surf
   assert.match(checkAgentFacing("no field here", cli)[0], /Agent-facing/);
   assert.deepEqual(checkAgentFacing("Agent-facing: no", cli), []);
   assert.match(checkAgentFacing("Agent-facing: yes", cli)[0], /Adoption item/);
-  assert.deepEqual(checkAgentFacing("Agent-facing: yes\nAdoption item: add --x", cli), []);
+  assert.deepEqual(checkAgentFacing("Agent-facing: yes\nAdoption item: add --x\nAdoption mode: none: no agent reads it", cli), []);
   assert.deepEqual(checkAgentFacing("no field here", ["apps/web/page.tsx"]), []);
+});
+
+// CHE-10447 (CHE-7712 S1): a yes PR states how agents get the new path.
+const cliPaths = ["server/cmd/multica/cmd_issue.go", "scripts/agent-adoption.test.mjs"];
+const yes = (...lines) => ["Agent-facing: yes", "Adoption item: use --x", ...lines].join("\n");
+const RERUN = "Edit the PR body, then re-run this failed job (it reads the live body), or push.";
+
+test("a yes PR without an Adoption mode line fails and names the line", () => {
+  const [error, ...rest] = checkAgentFacing(yes(), cliPaths);
+  assert.equal(rest.length, 0);
+  assert.match(error, /Adoption mode:/);
+  assert.ok(error.endsWith(RERUN), error);
+});
+
+test("each of the four modes passes when its required parts are there", () => {
+  for (const body of [
+    yes("Adoption mode: default", "Adoption proof: scripts/agent-adoption.test.mjs"),
+    yes("Adoption mode: refuse", "Adoption proof: `scripts/agent-adoption.test.mjs`"),
+    yes("Adoption mode: none: only the daemon logs change"),
+    yes("Adoption mode: instruction: multica-cheese-work-issue — the product cannot know the issue type"),
+  ]) assert.deepEqual(checkAgentFacing(body, cliPaths), [], body);
+});
+
+test("a mode that lacks a required part fails", () => {
+  for (const [mode, expect] of [
+    ["default", /Adoption proof:/],
+    ["refuse", /Adoption proof:/],
+    ["none:", /`none: <reason>`/],
+    ["none:   ", /`none: <reason>`/],
+    ["instruction: multica-cheese-work-issue", /`instruction: <skill name> — <why/],
+    ["instruction: multica-cheese-work-issue — ", /`instruction: <skill name> — <why/],
+    ["instruction: ~/private/skill.md — no default possible", /skill by its name/],
+    ["sometimes", /Adoption mode:/],
+    ["<default | refuse | none: <reason> | instruction: <skill> — <why>>", /Adoption mode:/],
+  ]) {
+    const errors = checkAgentFacing(yes(`Adoption mode: ${mode}`), cliPaths);
+    assert.equal(errors.length, 1, mode);
+    assert.match(errors[0], expect, mode);
+    assert.ok(errors[0].endsWith(RERUN), errors[0]);
+  }
+});
+
+test("default or refuse with a proof path outside the changed files fails", () => {
+  for (const mode of ["default", "refuse"]) {
+    const [error] = checkAgentFacing(yes(`Adoption mode: ${mode}`, "Adoption proof: scripts/other.test.mjs"), cliPaths);
+    assert.match(error, /scripts\/other\.test\.mjs/);
+    assert.match(error, /changed files/);
+  }
+});
+
+test("a mode inside an HTML comment or a code fence does not count", () => {
+  const hidden = [
+    yes("<!-- Adoption mode: none: x -->"),
+    yes("```", "Adoption mode: none: x", "```"),
+    yes("<!--", "Adoption mode: default", "Adoption proof: scripts/agent-adoption.test.mjs", "-->"),
+  ];
+  for (const body of hidden) assert.match(checkAgentFacing(body, cliPaths)[0], /Adoption mode:/, body);
+  assert.match(checkAgentFacing(yes("Adoption mode: default", "<!-- Adoption proof: scripts/agent-adoption.test.mjs -->"), cliPaths)[0], /Adoption proof:/);
+});
+
+test("two Adoption mode lines fail: a PR carries one", () => {
+  assert.match(checkAgentFacing(yes("Adoption mode: none: a", "Adoption mode: none: b"), cliPaths)[0], /one `Adoption mode:`/);
+});
+
+test("Agent-facing: no and a PR with no field on a non-agent-surface path need no mode", () => {
+  assert.deepEqual(checkAgentFacing("Agent-facing: no", cliPaths), []);
+  assert.deepEqual(checkAgentFacing("Agent-facing: no", ["apps/web/page.tsx"]), []);
+  assert.deepEqual(checkAgentFacing("no field here", ["apps/web/page.tsx"]), []);
+});
+
+test("an explicit yes PR needs a valid mode on any path, not only on agent-surface paths", () => {
+  for (const paths of [["apps/web/page.tsx"], ["scripts/agent-adoption.mjs"], ["scripts/agent-adoption.test.mjs"]]) {
+    const [error, ...rest] = checkAgentFacing("Agent-facing: yes", paths);
+    assert.equal(rest.length, 0);
+    assert.match(error, /Adoption mode:/);
+    assert.ok(error.endsWith(RERUN), error);
+    assert.deepEqual(checkAgentFacing(yes("Adoption mode: none: web copy only"), paths), []);
+    assert.deepEqual(checkAgentFacing(yes("Adoption mode: refuse", "Adoption proof: scripts/agent-adoption.test.mjs"), [...paths, "scripts/agent-adoption.test.mjs"]), []);
+    assert.match(checkAgentFacing(yes("Adoption mode: refuse", "Adoption proof: scripts/agent-adoption.test.mjs"), paths.filter((p) => !p.endsWith("test.mjs")))[0] ?? "", /changed files/);
+  }
+});
+
+test("parseAdoptionMode reads the mode, its reason and its proof", () => {
+  assert.deepEqual(parseAdoptionMode(yes("Adoption mode: refuse", "Adoption proof: a.test.mjs")), { mode: "refuse", proof: "a.test.mjs", count: 1 });
+  assert.deepEqual(parseAdoptionMode(yes("Adoption mode: none: why")), { mode: "none: why", proof: null, count: 1 });
+  assert.deepEqual(parseAdoptionMode("Agent-facing: no"), { mode: null, proof: null, count: 0 });
+});
+
+test("the template carries unfilled Adoption mode and proof lines, a public-repo note, and AGENTS.md states the rule", () => {
+  assert.match(template, /^Adoption mode:\s*$/m);
+  assert.match(template, /^Adoption proof:\s*$/m);
+  assert.match(template, /repo is public[^]*skill by its name/i);
+  assert.deepEqual(parseAdoptionMode(template), { mode: null, proof: null, count: 0 });
+  const agents = readFileSync(new URL("../AGENTS.md", import.meta.url), "utf8");
+  assert.match(agents, /Adoption mode:/);
 });
 
 test("newCliFlags lists added flags with their derived command path", () => {
@@ -303,11 +399,40 @@ test("check mode reads the PR event and the changed-file list, never the PR chec
   const run = (body, list = files) =>
     main(["check", "--event", file("event.json", JSON.stringify({ pull_request: { body } })), "--files", list], {});
   assert.equal(run("Agent-facing: no"), 0);
-  assert.equal(run("Agent-facing: yes\nAdoption item: use --x"), 0);
+  assert.equal(run("Agent-facing: yes\nAdoption item: use --x\nAdoption mode: none: internal"), 0);
+  assert.equal(run("Agent-facing: yes\nAdoption item: use --x"), 1);
   assert.equal(run("nothing"), 1);
   assert.equal(run("Agent-facing: yes"), 1);
   assert.equal(run("nothing", file("docs.txt", "README.md\n")), 0);
   assert.equal(run("Agent-facing: no", join(dir, "missing.txt")), 1, "an unreadable file list fails closed");
+});
+
+// Recovery (CHE-7712 plan r2, Sol F3): the job reads the live PR body, so a re-run after a body edit passes.
+test("check --body judges the live body file, not the body saved in the event", () => {
+  const dir = mkdtempSync(join(tmpdir(), "adoption-live-"));
+  const file = (name, text) => (writeFileSync(join(dir, name), text), join(dir, name));
+  const files = file("files.txt", "server/cmd/multica/cmd_issue.go\n");
+  const event = file("event.json", JSON.stringify({ pull_request: { body: "Agent-facing: yes\nAdoption item: use --x" } }));
+  const run = (body) => main(["check", "--event", event, "--files", files, "--body", body], {});
+  assert.equal(main(["check", "--event", event, "--files", files], {}), 1, "the saved body has no mode");
+  assert.equal(run(file("live.md", "Agent-facing: yes\nAdoption item: use --x\nAdoption mode: none: internal")), 0);
+  assert.equal(run(file("live-no.md", "Agent-facing: yes\nAdoption item: use --x")), 1, "the live body decides, a failing one fails");
+});
+
+test("check --body that cannot be read fails and says to re-run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "adoption-live-"));
+  const file = (name, text) => (writeFileSync(join(dir, name), text), join(dir, name));
+  const files = file("files.txt", "server/cmd/multica/cmd_issue.go\n");
+  const event = file("event.json", JSON.stringify({ pull_request: { body: "Agent-facing: no" } }));
+  const logs = [];
+  const log = console.log;
+  console.log = (line) => logs.push(line);
+  try {
+    assert.equal(main(["check", "--event", event, "--files", files, "--body", join(dir, "missing.md")], {}), 1);
+  } finally {
+    console.log = log;
+  }
+  assert.match(logs.join("\n"), /Could not read the live PR body; re-run the check/);
 });
 
 // CHE-10123 (CHE-9922 W5): per-deploy adoption issue lists features, signals, owners and result lines.
