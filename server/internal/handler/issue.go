@@ -558,7 +558,8 @@ func updateIssueStoppingWakeups(ctx context.Context, q *db.Queries, params db.Up
 			return db.Issue{}, nil, err
 		}
 		if service.ProjectInactive(status) {
-			stopped, err := q.CancelAgentTasksByIssue(ctx, issue.ID)
+			// A pause drains: its running run lives on. Cancel and complete stop every run.
+			stopped, err := q.CancelIssueAgentTasks(ctx, db.CancelIssueAgentTasksParams{IssueID: issue.ID, KeepRunning: status == "paused"})
 			if err != nil {
 				return db.Issue{}, nil, err
 			}
