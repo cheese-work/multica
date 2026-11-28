@@ -393,6 +393,8 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"issue_handoff_dispatch":             workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
 	"issue_handoff_operation":            workspaceDelete,     // CHE-5491 per-request retry receipt, no FK; DeleteWorkspaceLeafData.
 	"machine_banner_dismissal":           workspaceDelete,     // CHE-9190 no FK; DeleteWorkspaceIssueRoots.
+	"machine_online_event":               workspaceDeleteKeep, // CHE-9254 machine-wide online-transition log keyed by owner and daemon; no workspace_id.
+	"machine_online_event_generation":    workspaceDeleteKeep, // CHE-9254 one-row generation fence; no workspace_id.
 	"issue_step_assignee":                workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
 	"issue_step_watchdog_action":         workspaceDelete,     // CHE-7545 no FK; DeleteWorkspaceLeafData.
 	"merge_pause_state":                  workspaceDeleteKeep, // CHE-7545 per repository variable cache; no workspace_id.

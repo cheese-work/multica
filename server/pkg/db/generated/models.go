@@ -3395,6 +3395,18 @@ type MachineBannerDismissal struct {
 	DismissedAt    pgtype.Timestamptz `json:"dismissed_at"`
 }
 
+type MachineOnlineEvent struct {
+	MachineOwnerID pgtype.UUID        `json:"machine_owner_id"`
+	DaemonID       string             `json:"daemon_id"`
+	Seq            int64              `json:"seq"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+}
+
+type MachineOnlineEventGeneration struct {
+	Singleton  bool        `json:"singleton"`
+	Generation pgtype.UUID `json:"generation"`
+}
+
 type MaintenanceJob struct {
 	ID             pgtype.UUID        `json:"id"`
 	JobType        string             `json:"job_type"`
