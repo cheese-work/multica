@@ -9,10 +9,25 @@ set -euo pipefail
 # defect the issue explicitly calls out.
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$root_dir"
 
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
+
+# The scenarios run in a scratch root: the real deploy/ and server/migrations
+# by symlink, plus an empty stub file for every restore path a marked real
+# migration names (CHE-7486 N5a: verify requires the restore file in the tree,
+# and the restore files are not part of this change).
+scratch_root="$work_dir/root"
+mkdir -p "$scratch_root/server"
+ln -s "$root_dir/deploy" "$scratch_root/deploy"
+ln -s "$root_dir/server/migrations" "$scratch_root/server/migrations"
+for up in "$root_dir"/server/migrations/*.up.sql; do
+  restore="$(head -n 1 "$up" | sed -n 's/^-- multica:contract snapshot=[^ ]* restore=\([^ ]*\)$/\1/p')"
+  [ -n "$restore" ] || continue
+  mkdir -p "$scratch_root/$(dirname "$restore")"
+  : >"$scratch_root/$restore"
+done
+cd "$scratch_root"
 
 expect_exit() {
   local want=$1 got=$2 name=$3
@@ -76,6 +91,24 @@ build_base_packet() {
   ' "$out"
 }
 
+# fill_contracts adds the packet's contract_migrations list, computed from the
+# real tree and the packet's own observed ledger, to a hand-built packet.
+fill_contracts() {
+  node -e '
+    const fs = require("fs");
+    const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    const applied = new Set(p.observed_state.ledger.versions);
+    p.contract_migrations = [];
+    for (const f of fs.readdirSync("server/migrations").filter((n) => n.endsWith(".up.sql")).sort()) {
+      const version = f.replace(/\.up\.sql$/, "");
+      if (applied.has(version)) continue;
+      const m = /^-- multica:contract snapshot=(\S+) restore=(\S+)$/.exec(fs.readFileSync("server/migrations/" + f, "utf8").split("\n", 1)[0]);
+      if (m) p.contract_migrations.push({ version, snapshot_tables: m[1].split(","), restore: m[2] });
+    }
+    fs.writeFileSync(process.argv[1], JSON.stringify(p, null, 2));
+  ' "$1"
+}
+
 mutate() {
   local in=$1 out=$2 js=$3
   node -e "
@@ -88,6 +121,7 @@ mutate() {
 
 base_packet="$work_dir/base.json"
 build_base_packet "$base_packet"
+fill_contracts "$base_packet"
 manifest="$work_dir/manifest.json"
 cat >"$manifest" <<JSON
 {
@@ -402,6 +436,7 @@ build_c00_shape_packet() {
 
 c00_shape_packet="$work_dir/c00-shape.json"
 build_c00_shape_packet "$c00_shape_packet"
+fill_contracts "$c00_shape_packet"
 
 # ---------------------------------------------------------------------------
 # Scenario 10: a ledger reproducing C00's real pre-cutover shape — the
@@ -534,5 +569,190 @@ status=$?
 set -e
 expect_exit 1 "$status" legacy-unpin-dirty-ledger
 expect_contains "$output" "ledger contains version 627_not_a_migration not present in ordered_migrations — dirty ledger state" legacy-unpin-dirty-ledger
+
+# ---------------------------------------------------------------------------
+# CHE-7486 N5a: contract_migrations. A marked up file (first line
+# `-- multica:contract snapshot=<t1>[,<t2>] restore=<repo path>`) whose version
+# has no row in the observed ledger is a contract migration of this release.
+# `create` lists it in runner order; `verify` computes the list again from
+# --migrations-dir and fails on a missing, extra or changed entry.
+# ---------------------------------------------------------------------------
+fx="$work_dir/contract-fx"
+rm -rf "$fx"
+mkdir -p "$fx/server/migrations" "$fx/server/cmd/migrate/recovery"
+printf 'SELECT 1;\n' >"$fx/server/migrations/001_base.up.sql"
+printf -- '-- multica:contract snapshot=chat_wakeup restore=server/cmd/migrate/recovery/chat_wakeup_restore.sql\nSELECT 2;\n' >"$fx/server/migrations/002_convert.up.sql"
+printf 'SELECT 3;\n' >"$fx/server/migrations/003_after.up.sql"
+printf -- '-- multica:contract snapshot=t_one,t_two restore=server/cmd/migrate/recovery/two_restore.sql\nSELECT 4;\n' >"$fx/server/migrations/004_two.up.sql"
+printf -- '-- restore\n' >"$fx/server/cmd/migrate/recovery/chat_wakeup_restore.sql"
+printf -- '-- restore two\n' >"$fx/server/cmd/migrate/recovery/two_restore.sql"
+
+# build_contract_fixture <dir> <ledger version...>: manifest, baseline tuple and
+# observed state over the fixture tree; create runs against it.
+build_contract_fixture() {
+  local out=$1; shift
+  mkdir -p "$out"
+  node -e '
+    const fs = require("fs"), c = require("crypto");
+    const [out, ...ledger] = process.argv.slice(1);
+    const sha = (b) => "sha256:" + c.createHash("sha256").update(b).digest("hex");
+    const dir = "'"$fx"'/server/migrations";
+    const h = c.createHash("sha256");
+    for (const n of fs.readdirSync(dir).filter((n) => n.endsWith(".sql")).sort()) {
+      h.update(n); h.update("\0"); h.update(fs.readFileSync(dir + "/" + n)); h.update("\0");
+    }
+    const baseline = JSON.stringify({
+      images: { backend: { digest: "sha256:" + "a".repeat(64) }, web: { digest: "sha256:" + "b".repeat(64) } },
+      migration_ledger: {
+        latest: { version: ledger[ledger.length - 1] },
+        row_count: ledger.length,
+        ordered_sha256: sha(ledger.join("\n") + "\n"),
+      },
+    });
+    fs.writeFileSync(out + "/baseline.json", baseline);
+    fs.writeFileSync(out + "/observed.json", JSON.stringify({
+      schema_version: 1,
+      ledger: { status: "complete", versions: ledger },
+      indexes: { status: "complete", invalid: [] },
+      hooks: { status: "complete", observations: [] },
+    }));
+    fs.writeFileSync(out + "/manifest.json", JSON.stringify({
+      source_sha: "504078f8ea7fa31f342f195659e93a7f6c3e5a91",
+      images: {
+        backend: "registry.example/backend@sha256:" + "c".repeat(64),
+        web: "registry.example/web@sha256:" + "d".repeat(64),
+      },
+      migration_inventory_sha256: "sha256:" + h.digest("hex"),
+      baseline_tuple_sha256: sha(baseline),
+    }));
+  ' "$out" "$@"
+}
+create_contract_packet() {
+  local out=$1
+  node deploy/cd/release-packet.mjs create --manifest "$out/manifest.json" --baseline-tuple "$out/baseline.json" \
+    --observed-state "$out/observed.json" --migrations-dir "$fx/server/migrations" --output "$out/packet.json"
+}
+verify_contract_packet() {
+  node deploy/cd/release-packet.mjs verify --packet "$1/packet.json" --manifest "$1/manifest.json" --migrations-dir "$fx/server/migrations" "${@:2}"
+}
+contract_list() {
+  node -e 'process.stdout.write(JSON.stringify(JSON.parse(require("fs").readFileSync(process.argv[1])).contract_migrations))' "$1/packet.json"
+}
+
+# Red (N5a 1): a marked incoming file and a packet without contract_migrations.
+# Before this change verify passed; it must fail.
+c_missing="$work_dir/c-missing"
+build_contract_fixture "$c_missing" 001_base
+create_contract_packet "$c_missing"
+mutate "$c_missing/packet.json" "$c_missing/packet.json" 'delete p.contract_migrations;'
+set +e
+output="$(verify_contract_packet "$c_missing" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" contract-field-missing
+expect_contains "$output" "contract_migrations" contract-field-missing
+
+# create lists each marked incoming file in runner order, with its tables and
+# restore path, and the result verifies.
+c_ok="$work_dir/c-ok"
+build_contract_fixture "$c_ok" 001_base
+create_contract_packet "$c_ok"
+want='[{"version":"002_convert","snapshot_tables":["chat_wakeup"],"restore":"server/cmd/migrate/recovery/chat_wakeup_restore.sql"},{"version":"004_two","snapshot_tables":["t_one","t_two"],"restore":"server/cmd/migrate/recovery/two_restore.sql"}]'
+[ "$(contract_list "$c_ok")" = "$want" ] || { echo "scenario contract-create: contract_migrations $(contract_list "$c_ok"), want $want" >&2; exit 1; }
+output="$(verify_contract_packet "$c_ok" 2>&1)"
+expect_contains "$output" '"ok":true' contract-verify
+
+# A marked file whose version already has a ledger row is not incoming.
+c_applied="$work_dir/c-applied"
+build_contract_fixture "$c_applied" 001_base 002_convert 003_after
+create_contract_packet "$c_applied"
+[ "$(contract_list "$c_applied")" = '[{"version":"004_two","snapshot_tables":["t_one","t_two"],"restore":"server/cmd/migrate/recovery/two_restore.sql"}]' ] ||
+  { echo "scenario contract-applied: ledger-present version listed: $(contract_list "$c_applied")" >&2; exit 1; }
+
+# No marked incoming file: the field is an empty list.
+c_none="$work_dir/c-none"
+build_contract_fixture "$c_none" 001_base 002_convert 003_after 004_two
+create_contract_packet "$c_none"
+[ "$(contract_list "$c_none")" = '[]' ] || { echo "scenario contract-none: want [], got $(contract_list "$c_none")" >&2; exit 1; }
+
+# Negative controls: each of these must fail verify.
+for case_name in missing-entry extra-entry changed-tables changed-restore changed-version; do
+  c_case="$work_dir/c-$case_name"
+  cp -r "$c_ok" "$c_case"
+  case "$case_name" in
+    missing-entry) js='p.contract_migrations.pop();' ;;
+    extra-entry) js='p.contract_migrations.push({version:"003_after",snapshot_tables:["x"],restore:"server/cmd/migrate/recovery/two_restore.sql"});' ;;
+    changed-tables) js='p.contract_migrations[0].snapshot_tables.push("other_table");' ;;
+    changed-restore) js='p.contract_migrations[0].restore="server/cmd/migrate/recovery/two_restore.sql";' ;;
+    changed-version) js='p.contract_migrations[0].version="003_after";' ;;
+  esac
+  mutate "$c_ok/packet.json" "$c_case/packet.json" "$js"
+  set +e
+  output="$(verify_contract_packet "$c_case" 2>&1)"
+  status=$?
+  set -e
+  expect_exit 1 "$status" "contract-$case_name"
+  expect_contains "$output" "contract_migrations" "contract-$case_name"
+done
+
+# The restore file's existence is not checked by the packet tool yet (moved to
+# B3c-1, Cheese decision on card 1a801b4f option 2). A missing restore file
+# does not refuse create or verify.
+mv "$fx/server/cmd/migrate/recovery/two_restore.sql" "$fx/two_restore.sql.hold"
+output="$(verify_contract_packet "$c_ok" 2>&1)"
+expect_contains "$output" '"ok":true' contract-restore-missing-verify
+c_norestore="$work_dir/c-norestore"
+build_contract_fixture "$c_norestore" 001_base
+output="$(create_contract_packet "$c_norestore" 2>&1)"
+[ -s "$c_norestore/packet.json" ] || { echo "scenario contract-restore-missing-create: no packet written" >&2; exit 1; }
+mv "$fx/two_restore.sql.hold" "$fx/server/cmd/migrate/recovery/two_restore.sql"
+
+# An invalid contract line is an error, never "no contract" (the parser
+# follows N5r: a first line that starts with `-- multica:contract` and does
+# not parse fails; a marker later in the file is not a contract line).
+bad_line() {
+  local name=$1 line=$2
+  rm -rf "$fx/bad" && mkdir -p "$fx/bad/server/migrations"
+  printf '%s\nSELECT 1;\n' "$line" >"$fx/bad/server/migrations/001_bad.up.sql"
+  local d="$work_dir/c-bad-$name"
+  mkdir -p "$d"
+  node -e '
+    const fs = require("fs"), c = require("crypto");
+    const dir = process.argv[2] + "/server/migrations";
+    const sha = (b) => "sha256:" + c.createHash("sha256").update(b).digest("hex");
+    const h = c.createHash("sha256");
+    for (const n of fs.readdirSync(dir)) { h.update(n); h.update("\0"); h.update(fs.readFileSync(dir + "/" + n)); h.update("\0"); }
+    const baseline = JSON.stringify({ images: { backend: { digest: "sha256:" + "a".repeat(64) }, web: { digest: "sha256:" + "b".repeat(64) } },
+      migration_ledger: { latest: { version: "001_bad" }, row_count: 0, ordered_sha256: sha("\n") } });
+    fs.writeFileSync(process.argv[1] + "/baseline.json", baseline);
+    fs.writeFileSync(process.argv[1] + "/observed.json", JSON.stringify({ schema_version: 1, ledger: { status: "complete", versions: [] },
+      indexes: { status: "complete", invalid: [] }, hooks: { status: "complete", observations: [] } }));
+    fs.writeFileSync(process.argv[1] + "/manifest.json", JSON.stringify({ source_sha: "5".repeat(40),
+      images: { backend: "r/b@sha256:" + "c".repeat(64), web: "r/w@sha256:" + "d".repeat(64) },
+      migration_inventory_sha256: "sha256:" + h.digest("hex"), baseline_tuple_sha256: sha(baseline) }));
+  ' "$d" "$fx/bad"
+  node deploy/cd/release-packet.mjs create --manifest "$d/manifest.json" --baseline-tuple "$d/baseline.json" \
+    --observed-state "$d/observed.json" --migrations-dir "$fx/bad/server/migrations" --output "$d/packet.json"
+}
+for bad in \
+  '-- multica:contract' \
+  '-- multica:contract snapshot= restore=server/x.sql' \
+  '-- multica:contract snapshot=Bad_Name restore=server/x.sql' \
+  '-- multica:contract snapshot=t1 restore=/abs/x.sql' \
+  '-- multica:contract snapshot=t1 restore=server/../x.sql' \
+  '-- multica:contract snapshot=t1,,t2 restore=server/x.sql' \
+  '-- multica:contract snapshot=t1 restore=server/x.sql extra=1' \
+  '-- multica:contractx snapshot=t1 restore=server/x.sql'; do
+  set +e
+  output="$(bad_line x "$bad" 2>&1)"
+  status=$?
+  set -e
+  expect_exit 1 "$status" "contract-bad-line: $bad"
+  expect_contains "$output" "contract line" "contract-bad-line: $bad"
+done
+# Not a contract line: not the first line, or a different comment.
+for plain in '-- multica:other' '-- a multica:contract snapshot=t1 restore=server/x.sql'; do
+  output="$(bad_line plain "$plain" 2>&1)" || { echo "scenario contract-plain-line: '$plain' was refused: $output" >&2; exit 1; }
+done
 
 echo "release-packet.mjs control-flow fixtures passed"
