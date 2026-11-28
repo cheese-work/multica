@@ -14,12 +14,24 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
 import enChat from "../locales/en/chat.json";
 import enSearch from "../locales/en/search.json";
+import enEditor from "../locales/en/editor.json";
+import enIssues from "../locales/en/issues.json";
+import { MentionList } from "../editor/extensions/mention-suggestion";
 import {
   NavigationProvider,
   type NavigationAdapter,
 } from "../navigation";
 
-const TEST_RESOURCES = { en: { common: enCommon, chat: enChat, search: enSearch } };
+const TEST_RESOURCES = {
+  en: { common: enCommon, chat: enChat, search: enSearch, editor: enEditor, issues: enIssues },
+};
+const renderMentionPicker = vi.hoisted(() => ({ query: "" }));
+const searchIssuesMock = vi.hoisted(() => vi.fn());
+const searchProjectsMock = vi.hoisted(() => vi.fn());
+vi.mock("@multica/core/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/api")>()),
+  api: { searchIssues: searchIssuesMock, searchProjects: searchProjectsMock },
+}));
 const mockSignIn = vi.hoisted(() => vi.fn());
 
 vi.mock("../auth/use-logout", () => ({ useLogout: () => mockSignIn }));
@@ -56,10 +68,42 @@ vi.mock("./components/chat-message-list", async () => {
     ChatMessageSkeleton: () => <div>chat-message-skeleton</div>,
   };
 });
+const recentContextItems = vi.hoisted(() => [
+  { id: "proj-1", type: "project", label: "sa004-vpn", group: "recent" },
+]);
+const contextItemsWsId = vi.hoisted(() => ({ current: "" }));
+vi.mock("./components/use-chat-context-items", () => ({
+  useChatContextItems: (wsId: string) => {
+    contextItemsWsId.current = wsId;
+    return recentContextItems;
+  },
+}));
 vi.mock("./components/chat-input", () => ({
-  ChatInput: ({ disabled, compacting }: { disabled?: boolean; compacting?: boolean }) => (
-    <div data-disabled={String(!!disabled)} data-compacting={String(!!compacting)}>
+  ChatInput: ({
+    disabled,
+    compacting,
+    contextItems,
+  }: {
+    disabled?: boolean;
+    compacting?: boolean;
+    contextItems?: unknown[];
+  }) => (
+    <div
+      data-disabled={String(!!disabled)}
+      data-compacting={String(!!compacting)}
+      data-context-items={contextItems ? String(contextItems.length) : "none"}
+    >
       chat-input
+      {renderMentionPicker.query && (
+        // Mirrors ChatInput: contextItems => mentionMode "context" =>
+        // MentionList with project search (createMentionSuggestion).
+        <MentionList
+          items={(contextItems ?? []) as never}
+          query={renderMentionPicker.query}
+          command={() => {}}
+          includeProjectSearch={!!contextItems}
+        />
+      )}
     </div>
   ),
 }));
@@ -1333,5 +1377,36 @@ describe("ChatPage deep link vs workspace rehydration", () => {
     expect(useChatStore.getState().listView).toBe("unseen");
     unmount();
     expect(useChatStore.getState().listView).toBe("main");
+  });
+});
+
+describe("ChatPage composer mentions", () => {
+  // CHE-10092: the Chat screen must use the same `@` picker as the floating
+  // window (context mode: project search + Current/Recent groups).
+  it("passes the workspace context items to ChatInput so @ uses context mode", () => {
+    seedSession("session-9");
+    renderPage("session=session-9");
+    expect(screen.getByText("chat-input")).toHaveAttribute("data-context-items", "1");
+    expect(contextItemsWsId.current).toBe("ws-1");
+  });
+
+  it("shows the project row under Search results when typing @ + a project query", async () => {
+    searchIssuesMock.mockResolvedValue({ issues: [], total: 0 } as never);
+    searchProjectsMock.mockResolvedValue({
+      projects: [
+        { id: "proj-2", title: "acme/sa004-vpn", description: null, icon: null, status: "in_progress" },
+      ],
+      total: 1,
+    } as never);
+    renderMentionPicker.query = "sa004";
+    setCurrentWorkspace("acme", "ws-1");
+    try {
+      seedSession("session-9");
+      renderPage("session=session-9");
+      expect(await screen.findByText("acme/sa004-vpn")).toBeInTheDocument();
+      expect(screen.getByText("Search results")).toBeInTheDocument();
+    } finally {
+      renderMentionPicker.query = "";
+    }
   });
 });
