@@ -306,12 +306,16 @@ UPDATE issue AS i SET
     -- metadata.blocked_on names what a blocked issue waits for (CHE-6972); it
     -- is dropped by every write that leaves blocked, whichever writer moved it.
     metadata = CASE WHEN changed.next_status = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' - 'blocked_entry_link' - 'blocked_entry_rearm_refusal' END,
-    revision = i.revision + changed.did_change::integer,
+    -- An explicit due_date write that repeats the stored date still bumps the
+    -- revision: without it a later same-value write is indistinguishable from no
+    -- write, and a fence on the revision of an earlier write (the due-date
+    -- backfill rollback) cannot tell that someone re-asserted the date.
+    revision = i.revision + (changed.did_change OR COALESCE(sqlc.narg('due_date_touched')::boolean, false))::integer,
     last_activity_at = CASE WHEN changed.did_activity
         THEN GREATEST(COALESCE(i.last_activity_at, i.updated_at), now())
         ELSE i.last_activity_at
     END,
-    updated_at = CASE WHEN changed.did_change THEN now() ELSE i.updated_at END
+    updated_at = CASE WHEN changed.did_change OR COALESCE(sqlc.narg('due_date_touched')::boolean, false) THEN now() ELSE i.updated_at END
 FROM changed CROSS JOIN wakeup_source
 WHERE i.id = changed.id
   -- Re-check the precondition on the row version that UPDATE actually locks.
