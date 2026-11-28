@@ -31,7 +31,7 @@
 # NULL) is an empty set only when no attempt record lists a version with a
 # ledger row.
 contract_applied_read() {
-  local present rows line version attempt restore record versions count
+  local present rows line version attempt restore record versions count records_dir names name
   contract_applied=""
   contract_read_error=""
 
@@ -63,11 +63,32 @@ contract_applied_read() {
       ;;
   esac
 
+  # The ledger must be readable even when no attempt record exists: an
+  # unreadable ledger is never an empty set.
+  count="$(contract_psql "SELECT count(*) FROM schema_migrations")" || {
+    contract_read_error="cannot read the ledger"
+    return 1
+  }
+  [[ "$count" =~ ^[0-9]+$ ]] || {
+    contract_read_error="unreadable ledger answer '$count'"
+    return 1
+  }
+
   # Every attempt record (the final .json files, not a .json.tmp that was
   # never renamed) must be readable, and a version it lists that has a ledger
-  # row must also have a schema_contracts row.
-  for record in "$state_dir"/contract-attempts/*.json; do
-    [ -e "$record" ] || continue
+  # row must also have a schema_contracts row. A directory that exists but
+  # cannot be listed is uncertain, not empty.
+  records_dir="$state_dir/contract-attempts"
+  names=""
+  if [ -e "$records_dir" ]; then
+    if [ ! -d "$records_dir" ] || ! names="$(ls -A "$records_dir" 2>/dev/null)"; then
+      contract_read_error="attempt records under $records_dir cannot be listed"
+      return 1
+    fi
+  fi
+  while IFS= read -r name; do
+    case "$name" in *.json) ;; *) continue ;; esac
+    record="$records_dir/$name"
     versions="$(node -e '
       const record = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
       const versions = record.contract_versions;
@@ -91,7 +112,7 @@ contract_applied_read() {
         return 1
       fi
     done <<<"$versions"
-  done
+  done <<<"$names"
   return 0
 }
 
