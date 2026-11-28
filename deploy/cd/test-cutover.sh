@@ -14,12 +14,27 @@ set -euo pipefail
 # since those are exercised by their own dedicated test scripts and this
 # test only needs to prove cutover.sh's own sequencing/gating logic.
 
-root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$root_dir"
+real_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 real_node="$(command -v node)"
+real_mv="$(command -v mv)"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
+
+# Scratch source root (CHE-7486 N5a): a copy of the real deploy/ and compose
+# file (not symlinks: the .mjs main guards compare the resolved module path to
+# argv[1]), and a copy of server/migrations with every contract marker line
+# neutralized, so the scenarios below run against an unmarked tree and a
+# packet without contract_migrations. The real tree's two marked fork
+# conversions have no restore files yet; the N5a scenarios add their own
+# marked file and restore stub to this root.
+root_dir="$work_dir/root"
+mkdir -p "$root_dir/server"
+cp -r "$real_root/deploy" "$root_dir/deploy"
+cp "$real_root/docker-compose.selfhost.yml" "$root_dir/docker-compose.selfhost.yml"
+cp -r "$real_root/server/migrations" "$root_dir/server/migrations"
+sed -i '1s/^-- multica:contract /-- unmarked in test-cutover: /' "$root_dir"/server/migrations/*.up.sql
+cd "$root_dir"
 
 mock_bin="$work_dir/bin"
 mkdir -p "$mock_bin"
@@ -64,6 +79,7 @@ case "\$1" in
     control_dir="\${CUTOVER_TEST_CONTROL_DIR:?CUTOVER_TEST_CONTROL_DIR unset}"
     sub="\$2"
     printf '%s %s\n' "\$sub" "\$*" >>"\$control_dir/quiescence-calls.log"
+    [ "\$sub" != final-gate ] || echo final-gate >>"\$control_dir/events.log"
     # CHE-9367: a scenario can script the exact stdout and exit status of a
     # sub-command (output-<sub>, exit-<sub>) instead of the admit/deny pair.
     if [ -f "\$control_dir/output-\$sub" ]; then
@@ -76,6 +92,14 @@ case "\$1" in
     fi
     echo '{"admit":true,"decision":"admitted_test"}'
     exit 0
+    ;;
+  */contract-snapshot.mjs)
+    # CHE-7486 N5a: tamper-copy changes a copy file between its manifest and
+    # the controller's fresh SHA-256 check (a corrupt or edited snapshot).
+    if [ "\$2" = verify ] && [ -f "\${CUTOVER_TEST_CONTROL_DIR:-/nonexistent}/tamper-copy" ]; then
+      printf 'x' >>"\$(dirname "\$4")/n5a_alpha.copy"
+    fi
+    exec "$real_node" "\$@"
     ;;
   *)
     exec "$real_node" "\$@"
@@ -237,6 +261,13 @@ if [ "\$1" = "compose" ]; then
       printf 'migrate %s image=%s tag=%s service=%s\n' \\
         "\$direction" "\${MULTICA_BACKEND_IMAGE:-}" "\${MULTICA_IMAGE_TAG:-}" "\${*: -2:1}" \\
         >>"\$control_dir/migrate-calls.log"
+      passed=no
+      prev=""
+      for a in "\$@"; do
+        [ "\$prev" = -e ] && [ "\$a" = MULTICA_CONTRACT_ATTEMPT ] && passed=yes
+        prev="\$a"
+      done
+      printf 'migrate-run direction=%s attempt=%s passed=%s\n' "\$direction" "\${MULTICA_CONTRACT_ATTEMPT:-}" "\$passed" >>"\$control_dir/events.log"
       fail_if_flagged fail-migrate
       # Genuinely advance the mock ledger on a real "up" run, so the
       # rollback compatibility guard is exercised against a schema state
@@ -342,6 +373,11 @@ if [ "\$1" = "compose" ]; then
       exit 0
       ;;
     exec)
+      # CHE-7486 N5a: the snapshot gate's queries and COPY go to one script.
+      case "\$*" in
+        *"COPY "*|*information_schema*|*to_regclass*|*"FROM schema_contracts"*|*"WHERE version"*|*"count(*)"*)
+          exec "$mock_bin/mock-psql-contract" "\$@" ;;
+      esac
       # exec -T postgres psql ... ledger query
       version="\${MOCK_LEDGER_VERSION:-$pre_cutover_baseline}"
       if [ -f "\$control_dir/ledger-version" ]; then
@@ -397,6 +433,65 @@ echo "mock docker: unhandled command \$*" >&2
 exit 1
 MOCK
 chmod +x "$mock_bin/docker"
+
+cat >"$mock_bin/mock-psql-contract" <<'MOCK'
+#!/usr/bin/env bash
+# Scripted psql for the contract snapshot gate (CHE-7486 N5a). The default
+# COPY text holds a tab, an escaped newline, an escaped backslash, \N and
+# non-ASCII text, one table row per line.
+set -euo pipefail
+control_dir="${CUTOVER_TEST_CONTROL_DIR:?CUTOVER_TEST_CONTROL_DIR unset}"
+sql="${*: -1}"
+copy_text() {
+  if [ -f "$control_dir/copy-$1" ]; then cat "$control_dir/copy-$1"; else
+    printf '1\talpha\\nwrapped\t\\N\n2\tbeta \\\\ slash\tcaf\xc3\xa9\n'
+  fi
+}
+table_of() { sed -E "s/.*(COPY|to_regclass\('|FROM|table_name = ')[[:space:]]*([a-z_0-9]+).*/\2/" <<<"$sql"; }
+version_of() { sed -E "s/.*version = '([^']+)'.*/\1/" <<<"$sql"; }
+case "$sql" in
+  *"COPY "*)
+    t="$(table_of)"
+    echo "psql-copy $t" >>"$control_dir/events.log"
+    if [ -f "$control_dir/fail-copy-$t" ]; then
+      copy_text "$t" | head -n 1
+      echo "mock psql: forced COPY failure ($t)" >&2
+      exit 1
+    fi
+    copy_text "$t" ;;
+  *"to_regclass('schema_contracts')"*)
+    if [ -f "$control_dir/schema-contracts-table" ]; then echo t; else echo f; fi ;;
+  *"to_regclass("*)
+    if [ -f "$control_dir/absent-table-$(table_of)" ]; then echo f; else echo t; fi ;;
+  *"FROM schema_contracts"*)
+    if [ -f "$control_dir/contract-row-$(version_of)" ]; then echo 1; else echo 0; fi ;;
+  *"FROM schema_migrations WHERE version"*)
+    if [ -f "$control_dir/ledger-row-$(version_of)" ]; then echo 1; else echo 0; fi ;;
+  *"count(*) FROM schema_migrations"*) echo 535 ;;
+  *information_schema*) printf 'id\nname\nnote\n' ;;
+  *"count(*) FROM "*)
+    t="$(table_of)"
+    if [ -f "$control_dir/rows-$t" ]; then cat "$control_dir/rows-$t"; else copy_text "$t" | wc -l | tr -d ' '; fi ;;
+  *) echo "mock psql: unhandled SQL: $sql" >&2; exit 1 ;;
+esac
+MOCK
+chmod +x "$mock_bin/mock-psql-contract"
+
+# mv: record the attempt record's rename; fail-attempt-rename fails it.
+cat >"$mock_bin/mv" <<MOCK
+#!/usr/bin/env bash
+dest="\${*: -1}"
+case "\$dest" in
+  *contract-attempts/*.json)
+    echo rename-attempt >>"\${CUTOVER_TEST_CONTROL_DIR:?}/events.log"
+    if [ -f "\$CUTOVER_TEST_CONTROL_DIR/fail-attempt-rename" ]; then
+      echo "mock mv: forced rename failure" >&2
+      exit 1
+    fi ;;
+esac
+exec "$real_mv" "\$@"
+MOCK
+chmod +x "$mock_bin/mv"
 
 cat >"$mock_bin/curl" <<'MOCK'
 #!/usr/bin/env bash
@@ -1085,7 +1180,7 @@ fi
 # ---------------------------------------------------------------------------
 relocated_root="$work_dir/relocated-controller"
 mkdir -p "$relocated_root/deploy/cd/router" "$relocated_root/server"
-cp deploy/cd/{cutover.sh,deploy-lib.sh,docker-compose.ab.yml,docker-compose.flags.yml,docker-compose.jev.yml,drift-receipt.mjs,quiescence.mjs,release-packet.mjs,router.sh} "$relocated_root/deploy/cd/"
+cp deploy/cd/{contract-snapshot.mjs,cutover.sh,deploy-lib.sh,docker-compose.ab.yml,docker-compose.flags.yml,docker-compose.jev.yml,drift-receipt.mjs,quiescence.mjs,release-packet.mjs,router.sh} "$relocated_root/deploy/cd/"
 cp docker-compose.selfhost.yml "$relocated_root/"
 cp deploy/cd/router/nginx.conf.template "$relocated_root/deploy/cd/router/"
 cp -a server/migrations "$relocated_root/server/migrations"
@@ -1650,6 +1745,172 @@ drift_case() {
 drift_case drift-env-key-missing env-missing-frontend-green "" "frontend-green env: missing key MULTICA_APP_URL"
 drift_case drift-env-key-unexpected env-extra-backend-green "" "backend-green env: unexpected key STALE_FLAG"
 drift_case drift-image-digest running-digest-web "sha256:$(printf 'e%.0s' {1..64})" "frontend-green image: running digest"
+
+# ---------------------------------------------------------------------------
+# CHE-7486 N5a: contract migrations. A marked incoming migration makes the
+# controller snapshot its tables and write an attempt record AFTER the
+# quiescence final-gate and BEFORE the migrator, and hand the attempt id to
+# the migrator. The last real migration is marked for these scenarios, with
+# a packet that lists it, a restore stub in the scratch tree and a ledger
+# that lacks it. contract_end puts the unmarked tree and packet back.
+# ---------------------------------------------------------------------------
+contract_version="$packet_final_version"
+contract_file="server/migrations/${contract_version}.up.sql"
+contract_restore="deploy/cd/n5a-restore-fixture.sh"
+unmarked_packet="$packet"
+
+contract_begin() {
+  cp "$contract_file" "$work_dir/contract-file.orig"
+  { printf -- '-- multica:contract snapshot=n5a_alpha,n5a_beta restore=%s\n' "$contract_restore"; cat "$work_dir/contract-file.orig"; } >"$contract_file"
+  printf '#!/usr/bin/env bash\necho restore fixture\n' >"$contract_restore"
+  packet="$work_dir/contract-packet.json"
+  build_packet "$packet"
+  node -e '
+    const fs = require("fs");
+    const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+    p.observed_state.ledger.versions = p.ordered_migrations.slice(0, 2).map((m) => m.version);
+    p.contract_migrations = [{ version: process.argv[2], snapshot_tables: ["n5a_alpha", "n5a_beta"], restore: process.argv[3] }];
+    fs.writeFileSync(process.argv[1], JSON.stringify(p, null, 2));
+  ' "$packet" "$contract_version" "$contract_restore"
+}
+
+contract_end() {
+  cp "$work_dir/contract-file.orig" "$contract_file"
+  rm -f "$contract_restore" "$work_dir/contract-file.orig"
+  packet="$unmarked_packet"
+}
+
+# contract_fails NAME CONTROL-FILE WANT-TEXT: one failing gate step must run no
+# migrator, restart the incumbent and leave no success state.
+contract_fails() {
+  local name=$1 control=$2 want=$3
+  local dir
+  dir="$(fresh_scenario_dir "$name")"
+  mkdir -p "$dir/control"
+  for c in $control; do touch "$dir/control/$c"; done
+  set +e
+  output="$(run_cutover "$dir" 2>&1)"
+  status=$?
+  set -e
+  expect_exit 1 "$status" "$name"
+  expect_contains "$output" "$want" "$name"
+  expect_contains "$output" "RECOVERED:" "$name"
+  if grep -q '^migrate-run' "$dir/control/events.log" 2>/dev/null; then
+    echo "scenario $name: the migrator ran although the contract gate failed" >&2
+    exit 1
+  fi
+  [ ! -f "$dir/cutover-state.json" ] || { echo "scenario $name: success state written" >&2; exit 1; }
+  [ -f "$dir/control/running-backend-blue" ] || { echo "scenario $name: incumbent blue is not running" >&2; exit 1; }
+  [ ! -f "$dir/control/running-backend-green" ] || { echo "scenario $name: candidate green is running" >&2; exit 1; }
+}
+
+contract_begin
+
+state_dir="$(fresh_scenario_dir n5a-contract-success)"
+set +e
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 0 "$status" n5a-contract-success
+events="$state_dir/control/events.log"
+attempt_id="$(sed -n 's/^migrate-run direction=up attempt=\([0-9a-f]\{32\}\) passed=yes$/\1/p' "$events")"
+if [ -z "$attempt_id" ]; then
+  echo "scenario n5a-contract-success: the migrator did not run with a 32-hex MULTICA_CONTRACT_ATTEMPT passed through -e" >&2
+  cat "$events" >&2 || true
+  exit 1
+fi
+got_order="$(grep -E '^(final-gate|psql-copy|rename-attempt|migrate-run)' "$events" | sed 's/attempt=[0-9a-f]*/attempt=ID/')"
+want_order="$(printf '%s\n' 'final-gate' 'psql-copy n5a_alpha' 'psql-copy n5a_beta' 'rename-attempt' 'migrate-run direction=up attempt=ID passed=yes')"
+if [ "$got_order" != "$want_order" ]; then
+  echo "scenario n5a-contract-success: wrong order of final-gate, snapshot, attempt record and migrator" >&2
+  echo "--- got ---" >&2; echo "$got_order" >&2
+  echo "--- want ---" >&2; echo "$want_order" >&2
+  exit 1
+fi
+snap_dir="$state_dir/contract-snapshots/$attempt_id"
+record="$state_dir/contract-attempts/$attempt_id.json"
+[ "$(stat -c %a "$snap_dir")" = 700 ] || { echo "scenario n5a-contract-success: snapshot dir mode is not 0700" >&2; exit 1; }
+for f in "$snap_dir"/*; do
+  [ "$(stat -c %a "$f")" = 600 ] || { echo "scenario n5a-contract-success: $f mode is not 0600" >&2; exit 1; }
+done
+[ "$(stat -c %a "$record")" = 600 ] || { echo "scenario n5a-contract-success: attempt record mode is not 0600" >&2; exit 1; }
+node -e '
+  const fs = require("fs");
+  const crypto = require("crypto");
+  const [snap, recordPath, id, version, sha] = process.argv.slice(1);
+  const m = JSON.parse(fs.readFileSync(`${snap}/manifest.json`, "utf8"));
+  const r = JSON.parse(fs.readFileSync(recordPath, "utf8"));
+  const want = Buffer.from("1\talpha\\nwrapped\t\\N\n2\tbeta \\\\ slash\tcafé\n");
+  const check = (ok, what) => { if (!ok) { console.error("scenario n5a-contract-success: " + what); process.exit(1); } };
+  check(m.attempt_id === id && m.source_sha === sha, "manifest attempt_id or source_sha");
+  check(m.tables.length === 2 && m.tables.every((t) => t.contract_version === version && t.rows === 2 && t.columns.join() === "id,name,note"), "manifest tables");
+  check(fs.readFileSync(`${snap}/n5a_alpha.copy`).equals(want), "COPY bytes were not kept verbatim");
+  check(m.tables[0].sha256 === "sha256:" + crypto.createHash("sha256").update(want).digest("hex"), "manifest sha256");
+  check(typeof m.taken_at === "string" && m.ledger && typeof m.ledger.latest === "string", "manifest taken_at or ledger");
+  check(r.attempt_id === id && r.source_sha === sha && r.snapshot_dir === snap && r.contract_versions.join() === version, "record identity fields");
+  check(r.manifest_sha256 === "sha256:" + crypto.createHash("sha256").update(fs.readFileSync(`${snap}/manifest.json`)).digest("hex"), "record manifest_sha256");
+  check(/^sha256:[0-9a-f]{64}$/.test(r.candidate_backend_digest) && /^sha256:[0-9a-f]{64}$/.test(r.incumbent_backend_digest), "record digests");
+  check(typeof r.incumbent_backend_image_id === "string" && r.incumbent_backend_image_id !== "" && typeof r.written_at === "string", "record image id or written_at");
+' "$snap_dir" "$record" "$attempt_id" "$contract_version" "$source_sha"
+snapshot_before="$(sha256sum "$snap_dir/manifest.json" "$record")"
+
+# A second attempt (green back to blue) writes a new id, directory and record
+# and keeps the first.
+set +e
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 0 "$status" n5a-contract-second-attempt
+[ "$(ls "$state_dir/contract-snapshots" | wc -l)" -eq 2 ] || { echo "scenario n5a-contract-second-attempt: want 2 snapshot dirs" >&2; exit 1; }
+[ "$(ls "$state_dir/contract-attempts" | wc -l)" -eq 2 ] || { echo "scenario n5a-contract-second-attempt: want 2 attempt records" >&2; exit 1; }
+[ "$(sha256sum "$snap_dir/manifest.json" "$record")" = "$snapshot_before" ] || { echo "scenario n5a-contract-second-attempt: the first attempt was changed" >&2; exit 1; }
+[ "$(grep -c '^migrate-run direction=up attempt=[0-9a-f]\{32\} ' "$events")" -eq 2 ] || { echo "scenario n5a-contract-second-attempt: both runs need an attempt id" >&2; exit 1; }
+[ "$(grep -o 'attempt=[0-9a-f]*' "$events" | sort -u | wc -l)" -eq 2 ] || { echo "scenario n5a-contract-second-attempt: attempt ids repeat" >&2; exit 1; }
+
+# A missing table is recorded as absent with no rows and an empty copy file.
+state_dir="$(fresh_scenario_dir n5a-contract-absent-table)"
+mkdir -p "$state_dir/control"
+touch "$state_dir/control/absent-table-n5a_beta"
+set +e
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 0 "$status" n5a-contract-absent-table
+absent_dir="$(find "$state_dir/contract-snapshots" -mindepth 1 -maxdepth 1 -type d)"
+node -e '
+  const fs = require("fs");
+  const m = JSON.parse(fs.readFileSync(process.argv[1] + "/manifest.json", "utf8"));
+  const t = m.tables.find((e) => e.table === "n5a_beta");
+  if (!t || t.rows !== 0 || t.absent !== true || fs.statSync(process.argv[1] + "/n5a_beta.copy").size !== 0) {
+    console.error("scenario n5a-contract-absent-table: wanted rows 0, absent true and an empty copy file, got " + JSON.stringify(t));
+    process.exit(1);
+  }
+' "$absent_dir"
+
+# Failing gate steps run no migrator and restart the incumbent.
+contract_fails n5a-contract-copy-fails fail-copy-n5a_beta "contract snapshot or attempt record failed (no migration ran)"
+contract_fails n5a-contract-rename-fails fail-attempt-rename "contract snapshot or attempt record failed (no migration ran)"
+contract_fails n5a-contract-line-count-mismatch rows-n5a_alpha "contract snapshot or attempt record failed (no migration ran)"
+contract_fails n5a-contract-sha-mismatch tamper-copy "contract snapshot or attempt record failed (no migration ran)"
+contract_fails n5a-contract-ledger-row "ledger-row-$contract_version" "already"
+contract_fails n5a-contract-schema-contracts-row "schema-contracts-table contract-row-$contract_version" "already"
+[ ! -d "$work_dir/scenarios/n5a-contract-copy-fails/contract-attempts" ] || [ -z "$(ls "$work_dir/scenarios/n5a-contract-copy-fails/contract-attempts")" ] \
+  || { echo "scenario n5a-contract-copy-fails: an attempt record exists after a failed COPY" >&2; exit 1; }
+
+contract_end
+
+# Without a contract migration the migrator gets no attempt variable.
+state_dir="$(fresh_scenario_dir n5a-unmarked-no-attempt)"
+set +e
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 0 "$status" n5a-unmarked-no-attempt
+grep -qx 'migrate-run direction=up attempt= passed=no' "$state_dir/control/events.log" \
+  || { echo "scenario n5a-unmarked-no-attempt: the migrator got MULTICA_CONTRACT_ATTEMPT" >&2; exit 1; }
+[ ! -e "$state_dir/contract-snapshots" ] && [ ! -e "$state_dir/contract-attempts" ] \
+  || { echo "scenario n5a-unmarked-no-attempt: contract directories exist" >&2; exit 1; }
+echo "n5a contract scenarios passed"
 
 fi
 

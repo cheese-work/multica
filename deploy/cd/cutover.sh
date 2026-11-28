@@ -480,6 +480,111 @@ recover_incumbent() {
   exit 1
 }
 
+# Contract snapshot gate (CHE-7486 N5a). Runs after the quiescence final-gate
+# and before the migrator, only when the packet lists a contract migration.
+# It snapshots each listed table with COPY, checks the copy against its
+# manifest, writes the attempt record, and sets contract_attempt_id for the
+# migrator. Any failure restarts the incumbent: no migration has run yet.
+contract_psql() {
+  compose exec -T postgres psql -U "${POSTGRES_USER:-multica}" -d "${POSTGRES_DB:-multica}" -tA -v ON_ERROR_STOP=1 -c "$1" </dev/null
+}
+
+# contract_scalar returns one query answer; COPY output is streamed with
+# contract_psql, because command substitution would drop its trailing bytes.
+contract_scalar() {
+  local out
+  out="$(contract_psql "$1")" || return 1
+  printf '%s' "$out"
+}
+
+contract_fail() {
+  recover_incumbent "contract snapshot or attempt record failed (no migration ran): $1"
+}
+
+contract_snapshot_gate() {
+  local list version tables restore table present count rows columns copy entry
+  local -a absent_flag
+  local snapshots_dir attempts_dir attempt_dir entries versions_csv manifest_sha ledger_latest ledger_rows
+  local -A copied=()
+  contract_attempt_id=""
+  unset MULTICA_CONTRACT_ATTEMPT
+  list="$(node "$script_dir/contract-snapshot.mjs" list --packet "$packet")" || contract_fail "the packet's contract list is unreadable"
+  [ -n "$list" ] || return 0
+
+  while IFS=$'\t' read -r version tables restore; do
+    count="$(contract_scalar "SELECT count(*) FROM schema_migrations WHERE version = '$version'")" || contract_fail "cannot read the ledger for $version"
+    [[ "$count" =~ ^[0-9]+$ ]] || contract_fail "unreadable ledger answer for $version"
+    [ "$count" -eq 0 ] || recover_incumbent "contract migration $version already has a ledger row, so no snapshot can precede it (no migration ran)"
+    present="$(contract_scalar "SELECT to_regclass('schema_contracts') IS NOT NULL")" || contract_fail "cannot look up schema_contracts"
+    case "$present" in
+      t)
+        count="$(contract_scalar "SELECT count(*) FROM schema_contracts WHERE version = '$version'")" || contract_fail "cannot read schema_contracts for $version"
+        [[ "$count" =~ ^[0-9]+$ ]] || contract_fail "unreadable schema_contracts answer for $version"
+        [ "$count" -eq 0 ] || recover_incumbent "contract migration $version already has a schema_contracts row (no migration ran)"
+        ;;
+      f) ;;
+      *) contract_fail "unreadable schema_contracts lookup" ;;
+    esac
+  done <<<"$list"
+
+  contract_attempt_id="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  if ! [[ "$contract_attempt_id" =~ ^[0-9a-f]{32}$ ]]; then
+    contract_attempt_id=""
+    contract_fail "no attempt id from /dev/urandom"
+  fi
+  snapshots_dir="$state_dir/contract-snapshots"
+  attempts_dir="$state_dir/contract-attempts"
+  attempt_dir="$snapshots_dir/$contract_attempt_id"
+  (umask 077 && mkdir -p "$snapshots_dir" "$attempts_dir" && mkdir "$attempt_dir") || contract_fail "cannot create $attempt_dir"
+
+  entries=""
+  versions_csv=""
+  while IFS=$'\t' read -r version tables restore; do
+    versions_csv="${versions_csv:+$versions_csv,}$version"
+    for table in ${tables//,/ }; do
+      copy="$attempt_dir/$table.copy"
+      present="$(contract_scalar "SELECT to_regclass('$table') IS NOT NULL")" || contract_fail "cannot look up table $table"
+      case "$present" in t | f) ;; *) contract_fail "unreadable lookup for table $table" ;; esac
+      if [ "$present" = f ]; then
+        [ -n "${copied[$table]:-}" ] || (umask 077 && set -o noclobber && : >"$copy") || contract_fail "cannot create $copy"
+        rows=0
+        columns=""
+      else
+        [ -n "${copied[$table]:-}" ] || (umask 077 && set -o noclobber && contract_psql "COPY $table TO STDOUT" >"$copy") || contract_fail "COPY of $table failed"
+        rows="$(contract_scalar "SELECT count(*) FROM $table")" || contract_fail "cannot count the rows of $table"
+        [[ "$rows" =~ ^[0-9]+$ ]] || contract_fail "unreadable row count of $table"
+        columns="$(contract_scalar "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = '$table' ORDER BY ordinal_position")" ||
+          contract_fail "cannot read the columns of $table"
+      fi
+      copied[$table]=1
+      absent_flag=()
+      [ "$present" != f ] || absent_flag=(--absent)
+      entry="$(node "$script_dir/contract-snapshot.mjs" entry --version "$version" --table "$table" --rows "$rows" --copy "$copy" \
+        --columns-file /dev/stdin ${absent_flag[@]+"${absent_flag[@]}"} <<<"$columns")" || contract_fail "cannot describe the copy of $table"
+      entries+="$entry"$'\n'
+    done
+  done <<<"$list"
+  ledger_latest="$(current_ledger_version)" || contract_fail "cannot read the ledger version"
+  ledger_rows="$(contract_scalar "SELECT count(*) FROM schema_migrations")" || contract_fail "cannot count the ledger"
+  printf '%s' "$entries" | (umask 077 && node "$script_dir/contract-snapshot.mjs" manifest --out "$attempt_dir/manifest.json" \
+    --attempt-id "$contract_attempt_id" --source-sha "$source_sha" --taken-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --ledger-latest "$ledger_latest" --ledger-rows "$ledger_rows") || contract_fail "cannot write the manifest"
+  node "$script_dir/contract-snapshot.mjs" verify --manifest "$attempt_dir/manifest.json" || contract_fail "a copy does not match its manifest"
+  manifest_sha="sha256:$(sha256sum "$attempt_dir/manifest.json" | cut -d' ' -f1)"
+
+  (umask 077 && node "$script_dir/contract-snapshot.mjs" record --out "$attempts_dir/$contract_attempt_id.json.tmp" \
+    --attempt-id "$contract_attempt_id" --source-sha "$source_sha" --versions "$versions_csv" --snapshot-dir "$attempt_dir" \
+    --manifest-sha256 "$manifest_sha" --incumbent-image-id "$incumbent_backend_image_id" \
+    --incumbent-digest "${incumbent_backend_image##*@}" --candidate-digest "$backend_digest" \
+    --written-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)") || contract_fail "cannot write the attempt record"
+  # Flush only this attempt's files and directories; a host-wide sync can
+  # stall for minutes on a busy disk while the incumbent is down.
+  sync "$attempt_dir"/* "$attempt_dir" "$attempts_dir/$contract_attempt_id.json.tmp" || contract_fail "sync failed"
+  mv "$attempts_dir/$contract_attempt_id.json.tmp" "$attempts_dir/$contract_attempt_id.json" || contract_fail "cannot rename the attempt record"
+  sync "$attempts_dir" "$snapshots_dir" || contract_fail "sync failed"
+  echo "==> contract snapshot written: attempt $contract_attempt_id ($versions_csv)"
+}
+
 write_cutover_state() {
   local colour=$1 backend_image=$2 web_image=$3 ledger_version=$4 minimum_rollback_version=$5
   cat >"$cutover_state_file" <<JSON
@@ -551,7 +656,7 @@ case "$command" in
     # advisory document.
     echo "==> verifying release packet contract"
     if ! node "$script_dir/release-packet.mjs" verify --packet "$packet" --manifest "$manifest" \
-      --migrations-dir "$root_dir/server/migrations"; then
+      --migrations-dir "$root_dir/server/migrations" --repo-root "$root_dir"; then
       echo "!! release packet failed contract checks; refusing to cut over" >&2
       exit 1
     fi
@@ -744,12 +849,14 @@ case "$command" in
       recover_incumbent "quiescence final-gate denied cutover after draining $from_colour (no migration ran)"
     fi
 
+    contract_snapshot_gate
+
     # Run the standalone migrator exactly once, from the candidate image,
     # against the inactive colour's (stopped) service identity — never the
     # currently-serving colour's, so the one-shot container's --no-deps
     # never risks touching a live serving container's dependency graph.
     echo "==> running migration step (one-shot, candidate image, before candidate starts)"
-    if ! run_migration_step "$backend_repo" "$image_tag" up; then
+    if ! MULTICA_CONTRACT_ATTEMPT="$contract_attempt_id" run_migration_step "$backend_repo" "$image_tag" up; then
       # No automatic recovery here: a failed migration can leave DDL the
       # ledger does not record, so ledger proof cannot establish that
       # $from_colour is compatible with the schema actually in place.

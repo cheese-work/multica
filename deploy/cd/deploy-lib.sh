@@ -299,9 +299,11 @@ run_migration_step() {
   local repo=$1
   local tag=$2
   shift 2
+  local env_args=()
+  [ -z "${MULTICA_CONTRACT_ATTEMPT:-}" ] || env_args=(-e MULTICA_CONTRACT_ATTEMPT)
   MULTICA_BACKEND_IMAGE="$repo" \
   MULTICA_IMAGE_TAG="$tag" \
-    compose run --rm --no-deps \
+    compose run --rm --no-deps ${env_args[@]+"${env_args[@]}"} \
     --entrypoint ./migrate \
     "$migration_service_name" "$@"
 }
