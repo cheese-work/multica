@@ -572,3 +572,91 @@ func TestRemoteApps_PersonalDisconnectImpact(t *testing.T) {
 		t.Fatalf("another member's impact check: %d, want 404", w.Code)
 	}
 }
+
+// A remote connect that began while its starter had access must not finish
+// once that access is gone: the callback is public and the state stays valid
+// for minutes, so the callback itself rechecks the starter.
+func TestRemoteApps_CallbackRefusesAStarterWhoLostAccess(t *testing.T) {
+	ctx := context.Background()
+	teamRows := func() int {
+		var n int
+		testPool.QueryRow(ctx, `SELECT count(*) FROM remote_app_connection WHERE owner_id = $1 AND scope = 'team' AND status <> 'revoked'`, testWorkspaceID).Scan(&n)
+		return n
+	}
+	personalRows := func(userID string) int {
+		var n int
+		testPool.QueryRow(ctx, `SELECT count(*) FROM remote_app_connection WHERE owner_id = $1 AND scope = 'personal' AND status <> 'revoked'`, userID).Scan(&n)
+		return n
+	}
+	startTeam := func(t *testing.T, f *remoteAppsFixture) string {
+		w := httptest.NewRecorder()
+		f.h.ConnectTeamApp(w, appsReqAs(t, testUserID, http.MethodPost, "/api/apps/team/connect", map[string]string{"toolkit_slug": "mobbin"}))
+		if w.Code != http.StatusOK {
+			t.Fatalf("team connect as admin: %d %s", w.Code, w.Body.String())
+		}
+		var init ComposioConnectInitResponse
+		json.Unmarshal(w.Body.Bytes(), &init)
+		authorize, err := url.Parse(init.RedirectURL)
+		if err != nil {
+			t.Fatalf("redirect_url = %q", init.RedirectURL)
+		}
+		return "state=" + url.QueryEscape(authorize.Query().Get("state")) + "&code=auth-code"
+	}
+	restoreOwner := func(t *testing.T) {
+		var role string
+		testPool.QueryRow(ctx, `SELECT role FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID).Scan(&role)
+		t.Cleanup(func() {
+			testPool.Exec(ctx, `INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, $3) ON CONFLICT (workspace_id, user_id) DO UPDATE SET role = $3`, testWorkspaceID, testUserID, role)
+			testPool.Exec(ctx, `DELETE FROM remote_app_connection WHERE owner_id = $1`, testWorkspaceID)
+		})
+	}
+
+	t.Run("admin still an admin connects the team account", func(t *testing.T) {
+		f := newRemoteAppsFixture(t)
+		restoreOwner(t)
+		f.callback(t, startTeam(t, f))
+		if n := teamRows(); n != 1 {
+			t.Fatalf("team account rows = %d, want 1", n)
+		}
+	})
+
+	t.Run("starter demoted to member", func(t *testing.T) {
+		f := newRemoteAppsFixture(t)
+		restoreOwner(t)
+		query := startTeam(t, f)
+		testPool.Exec(ctx, `UPDATE member SET role = 'member' WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID)
+		f.callback(t, query)
+		if n := teamRows(); n != 0 {
+			t.Fatalf("team account rows = %d after the starter was demoted, want 0", n)
+		}
+	})
+
+	t.Run("starter removed from the workspace", func(t *testing.T) {
+		f := newRemoteAppsFixture(t)
+		restoreOwner(t)
+		query := startTeam(t, f)
+		testPool.Exec(ctx, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID)
+		f.callback(t, query)
+		if n := teamRows(); n != 0 {
+			t.Fatalf("team account rows = %d after the starter was removed, want 0", n)
+		}
+	})
+
+	t.Run("personal connect after the member left", func(t *testing.T) {
+		f := newRemoteAppsFixture(t)
+		restoreOwner(t)
+		w := httptest.NewRecorder()
+		f.h.ConnectPersonalApp(w, appsReqAs(t, testUserID, http.MethodPost, "/api/apps/personal/connect", map[string]string{"toolkit_slug": "mobbin"}))
+		if w.Code != http.StatusOK {
+			t.Fatalf("personal connect: %d %s", w.Code, w.Body.String())
+		}
+		var init ComposioConnectInitResponse
+		json.Unmarshal(w.Body.Bytes(), &init)
+		authorize, _ := url.Parse(init.RedirectURL)
+		testPool.Exec(ctx, `DELETE FROM member WHERE workspace_id = $1 AND user_id = $2`, testWorkspaceID, testUserID)
+		f.callback(t, "state="+url.QueryEscape(authorize.Query().Get("state"))+"&code=auth-code")
+		if n := personalRows(testUserID); n != 0 {
+			t.Fatalf("personal account rows = %d after the member left, want 0", n)
+		}
+	})
+}
