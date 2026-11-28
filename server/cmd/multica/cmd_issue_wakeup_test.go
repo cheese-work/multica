@@ -384,3 +384,64 @@ func TestIssueWakeupCLISendsWatchInputs(t *testing.T) {
 		t.Fatalf("no --watch must omit watch_inputs: %v", bodies[2])
 	}
 }
+
+func TestIssueWakeupCreateInfersKindFromScheduleFlags(t *testing.T) {
+	const issue = "a57c0511-1ebc-471d-a314-438ca16cc75d"
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		kind  string
+		watch []string
+	}{
+		{"every children", []string{"--every", "1h", "--watch", "children", "--expires-in", "72h"}, "every", []string{"children"}},
+		{"every issue", []string{"--every", "1h", "--watch", "issue"}, "every", []string{"issue"}},
+		{"every pr", []string{"--every", "1h", "--watch", "pr"}, "every", []string{"pr"}},
+		{"every thread", []string{"--every", "1h", "--watch", "thread:a57c0511-1ebc-471d-a314-438ca16cc75d"}, "every", []string{"thread:a57c0511-1ebc-471d-a314-438ca16cc75d"}},
+		{"every always", []string{"--every", "1h", "--watch", "always"}, "every", []string{"always"}},
+		{"cron children", []string{"--cron", "5 * * * *", "--watch", "children", "--expires-in", "72h"}, "cron", []string{"children"}},
+		{"cron always", []string{"--cron", "5 * * * *", "--watch", "always"}, "cron", []string{"always"}},
+		{"after", []string{"--after", "10m", "--watch", "issue"}, "at", []string{"issue"}},
+		{"at", []string{"--at", "2030-01-01T00:00:00Z", "--watch", "pr"}, "at", []string{"pr"}},
+		{"explicit kind wins", []string{"--kind", "every", "--every", "1h", "--watch", "children"}, "every", []string{"children"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			var body map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewDecoder(r.Body).Decode(&body)
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": "wake", "enabled": true})
+			}))
+			defer srv.Close()
+			t.Setenv("MULTICA_SERVER_URL", srv.URL)
+			t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+			t.Setenv("MULTICA_TOKEN", "test-token")
+			cmd := newIssueWakeupCommand()
+			cmd.SetArgs(append([]string{"create", issue, "--instruction", "sweep"}, tc.args...))
+			if err := cmd.Execute(); err != nil {
+				t.Fatal(err)
+			}
+			if body["kind"] != tc.kind {
+				t.Fatalf("kind = %v, want %s (body %+v)", body["kind"], tc.kind, body)
+			}
+			got := []string{}
+			for _, v := range body["watch_inputs"].([]any) {
+				got = append(got, v.(string))
+			}
+			if !reflect.DeepEqual(got, tc.watch) {
+				t.Fatalf("watch_inputs = %v, want %v", got, tc.watch)
+			}
+		})
+	}
+}
+
+func TestIssueWakeupRejectsConflictingKindAndSchedule(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("MULTICA_SERVER_URL", "http://127.0.0.1:1")
+	t.Setenv("MULTICA_WORKSPACE_ID", "ws-1")
+	t.Setenv("MULTICA_TOKEN", "test-token")
+	cmd := newIssueWakeupCommand()
+	cmd.SetArgs([]string{"create", "a57c0511-1ebc-471d-a314-438ca16cc75d", "--instruction", "x", "--every", "1h", "--cron", "5 * * * *"})
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "only one of") {
+		t.Fatalf("err = %v", err)
+	}
+}

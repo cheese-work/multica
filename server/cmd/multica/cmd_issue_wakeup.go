@@ -176,6 +176,21 @@ func runIssueWakeup(cmd *cobra.Command, args []string, action string) error {
 				body[key] = v
 			}
 		}
+		if !cmd.Flags().Changed("kind") {
+			// --kind defaults to event; a schedule flag names the time kind.
+			var inferred []string
+			for flag, kind := range map[string]string{"every": "every", "cron": "cron", "at": "at", "after": "at"} {
+				if v, _ := cmd.Flags().GetString(flag); v != "" {
+					inferred = append(inferred, kind)
+				}
+			}
+			if len(inferred) > 1 {
+				return fmt.Errorf("use only one of --at, --after, --every and --cron")
+			}
+			if len(inferred) == 1 {
+				body["kind"] = inferred[0]
+			}
+		}
 		instruction, _, e := resolveTextFlag(cmd, "instruction")
 		if e != nil {
 			return e
