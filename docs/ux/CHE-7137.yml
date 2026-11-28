@@ -1,0 +1,14 @@
+# Design gate: lock waived by Cheese. Decision request a60a2266-9291-4d6e-afa9-41d30a3082a0 on CHE-7118,
+# answered "Waive now" 18 Nov 2026 10:03 ICT, in effect 10:13 ICT. It covers the divider header copy at
+# apps/web/features/landing/components/fork-deploys.tsx:46 with the CHE-7118 wording only.
+# Layout, colour and chip changes are out of scope. The waiver does not waive the UI change gate captures.
+issue: CHE-7137
+design: waived   # decision request a60a2266-9291-4d6e-afa9-41d30a3082a0
+pages:
+  - id: changelog
+    url: /changelog   # same path on base and preview
+    keep:   [deploy-divider-chip-live, deploy-divider-chip-previous, deploy-divider-heat-colours, deploy-divider-order]
+    change:
+      - deploy-divider-header: "label the deploy time and the build stamp separately: 'Deployed <ICT time> · build <version>', Live: 'Live · build <version>'"
+    remove: []
+# Element ids: the existing `data-deploy` / `data-heat` attributes on each divider; no new test ids were added.

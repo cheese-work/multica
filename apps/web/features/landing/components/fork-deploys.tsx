@@ -43,7 +43,7 @@ export function DeploySections({ release }: { release: ChangelogRelease }) {
           <div key={deploy.sha} data-heat={level} data-deploy={deploy.sha} className={heatStyle[level]}>
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-label font-semibold tabular-nums text-[#0a0d12]/75">
               <span aria-hidden="true">──</span>
-              <span>{deploy.live ? `${deploy.version} · Live` : `${deploy.version} · ${ictTime(deploy.deployedAt)}`}</span>
+              <span>{deploy.live ? `Live · build ${deploy.version}` : `Deployed ${ictTime(deploy.deployedAt)} · build ${deploy.version}`}</span>
               {(level === "live" || level === "previous") && (
                 <span className={`rounded-sm px-1.5 py-0.5 text-xs font-semibold uppercase tracking-wide ${chipStyle[level]}`}>{level === "live" ? "Live" : "Previous"}</span>
               )}
