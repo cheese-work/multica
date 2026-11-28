@@ -573,7 +573,17 @@ case "$sql" in
   *"FROM schema_migrations WHERE version"*)
     if [ -f "$control_dir/fail-ledger-read" ]; then echo "mock psql: forced ledger read failure" >&2; exit 1; fi
     if [ -f "$control_dir/ledger-row-$(version_of)" ]; then echo 1; else echo 0; fi ;;
-  *"count(*) FROM schema_migrations"*) echo 535 ;;
+  *"count(*) FROM schema_migrations"*)
+    # CHE-7486 N5b-1: the plain ledger read. fail-ledger-read fails it always,
+    # ledger-read-fails-from=<n> fails the n-th and later reads.
+    n=$(( $(cat "$control_dir/ledger-reads" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" >"$control_dir/ledger-reads"
+    if [ -f "$control_dir/fail-ledger-read" ] ||
+      { [ -f "$control_dir/ledger-read-fails-from" ] && [ "$n" -ge "$(cat "$control_dir/ledger-read-fails-from")" ]; }; then
+      echo "mock psql: forced ledger read failure (read $n)" >&2
+      exit 1
+    fi
+    echo 535 ;;
   *information_schema*) printf 'id\nname\nnote\n' ;;
   *"count(*) FROM "*)
     t="$(table_of)"
@@ -2207,7 +2217,7 @@ n5b1_cutover
 n5b1_expect_refused_before_drain n5b1-candidate-lacks-file
 expect_contains "$n5b1_output" "does not hold contract migration $n5b1_version_2 (attempt $n5b1_attempt_1)" n5b1-candidate-lacks-file
 expect_contains "$n5b1_output" "blue remains active" n5b1-candidate-lacks-file
-grep -q 'proof-run role=candidate image=imgid-ghcr.io/cheese-work/multica-backend:sha-' "$n5b1_dir/control/events.log" || n5b1_fail n5b1-candidate-lacks-file "the proof did not run on the candidate image id"
+grep -q 'proof-run role=candidate image=imgid-.*multica-backend:sha-' "$n5b1_dir/control/events.log" || n5b1_fail n5b1-candidate-lacks-file "the proof did not run on the candidate image id"
 
 # A candidate that holds the file: the proof runs before the drain, then the
 # cutover completes.
@@ -2293,6 +2303,25 @@ n5b1_cutover
 n5b1_expect_refused_before_drain n5b1-ledger-unreadable
 expect_contains "$n5b1_output" "contract state unreadable" n5b1-ledger-unreadable
 
+# An unreadable ledger refuses even when no attempt record exists, on the
+# pre-drain path and on the recovery path, and a state dir whose attempt
+# records cannot be enumerated refuses.
+n5b1_setup n5b1-ledger-unreadable-no-record fail-ledger-read
+n5b1_cutover
+n5b1_expect_refused_before_drain n5b1-ledger-unreadable-no-record
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-ledger-unreadable-no-record
+
+n5b1_setup n5b1-ledger-unreadable-in-recovery "health-never-ready-${BACKEND_GREEN_PORT:-18082}" ledger-read-fails-from=2
+n5b1_cutover
+n5b1_expect_outage_no_start n5b1-ledger-unreadable-in-recovery
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-ledger-unreadable-in-recovery
+
+n5b1_setup n5b1-attempts-not-enumerable
+printf 'not a directory' >"$n5b1_dir/contract-attempts"
+n5b1_cutover
+n5b1_expect_refused_before_drain n5b1-attempts-not-enumerable
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-attempts-not-enumerable
+
 # contract-check: read-only; exit 0 proven, 3 refused, 1 uncertain; by colour
 # and by image reference.
 # n5b1_check NAME [FILE | FILE=CONTENT]... -- ARGS...: sets n5b1_output and n5b1_status.
@@ -2335,12 +2364,12 @@ expect_exit 0 "$n5b1_status" n5b1-check-colour-stopped
 expect_contains "$n5b1_output" "imgid-green-stopped" n5b1-check-colour-stopped
 n5b1_check n5b1-check-colour-absent -- --colour green
 expect_exit 1 "$n5b1_status" n5b1-check-colour-absent
-n5b1_check n5b1-check-image-proven -- --image ghcr.io/cheese-work/multica-backend:sha-test
+n5b1_check n5b1-check-image-proven -- --image ghcr.io/example/multica-backend:sha-test
 expect_exit 0 "$n5b1_status" n5b1-check-image-proven
-expect_contains "$n5b1_output" "imgid-ghcr.io/cheese-work/multica-backend:sha-test" n5b1-check-image-proven
-n5b1_check n5b1-check-image-refused proof-exit-candidate=10 -- --image ghcr.io/cheese-work/multica-backend:sha-test
+expect_contains "$n5b1_output" "imgid-ghcr.io/example/multica-backend:sha-test" n5b1-check-image-proven
+n5b1_check n5b1-check-image-refused proof-exit-candidate=10 -- --image ghcr.io/example/multica-backend:sha-test
 expect_exit 3 "$n5b1_status" n5b1-check-image-refused
-n5b1_check n5b1-check-image-uncertain proof-exit-candidate=125 -- --image ghcr.io/cheese-work/multica-backend:sha-test
+n5b1_check n5b1-check-image-uncertain proof-exit-candidate=125 -- --image ghcr.io/example/multica-backend:sha-test
 expect_exit 1 "$n5b1_status" n5b1-check-image-uncertain
 n5b1_applied_version=""
 n5b1_check n5b1-check-none-applied -- --colour blue
