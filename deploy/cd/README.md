@@ -658,8 +658,11 @@ a repo-relative SQL file that puts them back.
   up file with no ledger row, in runner order. `verify` recomputes the list
   and fails on any difference. The packet tool does not check that the
   `restore` file exists yet (deferred to B3c-1). The cutover bundle carries
-  each restore file at the same relative path and verifies with
-  `--repo-root <bundle>`.
+  each restore file that exists in the tree at the same relative path and
+  verifies with `--repo-root <bundle>`. A declared restore file that is not in
+  the tree yet is not copied: the build logs
+  `restore file not in tree, bundle built without it` and still succeeds. The
+  requirement that every declared file exists returns in B3c-1.
 - **Gate.** `cutover.sh cutover` runs the gate after the quiescence
   final-gate and before the migrator. No contract migration: nothing happens
   and `MULTICA_CONTRACT_ATTEMPT` stays unset.

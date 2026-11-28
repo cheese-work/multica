@@ -100,9 +100,10 @@ JSON
 }
 
 # CHE-7486 N5a: with every version in the ledger the packet lists no contract
-# migration. A marked migration that is not in the ledger needs its restore
-# file: the bundle build refuses without it, and with it the bundle carries
-# the file and verifies from its own tree.
+# migration. A marked migration that is not in the ledger: with its restore
+# file in the tree the bundle carries the file and verifies from its own tree;
+# without it the bundle still builds and the log names the file (B3c-1 brings
+# the requirement back).
 node -e 'const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(JSON.stringify(p.contract_migrations)!=="[]"){console.error("want contract_migrations [] for an all-applied ledger");process.exit(1)}' \
   "$work_dir/unpack/cutover-controller/evidence/release-packet.json"
 marked_version="$(grep -l '^-- multica:contract ' server/migrations/*.up.sql | head -1 | xargs -r basename | sed 's/\.up\.sql$//')"
@@ -116,12 +117,33 @@ if [ -n "$marked_version" ]; then
   x.ledger.versions=fs.readFileSync(process.argv[2],"utf8").trim().split("\n");
   fs.writeFileSync(process.argv[3],JSON.stringify(x));' "$observed" "$open_ledger" "$open_observed"
   make_admission "$open_ledger" "$work_dir/open"
-  if bash deploy/cd/build-cutover-bundle.sh --manifest "$work_dir/open-manifest.json" --baseline-tuple "$work_dir/open-baseline.json" --observed-state "$open_observed" --output "$work_dir/no-restore.tar" --checksum-output "$work_dir/no-restore.sha256" >/dev/null 2>&1; then
-    echo "a marked migration without its restore file was bundled" >&2
+  # Restore file absent from the tree: the bundle still builds, the log names
+  # the file, and the bundle does not carry it (the requirement returns in B3c-1).
+  scratch_absent="$work_dir/scratch-absent"
+  mkdir -p "$scratch_absent/server"
+  cp -r deploy "$scratch_absent/deploy"
+  cp docker-compose.selfhost.yml "$scratch_absent/"
+  cp -r server/migrations "$scratch_absent/server/migrations"
+  rm -f "$scratch_absent/$restore_path"
+  absent_log="$work_dir/absent-build.log"
+  if ! bash "$scratch_absent/deploy/cd/build-cutover-bundle.sh" --manifest "$work_dir/open-manifest.json" --baseline-tuple "$work_dir/open-baseline.json" --observed-state "$open_observed" --output "$work_dir/no-restore.tar" --checksum-output "$work_dir/no-restore.sha256" >/dev/null 2>"$absent_log"; then
+    echo "a marked migration without its restore file did not bundle" >&2
+    cat "$absent_log" >&2
+    exit 1
+  fi
+  if ! grep -q "restore file not in tree, bundle built without it: $restore_path" "$absent_log"; then
+    echo "bundle build did not log the missing restore file $restore_path" >&2
+    cat "$absent_log" >&2
+    exit 1
+  fi
+  mkdir "$work_dir/unpack-absent"
+  tar -C "$work_dir/unpack-absent" -xf "$work_dir/no-restore.tar"
+  if [ -e "$work_dir/unpack-absent/cutover-controller/$restore_path" ]; then
+    echo "bundle carries a restore file that is not in the tree" >&2
     exit 1
   fi
   # State of the real tree: every declared restore file that is not in it yet.
-  # The bundle build needs each file to copy it, so this is a merge-order fact, not a skip.
+  # Informational only: an absent file no longer blocks the bundle (B3c-1 restores the check).
   for marked in $(grep -l '^-- multica:contract ' server/migrations/*.up.sql | xargs -n1 basename | sed 's/\.up\.sql$//'); do
     declared="$(head -n 1 "server/migrations/$marked.up.sql" | sed -E 's/.* restore=(\S+)$/\1/')"
     if [ -f "$declared" ]; then echo "restore file present in tree: $declared"; else echo "restore file not in this tree yet: $declared ($marked)"; fi

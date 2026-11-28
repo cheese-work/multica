@@ -68,11 +68,17 @@ node "$root_dir/deploy/cd/release-packet.mjs" create \
   --output "$bundle/evidence/release-packet.json"
 
 # A contract migration's restore file travels with the bundle at the same
-# relative path, so the bundle verifies from its own tree (CHE-7486 N5a).
+# relative path (CHE-7486 N5a). A file that is not in the tree yet is not
+# copied: the bundle still builds and the log names it. The requirement that
+# every declared restore file exists returns in B3c-1 (CHE-7486).
 while IFS= read -r restore; do
   [ -n "$restore" ] || continue
-  mkdir -p "$bundle/$(dirname "$restore")"
-  cp "$root_dir/$restore" "$bundle/$restore"
+  if [ -f "$root_dir/$restore" ]; then
+    mkdir -p "$bundle/$(dirname "$restore")"
+    cp "$root_dir/$restore" "$bundle/$restore"
+  else
+    echo "build-cutover-bundle: restore file not in tree, bundle built without it: $restore (required again in B3c-1)" >&2
+  fi
 done < <(node -e 'for (const c of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).contract_migrations ?? []) console.log(c.restore)' "$bundle/evidence/release-packet.json")
 
 (
