@@ -376,8 +376,11 @@ func migrateUpOK(t *testing.T, name string, extraEnv ...string) string {
 	return out
 }
 
+// attemptEnv hands X its attempt id both ways: the setting that X reads on a
+// tree without the contract runner, and the variable the contract runner (N5r)
+// turns into that setting and into its schema_contracts row.
 func attemptEnv(attempt string) []string {
-	return []string{"PGOPTIONS=-c multica.contract_attempt=" + attempt}
+	return []string{"PGOPTIONS=-c multica.contract_attempt=" + attempt, "MULTICA_CONTRACT_ATTEMPT=" + attempt}
 }
 
 // ---- tests ------------------------------------------------------------------
