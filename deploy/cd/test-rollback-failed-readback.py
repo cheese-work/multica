@@ -66,7 +66,7 @@ esac
         (self.bin / "docker").write_text(script)
         (self.bin / "docker").chmod(0o755)
 
-    def rollback(self, running=DEPLOYED, rollback_ok=True, healthy_after=True, sha=DEPLOYED, label=None, tag="", **images):
+    def rollback(self, running=DEPLOYED, rollback_ok=True, refused=None, healthy_after=True, sha=DEPLOYED, label=None, tag="", **images):
         self.docker(label=running if label is None else label, tag=tag, **images)
         live = json.dumps({"application_sha": PREDECESSOR})
         # The full baseline needs running services: it fails until the rollback ran.
@@ -75,7 +75,7 @@ esac
                   f"echo '{live}' > \"$1\"\n")
         self.stub("cutover.sh",
                   f'echo "cutover $* url=$CUTOVER_DATABASE_URL router=$ROUTER_STATE_DIR token=$GHCR_PULL_TOKEN pins=$MULTICA_BACKEND_IMAGE|$MULTICA_WEB_IMAGE|$MULTICA_IMAGE_TAG" >> "{self.calls}"\n'
-                  + ("" if rollback_ok else "exit 1\n"))
+                  + (f'echo "rollback refused: {refused}" >&2\nexit 3\n' if refused else "" if rollback_ok else "exit 1\n"))
         self.stub("ab-health-check.sh", f'echo "health $*" >> "{self.calls}"\n' + ("" if healthy_after else "exit 1\n"))
         env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "C00_COMPOSE_DIR": str(self.compose),
                "C00_CUTOVER_STATE_DIR": str(self.cutover_state), "C00_ROUTER_STATE_DIR": "/router-state", "GHCR_PULL_TOKEN": "tok"}
@@ -105,6 +105,19 @@ esac
         result = self.rollback(rollback_ok=False)
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn("health", self.recorded())
+
+    def test_a_refused_rollback_fails_the_job_with_the_controller_reason(self):
+        # CHE-7486 N5b-2: exit 3 means the controller refused before it drained
+        # or started anything. The job fails and the annotation carries why.
+        reason = "backend-blue image imgid-old does not hold contract migration 20260101_x (attempt " + "a" * 32 + ")"
+        result = self.rollback(refused=reason)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(f"::error title=C00 rollback refused::{reason}", result.stdout + result.stderr)
+        self.assertNotIn("health", self.recorded())
+
+    def test_a_failed_rollback_has_no_refusal_annotation(self):
+        result = self.rollback(rollback_ok=False)
+        self.assertNotIn("C00 rollback refused", result.stdout + result.stderr)
 
     def test_an_unhealthy_route_after_rollback_fails_the_job(self):
         self.assertNotEqual(self.rollback(healthy_after=False).returncode, 0)

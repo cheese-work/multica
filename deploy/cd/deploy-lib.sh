@@ -65,22 +65,33 @@ bare_repo() {
   printf '%s' "${ref%%:*}"
 }
 
-# verify_pulled_digest confirms the image Docker actually pulled for
-# "repo:tag" matches the digest a manifest/packet pinned — the same
-# immutability guarantee a raw digest reference would give directly, without
-# requiring compose files to accept "repo@digest" syntax (which
+# verified_image_id confirms the image Docker actually pulled for "repo:tag"
+# matches the digest a manifest/packet pinned — the same immutability
+# guarantee a raw digest reference would give directly, without requiring
+# compose files to accept "repo@digest" syntax (which
 # docker-compose.selfhost.yml's hardcoded "${VAR}:${VAR}" templating cannot
-# express).
-verify_pulled_digest() {
+# express) — and prints that same image's id. One `docker image inspect`
+# returns both fields, so the id belongs to the image whose digest matched;
+# a second read of the reference could pair one image's digest with another
+# image's id if the tag moved in between.
+verified_image_id() {
   local repo=$1
   local tag=$2
   local expected_digest=$3
-  local actual
-  actual="$(docker inspect --format '{{index .RepoDigests 0}}' "${repo}:${tag}" 2>/dev/null | sed -E 's#^.*@##')"
-  if [ "$actual" != "$expected_digest" ]; then
+  local inspected id first_digest actual
+  inspected="$(docker image inspect --format '{{.Id}}{{range .RepoDigests}} {{.}}{{end}}' "${repo}:${tag}" 2>/dev/null || true)"
+  read -r id first_digest _ <<<"$inspected"
+  actual="${first_digest##*@}"
+  if [ -z "$id" ] || [ "$actual" != "$expected_digest" ]; then
     echo "pulled image ${repo}:${tag} digest ${actual:-<none>} does not match manifest digest ${expected_digest}" >&2
     return 1
   fi
+  printf '%s\n' "$id"
+}
+
+# verify_pulled_digest is verified_image_id without the id.
+verify_pulled_digest() {
+  verified_image_id "$@" >/dev/null
 }
 
 # compose runs `docker compose -f <files...>` against $compose_dir, with
@@ -299,9 +310,11 @@ run_migration_step() {
   local repo=$1
   local tag=$2
   shift 2
+  local env_args=()
+  [ -z "${MULTICA_CONTRACT_ATTEMPT:-}" ] || env_args=(-e MULTICA_CONTRACT_ATTEMPT)
   MULTICA_BACKEND_IMAGE="$repo" \
   MULTICA_IMAGE_TAG="$tag" \
-    compose run --rm --no-deps \
+    compose run --rm --no-deps ${env_args[@]+"${env_args[@]}"} \
     --entrypoint ./migrate \
     "$migration_service_name" "$@"
 }

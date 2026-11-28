@@ -45,6 +45,16 @@ Commands:
       CURRENT schema, start it without migrations, restore its router
       generation. Never runs a down migration or restores from backup —
       that is the separately authorized recovery path.
+      With a contract migration applied, first proves the exact stopped
+      containers (image holds the migration, pinned reference matches) and
+      starts them with `compose start`; any doubt exits 3, before the drain.
+
+  contract-check --compose-dir PATH --state-dir PATH (--colour blue|green | --image REF)
+      Read-only. Read the applied contract migrations from the database and
+      prove that the colour's backend container image (running or stopped), or
+      the image REF, holds every one of them. Exit 0 proven or none applied,
+      3 refused (a migration file is missing), 1 uncertain (nothing started or
+      changed either way). Never takes the deploy lock.
 
   status --state-dir PATH
       Print which colour is currently active (from cutover-state.json) and
@@ -92,6 +102,8 @@ manifest=""
 packet=""
 compose_dir=""
 state_dir=""
+check_colour=""
+check_image=""
 
 while (($#)); do
   case "$1" in
@@ -99,6 +111,8 @@ while (($#)); do
     --packet) packet=${2:?}; shift 2 ;;
     --compose-dir) compose_dir=${2:?}; shift 2 ;;
     --state-dir) state_dir=${2:?}; shift 2 ;;
+    --colour) check_colour=${2:?}; shift 2 ;;
+    --image) check_image=${2:?}; shift 2 ;;
     --help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -137,6 +151,8 @@ deploy_lock="$state_dir/deploy.lock"
 
 # shellcheck source=deploy-lib.sh
 source "$script_dir/deploy-lib.sh"
+# shellcheck source=contract-lib.sh
+source "$script_dir/contract-lib.sh"
 compose_files=("docker-compose.selfhost.yml" "$script_dir/docker-compose.ab.yml")
 flags_file=""
 
@@ -392,15 +408,14 @@ container_image_id() {
   docker inspect --format '{{.Image}}' "$cid" 2>/dev/null
 }
 
-# runs_verified_image: service's running container uses exactly the local
-# image repo:tag resolves to, whose digest verify_pulled_digest already
-# matched against the manifest.
+# runs_verified_image: service's running container was created from exactly
+# the image id verified_image_id returned for the manifest digest. The
+# reference is not read again here: it may point elsewhere by now.
 runs_verified_image() {
-  local service=$1 ref=$2 running want
+  local service=$1 want=$2 running
   running="$(container_image_id "$service" || true)"
-  want="$(docker inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
   if [ -z "$want" ] || [ "$running" != "$want" ]; then
-    echo "!! $service runs image '${running:-<none>}', verified $ref is '${want:-<none>}'" >&2
+    echo "!! $service runs image '${running:-<none>}', verified image id is '${want:-<none>}'" >&2
     return 1
   fi
 }
@@ -454,6 +469,26 @@ recover_incumbent() {
     alert_outage "$reason; ledger '${ledger:-<unreadable>}' is neither the pre-drain ledger ($incumbent_ledger) nor within [$minimum, $final], so $from_colour is not proven schema-compatible and was NOT restarted; both colours are stopped"
     exit 1
   fi
+  # CHE-7486 N5b-1: with a contract migration applied, the incumbent image
+  # must hold its migration file. The applied set is read again here, after
+  # the drain, never taken from the pre-drain read or the state file.
+  if ! contract_applied_read; then
+    alert_outage "$reason; contract state unreadable ($contract_read_error), so $from_colour was NOT restarted; both colours are stopped; $(contract_recovery_text)"
+    exit 1
+  fi
+  contract_proof_rc=0
+  contract_image_proof "$incumbent_backend_image_id" || contract_proof_rc=$?
+  case "$contract_proof_rc" in
+    0) ;;
+    3)
+      alert_outage "$reason; contract migration $(contract_applied_versions) applied (attempt $(contract_applied_attempts)) and the $from_colour image $incumbent_backend_image_id does not hold it and was NOT restarted; both colours are stopped; $(contract_recovery_text)"
+      exit 1
+      ;;
+    *)
+      alert_outage "$reason; contract state unreadable (the image proof on $incumbent_backend_image_id could not run), so $from_colour was NOT restarted; both colours are stopped; $(contract_recovery_text)"
+      exit 1
+      ;;
+  esac
   if ! compose start "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1; then
     alert_outage "$reason; restarting $from_colour failed; both colours are stopped"
     exit 1
@@ -478,6 +513,175 @@ recover_incumbent() {
   fi
   echo "!! RECOVERED: cutover to $to_colour failed ($reason); $from_colour restarted (image $incumbent_backend_image, commit $incumbent_commit, ledger $ledger) and the public route reads back healthy. Cutover state unchanged; investigate before retrying." >&2
   exit 1
+}
+
+# rollback_contract_binding (CHE-7486 N5b-2): with a contract migration
+# applied, `rollback` starts only the exact stopped containers whose image id
+# it has proven, never what a tag or the state file names. Runs BEFORE the
+# drain; every doubt is exit 3 "rollback refused: <reason>" with nothing
+# stopped, started or created. Sets rollback_bound=1 and the proven ids when a
+# contract is applied; with none applied it changes nothing (today's path).
+#   1. read the applied set (N5b-1); unreadable refuses
+#   2. exactly one stopped backend-<to> and frontend-<to> container each, and
+#      the image id each was created from
+#   3. the backend image id holds every applied migration file
+#   4. the pinned reference (`compose config` under the caller's
+#      MULTICA_BACKEND_IMAGE / MULTICA_WEB_IMAGE / MULTICA_IMAGE_TAG) of each
+#      service resolves to that container's own image id
+rollback_refuse() {
+  echo "rollback refused: $1" >&2
+  exit 3
+}
+
+rollback_bound=0
+rollback_proven_backend_id=""
+rollback_proven_web_id=""
+rollback_contract_binding() {
+  local service cids count cid image_id reference config resolved proof_rc=0
+  rollback_bound=0
+  contract_applied_read || rollback_refuse "contract state unreadable ($contract_read_error)"
+  [ -n "$contract_applied" ] || return 0
+
+  for service in backend frontend; do
+    cids="$(compose ps --all -q "${service}-${to_colour}" 2>/dev/null)" || rollback_refuse "cannot list the ${service}-${to_colour} containers"
+    count="$(printf '%s' "$cids" | grep -c . || true)"
+    if [ "$count" -eq 0 ]; then
+      rollback_refuse "${service}-${to_colour} has no stopped container (want exactly one)"
+    elif [ "$count" -ne 1 ]; then
+      rollback_refuse "${service}-${to_colour} has $count containers (want exactly one)"
+    fi
+    cid="$cids"
+    image_id="$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null | tr -d '[:space:]')" || image_id=""
+    [ -n "$image_id" ] || rollback_refuse "cannot read the image id of the ${service}-${to_colour} container"
+    if [ "$service" = backend ]; then rollback_proven_backend_id="$image_id"; else rollback_proven_web_id="$image_id"; fi
+  done
+
+  contract_image_proof "$rollback_proven_backend_id" || proof_rc=$?
+  case "$proof_rc" in
+    0) ;;
+    3) rollback_refuse "backend-${to_colour} image $rollback_proven_backend_id does not hold contract migration $(contract_applied_versions) (attempt $(contract_applied_attempts)); $(contract_recovery_text)" ;;
+    *) rollback_refuse "contract state unreadable (the image proof on $rollback_proven_backend_id could not run)" ;;
+  esac
+
+  config="$(compose config --format json 2>/dev/null)" || rollback_refuse "cannot render the pinned references (docker compose config failed)"
+  for service in backend frontend; do
+    reference="$(printf '%s' "$config" | node -e '
+      const c = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+      const image = c.services?.[process.argv[1]]?.image;
+      if (typeof image !== "string" || image === "") process.exit(1);
+      process.stdout.write(image);
+    ' "${service}-${to_colour}" 2>/dev/null)" || rollback_refuse "cannot read the pinned reference of ${service}-${to_colour}"
+    resolved="$(docker image inspect --format '{{.Id}}' "$reference" 2>/dev/null | tr -d '[:space:]')" || resolved=""
+    if [ "$service" = backend ]; then image_id="$rollback_proven_backend_id"; else image_id="$rollback_proven_web_id"; fi
+    [ "$resolved" = "$image_id" ] ||
+      rollback_refuse "${service}-${to_colour} pinned reference $reference resolves to ${resolved:-<nothing>}, but the stopped container holds $image_id"
+  done
+  rollback_bound=1
+}
+
+# Contract snapshot gate (CHE-7486 N5a). Runs after the quiescence final-gate
+# and before the migrator, only when the packet lists a contract migration.
+# It snapshots each listed table with COPY, checks the copy against its
+# manifest, writes the attempt record, and sets contract_attempt_id for the
+# migrator. Any failure restarts the incumbent: no migration has run yet.
+contract_psql() {
+  compose exec -T postgres psql -U "${POSTGRES_USER:-multica}" -d "${POSTGRES_DB:-multica}" -tA -v ON_ERROR_STOP=1 -c "$1" </dev/null
+}
+
+# contract_scalar returns one query answer; COPY output is streamed with
+# contract_psql, because command substitution would drop its trailing bytes.
+contract_scalar() {
+  local out
+  out="$(contract_psql "$1")" || return 1
+  printf '%s' "$out"
+}
+
+contract_fail() {
+  recover_incumbent "contract snapshot or attempt record failed (no migration ran): $1"
+}
+
+contract_snapshot_gate() {
+  local list version tables restore table present count rows columns copy entry
+  local -a absent_flag
+  local snapshots_dir attempts_dir attempt_dir entries versions_csv manifest_sha ledger_latest ledger_rows
+  local -A copied=()
+  contract_attempt_id=""
+  unset MULTICA_CONTRACT_ATTEMPT
+  list="$(node "$script_dir/contract-snapshot.mjs" list --packet "$packet")" || contract_fail "the packet's contract list is unreadable"
+  [ -n "$list" ] || return 0
+
+  while IFS=$'\t' read -r version tables restore; do
+    count="$(contract_scalar "SELECT count(*) FROM schema_migrations WHERE version = '$version'")" || contract_fail "cannot read the ledger for $version"
+    [[ "$count" =~ ^[0-9]+$ ]] || contract_fail "unreadable ledger answer for $version"
+    [ "$count" -eq 0 ] || recover_incumbent "contract migration $version already has a ledger row, so no snapshot can precede it (no migration ran)"
+    present="$(contract_scalar "SELECT to_regclass('schema_contracts') IS NOT NULL")" || contract_fail "cannot look up schema_contracts"
+    case "$present" in
+      t)
+        count="$(contract_scalar "SELECT count(*) FROM schema_contracts WHERE version = '$version'")" || contract_fail "cannot read schema_contracts for $version"
+        [[ "$count" =~ ^[0-9]+$ ]] || contract_fail "unreadable schema_contracts answer for $version"
+        [ "$count" -eq 0 ] || recover_incumbent "contract migration $version already has a schema_contracts row (no migration ran)"
+        ;;
+      f) ;;
+      *) contract_fail "unreadable schema_contracts lookup" ;;
+    esac
+  done <<<"$list"
+
+  contract_attempt_id="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  if ! [[ "$contract_attempt_id" =~ ^[0-9a-f]{32}$ ]]; then
+    contract_attempt_id=""
+    contract_fail "no attempt id from /dev/urandom"
+  fi
+  snapshots_dir="$state_dir/contract-snapshots"
+  attempts_dir="$state_dir/contract-attempts"
+  attempt_dir="$snapshots_dir/$contract_attempt_id"
+  (umask 077 && mkdir -p "$snapshots_dir" "$attempts_dir" && mkdir "$attempt_dir") || contract_fail "cannot create $attempt_dir"
+
+  entries=""
+  versions_csv=""
+  while IFS=$'\t' read -r version tables restore; do
+    versions_csv="${versions_csv:+$versions_csv,}$version"
+    for table in ${tables//,/ }; do
+      copy="$attempt_dir/$table.copy"
+      present="$(contract_scalar "SELECT to_regclass('$table') IS NOT NULL")" || contract_fail "cannot look up table $table"
+      case "$present" in t | f) ;; *) contract_fail "unreadable lookup for table $table" ;; esac
+      if [ "$present" = f ]; then
+        [ -n "${copied[$table]:-}" ] || (umask 077 && set -o noclobber && : >"$copy") || contract_fail "cannot create $copy"
+        rows=0
+        columns=""
+      else
+        [ -n "${copied[$table]:-}" ] || (umask 077 && set -o noclobber && contract_psql "COPY $table TO STDOUT" >"$copy") || contract_fail "COPY of $table failed"
+        rows="$(contract_scalar "SELECT count(*) FROM $table")" || contract_fail "cannot count the rows of $table"
+        [[ "$rows" =~ ^[0-9]+$ ]] || contract_fail "unreadable row count of $table"
+        columns="$(contract_scalar "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = '$table' ORDER BY ordinal_position")" ||
+          contract_fail "cannot read the columns of $table"
+      fi
+      copied[$table]=1
+      absent_flag=()
+      [ "$present" != f ] || absent_flag=(--absent)
+      entry="$(node "$script_dir/contract-snapshot.mjs" entry --version "$version" --table "$table" --rows "$rows" --copy "$copy" \
+        --columns-file /dev/stdin ${absent_flag[@]+"${absent_flag[@]}"} <<<"$columns")" || contract_fail "cannot describe the copy of $table"
+      entries+="$entry"$'\n'
+    done
+  done <<<"$list"
+  ledger_latest="$(current_ledger_version)" || contract_fail "cannot read the ledger version"
+  ledger_rows="$(contract_scalar "SELECT count(*) FROM schema_migrations")" || contract_fail "cannot count the ledger"
+  printf '%s' "$entries" | (umask 077 && node "$script_dir/contract-snapshot.mjs" manifest --out "$attempt_dir/manifest.json" \
+    --attempt-id "$contract_attempt_id" --source-sha "$source_sha" --taken-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --ledger-latest "$ledger_latest" --ledger-rows "$ledger_rows") || contract_fail "cannot write the manifest"
+  node "$script_dir/contract-snapshot.mjs" verify --manifest "$attempt_dir/manifest.json" || contract_fail "a copy does not match its manifest"
+  manifest_sha="sha256:$(sha256sum "$attempt_dir/manifest.json" | cut -d' ' -f1)"
+
+  (umask 077 && node "$script_dir/contract-snapshot.mjs" record --out "$attempts_dir/$contract_attempt_id.json.tmp" \
+    --attempt-id "$contract_attempt_id" --source-sha "$source_sha" --versions "$versions_csv" --snapshot-dir "$attempt_dir" \
+    --manifest-sha256 "$manifest_sha" --incumbent-image-id "$incumbent_backend_image_id" \
+    --incumbent-digest "${incumbent_backend_image##*@}" --candidate-digest "$backend_digest" \
+    --written-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)") || contract_fail "cannot write the attempt record"
+  # Flush only this attempt's files and directories; a host-wide sync can
+  # stall for minutes on a busy disk while the incumbent is down.
+  sync "$attempt_dir"/* "$attempt_dir" "$attempts_dir/$contract_attempt_id.json.tmp" || contract_fail "sync failed"
+  mv "$attempts_dir/$contract_attempt_id.json.tmp" "$attempts_dir/$contract_attempt_id.json" || contract_fail "cannot rename the attempt record"
+  sync "$attempts_dir" "$snapshots_dir" || contract_fail "sync failed"
+  echo "==> contract snapshot written: attempt $contract_attempt_id ($versions_csv)"
 }
 
 write_cutover_state() {
@@ -506,13 +710,15 @@ JSON
 # Docker calls) in a few seconds instead of waiting out the real 600s
 # production bound.
 lock_wait_seconds="${CUTOVER_LOCK_WAIT_SECONDS:-600}"
-exec 9>"$deploy_lock"
-if ! flock -w "$lock_wait_seconds" 9; then
+if [ "$command" != contract-check ]; then
+  exec 9>"$deploy_lock"
+fi
+if [ "$command" != contract-check ] && ! flock -w "$lock_wait_seconds" 9; then
   echo "could not acquire deploy lock within ${lock_wait_seconds}s — another deploy/cutover is running" >&2
   exit 1
 fi
 
-if [ "$command" != status ]; then
+if [ "$command" != status ] && [ "$command" != contract-check ]; then
   flags_overlay_prepare
   jev_overlay_prepare
 fi
@@ -526,6 +732,49 @@ case "$command" in
     fi
     echo "$colour"
     exit 0
+    ;;
+
+  contract-check)
+    if [ -n "$check_colour" ] && [ -n "$check_image" ] || [ -z "$check_colour$check_image" ]; then
+      echo "contract-check needs exactly one of --colour blue|green or --image REF" >&2
+      usage >&2
+      exit 2
+    fi
+    case "$check_colour" in blue | green | "") ;; *) echo "contract-check --colour must be blue or green" >&2; exit 2 ;; esac
+    if [ -n "$check_colour" ]; then
+      check_label="backend-${check_colour}"
+      check_cid="$(compose ps --all -q "$check_label" 2>/dev/null | head -1 || true)"
+      if [ -z "$check_cid" ]; then
+        echo "contract-check: no $check_label container, running or stopped, to read an image id from (uncertain)" >&2
+        exit 1
+      fi
+      check_image_id="$(docker inspect --format '{{.Image}}' "$check_cid" 2>/dev/null || true)"
+    else
+      check_label="$check_image"
+      check_image_id="$(docker image inspect --format '{{.Id}}' "$check_image" 2>/dev/null || true)"
+    fi
+    if [ -z "$check_image_id" ]; then
+      echo "contract-check: cannot resolve $check_label to an image id (uncertain)" >&2
+      exit 1
+    fi
+    if ! contract_applied_read; then
+      echo "contract-check: contract state unreadable: $contract_read_error (uncertain)" >&2
+      exit 1
+    fi
+    if [ -z "$contract_applied" ]; then
+      echo "contract-check: no contract migration applied; $check_label image $check_image_id needs no proof"
+      exit 0
+    fi
+    while IFS='|' read -r check_version check_attempt check_restore; do
+      echo "applied: $check_version (attempt ${check_attempt:-none}, restore $check_restore)"
+    done <<<"$contract_applied"
+    contract_proof_rc=0
+    contract_image_proof "$check_image_id" || contract_proof_rc=$?
+    case "$contract_proof_rc" in
+      0) echo "$check_label image $check_image_id: proven, it holds every applied contract migration"; exit 0 ;;
+      3) echo "$check_label image $check_image_id: refused, it does not hold every applied contract migration; $(contract_recovery_text)"; exit 3 ;;
+      *) echo "contract-check: the image proof on $check_image_id could not run (uncertain)" >&2; exit 1 ;;
+    esac
     ;;
 
   cutover)
@@ -551,7 +800,7 @@ case "$command" in
     # advisory document.
     echo "==> verifying release packet contract"
     if ! node "$script_dir/release-packet.mjs" verify --packet "$packet" --manifest "$manifest" \
-      --migrations-dir "$root_dir/server/migrations"; then
+      --migrations-dir "$root_dir/server/migrations" --repo-root "$root_dir"; then
       echo "!! release packet failed contract checks; refusing to cut over" >&2
       exit 1
     fi
@@ -654,14 +903,37 @@ case "$command" in
       sleep $((pull_attempt * 5))
       pull_attempt=$((pull_attempt + 1))
     done
-    if ! verify_pulled_digest "$backend_repo" "$image_tag" "$backend_digest"; then
+    if ! candidate_backend_id="$(verified_image_id "$backend_repo" "$image_tag" "$backend_digest")"; then
       echo "!! pulled backend image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
       exit 1
     fi
-    if ! verify_pulled_digest "$web_repo" "$image_tag" "$web_digest"; then
+    if ! candidate_web_id="$(verified_image_id "$web_repo" "$image_tag" "$web_digest")"; then
       echo "!! pulled web image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
       exit 1
     fi
+    echo "==> candidate image ids: backend $candidate_backend_id, web $candidate_web_id (digest-verified)"
+
+    # CHE-7486 N5b-1: a contract migration may already be applied (an earlier
+    # attempt, or an out-of-band run). The candidate image id must hold its
+    # migration file before anything drains, or the candidate would start on
+    # a schema its tree predates. An uncertain read refuses.
+    if ! contract_applied_read; then
+      echo "!! contract state unreadable ($contract_read_error); refusing to cut over; $from_colour remains active" >&2
+      exit 1
+    fi
+    contract_proof_rc=0
+    contract_image_proof "$candidate_backend_id" || contract_proof_rc=$?
+    case "$contract_proof_rc" in
+      0) ;;
+      3)
+        echo "!! candidate backend image $candidate_backend_id does not hold contract migration $(contract_applied_versions) (attempt $(contract_applied_attempts)); $from_colour remains active; $(contract_recovery_text)" >&2
+        exit 1
+        ;;
+      *)
+        echo "!! contract state unreadable (the image proof on candidate $candidate_backend_id could not run); refusing to cut over; $from_colour remains active" >&2
+        exit 1
+        ;;
+    esac
 
     # The release packet's OWN minimum_rollback_version is the rollback
     # compatibility anchor for THIS cutover — not a value cutover.sh derives
@@ -744,12 +1016,14 @@ case "$command" in
       recover_incumbent "quiescence final-gate denied cutover after draining $from_colour (no migration ran)"
     fi
 
+    contract_snapshot_gate
+
     # Run the standalone migrator exactly once, from the candidate image,
     # against the inactive colour's (stopped) service identity — never the
     # currently-serving colour's, so the one-shot container's --no-deps
     # never risks touching a live serving container's dependency graph.
     echo "==> running migration step (one-shot, candidate image, before candidate starts)"
-    if ! run_migration_step "$backend_repo" "$image_tag" up; then
+    if ! MULTICA_CONTRACT_ATTEMPT="$contract_attempt_id" run_migration_step "$backend_repo" "$image_tag" up; then
       # No automatic recovery here: a failed migration can leave DDL the
       # ledger does not record, so ledger proof cannot establish that
       # $from_colour is compatible with the schema actually in place.
@@ -770,8 +1044,8 @@ case "$command" in
 
     # The candidate's RUNNING containers must be the digest-verified images,
     # not a stale container Compose chose to keep.
-    if ! runs_verified_image "backend-${to_colour}" "${backend_repo}:${image_tag}" ||
-      ! runs_verified_image "frontend-${to_colour}" "${web_repo}:${image_tag}"; then
+    if ! runs_verified_image "backend-${to_colour}" "$candidate_backend_id" ||
+      ! runs_verified_image "frontend-${to_colour}" "$candidate_web_id"; then
       recover_incumbent "candidate colour=$to_colour is not running the manifest-verified images"
     fi
 
@@ -863,6 +1137,10 @@ case "$command" in
     incumbent_web_image_id="$(container_image_id "frontend-${from_colour}" || true)"
     incumbent_ledger="$(current_ledger_version || true)"
 
+    # CHE-7486 N5b-2: with a contract applied, prove the exact stopped
+    # containers first. Refuses (exit 3) before anything is drained.
+    rollback_contract_binding
+
     # Drain and stop the failing candidate BEFORE the strict quiescence
     # final-gate runs — same root cause and same fix as the `cutover)`
     # branch above (CHE-655): $from_colour is the failing candidate here,
@@ -925,7 +1203,22 @@ case "$command" in
 
     backend_port="$(slot_port backend "$to_colour")"
     echo "==> starting retained predecessor colour=$to_colour without migrations"
-    if ! MULTICA_SKIP_MIGRATIONS=1 compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
+    if [ "$rollback_bound" -eq 1 ]; then
+      # A contract is applied: start the proven stopped containers themselves.
+      # `compose up` could recreate them from a re-pointed tag.
+      if ! compose start "backend-${to_colour}" "frontend-${to_colour}"; then
+        echo "!! failed to start retained predecessor colour=$to_colour — MANUAL INTERVENTION REQUIRED" >&2
+        exit 1
+      fi
+      started_backend_id="$(container_image_id "backend-${to_colour}" || true)"
+      started_web_id="$(container_image_id "frontend-${to_colour}" || true)"
+      if [ "$started_backend_id" != "$rollback_proven_backend_id" ] || [ "$started_web_id" != "$rollback_proven_web_id" ]; then
+        rollback_stop_note="stopped again"
+        stop_confirmed "backend-${to_colour}" "frontend-${to_colour}" || rollback_stop_note="stopping them again was NOT confirmed"
+        alert_outage "rollback started an image other than the proven one (backend ${started_backend_id:-<none>} want $rollback_proven_backend_id, frontend ${started_web_id:-<none>} want $rollback_proven_web_id); $rollback_stop_note"
+        exit 1
+      fi
+    elif ! MULTICA_SKIP_MIGRATIONS=1 compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
       echo "!! failed to start retained predecessor colour=$to_colour — MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi

@@ -332,6 +332,7 @@ bash deploy/cd/test-deploy.sh
 bash deploy/cd/test-router.sh
 bash deploy/cd/test-release-packet.sh
 bash deploy/cd/test-cutover.sh
+bash deploy/cd/test-contract-snapshot.sh
 bash deploy/cd/test-artifact-controller.sh
 node --test deploy/cd/drift-receipt.test.mjs
 (cd server && go test ./internal/dbstartup/...)
@@ -613,7 +614,11 @@ assuming `deploy/cd/router/state`).
    ledger, or sits at or after `minimum_rollback_version` in
    `cutover-state.json` and no migration failed partway. If a migration
    failed, or you cannot tell, stop and escalate. Down migrations and
-   backup restores need separate authorization.
+   backup restores need separate authorization. When a contract migration is
+   applied, the colour you start must also hold its migration file: run
+   `bash deploy/cd/cutover.sh contract-check --compose-dir "$C00_COMPOSE_DIR" --state-dir <state-dir> --colour <colour>`
+   and continue only when it exits 0 (3: refused, 1: uncertain; both mean do
+   not start the colour, see "Contract migration recovery").
 4. Restart the router-selected colour's own containers with
    `docker compose "${ab[@]}" start backend-<colour> frontend-<colour>`. This
    reuses the stopped containers, so the image does not change.
@@ -640,6 +645,133 @@ nonzero, failing the cutover (incumbent recovery), when any of these differ:
 - the candidate containers' env key names vs the released compose render plus
   the image's own env (names only, never values);
 - the candidate containers' image digests vs the manifest.
+
+### Contract migrations
+
+A contract migration is an up file whose first line is
+
+```
+-- multica:contract snapshot=<table>[,<table>] restore=<repo path>
+```
+
+`snapshot` lists the tables the migration changes destructively. `restore` is
+a repo-relative SQL file that puts them back.
+
+- **Packet.** `release-packet.mjs create` adds
+  `contract_migrations: [{version, snapshot_tables, restore}]` for every marked
+  up file with no ledger row, in runner order. `verify` recomputes the list
+  and fails on any difference. The packet tool does not check that the
+  `restore` file exists yet (deferred to B3c-1). The cutover bundle carries
+  each restore file that exists in the tree at the same relative path and
+  verifies with `--repo-root <bundle>`. A declared restore file that is not in
+  the tree yet is not copied: the build logs
+  `restore file not in tree, bundle built without it` and still succeeds. The
+  requirement that every declared file exists returns in B3c-1.
+- **Gate.** `cutover.sh cutover` runs the gate after the quiescence
+  final-gate and before the migrator. No contract migration: nothing happens
+  and `MULTICA_CONTRACT_ATTEMPT` stays unset.
+  1. Every contract version must have no `schema_migrations` row and no
+     `schema_contracts` row. Otherwise `recover_incumbent`.
+  2. Each table is streamed with `COPY <table> TO STDOUT` into
+     `<state-dir>/contract-snapshots/<attempt_id>/<table>.copy`. The directory
+     is 0700, files are 0600, nothing is overwritten. A missing table is
+     recorded as `rows: 0, absent: true`.
+  3. `manifest.json` records `attempt_id, source_sha, taken_at, ledger`, and per
+     table `contract_version, columns, rows, sha256`. The gate re-reads every
+     copy: the line count must equal `rows` and a fresh SHA-256 must equal the
+     manifest's.
+  4. The attempt record `<state-dir>/contract-attempts/<attempt_id>.json`
+     holds `attempt_id, source_sha, contract_versions, snapshot_dir`, the
+     manifest SHA-256, the incumbent backend image id and digest, the
+     candidate backend digest and `written_at`. It is written to a temporary
+     file, synced, renamed, then the directory is synced. Mode 0600.
+  5. The migrator runs with `MULTICA_CONTRACT_ATTEMPT=<attempt_id>`.
+- **Failure.** Any failure in steps 1 to 4 calls `recover_incumbent` with
+  `contract snapshot or attempt record failed (no migration ran)`: the
+  migrator never starts and the incumbent restarts.
+- **Attempts.** Each attempt gets a new random id, directory and record. An
+  earlier attempt's files are never touched.
+- **Restore.** Not performed here. The attempt record is the pointer a restore
+  procedure starts from.
+
+`COPY` text format escapes tab, newline, carriage return and backslash, so one
+row is one line. `test-contract-snapshot.sh` round-trips those characters and
+non-ASCII text through a throwaway Postgres (skipped without Docker).
+
+### Contract migration guard (CHE-7486 N5b-1)
+
+While a contract migration is applied, `cutover` and its incumbent recovery
+never start a backend image whose tree predates it, and `cutover-state.json`
+is never consulted. `rollback` makes its own proof (CHE-7486 N5b-2, below).
+`contract-lib.sh` (sourced by `cutover.sh`, carried in the cutover bundle and
+its bundle check) makes two reads, and an uncertain read refuses.
+
+- **Applied set.** The `schema_contracts` rows (`version`, `attempt_id`,
+  `restore`), read with `psql -v ON_ERROR_STOP=1`, newest version first. The
+  read is uncertain when `psql` fails, the ledger cannot be read, an attempt
+  record under `<state-dir>/contract-attempts/` cannot be read, or an attempt
+  record lists a version that has a `schema_migrations` row but no
+  `schema_contracts` row. A missing `schema_contracts` table is an empty set
+  only when no attempt record lists a version with a ledger row.
+- **Image proof.** Made on an image id, never a tag:
+  `docker run --rm --network none --entrypoint /bin/sh <image id> -c 'for v; do test -f "/app/migrations/$v.up.sql" || exit 10; done' sh <versions>`.
+  Exit 0 is proven, 10 is refused (a file is missing), anything else is
+  uncertain. With an empty applied set no container runs.
+- **`cutover`.** After the candidate's digest check and before the drain, the
+  candidate backend image id is proven. Refused or uncertain: exit 1, no
+  drain, the incumbent keeps serving.
+- **`recover_incumbent`.** After the candidate is stopped and before
+  `compose start`, the applied set is read again and the pre-drain incumbent
+  backend image id is proven. Refused or uncertain: `alert_outage` names the
+  versions, the attempt ids and both recovery routes, nothing is restarted, and
+  both colours stay stopped.
+- **`contract-check`.** `cutover.sh contract-check --compose-dir PATH --state-dir PATH (--colour blue|green | --image REF)`
+  takes no lock and changes nothing. It resolves the colour's backend
+  container (running or stopped, `ps -a`) or the reference to an image id,
+  prints the applied set with attempt ids and restore paths, the image id and
+  the proof result. Exit 0 proven or none applied, 3 refused, 1 uncertain.
+
+#### Rollback with a contract applied (CHE-7486 N5b-2)
+
+With a contract applied, `rollback` starts only the exact stopped
+`backend-<to>` and `frontend-<to>` containers whose image it proved. Before the
+drain it reads the applied set, resolves exactly one stopped container per
+service (`compose ps --all -q`) and its image id, proves the backend image id
+holds every applied migration file, and checks that each service's pinned
+reference (`compose config` under the caller's `MULTICA_BACKEND_IMAGE`,
+`MULTICA_WEB_IMAGE`, `MULTICA_IMAGE_TAG`) resolves to that container's image
+id. Any failure exits 3 with `rollback refused: <reason>` and nothing is
+stopped, started or created. It then runs `compose start` on those containers
+(never `compose up`) and checks each started image id against the proven one;
+a mismatch stops both again, raises the outage alert and exits 1.
+`rollback-failed-readback.sh` turns exit 3 into a failed job with an
+`::error title=C00 rollback refused::` annotation. With no contract applied
+the path is unchanged.
+
+### Contract migration recovery
+
+Use this when the alert or `contract-check` says a contract migration is
+applied and the image you would start does not hold it. Do not start that
+image. Read the applied set first: `cutover.sh contract-check --colour <colour>`
+prints every applied version with its attempt id, newest version first.
+
+- **Route 1: roll forward.** A manual `cd-deploy` dispatch with
+  `cutover_mode: recover-forward` and a candidate that holds every applied
+  version. It needs no backup restore.
+- **Route 2: restore.** Only with the authorization Q1 of the CHE-7278 plan
+  names. Both colours stopped.
+  1. Run the quiescence final-gate.
+  2. Find the snapshot by the attempt id: `<state-dir>/contract-snapshots/<attempt_id>`.
+     Check its files against the SHA-256 values in its `manifest.json`.
+  3. For each version in the applied set that `contract-check` prints, newest
+     version first, run the restore its contract line names, with the attempt
+     id from that version's `schema_contracts` row. Run no restore for a
+     version that is not in the set. Each restore refuses when its version is
+     not applied under that attempt. Examples: S1 and X applied, run R, then
+     S2; S1 only, run S2 only.
+  4. Confirm `cutover.sh contract-check --colour <previous>` exits 0.
+  5. Restart the incumbent by the outage runbook (after a failed cutover), or
+     run `cutover.sh rollback` (after a completed cutover).
 
 ### What this unit does NOT cover
 

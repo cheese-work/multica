@@ -10,6 +10,8 @@ for path in \
   docker-compose.selfhost.yml \
   deploy/cd/drift-receipt.mjs \
   deploy/cd/cutover.sh \
+  deploy/cd/contract-lib.sh \
+  deploy/cd/contract-snapshot.mjs \
   deploy/cd/release-packet.mjs \
   deploy/cd/migration-inventory.mjs \
   server/migrations; do
@@ -29,4 +31,5 @@ fi
 node "$bundle_root/deploy/cd/release-packet.mjs" verify \
   --packet "$bundle_root/evidence/release-packet.json" \
   --manifest "$bundle_root/evidence/manifest.json" \
-  --migrations-dir "$bundle_root/server/migrations" >/dev/null
+  --migrations-dir "$bundle_root/server/migrations" \
+  --repo-root "$bundle_root" >/dev/null
