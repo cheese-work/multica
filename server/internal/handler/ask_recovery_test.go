@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -231,5 +232,48 @@ func TestAskRecoveryAnswerAndAccessAfterDelivery(t *testing.T) {
 	}
 	if state() != "delivered" {
 		t.Fatalf("a refused reply changed the state to %s", state())
+	}
+}
+
+// laterEdit writes the open block event that a refused comment edit leaves
+// after the run already asked the member, with the source the notice would quote.
+func laterEdit(t *testing.T, issueID, taskID, member string) string {
+	t.Helper()
+	id := dbid.NewV7()
+	dbfx.Exec(t, `INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, member_id, source_text) VALUES ($1, $2, $3, $4, 'comment_edit', $5, 'block', $6, 'Edited Discovery note that asks the member.')`,
+		id, testWorkspaceID, issueID, taskID, uuid.NewString(), member)
+	dbfx.Cleanup(t, `DELETE FROM ask_recovery_notice WHERE event_id = $1`, id)
+	dbfx.Cleanup(t, `DELETE FROM ask_guard_event WHERE id = $1`, id)
+	return uuidToString(id)
+}
+
+// TestAskRecoverySkipsAnEventOfAnAskThatAlreadyReached: the run asked the member
+// with a decision request, then a guarded edit of its own comment was refused.
+// The event opened after the request, so the request did not serve it; recovery
+// must not repost an ask the member already has. An event for a member the run
+// never asked still gets its notice.
+func TestAskRecoverySkipsAnEventOfAnAskThatAlreadyReached(t *testing.T) {
+	setAskGuardMode(t, "block")
+	fixture := newSingleCallFixture(t)
+	other := dbfx.User(t, "Other human", "recovery-late-"+uuid.NewString()+"@test.invalid")
+	dbfx.Insert(t, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": other, "role": "member"})
+	testutil.Call(t, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated)
+	asked := laterEdit(t, fixture.issueID, fixture.taskID, fixture.humanID)
+	notAsked := laterEdit(t, fixture.issueID, fixture.taskID, other)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+
+	deliverRecoveries(t)
+
+	if n := dbfx.Count(t, `SELECT count(*) FROM ask_recovery_notice WHERE event_id = $1`, asked); n != 0 {
+		t.Fatalf("recovery notices for the asked member = %d, want 0", n)
+	}
+	if n := noticeInbox(t, fixture.humanID, fixture.issueID); n != 0 {
+		t.Fatalf("recovery inbox items for the asked member = %d, want 0", n)
+	}
+	if !eventCleared(t, asked) {
+		t.Fatal("the event of the delivered ask stays open")
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM ask_recovery_notice WHERE event_id = $1 AND state = 'delivered'`, notAsked); n != 1 {
+		t.Fatalf("recovery notices for the member the run never asked = %d, want 1", n)
 	}
 }
