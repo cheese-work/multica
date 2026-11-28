@@ -3940,6 +3940,11 @@ type TaskCancellationActor struct {
 	Name string
 }
 
+// FailureReasonCancelled names an automatic server cancellation whose caller
+// supplied no reason. The web client already renders it as "Cancelled by the
+// system". User-initiated cancellations keep an empty reason by design.
+const FailureReasonCancelled = "cancelled"
+
 // CancelTaskOptions carries what the caller knows about the client that asked
 // for the cancellation.
 type CancelTaskOptions struct {
@@ -4115,7 +4120,12 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 					FailureReason: pgtype.Text{String: opts.FailureReason, Valid: opts.FailureReason != ""},
 				})
 			} else {
-				cancelled, err = qtx.CancelAgentTask(ctx, taskID)
+				// An automatic cancel that names no reason would persist an empty
+				// failure_reason, which run telemetry counts as "unknown" (CHE-9045).
+				cancelled, err = qtx.CancelAgentTaskWithReason(ctx, db.CancelAgentTaskWithReasonParams{
+					ID:            taskID,
+					FailureReason: pgtype.Text{String: FailureReasonCancelled, Valid: true},
+				})
 			}
 			if err != nil {
 				return err
