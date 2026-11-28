@@ -702,8 +702,7 @@ non-ASCII text through a throwaway Postgres (skipped without Docker).
 
 While a contract migration is applied, `cutover` and its incumbent recovery
 never start a backend image whose tree predates it, and `cutover-state.json`
-is never consulted. `rollback` makes no proof of its own: run `contract-check`
-before it.
+is never consulted. `rollback` makes its own proof (CHE-7486 N5b-2, below).
 `contract-lib.sh` (sourced by `cutover.sh`, carried in the cutover bundle and
 its bundle check) makes two reads, and an uncertain read refuses.
 
@@ -731,6 +730,23 @@ its bundle check) makes two reads, and an uncertain read refuses.
   container (running or stopped, `ps -a`) or the reference to an image id,
   prints the applied set with attempt ids and restore paths, the image id and
   the proof result. Exit 0 proven or none applied, 3 refused, 1 uncertain.
+
+#### Rollback with a contract applied (CHE-7486 N5b-2)
+
+With a contract applied, `rollback` starts only the exact stopped
+`backend-<to>` and `frontend-<to>` containers whose image it proved. Before the
+drain it reads the applied set, resolves exactly one stopped container per
+service (`compose ps --all -q`) and its image id, proves the backend image id
+holds every applied migration file, and checks that each service's pinned
+reference (`compose config` under the caller's `MULTICA_BACKEND_IMAGE`,
+`MULTICA_WEB_IMAGE`, `MULTICA_IMAGE_TAG`) resolves to that container's image
+id. Any failure exits 3 with `rollback refused: <reason>` and nothing is
+stopped, started or created. It then runs `compose start` on those containers
+(never `compose up`) and checks each started image id against the proven one;
+a mismatch stops both again, raises the outage alert and exits 1.
+`rollback-failed-readback.sh` turns exit 3 into a failed job with an
+`::error title=C00 rollback refused::` annotation. With no contract applied
+the path is unchanged.
 
 ### Contract migration recovery
 

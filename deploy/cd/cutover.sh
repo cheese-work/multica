@@ -45,6 +45,9 @@ Commands:
       CURRENT schema, start it without migrations, restore its router
       generation. Never runs a down migration or restores from backup —
       that is the separately authorized recovery path.
+      With a contract migration applied, first proves the exact stopped
+      containers (image holds the migration, pinned reference matches) and
+      starts them with `compose start`; any doubt exits 3, before the drain.
 
   contract-check --compose-dir PATH --state-dir PATH (--colour blue|green | --image REF)
       Read-only. Read the applied contract migrations from the database and
@@ -510,6 +513,70 @@ recover_incumbent() {
   fi
   echo "!! RECOVERED: cutover to $to_colour failed ($reason); $from_colour restarted (image $incumbent_backend_image, commit $incumbent_commit, ledger $ledger) and the public route reads back healthy. Cutover state unchanged; investigate before retrying." >&2
   exit 1
+}
+
+# rollback_contract_binding (CHE-7486 N5b-2): with a contract migration
+# applied, `rollback` starts only the exact stopped containers whose image id
+# it has proven, never what a tag or the state file names. Runs BEFORE the
+# drain; every doubt is exit 3 "rollback refused: <reason>" with nothing
+# stopped, started or created. Sets rollback_bound=1 and the proven ids when a
+# contract is applied; with none applied it changes nothing (today's path).
+#   1. read the applied set (N5b-1); unreadable refuses
+#   2. exactly one stopped backend-<to> and frontend-<to> container each, and
+#      the image id each was created from
+#   3. the backend image id holds every applied migration file
+#   4. the pinned reference (`compose config` under the caller's
+#      MULTICA_BACKEND_IMAGE / MULTICA_WEB_IMAGE / MULTICA_IMAGE_TAG) of each
+#      service resolves to that container's own image id
+rollback_refuse() {
+  echo "rollback refused: $1" >&2
+  exit 3
+}
+
+rollback_bound=0
+rollback_proven_backend_id=""
+rollback_proven_web_id=""
+rollback_contract_binding() {
+  local service cids count cid image_id reference config resolved proof_rc=0
+  rollback_bound=0
+  contract_applied_read || rollback_refuse "contract state unreadable ($contract_read_error)"
+  [ -n "$contract_applied" ] || return 0
+
+  for service in backend frontend; do
+    cids="$(compose ps --all -q "${service}-${to_colour}" 2>/dev/null)" || rollback_refuse "cannot list the ${service}-${to_colour} containers"
+    count="$(printf '%s' "$cids" | grep -c . || true)"
+    if [ "$count" -eq 0 ]; then
+      rollback_refuse "${service}-${to_colour} has no stopped container (want exactly one)"
+    elif [ "$count" -ne 1 ]; then
+      rollback_refuse "${service}-${to_colour} has $count containers (want exactly one)"
+    fi
+    cid="$cids"
+    image_id="$(docker inspect --format '{{.Image}}' "$cid" 2>/dev/null | tr -d '[:space:]')" || image_id=""
+    [ -n "$image_id" ] || rollback_refuse "cannot read the image id of the ${service}-${to_colour} container"
+    if [ "$service" = backend ]; then rollback_proven_backend_id="$image_id"; else rollback_proven_web_id="$image_id"; fi
+  done
+
+  contract_image_proof "$rollback_proven_backend_id" || proof_rc=$?
+  case "$proof_rc" in
+    0) ;;
+    3) rollback_refuse "backend-${to_colour} image $rollback_proven_backend_id does not hold contract migration $(contract_applied_versions) (attempt $(contract_applied_attempts)); $(contract_recovery_text)" ;;
+    *) rollback_refuse "contract state unreadable (the image proof on $rollback_proven_backend_id could not run)" ;;
+  esac
+
+  config="$(compose config --format json 2>/dev/null)" || rollback_refuse "cannot render the pinned references (docker compose config failed)"
+  for service in backend frontend; do
+    reference="$(printf '%s' "$config" | node -e '
+      const c = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+      const image = c.services?.[process.argv[1]]?.image;
+      if (typeof image !== "string" || image === "") process.exit(1);
+      process.stdout.write(image);
+    ' "${service}-${to_colour}" 2>/dev/null)" || rollback_refuse "cannot read the pinned reference of ${service}-${to_colour}"
+    resolved="$(docker image inspect --format '{{.Id}}' "$reference" 2>/dev/null | tr -d '[:space:]')" || resolved=""
+    if [ "$service" = backend ]; then image_id="$rollback_proven_backend_id"; else image_id="$rollback_proven_web_id"; fi
+    [ "$resolved" = "$image_id" ] ||
+      rollback_refuse "${service}-${to_colour} pinned reference $reference resolves to ${resolved:-<nothing>}, but the stopped container holds $image_id"
+  done
+  rollback_bound=1
 }
 
 # Contract snapshot gate (CHE-7486 N5a). Runs after the quiescence final-gate
@@ -1070,6 +1137,10 @@ case "$command" in
     incumbent_web_image_id="$(container_image_id "frontend-${from_colour}" || true)"
     incumbent_ledger="$(current_ledger_version || true)"
 
+    # CHE-7486 N5b-2: with a contract applied, prove the exact stopped
+    # containers first. Refuses (exit 3) before anything is drained.
+    rollback_contract_binding
+
     # Drain and stop the failing candidate BEFORE the strict quiescence
     # final-gate runs — same root cause and same fix as the `cutover)`
     # branch above (CHE-655): $from_colour is the failing candidate here,
@@ -1132,7 +1203,22 @@ case "$command" in
 
     backend_port="$(slot_port backend "$to_colour")"
     echo "==> starting retained predecessor colour=$to_colour without migrations"
-    if ! MULTICA_SKIP_MIGRATIONS=1 compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
+    if [ "$rollback_bound" -eq 1 ]; then
+      # A contract is applied: start the proven stopped containers themselves.
+      # `compose up` could recreate them from a re-pointed tag.
+      if ! compose start "backend-${to_colour}" "frontend-${to_colour}"; then
+        echo "!! failed to start retained predecessor colour=$to_colour — MANUAL INTERVENTION REQUIRED" >&2
+        exit 1
+      fi
+      started_backend_id="$(container_image_id "backend-${to_colour}" || true)"
+      started_web_id="$(container_image_id "frontend-${to_colour}" || true)"
+      if [ "$started_backend_id" != "$rollback_proven_backend_id" ] || [ "$started_web_id" != "$rollback_proven_web_id" ]; then
+        rollback_stop_note="stopped again"
+        stop_confirmed "backend-${to_colour}" "frontend-${to_colour}" || rollback_stop_note="stopping them again was NOT confirmed"
+        alert_outage "rollback started an image other than the proven one (backend ${started_backend_id:-<none>} want $rollback_proven_backend_id, frontend ${started_web_id:-<none>} want $rollback_proven_web_id); $rollback_stop_note"
+        exit 1
+      fi
+    elif ! MULTICA_SKIP_MIGRATIONS=1 compose up -d --no-deps "backend-${to_colour}" "frontend-${to_colour}"; then
       echo "!! failed to start retained predecessor colour=$to_colour — MANUAL INTERVENTION REQUIRED" >&2
       exit 1
     fi

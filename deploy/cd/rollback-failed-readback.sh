@@ -9,6 +9,9 @@
 # migrations, restore its router generation. Never a down migration or restore.
 # Skips, with exit 0, when C00 no longer runs SOURCE_SHA: a newer deploy owns it.
 # Fails, without rolling back, when the live commit cannot be identified.
+# Exit 3 from the controller means it refused the rollback before it drained or
+# started anything (a contract migration is applied and the predecessor is not
+# proven): the job fails with an `::error title=C00 rollback refused::` annotation.
 # Pins the retained predecessor's own image (repo and tag, read from its
 # containers) after .env is sourced, so Compose never recreates it from a stale
 # .env tag (CHE-4665). Fails, without rolling back, when that image is unknown.
@@ -60,13 +63,24 @@ pins="export MULTICA_BACKEND_IMAGE='${backend_ref%:*}' MULTICA_WEB_IMAGE='${web_
 
 echo "::warning title=C00 rollback::readback of ${sha} failed; rolling back to the retained predecessor."
 controller="$(cd deploy/cd && pwd)/cutover.sh"
+# The controller's stderr is kept so exit 3 (CHE-7486 N5b-2: the controller
+# refused before it drained or started anything) can be annotated with its reason.
+errlog="$(mktemp)"
+live="$(mktemp)"
+trap 'rm -f "$live" "$errlog"' EXIT
+rc=0
 bash deploy/cd/render-cutover-remote-script.sh \
   --router-state-dir "$router_state_dir" \
   -- bash -c "cd '$C00_COMPOSE_DIR' && . ./.env && $pins && export CUTOVER_DATABASE_URL=\"postgres://\${POSTGRES_USER:-multica}:\${POSTGRES_PASSWORD:-multica}@postgres:5432/\${POSTGRES_DB:-multica}?sslmode=disable\" && bash '$controller' rollback --compose-dir '$C00_COMPOSE_DIR' --state-dir '$C00_CUTOVER_STATE_DIR'" \
-  | env -i HOME="$HOME" PATH="$PATH" bash -s
+  | env -i HOME="$HOME" PATH="$PATH" bash -s 2>"$errlog" || rc=$?
+cat "$errlog" >&2
+if [ "$rc" -eq 3 ]; then
+  reason="$(sed -n 's/^rollback refused: //p' "$errlog" | head -n 1)"
+  echo "::error title=C00 rollback refused::${reason:-the controller refused the rollback; see the log above}" >&2
+  exit 3
+fi
+[ "$rc" -eq 0 ] || exit "$rc"
 
-live="$(mktemp)"
-trap 'rm -f "$live"' EXIT
 bash deploy/cd/ab-health-check.sh --router-state-dir "$router_state_dir" --cutover-state-dir "$C00_CUTOVER_STATE_DIR" --window 60
 bash deploy/cd/capture-remote-baseline.sh "$live"
 echo "C00 rolled back from ${sha}; now running $(node -e 'process.stdout.write(String(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).application_sha))' "$live")."
