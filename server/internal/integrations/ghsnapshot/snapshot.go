@@ -91,7 +91,11 @@ const (
 type restPullRequest struct {
 	State string `json:"state"`
 	Head  struct {
-		SHA string `json:"sha"`
+		SHA  string `json:"sha"`
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -204,7 +208,7 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 		}
 		seenRuns[run.ID] = struct{}{}
 	}
-	superseded, triggers, err := fetchSupersededSuites(ctx, c, installationID, base, snap.HeadSHA, runs)
+	superseded, triggers, err := fetchSupersededSuites(ctx, c, installationID, base, snap.HeadSHA, pr.Head.Ref, pr.Head.Repo.FullName, runs)
 	if err != nil {
 		return nil, err
 	}
@@ -305,7 +309,9 @@ const actionsAppSlug = "github-actions"
 // run of the same workflow for the same event exists on this head. That newer
 // run must already have check runs in this snapshot, and must be finished or
 // still have one running, so the rollup reads PENDING rather than passing
-// before the replacement has reported. A failed run is never dropped here;
+// before the replacement has reported. A suite from another branch or
+// repository than the PR head is dropped as another PR's. A failed run of this
+// PR is never dropped here;
 // the second result names the workflow and event of every suite, so a failed
 // check that a newer run of the same workflow re-reported under its name
 // stops counting, and one the newer run did not re-report keeps failing.
@@ -326,7 +332,7 @@ type workflowTrigger struct {
 	repo     string
 }
 
-func fetchSupersededSuites(ctx context.Context, c *Client, installationID int64, base, headSHA string, runs []restCheckRun) (map[int64]struct{}, map[int64]workflowTrigger, error) {
+func fetchSupersededSuites(ctx context.Context, c *Client, installationID int64, base, headSHA, headRef, headRepo string, runs []restCheckRun) (map[int64]struct{}, map[int64]workflowTrigger, error) {
 	shown := make(map[int64]struct{})
 	running := make(map[int64]struct{})
 	failing := false
@@ -379,6 +385,16 @@ func fetchSupersededSuites(ctx context.Context, c *Client, installationID int64,
 			continue
 		}
 		superseded[wr.CheckSuiteID] = struct{}{}
+	}
+	// Another pull request can share this head commit. A workflow run that
+	// names a different source branch or repository than this PR's head
+	// belongs to that other PR, so its checks are not this PR's evidence.
+	// A run, or a PR, that names no branch or repository is kept.
+	for _, wr := range workflowRuns {
+		if (headRef != "" && wr.HeadBranch != "" && wr.HeadBranch != headRef) ||
+			(headRepo != "" && wr.HeadRepo.FullName != "" && !strings.EqualFold(wr.HeadRepo.FullName, headRepo)) {
+			superseded[wr.CheckSuiteID] = struct{}{}
+		}
 	}
 	return superseded, triggers, nil
 }

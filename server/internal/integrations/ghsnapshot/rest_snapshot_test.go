@@ -461,6 +461,7 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 		wantNames    []string
 		wantFetch    bool
 		wantErr      bool
+		headRef      string
 	}{
 		{
 			name: "cancelled run replaced by a green run of the same workflow",
@@ -596,8 +597,9 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 			want: "FAILURE", wantNames: []string{"close-target", "lint"}, wantFetch: true,
 		},
 		{
-			// Two pull requests can share a head commit; their runs differ in branch.
-			name: "failed run of another branch on the same head",
+			// Two pull requests can share a head commit; each judges only the
+			// runs of its own branch.
+			name: "failed run of another PR's branch on the same head",
 			runs: []map[string]any{
 				inRun(done(1, 10, "close-target", "failure"), 100), inRun(done(2, 20, "close-target", "success"), 200),
 			},
@@ -605,7 +607,32 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 				onBranch(workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"), "agent/one"),
 				onBranch(workflowRun(200, ci, "pull_request_target", 20, "completed", "success"), "agent/two"),
 			},
-			want: "FAILURE", wantNames: []string{"close-target", "close-target"}, wantFetch: true,
+			headRef: "agent/two",
+			want:    "SUCCESS", wantNames: []string{"close-target"}, wantFetch: true,
+		},
+		{
+			name: "failure of the PR's own branch stays when another branch passed",
+			runs: []map[string]any{
+				inRun(done(1, 10, "close-target", "failure"), 100), inRun(done(2, 20, "close-target", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				onBranch(workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"), "agent/one"),
+				onBranch(workflowRun(200, ci, "pull_request_target", 20, "completed", "success"), "agent/two"),
+			},
+			headRef: "agent/one",
+			want:    "FAILURE", wantNames: []string{"close-target"}, wantFetch: true,
+		},
+		{
+			name: "unknown provenance keeps the failure",
+			runs: []map[string]any{
+				inRun(done(1, 10, "close-target", "failure"), 100), inRun(done(2, 20, "close-target", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"),
+				onBranch(workflowRun(200, ci, "pull_request_target", 20, "completed", "success"), "agent/two"),
+			},
+			headRef: "agent/two",
+			want:    "FAILURE", wantNames: []string{"close-target", "close-target"}, wantFetch: true,
 		},
 		{
 			name: "newest run cancelled",
@@ -659,7 +686,15 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 			srv := snapshotServerWithPermissions(t, permissions, func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/repos/o/r/pulls/5":
-					writeTestPR(w, "sha1", true, "clean")
+					if tc.headRef == "" {
+						writeTestPR(w, "sha1", true, "clean")
+						break
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"head":      map[string]any{"sha": "sha1", "ref": tc.headRef, "repo": map[string]any{"full_name": "o/r"}},
+						"base":      map[string]any{"ref": "main", "sha": "base-tip"},
+						"mergeable": true, "mergeable_state": "clean",
+					})
 				case "/repos/o/r/commits/sha1/check-runs":
 					_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(tc.runs), "check_runs": tc.runs})
 				case "/repos/o/r/commits/sha1/status":
