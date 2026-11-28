@@ -436,6 +436,14 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 		r["details_url"] = fmt.Sprintf("https://github.com/o/r/actions/runs/%d/job/1", run)
 		return r
 	}
+	startedAt := func(r map[string]any, at string) map[string]any {
+		r["started_at"] = at
+		return r
+	}
+	onBranch := func(r map[string]any, branch string) map[string]any {
+		r["head_branch"] = branch
+		return r
+	}
 	const ci, docs = 1, 2
 	// The case from #9830: run 1 is cancelled and its always() gate fails,
 	// run 2 of the same workflow passes.
@@ -572,6 +580,32 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 				workflowRun(200, docs, "pull_request", 20, "completed", "success"),
 			},
 			want: "FAILURE", wantNames: []string{"test", "test"}, wantFetch: true,
+		},
+		{
+			// A job of the older workflow run can start after the newer run's.
+			name: "newer workflow run decides over a later job start",
+			runs: []map[string]any{
+				startedAt(inRun(done(1, 10, "close-target", "success"), 100), "2026-01-01T00:00:09Z"),
+				startedAt(inRun(done(2, 10, "lint", "success"), 100), "2026-01-01T00:00:01Z"),
+				startedAt(inRun(done(3, 20, "close-target", "failure"), 200), "2026-01-01T00:00:05Z"),
+			},
+			workflowRuns: []map[string]any{
+				workflowRun(100, ci, "pull_request", 10, "completed", "success"),
+				workflowRun(200, ci, "pull_request", 20, "completed", "failure"),
+			},
+			want: "FAILURE", wantNames: []string{"close-target", "lint"}, wantFetch: true,
+		},
+		{
+			// Two pull requests can share a head commit; their runs differ in branch.
+			name: "failed run of another branch on the same head",
+			runs: []map[string]any{
+				inRun(done(1, 10, "close-target", "failure"), 100), inRun(done(2, 20, "close-target", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				onBranch(workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"), "agent/one"),
+				onBranch(workflowRun(200, ci, "pull_request_target", 20, "completed", "success"), "agent/two"),
+			},
+			want: "FAILURE", wantNames: []string{"close-target", "close-target"}, wantFetch: true,
 		},
 		{
 			name: "newest run cancelled",

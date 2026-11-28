@@ -121,13 +121,21 @@ type restCheckRun struct {
 // restWorkflowRun is one GitHub Actions workflow run; each run owns exactly one
 // check suite.
 type restWorkflowRun struct {
-	ID           int64  `json:"id"`
-	HeadSHA      string `json:"head_sha"`
-	WorkflowID   int64  `json:"workflow_id"`
-	Event        string `json:"event"`
+	ID         int64  `json:"id"`
+	HeadSHA    string `json:"head_sha"`
+	WorkflowID int64  `json:"workflow_id"`
+	Event      string `json:"event"`
+	HeadBranch string `json:"head_branch"`
+	HeadRepo   struct {
+		FullName string `json:"full_name"`
+	} `json:"head_repository"`
 	Status       string `json:"status"`
 	Conclusion   string `json:"conclusion"`
 	CheckSuiteID int64  `json:"check_suite_id"`
+}
+
+func (wr restWorkflowRun) trigger() workflowTrigger {
+	return workflowTrigger{wr.WorkflowID, wr.Event, wr.HeadBranch, wr.HeadRepo.FullName}
 }
 
 type restStatusContext struct {
@@ -213,6 +221,13 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 			newer := run.ID > previous.ID
 			if !run.StartedAt.IsZero() && !previous.StartedAt.IsZero() && !run.StartedAt.Equal(previous.StartedAt) {
 				newer = run.StartedAt.After(previous.StartedAt)
+			}
+			// Across workflow runs of one workflow the workflow run's order
+			// decides: a job of an older run can start after the newer run's.
+			if key.Workflow != (workflowTrigger{}) {
+				if a, b := actionsRunID(run.DetailsURL), actionsRunID(previous.DetailsURL); a != b {
+					newer = a > b
+				}
 			}
 			if newer {
 				latestRuns[index] = run
@@ -300,10 +315,15 @@ const actionsAppSlug = "github-actions"
 // still fails the rollup: no Checks-only signal (check name, app, suite order)
 // proves two suites come from the same workflow. The lookup also runs only
 // when a failing Actions check sits beside another Actions suite.
-// workflowTrigger identifies the workflow and event a workflow run belongs to.
+// workflowTrigger identifies the workflow, event and source branch a workflow
+// run belongs to. Several pull requests can share one head commit; their runs
+// of the same workflow differ in branch (and repository), so a later success
+// for one never replaces another's failure.
 type workflowTrigger struct {
 	workflow int64
 	event    string
+	branch   string
+	repo     string
 }
 
 func fetchSupersededSuites(ctx context.Context, c *Client, installationID int64, base, headSHA string, runs []restCheckRun) (map[int64]struct{}, map[int64]workflowTrigger, error) {
@@ -340,7 +360,7 @@ func fetchSupersededSuites(ctx context.Context, c *Client, installationID int64,
 			return nil, nil, errors.New("ghsnapshot: duplicate workflow run during pagination")
 		}
 		seen[wr.ID] = struct{}{}
-		key := workflowTrigger{wr.WorkflowID, wr.Event}
+		key := wr.trigger()
 		triggers[wr.CheckSuiteID] = key
 		if cur, ok := newest[key]; !ok || wr.ID > cur.ID {
 			newest[key] = wr
@@ -348,7 +368,7 @@ func fetchSupersededSuites(ctx context.Context, c *Client, installationID int64,
 	}
 	superseded := make(map[int64]struct{})
 	for _, wr := range workflowRuns {
-		latest := newest[workflowTrigger{wr.WorkflowID, wr.Event}]
+		latest := newest[wr.trigger()]
 		if latest.ID == wr.ID || !strings.EqualFold(wr.Conclusion, "cancelled") {
 			continue
 		}
