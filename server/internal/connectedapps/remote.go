@@ -57,6 +57,10 @@ const (
 // expired. The handler shows a generic failure for it.
 var ErrRemoteState = errors.New("connectedapps: invalid connect state")
 
+// ErrRemoteActorRevoked means the member who started the connect no longer has
+// the access the start needed. The handler shows its generic failure for it.
+var ErrRemoteActorRevoked = errors.New("connectedapps: the member who started the connect lost access")
+
 // TxStarter begins the transaction a token refresh runs in.
 type TxStarter interface {
 	Begin(ctx context.Context) (pgx.Tx, error)
@@ -329,6 +333,11 @@ func (s *Service) CompleteRemoteConnect(ctx context.Context, rawState, code, oau
 	}
 	refresh, err := s.seal(tokens.RefreshToken)
 	if err != nil {
+		return result, err
+	}
+	// The state outlives the start request and the callback is public, so the
+	// starter's access is read again here, just before the account is saved.
+	if err := s.checkRemoteActor(ctx, st.Scope, workspace, actor); err != nil {
 		return result, err
 	}
 	row, err := s.q.UpsertRemoteAppConnection(ctx, db.UpsertRemoteAppConnectionParams{
@@ -706,4 +715,20 @@ func randomToken() (string, error) {
 func expiry(now time.Time, expiresIn int64) pgtype.Timestamptz {
 	at := remotemcp.OAuthExpiry(now, expiresIn)
 	return pgtype.Timestamptz{Time: at, Valid: !at.IsZero()}
+}
+
+// checkRemoteActor holds a connect to the rule its start followed: a team
+// account needs a workspace owner or admin, a personal one a current member.
+func (s *Service) checkRemoteActor(ctx context.Context, scope string, workspace, actor pgtype.UUID) error {
+	member, err := s.q.GetMemberByUserAndWorkspace(ctx, db.GetMemberByUserAndWorkspaceParams{UserID: actor, WorkspaceID: workspace})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrRemoteActorRevoked
+	}
+	if err != nil {
+		return fmt.Errorf("connectedapps: load the member who started the connect: %w", err)
+	}
+	if scope == ScopeTeam && member.Role != "owner" && member.Role != "admin" {
+		return ErrRemoteActorRevoked
+	}
+	return nil
 }
