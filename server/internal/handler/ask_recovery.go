@@ -10,6 +10,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/decisiontx"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/dbid"
@@ -90,15 +91,16 @@ func (handler *Handler) deliverAskRecovery(ctx context.Context, listed db.AskGua
 		return transaction.Commit(ctx)
 	}
 	// The event is about a comment whose ask the run already sent to this member
-	// as a decision request: the ask reached them, so a notice would repeat it.
-	// An event that opened after the request (a refused edit) was not served when
+	// as a decision request, and the refused edit adds no member link, command,
+	// file or UI step the delivered text lacked: the ask reached them, so a notice
+	// would repeat it. An event that opened after the request was not served when
 	// the request was created, so close it here. A distinct ask stays open.
 	if event.MemberID.Valid && event.CommentID.Valid {
-		asked, err := queries.TaskAskedMemberOnIssue(ctx, db.TaskAskedMemberOnIssueParams{WorkspaceID: event.WorkspaceID, IssueID: event.IssueID, HumanUserID: event.MemberID, TaskID: event.TaskID, SourceCommentID: event.CommentID})
+		snapshots, err := queries.ListDeliveredAskSnapshots(ctx, db.ListDeliveredAskSnapshotsParams{WorkspaceID: event.WorkspaceID, IssueID: event.IssueID, HumanUserID: event.MemberID, TaskID: event.TaskID, SourceCommentID: event.CommentID})
 		if err != nil {
 			return err
 		}
-		if asked {
+		if editAddsNothingTo(snapshots, event.SourceText.String) {
 			if _, err := queries.ServeAskGuardEvent(ctx, db.ServeAskGuardEventParams{ID: event.ID, WorkspaceID: event.WorkspaceID}); err != nil {
 				return err
 			}
@@ -279,4 +281,19 @@ func (handler *Handler) askRecoveryNoticeAnswer(writer http.ResponseWriter, requ
 		return notice, false, false
 	}
 	return notice, true, true
+}
+
+// editAddsNothingTo reports whether the refused edit text brings in no member
+// link and no command, file or UI step that one of the delivered texts lacked.
+// No delivered text, or an event without a stored text, never matches.
+func editAddsNothingTo(delivered []string, edit string) bool {
+	if edit == "" {
+		return false
+	}
+	for _, text := range delivered {
+		if !addsMemberMention(text, edit) && !decisiontx.AddsAskItem(text, edit) {
+			return true
+		}
+	}
+	return false
 }

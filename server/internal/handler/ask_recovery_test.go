@@ -292,3 +292,41 @@ func TestAskRecoverySkipsOnlyTheEventOfTheAskThatReached(t *testing.T) {
 		}
 	}
 }
+
+// A refused edit of the comment whose ask was delivered: one that only repeats
+// the delivered text is not an undelivered ask, one that brings a new command
+// into it is, and recovery must still send that one (CHE-10594).
+func TestAskRecoveryRealEditOfTheDeliveredComment(t *testing.T) {
+	setAskGuardMode(t, "block")
+	fixture := newSingleCallFixture(t)
+	guard := askGuardCommentFixture{fixture.intentFixture}
+	// No ask cue yet, so the stored comment passes the guard; its text is what the request delivered.
+	delivered := "Notes on bash scripts/setup.sh <token> for " + guard.mention() + "."
+	dbfx.Exec(t, `UPDATE comment SET content = $1 WHERE id = $2`, delivered, fixture.sourceID)
+	testutil.Call(t, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated)
+
+	repeat := delivered + " Cheese, that is for you."
+	newAsk := delivered + " Cheese, please run `make deploy-prod` on the host."
+	guard.edit(t, fixture.sourceID, repeat).Want(http.StatusUnprocessableEntity)
+	guard.edit(t, fixture.sourceID, newAsk).Want(http.StatusUnprocessableEntity)
+	eventFor := func(text string) string {
+		var id string
+		dbfx.QueryRow(t, `SELECT id::text FROM ask_guard_event WHERE issue_id = $1 AND operation_kind = 'comment_edit' AND source_text = $2`, fixture.issueID, text).Scan(&id)
+		if id == "" {
+			t.Fatalf("no comment_edit event for %q", text)
+		}
+		return id
+	}
+	repeated, added := eventFor(repeat), eventFor(newAsk)
+	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
+	dbfx.Cleanup(t, `DELETE FROM ask_recovery_notice WHERE event_id IN ($1::uuid, $2::uuid)`, repeated, added)
+
+	deliverRecoveries(t)
+
+	if n := recoveryNotices(t, repeated); n != 0 {
+		t.Errorf("recovery notices for the edit that repeats the delivered ask = %d, want 0", n)
+	}
+	if n := dbfx.Count(t, `SELECT count(*) FROM ask_recovery_notice WHERE event_id = $1 AND state = 'delivered'`, added); n != 1 {
+		t.Errorf("recovery notices for the edit that adds a new ask = %d, want 1", n)
+	}
+}

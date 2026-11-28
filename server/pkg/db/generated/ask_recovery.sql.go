@@ -198,6 +198,52 @@ func (q *Queries) ListAskRecoveryNoticesByMessage(ctx context.Context, arg ListA
 	return items, nil
 }
 
+const listDeliveredAskSnapshots = `-- name: ListDeliveredAskSnapshots :many
+SELECT request.source_content_snapshot::text AS snapshot
+FROM decision_request request
+JOIN decision_intent intent ON intent.id = request.decision_intent_id AND intent.workspace_id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.issue_id = $2 AND request.human_user_id = $3 AND intent.task_id = $4
+  AND (request.source_comment_id = $5 OR intent.comment_id = $5)
+`
+
+type ListDeliveredAskSnapshotsParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	IssueID         pgtype.UUID `json:"issue_id"`
+	HumanUserID     pgtype.UUID `json:"human_user_id"`
+	TaskID          pgtype.UUID `json:"task_id"`
+	SourceCommentID pgtype.UUID `json:"source_comment_id"`
+}
+
+// The comment text of every decision request the run that left the event
+// already sent to the member on the issue for the comment the event is about
+// (the request's source comment, or the comment of its intent): what reached
+// them. An event with no comment, or about another comment, matches nothing.
+func (q *Queries) ListDeliveredAskSnapshots(ctx context.Context, arg ListDeliveredAskSnapshotsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeliveredAskSnapshots,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.HumanUserID,
+		arg.TaskID,
+		arg.SourceCommentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var snapshot string
+		if err := rows.Scan(&snapshot); err != nil {
+			return nil, err
+		}
+		items = append(items, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockAskGuardEvent = `-- name: LockAskGuardEvent :one
 SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id, comment_id FROM ask_guard_event WHERE id = $1 AND workspace_id = $2 FOR UPDATE
 `
@@ -295,39 +341,4 @@ type SetAskGuardEventRepairParams struct {
 func (q *Queries) SetAskGuardEventRepair(ctx context.Context, arg SetAskGuardEventRepairParams) error {
 	_, err := q.db.Exec(ctx, setAskGuardEventRepair, arg.ID, arg.WorkspaceID, arg.RepairReason)
 	return err
-}
-
-const taskAskedMemberOnIssue = `-- name: TaskAskedMemberOnIssue :one
-SELECT EXISTS (
-  SELECT 1 FROM decision_request request
-  JOIN decision_intent intent ON intent.id = request.decision_intent_id AND intent.workspace_id = request.workspace_id
-  WHERE request.workspace_id = $1 AND request.issue_id = $2 AND request.human_user_id = $3 AND intent.task_id = $4
-    AND (request.source_comment_id = $5 OR intent.comment_id = $5)
-) AS asked
-`
-
-type TaskAskedMemberOnIssueParams struct {
-	WorkspaceID     pgtype.UUID `json:"workspace_id"`
-	IssueID         pgtype.UUID `json:"issue_id"`
-	HumanUserID     pgtype.UUID `json:"human_user_id"`
-	TaskID          pgtype.UUID `json:"task_id"`
-	SourceCommentID pgtype.UUID `json:"source_comment_id"`
-}
-
-// Whether the run that left the event already sent a decision request to the
-// member on the issue for the comment the event is about (the request's source
-// comment, or the comment of its intent): the ask reached them, so a recovery
-// notice would repeat it. An event with no comment, or about another comment, is
-// a distinct ask and never matches.
-func (q *Queries) TaskAskedMemberOnIssue(ctx context.Context, arg TaskAskedMemberOnIssueParams) (bool, error) {
-	row := q.db.QueryRow(ctx, taskAskedMemberOnIssue,
-		arg.WorkspaceID,
-		arg.IssueID,
-		arg.HumanUserID,
-		arg.TaskID,
-		arg.SourceCommentID,
-	)
-	var asked bool
-	err := row.Scan(&asked)
-	return asked, err
 }

@@ -43,18 +43,16 @@ SELECT * FROM ask_recovery_notice WHERE chat_message_id = ANY($1::uuid[]) AND wo
 UPDATE ask_recovery_notice SET state = 'answered', answered_at = clock_timestamp()
 WHERE id = $1 AND state = 'delivered';
 
--- name: TaskAskedMemberOnIssue :one
--- Whether the run that left the event already sent a decision request to the
--- member on the issue for the comment the event is about (the request's source
--- comment, or the comment of its intent): the ask reached them, so a recovery
--- notice would repeat it. An event with no comment, or about another comment, is
--- a distinct ask and never matches.
-SELECT EXISTS (
-  SELECT 1 FROM decision_request request
-  JOIN decision_intent intent ON intent.id = request.decision_intent_id AND intent.workspace_id = request.workspace_id
-  WHERE request.workspace_id = $1 AND request.issue_id = $2 AND request.human_user_id = $3 AND intent.task_id = $4
-    AND (request.source_comment_id = $5 OR intent.comment_id = $5)
-) AS asked;
+-- name: ListDeliveredAskSnapshots :many
+-- The comment text of every decision request the run that left the event
+-- already sent to the member on the issue for the comment the event is about
+-- (the request's source comment, or the comment of its intent): what reached
+-- them. An event with no comment, or about another comment, matches nothing.
+SELECT request.source_content_snapshot::text AS snapshot
+FROM decision_request request
+JOIN decision_intent intent ON intent.id = request.decision_intent_id AND intent.workspace_id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.issue_id = $2 AND request.human_user_id = $3 AND intent.task_id = $4
+  AND (request.source_comment_id = $5 OR intent.comment_id = $5);
 
 -- name: ServeAskGuardEvent :execrows
 -- Closes an open event whose ask already reached the member, without marking a notice delivered.
