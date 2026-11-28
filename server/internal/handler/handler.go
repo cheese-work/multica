@@ -247,6 +247,10 @@ type RuntimeRecoveryNotifier interface {
 type Handler struct {
 	// threadRelationsForTest replaces the thread relation read (CHE-6428).
 	threadRelationsForTest func(context.Context, threadRelationQuery) (threadRelationSet, error)
+	// invokeGuardForTest replaces the plugin guard call (CHE-10256).
+	invokeGuardForTest func(context.Context, service.HookInvocation) (service.GuardResult, error)
+	// guardPreparedForTest runs between the guard calls and the write (CHE-10256).
+	guardPreparedForTest func()
 	// handoffDispatchHook is a test seam (CHE-5488): it is called at named points of
 	// dispatchHandoffIntent, and an error it returns fails the dispatch there.
 	handoffDispatchHook func(point string) error

@@ -1,6 +1,7 @@
 package issueworkflow
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
 )
@@ -31,6 +32,17 @@ type EntryGate struct {
 
 // Overridable reports whether a person may override the gate.
 func (g EntryGate) Overridable() bool { return g.MemberOverride == nil || *g.MemberOverride }
+
+// PluginVerdict is what a guard hook decided for one plugin gate. Overridable
+// is the hook's own guard.overridable policy.
+type PluginVerdict struct {
+	Allow       bool
+	Reason      string
+	Overridable bool
+}
+
+// PluginGateKey names a plugin gate in Facts.Plugin.
+func PluginGateKey(g Guard) string { return g.Args[0] + "/" + g.Args[1] }
 
 // EntryFailure is a gate that does not hold, with the fact behind it and the
 // action that fixes it.
@@ -155,7 +167,20 @@ func EvaluateEntry(gates []EntryGate, f Facts) []EntryFailure {
 			continue
 		}
 		var fact string
+		override := e.Overridable()
 		switch {
+		case g.Kind == GuardPlugin:
+			// A gate without a verdict fails closed, and no one may override it:
+			// the hook's guard.overridable policy is unknown.
+			v, ok := f.Plugin[PluginGateKey(g)]
+			switch {
+			case !ok:
+				fact = "the guard plugin gave no verdict"
+				override = false
+			case !v.Allow:
+				fact = cmp.Or(v.Reason, "the guard plugin denied the move")
+				override = override && v.Overridable
+			}
 		case g.Kind == GuardIntakeSimple:
 			// A Param that cannot be read fails closed rather than skipping the cap.
 			hours, _ := ParamHours(e.Param)
@@ -174,7 +199,7 @@ func EvaluateEntry(gates []EntryGate, f Facts) []EntryFailure {
 			}
 		}
 		if fact != "" {
-			failed = append(failed, EntryFailure{Guard: e.Guard, Mode: e.Mode, Fact: fact, Fix: fixFor(g), MemberOverride: e.Overridable()})
+			failed = append(failed, EntryFailure{Guard: e.Guard, Mode: e.Mode, Fact: fact, Fix: fixFor(g), MemberOverride: override})
 		}
 	}
 	return failed
@@ -283,6 +308,8 @@ func fixFor(g Guard) string {
 		return intakeFix()
 	case GuardQAProof:
 		return qaFix()
+	case GuardPlugin:
+		return fmt.Sprintf("do what the %s guard of %s asks, then retry the move", g.Args[1], g.Args[0])
 	}
 	return "make the condition hold"
 }

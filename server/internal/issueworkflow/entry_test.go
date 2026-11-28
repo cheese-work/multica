@@ -214,3 +214,61 @@ func TestPRNoneOpenIsAnEntryGateNotAnEdgeGuard(t *testing.T) {
 		t.Fatalf("pr.none_open must validate as an entry gate: %v", err)
 	}
 }
+
+func TestParseGuardPluginTakesPluginAndHookKey(t *testing.T) {
+	g, err := ParseGuard("plugin(com.example.guard, qa-proof)")
+	if err != nil || g.Kind != GuardPlugin || len(g.Args) != 2 || g.Args[0] != "com.example.guard" || g.Args[1] != "qa-proof" {
+		t.Fatalf("ParseGuard = %+v, %v", g, err)
+	}
+	for _, bad := range []string{"plugin", "plugin(a)", "plugin(a, b, c)", "plugin(a, )"} {
+		if _, err := ParseGuard(bad); err == nil {
+			t.Errorf("ParseGuard(%q) accepted a malformed plugin guard", bad)
+		}
+	}
+}
+
+func TestPluginGuardIsAnEntryGateNotAnEdgeGuard(t *testing.T) {
+	def := devDefinition()
+	step := def.Steps[0]
+	step.Edges = []Edge{{To: def.Steps[1].StatusKey, Guard: "plugin(com.example.guard, qa-proof)"}}
+	if err := validateEdges(step, def); err == nil || !strings.Contains(err.Error(), "entry gate") {
+		t.Fatalf("validateEdges = %v, want a refusal naming the entry gate", err)
+	}
+	step.Edges = nil
+	step.Entry = gates(EntryModeBlock, "plugin(com.example.guard, qa-proof)")
+	if err := validateEntry(step); err != nil {
+		t.Fatalf("validateEntry refused a plugin entry gate: %v", err)
+	}
+}
+
+func TestEvaluateEntryPluginGateFollowsTheVerdict(t *testing.T) {
+	const guard = "plugin(com.example.guard, qa-proof)"
+	key := PluginGateKey(Guard{Kind: GuardPlugin, Args: []string{"com.example.guard", "qa-proof"}})
+	allow := Facts{Plugin: map[string]PluginVerdict{key: {Allow: true}}}
+	if got := EvaluateEntry(gates(EntryModeBlock, guard), allow); len(got) != 0 {
+		t.Fatalf("an allow verdict failed the gate: %+v", got)
+	}
+	deny := Facts{Plugin: map[string]PluginVerdict{key: {Reason: "no QA line", Overridable: true}}}
+	got := EvaluateEntry(gates(EntryModeBlock, guard), deny)
+	if len(got) != 1 || got[0].Guard != guard || got[0].Mode != EntryModeBlock || !strings.Contains(got[0].Fact, "no QA line") || !got[0].MemberOverride || got[0].Fix == "" {
+		t.Fatalf("deny verdict: %+v", got)
+	}
+	// The hook's own overridable flag governs the override, and the gate's
+	// member_override can still turn it off.
+	deny.Plugin[key] = PluginVerdict{Reason: "no QA line", Overridable: false}
+	if got := EvaluateEntry(gates(EntryModeBlock, guard), deny); len(got) != 1 || got[0].MemberOverride {
+		t.Fatalf("a non-overridable hook must not allow an override: %+v", got)
+	}
+	// warn mode still reports the failure; off skips it.
+	if got := EvaluateEntry(gates(EntryModeWarn, guard), deny); len(got) != 1 || got[0].Mode != EntryModeWarn {
+		t.Fatalf("warn mode: %+v", got)
+	}
+	if got := EvaluateEntry(gates(EntryModeOff, guard), deny); len(got) != 0 {
+		t.Fatalf("off mode: %+v", got)
+	}
+	// No verdict at all fails closed, and the gate default (overridable) does not
+	// apply: the hook's policy is unknown.
+	if got := EvaluateEntry(gates(EntryModeBlock, guard), Facts{}); len(got) != 1 || got[0].MemberOverride {
+		t.Fatalf("missing verdict must fail the gate and not be overridable: %+v", got)
+	}
+}

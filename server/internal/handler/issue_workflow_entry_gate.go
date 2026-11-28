@@ -99,6 +99,9 @@ func (w *workflowWrite) checkEntry(ctx context.Context, h *Handler, q *db.Querie
 	// parent from params, so a request that also changes the parent decides it.
 	facts.HasParent = params.ParentIssueID.Valid
 	w.loadGateFacts(ctx, q, locked, step, &facts)
+	if err := w.loadPluginFacts(ctx, h, q, locked, def, step, params.Status.String, &facts); err != nil {
+		return err
+	}
 	failed := issueworkflow.EvaluateEntry(step.Entry, facts)
 	err = w.applyEntry(ctx, q, locked, params.Status.String, failed, facts)
 	if !entryGateOn(step, issueworkflow.GuardIntakeSimple) {

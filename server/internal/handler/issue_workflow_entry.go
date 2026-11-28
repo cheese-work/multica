@@ -562,6 +562,13 @@ func writeIssueWorkflowError(ctx context.Context, w http.ResponseWriter, err err
 		})
 		return true
 	}
+	if errors.Is(err, errEntryGateStale) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": err.Error() + "; retry",
+			"code":  "entry_gate_stale",
+		})
+		return true
+	}
 	if errors.Is(err, errHandoffPreviewStale) {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error": err.Error() + "; review the move again",
