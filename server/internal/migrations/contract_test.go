@@ -92,18 +92,18 @@ func TestParseContractAcceptsCRLFAndNoNewline(t *testing.T) {
 
 func TestTransactionControl(t *testing.T) {
 	refused := map[string]string{
-		"COMMIT;":                                    "COMMIT",
-		"commit":                                     "COMMIT",
-		"SELECT 1; BEGIN; SELECT 2;":                 "BEGIN",
-		"SELECT 1;\n  rollback ;":                    "ROLLBACK",
-		"ROLLBACK TO SAVEPOINT s;":                   "ROLLBACK",
-		"SELECT 1; END;":                             "END",
-		"/* c */ COMMIT;":                            "COMMIT",
-		"-- c\nBEGIN;":                               "BEGIN",
+		"COMMIT;":                    "COMMIT",
+		"commit":                     "COMMIT",
+		"SELECT 1; BEGIN; SELECT 2;": "BEGIN",
+		"SELECT 1;\n  rollback ;":    "ROLLBACK",
+		"ROLLBACK TO SAVEPOINT s;":   "ROLLBACK",
+		"SELECT 1; END;":             "END",
+		"/* c */ COMMIT;":            "COMMIT",
+		"-- c\nBEGIN;":               "BEGIN",
 		"SELECT 'x'; /* a /* nested */ b */ COMMIT": "COMMIT",
-		"BEGIN TRANSACTION;":                         "BEGIN",
-		"ABORT;":                                     "ABORT",
-		"START TRANSACTION;":                         "START",
+		"BEGIN TRANSACTION;":                        "BEGIN",
+		"ABORT;":                                    "ABORT",
+		"START TRANSACTION;":                        "START",
 	}
 	for sql, want := range refused {
 		got, ok := TransactionControl(sql)

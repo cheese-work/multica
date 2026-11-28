@@ -89,7 +89,7 @@ func applyContract(ctx context.Context, conn *pgxpool.Conn, opts runOptions, ver
 	if err := execContract(ctx, tx, opts, version, sql, contract, ledgerIdent, contractsIdent); err != nil {
 		// Roll back on a fresh context: ctx may be the reason for the failure.
 		if rbErr := tx.Rollback(context.WithoutCancel(ctx)); rbErr != nil && !errors.Is(rbErr, pgx.ErrTxClosed) {
-			return fmt.Errorf("%w (rollback also failed: %v)", err, rbErr)
+			return fmt.Errorf("%w (rollback also failed: %w)", err, rbErr)
 		}
 		return err
 	}
