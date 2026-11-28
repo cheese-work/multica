@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -367,7 +368,7 @@ func postDeployWrites(t *testing.T, fx *restoreFixture) {
 		fx.label[id] = label
 		fx.wantNew[id] = "not_restored"
 	}
-	issue := fmt.Sprintf(`"issue_id":"%s"`, issueOne)
+	issue := fmt.Sprintf(`"issue_id":%q`, issueOne)
 	newRow("n_at", "at", "", nil)
 	newRow("n_issue", "condition", `{"type":"issue",`+issue+`,"status":"done"}`, nil)
 	newRow("n_reply_member_author", "condition", `{"type":"issue_reply",`+issue+`,"author_type":"member","author_id":"`+userMem+`","since":"2026-11-28T01:02:03Z"}`, nil)
@@ -825,6 +826,9 @@ func assertRollForward(t *testing.T, fx *restoreFixture) {
 		if n := tableCountWhere(t, fx.pool, "schema_contracts", "version = '99zzz00_chat_wakeup_fork_convert' AND attempt_id = '"+restoreAttempt2+"'"); n != 1 {
 			t.Errorf("A6: new schema_contracts rows = %d, want 1", n)
 		}
+		if n := tableCountWhere(t, fx.pool, "schema_contracts", "version = '99zzz00_chat_wakeup_fork_convert'"); n != 1 {
+			t.Errorf("A6: schema_contracts rows of X = %d, want 1 (R deleted the old one)", n)
+		}
 	} else {
 		t.Logf("A6: no schema_contracts table on this tree; that row is checked on the N5r stack")
 	}
@@ -849,6 +853,7 @@ func assertRollForward(t *testing.T, fx *restoreFixture) {
 			t.Errorf("A6: %s status %q after conversion, want %q", fx.label[id], got[id], wantStatus[st])
 		}
 	}
+	assertRoundTrip(t, fx)
 	idx, _ := queryStrings(ctx, fx.pool, `SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND tablename = 'chat_wakeup' ORDER BY 1`)
 	for _, want := range []string{"idx_chat_wakeup_due", "idx_chat_wakeup_session", "idx_chat_wakeup_requester"} {
 		if !slices.Contains(idx, want) {
@@ -858,6 +863,98 @@ func assertRollForward(t *testing.T, fx *restoreFixture) {
 	// a second restore cannot collide with the first one's saved names: the first saved table is still there
 	if tableCount(t, fx.pool, fx.saved) < 1 {
 		t.Errorf("A6: first saved table gone")
+	}
+}
+
+// assertRoundTrip: X(R(U)) == U on every column the fork table can carry. U is
+// the upstream row R read (fx.preR). After the roll-forward, each row R
+// restored must equal U on those columns. The columns the fork table has no
+// place for are not compared, because X derives them again, by its own rule:
+//   - updated_at, next_eval_at: clock values.
+//   - requester_id: X takes the owner of the chat session.
+//   - end_reason: X writes fork_migrated for an ended row.
+//   - condition_state: the fork keeps none; X starts it empty.
+//   - created_at of a condition row: R stores the watch's `since` there, and X
+//     reads it back (the fork has no other column for it).
+//   - condition.identifier and condition.author_name: X looks the names up.
+//
+// Rows R cannot express are excluded; assertRestored checks their outcome.
+func assertRoundTrip(t *testing.T, fx *restoreFixture) {
+	t.Helper()
+	ctx := context.Background()
+	outcome := map[string]string{}
+	rows, err := fx.pool.Query(ctx, `SELECT id::text, outcome FROM chat_wakeup_restore_report WHERE attempt_id = $1 AND outcome <> 'saved_table_renames'`, fx.attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id, o string
+		_ = rows.Scan(&id, &o)
+		outcome[id] = o
+	}
+	rows.Close()
+	post := map[string]string{}
+	rows, err = fx.pool.Query(ctx, `SELECT id::text, to_jsonb(c)::text FROM chat_wakeup c`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id, js string
+		_ = rows.Scan(&id, &js)
+		post[id] = js
+	}
+	rows.Close()
+	volatile := []string{"updated_at", "next_eval_at", "requester_id", "end_reason", "condition_state"}
+	decode := func(js string) map[string]any {
+		m := map[string]any{}
+		if err := json.Unmarshal([]byte(js), &m); err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range volatile {
+			delete(m, k)
+		}
+		if cond, ok := m["condition"].(map[string]any); ok {
+			delete(cond, "identifier")
+			delete(cond, "author_name")
+			delete(m, "created_at") // holds the watch's since, set by R
+		}
+		return m
+	}
+	compared := 0
+	for id, o := range outcome {
+		switch o {
+		case "restored_pending", "from_current", "restored_terminal", "ended_after_deploy", "converted_new":
+		default:
+			continue
+		}
+		if fx.label[id] == "n_reply_no_author_type" {
+			continue // Decision A: R adds author_type member; checked in assertRestoredValues
+		}
+		want, ok := fx.preR[id]
+		if !ok {
+			t.Errorf("A6: %s (%s) has no pre-R row", fx.label[id], o)
+			continue
+		}
+		got, ok := post[id]
+		if !ok {
+			t.Errorf("A6: %s (%s) is gone after the roll-forward", fx.label[id], o)
+			continue
+		}
+		w, g := decode(want), decode(got)
+		for k, wv := range w {
+			if gv := g[k]; !reflect.DeepEqual(wv, gv) {
+				t.Errorf("A6: %s (%s) column %s = %v after the roll-forward, want %v (the row R read)", fx.label[id], o, k, gv, wv)
+			}
+		}
+		for k := range g {
+			if _, ok := w[k]; !ok {
+				t.Errorf("A6: %s (%s) has an extra column %s", fx.label[id], o, k)
+			}
+		}
+		compared++
+	}
+	if compared < 15 {
+		t.Errorf("A6: compared %d rows, want at least 15", compared)
 	}
 }
 
@@ -944,5 +1041,52 @@ func TestChatWakeupForkRestoreIsNotAMigration(t *testing.T) {
 	first, _, _ := strings.Cut(string(x), "\n")
 	if !strings.HasSuffix(first, "restore=server/cmd/migrate/"+restoreScriptPath) {
 		t.Errorf("X's contract line does not name R: %q", first)
+	}
+}
+
+// R binds to the attempt X recorded. When schema_contracts exists, an absent or
+// null row refuses (a snapshot from another attempt could replace current
+// data), a different attempt refuses, and the matching row lets R run with or
+// without the setting.
+func TestChatWakeupForkRestoreBindsToXAttempt(t *testing.T) {
+	if step, _ := chosenStep(t); step != "script" {
+		t.Skip("green-only check")
+	}
+	fx := buildRestoreFixture(t, false)
+	ctx := context.Background()
+	const xv = "99zzz00_chat_wakeup_fork_convert"
+	fx.exec(t, `CREATE TABLE IF NOT EXISTS schema_contracts (version TEXT PRIMARY KEY, attempt_id TEXT, snapshot_tables TEXT NOT NULL DEFAULT '', restore TEXT NOT NULL DEFAULT '', applied_at TIMESTAMPTZ NOT NULL DEFAULT now())`)
+	untouched := func(label string) {
+		t.Helper()
+		if got, _ := queryStrings(ctx, fx.pool, `SELECT coalesce(to_regclass('`+fx.saved+`')::text, '-')`); len(got) != 1 || got[0] != "-" {
+			t.Errorf("%s: saved table exists: %v", label, got)
+		}
+	}
+	refusals := []struct {
+		name, setup, attempt, wantErr string
+	}{
+		{"no row, setting given", `DELETE FROM schema_contracts WHERE version = '` + xv + `'`, restoreAttempt, "has no row with an attempt id"},
+		{"no row, no setting", `DELETE FROM schema_contracts WHERE version = '` + xv + `'`, "", "has no row with an attempt id"},
+		{"row with null attempt", `DELETE FROM schema_contracts WHERE version = '` + xv + `'; INSERT INTO schema_contracts (version, attempt_id) VALUES ('` + xv + `', NULL)`, restoreAttempt, "has no row with an attempt id"},
+		{"row with another attempt", `DELETE FROM schema_contracts WHERE version = '` + xv + `'; INSERT INTO schema_contracts (version, attempt_id) VALUES ('` + xv + `', '` + restoreAttempt2 + `')`, restoreAttempt, "differs from the attempt id"},
+	}
+	for _, c := range refusals {
+		fx.exec(t, c.setup)
+		_, err := runRestoreScript(t, fx.name, c.attempt)
+		if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+			t.Errorf("%s: error = %v, want it to contain %q", c.name, err, c.wantErr)
+		}
+		untouched(c.name)
+	}
+	// matching row, no setting: the row names the attempt
+	fx.exec(t, `DELETE FROM schema_contracts WHERE version = '`+xv+`'; INSERT INTO schema_contracts (version, attempt_id) VALUES ('`+xv+`', '`+restoreAttempt+`')`)
+	if _, err := runRestoreScript(t, fx.name, ""); err != nil {
+		t.Fatalf("matching row, no setting: %v", err)
+	}
+	if got, _ := queryStrings(ctx, fx.pool, `SELECT to_regclass('`+fx.saved+`')::text`); len(got) != 1 || got[0] == "" {
+		t.Errorf("matching row: saved table missing after R")
+	}
+	if n := tableCountWhere(t, fx.pool, "schema_contracts", "version = '"+xv+"'"); n != 0 {
+		t.Errorf("matching row: R left %d schema_contracts rows of X, want 0", n)
 	}
 }

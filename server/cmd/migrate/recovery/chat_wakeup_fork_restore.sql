@@ -2,7 +2,7 @@
 --
 -- NOT a migration: the runner never applies this file. People run it by hand,
 -- only by route 2 of README "Contract migration recovery", each time with a
--- Cheese decision. It is the `restore=` target of the contract line on
+-- decision by the owner. It is the `restore=` target of the contract line on
 -- 99zzz00_chat_wakeup_fork_convert (X).
 --
 -- Goal: after X has run, the previous image can serve chat wakeups again. No
@@ -17,8 +17,11 @@
 --     psql "$DATABASE_URL" -X -v ON_ERROR_STOP=1 -f chat_wakeup_fork_restore.sql
 --
 -- <A> is the attempt id of X's schema_contracts row: 32 lower-case hexadecimal
--- characters. The setting is optional when schema_contracts holds X's row with
--- an attempt id; when both are given they must match.
+-- characters. When the schema_contracts table exists, R binds to X's recorded
+-- attempt: that row must exist with a non-null attempt id, and the setting, if
+-- given, must match it. R refuses an absent or null row, because a snapshot
+-- from another attempt could then replace current data. When the table does
+-- not exist (a tree before N5r), the setting alone names the attempt.
 --
 -- Input (loaded by hand, because the N4b loader is not on main). The snapshot
 -- is the controller's `COPY chat_wakeup TO STDOUT` text copy of the fork table
@@ -171,6 +174,9 @@ BEGIN
     a := nullif(current_setting('multica.restore_attempt', true), '');
     IF to_regclass('schema_contracts') IS NOT NULL THEN
         EXECUTE 'SELECT attempt_id FROM schema_contracts WHERE version = $1' INTO contract_a USING x_version;
+        IF contract_a IS NULL THEN
+            RAISE EXCEPTION 'restore: schema_contracts has no row with an attempt id for %; refusing to restore a snapshot that X did not record', x_version;
+        END IF;
     END IF;
     IF a IS NOT NULL AND contract_a IS NOT NULL AND a <> contract_a THEN
         RAISE EXCEPTION 'restore: multica.restore_attempt % differs from the attempt id % in the schema_contracts row of %',
