@@ -13,6 +13,10 @@ import { BatchActionToolbar } from "./batch-action-toolbar";
 // picker is not mocked, so the scope the toolbar hands it is what is judged.
 
 const selection = vi.hoisted(() => ({ selectedIds: new Set<string>(), clear: vi.fn() }));
+vi.mock("@multica/core/permissions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/permissions")>()),
+  useIsGuest: () => false,
+}));
 vi.mock("@multica/core/issues/use-issue-deletion", () => ({
   useIssueDeletion: () => ({ canDelete: () => true }),
 }));

@@ -23,6 +23,7 @@ export function useWakeupForm({
   onSaved,
   onBusy,
   describeError,
+  runnableAgents,
 }: {
   workspaceId: string;
   defaultAgentId: string;
@@ -38,15 +39,24 @@ export function useWakeupForm({
   onBusy?: (busy: boolean) => void;
   /** A message for a refusal the caller knows; anything else gets the shared one. */
   describeError?: (err: unknown) => string | undefined;
+  /**
+   * Set when the member creates the rule, so the agent must be one they can
+   * run: a default outside this list counts as unchosen, and a refusal that is
+   * not about the agent gets the generic create error.
+   */
+  runnableAgents?: readonly { id: string }[];
 }) {
   const { t } = useT("issues");
   const text = useWakeupText();
   const timezone = useViewingTimezone();
-  const [draft, setDraft] = useState<WakeupDraft>(() => ({
+  const [rawDraft, setDraft] = useState<WakeupDraft>(() => ({
     ...emptyWakeupDraft(defaultAgentId, timezone),
     ...initial,
     ...(draftKey ? (useWakeupFormDraftStore.getState().getDraft(draftKey)?.fields as Partial<WakeupDraft> | null | undefined) : null),
   }));
+  const runnableAgentsOnly = !!runnableAgents;
+  const draft =
+    !runnableAgents || runnableAgents.some((a) => a.id === rawDraft.agentId) ? rawDraft : { ...rawDraft, agentId: "" };
   const [error, setError] = useState("");
   const [pending, setPending] = useState(false);
   const inFlight = useRef(false);
@@ -101,7 +111,11 @@ export function useWakeupForm({
         describeError?.(err) ??
           (code === "wakeup_capacity_exceeded"
             ? t(($) => $.wakeups.create.capacity_error)
-            : text.error(err, t(($) => $.wakeups.create.error))),
+            : runnableAgentsOnly && code === "wakeup_agent_not_invocable"
+              ? t(($) => $.wakeups.create.agent_error)
+              : runnableAgentsOnly && err instanceof ApiError && err.status === 403
+                ? t(($) => $.wakeups.create.error)
+                : text.error(err, t(($) => $.wakeups.create.error))),
       );
     } finally {
       inFlight.current = false;

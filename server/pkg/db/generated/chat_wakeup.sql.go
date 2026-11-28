@@ -7,132 +7,140 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const cancelChatWakeup = `-- name: CancelChatWakeup :one
-UPDATE chat_wakeup SET status = 'cancelled', resolved_at = now()
-WHERE id = $1 AND chat_session_id = $2 AND status = 'pending'
-RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout
+const checkInChatWakeup = `-- name: CheckInChatWakeup :one
+UPDATE chat_wakeup
+SET last_check_note = $1,
+    last_checked_at = now(),
+    last_checkin_task_id = $2,
+    updated_at = now()
+WHERE id = $3 AND kind = 'check'
+RETURNING id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at
 `
 
-type CancelChatWakeupParams struct {
-	ID            pgtype.UUID `json:"id"`
-	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+type CheckInChatWakeupParams struct {
+	Note   pgtype.Text `json:"note"`
+	TaskID pgtype.UUID `json:"task_id"`
+	ID     pgtype.UUID `json:"id"`
 }
 
-func (q *Queries) CancelChatWakeup(ctx context.Context, arg CancelChatWakeupParams) (ChatWakeup, error) {
-	row := q.db.QueryRow(ctx, cancelChatWakeup, arg.ID, arg.ChatSessionID)
+func (q *Queries) CheckInChatWakeup(ctx context.Context, arg CheckInChatWakeupParams) (ChatWakeup, error) {
+	row := q.db.QueryRow(ctx, checkInChatWakeup, arg.Note, arg.TaskID, arg.ID)
 	var i ChatWakeup
 	err := row.Scan(
 		&i.ID,
 		&i.WorkspaceID,
 		&i.ChatSessionID,
 		&i.AgentID,
-		&i.Instruction,
-		&i.FireAt,
-		&i.Status,
-		&i.CreatedByTaskID,
-		&i.FiredTaskID,
-		&i.CreatedAt,
-		&i.ResolvedAt,
+		&i.RequesterID,
+		&i.SourceTaskID,
+		&i.SourceMessageID,
 		&i.Title,
-		&i.IssueID,
-		&i.EventType,
-		&i.FilterActorType,
-		&i.FilterActorID,
-		&i.UntilStatus,
-		&i.OnTimeout,
+		&i.Instruction,
+		&i.Kind,
+		&i.Condition,
+		&i.ConditionState,
+		&i.IntervalSeconds,
+		&i.FireAt,
+		&i.NextEvalAt,
+		&i.ExpiresAt,
+		&i.Status,
+		&i.EndReason,
+		&i.EndedAt,
+		&i.CheckCount,
+		&i.LastCheckNote,
+		&i.LastCheckedAt,
+		&i.LastCheckinTaskID,
+		&i.LastTaskID,
+		&i.LastFiredAt,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const claimChatWakeup = `-- name: ClaimChatWakeup :one
-UPDATE chat_wakeup SET status = 'fired', resolved_at = now()
-WHERE id = $1 AND status = 'pending' AND (fire_at <= now() OR issue_id IS NOT NULL)
-RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout
-`
-
-// ClaimChatWakeup is the fire gate: only one caller flips a pending row, and it
-// holds the row lock until its transaction ends. An issue watch may be claimed
-// before fire_at (its expiry) when its event arrived.
-func (q *Queries) ClaimChatWakeup(ctx context.Context, id pgtype.UUID) (ChatWakeup, error) {
-	row := q.db.QueryRow(ctx, claimChatWakeup, id)
-	var i ChatWakeup
-	err := row.Scan(
-		&i.ID,
-		&i.WorkspaceID,
-		&i.ChatSessionID,
-		&i.AgentID,
-		&i.Instruction,
-		&i.FireAt,
-		&i.Status,
-		&i.CreatedByTaskID,
-		&i.FiredTaskID,
-		&i.CreatedAt,
-		&i.ResolvedAt,
-		&i.Title,
-		&i.IssueID,
-		&i.EventType,
-		&i.FilterActorType,
-		&i.FilterActorID,
-		&i.UntilStatus,
-		&i.OnTimeout,
-	)
-	return i, err
-}
-
-const countPendingChatWakeups = `-- name: CountPendingChatWakeups :one
+const countActiveChatWakeupsForRequester = `-- name: CountActiveChatWakeupsForRequester :one
 SELECT count(*) FROM chat_wakeup
-WHERE chat_session_id = $1 AND status = 'pending'
+WHERE workspace_id = $1 AND requester_id = $2 AND status = 'active'
 `
 
-func (q *Queries) CountPendingChatWakeups(ctx context.Context, chatSessionID pgtype.UUID) (int64, error) {
-	row := q.db.QueryRow(ctx, countPendingChatWakeups, chatSessionID)
+type CountActiveChatWakeupsForRequesterParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RequesterID pgtype.UUID `json:"requester_id"`
+}
+
+func (q *Queries) CountActiveChatWakeupsForRequester(ctx context.Context, arg CountActiveChatWakeupsForRequesterParams) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveChatWakeupsForRequester, arg.WorkspaceID, arg.RequesterID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countActiveChatWakeupsForSession = `-- name: CountActiveChatWakeupsForSession :one
+SELECT count(*) FROM chat_wakeup
+WHERE chat_session_id = $1 AND status = 'active'
+`
+
+func (q *Queries) CountActiveChatWakeupsForSession(ctx context.Context, chatSessionID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countActiveChatWakeupsForSession, chatSessionID)
 	var count int64
 	err := row.Scan(&count)
 	return count, err
 }
 
 const createChatWakeup = `-- name: CreateChatWakeup :one
-INSERT INTO chat_wakeup (workspace_id, chat_session_id, agent_id, title, instruction, fire_at, created_by_task_id,
-    issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-RETURNING id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout
+INSERT INTO chat_wakeup (
+    id, workspace_id, chat_session_id, agent_id, requester_id,
+    source_task_id, source_message_id, title, instruction, kind,
+    condition, interval_seconds, fire_at, next_eval_at, expires_at
+) VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9, $10,
+    $11, $12, $13, $14, $15
+)
+RETURNING id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at
 `
 
 type CreateChatWakeupParams struct {
+	ID              pgtype.UUID        `json:"id"`
 	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
 	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
 	AgentID         pgtype.UUID        `json:"agent_id"`
+	RequesterID     pgtype.UUID        `json:"requester_id"`
+	SourceTaskID    pgtype.UUID        `json:"source_task_id"`
+	SourceMessageID pgtype.UUID        `json:"source_message_id"`
 	Title           string             `json:"title"`
 	Instruction     string             `json:"instruction"`
+	Kind            string             `json:"kind"`
+	Condition       json.RawMessage    `json:"condition"`
+	IntervalSeconds pgtype.Int8        `json:"interval_seconds"`
 	FireAt          pgtype.Timestamptz `json:"fire_at"`
-	CreatedByTaskID pgtype.UUID        `json:"created_by_task_id"`
-	IssueID         pgtype.UUID        `json:"issue_id"`
-	EventType       string             `json:"event_type"`
-	FilterActorType string             `json:"filter_actor_type"`
-	FilterActorID   pgtype.UUID        `json:"filter_actor_id"`
-	UntilStatus     string             `json:"until_status"`
-	OnTimeout       string             `json:"on_timeout"`
+	NextEvalAt      pgtype.Timestamptz `json:"next_eval_at"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
 }
 
 func (q *Queries) CreateChatWakeup(ctx context.Context, arg CreateChatWakeupParams) (ChatWakeup, error) {
 	row := q.db.QueryRow(ctx, createChatWakeup,
+		arg.ID,
 		arg.WorkspaceID,
 		arg.ChatSessionID,
 		arg.AgentID,
+		arg.RequesterID,
+		arg.SourceTaskID,
+		arg.SourceMessageID,
 		arg.Title,
 		arg.Instruction,
+		arg.Kind,
+		arg.Condition,
+		arg.IntervalSeconds,
 		arg.FireAt,
-		arg.CreatedByTaskID,
-		arg.IssueID,
-		arg.EventType,
-		arg.FilterActorType,
-		arg.FilterActorID,
-		arg.UntilStatus,
-		arg.OnTimeout,
+		arg.NextEvalAt,
+		arg.ExpiresAt,
 	)
 	var i ChatWakeup
 	err := row.Scan(
@@ -140,326 +148,920 @@ func (q *Queries) CreateChatWakeup(ctx context.Context, arg CreateChatWakeupPara
 		&i.WorkspaceID,
 		&i.ChatSessionID,
 		&i.AgentID,
-		&i.Instruction,
-		&i.FireAt,
-		&i.Status,
-		&i.CreatedByTaskID,
-		&i.FiredTaskID,
-		&i.CreatedAt,
-		&i.ResolvedAt,
+		&i.RequesterID,
+		&i.SourceTaskID,
+		&i.SourceMessageID,
 		&i.Title,
-		&i.IssueID,
-		&i.EventType,
-		&i.FilterActorType,
-		&i.FilterActorID,
-		&i.UntilStatus,
-		&i.OnTimeout,
+		&i.Instruction,
+		&i.Kind,
+		&i.Condition,
+		&i.ConditionState,
+		&i.IntervalSeconds,
+		&i.FireAt,
+		&i.NextEvalAt,
+		&i.ExpiresAt,
+		&i.Status,
+		&i.EndReason,
+		&i.EndedAt,
+		&i.CheckCount,
+		&i.LastCheckNote,
+		&i.LastCheckedAt,
+		&i.LastCheckinTaskID,
+		&i.LastTaskID,
+		&i.LastFiredAt,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
 	)
 	return i, err
 }
 
-const dropChatWakeup = `-- name: DropChatWakeup :exec
-UPDATE chat_wakeup SET status = 'cancelled', resolved_at = now()
-WHERE id = $1 AND status = 'pending'
+const deferChatWakeup = `-- name: DeferChatWakeup :exec
+UPDATE chat_wakeup
+SET next_eval_at = $1,
+    last_error = $2,
+    updated_at = now()
+WHERE id = $3 AND status = 'active'
 `
 
-func (q *Queries) DropChatWakeup(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, dropChatWakeup, id)
+type DeferChatWakeupParams struct {
+	NextEvalAt pgtype.Timestamptz `json:"next_eval_at"`
+	LastError  pgtype.Text        `json:"last_error"`
+	ID         pgtype.UUID        `json:"id"`
+}
+
+func (q *Queries) DeferChatWakeup(ctx context.Context, arg DeferChatWakeupParams) error {
+	_, err := q.db.Exec(ctx, deferChatWakeup, arg.NextEvalAt, arg.LastError, arg.ID)
 	return err
 }
 
-const firstMatchingIssueComment = `-- name: FirstMatchingIssueComment :one
-SELECT id FROM comment
-WHERE issue_id = $1 AND type = 'comment' AND created_at > $2
-  AND deleted_at IS NULL
-  AND ($3::text = '' OR author_type = $3)
-  AND ($4::uuid IS NULL OR author_id = $4)
-ORDER BY created_at, id
+const deleteChatWakeup = `-- name: DeleteChatWakeup :exec
+DELETE FROM chat_wakeup WHERE id = $1
+`
+
+// Drops a wakeup whose conversation no longer exists.
+func (q *Queries) DeleteChatWakeup(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChatWakeup, id)
+	return err
+}
+
+const deleteChatWakeupInput = `-- name: DeleteChatWakeupInput :exec
+DELETE FROM chat_message
+WHERE id = $1 AND message_kind = 'wakeup'
+`
+
+func (q *Queries) DeleteChatWakeupInput(ctx context.Context, id pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChatWakeupInput, id)
+	return err
+}
+
+const deleteChatWakeupsBySession = `-- name: DeleteChatWakeupsBySession :exec
+DELETE FROM chat_wakeup WHERE chat_session_id = $1
+`
+
+// chat_wakeup has no chat_session FK; DeleteChatSession removes them in its
+// transaction.
+func (q *Queries) DeleteChatWakeupsBySession(ctx context.Context, chatSessionID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChatWakeupsBySession, chatSessionID)
+	return err
+}
+
+const deleteChatWakeupsBySystemRuntimeAgents = `-- name: DeleteChatWakeupsBySystemRuntimeAgents :exec
+DELETE FROM chat_wakeup
+WHERE chat_session_id IN (
+    SELECT cs.id FROM chat_session cs JOIN agent a ON a.id = cs.agent_id
+    WHERE a.runtime_id = $1 AND a.kind = 'system'
+)
+`
+
+// System agents' sessions cascade away with the agents on runtime teardown;
+// their wakeups go first, while the join can still find them.
+func (q *Queries) DeleteChatWakeupsBySystemRuntimeAgents(ctx context.Context, runtimeID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteChatWakeupsBySystemRuntimeAgents, runtimeID)
+	return err
+}
+
+const endActiveChatWakeupsForSession = `-- name: EndActiveChatWakeupsForSession :many
+UPDATE chat_wakeup
+SET status = 'cancelled',
+    end_reason = $1,
+    ended_at = now(),
+    updated_at = now()
+WHERE chat_session_id = $2 AND status = 'active'
+RETURNING id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at
+`
+
+type EndActiveChatWakeupsForSessionParams struct {
+	EndReason     pgtype.Text `json:"end_reason"`
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+}
+
+func (q *Queries) EndActiveChatWakeupsForSession(ctx context.Context, arg EndActiveChatWakeupsForSessionParams) ([]ChatWakeup, error) {
+	rows, err := q.db.Query(ctx, endActiveChatWakeupsForSession, arg.EndReason, arg.ChatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ChatWakeup{}
+	for rows.Next() {
+		var i ChatWakeup
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ChatSessionID,
+			&i.AgentID,
+			&i.RequesterID,
+			&i.SourceTaskID,
+			&i.SourceMessageID,
+			&i.Title,
+			&i.Instruction,
+			&i.Kind,
+			&i.Condition,
+			&i.ConditionState,
+			&i.IntervalSeconds,
+			&i.FireAt,
+			&i.NextEvalAt,
+			&i.ExpiresAt,
+			&i.Status,
+			&i.EndReason,
+			&i.EndedAt,
+			&i.CheckCount,
+			&i.LastCheckNote,
+			&i.LastCheckedAt,
+			&i.LastCheckinTaskID,
+			&i.LastTaskID,
+			&i.LastFiredAt,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const endChatWakeup = `-- name: EndChatWakeup :one
+UPDATE chat_wakeup
+SET status = $1,
+    end_reason = $2,
+    ended_at = now(),
+    last_error = $3,
+    updated_at = now()
+WHERE id = $4 AND status = 'active'
+RETURNING id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at
+`
+
+type EndChatWakeupParams struct {
+	Status    string      `json:"status"`
+	EndReason pgtype.Text `json:"end_reason"`
+	LastError pgtype.Text `json:"last_error"`
+	ID        pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) EndChatWakeup(ctx context.Context, arg EndChatWakeupParams) (ChatWakeup, error) {
+	row := q.db.QueryRow(ctx, endChatWakeup,
+		arg.Status,
+		arg.EndReason,
+		arg.LastError,
+		arg.ID,
+	)
+	var i ChatWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ChatSessionID,
+		&i.AgentID,
+		&i.RequesterID,
+		&i.SourceTaskID,
+		&i.SourceMessageID,
+		&i.Title,
+		&i.Instruction,
+		&i.Kind,
+		&i.Condition,
+		&i.ConditionState,
+		&i.IntervalSeconds,
+		&i.FireAt,
+		&i.NextEvalAt,
+		&i.ExpiresAt,
+		&i.Status,
+		&i.EndReason,
+		&i.EndedAt,
+		&i.CheckCount,
+		&i.LastCheckNote,
+		&i.LastCheckedAt,
+		&i.LastCheckinTaskID,
+		&i.LastTaskID,
+		&i.LastFiredAt,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChatWakeup = `-- name: GetChatWakeup :one
+SELECT id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at FROM chat_wakeup WHERE id = $1
+`
+
+func (q *Queries) GetChatWakeup(ctx context.Context, id pgtype.UUID) (ChatWakeup, error) {
+	row := q.db.QueryRow(ctx, getChatWakeup, id)
+	var i ChatWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ChatSessionID,
+		&i.AgentID,
+		&i.RequesterID,
+		&i.SourceTaskID,
+		&i.SourceMessageID,
+		&i.Title,
+		&i.Instruction,
+		&i.Kind,
+		&i.Condition,
+		&i.ConditionState,
+		&i.IntervalSeconds,
+		&i.FireAt,
+		&i.NextEvalAt,
+		&i.ExpiresAt,
+		&i.Status,
+		&i.EndReason,
+		&i.EndedAt,
+		&i.CheckCount,
+		&i.LastCheckNote,
+		&i.LastCheckedAt,
+		&i.LastCheckinTaskID,
+		&i.LastTaskID,
+		&i.LastFiredAt,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChatWakeupInSession = `-- name: GetChatWakeupInSession :one
+SELECT id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at FROM chat_wakeup
+WHERE id = $1 AND chat_session_id = $2
+`
+
+type GetChatWakeupInSessionParams struct {
+	ID            pgtype.UUID `json:"id"`
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+}
+
+func (q *Queries) GetChatWakeupInSession(ctx context.Context, arg GetChatWakeupInSessionParams) (ChatWakeup, error) {
+	row := q.db.QueryRow(ctx, getChatWakeupInSession, arg.ID, arg.ChatSessionID)
+	var i ChatWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ChatSessionID,
+		&i.AgentID,
+		&i.RequesterID,
+		&i.SourceTaskID,
+		&i.SourceMessageID,
+		&i.Title,
+		&i.Instruction,
+		&i.Kind,
+		&i.Condition,
+		&i.ConditionState,
+		&i.IntervalSeconds,
+		&i.FireAt,
+		&i.NextEvalAt,
+		&i.ExpiresAt,
+		&i.Status,
+		&i.EndReason,
+		&i.EndedAt,
+		&i.CheckCount,
+		&i.LastCheckNote,
+		&i.LastCheckedAt,
+		&i.LastCheckinTaskID,
+		&i.LastTaskID,
+		&i.LastFiredAt,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getChatWakeupInputForTask = `-- name: GetChatWakeupInputForTask :one
+SELECT id, chat_session_id, role, content, task_id, created_at, failure_reason, elapsed_ms, message_kind, channel_media_pending_until, channel_ingested, quick_actions, channel_context_revision, channel_outbound_type, channel_outbound_installation_id, channel_outbound_chat_id, channel_outbound_message_ids, channel_typing_settled, sent_via, decision_answer_id, lineage_message_ids, decision_request_ids, client_message_id, reanchored_at, wakeup_id FROM chat_message
+WHERE task_id = $1 AND role = 'user' AND message_kind = 'wakeup'
 LIMIT 1
 `
 
-type FirstMatchingIssueCommentParams struct {
-	IssueID   pgtype.UUID        `json:"issue_id"`
-	Since     pgtype.Timestamptz `json:"since"`
-	ActorType string             `json:"actor_type"`
-	ActorID   pgtype.UUID        `json:"actor_id"`
-}
-
-// First live comment on the issue after the watch was set that passes the actor
-// filter. It only names the comment: the send transaction reads the text.
-func (q *Queries) FirstMatchingIssueComment(ctx context.Context, arg FirstMatchingIssueCommentParams) (pgtype.UUID, error) {
-	row := q.db.QueryRow(ctx, firstMatchingIssueComment,
-		arg.IssueID,
-		arg.Since,
-		arg.ActorType,
-		arg.ActorID,
-	)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
-}
-
-const listChatWakeupsByFiredTasks = `-- name: ListChatWakeupsByFiredTasks :many
-SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout FROM chat_wakeup
-WHERE fired_task_id = ANY($1::uuid[])
-`
-
-func (q *Queries) ListChatWakeupsByFiredTasks(ctx context.Context, taskIds []pgtype.UUID) ([]ChatWakeup, error) {
-	rows, err := q.db.Query(ctx, listChatWakeupsByFiredTasks, taskIds)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChatWakeup{}
-	for rows.Next() {
-		var i ChatWakeup
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.ChatSessionID,
-			&i.AgentID,
-			&i.Instruction,
-			&i.FireAt,
-			&i.Status,
-			&i.CreatedByTaskID,
-			&i.FiredTaskID,
-			&i.CreatedAt,
-			&i.ResolvedAt,
-			&i.Title,
-			&i.IssueID,
-			&i.EventType,
-			&i.FilterActorType,
-			&i.FilterActorID,
-			&i.UntilStatus,
-			&i.OnTimeout,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listDueChatWakeups = `-- name: ListDueChatWakeups :many
-SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout FROM chat_wakeup
-WHERE status = 'pending' AND fire_at <= now()
-ORDER BY fire_at, id
-LIMIT $1
-`
-
-func (q *Queries) ListDueChatWakeups(ctx context.Context, limit int32) ([]ChatWakeup, error) {
-	rows, err := q.db.Query(ctx, listDueChatWakeups, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChatWakeup{}
-	for rows.Next() {
-		var i ChatWakeup
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.ChatSessionID,
-			&i.AgentID,
-			&i.Instruction,
-			&i.FireAt,
-			&i.Status,
-			&i.CreatedByTaskID,
-			&i.FiredTaskID,
-			&i.CreatedAt,
-			&i.ResolvedAt,
-			&i.Title,
-			&i.IssueID,
-			&i.EventType,
-			&i.FilterActorType,
-			&i.FilterActorID,
-			&i.UntilStatus,
-			&i.OnTimeout,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listPendingChatIssueWatches = `-- name: ListPendingChatIssueWatches :many
-SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout FROM chat_wakeup
-WHERE status = 'pending' AND issue_id IS NOT NULL
-  AND (created_at, id) > ($1::timestamptz, $2::uuid)
-ORDER BY created_at, id
-LIMIT $3
-`
-
-type ListPendingChatIssueWatchesParams struct {
-	AfterCreatedAt pgtype.Timestamptz `json:"after_created_at"`
-	AfterID        pgtype.UUID        `json:"after_id"`
-	PageSize       int32              `json:"page_size"`
-}
-
-func (q *Queries) ListPendingChatIssueWatches(ctx context.Context, arg ListPendingChatIssueWatchesParams) ([]ChatWakeup, error) {
-	rows, err := q.db.Query(ctx, listPendingChatIssueWatches, arg.AfterCreatedAt, arg.AfterID, arg.PageSize)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChatWakeup{}
-	for rows.Next() {
-		var i ChatWakeup
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.ChatSessionID,
-			&i.AgentID,
-			&i.Instruction,
-			&i.FireAt,
-			&i.Status,
-			&i.CreatedByTaskID,
-			&i.FiredTaskID,
-			&i.CreatedAt,
-			&i.ResolvedAt,
-			&i.Title,
-			&i.IssueID,
-			&i.EventType,
-			&i.FilterActorType,
-			&i.FilterActorID,
-			&i.UntilStatus,
-			&i.OnTimeout,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listPendingChatWakeups = `-- name: ListPendingChatWakeups :many
-SELECT id, workspace_id, chat_session_id, agent_id, instruction, fire_at, status, created_by_task_id, fired_task_id, created_at, resolved_at, title, issue_id, event_type, filter_actor_type, filter_actor_id, until_status, on_timeout FROM chat_wakeup
-WHERE chat_session_id = $1 AND status = 'pending'
-ORDER BY fire_at, id
-`
-
-func (q *Queries) ListPendingChatWakeups(ctx context.Context, chatSessionID pgtype.UUID) ([]ChatWakeup, error) {
-	rows, err := q.db.Query(ctx, listPendingChatWakeups, chatSessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []ChatWakeup{}
-	for rows.Next() {
-		var i ChatWakeup
-		if err := rows.Scan(
-			&i.ID,
-			&i.WorkspaceID,
-			&i.ChatSessionID,
-			&i.AgentID,
-			&i.Instruction,
-			&i.FireAt,
-			&i.Status,
-			&i.CreatedByTaskID,
-			&i.FiredTaskID,
-			&i.CreatedAt,
-			&i.ResolvedAt,
-			&i.Title,
-			&i.IssueID,
-			&i.EventType,
-			&i.FilterActorType,
-			&i.FilterActorID,
-			&i.UntilStatus,
-			&i.OnTimeout,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const lockChatWatchSourceComment = `-- name: LockChatWatchSourceComment :one
-SELECT id, author_type, author_id, content, taint_ids FROM comment
-WHERE id = $1::uuid
-  AND issue_id = $2::uuid
-  AND workspace_id = $3::uuid
-  AND deleted_at IS NULL
-FOR SHARE
-`
-
-type LockChatWatchSourceCommentParams struct {
-	CommentID   pgtype.UUID `json:"comment_id"`
-	IssueID     pgtype.UUID `json:"issue_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-type LockChatWatchSourceCommentRow struct {
-	ID         pgtype.UUID `json:"id"`
-	AuthorType string      `json:"author_type"`
-	AuthorID   pgtype.UUID `json:"author_id"`
-	Content    string      `json:"content"`
-	TaintIds   []string    `json:"taint_ids"`
-}
-
-// The only read of the text a fired watch quotes. The send transaction takes the
-// text and the taint here under a share lock, so the comment cannot be edited,
-// tombstoned or deleted before the turn commits. No row means it was deleted or
-// tombstoned after the tick named it (or is not on the watch's issue): the
-// caller sends nothing.
-func (q *Queries) LockChatWatchSourceComment(ctx context.Context, arg LockChatWatchSourceCommentParams) (LockChatWatchSourceCommentRow, error) {
-	row := q.db.QueryRow(ctx, lockChatWatchSourceComment, arg.CommentID, arg.IssueID, arg.WorkspaceID)
-	var i LockChatWatchSourceCommentRow
+// The hidden wakeup row a turn was started for, if any. $1 is the task's input
+// owner (chat_input_task_id), so an auto-retry finds its root's row.
+func (q *Queries) GetChatWakeupInputForTask(ctx context.Context, taskID pgtype.UUID) (ChatMessage, error) {
+	row := q.db.QueryRow(ctx, getChatWakeupInputForTask, taskID)
+	var i ChatMessage
 	err := row.Scan(
 		&i.ID,
-		&i.AuthorType,
-		&i.AuthorID,
+		&i.ChatSessionID,
+		&i.Role,
 		&i.Content,
-		&i.TaintIds,
+		&i.TaskID,
+		&i.CreatedAt,
+		&i.FailureReason,
+		&i.ElapsedMs,
+		&i.MessageKind,
+		&i.ChannelMediaPendingUntil,
+		&i.ChannelIngested,
+		&i.QuickActions,
+		&i.ChannelContextRevision,
+		&i.ChannelOutboundType,
+		&i.ChannelOutboundInstallationID,
+		&i.ChannelOutboundChatID,
+		&i.ChannelOutboundMessageIds,
+		&i.ChannelTypingSettled,
+		&i.SentVia,
+		&i.DecisionAnswerID,
+		&i.LineageMessageIds,
+		&i.DecisionRequestIds,
+		&i.ClientMessageID,
+		&i.ReanchoredAt,
+		&i.WakeupID,
 	)
 	return i, err
 }
 
-const setChatWakeupFiredTask = `-- name: SetChatWakeupFiredTask :exec
-UPDATE chat_wakeup SET fired_task_id = $2 WHERE id = $1
+const getChatWakeupTaskStatus = `-- name: GetChatWakeupTaskStatus :one
+SELECT status FROM agent_task_queue
+WHERE chat_session_id = $1
+  AND (id = $2 OR chat_input_task_id = $2)
+ORDER BY created_at DESC
+LIMIT 1
 `
 
-type SetChatWakeupFiredTaskParams struct {
-	ID          pgtype.UUID `json:"id"`
-	FiredTaskID pgtype.UUID `json:"fired_task_id"`
+type GetChatWakeupTaskStatusParams struct {
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+	TaskID        pgtype.UUID `json:"task_id"`
 }
 
-func (q *Queries) SetChatWakeupFiredTask(ctx context.Context, arg SetChatWakeupFiredTaskParams) error {
-	_, err := q.db.Exec(ctx, setChatWakeupFiredTask, arg.ID, arg.FiredTaskID)
+// The status of a wakeup turn, following its auto-retries: they share the
+// turn's input owner, and the newest one is the turn's current state.
+func (q *Queries) GetChatWakeupTaskStatus(ctx context.Context, arg GetChatWakeupTaskStatusParams) (string, error) {
+	row := q.db.QueryRow(ctx, getChatWakeupTaskStatus, arg.ChatSessionID, arg.TaskID)
+	var status string
+	err := row.Scan(&status)
+	return status, err
+}
+
+const listChatWakeupsForSession = `-- name: ListChatWakeupsForSession :many
+SELECT
+    w.id, w.workspace_id, w.chat_session_id, w.agent_id, w.requester_id, w.source_task_id, w.source_message_id, w.title, w.instruction, w.kind, w.condition, w.condition_state, w.interval_seconds, w.fire_at, w.next_eval_at, w.expires_at, w.status, w.end_reason, w.ended_at, w.check_count, w.last_check_note, w.last_checked_at, w.last_checkin_task_id, w.last_task_id, w.last_fired_at, w.last_error, w.created_at, w.updated_at,
+    COALESCE(t.status, '')::text AS last_task_status
+FROM chat_wakeup AS w
+LEFT JOIN LATERAL (
+    SELECT status FROM agent_task_queue
+    WHERE chat_session_id = w.chat_session_id
+      AND (id = w.last_task_id OR chat_input_task_id = w.last_task_id)
+    ORDER BY created_at DESC
+    LIMIT 1
+) AS t ON w.last_task_id IS NOT NULL
+WHERE w.chat_session_id = $1
+  AND (w.status = 'active' OR w.ended_at > now() - interval '7 days')
+ORDER BY (w.status = 'active') DESC, w.created_at DESC
+LIMIT 50
+`
+
+type ListChatWakeupsForSessionRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	RequesterID       pgtype.UUID        `json:"requester_id"`
+	SourceTaskID      pgtype.UUID        `json:"source_task_id"`
+	SourceMessageID   pgtype.UUID        `json:"source_message_id"`
+	Title             string             `json:"title"`
+	Instruction       string             `json:"instruction"`
+	Kind              string             `json:"kind"`
+	Condition         json.RawMessage    `json:"condition"`
+	ConditionState    string             `json:"condition_state"`
+	IntervalSeconds   pgtype.Int8        `json:"interval_seconds"`
+	FireAt            pgtype.Timestamptz `json:"fire_at"`
+	NextEvalAt        pgtype.Timestamptz `json:"next_eval_at"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	Status            string             `json:"status"`
+	EndReason         pgtype.Text        `json:"end_reason"`
+	EndedAt           pgtype.Timestamptz `json:"ended_at"`
+	CheckCount        int32              `json:"check_count"`
+	LastCheckNote     pgtype.Text        `json:"last_check_note"`
+	LastCheckedAt     pgtype.Timestamptz `json:"last_checked_at"`
+	LastCheckinTaskID pgtype.UUID        `json:"last_checkin_task_id"`
+	LastTaskID        pgtype.UUID        `json:"last_task_id"`
+	LastFiredAt       pgtype.Timestamptz `json:"last_fired_at"`
+	LastError         pgtype.Text        `json:"last_error"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	LastTaskStatus    string             `json:"last_task_status"`
+}
+
+// Active wakeups plus the ones that ended in the last week, newest first. The
+// last turn's status (after any auto-retry) lets a client tell a report that
+// is waiting, running, delivered or failed apart.
+func (q *Queries) ListChatWakeupsForSession(ctx context.Context, chatSessionID pgtype.UUID) ([]ListChatWakeupsForSessionRow, error) {
+	rows, err := q.db.Query(ctx, listChatWakeupsForSession, chatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatWakeupsForSessionRow{}
+	for rows.Next() {
+		var i ListChatWakeupsForSessionRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ChatSessionID,
+			&i.AgentID,
+			&i.RequesterID,
+			&i.SourceTaskID,
+			&i.SourceMessageID,
+			&i.Title,
+			&i.Instruction,
+			&i.Kind,
+			&i.Condition,
+			&i.ConditionState,
+			&i.IntervalSeconds,
+			&i.FireAt,
+			&i.NextEvalAt,
+			&i.ExpiresAt,
+			&i.Status,
+			&i.EndReason,
+			&i.EndedAt,
+			&i.CheckCount,
+			&i.LastCheckNote,
+			&i.LastCheckedAt,
+			&i.LastCheckinTaskID,
+			&i.LastTaskID,
+			&i.LastFiredAt,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastTaskStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listChatWakeupsForSessionOwner = `-- name: ListChatWakeupsForSessionOwner :many
+SELECT
+    w.id, w.workspace_id, w.chat_session_id, w.agent_id, w.requester_id, w.source_task_id, w.source_message_id, w.title, w.instruction, w.kind, w.condition, w.condition_state, w.interval_seconds, w.fire_at, w.next_eval_at, w.expires_at, w.status, w.end_reason, w.ended_at, w.check_count, w.last_check_note, w.last_checked_at, w.last_checkin_task_id, w.last_task_id, w.last_fired_at, w.last_error, w.created_at, w.updated_at,
+    COALESCE(t.status, '')::text AS last_task_status,
+    s.title AS chat_session_title
+FROM chat_wakeup AS w
+JOIN chat_session AS s ON s.id = w.chat_session_id
+LEFT JOIN LATERAL (
+    SELECT status FROM agent_task_queue
+    WHERE chat_session_id = w.chat_session_id
+      AND (id = w.last_task_id OR chat_input_task_id = w.last_task_id)
+    ORDER BY created_at DESC
+    LIMIT 1
+) AS t ON w.last_task_id IS NOT NULL
+WHERE w.workspace_id = $1
+  AND s.creator_id = $2
+  AND s.status = 'active'
+  AND (w.status = 'active' OR w.ended_at > now() - interval '7 days')
+ORDER BY (w.status = 'active') DESC, w.created_at DESC
+LIMIT 100
+`
+
+type ListChatWakeupsForSessionOwnerParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	OwnerID     pgtype.UUID `json:"owner_id"`
+}
+
+type ListChatWakeupsForSessionOwnerRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	RequesterID       pgtype.UUID        `json:"requester_id"`
+	SourceTaskID      pgtype.UUID        `json:"source_task_id"`
+	SourceMessageID   pgtype.UUID        `json:"source_message_id"`
+	Title             string             `json:"title"`
+	Instruction       string             `json:"instruction"`
+	Kind              string             `json:"kind"`
+	Condition         json.RawMessage    `json:"condition"`
+	ConditionState    string             `json:"condition_state"`
+	IntervalSeconds   pgtype.Int8        `json:"interval_seconds"`
+	FireAt            pgtype.Timestamptz `json:"fire_at"`
+	NextEvalAt        pgtype.Timestamptz `json:"next_eval_at"`
+	ExpiresAt         pgtype.Timestamptz `json:"expires_at"`
+	Status            string             `json:"status"`
+	EndReason         pgtype.Text        `json:"end_reason"`
+	EndedAt           pgtype.Timestamptz `json:"ended_at"`
+	CheckCount        int32              `json:"check_count"`
+	LastCheckNote     pgtype.Text        `json:"last_check_note"`
+	LastCheckedAt     pgtype.Timestamptz `json:"last_checked_at"`
+	LastCheckinTaskID pgtype.UUID        `json:"last_checkin_task_id"`
+	LastTaskID        pgtype.UUID        `json:"last_task_id"`
+	LastFiredAt       pgtype.Timestamptz `json:"last_fired_at"`
+	LastError         pgtype.Text        `json:"last_error"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
+	LastTaskStatus    string             `json:"last_task_status"`
+	ChatSessionTitle  string             `json:"chat_session_title"`
+}
+
+// The wakeups of every conversation one person owns in one workspace: the
+// active ones and those that ended in the last week. Archived conversations
+// are skipped; their wakeups ended when they were archived.
+func (q *Queries) ListChatWakeupsForSessionOwner(ctx context.Context, arg ListChatWakeupsForSessionOwnerParams) ([]ListChatWakeupsForSessionOwnerRow, error) {
+	rows, err := q.db.Query(ctx, listChatWakeupsForSessionOwner, arg.WorkspaceID, arg.OwnerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListChatWakeupsForSessionOwnerRow{}
+	for rows.Next() {
+		var i ListChatWakeupsForSessionOwnerRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.ChatSessionID,
+			&i.AgentID,
+			&i.RequesterID,
+			&i.SourceTaskID,
+			&i.SourceMessageID,
+			&i.Title,
+			&i.Instruction,
+			&i.Kind,
+			&i.Condition,
+			&i.ConditionState,
+			&i.IntervalSeconds,
+			&i.FireAt,
+			&i.NextEvalAt,
+			&i.ExpiresAt,
+			&i.Status,
+			&i.EndReason,
+			&i.EndedAt,
+			&i.CheckCount,
+			&i.LastCheckNote,
+			&i.LastCheckedAt,
+			&i.LastCheckinTaskID,
+			&i.LastTaskID,
+			&i.LastFiredAt,
+			&i.LastError,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.LastTaskStatus,
+			&i.ChatSessionTitle,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDueChatWakeupIDs = `-- name: ListDueChatWakeupIDs :many
+SELECT id FROM chat_wakeup
+WHERE status = 'active' AND next_eval_at <= now()
+ORDER BY next_eval_at ASC
+LIMIT $1
+`
+
+func (q *Queries) ListDueChatWakeupIDs(ctx context.Context, rowLimit int32) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listDueChatWakeupIDs, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockChatWakeup = `-- name: LockChatWakeup :one
+SELECT id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at FROM chat_wakeup
+WHERE id = $1
+FOR UPDATE
+`
+
+func (q *Queries) LockChatWakeup(ctx context.Context, id pgtype.UUID) (ChatWakeup, error) {
+	row := q.db.QueryRow(ctx, lockChatWakeup, id)
+	var i ChatWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ChatSessionID,
+		&i.AgentID,
+		&i.RequesterID,
+		&i.SourceTaskID,
+		&i.SourceMessageID,
+		&i.Title,
+		&i.Instruction,
+		&i.Kind,
+		&i.Condition,
+		&i.ConditionState,
+		&i.IntervalSeconds,
+		&i.FireAt,
+		&i.NextEvalAt,
+		&i.ExpiresAt,
+		&i.Status,
+		&i.EndReason,
+		&i.EndedAt,
+		&i.CheckCount,
+		&i.LastCheckNote,
+		&i.LastCheckedAt,
+		&i.LastCheckinTaskID,
+		&i.LastTaskID,
+		&i.LastFiredAt,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const lockChatWakeupInSession = `-- name: LockChatWakeupInSession :one
+SELECT id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at FROM chat_wakeup
+WHERE id = $1 AND chat_session_id = $2
+FOR UPDATE
+`
+
+type LockChatWakeupInSessionParams struct {
+	ID            pgtype.UUID `json:"id"`
+	ChatSessionID pgtype.UUID `json:"chat_session_id"`
+}
+
+func (q *Queries) LockChatWakeupInSession(ctx context.Context, arg LockChatWakeupInSessionParams) (ChatWakeup, error) {
+	row := q.db.QueryRow(ctx, lockChatWakeupInSession, arg.ID, arg.ChatSessionID)
+	var i ChatWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ChatSessionID,
+		&i.AgentID,
+		&i.RequesterID,
+		&i.SourceTaskID,
+		&i.SourceMessageID,
+		&i.Title,
+		&i.Instruction,
+		&i.Kind,
+		&i.Condition,
+		&i.ConditionState,
+		&i.IntervalSeconds,
+		&i.FireAt,
+		&i.NextEvalAt,
+		&i.ExpiresAt,
+		&i.Status,
+		&i.EndReason,
+		&i.EndedAt,
+		&i.CheckCount,
+		&i.LastCheckNote,
+		&i.LastCheckedAt,
+		&i.LastCheckinTaskID,
+		&i.LastTaskID,
+		&i.LastFiredAt,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const recordChatWakeupFire = `-- name: RecordChatWakeupFire :one
+UPDATE chat_wakeup
+SET last_task_id = $1,
+    last_fired_at = now(),
+    check_count = check_count + CASE WHEN kind = 'check' AND $2::text = '' THEN 1 ELSE 0 END,
+    status = CASE WHEN $2::text = '' THEN status ELSE $2::text END,
+    end_reason = CASE WHEN $2::text = '' THEN end_reason ELSE $3::text END,
+    ended_at = CASE WHEN $2::text = '' THEN ended_at ELSE now() END,
+    next_eval_at = $4,
+    last_check_note = NULL,
+    last_error = NULL,
+    updated_at = now()
+WHERE id = $5
+RETURNING id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at
+`
+
+type RecordChatWakeupFireParams struct {
+	TaskID     pgtype.UUID        `json:"task_id"`
+	EndStatus  string             `json:"end_status"`
+	EndReason  string             `json:"end_reason"`
+	NextEvalAt pgtype.Timestamptz `json:"next_eval_at"`
+	ID         pgtype.UUID        `json:"id"`
+}
+
+// One turn was started for this wakeup. A one-shot wakeup ends here; a check
+// stays active and is next evaluated at next_eval_at.
+func (q *Queries) RecordChatWakeupFire(ctx context.Context, arg RecordChatWakeupFireParams) (ChatWakeup, error) {
+	row := q.db.QueryRow(ctx, recordChatWakeupFire,
+		arg.TaskID,
+		arg.EndStatus,
+		arg.EndReason,
+		arg.NextEvalAt,
+		arg.ID,
+	)
+	var i ChatWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ChatSessionID,
+		&i.AgentID,
+		&i.RequesterID,
+		&i.SourceTaskID,
+		&i.SourceMessageID,
+		&i.Title,
+		&i.Instruction,
+		&i.Kind,
+		&i.Condition,
+		&i.ConditionState,
+		&i.IntervalSeconds,
+		&i.FireAt,
+		&i.NextEvalAt,
+		&i.ExpiresAt,
+		&i.Status,
+		&i.EndReason,
+		&i.EndedAt,
+		&i.CheckCount,
+		&i.LastCheckNote,
+		&i.LastCheckedAt,
+		&i.LastCheckinTaskID,
+		&i.LastTaskID,
+		&i.LastFiredAt,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const recordChatWakeupRetry = `-- name: RecordChatWakeupRetry :one
+UPDATE chat_wakeup
+SET last_task_id = $1,
+    last_fired_at = now(),
+    last_error = NULL,
+    updated_at = now()
+WHERE id = $2
+RETURNING id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at
+`
+
+type RecordChatWakeupRetryParams struct {
+	TaskID pgtype.UUID `json:"task_id"`
+	ID     pgtype.UUID `json:"id"`
+}
+
+// The person re-ran an ended wakeup's failed turn. Status and end stay.
+func (q *Queries) RecordChatWakeupRetry(ctx context.Context, arg RecordChatWakeupRetryParams) (ChatWakeup, error) {
+	row := q.db.QueryRow(ctx, recordChatWakeupRetry, arg.TaskID, arg.ID)
+	var i ChatWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ChatSessionID,
+		&i.AgentID,
+		&i.RequesterID,
+		&i.SourceTaskID,
+		&i.SourceMessageID,
+		&i.Title,
+		&i.Instruction,
+		&i.Kind,
+		&i.Condition,
+		&i.ConditionState,
+		&i.IntervalSeconds,
+		&i.FireAt,
+		&i.NextEvalAt,
+		&i.ExpiresAt,
+		&i.Status,
+		&i.EndReason,
+		&i.EndedAt,
+		&i.CheckCount,
+		&i.LastCheckNote,
+		&i.LastCheckedAt,
+		&i.LastCheckinTaskID,
+		&i.LastTaskID,
+		&i.LastFiredAt,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const setChatWakeupEvaluation = `-- name: SetChatWakeupEvaluation :exec
+UPDATE chat_wakeup
+SET condition_state = $1,
+    next_eval_at = $2,
+    last_error = $3,
+    updated_at = now()
+WHERE id = $4
+`
+
+type SetChatWakeupEvaluationParams struct {
+	ConditionState string             `json:"condition_state"`
+	NextEvalAt     pgtype.Timestamptz `json:"next_eval_at"`
+	LastError      pgtype.Text        `json:"last_error"`
+	ID             pgtype.UUID        `json:"id"`
+}
+
+func (q *Queries) SetChatWakeupEvaluation(ctx context.Context, arg SetChatWakeupEvaluationParams) error {
+	_, err := q.db.Exec(ctx, setChatWakeupEvaluation,
+		arg.ConditionState,
+		arg.NextEvalAt,
+		arg.LastError,
+		arg.ID,
+	)
 	return err
 }
 
-const stampChatTaskWatchSource = `-- name: StampChatTaskWatchSource :exec
-UPDATE agent_task_queue SET
-    taint_ids = $1::text[],
-    trigger_evidence_kind = 'comment',
-    trigger_evidence_ref_id = $2::uuid
-WHERE id = $3::uuid
+const updateChatWakeupConfig = `-- name: UpdateChatWakeupConfig :one
+UPDATE chat_wakeup
+SET title = $1,
+    instruction = $2,
+    condition = $3,
+    condition_state = $4,
+    interval_seconds = $5,
+    fire_at = $6,
+    next_eval_at = $7,
+    expires_at = $8,
+    last_error = NULL,
+    updated_at = now()
+WHERE id = $9 AND status = 'active'
+RETURNING id, workspace_id, chat_session_id, agent_id, requester_id, source_task_id, source_message_id, title, instruction, kind, condition, condition_state, interval_seconds, fire_at, next_eval_at, expires_at, status, end_reason, ended_at, check_count, last_check_note, last_checked_at, last_checkin_task_id, last_task_id, last_fired_at, last_error, created_at, updated_at
 `
 
-type StampChatTaskWatchSourceParams struct {
-	TaintIds  []string    `json:"taint_ids"`
-	CommentID pgtype.UUID `json:"comment_id"`
-	TaskID    pgtype.UUID `json:"task_id"`
+type UpdateChatWakeupConfigParams struct {
+	Title           string             `json:"title"`
+	Instruction     string             `json:"instruction"`
+	Condition       json.RawMessage    `json:"condition"`
+	ConditionState  string             `json:"condition_state"`
+	IntervalSeconds pgtype.Int8        `json:"interval_seconds"`
+	FireAt          pgtype.Timestamptz `json:"fire_at"`
+	NextEvalAt      pgtype.Timestamptz `json:"next_eval_at"`
+	ExpiresAt       pgtype.Timestamptz `json:"expires_at"`
+	ID              pgtype.UUID        `json:"id"`
 }
 
-// The task names the quoted comment as its trigger evidence and carries the
-// taint LockChatWatchSourceComment read (the task trigger unions it with what
-// the task has).
-func (q *Queries) StampChatTaskWatchSource(ctx context.Context, arg StampChatTaskWatchSourceParams) error {
-	_, err := q.db.Exec(ctx, stampChatTaskWatchSource, arg.TaintIds, arg.CommentID, arg.TaskID)
-	return err
+func (q *Queries) UpdateChatWakeupConfig(ctx context.Context, arg UpdateChatWakeupConfigParams) (ChatWakeup, error) {
+	row := q.db.QueryRow(ctx, updateChatWakeupConfig,
+		arg.Title,
+		arg.Instruction,
+		arg.Condition,
+		arg.ConditionState,
+		arg.IntervalSeconds,
+		arg.FireAt,
+		arg.NextEvalAt,
+		arg.ExpiresAt,
+		arg.ID,
+	)
+	var i ChatWakeup
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.ChatSessionID,
+		&i.AgentID,
+		&i.RequesterID,
+		&i.SourceTaskID,
+		&i.SourceMessageID,
+		&i.Title,
+		&i.Instruction,
+		&i.Kind,
+		&i.Condition,
+		&i.ConditionState,
+		&i.IntervalSeconds,
+		&i.FireAt,
+		&i.NextEvalAt,
+		&i.ExpiresAt,
+		&i.Status,
+		&i.EndReason,
+		&i.EndedAt,
+		&i.CheckCount,
+		&i.LastCheckNote,
+		&i.LastCheckedAt,
+		&i.LastCheckinTaskID,
+		&i.LastTaskID,
+		&i.LastFiredAt,
+		&i.LastError,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

@@ -3,6 +3,7 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { motion, useIsPresent } from "motion/react";
+import { useReducedMotion } from "@multica/core/appearance";
 import type { AgentAvailability } from "@multica/core/agents";
 import { errorCode } from "@multica/core/api";
 import type { ChatMessage, ChatPendingTask, ChatQuickAction, ChatSession } from "@multica/core/types";
@@ -11,6 +12,7 @@ import { hideQueuedChatMessages } from "@multica/core/chat/pending";
 import { useRegenerateChatQuickActions } from "@multica/core/chat/mutations";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
 import { InteractiveLoginBanner } from "./interactive-login-banner";
+import { useChatWakeups } from "./chat-wakeups";
 
 /** Message-only observers leave with the fading list; the composer stays alive. */
 export function ChatWindowMessages({
@@ -54,6 +56,8 @@ export function ChatWindowMessages({
   children: ReactNode;
 }) {
   const isPresent = useIsPresent();
+  const prefersReducedMotion = useReducedMotion();
+  const wakeups = useChatWakeups(sessionId);
   const regenerateQuickActions = useRegenerateChatQuickActions();
   const {
     data,
@@ -103,7 +107,7 @@ export function ChatWindowMessages({
       initial={false}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.15 }}
+      transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
     >
       {loginRequired ? (
         <InteractiveLoginBanner />
@@ -135,6 +139,7 @@ export function ChatWindowMessages({
             : undefined}
           quickActionsPendingMessageId={quickActionsPendingMessageId}
           onQuoteMessage={onQuoteMessage}
+          wakeups={wakeups}
         />
       ) : children}
     </motion.div>

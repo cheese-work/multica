@@ -435,9 +435,8 @@ export function useResolveComment(issueId: string) {
  * Toggle a reaction on the issue itself. Cache target is the issue detail
  * query — Issue.reactions is an optional array on the Issue object.
  *
- * Mobile reads issue reactions directly off the detail cache (no separate
- * query like web's issueReactionsOptions). Single source of truth, less
- * code, fewer requests.
+ * Mobile reads issue reactions directly off the detail cache, as web does.
+ * Single source of truth, less code, fewer requests.
  */
 export function useToggleIssueReaction(issueId: string) {
   const qc = useQueryClient();
@@ -556,6 +555,8 @@ export function useUpdateIssue(issueId: string) {
           expected_revision: _expectedRevision,
           handoff_preview: _handoffPreview,
           stop_previous_assignee_runs: _stopPreviousAssigneeRuns,
+          blocked_by: _blockedBy,
+          remove_blocked_by: _removeBlockedBy,
           ...optimisticPatch
         } = patch;
         qc.setQueryData<Issue>(key, {

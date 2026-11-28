@@ -27,7 +27,8 @@ describe("startup path imports", () => {
 describe("modal registry", () => {
   it("loads each modal on first open, not at startup", () => {
     const source = readFileSync(resolve(__dirname, "modals/registry.tsx"), "utf8");
-    const eager = source.match(/^import \{[^}]+\} from "\.\/(?!issue-limit-upgrade-dialog)[^"]+";$/gm) ?? [];
+    // limit-recovery-dialog is the one eager modal: it is always mounted and opens from the modal store.
+    const eager = source.match(/^import \{[^}]+\} from "\.\/(?!limit-recovery-dialog)[^"]+";$/gm) ?? [];
     expect(eager).toEqual([]);
   });
 });

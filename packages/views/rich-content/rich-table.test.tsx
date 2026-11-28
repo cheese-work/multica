@@ -75,6 +75,33 @@ describe("RichTable", () => {
     expect(screen.queryByRole("button", { name: "Reset widths" })).toBeNull();
   });
 
+  // Upstream's measure-skip (no max-content pass while the minimums fit) lives
+  // in upstream's in-file measureColumns. The fork moved measuring into
+  // rich-table-fit.ts with a per-content fit cache, and the skip is not ported
+  // there yet (CHE-10180 follow-up row). The table content is unique so the
+  // fit cache cannot leak this test's result into the other RichTable tests.
+  it.skip("skips max-content measurements when minimum column widths fit", () => {
+    const measurements: string[] = [];
+    const rect = vi
+      .spyOn(HTMLTableCellElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLTableCellElement) {
+        measurements.push(this.closest("table")?.style.width ?? "");
+        return new DOMRect(0, 0, 100, 20);
+      });
+    const clientWidth = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(560);
+    try {
+      const view = render(<RichContent content={TABLE.replace("harness switch", "measure skip")} />);
+      const table = view.container.querySelector("table");
+      if (!table) throw new Error("table not rendered");
+      expect(measurements).toContain("min-content");
+      expect(measurements).not.toContain("max-content");
+      expect(table).not.toHaveAttribute("data-column-widths");
+    } finally {
+      rect.mockRestore();
+      clientWidth.mockRestore();
+    }
+  });
+
   it("gives an overflowing table capped content widths without saving them", () => {
     const natural = { "max-content": [500, 260, 90], "min-content": [200, 330, 64] } as const;
     const rect = vi
@@ -233,6 +260,36 @@ describe("RichTable", () => {
         globalThis.ResizeObserver = Original;
       }
     });
+  });
+
+  it("measures again for web fonts only while they are still loading", async () => {
+    const rect = vi.spyOn(HTMLTableCellElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 100 } as DOMRect);
+    const clientWidth = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(560);
+    const measures = async (status: FontFaceSet["status"]) => {
+      let fontsLoaded!: () => void;
+      const ready = new Promise<void>((resolve) => (fontsLoaded = resolve));
+      Object.defineProperty(document, "fonts", { configurable: true, value: { status, ready } });
+      rect.mockClear();
+      const view = renderTable();
+      const first = rect.mock.calls.length;
+      fontsLoaded();
+      await ready;
+      await Promise.resolve();
+      const total = rect.mock.calls.length;
+      view.unmount();
+      return { first, total };
+    };
+    try {
+      const loaded = await measures("loaded");
+      expect(loaded.first).toBeGreaterThan(0);
+      expect(loaded.total).toBe(loaded.first);
+      const loading = await measures("loading");
+      expect(loading.total).toBeGreaterThan(loading.first);
+    } finally {
+      delete (document as { fonts?: unknown }).fonts;
+      rect.mockRestore();
+      clientWidth.mockRestore();
+    }
   });
 
   it("resizes a column from the keyboard, persists it, and resets", async () => {

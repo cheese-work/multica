@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { SidebarProvider } from "@multica/ui/components/ui/sidebar";
+import { WorkspaceTrialNotices } from "../billing/trial-notices";
 import { AppearanceSync } from "../common/appearance-sync";
 import { ModalRegistry } from "../modals/registry";
 import { SourceBackfillModal } from "../onboarding/source-backfill-modal";
@@ -19,6 +20,8 @@ import { MachinePauseBanner } from "./machine-pause-banner";
 import { MachineBannerHeaderSlot } from "./machine-banner-toggle";
 import { WorkspacePauseBanner } from "./workspace-pause-banner";
 import { OpenDecisionsChip } from "./open-decisions-chip";
+import { useIsResolvedNonGuest } from "@multica/core/permissions";
+import { useCurrentWorkspace } from "@multica/core/paths";
 
 interface DashboardLayoutProps {
   children: ReactNode;
@@ -40,6 +43,27 @@ export function AppShellCard({ children }: { children: ReactNode }) {
       <SpacePanel />
       <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden">{children}</div>
     </main>
+  );
+}
+
+/**
+ * The shell's banners. A guest (MUL-9420) is refused the fork's affected-machine
+ * and open-decision endpoints, so the machine banner, its header toggle and the
+ * open-decisions chip stay out of a guest's shell.
+ */
+function MemberShellBanners({ children }: { children: ReactNode }) {
+  const wsId = useCurrentWorkspace()?.id;
+  // Mount the member-only banners only once the role is known: while the member
+  // list loads `guest` is false, and their queries would start and be refused.
+  const memberKnown = useIsResolvedNonGuest(wsId);
+  return (
+    <>
+      {memberKnown && <MachinePauseBanner />}
+      <WorkspacePauseBanner />
+      {memberKnown && <OpenDecisionsChip />}
+      <WorkspaceTrialNotices />
+      <MachineBannerHeaderSlot enabled={memberKnown}>{children}</MachineBannerHeaderSlot>
+    </>
   );
 }
 
@@ -75,10 +99,7 @@ export function DashboardLayout({
               <div className="flex min-w-0 flex-1 flex-col">
                 <AppShellCard>
                   <NavigationProgress />
-                  <MachinePauseBanner />
-                  <WorkspacePauseBanner />
-                  <OpenDecisionsChip />
-                  <MachineBannerHeaderSlot>{children}</MachineBannerHeaderSlot>
+                  <MemberShellBanners>{children}</MemberShellBanners>
                   <ModalRegistry />
                   <SourceBackfillModal />
                   {extra}

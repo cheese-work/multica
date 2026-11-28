@@ -9,6 +9,10 @@ import { renderWithI18n } from "../../test/i18n";
 // (a placeholder holds their space), because the CHE-2082 deep-link target
 // alone mounts ~30 tables and ~65 SVG icons. Find still mounts them all.
 
+vi.mock("@multica/core/permissions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/permissions")>()),
+  useIsGuest: () => false,
+}));
 vi.mock("@multica/core/api", () => ({
   api: { uploadFile: vi.fn(), getAttachmentTextContent: vi.fn() },
   PreviewTooLargeError: class extends Error {},

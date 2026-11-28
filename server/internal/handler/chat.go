@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -47,6 +49,9 @@ func (h *Handler) CreateChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
+	if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
+		return
+	}
 
 	var req CreateChatSessionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -196,6 +201,9 @@ func (h *Handler) ListChatSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, responses)
 		return
 	}
+	if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
+		return
+	}
 
 	// Compute the accessible-agents set once and use it to drop sessions
 	// whose target agent the caller no longer has access to — without this,
@@ -320,6 +328,29 @@ func formatAttentionTime(t *time.Time) *string {
 	return &s
 }
 
+// requireChatOwnerAccess gates every Chat route that acts as the caller's own
+// conversations. A task token's user id is its runtime owner whoever started
+// the run, so only a live task the owner started may list, read or write the
+// owner's chats; agents read their own session through /api/chat/history.
+// Returns false having already written the error response.
+func (h *Handler) requireChatOwnerAccess(w http.ResponseWriter, r *http.Request, userID, workspaceID string) bool {
+	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
+	if !ok {
+		return false
+	}
+	ok, err := h.requestRepresentsUser(r, userID, workspaceUUID)
+	if err != nil {
+		slog.Warn("resolve chat access failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to resolve chat access")
+		return false
+	}
+	if !ok {
+		writeError(w, http.StatusForbidden, "chat access requires the session owner's verified human trigger")
+		return false
+	}
+	return true
+}
+
 func (h *Handler) loadChatSessionForUser(w http.ResponseWriter, r *http.Request, userID, workspaceID, sessionID string) (db.ChatSession, bool) {
 	sessionUUID, ok := parseUUIDOrBadRequest(w, sessionID, "chat session id")
 	if !ok {
@@ -327,6 +358,9 @@ func (h *Handler) loadChatSessionForUser(w http.ResponseWriter, r *http.Request,
 	}
 	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace id")
 	if !ok {
+		return db.ChatSession{}, false
+	}
+	if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
 		return db.ChatSession{}, false
 	}
 	session, err := h.Queries.GetChatSessionInWorkspace(r.Context(), db.GetChatSessionInWorkspaceParams{
@@ -746,6 +780,11 @@ func (h *Handler) SetChatSessionArchived(w http.ResponseWriter, r *http.Request)
 	// rather than at the daemon's next poll.
 	h.TaskService.BroadcastCancelledTasks(r.Context(), workspaceID, cancelled, reactionTargets)
 	h.publishDMRepliesRead(workspaceID, userID, closedRecords)
+	// After commit: a firing wakeup locks its row before the session, so
+	// ending wakeups inside the archive tx could deadlock with it.
+	if req.Archived {
+		h.chatWakeups().EndForArchivedSession(r.Context(), updated.ID)
+	}
 
 	resolvedSessionID := uuidToString(updated.ID)
 	status := updated.Status
@@ -826,6 +865,14 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := qtx.DeleteChatTaskSupplementsBySession(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete chat supplements")
+		return
+	}
+	if err := qtx.DeleteChatSupplementCapabilitiesBySession(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete chat supplement capabilities")
+		return
+	}
 	cancelled, err := qtx.CancelAgentTasksByChatSession(r.Context(), session.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to cancel chat session tasks")
@@ -870,10 +917,12 @@ func (h *Handler) DeleteChatSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to delete chat session draft restores")
 		return
 	}
+	if err := qtx.DeleteChatWakeupsBySession(r.Context(), session.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete chat session wakeups")
+		return
+	}
 
-	if err := qtx.DeleteChatTaskSupplementsBySession(r.Context(), db.DeleteChatTaskSupplementsBySessionParams{
-		ChatSessionID: session.ID, WorkspaceID: session.WorkspaceID,
-	}); err != nil {
+	if err := qtx.DeleteChatTaskSupplementsBySession(r.Context(), session.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete chat supplements")
 		return
 	}
@@ -945,6 +994,8 @@ type SendChatMessageRequest struct {
 	Content           string   `json:"content"`
 	AttachmentIDs     []string `json:"attachment_ids"`
 	DecisionRequestID string   `json:"decision_request_id"`
+	// Steer makes the send redirect the in-flight turn instead of queueing.
+	Steer bool `json:"steer"`
 	// ClientMessageID makes the send idempotent per DM: a retry with the same id
 	// (after a timeout) returns the stored message and writes nothing.
 	ClientMessageID string `json:"client_message_id"`
@@ -1030,7 +1081,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 			h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
 			return
 		}
-		accepted, err := h.TaskService.LookupDirectChatSubmission(r.Context(), session, parseUUID(userID), req.Content, attachmentIDs, submitterType, parseUUID(submitterID), submissionID)
+		accepted, err := h.TaskService.LookupDirectChatSubmission(r.Context(), session, parseUUID(userID), req.Content, attachmentIDs, submitterType, parseUUID(submitterID), submissionID, req.Steer)
 		if err != nil {
 			h.writeChatSubmissionError(w, err)
 			return
@@ -1128,9 +1179,9 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	} else {
 		opts := service.DirectChatSendOptions{ClientMessageID: req.ClientMessageID, HumanSend: actorType == "member", AskIDs: askIDs}
 		if submissionID.Valid {
-			sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts, submissionID)
+			sent, err = h.TaskService.SendDirectChatMessageWithSubmission(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts, submissionID, req.Steer)
 		} else {
-			sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts)
+			sent, err = h.TaskService.SendDirectChatMessage(r.Context(), session, agent, parseUUID(userID), req.Content, attachmentIDs, actorType, parseUUID(actorID), r.Header.Get("X-Actor-Source"), opts, req.Steer)
 		}
 	}
 	if err != nil {
@@ -1172,6 +1223,9 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		writeReplayedSend(w, sent)
 		return
 	}
+	if sent.Steered {
+		h.notifyTaskSupplementAvailable(task)
+	}
 	currentTitle := session.Title
 	if sent.InitialTitle != "" {
 		currentTitle = sent.InitialTitle
@@ -1211,7 +1265,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		MessageID:     uuidToString(msg.ID),
 		Role:          "user",
 		Content:       req.Content,
-		TaskID:        uuidToString(task.ID),
+		TaskID:        uuidToString(msg.TaskID),
 		CreatedAt:     timestampToString(msg.CreatedAt),
 	})
 
@@ -1231,12 +1285,15 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, SendChatMessageResponse{
-		MessageID:     uuidToString(msg.ID),
-		TaskID:        uuidToString(task.ID),
-		SupportsQueue: true,
-		Queued:        sent.Queued,
-		CreatedAt:     timestampToString(msg.CreatedAt),
-		AttachmentIDs: boundAttachmentIDs,
+		MessageID:        uuidToString(msg.ID),
+		TaskID:           uuidToString(task.ID),
+		SupportsQueue:    true,
+		Queued:           sent.Queued,
+		Steered:          sent.Steered,
+		MessageTaskID:    uuidToString(msg.TaskID),
+		MessageCreatedAt: timestampToString(msg.CreatedAt),
+		CreatedAt:        timestampToString(msg.CreatedAt),
+		AttachmentIDs:    boundAttachmentIDs,
 	})
 }
 
@@ -1541,13 +1598,11 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	requests := h.decisionRequestsForMessages(ctx, workspaceID, messages)
 
 	wakeups := h.scheduledWakeupsForMessages(ctx, messages)
-	supplements := h.chatSupplementsForMessages(ctx, workspaceID, messages)
 
 	resp := make([]ChatMessageResponse, len(messages))
 	for i, m := range messages {
 		resp[i] = chatMessageToResponse(m, groupedAtt[uuidToString(m.ID)])
 		resp[i].ScheduledWakeup = wakeups[uuidToString(m.ID)]
-		resp[i].Supplement = supplements[uuidToString(m.ID)]
 		if cards := requests[uuidToString(m.ID)]; len(cards) > 0 {
 			if m.MessageKind == protocol.ChatMessageKindDecisionCancelNotice {
 				resp[i].DecisionRequests = cards
@@ -1567,37 +1622,45 @@ func (h *Handler) chatMessageResponses(ctx context.Context, workspaceID string, 
 	return resp
 }
 
-// scheduledWakeupsForMessages maps message id to the fired wakeup that sent it,
-// in one query. A user message matches when its task is the wakeup's fired task
-// in the same session.
+// scheduledWakeupsForMessages maps message id to the wakeup that sent it. On
+// upstream's chat_wakeup schema (X, CHE-10195) a wakeup turn's input row
+// carries wakeup_id, so the fork's event-row payload is read by that id. Only
+// a row in the wakeup's own session matches.
 func (h *Handler) scheduledWakeupsForMessages(ctx context.Context, messages []db.ChatMessage) map[string]*ScheduledWakeupResponse {
-	var taskIDs []pgtype.UUID
+	byID := make(map[string]*db.ChatWakeup)
 	for _, m := range messages {
-		if m.Role == "user" && m.TaskID.Valid {
-			taskIDs = append(taskIDs, m.TaskID)
+		if !m.WakeupID.Valid {
+			continue
 		}
+		key := uuidToString(m.WakeupID)
+		if _, seen := byID[key]; seen {
+			continue
+		}
+		w, err := h.Queries.GetChatWakeup(ctx, m.WakeupID)
+		if err != nil {
+			if !errors.Is(err, pgx.ErrNoRows) {
+				slog.Warn("load scheduled wakeup for chat message failed", "wakeup_id", key, "error", err)
+			}
+			byID[key] = nil
+			continue
+		}
+		byID[key] = &w
 	}
-	if len(taskIDs) == 0 {
+	if len(byID) == 0 {
 		return nil
-	}
-	rows, err := h.Queries.ListChatWakeupsByFiredTasks(ctx, taskIDs)
-	if err != nil {
-		slog.Warn("list scheduled wakeups for chat messages failed", "error", err)
-		return nil
-	}
-	byTask := make(map[string]db.ChatWakeup, len(rows))
-	for _, w := range rows {
-		byTask[uuidToString(w.FiredTaskID)] = w
 	}
 	out := make(map[string]*ScheduledWakeupResponse)
 	for _, m := range messages {
-		w, ok := byTask[uuidToString(m.TaskID)]
-		if !ok || m.Role != "user" || w.ChatSessionID != m.ChatSessionID {
+		if !m.WakeupID.Valid {
+			continue
+		}
+		w := byID[uuidToString(m.WakeupID)]
+		if w == nil || w.ChatSessionID != m.ChatSessionID {
 			continue
 		}
 		out[uuidToString(m.ID)] = &ScheduledWakeupResponse{
 			ID: uuidToString(w.ID), AgentID: uuidToString(w.AgentID), Title: w.Title, Instruction: w.Instruction,
-			FireAt: timestampToString(w.FireAt), CreatedAt: timestampToString(w.CreatedAt),
+			FireAt: timestampToString(w.LastFiredAt), CreatedAt: timestampToString(w.CreatedAt),
 		}
 	}
 	return out
@@ -1687,6 +1750,7 @@ type PendingChatTaskResponse struct {
 	// as today's bare "Waiting for local directory".
 	WaitReason    string                   `json:"wait_reason,omitempty"`
 	SupportsQueue bool                     `json:"supports_queue"`
+	CanSupplement bool                     `json:"can_supplement"`
 	QueuedTasks   []QueuedChatTaskResponse `json:"queued_tasks,omitempty"`
 	// HeadSupplement says whether a queued follow-up can be steered into the
 	// head task now: capable, starting (negotiation unknown yet) or
@@ -1711,6 +1775,9 @@ type QueuedChatTaskResponse struct {
 	CreatedAt string `json:"created_at"`
 	MessageID string `json:"message_id,omitempty"`
 	Content   string `json:"content,omitempty"`
+	// WakeupID marks a turn a chat wakeup started. Its input is for the
+	// runtime, so Content is empty and clients show the wakeup's title.
+	WakeupID string `json:"wakeup_id,omitempty"`
 }
 
 type PrioritizeQueuedChatTaskResponse struct {
@@ -1952,6 +2019,9 @@ func (h *Handler) ListPendingChatTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
+	if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
+		return
+	}
 
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
@@ -2022,6 +2092,9 @@ func (h *Handler) HasPendingChatTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workspaceID := ctxWorkspaceID(r.Context())
+	if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
+		return
+	}
 
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
@@ -2091,13 +2164,17 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 		if task.Status != "queued" {
 			continue
 		}
-		queued = append(queued, QueuedChatTaskResponse{
+		item := QueuedChatTaskResponse{
 			TaskID:    uuidToString(task.ID),
 			Status:    task.Status,
 			CreatedAt: timestampToString(task.CreatedAt),
 			MessageID: uuidToString(task.MessageID),
 			Content:   task.Content,
-		})
+		}
+		if task.MessageKind == protocol.ChatMessageKindWakeup {
+			item.Content, item.WakeupID = "", uuidToString(task.WakeupID)
+		}
+		queued = append(queued, item)
 	}
 
 	writeJSON(w, http.StatusOK, PendingChatTaskResponse{
@@ -2106,9 +2183,29 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:      timestampToString(head.CreatedAt),
 		WaitReason:     waitReasonForStatus(head.Status, head.WaitReason),
 		SupportsQueue:  true,
+		CanSupplement:  h.canSupplementChatTask(r, session, head.ID, head.Status),
 		QueuedTasks:    queued,
-		HeadSupplement: h.headSupplementState(r.Context(), head.ID, head.Status),
 	})
+}
+
+func (h *Handler) canSupplementChatTask(r *http.Request, session db.ChatSession, taskID pgtype.UUID, status string) bool {
+	if status != "running" {
+		return false
+	}
+	if _, err := h.Queries.GetChannelChatSessionBindingBySessionAny(r.Context(), session.ID); !errors.Is(err, pgx.ErrNoRows) {
+		return false
+	}
+	capability, err := h.Queries.GetTaskSupplementCapability(r.Context(), taskID)
+	if err != nil || capability.Capability != protocol.DaemonCapabilityTaskSupplementV1 {
+		return false
+	}
+	userID := requestUserID(r)
+	actorType, actorID := h.resolveActor(r, userID, uuidToString(session.WorkspaceID))
+	if actorType != "member" {
+		return false
+	}
+	agent, err := h.Queries.GetAgent(r.Context(), session.AgentID)
+	return err == nil && h.canInvokeAgent(r.Context(), agent, actorType, actorID, userID, uuidToString(session.WorkspaceID))
 }
 
 // PrioritizeQueuedChatTask moves one queued follow-up ahead of its FIFO peers.
@@ -2289,6 +2386,9 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 		// Chat privacy: only the member who opened the conversation may
 		// cancel its task, even though the workspace is shared. A DM-derived
 		// background task answers to the same member.
+		if !h.requireChatOwnerAccess(w, r, userID, workspaceID) {
+			return
+		}
 		cs, err := h.Queries.GetChatSessionInWorkspace(r.Context(), db.GetChatSessionInWorkspaceParams{
 			ID:          session,
 			WorkspaceID: wsUUID,
@@ -2517,16 +2617,68 @@ type ChatLastMessage struct {
 	MessageKind string `json:"message_kind"`
 }
 
+// chatLastMessagePreviewMaxRunes caps ChatLastMessage.Content. The list only
+// renders a one-line snippet, but shipping each session's full last reply made
+// the list payload grow with every long agent answer (#9954).
+const chatLastMessagePreviewMaxRunes = 256
+
+// chatLastMessagePreview mirrors the list client's cleanup before applying the
+// cap. Complete fences become whitespace, and Markdown markers are dropped before
+// counting runes so they cannot crowd out visible text.
+func chatLastMessagePreview(content string) string {
+	const fence = "```"
+	var preview strings.Builder
+	preview.Grow(min(len(content), chatLastMessagePreviewMaxRunes))
+	remaining := chatLastMessagePreviewMaxRunes
+	pendingSpace := false
+
+	for len(content) > 0 && remaining > 0 {
+		if strings.HasPrefix(content, fence) {
+			if end := strings.Index(content[len(fence):], fence); end >= 0 {
+				content = content[end+2*len(fence):]
+				pendingSpace = preview.Len() > 0
+				continue
+			}
+		}
+
+		r, width := utf8.DecodeRuneInString(content)
+		content = content[width:]
+		switch r {
+		case '#', '*', '`', '>', '~':
+			continue
+		}
+		// JavaScript's whitespace includes BOM and excludes NEXT LINE.
+		if r == '\uFEFF' || (r != '\u0085' && unicode.IsSpace(r)) {
+			pendingSpace = preview.Len() > 0
+			continue
+		}
+		if pendingSpace {
+			if remaining == 1 {
+				break
+			}
+			preview.WriteByte(' ')
+			remaining--
+			pendingSpace = false
+		}
+		preview.WriteRune(r)
+		remaining--
+	}
+	return preview.String()
+}
+
 // buildChatLastMessage assembles the preview from list-row columns; returns nil
 // when there is no last message (the LEFT JOIN produced a NULL timestamp).
 func buildChatLastMessage(id, taskID pgtype.UUID, at pgtype.Timestamptz, content, role string, failure pgtype.Text, kind string) *ChatLastMessage {
 	if !at.Valid || kind == protocol.ChatMessageKindOnboardingKickoff {
 		return nil
 	}
+	if kind == protocol.ChatMessageKindWakeup {
+		content = ""
+	}
 	return &ChatLastMessage{
 		ID:            uuidToPtr(id),
 		TaskID:        uuidToPtr(taskID),
-		Content:       content,
+		Content:       chatLastMessagePreview(content),
 		Role:          role,
 		CreatedAt:     timestampToString(at),
 		FailureReason: textToPtr(failure),
@@ -2553,6 +2705,10 @@ type ChatMessageResponse struct {
 	// QuickActions are sanitized follow-ups generated with this assistant turn.
 	// Always an empty array for legacy rows and user messages.
 	QuickActions []protocol.ChatQuickAction `json:"quick_actions"`
+	// WakeupID is set on a wakeup turn's input row (message_kind "wakeup"),
+	// whose content is withheld: it is the runtime's input, not something
+	// the person wrote.
+	WakeupID *string `json:"wakeup_id,omitempty"`
 	// Attachments linked to this message via chat_message_id. The chat
 	// bubble renders file cards from these, and the daemon claim path
 	// (daemon.go) pulls structured metadata from the same source so the
@@ -2573,9 +2729,6 @@ type ChatMessageResponse struct {
 	// CarriedFromSessionID names the earlier DM a reply's run ran in, set only
 	// when a rollover wrote that reply into this DM (CHE-2119). Nil otherwise.
 	CarriedFromSessionID *string `json:"carried_from_session_id,omitempty"`
-	// Supplement is the delivery receipt of a user message steered into a
-	// running task. Absent for messages that were never steered.
-	Supplement *ChatSupplementResponse `json:"supplement,omitempty"`
 }
 
 type ScheduledWakeupResponse struct {
@@ -2638,6 +2791,9 @@ func chatSessionToResponse(s db.ChatSession) ChatSessionResponse {
 }
 
 func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) ChatMessageResponse {
+	if m.MessageKind == protocol.ChatMessageKindWakeup {
+		m.Content = ""
+	}
 	return ChatMessageResponse{
 		ID:             uuidToString(m.ID),
 		ChatSessionID:  uuidToString(m.ChatSessionID),
@@ -2650,6 +2806,7 @@ func chatMessageToResponse(m db.ChatMessage, attachments []AttachmentResponse) C
 		MessageKind:    normalizeMessageKind(m.MessageKind),
 		QuickActions:   decodeChatQuickActions(m.QuickActions),
 		Attachments:    attachments,
+		WakeupID:       uuidToPtr(m.WakeupID),
 		DecisionQuotes: []DecisionCard{},
 	}
 }
@@ -2711,6 +2868,8 @@ func normalizeMessageKind(kind string) string {
 		return protocol.ChatMessageKindDecisionReference
 	case protocol.ChatMessageKindDecisionRequest, protocol.ChatMessageKindDecisionCancelNotice:
 		return kind
+	case protocol.ChatMessageKindWakeup:
+		return protocol.ChatMessageKindWakeup
 	default:
 		return protocol.ChatMessageKindMessage
 	}

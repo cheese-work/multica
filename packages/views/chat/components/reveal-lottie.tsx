@@ -1,4 +1,5 @@
 import { DotLottieReact } from "@lottiefiles/dotlottie-react";
+import { useReducedMotion } from "@multica/core/appearance";
 import { cn } from "@multica/ui/lib/utils";
 import animationData from "../assets/reveal-happy.json";
 
@@ -6,13 +7,10 @@ import animationData from "../assets/reveal-happy.json";
 // Reduced motion draws the animation's last frame as inline SVG and never
 // loads the player or its WASM. The SVG mirrors the last frame of
 // ../assets/reveal-happy.json (ring r=70, check path, same green).
-const reducedMotion = () =>
-  typeof window.matchMedia === "function" &&
-  window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-
 export function RevealLottie({ className }: { className?: string }) {
   const wrap = cn("pointer-events-none", className);
-  if (reducedMotion()) {
+  const reduced = useReducedMotion();
+  if (reduced) {
     return (
       <div aria-hidden="true" className={wrap}>
         <svg

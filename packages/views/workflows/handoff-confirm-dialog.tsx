@@ -84,12 +84,16 @@ function useDuration() {
  * or the workflow changed), the move applies without asking.
  */
 export function WorkflowHandoffConfirmDialog({
+  open: openProp,
   issue,
   toStatus,
   toProject,
   onCancel,
   onConfirm,
+  onOpenChangeComplete,
 }: {
+  /** Override open state while keeping issue data mounted for exit animation. */
+  open?: boolean;
   /** The issue being moved; null keeps the dialog closed. */
   issue: { id: string; identifier: string } | null;
   /** The status being moved to; ignored with `toProject`. */
@@ -97,6 +101,7 @@ export function WorkflowHandoffConfirmDialog({
   toProject?: { id: string; title: string } | null;
   onCancel: () => void;
   onConfirm: (options: HandoffConfirmOptions) => void;
+  onOpenChangeComplete?: (open: boolean) => void;
 }) {
   const { t } = useT("issues");
   const wsId = useWorkspaceId();
@@ -106,7 +111,7 @@ export function WorkflowHandoffConfirmDialog({
   const duration = useDuration();
   const [stop, setStop] = useState(true);
   const [briefOpen, setBriefOpen] = useState(false);
-  const open = issue !== null;
+  const open = (openProp ?? true) && issue !== null;
   const { data: fetched, isPending, isError, isFetching, dataUpdatedAt, refetch } = useQuery({
     ...workflowHandoffPreviewOptions(wsId, issue?.id ?? "", toProject ? "" : toStatus, toProject?.id),
     enabled: open,
@@ -188,7 +193,11 @@ export function WorkflowHandoffConfirmDialog({
   }
 
   return (
-    <Dialog open={open && !(preview && !preview.handoff)} onOpenChange={(v) => !v && onCancel()}>
+    <Dialog
+      open={open && !(preview && !preview.handoff)}
+      onOpenChange={(v) => !v && onCancel()}
+      onOpenChangeComplete={onOpenChangeComplete}
+    >
       <DialogContent className="sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>

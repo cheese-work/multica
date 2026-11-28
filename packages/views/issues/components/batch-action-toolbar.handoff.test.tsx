@@ -39,6 +39,10 @@ const api = vi.hoisted(() => ({
   listProjects: vi.fn(),
   previewWorkflowHandoff: vi.fn(),
 }));
+vi.mock("@multica/core/permissions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/permissions")>()),
+  useIsGuest: () => false,
+}));
 vi.mock("@multica/core/api", () => ({ api }));
 vi.mock("@multica/core/hooks", () => ({ useWorkspaceId: () => "ws-1" }));
 vi.mock("@multica/core/modals", () => ({

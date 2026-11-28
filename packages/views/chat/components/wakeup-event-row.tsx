@@ -3,7 +3,7 @@
 import { Fragment, useId, useState, type ReactNode } from "react";
 import { ChevronDown, ChevronUp, Clock } from "@multica/ui/icons";
 import { cn } from "@multica/ui/lib/utils";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useWorkspacePaths } from "@multica/core/paths";
 import type { ChatScheduledWakeup } from "@multica/core/types";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -46,7 +46,7 @@ function InstructionText({ text }: { text: string }) {
     seen.add(key);
     if (mentionId) seen.add(mentionId);
     parts.push(
-      <AppLink key={match.index} href={paths.issueDetail(mentionId ?? raw)} className={CHIP_CLASS}>
+      <AppLink key={match.index} href={paths.issueDetail(issueRouteRef({ id: mentionId ?? raw, identifier: null }))} className={CHIP_CLASS}>
         {label}
       </AppLink>,
     );

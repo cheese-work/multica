@@ -126,7 +126,7 @@ func TestIssueOutsideAProjectHasNoWorkflowWithoutAnOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := testHandler.claimProjectWorkflow(context.Background(), issue, nil); got != nil {
+	if got := testHandler.claimProjectWorkflow(context.Background(), issue, nil, false, false); got != nil {
 		t.Fatalf("an issue with no project and no override got a workflow brief:\n%s", got.Brief)
 	}
 	updateIssueForTest(t, issueID, map[string]any{"status": "in_progress"}).Want(http.StatusOK)

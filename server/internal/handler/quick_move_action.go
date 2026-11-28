@@ -346,7 +346,7 @@ func (h *Handler) publishProjectSwitches(ctx context.Context, action db.Decision
 	h.broadcastCancelledWakeups(ctx, action.WorkspaceID, cancelled)
 	for _, project := range projects {
 		resp := projectToResponse(project)
-		resp.IssueCount, resp.DoneCount = h.loadProjectIssueStats(ctx, project.WorkspaceID, project.ID)
+		h.fillProjectIssueStats(ctx, &resp, project)
 		resp.ResourceCount = h.loadProjectResourceCount(ctx, project.ID)
 		h.publish(protocol.EventProjectUpdated, uuidToString(action.WorkspaceID), "member", approver, map[string]any{"project": resp})
 	}

@@ -402,6 +402,7 @@ export function RuntimeDetailPage({
         <RuntimeProfilesDialog
           wsId={wsId}
           intent="create"
+          daemonId={machine.daemonId ?? undefined}
           machineName={machine.title}
           onClose={() => setCreateProfileOpen(false)}
         />

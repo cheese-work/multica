@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { prefersReducedMotion } from "@multica/core/appearance";
+import { issueRouteRef, useWorkspacePaths } from "@multica/core/paths";
 import type { TimelineNode } from "@multica/core/issues/graph-core";
 import { Button } from "@multica/ui/components/ui/button";
 import { Minus, Plus } from "@multica/ui/icons";
@@ -17,7 +18,6 @@ import { useHierarchyLevels } from "./use-hierarchy-levels";
 
 const PAD = 24;
 const toIssue = ({ id, identifier, title, status }: TimelineNode): HierarchyIssue => ({ id, identifier, title, status });
-const prefersReducedMotion = () => !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 
 /**
  * Focus-depth hierarchy (CHE-4312 D4): the children of one focused card at a time (the root at depth 0), the chain
@@ -170,7 +170,7 @@ export function FocusCanvas({ root, catalog, viewportRef, onOpen }: { root: Hier
           <div ref={worldRef} data-testid="hierarchy-world" className="relative" style={shape}>
             <div className="absolute" style={world}>
               <FocusEdges edges={layout.edges} />
-              {layout.items.map((item, index) => <FocusItemView key={itemKey(item, index)} item={item} root={root} catalog={catalog} style={place(item.box)} href={item.kind === "card" ? paths.issueDetail(item.issue.id) : ""} pending={pending} hidden={hidden} path={path} onOpen={onOpen} onActive={setActiveId} onStepIn={stepIn} onStepOut={stepOut} />)}
+              {layout.items.map((item, index) => <FocusItemView key={itemKey(item, index)} item={item} root={root} catalog={catalog} style={place(item.box)} href={item.kind === "card" ? paths.issueDetail(issueRouteRef({ id: item.issue.id, identifier: null })) : ""} pending={pending} hidden={hidden} path={path} onOpen={onOpen} onActive={setActiveId} onStepIn={stepIn} onStepOut={stepOut} />)}
             </div>
           </div>
           {!ready && failed.length === 0 && <div role="status" aria-label={t(($) => $.hierarchy.loading)} className="absolute bottom-2 left-2 h-2 w-32 rounded-full bg-muted motion-safe:animate-pulse" />}

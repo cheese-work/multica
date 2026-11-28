@@ -7,9 +7,14 @@ import providerRules from "../../../server/pkg/redact/provider-rules.json";
 
 // Provider-token rules are shared with the server (server/pkg/redact embeds the
 // same file); the parity fixture in redact.test.ts keeps both on one list.
-const patterns = (
-  providerRules as { pattern: string; flags: string; replacement: string }[]
-).map(({ pattern, flags, replacement }) => ({ re: new RegExp(pattern, `${flags}g`), replacement }));
+// The file uses Go replacement syntax (`${1}`); String.prototype.replace only
+// expands `$1`, so group references are translated here.
+const patterns = (providerRules as { pattern: string; flags: string; replacement: string }[]).map(
+  ({ pattern, flags, replacement }) => ({
+    re: new RegExp(pattern, `${flags}g`),
+    replacement: replacement.replace(/\$\{(\d+)\}/g, "$$$1"),
+  }),
+);
 
 const genericCredentialPattern = /(?:API_KEY|API_SECRET|SECRET_KEY|SECRET|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL|PASSWORD|TOKEN)\s*[=:]\s*/gi;
 // Prose-safe subset of the keyword rule. Agent prose says "the password field" and

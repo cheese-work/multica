@@ -49,11 +49,14 @@ const nextConfig: NextConfig = {
     },
   },
   ...(process.env.STANDALONE === "true" ? { output: "standalone" as const } : {}),
+  // Otherwise `next dev` writes a generic apps/web/AGENTS.md; agent guidance
+  // lives in the root AGENTS.md.
+  agentRules: false,
   // Image builds set this: `pnpm typecheck` already gates every PR (CHE-3983).
   ...(process.env.NEXT_SKIP_TYPECHECK === "true"
     ? { typescript: { ignoreBuildErrors: true } }
     : {}),
-  transpilePackages: ["@multica/core", "@multica/ui", "@multica/views"],
+  transpilePackages: ["@multica/core", "@multica/ui", "@multica/views", "@multica/ee"],
   outputFileTracingIncludes: {
     "/changelog": ["./.fork-changelog/entries.json"],
   },
@@ -67,6 +70,11 @@ const nextConfig: NextConfig = {
   // without it the compiler's heap stays in the main process through the
   // TypeScript phase, which OOM-kills the build again (CHE-702).
   experimental: {
+    // Workspace pages are client components over TanStack Query, so a route's
+    // RSC payload is the same on every visit. Reusing a visited or prefetched
+    // one for 30s lets a click (an Inbox notification, back to an issue just
+    // read) render without a server round trip first (MUL-9538).
+    staleTimes: { dynamic: 30 },
     cpus: 2,
     webpackMemoryOptimizations: true,
     webpackBuildWorker: true,
@@ -123,6 +131,10 @@ const nextConfig: NextConfig = {
             {
               source: "/ws",
               destination: `${remoteApiUrl}/ws`,
+            },
+            {
+              source: "/collab",
+              destination: `${remoteApiUrl}/collab`,
             },
             {
               source: "/health",

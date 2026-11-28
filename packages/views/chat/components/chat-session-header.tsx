@@ -53,6 +53,7 @@ import { ChatPresetPicker } from "./chat-preset-picker";
 import { OpenDecisionsBadge } from "./open-decisions-badge";
 import { ScheduledWakeupsChip } from "./scheduled-wakeups-chip";
 import { TooltipHint } from "@multica/ui/components/common/tooltip-hint";
+import { ChatWakeupHeaderButton, useChatWakeups } from "./chat-wakeups";
 
 /**
  * Per-session header for the conversation pane, read as a breadcrumb: the
@@ -111,6 +112,7 @@ export function ChatSessionHeader({
   const deleteSession = useDeleteChatSession();
   const setArchived = useSetChatSessionArchived();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
+  const wakeups = useChatWakeups(session.id);
 
   const isArchived = session.status === "archived";
   const menuItems = getChatSessionMenuItems({ archived: isArchived });
@@ -129,6 +131,16 @@ export function ChatSessionHeader({
   const handledRenameRequest = useRef(renameRequest);
 
   const title = session.title?.trim() || t(($) => $.window.untitled);
+
+  useEffect(() => {
+    clearPendingBlurCommit();
+    isComposingRef.current = false;
+    commitAfterCompositionRef.current = false;
+    setEditing(false);
+    setConfirmDelete(false);
+    setDraft(session.title ?? "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset transient header UI only when switching sessions
+  }, [session.id]);
 
   useEffect(() => {
     if (editing) {
@@ -309,6 +321,8 @@ export function ChatSessionHeader({
                 onSelect={onSetPreset}
               />
             )}
+
+            <ChatWakeupHeaderButton sessionId={session.id} wakeups={wakeups} />
 
             <DropdownMenu>
               <DropdownMenuTrigger

@@ -56,6 +56,10 @@ vi.mock("../../workflows/permissions", () => ({
   }),
 }));
 const toast = vi.hoisted(() => ({ success: vi.fn(), warning: vi.fn(), error: vi.fn() }));
+vi.mock("@multica/core/permissions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/permissions")>()),
+  useIsGuest: () => false,
+}));
 vi.mock("sonner", () => ({ toast }));
 vi.mock("./pickers", () => ({
   StatusPicker: () => <div />,

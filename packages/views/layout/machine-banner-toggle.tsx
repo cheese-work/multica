@@ -57,10 +57,14 @@ export function MachineBannerToggle() {
   );
 }
 
-/** Puts the machine banner icon at the right end of every `PageHeader` below it. */
-export function MachineBannerHeaderSlot({ children }: { children: React.ReactNode }) {
+/**
+ * Puts the machine banner icon at the right end of every `PageHeader` below it.
+ * `enabled` false mounts no icon, so its machine queries never start; the
+ * children keep their place in the tree either way.
+ */
+export function MachineBannerHeaderSlot({ children, enabled = true }: { children: React.ReactNode; enabled?: boolean }) {
   return (
-    <PageHeaderTrailingContext.Provider value={<MachineBannerToggle />}>
+    <PageHeaderTrailingContext.Provider value={enabled ? <MachineBannerToggle /> : null}>
       {children}
     </PageHeaderTrailingContext.Provider>
   );

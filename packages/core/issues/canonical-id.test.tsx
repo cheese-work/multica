@@ -149,14 +149,18 @@ describe("useCanonicalIssue", () => {
     const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
       wrapper: createWrapper(qc),
     });
-    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+    // An entry already cached by UUID opens the identifier URL without a
+    // lookup (upstream v0.13.0), but it is not the lookup's own response, so
+    // the detail view still reconciles it with one read.
+    await waitFor(() => expect(result.current.issue).toEqual({ ...issue, status: "done" }));
+    expect(getIssue).toHaveBeenCalledTimes(0);
     expect(result.current.authoritative).toBe(false);
 
     renderHook(
       () => useQuery(issueDetailViewOptions("ws-1", ISSUE_UUID, undefined, result.current.authoritative)),
       { wrapper: createWrapper(qc) },
     );
-    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
   });
 
   // Revisit: an earlier visit left the same object under both keys. Nothing
@@ -188,6 +192,22 @@ describe("useCanonicalIssue", () => {
     });
     expect(view.result.current.data).toEqual(row);
     await waitFor(() => expect(getIssue).toHaveBeenCalledTimes(1));
+  });
+
+  // In-app links carry the identifier, often to an issue a list, peek or
+  // create already cached by UUID.
+  it("opens an identifier URL from the issue cached by UUID without a request", async () => {
+    qc.setQueryData(issueKeys.detail("ws-1", ISSUE_UUID), issue);
+
+    const { result } = renderHook(() => useCanonicalIssue("ws-1", "TRS-134"), {
+      wrapper: createWrapper(qc),
+    });
+
+    expect(result.current.canonicalId).toBe(ISSUE_UUID);
+    expect(result.current.isResolving).toBe(false);
+    expect(result.current.issue).toEqual(issue);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(getIssue).not.toHaveBeenCalled();
   });
 
   // The realtime updaters patch `issueKeys.detail(wsId, issue.id)` with the

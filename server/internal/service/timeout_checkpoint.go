@@ -157,7 +157,7 @@ func ParseTimeoutCheckpoint(raw json.RawMessage) *TimeoutCheckpoint {
 			continue
 		}
 		act.Tool = redact.Text(act.Tool)
-		act.Input = oneLine(truncateRunes(redact.Text(act.Input), timeoutCheckpointMaxActionLen))
+		act.Input = oneLine(truncateRunesExact(redact.Text(act.Input), timeoutCheckpointMaxActionLen))
 		actions = append(actions, act)
 	}
 	if len(actions) > timeoutCheckpointMaxActions {
@@ -175,19 +175,21 @@ func ParseTimeoutCheckpoint(raw json.RawMessage) *TimeoutCheckpoint {
 	if json.Unmarshal(top.Warning, &w) == nil {
 		switch w.State {
 		case TimeoutWarningDelivered, TimeoutWarningNotDelivered, TimeoutWarningDisabled:
-			w.Reason = oneLine(truncateRunes(redact.Text(w.Reason), timeoutCheckpointMaxReasonLen))
+			w.Reason = oneLine(truncateRunesExact(redact.Text(w.Reason), timeoutCheckpointMaxReasonLen))
 			cp.Warning = w
 		}
 	}
 	// The daemon only ever sends "failed <reason>"; anything else is dropped.
 	var probe string
 	if json.Unmarshal(top.Probe, &probe) == nil && (probe == "failed" || strings.HasPrefix(probe, "failed ")) {
-		cp.Probe = oneLine(truncateRunes(redact.Text(probe), timeoutCheckpointMaxProbeLen))
+		cp.Probe = oneLine(truncateRunesExact(redact.Text(probe), timeoutCheckpointMaxProbeLen))
 	}
 	return cp
 }
 
-func truncateRunes(s string, n int) string {
+// truncateRunesExact cuts s to n runes with no ellipsis; the checkpoint
+// limits are exact rune budgets for the comment.
+func truncateRunesExact(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}

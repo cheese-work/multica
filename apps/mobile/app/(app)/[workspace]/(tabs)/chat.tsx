@@ -29,6 +29,11 @@
  * (packages/views/chat/components/chat-window.tsx ~262-345):
  *   seed messages → seed pendingTask → flip activeSessionId → POST →
  *   patch pendingTask with server task_id + created_at.
+ *
+ * During a reply on a queue-capable server, Send asks to add the message to
+ * that reply (`steer`) and the composer's Queue action keeps it for the next
+ * turn. The server decides whether steering applies; an accepted steer keeps
+ * the running head instead of seeding a new turn.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -82,7 +87,7 @@ import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-sto
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
 import {
   invalidatePendingTask,
-  seedAcceptedPendingTask,
+  reconcileAcceptedChatSend,
 } from "@/data/realtime/chat-ws-updaters";
 import {
   ArchivedSendInterceptedError,
@@ -91,9 +96,9 @@ import {
   unarchiveThenSendOnce,
 } from "@/lib/chat-dm-stats-archive";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
-import {
-  dispatchReasonCode,
-} from "@/lib/dispatch-reason";
+import { queuedChatMessages } from "@/lib/chat-queued-messages";
+import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
+import { sendFailureMessage } from "@/lib/dispatch-reason";
 import { useT } from "@/lib/i18n";
 import { useAgentPresence } from "@/lib/use-agent-presence";
 import { Header } from "@/components/ui/header";
@@ -113,20 +118,6 @@ import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
 export default function ChatTab() {
   const qc = useQueryClient();
   const { t } = useT("chat");
-  const sendFailureMessage = useCallback((err: unknown) => {
-    switch (dispatchReasonCode(err)) {
-      case "invocation_not_allowed":
-        return t("failure.invocation_not_allowed");
-      case "agent_runtime_required":
-        return t("failure.agent_runtime_required");
-      case "runtime_access_denied":
-        return t("failure.runtime_access_denied", {
-          detail: t("failure.runtime_access_recovery"),
-        });
-      default:
-        return t("failure.default");
-    }
-  }, [t]);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
@@ -175,6 +166,7 @@ export default function ChatTab() {
     pendingChatTaskOptions(activeSessionId),
   );
   const visibleMessages = hideQueuedChatMessages(messages, pendingTask);
+  const queuedMessages = queuedChatMessages(pendingTask, messages);
   // Live execution trace for the in-flight task. `task:message` WS events
   // append rows to this same cache key via `appendTaskMessage`, so the
   // list/pill stay in sync without a polling fetch. `enabled` is gated by
@@ -336,7 +328,7 @@ export default function ChatTab() {
         }
         showArchiveUndo({
           sessionId: session.id,
-          title: session.title || t("sessions.new_chat"),
+          title: chatSessionDisplayTitle(session.title, t),
         });
         return true;
       } catch (err) {
@@ -419,6 +411,7 @@ export default function ChatTab() {
     async (
       content: string,
       attachmentIds: string[] = [],
+      options: { queue?: boolean } = {},
     ) => {
       if (!currentAgent) return;
       if (accessRevoked) {
@@ -442,7 +435,10 @@ export default function ChatTab() {
       try {
         sessionId = await ensureSession();
       } catch (err) {
-        Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
+        // Session create runs the same invoke gate as a send, so a permission
+        // change refuses here too — and this is the only layer that sees the
+        // reason code (MUL-6380).
+        Alert.alert(t("alerts.not_sent"), sendFailureMessage(err, t));
         throw err;
       }
       if (!sessionId) return;
@@ -487,32 +483,24 @@ export default function ChatTab() {
       try {
         // A retry of the same text reuses its client_message_id (A22), so a
         // timeout that hid a delivered send cannot store a second message.
-        const result = await sendWithPendingId(sessionId, content, {
+        const sendArgs = {
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
-        });
-        qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
-          old?.map((message) =>
-            message.id === optimistic.id
-              ? {
-                  ...message,
-                  id: result.message_id,
-                  task_id: result.task_id,
-                  created_at: result.created_at,
-                }
-              : message,
-          ),
-        );
-        seedAcceptedPendingTask(qc, {
+        };
+        // Explicit queue sends skip the replay-id store: it does not carry
+        // `queue`, so routing them through it would silently steer instead.
+        const result = options.queue
+          ? await api.sendChatMessage(sessionId, content, { ...sendArgs, queue: true })
+          : await sendWithPendingId(sessionId, content, sendArgs);
+        // Replace the local bubble before reconciling pending state. When the
+        // server says this is a follow-up, its real message id lets the shared
+        // queue filter hide it immediately instead of waiting for the refetch.
+        reconcileAcceptedChatSend(qc, {
           chat_session_id: sessionId,
-          task_id: result.task_id,
-          created_at: result.created_at,
-          message_id: result.message_id,
-          content,
+          optimistic_message_id: optimistic.id,
           optimistic_task_id: optimisticTaskId,
-          supports_queue: result.supports_queue,
-          queued: result.queued,
+          content,
+          result,
         });
-        qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         // This send just committed the new session's server-derived title.
         if (isNewSession) {
           void refetchChatSessionsAfterCommit(qc, chatKeys.sessions(wsId));
@@ -528,7 +516,10 @@ export default function ChatTab() {
           chatKeys.pendingTask(sessionId),
           (old) => removePendingChatTask(old, optimisticTaskId),
         );
-        Alert.alert(t("alerts.not_sent"), sendFailureMessage(err));
+        // The composer restores the draft on a thrown rejection but says nothing
+        // about it, so a revoked-permission 403 used to read as a silent no-op
+        // (MUL-6380). Name the cause here: only this layer sees the error body.
+        Alert.alert(t("alerts.not_sent"), sendFailureMessage(err, t));
         throw err;
       }
     },
@@ -540,7 +531,6 @@ export default function ChatTab() {
       runtimeBound,
       ensureSession,
       qc,
-      sendFailureMessage,
       t,
       promoteNewDraft,
       draftScope,
@@ -551,6 +541,7 @@ export default function ChatTab() {
     async (
       content: string,
       attachmentIds: string[] = [],
+      options: { queue?: boolean } = {},
     ) => {
       if (activeSession?.status === "archived") {
         const archivedSession = activeSession;
@@ -574,7 +565,7 @@ export default function ChatTab() {
           const confirmUnarchiveAndSend = () => {
             unarchiveThenSendOnce(
               () => handleUnarchive(archivedSession),
-              () => executeSend(content, attachmentIds),
+              () => executeSend(content, attachmentIds, options),
             ).then(resolve, reject);
           };
 
@@ -609,7 +600,7 @@ export default function ChatTab() {
         });
       }
 
-      return executeSend(content, attachmentIds);
+      return executeSend(content, attachmentIds, options);
     },
     [activeSession, sessions, t, handleUnarchive, executeSend],
   );
@@ -662,7 +653,7 @@ export default function ChatTab() {
       if (session.status !== "archived") return;
       Alert.alert(
         t("alerts.delete_title"),
-        session.title || t("sessions.new_chat"),
+        chatSessionDisplayTitle(session.title, t),
         [
           { text: t("common:actions.cancel"), style: "cancel" },
           {
@@ -753,6 +744,7 @@ export default function ChatTab() {
           quickActionsDisabled={sending || disabled}
           pendingTask={pendingTask}
           liveTaskMessages={liveTaskMessages}
+          queuedMessages={queuedMessages}
           availability={presenceAvailability}
         />
         {undoToast ? (
@@ -823,6 +815,7 @@ export default function ChatTab() {
           onStop={handleStop}
           sending={sending}
           allowStop={pendingTask?.status !== "queued"}
+          allowSendWhileSending={pendingTask?.supports_queue === true}
           disabled={disabled}
           disabledReason={disabledReason}
           archived={isArchived}

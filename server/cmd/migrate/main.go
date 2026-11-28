@@ -325,6 +325,49 @@ var concurrentIndexCleanups = map[string]string{
 	"99zz07_agent_app_agent_toolkit_idx":                        "idx_agent_app_agent_toolkit",
 	"99zz06_workspace_composio_connection_status_idx":           "idx_workspace_composio_connection_status",
 	"99zz05_workspace_composio_connection_account_idx":          "idx_workspace_composio_connection_account",
+	"99zzz93_agent_task_queue_doc_idx":                          "idx_agent_task_queue_doc",
+	"99zzz89_app_tool_call_quota_period_scope_idx":              "uq_app_tool_call_quota_period_scope",
+	"99zzz91_app_tool_call_workspace_metered_idx":               "idx_app_tool_call_workspace_metered",
+	"99zzz76_task_usage_hourly_squad_uq_idx":                    "uq_task_usage_hourly_squad_key_idx",
+	"99zzz77_task_usage_hourly_dirty_squad_uq_idx":              "uq_task_usage_hourly_dirty_squad_key_idx",
+	"99zzz78_task_usage_hourly_workspace_squad_idx":             "idx_task_usage_hourly_workspace_squad_time",
+	"99zzz84_issue_blocker_unique":                              "issue_blocker_unique",
+	"99zzz85_issue_blocker_reverse":                             "issue_blocker_reverse",
+	"99zzz73_comment_idempotency_receipt_key":                   "uq_comment_idempotency_receipt_key",
+	"99zzz74_comment_idempotency_receipt_created":               "idx_comment_idempotency_receipt_created",
+	"99zzz69_remote_app_connection_workspace_idx":               "uq_remote_app_connection_owner_ws",
+	"99zzz60_remote_app_oauth_client_idx":                       "uq_remote_app_oauth_client_app_redirect",
+	"99zzz61_remote_app_connection_owner_idx":                   "uq_remote_app_connection_owner",
+	"99zzz16_chat_wakeup_due_idx":                               "idx_chat_wakeup_due",
+	"99zzz17_chat_wakeup_session_idx":                           "idx_chat_wakeup_session",
+	"99zzz18_chat_wakeup_requester_idx":                         "idx_chat_wakeup_requester",
+	"99zzz20_entitlement_limit_overage_scope_idx":               "uq_entitlement_limit_overage_scope",
+	"99zzz22_project_folder_name_idx":                           "uq_project_folder_workspace_name",
+	"99zzz24_entitlement_feature_attempt_scope_idx":             "uq_entitlement_feature_attempt_scope",
+	"99zzz26_doc_folder_pkey_index":                             "doc_folder_pkey_idx",
+	"99zzz28_doc_pkey_index":                                    "doc_pkey_idx",
+	"99zzz30_doc_version_pkey_index":                            "doc_version_pkey_idx",
+	"99zzz32_doc_folder_workspace_idx":                          "doc_folder_workspace_idx",
+	"99zzz33_doc_workspace_idx":                                 "doc_workspace_idx",
+	"99zzz34_doc_version_workspace_idx":                         "doc_version_workspace_idx",
+	"99zzz36_inbox_item_active_shown_idx":                       "idx_inbox_active_shown",
+	"99zzz38_autopilot_run_idempotency_key_idx":                 "uq_autopilot_run_idempotency_key",
+	"99zzz41_member_search_access_pkey_index":                   "member_search_access_pkey_idx",
+	"99zzz44_doc_comment_pkey_index":                            "doc_comment_pkey_idx",
+	"99zzz46_doc_comment_doc_idx":                               "doc_comment_doc_idx",
+	"99zzz47_doc_comment_workspace_idx":                         "doc_comment_workspace_idx",
+	"99zzz48_attachment_workspace_size_idx":                     "idx_attachment_workspace_size",
+	"99zzz52_dashboard_range_view_scope_idx":                    "uq_dashboard_range_view_scope",
+	"99zzz54_doc_collab_state_pkey_index":                       "doc_collab_state_pkey_idx",
+	"99zzz56_doc_revision_pkey_index":                           "doc_revision_pkey_idx",
+	"99zzz64_issue_description_collab_state_pkey_index":         "issue_description_collab_state_pkey_idx",
+	"99zzz66_issue_description_revision_pkey_index":             "issue_description_collab_revision_pkey_idx",
+	"99zzz11_weixin_account_state_unique_index":                 "weixin_account_state_pkey",
+	"99zzz09_weixin_login_session_unique_index":                 "weixin_login_session_pkey",
+	"99zzz06_weixin_login_expiry_idx":                           "weixin_login_expiry_idx",
+	"99zzz02_chat_task_supplement_message":                      "uq_chat_task_supplement_message",
+	"99zzz03_chat_task_supplement_task":                         "idx_chat_task_supplement_task",
+	"99zzz04_chat_task_supplement_workspace":                    "idx_chat_task_supplement_workspace",
 	"535_github_pr_address_index":                               "idx_github_pull_request_pr_owner_repo",
 	"539_task_supplement_request_index":                         "task_supplement_task_request_uidx",
 	"540_task_supplement_capability_index":                      "task_supplement_capability_task_uidx",
@@ -889,6 +932,9 @@ var concurrentDownIndexCleanups = map[string]string{
 	"751_github_dispatch_drop_body_key":                     "idx_github_webhook_dispatch_key",
 	"729_github_revision_body_key":                          "idx_github_webhook_revision_key",
 	"616_decision_request_comment_index_retire":             "comment_decision_request_kind_uidx",
+	"99zzz80_task_usage_hourly_drop_legacy_key":             "uq_task_usage_hourly_key",
+	"99zzz81_task_usage_hourly_dirty_drop_legacy_key":       "uq_task_usage_hourly_dirty_key",
+	"99zzz70_drop_remote_app_connection_owner_idx":          "uq_remote_app_connection_owner",
 	"144_drop_agent_task_queue_chat_pending_v1":             "idx_agent_task_queue_chat_pending",
 	"171_drop_legacy_label_namespace_index":                 "issue_label_workspace_name_lower_idx",
 	"256_drop_agent_task_queue_chat_pending_v2":             "idx_agent_task_queue_chat_pending_v2",
@@ -915,6 +961,7 @@ var concurrentDownIndexCleanups = map[string]string{
 	"574_drop_github_merge_announcement_identity_index":     "uq_github_merge_announcement_identity",
 	"575_drop_github_merge_announcement_pending_index":      "idx_github_merge_announcement_pending_claim",
 	"612_decision_target_primary_key":                       "decision_intent_target_uidx",
+	"99zzz49_drop_attachment_workspace_index":               "idx_attachment_workspace",
 }
 
 var preMigrationHooks = func() map[string]preMigrationHook {
@@ -936,6 +983,19 @@ var preMigrationHooks = func() map[string]preMigrationHook {
 			return err
 		}
 		return refuseDuplicateActiveChatTasks(ctx, pool)
+	}
+	// CHE-7535 S1: copy fork data into an upstream-owned table, after the
+	// version's own invalid-index cleanup.
+	for version, copyHook := range forkDataCopyHooks {
+		cleanup := hooks[version]
+		hooks[version] = func(ctx context.Context, pool *pgxpool.Pool) error {
+			if cleanup != nil {
+				if err := cleanup(ctx, pool); err != nil {
+					return err
+				}
+			}
+			return copyHook(ctx, pool)
+		}
 	}
 	return hooks
 }()

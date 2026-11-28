@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties, type RefObject } from "react";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { prefersReducedMotion } from "@multica/core/appearance";
+import { issueRouteRef, useWorkspacePaths } from "@multica/core/paths";
 import type { Issue } from "@multica/core/types";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { useNavigation } from "../../../navigation";
@@ -34,10 +35,10 @@ export function HierarchyDialog({ issue, headingRef, modes, onClose }: { issue: 
   const open = (id: string) => {
     if (collapse) return;
     requestHierarchyFocus();
-    const go = () => { onClose(); navigation.push(paths.issueDetail(id)); };
+    const go = () => { onClose(); navigation.push(paths.issueDetail(issueRouteRef({ id: id, identifier: null }))); };
     const popup = popupRef.current?.getBoundingClientRect();
     const target = headingRef.current?.closest("section")?.getBoundingClientRect();
-    if (!popup || !target || window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return go();
+    if (!popup || !target || prefersReducedMotion()) return go();
     const x = squeeze(popup.left, popup.width, target.left, target.width);
     const y = squeeze(popup.top, popup.height, target.top, target.height);
     setCollapse({

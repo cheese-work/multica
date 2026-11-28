@@ -27,7 +27,8 @@
 //     runtime_recovery, timeout, iteration_limit, agent_blocked,
 //     api_invalid_request, skill_bundle_unavailable,
 //     runtime_cli_timeout, environment_prepare_failed,
-//     invalid_task_identity, runtime_access_denied
+//     local_directory_missing, invalid_task_identity,
+//     runtime_access_denied
 //
 //   - A dispatch-blocked value (`dispatch_blocked.` prefix), written at
 //     admission time — before a task row exists — when service.AgentReadiness
@@ -202,6 +203,23 @@ const (
 	// session was touched.
 	ReasonEnvironmentPrepareFailed Reason = "environment_prepare_failed"
 
+	// ReasonLocalDirectoryMissing: the project links a local_directory to
+	// the daemon that claimed the task, and that directory no longer exists
+	// on the machine — the user deleted or moved it after linking it. The
+	// agent process is never launched.
+	//
+	// Split out of the daemon's generic local_directory_error because it is
+	// the one local-directory failure whose fix the user can name from the
+	// label alone: restore the folder, or link a new one (or remove the stale
+	// one) in the project's resources. "Local directory error" hid that, and
+	// retrying reproduces it identically.
+	//
+	// Deliberately NOT retryable: nothing changes until the user acts.
+	// Resume-safe, because no session was touched. Written by
+	// acquireLocalDirectoryLockIfNeeded in daemon/daemon.go; older daemons'
+	// reports are upgraded by NormalizeDaemonReason.
+	ReasonLocalDirectoryMissing Reason = "local_directory_missing"
+
 	// ReasonInvalidTaskIdentity: the daemon refused a claimed task because
 	// the task row's authoritative agent_id was absent or disagreed with the
 	// nested agent payload. The agent process is never launched. This is
@@ -338,7 +356,7 @@ const (
 	ReasonAgentUnknown Reason = "agent_error.unknown"
 )
 
-// allReasons is the canonical ordered list of the reasons. Order is
+// allReasons is the canonical ordered list of reasons. Order is
 // stable so callers (e.g. Prometheus collectors that pre-warm series via
 // AllReasons) can build deterministic label sets across restarts.
 //
@@ -367,6 +385,7 @@ var allReasons = []Reason{
 	ReasonSkillBundleUnavailable,
 	ReasonRuntimeCLITimeout,
 	ReasonEnvironmentPrepareFailed,
+	ReasonLocalDirectoryMissing,
 	ReasonInvalidTaskIdentity,
 	ReasonRuntimeAccessDenied,
 

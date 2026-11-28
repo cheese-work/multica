@@ -86,6 +86,20 @@ func TestChatMessageAuthProvenance(test *testing.T) {
 			request.Header.Set("X-Actor-Source", "interactive_jwt")
 			var response SendChatMessageResponse
 			protected := middleware.Auth(testHandler.Queries, nil, verifier, nil)(http.HandlerFunc(testHandler.SendChatMessage))
+			if source == "cloud_pat" || source == "task_token" {
+				// Neither carries the session owner's human trigger (a cloud-node
+				// PAT has none; this task has no originator), so the owner gate
+				// refuses before anything is written.
+				testutil.Call(test, protected.ServeHTTP, request).Want(http.StatusForbidden)
+				var stored int
+				if err := testPool.QueryRow(context.Background(), `SELECT count(*) FROM chat_message WHERE chat_session_id = $1`, sessionID).Scan(&stored); err != nil {
+					test.Fatal(err)
+				}
+				if stored != 0 {
+					test.Fatalf("refused %s send stored %d messages", source, stored)
+				}
+				return
+			}
 			testutil.Call(test, protected.ServeHTTP, request).Want(http.StatusCreated).JSON(&response)
 			var sentVia string
 			if err := testPool.QueryRow(context.Background(), `SELECT sent_via FROM chat_message WHERE id = $1`, response.MessageID).Scan(&sentVia); err != nil {

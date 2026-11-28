@@ -186,5 +186,385 @@
   {
     "from": "660_inbox_item_snoozed_at",
     "to": "99zz47_inbox_item_snoozed_at"
+  },
+  {
+    "from": "661_chat_task_supplement",
+    "to": "99zzz01_chat_task_supplement"
+  },
+  {
+    "from": "662_chat_task_supplement_message",
+    "to": "99zzz02_chat_task_supplement_message"
+  },
+  {
+    "from": "663_chat_task_supplement_task",
+    "to": "99zzz03_chat_task_supplement_task"
+  },
+  {
+    "from": "664_chat_task_supplement_workspace",
+    "to": "99zzz04_chat_task_supplement_workspace"
+  },
+  {
+    "from": "665_weixin_state",
+    "to": "99zzz05_weixin_state"
+  },
+  {
+    "from": "666_weixin_login_expiry_idx",
+    "to": "99zzz06_weixin_login_expiry_idx"
+  },
+  {
+    "from": "667_issue_origin_weixin_chat",
+    "to": "99zzz07_issue_origin_weixin_chat"
+  },
+  {
+    "from": "668_issue_origin_weixin_chat_validate",
+    "to": "99zzz08_issue_origin_weixin_chat_validate"
+  },
+  {
+    "from": "669_weixin_login_session_unique_index",
+    "to": "99zzz09_weixin_login_session_unique_index"
+  },
+  {
+    "from": "670_weixin_login_session_primary_key",
+    "to": "99zzz10_weixin_login_session_primary_key"
+  },
+  {
+    "from": "671_weixin_account_state_unique_index",
+    "to": "99zzz11_weixin_account_state_unique_index"
+  },
+  {
+    "from": "672_weixin_account_state_primary_key",
+    "to": "99zzz12_weixin_account_state_primary_key"
+  },
+  {
+    "from": "673_runtime_rate_limit",
+    "to": "99zzz13_runtime_rate_limit"
+  },
+  {
+    "from": "674_runtime_profile_daemon",
+    "to": "99zzz14_runtime_profile_daemon"
+  },
+  {
+    "from": "675_chat_wakeup",
+    "to": "99zzz15_chat_wakeup"
+  },
+  {
+    "from": "676_chat_wakeup_due_idx",
+    "to": "99zzz16_chat_wakeup_due_idx"
+  },
+  {
+    "from": "677_chat_wakeup_session_idx",
+    "to": "99zzz17_chat_wakeup_session_idx"
+  },
+  {
+    "from": "678_chat_wakeup_requester_idx",
+    "to": "99zzz18_chat_wakeup_requester_idx"
+  },
+  {
+    "from": "679_entitlement_limit_overage",
+    "to": "99zzz19_entitlement_limit_overage"
+  },
+  {
+    "from": "680_entitlement_limit_overage_scope_idx",
+    "to": "99zzz20_entitlement_limit_overage_scope_idx"
+  },
+  {
+    "from": "681_project_folder",
+    "to": "99zzz21_project_folder"
+  },
+  {
+    "from": "682_project_folder_name_idx",
+    "to": "99zzz22_project_folder_name_idx"
+  },
+  {
+    "from": "683_entitlement_feature_attempt",
+    "to": "99zzz23_entitlement_feature_attempt"
+  },
+  {
+    "from": "684_entitlement_feature_attempt_scope_idx",
+    "to": "99zzz24_entitlement_feature_attempt_scope_idx"
+  },
+  {
+    "from": "685_docs",
+    "to": "99zzz25_docs"
+  },
+  {
+    "from": "686_doc_folder_pkey_index",
+    "to": "99zzz26_doc_folder_pkey_index"
+  },
+  {
+    "from": "687_doc_folder_pkey",
+    "to": "99zzz27_doc_folder_pkey"
+  },
+  {
+    "from": "688_doc_pkey_index",
+    "to": "99zzz28_doc_pkey_index"
+  },
+  {
+    "from": "689_doc_pkey",
+    "to": "99zzz29_doc_pkey"
+  },
+  {
+    "from": "690_doc_version_pkey_index",
+    "to": "99zzz30_doc_version_pkey_index"
+  },
+  {
+    "from": "691_doc_version_pkey",
+    "to": "99zzz31_doc_version_pkey"
+  },
+  {
+    "from": "692_doc_folder_workspace_idx",
+    "to": "99zzz32_doc_folder_workspace_idx"
+  },
+  {
+    "from": "693_doc_workspace_idx",
+    "to": "99zzz33_doc_workspace_idx"
+  },
+  {
+    "from": "694_doc_version_workspace_idx",
+    "to": "99zzz34_doc_version_workspace_idx"
+  },
+  {
+    "from": "695_inbox_item_returned_at",
+    "to": "99zzz35_inbox_item_returned_at"
+  },
+  {
+    "from": "696_inbox_item_active_shown_idx",
+    "to": "99zzz36_inbox_item_active_shown_idx"
+  },
+  {
+    "from": "697_autopilot_run_idempotency_key",
+    "to": "99zzz37_autopilot_run_idempotency_key"
+  },
+  {
+    "from": "698_autopilot_run_idempotency_key_idx",
+    "to": "99zzz38_autopilot_run_idempotency_key_idx"
+  },
+  {
+    "from": "699_member_guest_role",
+    "to": "99zzz39_member_guest_role"
+  },
+  {
+    "from": "700_member_search_access",
+    "to": "99zzz40_member_search_access"
+  },
+  {
+    "from": "701_member_search_access_pkey_index",
+    "to": "99zzz41_member_search_access_pkey_index"
+  },
+  {
+    "from": "702_member_search_access_pkey",
+    "to": "99zzz42_member_search_access_pkey"
+  },
+  {
+    "from": "703_doc_comment",
+    "to": "99zzz43_doc_comment"
+  },
+  {
+    "from": "704_doc_comment_pkey_index",
+    "to": "99zzz44_doc_comment_pkey_index"
+  },
+  {
+    "from": "705_doc_comment_pkey",
+    "to": "99zzz45_doc_comment_pkey"
+  },
+  {
+    "from": "706_doc_comment_doc_idx",
+    "to": "99zzz46_doc_comment_doc_idx"
+  },
+  {
+    "from": "707_doc_comment_workspace_idx",
+    "to": "99zzz47_doc_comment_workspace_idx"
+  },
+  {
+    "from": "708_attachment_workspace_size_idx",
+    "to": "99zzz48_attachment_workspace_size_idx"
+  },
+  {
+    "from": "709_drop_attachment_workspace_index",
+    "to": "99zzz49_drop_attachment_workspace_index"
+  },
+  {
+    "from": "710_autopilot_quota_limit_notice",
+    "to": "99zzz50_autopilot_quota_limit_notice"
+  },
+  {
+    "from": "711_dashboard_range_view",
+    "to": "99zzz51_dashboard_range_view"
+  },
+  {
+    "from": "712_dashboard_range_view_scope_idx",
+    "to": "99zzz52_dashboard_range_view_scope_idx"
+  },
+  {
+    "from": "713_doc_collab",
+    "to": "99zzz53_doc_collab"
+  },
+  {
+    "from": "714_doc_collab_state_pkey_index",
+    "to": "99zzz54_doc_collab_state_pkey_index"
+  },
+  {
+    "from": "715_doc_collab_state_pkey",
+    "to": "99zzz55_doc_collab_state_pkey"
+  },
+  {
+    "from": "716_doc_revision_pkey_index",
+    "to": "99zzz56_doc_revision_pkey_index"
+  },
+  {
+    "from": "717_doc_revision_pkey",
+    "to": "99zzz57_doc_revision_pkey"
+  },
+  {
+    "from": "718_auto_archive_prompt",
+    "to": "99zzz58_auto_archive_prompt"
+  },
+  {
+    "from": "719_remote_app_connection",
+    "to": "99zzz59_remote_app_connection"
+  },
+  {
+    "from": "720_remote_app_oauth_client_idx",
+    "to": "99zzz60_remote_app_oauth_client_idx"
+  },
+  {
+    "from": "721_remote_app_connection_owner_idx",
+    "to": "99zzz61_remote_app_connection_owner_idx"
+  },
+  {
+    "from": "722_auto_archive_agent_trigger_prompt",
+    "to": "99zzz62_auto_archive_agent_trigger_prompt"
+  },
+  {
+    "from": "723_issue_description_collab",
+    "to": "99zzz63_issue_description_collab"
+  },
+  {
+    "from": "724_issue_description_collab_state_pkey_index",
+    "to": "99zzz64_issue_description_collab_state_pkey_index"
+  },
+  {
+    "from": "725_issue_description_collab_state_pkey",
+    "to": "99zzz65_issue_description_collab_state_pkey"
+  },
+  {
+    "from": "726_issue_description_revision_pkey_index",
+    "to": "99zzz66_issue_description_revision_pkey_index"
+  },
+  {
+    "from": "727_issue_description_revision_pkey",
+    "to": "99zzz67_issue_description_revision_pkey"
+  },
+  {
+    "from": "728_app_account_requests",
+    "to": "99zzz68_app_account_requests"
+  },
+  {
+    "from": "729_remote_app_connection_workspace_idx",
+    "to": "99zzz69_remote_app_connection_workspace_idx"
+  },
+  {
+    "from": "730_drop_remote_app_connection_owner_idx",
+    "to": "99zzz70_drop_remote_app_connection_owner_idx"
+  },
+  {
+    "from": "731_skill_revision",
+    "to": "99zzz71_skill_revision"
+  },
+  {
+    "from": "732_comment_idempotency_receipt",
+    "to": "99zzz72_comment_idempotency_receipt"
+  },
+  {
+    "from": "733_comment_idempotency_receipt_key",
+    "to": "99zzz73_comment_idempotency_receipt_key"
+  },
+  {
+    "from": "734_comment_idempotency_receipt_created",
+    "to": "99zzz74_comment_idempotency_receipt_created"
+  },
+  {
+    "from": "735_task_usage_hourly_squad_col",
+    "to": "99zzz75_task_usage_hourly_squad_col"
+  },
+  {
+    "from": "736_task_usage_hourly_squad_uq_idx",
+    "to": "99zzz76_task_usage_hourly_squad_uq_idx"
+  },
+  {
+    "from": "737_task_usage_hourly_dirty_squad_uq_idx",
+    "to": "99zzz77_task_usage_hourly_dirty_squad_uq_idx"
+  },
+  {
+    "from": "738_task_usage_hourly_workspace_squad_idx",
+    "to": "99zzz78_task_usage_hourly_workspace_squad_idx"
+  },
+  {
+    "from": "739_task_usage_hourly_squad_pipeline",
+    "to": "99zzz79_task_usage_hourly_squad_pipeline"
+  },
+  {
+    "from": "740_task_usage_hourly_drop_legacy_key",
+    "to": "99zzz80_task_usage_hourly_drop_legacy_key"
+  },
+  {
+    "from": "741_task_usage_hourly_dirty_drop_legacy_key",
+    "to": "99zzz81_task_usage_hourly_dirty_drop_legacy_key"
+  },
+  {
+    "from": "742_task_usage_hourly_squad_rollback_merge",
+    "to": "99zzz82_task_usage_hourly_squad_rollback_merge"
+  },
+  {
+    "from": "743_issue_blocker",
+    "to": "99zzz83_issue_blocker"
+  },
+  {
+    "from": "744_issue_blocker_unique",
+    "to": "99zzz84_issue_blocker_unique"
+  },
+  {
+    "from": "745_issue_blocker_reverse",
+    "to": "99zzz85_issue_blocker_reverse"
+  },
+  {
+    "from": "746_issue_blocker_rules",
+    "to": "99zzz86_issue_blocker_rules"
+  },
+  {
+    "from": "747_squad_handoff_mode",
+    "to": "99zzz87_squad_handoff_mode"
+  },
+  {
+    "from": "748_app_tool_call_quota_period",
+    "to": "99zzz88_app_tool_call_quota_period"
+  },
+  {
+    "from": "749_app_tool_call_quota_period_scope_idx",
+    "to": "99zzz89_app_tool_call_quota_period_scope_idx"
+  },
+  {
+    "from": "750_app_tool_call_quota_columns",
+    "to": "99zzz90_app_tool_call_quota_columns"
+  },
+  {
+    "from": "751_app_tool_call_workspace_metered_idx",
+    "to": "99zzz91_app_tool_call_workspace_metered_idx"
+  },
+  {
+    "from": "752_doc_comment_agent_runs",
+    "to": "99zzz92_doc_comment_agent_runs"
+  },
+  {
+    "from": "753_agent_task_queue_doc_idx",
+    "to": "99zzz93_agent_task_queue_doc_idx"
+  },
+  {
+    "from": "754_issue_stage_blockers_skip_top_level",
+    "to": "99zzz94_issue_stage_blockers_skip_top_level"
+  },
+  {
+    "from": "755_task_usage_hourly_rollup_hour_key",
+    "to": "99zzz95_task_usage_hourly_rollup_hour_key"
   }
 ]
