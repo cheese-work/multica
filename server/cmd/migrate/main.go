@@ -1464,7 +1464,16 @@ type runOptions struct {
 	// migration ledger, allowing later migrations to run in environments where
 	// this version's DDL is intentionally unnecessary.
 	Conditions map[string]migrationCondition
+	// ContractAttempt is the attempt id a contract migration records in its
+	// schema_contracts row and exposes to its SQL as the transaction-local
+	// setting multica.contract_attempt. Empty means NULL / ''. main() reads
+	// it from MULTICA_CONTRACT_ATTEMPT.
+	ContractAttempt string
 }
+
+// contractAttemptEnv names the environment variable that carries the attempt
+// id of a contract migration (N5a writes it, the runner records it).
+const contractAttemptEnv = "MULTICA_CONTRACT_ATTEMPT"
 
 // usage is printed on any argument error. Kept as a single literal so the
 // "up|down" line and the "--to" line always describe the same two commands.
@@ -1592,6 +1601,8 @@ func main() {
 		Files:      files,
 		Hooks:      hooksForDirection(direction),
 		Conditions: conditionsForDirection(direction),
+
+		ContractAttempt: os.Getenv(contractAttemptEnv),
 	}
 	startupCtx, stopStartup := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopStartup()
@@ -1806,6 +1817,22 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 		return fmt.Errorf("create migrations table: %w", err)
 	}
 
+	contractsIdent, err := contractsTableIdentifier(table)
+	if err != nil {
+		return fmt.Errorf("invalid schema contracts table for %q: %w", table, err)
+	}
+	if _, err := conn.Exec(ctx, fmt.Sprintf(`
+		CREATE TABLE IF NOT EXISTS %s (
+			version TEXT PRIMARY KEY,
+			attempt_id TEXT,
+			snapshot_tables TEXT,
+			restore TEXT,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)
+	`, contractsIdent)); err != nil {
+		return fmt.Errorf("create contracts table: %w", err)
+	}
+
 	existsSQL := fmt.Sprintf("SELECT EXISTS(SELECT 1 FROM %s WHERE version = $1)", tableIdent)
 	insertSQL := fmt.Sprintf("INSERT INTO %s (version) VALUES ($1)", tableIdent)
 	deleteSQL := fmt.Sprintf("DELETE FROM %s WHERE version = $1", tableIdent)
@@ -1838,6 +1865,11 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 			return fmt.Errorf("read migration %q: %w", file, err)
 		}
 
+		contract, err := classifyContract(ctx, conn, opts, file, version, string(sql), contractsIdent)
+		if err != nil {
+			return err
+		}
+
 		// Run any pre-migration hook before the SQL file. Hooks
 		// receive the *pgxpool.Pool (not the loop's pinned conn), so
 		// they can acquire other session-level locks without
@@ -1849,6 +1881,14 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 			if err := hook(ctx, pool); err != nil {
 				return fmt.Errorf("pre-migration hook for %q (%s): %w", version, opts.Direction, err)
 			}
+		}
+
+		if contract != nil {
+			if err := applyContract(ctx, conn, opts, version, string(sql), contract, tableIdent, contractsIdent); err != nil {
+				return err
+			}
+			fmt.Printf("  %s  %s (contract)\n", opts.Direction, version)
+			continue
 		}
 
 		applySQL := true
