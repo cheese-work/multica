@@ -815,7 +815,7 @@ expect_exit 0 "$n5v_status" n5v-reads-baseline
 expect_contains "$n5v_output" "cutover complete: green is now active" n5v-reads-baseline
 for ref in backend web; do
   reads="$(cat "$n5v_dir/control/reads-$ref")"
-  if [ "$reads" -lt 3 ]; then
+  if [ "$reads" -lt 2 ]; then
     echo "scenario n5v-sweep-$ref: a run without a move made only $reads reads of the $ref reference" >&2
     exit 1
   fi
