@@ -2473,7 +2473,7 @@ func (q *Queries) SetIssueMetadataKey(ctx context.Context, arg SetIssueMetadataK
 }
 
 const updateIssue = `-- name: UpdateIssue :one
-WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', COALESCE($3::uuid::text, ''), true)), candidate AS MATERIALIZED (
+WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', COALESCE($4::uuid::text, ''), true)), candidate AS MATERIALIZED (
     -- FOR UPDATE, so every next_* value below is computed from the row this
     -- statement is about to write rather than from the snapshot the statement
     -- started with. Without it a write that waits here behind a concurrent one
@@ -2483,17 +2483,17 @@ WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', 
     -- Materialized so the locking clause is never inlined away.
     SELECT
         i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read, i.created_via, i.requester_user_id, i.description_revision,
-        COALESCE($4::text, i.title) AS next_title,
-        COALESCE($5::text, i.description) AS next_description,
-        COALESCE($6::text, i.status) AS next_status,
-        COALESCE($7::text, i.priority) AS next_priority,
-        $8::text AS next_assignee_type,
-        $9::uuid AS next_assignee_id,
+        COALESCE($5::text, i.title) AS next_title,
+        COALESCE($6::text, i.description) AS next_description,
+        COALESCE($7::text, i.status) AS next_status,
+        COALESCE($8::text, i.priority) AS next_priority,
+        $9::text AS next_assignee_type,
+        $10::uuid AS next_assignee_id,
         CASE
             -- An explicit position wins. Cross-column drag-and-drop sends
             -- status and position together and means the slot it dropped on.
-            WHEN $10::double precision IS NOT NULL
-                THEN $10::double precision
+            WHEN $11::double precision IS NOT NULL
+                THEN $11::double precision
             -- position ranks an issue *within* its (workspace, status)
             -- column, so it stops meaning anything the moment the column
             -- changes: the value that put the issue on top of Todo lands it
@@ -2508,37 +2508,37 @@ WITH wakeup_source AS MATERIALIZED (SELECT set_config('multica.source_task_id', 
             -- unstable across pages. Creation avoids the tie by computing its
             -- min under the workspace counter lock; a status change holds no
             -- such lock and is not worth taking one for.
-            WHEN i.status IS DISTINCT FROM COALESCE($6::text, i.status)
+            WHEN i.status IS DISTINCT FROM COALESCE($7::text, i.status)
                 THEN (
                     SELECT COALESCE(MIN(target.position), 0) - 1
                     FROM issue AS target
                     WHERE target.workspace_id = i.workspace_id
-                      AND target.status = $6::text
+                      AND target.status = $7::text
                 )
             ELSE i.position
         END AS next_position,
-        $11::date AS next_start_date,
-        $12::date AS next_due_date,
-        $13::uuid AS next_parent_issue_id,
+        $12::date AS next_start_date,
+        $13::date AS next_due_date,
+        $14::uuid AS next_parent_issue_id,
         -- preserve_project keeps the locked row's project, for a content write
         -- built from a snapshot that a concurrent move may have outdated.
-        CASE WHEN COALESCE($14::boolean, false) THEN i.project_id ELSE $15::uuid END AS next_project_id,
-        $16::integer AS next_stage,
+        CASE WHEN COALESCE($15::boolean, false) THEN i.project_id ELSE $16::uuid END AS next_project_id,
+        $17::integer AS next_stage,
         -- A supplied pointer marks the issue (the handler also sets cancelled).
         -- Otherwise a mark only survives a write that leaves an already
         -- cancelled issue cancelled. Every other write drops it: reopening is
         -- how a mark is removed, and re-entering cancelled does not revive a
         -- pointer that a server predating this rule left on a reopened issue.
         CASE
-            WHEN $17::uuid IS NOT NULL
-                THEN $17::uuid
-            WHEN i.status = 'cancelled' AND COALESCE($6::text, i.status) = 'cancelled'
+            WHEN $18::uuid IS NOT NULL
+                THEN $18::uuid
+            WHEN i.status = 'cancelled' AND COALESCE($7::text, i.status) = 'cancelled'
                 THEN i.duplicate_of_issue_id
             ELSE NULL
         END AS next_duplicate_of_issue_id
     FROM issue AS i
     WHERE i.id = $1
-      AND ($2::bigint IS NULL OR i.revision = $2::bigint)
+      AND ($3::bigint IS NULL OR i.revision = $3::bigint)
     FOR UPDATE
 ), changed AS (
     SELECT
@@ -2582,26 +2582,31 @@ UPDATE issue AS i SET
     -- metadata.blocked_on names what a blocked issue waits for (CHE-6972); it
     -- is dropped by every write that leaves blocked, whichever writer moved it.
     metadata = CASE WHEN changed.next_status = 'blocked' THEN i.metadata ELSE i.metadata - 'blocked_on' - 'blocked_entry_link' - 'blocked_entry_rearm_refusal' END,
-    revision = i.revision + changed.did_change::integer,
+    -- An explicit due_date write that repeats the stored date still bumps the
+    -- revision: without it a later same-value write is indistinguishable from no
+    -- write, and a fence on the revision of an earlier write (the due-date
+    -- backfill rollback) cannot tell that someone re-asserted the date.
+    revision = i.revision + (changed.did_change OR COALESCE($2::boolean, false))::integer,
     description_revision = i.description_revision
         + (changed.next_description IS DISTINCT FROM changed.description)::integer,
     last_activity_at = CASE WHEN changed.did_activity
         THEN GREATEST(COALESCE(i.last_activity_at, i.updated_at), now())
         ELSE i.last_activity_at
     END,
-    updated_at = CASE WHEN changed.did_change THEN now() ELSE i.updated_at END
+    updated_at = CASE WHEN changed.did_change OR COALESCE($2::boolean, false) THEN now() ELSE i.updated_at END
 FROM changed CROSS JOIN wakeup_source
 WHERE i.id = changed.id
   -- Re-check the precondition on the row version that UPDATE actually locks.
   -- Under READ COMMITTED, concurrent statements may both populate candidate
   -- from the same snapshot; EvalPlanQual re-evaluates this target-row predicate
   -- after waiting for the first writer, leaving the stale writer with 0 rows.
-  AND ($2::bigint IS NULL OR i.revision = $2::bigint)
+  AND ($3::bigint IS NULL OR i.revision = $3::bigint)
 RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read, i.created_via, i.requester_user_id, i.description_revision
 `
 
 type UpdateIssueParams struct {
 	ID                 pgtype.UUID   `json:"id"`
+	DueDateTouched     pgtype.Bool   `json:"due_date_touched"`
 	ExpectedRevision   pgtype.Int8   `json:"expected_revision"`
 	SourceTaskID       pgtype.UUID   `json:"source_task_id"`
 	Title              pgtype.Text   `json:"title"`
@@ -2623,6 +2628,7 @@ type UpdateIssueParams struct {
 func (q *Queries) UpdateIssue(ctx context.Context, arg UpdateIssueParams) (Issue, error) {
 	row := q.db.QueryRow(ctx, updateIssue,
 		arg.ID,
+		arg.DueDateTouched,
 		arg.ExpectedRevision,
 		arg.SourceTaskID,
 		arg.Title,

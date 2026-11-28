@@ -5561,6 +5561,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		} else {
 			params.DueDate = pgtype.Date{Valid: false} // explicit null = clear date
 		}
+		params.DueDateTouched = pgtype.Bool{Bool: true, Valid: true}
 	}
 	if _, ok := rawFields["parent_issue_id"]; ok {
 		if req.ParentIssueID != nil {
@@ -6942,6 +6943,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			} else {
 				params.DueDate = pgtype.Date{Valid: false}
 			}
+			params.DueDateTouched = pgtype.Bool{Bool: true, Valid: true}
 		}
 
 		if _, ok := rawUpdates["parent_issue_id"]; ok {
