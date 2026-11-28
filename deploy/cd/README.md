@@ -656,9 +656,9 @@ a repo-relative SQL file that puts them back.
 - **Packet.** `release-packet.mjs create` adds
   `contract_migrations: [{version, snapshot_tables, restore}]` for every marked
   up file with no ledger row, in runner order. `verify` recomputes the list
-  and fails on any difference. The `restore` file must exist under
-  `--repo-root` (default: two levels above `--migrations-dir`). The cutover
-  bundle carries each restore file at the same relative path and verifies with
+  and fails on any difference. The packet tool does not check that the
+  `restore` file exists yet (deferred to B3c-1). The cutover bundle carries
+  each restore file at the same relative path and verifies with
   `--repo-root <bundle>`.
 - **Gate.** `cutover.sh cutover` runs the gate after the quiescence
   final-gate and before the migrator. No contract migration: nothing happens

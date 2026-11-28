@@ -15,7 +15,7 @@
 // tested extension, never folded silently into the existing D2 files.
 
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 function fail(message) {
@@ -197,23 +197,11 @@ function contractMigrations(migrationsDir, ledgerVersions) {
   return found;
 }
 
-function requireRestorePaths(contracts, repoRoot) {
-  for (const entry of contracts) {
-    let ok = false;
-    try {
-      ok = statSync(join(repoRoot, entry.restore)).isFile();
-    } catch {
-      ok = false;
-    }
-    if (!ok) fail(`restore path ${entry.restore} of contract migration ${entry.version} does not exist as a file under ${repoRoot}`);
-  }
-}
-
 // validatePacket applies every reject condition the accepted architecture
 // names for a release packet: dirty ledger, checksum drift, invalid
 // indexes, unknown writers. Each check fails closed (an ambiguous or
 // missing input is a rejection, not a pass).
-function validatePacket(packet, { migrationsDir, manifest, repoRoot }) {
+function validatePacket(packet, { migrationsDir, manifest }) {
   if (packet.schema_version !== 1) fail("unsupported release packet schema_version");
 
   if (!manifest) fail("missing --manifest; release packets must be verified against the admitted candidate");
@@ -287,8 +275,8 @@ function validatePacket(packet, { migrationsDir, manifest, repoRoot }) {
   // Contract migrations: the packet's list must equal the list computed again
   // from the tree and the observed ledger. A missing field means an empty
   // list (a packet without a marked incoming migration). Any difference
-  // (missing, extra or changed entry) refuses, and each restore path must
-  // exist in the tree.
+  // (missing, extra or changed entry) refuses. The restore file's existence
+  // is not checked here yet (deferred to B3c-1).
   const expectedContracts = contractMigrations(migrationsDir, observed.ledger.versions);
   const packetContracts = packet.contract_migrations ?? [];
   if (!Array.isArray(packetContracts) || JSON.stringify(packetContracts) !== JSON.stringify(expectedContracts)) {
@@ -296,7 +284,6 @@ function validatePacket(packet, { migrationsDir, manifest, repoRoot }) {
       `contract_migrations does not match the marked incoming migrations in ${migrationsDir}: packet has ${JSON.stringify(packet.contract_migrations ?? null)}, expected ${JSON.stringify(expectedContracts)}`,
     );
   }
-  requireRestorePaths(expectedContracts, repoRoot ?? resolve(migrationsDir, "..", ".."));
 
   // Invalid indexes: any index the packet reports as invalid (a concurrent
   // build that failed or was interrupted, per AGENTS.md's CONCURRENTLY
@@ -404,7 +391,7 @@ function create(args) {
     },
     minimum_rollback_version: minimumRollbackVersion,
   };
-  validatePacket(packet, { migrationsDir, manifest, repoRoot: optional("--repo-root", args) });
+  validatePacket(packet, { migrationsDir, manifest });
   writeFileSync(option("--output", args), `${JSON.stringify(packet, null, 2)}\n`);
 }
 
@@ -412,7 +399,7 @@ function verify(args) {
   const packet = readJSON(option("--packet", args));
   const manifest = readJSON(option("--manifest", args));
   const migrationsDir = optional("--migrations-dir", args) ?? "server/migrations";
-  const result = validatePacket(packet, { migrationsDir, manifest, repoRoot: optional("--repo-root", args) });
+  const result = validatePacket(packet, { migrationsDir, manifest });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 

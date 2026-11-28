@@ -695,32 +695,17 @@ for case_name in missing-entry extra-entry changed-tables changed-restore change
   expect_contains "$output" "contract_migrations" "contract-$case_name"
 done
 
-# The restore path must exist in the tree (relative to the repo root, two
-# levels above --migrations-dir unless --repo-root names another).
+# The restore file's existence is not checked by the packet tool yet (moved to
+# B3c-1, Cheese decision on card 1a801b4f option 2). A missing restore file
+# does not refuse create or verify.
 mv "$fx/server/cmd/migrate/recovery/two_restore.sql" "$fx/two_restore.sql.hold"
-set +e
 output="$(verify_contract_packet "$c_ok" 2>&1)"
-status=$?
-set -e
-expect_exit 1 "$status" contract-restore-missing
-expect_contains "$output" "restore path server/cmd/migrate/recovery/two_restore.sql" contract-restore-missing
+expect_contains "$output" '"ok":true' contract-restore-missing-verify
 c_norestore="$work_dir/c-norestore"
 build_contract_fixture "$c_norestore" 001_base
-set +e
 output="$(create_contract_packet "$c_norestore" 2>&1)"
-status=$?
-set -e
-expect_exit 1 "$status" contract-create-restore-missing
-expect_contains "$output" "restore path" contract-create-restore-missing
+[ -s "$c_norestore/packet.json" ] || { echo "scenario contract-restore-missing-create: no packet written" >&2; exit 1; }
 mv "$fx/two_restore.sql.hold" "$fx/server/cmd/migrate/recovery/two_restore.sql"
-
-# --repo-root names the tree that holds the restore files.
-mv "$fx/server/cmd/migrate/recovery" "$work_dir/elsewhere-recovery"
-mkdir -p "$work_dir/alt-root/server/cmd/migrate"
-cp -r "$work_dir/elsewhere-recovery" "$work_dir/alt-root/server/cmd/migrate/recovery"
-output="$(verify_contract_packet "$c_ok" --repo-root "$work_dir/alt-root" 2>&1)"
-expect_contains "$output" '"ok":true' contract-repo-root
-mv "$work_dir/elsewhere-recovery" "$fx/server/cmd/migrate/recovery"
 
 # An invalid contract line is an error, never "no contract" (the parser
 # follows N5r: a first line that starts with `-- multica:contract` and does
