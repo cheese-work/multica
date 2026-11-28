@@ -14,6 +14,7 @@
 // Usage (on X99, with a logged-in multica CLI):
 //
 //	go run ./cmd/issue_usd --days 7 [--json]
+//	go run ./cmd/issue_usd --day 2026-11-20 --json   # one ICT calendar day
 package main
 
 import (
@@ -28,6 +29,17 @@ import (
 	"sync"
 	"time"
 )
+
+// dayWindow is one ICT calendar day: [00:00 ICT, +24 h). The daily cost check
+// (CHE-6536) uses it so its USD lines the same day the sub2api reconciliation
+// reads, not "the last 24 hours".
+func dayWindow(day string) (start, end time.Time, err error) {
+	d, err := time.ParseInLocation("2006-01-02", day, ict)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("--day %q: want YYYY-MM-DD (ICT)", day)
+	}
+	return d, d.AddDate(0, 0, 1), nil
+}
 
 var beforeRe = regexp.MustCompile(`--before "([^"]+)"`)
 
@@ -132,27 +144,34 @@ func parallel[T any](items []T, n int, fn func(T)) {
 
 func main() {
 	days := flag.Int("days", 7, "window length in days, counted back from now")
+	day := flag.String("day", "", "one ICT calendar day, YYYY-MM-DD; overrides --days")
 	asJSON := flag.Bool("json", false, "print the report as JSON")
 	workers := flag.Int("workers", 6, "parallel CLI calls")
 	flag.Parse()
-	if err := mainErr(*days, *asJSON, *workers); err != nil {
+	if err := mainErr(*days, *day, *asJSON, *workers); err != nil {
 		fmt.Fprintln(os.Stderr, "issue_usd:", err)
 		os.Exit(1)
 	}
 }
 
-func mainErr(days int, asJSON bool, workers int) error {
+func mainErr(days int, day string, asJSON bool, workers int) error {
 	c := cli{path: os.Getenv("MULTICA_CLI_PATH")}
 	if c.path == "" {
 		c.path = "multica"
 	}
-	cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	cutoff, end := time.Now().Add(-time.Duration(days)*24*time.Hour), time.Time{}
+	if day != "" {
+		var err error
+		if cutoff, end, err = dayWindow(day); err != nil {
+			return err
+		}
+	}
 
 	agents, err := c.agentIDs()
 	if err != nil {
 		return err
 	}
-	return execute(c, agents, cutoff, asJSON, workers, os.Stdout)
+	return execute(c, agents, cutoff, end, asJSON, workers, os.Stdout)
 }
 
 type gathered struct {
@@ -220,8 +239,19 @@ func gather(src source, agents []string, cutoff time.Time, workers int) gathered
 // error whenever any CLI read failed after retries: the report is written
 // first (with failed_calls / an INCOMPLETE line), then main exits nonzero so an
 // automated consumer cannot accept incomplete totals.
-func execute(src source, agents []string, cutoff time.Time, asJSON bool, workers int, out io.Writer) error {
+func execute(src source, agents []string, cutoff, end time.Time, asJSON bool, workers int, out io.Writer) error {
 	g := gather(src, agents, cutoff, workers)
+	if !end.IsZero() {
+		// Paging reads newest-first from now, so the runs after the window are
+		// fetched and dropped here. Their issue lookups are harmless extras.
+		kept := g.runs[:0]
+		for _, r := range g.runs {
+			if r.CreatedAt.Before(end) {
+				kept = append(kept, r)
+			}
+		}
+		g.runs = kept
+	}
 	rep := Aggregate(g.runs, g.issues)
 	rep.FailedCalls = len(g.failures)
 	if asJSON {
