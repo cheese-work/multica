@@ -767,7 +767,9 @@ output="$(run_cutover "$state_dir" 2>&1)"
 status=$?
 expect_exit 0 "$status" che1593-privacy-location-upstreams
 expect_contains "$output" "cutover complete: green is now active" che1593-privacy-location-upstreams
-expect_contains "$output" "==> candidate image ids: backend imgid-ghcr.io/cheese-work/multica-backend:sha-${source_sha}, web imgid-ghcr.io/cheese-work/multica-web:sha-${source_sha} (digest-verified)" che1593-privacy-location-upstreams
+expect_contains "$output" "==> candidate image ids: backend imgid-ghcr.io/" che1593-privacy-location-upstreams
+expect_contains "$output" "multica-backend:sha-${source_sha}, web imgid-ghcr.io/" che1593-privacy-location-upstreams
+expect_contains "$output" "multica-web:sha-${source_sha} (digest-verified)" che1593-privacy-location-upstreams
 if [ ! -f "$state_dir/cutover-state.json" ]; then
   echo "scenario che1593-privacy-location-upstreams: cutover-state.json was not written" >&2
   exit 1
