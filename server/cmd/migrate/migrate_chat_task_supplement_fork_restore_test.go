@@ -52,6 +52,11 @@ func TestSupplementForkRestoreRecoversAfterPostDeployWrites(t *testing.T) {
 		t.Fatalf("build fork baseline: %v", err)
 	}
 	seedForkSupplements(t, ctx, pool, "chat_task_supplement", supplementSeed())
+	// Message 9 is pending on task 90 in the fork; the new image delivers it on task 91.
+	mustExecSupplement(t, ctx, pool, `
+		INSERT INTO chat_task_supplement (message_id, task_id, workspace_id, chat_session_id, author_id, status, created_at)
+		VALUES ($1, $2, $3, $4, $5, 'pending', now())`,
+		m(9), tk(90), wsA, supplementID("5555", 91), supplementID("aaaa", 91))
 	// The pre-deploy snapshot (N5a): the fork table before the migration.
 	mustExecSupplement(t, ctx, pool, `CREATE TABLE chat_task_supplement_snapshot_`+a+` (LIKE chat_task_supplement INCLUDING DEFAULTS)`)
 	mustExecSupplement(t, ctx, pool, `INSERT INTO chat_task_supplement_snapshot_`+a+` SELECT * FROM chat_task_supplement`)
@@ -74,21 +79,24 @@ func TestSupplementForkRestoreRecoversAfterPostDeployWrites(t *testing.T) {
 	insertUpstream(m(22), tk(22), "delivered")  // new, delivered
 	insertUpstream(m(23), tk(23), "delivering") // new, claimed but unacked
 	insertUpstream(m(5), tk(80), "pending")     // fork has an uncertain row on another task: new pending row
+	insertUpstream(m(9), tk(91), "delivered")   // delivered on task 91; the fork's pending row on task 90 must not redeliver
 	// Cross-task duplicate: fork (m2, t3) is delivered; the new image moves the message to task t50 as pending.
 	// It must not come back as a second pending row.
 	mustExecSupplement(t, ctx, pool,
 		`UPDATE chat_task_supplement SET task_id = $1, status = 'pending' WHERE message_id = $2`, tk(50), m(2))
-	// The contract ledger exists on the deployed path; the script removes only its 99zzz00 row.
-	mustExecSupplement(t, ctx, pool, `CREATE TABLE schema_contracts (version TEXT PRIMARY KEY)`)
-	mustExecSupplement(t, ctx, pool, `INSERT INTO schema_contracts (version) VALUES ('99zzz00_chat_task_supplement_fork_convert'), ('875_chat_task_supplement')`)
+	// The runner wrote the real schema_contracts layout (N5r) when it applied the 99zzz00 contract.
+	var contractRow int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_contracts WHERE version = $1 AND snapshot_tables = 'chat_task_supplement' AND restore = 'server/cmd/migrate/recovery/chat_task_supplement_fork_restore.sql' AND attempt_id IS NULL AND applied_at IS NOT NULL`,
+		supplementForkConvertVersion).Scan(&contractRow); err != nil || contractRow != 1 {
+		t.Fatalf("runner's schema_contracts row for 99zzz00 = %d, %v; want 1", contractRow, err)
+	}
 
 	var upstreamBefore int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM chat_task_supplement`).Scan(&upstreamBefore); err != nil {
 		t.Fatal(err)
 	}
 
-	// Before: the recovery step is today's rollback path, which runs no data step. The
-	// script is not on the tree yet, so this run is the red.
+	// Restore: the recovery script brings back the fork shape and reconciles delivery states.
 	if err := runSupplementRestore(ctx, pool, a); err != nil {
 		t.Fatalf("restore script: %v", err)
 	}
@@ -154,6 +162,24 @@ func TestSupplementForkRestoreRecoversAfterPostDeployWrites(t *testing.T) {
 	}{{3, 4, "fork_row_updated"}, {20, 20, "inserted"}, {22, 22, "inserted"}} {
 		if err := pool.QueryRow(ctx, `SELECT outcome FROM chat_task_supplement_restore_report WHERE attempt_id = $1 AND message_id = $2 AND task_id = $3`, a, m(c.msg), tk(c.task)).Scan(&outcome); err != nil || outcome != c.outcome {
 			t.Errorf("report outcome for message %d = %q, %v; want %s", c.msg, outcome, err, c.outcome)
+		}
+	}
+
+	// Cross-task: the fork's pending row on task 90 is superseded; the delivered upstream row on task 91 is restored as delivered.
+	var forkStatus, forkReason, newStatus string
+	var newDeliveredAt *string
+	if err := pool.QueryRow(ctx, `SELECT status, COALESCE(failure_reason, '') FROM chat_task_supplement WHERE message_id = $1 AND task_id = $2`, m(9), tk(90)).Scan(&forkStatus, &forkReason); err != nil || forkStatus != "failed" || forkReason != "superseded after deploy" {
+		t.Fatalf("fork pending row on task 90: status=%q reason=%q, %v; want failed, superseded after deploy", forkStatus, forkReason, err)
+	}
+	if err := pool.QueryRow(ctx, `SELECT status, delivered_at::text FROM chat_task_supplement WHERE message_id = $1 AND task_id = $2`, m(9), tk(91)).Scan(&newStatus, &newDeliveredAt); err != nil || newStatus != "delivered" || newDeliveredAt == nil {
+		t.Fatalf("delivered upstream row on task 91: status=%q delivered_at=%v, %v; want delivered with delivered_at", newStatus, newDeliveredAt, err)
+	}
+	for _, c := range []struct {
+		task    int
+		outcome string
+	}{{91, "inserted_cross_task"}, {90, "fork_row_superseded"}} {
+		if err := pool.QueryRow(ctx, `SELECT outcome FROM chat_task_supplement_restore_report WHERE attempt_id = $1 AND message_id = $2 AND task_id = $3`, a, m(9), tk(c.task)).Scan(&outcome); err != nil || outcome != c.outcome {
+			t.Errorf("report outcome for message 9 on task %d = %q, %v; want %s", c.task, outcome, err, c.outcome)
 		}
 	}
 
