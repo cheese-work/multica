@@ -392,15 +392,14 @@ container_image_id() {
   docker inspect --format '{{.Image}}' "$cid" 2>/dev/null
 }
 
-# runs_verified_image: service's running container uses exactly the local
-# image repo:tag resolves to, whose digest verify_pulled_digest already
-# matched against the manifest.
+# runs_verified_image: service's running container was created from exactly
+# the image id verified_image_id returned for the manifest digest. The
+# reference is not read again here: it may point elsewhere by now.
 runs_verified_image() {
-  local service=$1 ref=$2 running want
+  local service=$1 want=$2 running
   running="$(container_image_id "$service" || true)"
-  want="$(docker inspect --format '{{.Id}}' "$ref" 2>/dev/null || true)"
   if [ -z "$want" ] || [ "$running" != "$want" ]; then
-    echo "!! $service runs image '${running:-<none>}', verified $ref is '${want:-<none>}'" >&2
+    echo "!! $service runs image '${running:-<none>}', verified image id is '${want:-<none>}'" >&2
     return 1
   fi
 }
@@ -759,14 +758,15 @@ case "$command" in
       sleep $((pull_attempt * 5))
       pull_attempt=$((pull_attempt + 1))
     done
-    if ! verify_pulled_digest "$backend_repo" "$image_tag" "$backend_digest"; then
+    if ! candidate_backend_id="$(verified_image_id "$backend_repo" "$image_tag" "$backend_digest")"; then
       echo "!! pulled backend image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
       exit 1
     fi
-    if ! verify_pulled_digest "$web_repo" "$image_tag" "$web_digest"; then
+    if ! candidate_web_id="$(verified_image_id "$web_repo" "$image_tag" "$web_digest")"; then
       echo "!! pulled web image digest mismatch for colour=$to_colour; $from_colour remains active" >&2
       exit 1
     fi
+    echo "==> candidate image ids: backend $candidate_backend_id, web $candidate_web_id (digest-verified)"
 
     # The release packet's OWN minimum_rollback_version is the rollback
     # compatibility anchor for THIS cutover — not a value cutover.sh derives
@@ -877,8 +877,8 @@ case "$command" in
 
     # The candidate's RUNNING containers must be the digest-verified images,
     # not a stale container Compose chose to keep.
-    if ! runs_verified_image "backend-${to_colour}" "${backend_repo}:${image_tag}" ||
-      ! runs_verified_image "frontend-${to_colour}" "${web_repo}:${image_tag}"; then
+    if ! runs_verified_image "backend-${to_colour}" "$candidate_backend_id" ||
+      ! runs_verified_image "frontend-${to_colour}" "$candidate_web_id"; then
       recover_incumbent "candidate colour=$to_colour is not running the manifest-verified images"
     fi
 
