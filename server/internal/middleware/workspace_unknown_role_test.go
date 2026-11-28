@@ -13,10 +13,11 @@ import (
 )
 
 // A member row whose role this build does not know grants no membership
-// (CHE-9701). Upstream's 699_member_guest_role widens member's role CHECK to
-// admit 'guest'; a pre-699 image rolled back onto that data must not read the
-// new role as a full member. The test widens the CHECK the same way 699 does,
-// inside a transaction that is rolled back, so no other test sees it.
+// (CHE-9701). A later release can widen member's role CHECK to admit a new role
+// (as 99zzz39_member_guest_role did for 'guest'); a build rolled back onto that
+// data must not read the new role as a full member. 'viewer' stands for such a
+// role. The test widens the CHECK to admit it, inside a transaction that is
+// rolled back, so no other test sees it.
 func TestUnknownMemberRoleGrantsNoMembership(t *testing.T) {
 	pool := openPool(t)
 	defer pool.Close()
@@ -31,11 +32,11 @@ func TestUnknownMemberRoleGrantsNoMembership(t *testing.T) {
 	if _, err := tx.Exec(ctx, `ALTER TABLE member
 		DROP CONSTRAINT IF EXISTS member_role_check,
 		ADD CONSTRAINT member_role_check
-		CHECK (role IN ('owner', 'admin', 'member', 'guest')) NOT VALID`); err != nil {
+		CHECK (role IN ('owner', 'admin', 'member', 'viewer')) NOT VALID`); err != nil {
 		t.Fatalf("widen member role check: %v", err)
 	}
 
-	roles := []string{"owner", "admin", "member", "guest"}
+	roles := []string{"owner", "admin", "member", "viewer"}
 	userIDs := map[string]pgtype.UUID{}
 	workspaceIDs := map[string]pgtype.UUID{}
 	for _, role := range roles {
@@ -72,9 +73,9 @@ func TestUnknownMemberRoleGrantsNoMembership(t *testing.T) {
 			req.Header.Set("X-Workspace-ID", uuidText(workspaceIDs[role]))
 			rec := httptest.NewRecorder()
 			route.ServeHTTP(rec, req)
-			if role == "guest" {
+			if role == "viewer" {
 				if rec.Code != http.StatusForbidden && rec.Code != http.StatusNotFound {
-					t.Errorf("role guest: status %d, want 403 or 404", rec.Code)
+					t.Errorf("role viewer: status %d, want 403 or 404", rec.Code)
 				}
 				continue
 			}
@@ -122,8 +123,8 @@ func TestUnknownMemberRoleGrantsNoMembership(t *testing.T) {
 			t.Errorf("GetRealtimeMemberships returned %d rows, want 3 (owner, admin, member)", len(rows))
 		}
 		for _, row := range rows {
-			if row.UserID == userIDs["guest"] {
-				t.Errorf("guest user kept a realtime membership")
+			if row.UserID == userIDs["viewer"] {
+				t.Errorf("viewer user kept a realtime membership")
 			}
 		}
 	})
@@ -139,9 +140,9 @@ func TestUnknownMemberRoleGrantsNoMembership(t *testing.T) {
 				Title:         "unknown role probe",
 				Details:       []byte(`{}`),
 			})
-			if role == "guest" {
+			if role == "viewer" {
 				if !errors.Is(err, pgx.ErrNoRows) {
-					t.Errorf("guest inbox delivery: err %v, want pgx.ErrNoRows (quiet skip)", err)
+					t.Errorf("viewer inbox delivery: err %v, want pgx.ErrNoRows (quiet skip)", err)
 				}
 				continue
 			}
@@ -149,20 +150,20 @@ func TestUnknownMemberRoleGrantsNoMembership(t *testing.T) {
 				t.Errorf("role %s inbox delivery: %v", role, err)
 			}
 		}
-		// The guest holds a stray unread item written before the rollback.
+		// The viewer holds a stray unread item written before the rollback.
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO inbox_item (workspace_id, recipient_type, recipient_id, type, severity, title, details)
 			 VALUES ($1, 'member', $2, 'new_comment', 'info', 'stray', '{}')`,
-			workspaceIDs["guest"], userIDs["guest"],
+			workspaceIDs["viewer"], userIDs["viewer"],
 		); err != nil {
-			t.Fatalf("seed guest inbox item: %v", err)
+			t.Fatalf("seed viewer inbox item: %v", err)
 		}
-		rows, err := queries.CountUnreadInboxByWorkspace(ctx, userIDs["guest"])
+		rows, err := queries.CountUnreadInboxByWorkspace(ctx, userIDs["viewer"])
 		if err != nil {
 			t.Fatalf("CountUnreadInboxByWorkspace: %v", err)
 		}
 		if len(rows) != 0 {
-			t.Errorf("guest unread dot lit for %d workspaces, want 0", len(rows))
+			t.Errorf("viewer unread dot lit for %d workspaces, want 0", len(rows))
 		}
 	})
 }
@@ -170,7 +171,7 @@ func TestUnknownMemberRoleGrantsNoMembership(t *testing.T) {
 // listedWant is how many workspace rows a user holding role sees: one for a
 // role this build knows, none otherwise.
 func listedWant(role string) int {
-	if role == "guest" {
+	if role == "viewer" {
 		return 0
 	}
 	return 1

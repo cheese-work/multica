@@ -20,7 +20,7 @@ import {
   type DisclaimConflict,
 } from "@multica/core/issues/decision-disclaim";
 import { issueKeys } from "@multica/core/issues/queries";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import type { DecisionState, TimelineEntry } from "@multica/core/types";
 import { useT } from "../../i18n";
@@ -176,7 +176,7 @@ export function DecisionQuoteCard({
         )}
         {compact && entry.decision_issue_id && entry.decision_issue_identifier && (
           <AppLink
-            href={paths.issueDetail(entry.decision_issue_id)}
+            href={paths.issueDetail(issueRouteRef({ id: entry.decision_issue_id, identifier: null }))}
             data-testid="decision-receipt-issue"
             className="text-micro text-muted-foreground hover:underline"
           >

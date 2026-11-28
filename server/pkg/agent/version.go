@@ -153,10 +153,21 @@ func SupportsTaskSupplement(provider, version string) bool {
 		// into the running ACP turn (queued, then injected at the next
 		// tool/message boundary of the same session/prompt).
 		minimum = "2.33.0"
+	case "antigravity":
+		// 1.4.8 is the oldest agy verified to append PreInvocation injectSteps
+		// userMessage entries to the running turn and to report each as a
+		// user_input step on the stream-json output.
+		minimum = "1.4.8"
 	case "cursor":
 		// 2026.10.14 is the oldest build verified to forward postToolUse
 		// additional_context into the model turn in --print mode.
 		minimum = "2026.10.14"
+	case "hermes":
+		// 0.22.3 is the oldest Hermes Agent whose gateway ACP answers `/steer`
+		// with an acknowledgement and keeps late guidance inside the running
+		// admission. The backend also requires the session to advertise the
+		// command; jcode shares this provider and is gated out by the daemon.
+		minimum = "0.22.3"
 	default:
 		return false
 	}
@@ -179,6 +190,23 @@ func parseSemver(raw string) (semver, error) {
 	minor, _ := strconv.Atoi(m[2])
 	patch, _ := strconv.Atoi(m[3])
 	return semver{Major: major, Minor: minor, Patch: patch}, nil
+}
+
+// CompareVersionCores orders the semver cores of two version strings: -1, 0 or
+// 1. ok is false when either one has no major.minor.patch core.
+func CompareVersionCores(a, b string) (cmp int, ok bool) {
+	va, errA := parseSemver(a)
+	vb, errB := parseSemver(b)
+	if errA != nil || errB != nil {
+		return 0, false
+	}
+	switch {
+	case va.lessThan(vb):
+		return -1, true
+	case vb.lessThan(va):
+		return 1, true
+	}
+	return 0, true
 }
 
 // lessThan returns true if v < other.

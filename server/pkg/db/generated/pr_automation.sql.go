@@ -215,7 +215,7 @@ WHERE i.id = $1
       )
       )
   )
-RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read, i.created_via, i.requester_user_id
+RETURNING i.id, i.workspace_id, i.title, i.description, i.status, i.priority, i.assignee_type, i.assignee_id, i.creator_type, i.creator_id, i.parent_issue_id, i.acceptance_criteria, i.context_refs, i.position, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.origin_type, i.origin_id, i.first_executed_at, i.start_date, i.metadata, i.stage, i.properties, i.revision, i.last_activity_at, i.triage_state, i.duplicate_of_issue_id, i.workflow_id, i.requested_by_id, i.max_runs_override, i.description_external_read, i.created_via, i.requester_user_id, i.description_revision
 `
 
 type MoveIssueFromPullRequestsParams struct {
@@ -280,6 +280,7 @@ func (q *Queries) MoveIssueFromPullRequests(ctx context.Context, arg MoveIssueFr
 		&i.DescriptionExternalRead,
 		&i.CreatedVia,
 		&i.RequesterUserID,
+		&i.DescriptionRevision,
 	)
 	return i, err
 }

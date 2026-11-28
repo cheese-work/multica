@@ -128,7 +128,13 @@ multica workflow webhook list <workflow-id>                    # never shows sec
   `required` (default `optional`; the flip to `required` is tracked in CHE-9416,
   readiness: `--list --days 7` shows no `uncategorized` finding). From round 2 on, a new P0 or P1
   that round 1 did not list needs `@revision` (the revision introduced it), or
-  the server refuses the verdict (`review_round_new_blocker`). Read-only.
+  the server refuses the verdict (`review_round_new_blocker`). The three
+  refusals (`review_verdict_findings_required`, `review_finding_category_required`,
+  `review_round_new_blocker`) carry `cli_form`, the `--finding` form to send.
+  `review_round_new_blocker` also says "update the multica CLI" and sets
+  `client_outdated: true` (with `client_version`, `min_client_version`) when your
+  CLI is older than `0.10.0-20261125-1520`; an unknown version (`dev`) is never
+  flagged. Read-only.
 - `multica issue workflow escalate <id> --reason "<why>" [--output json]` moves
   an issue that follows Quick back to the full workflow it followed before.
   `--reason` is required; `--reason rollback` needs no Estimate. The server

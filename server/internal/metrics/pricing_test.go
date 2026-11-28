@@ -564,6 +564,8 @@ func TestPriceForModelAliasAnthropicFable51(t *testing.T) {
 	// the Fable 5.1 row specifically.
 	fable51 := ModelPrice{Provider: "anthropic", Model: "claude-fable-5-1", InputPerM: 10, CacheReadPerM: 0.25, CacheWritePerM: 12.5, CacheWrite1hPerM: 20, OutputPerM: 50}
 	fable5 := ModelPrice{Provider: "anthropic", Model: "claude-fable-5", InputPerM: 10, CacheReadPerM: 1, CacheWritePerM: 12.5, CacheWrite1hPerM: 20, OutputPerM: 50}
+	// Fable 5.2 is its own, cheaper row.
+	fable52 := ModelPrice{Provider: "anthropic", Model: "claude-fable-5-2", InputPerM: 8, CacheReadPerM: 0.2, CacheWritePerM: 10, CacheWrite1hPerM: 16, OutputPerM: 40}
 	cases := []struct {
 		model string
 		want  ModelPrice
@@ -590,6 +592,11 @@ func TestPriceForModelAliasAnthropicFable51(t *testing.T) {
 		{model: "claude-fable-5-1-20260901", want: fable51},
 		{model: "claude-fable-5-1-latest", want: fable51},
 		{model: "claude-fable-5-1-20260901[1m]", want: fable51},
+		{model: "claude-fable-5-2", want: fable52},
+		{model: "claude-fable-5.2", want: fable52},
+		{model: "anthropic/claude-fable-5-2", want: fable52},
+		{model: "claude-fable-5-2[1m]", want: fable52},
+		{model: "claude-fable-5-2-20261101", want: fable52},
 	}
 
 	for _, tc := range cases {
@@ -611,6 +618,7 @@ func TestPriceForModelAliasAnthropicFable51(t *testing.T) {
 		"claude-fable-5.3",
 		"claude-fable-5-10",
 		"claude-fable-5.10",
+		"claude-fable-5-2x",
 		"claude-fable-5-1x",
 	} {
 		if got, ok := PriceForModelAlias(model); ok {

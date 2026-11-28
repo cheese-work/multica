@@ -223,6 +223,11 @@ WHERE a.workspace_id = $1
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= $2::timestamptz
   AND ($3::uuid IS NULL OR i.project_id = $3)
+  AND (
+      $4::text = ''
+      OR ($4::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR ($4::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = $5::uuid)
+  )
 GROUP BY atq.agent_id
 ORDER BY total_seconds DESC
 `
@@ -231,6 +236,8 @@ type ListDashboardAgentRunTimeParams struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	Since       pgtype.Timestamptz `json:"since"`
 	ProjectID   pgtype.UUID        `json:"project_id"`
+	SquadScope  string             `json:"squad_scope"`
+	SquadID     pgtype.UUID        `json:"squad_id"`
 }
 
 type ListDashboardAgentRunTimeRow struct {
@@ -259,7 +266,13 @@ type ListDashboardAgentRunTimeRow struct {
 // charts the client trims to the same span; passed straight through without
 // re-truncation.
 func (q *Queries) ListDashboardAgentRunTime(ctx context.Context, arg ListDashboardAgentRunTimeParams) ([]ListDashboardAgentRunTimeRow, error) {
-	rows, err := q.db.Query(ctx, listDashboardAgentRunTime, arg.WorkspaceID, arg.Since, arg.ProjectID)
+	rows, err := q.db.Query(ctx, listDashboardAgentRunTime,
+		arg.WorkspaceID,
+		arg.Since,
+		arg.ProjectID,
+		arg.SquadScope,
+		arg.SquadID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -302,6 +315,11 @@ WHERE a.workspace_id = $1
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= $2::timestamptz
   AND ($3::uuid IS NULL OR i.project_id = $3)
+  AND (
+      $4::text = ''
+      OR ($4::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR ($4::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = $5::uuid)
+  )
 GROUP BY atq.agent_id, 2
 ORDER BY atq.agent_id, 2
 `
@@ -310,6 +328,8 @@ type ListDashboardFailuresByAgentParams struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	Since       pgtype.Timestamptz `json:"since"`
 	ProjectID   pgtype.UUID        `json:"project_id"`
+	SquadScope  string             `json:"squad_scope"`
+	SquadID     pgtype.UUID        `json:"squad_id"`
 }
 
 type ListDashboardFailuresByAgentRow struct {
@@ -326,7 +346,13 @@ type ListDashboardFailuresByAgentRow struct {
 // No date bucketing, so no @tz — @since is the viewer's local
 // start-of-day-(N) so the window lines up with the per-agent run-time card.
 func (q *Queries) ListDashboardFailuresByAgent(ctx context.Context, arg ListDashboardFailuresByAgentParams) ([]ListDashboardFailuresByAgentRow, error) {
-	rows, err := q.db.Query(ctx, listDashboardFailuresByAgent, arg.WorkspaceID, arg.Since, arg.ProjectID)
+	rows, err := q.db.Query(ctx, listDashboardFailuresByAgent,
+		arg.WorkspaceID,
+		arg.Since,
+		arg.ProjectID,
+		arg.SquadScope,
+		arg.SquadID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -335,6 +361,81 @@ func (q *Queries) ListDashboardFailuresByAgent(ctx context.Context, arg ListDash
 	for rows.Next() {
 		var i ListDashboardFailuresByAgentRow
 		if err := rows.Scan(&i.AgentID, &i.FailureReason, &i.TaskCount); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDashboardFailuresBySquad = `-- name: ListDashboardFailuresBySquad :many
+SELECT
+    COALESCE(atq.usage_squad_id, atq.squad_id)::uuid AS squad_id,
+    atq.agent_id,
+    CASE
+        WHEN atq.status = 'failed'
+            THEN COALESCE(NULLIF(atq.failure_reason, ''), 'unclassified')
+        ELSE ''
+    END AS failure_reason,
+    COUNT(*)::int AS task_count
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+LEFT JOIN issue i ON i.id = atq.issue_id
+WHERE a.workspace_id = $1
+  AND atq.status IN ('completed', 'failed')
+  AND atq.completed_at IS NOT NULL
+  AND atq.completed_at >= $2::timestamptz
+  AND ($3::uuid IS NULL OR i.project_id = $3)
+  AND (
+      $4::text = ''
+      OR ($4::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR ($4::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = $5::uuid)
+  )
+GROUP BY COALESCE(atq.usage_squad_id, atq.squad_id), atq.agent_id, 3
+ORDER BY 1 NULLS LAST, atq.agent_id, 3
+`
+
+type ListDashboardFailuresBySquadParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	SquadScope  string             `json:"squad_scope"`
+	SquadID     pgtype.UUID        `json:"squad_id"`
+}
+
+type ListDashboardFailuresBySquadRow struct {
+	SquadID       pgtype.UUID `json:"squad_id"`
+	AgentID       pgtype.UUID `json:"agent_id"`
+	FailureReason string      `json:"failure_reason"`
+	TaskCount     int32       `json:"task_count"`
+}
+
+// Per-(squad, agent, failure_reason) terminal-task counts for the Errors tab's
+// Squad breakdown. squad_id IS NULL represents standalone agent runs.
+func (q *Queries) ListDashboardFailuresBySquad(ctx context.Context, arg ListDashboardFailuresBySquadParams) ([]ListDashboardFailuresBySquadRow, error) {
+	rows, err := q.db.Query(ctx, listDashboardFailuresBySquad,
+		arg.WorkspaceID,
+		arg.Since,
+		arg.ProjectID,
+		arg.SquadScope,
+		arg.SquadID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDashboardFailuresBySquadRow{}
+	for rows.Next() {
+		var i ListDashboardFailuresBySquadRow
+		if err := rows.Scan(
+			&i.SquadID,
+			&i.AgentID,
+			&i.FailureReason,
+			&i.TaskCount,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)
@@ -362,6 +463,11 @@ WHERE a.workspace_id = $1
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= $3::timestamptz
   AND ($4::uuid IS NULL OR i.project_id = $4)
+  AND (
+      $5::text = ''
+      OR ($5::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR ($5::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = $6::uuid)
+  )
 GROUP BY 1, 2
 ORDER BY 1 DESC, 2
 `
@@ -371,6 +477,8 @@ type ListDashboardFailuresDailyParams struct {
 	Tz          string             `json:"tz"`
 	Since       pgtype.Timestamptz `json:"since"`
 	ProjectID   pgtype.UUID        `json:"project_id"`
+	SquadScope  string             `json:"squad_scope"`
+	SquadID     pgtype.UUID        `json:"squad_id"`
 }
 
 type ListDashboardFailuresDailyRow struct {
@@ -406,6 +514,8 @@ func (q *Queries) ListDashboardFailuresDaily(ctx context.Context, arg ListDashbo
 		arg.Tz,
 		arg.Since,
 		arg.ProjectID,
+		arg.SquadScope,
+		arg.SquadID,
 	)
 	if err != nil {
 		return nil, err
@@ -444,6 +554,11 @@ WHERE a.workspace_id = $1
   AND atq.completed_at IS NOT NULL
   AND atq.completed_at >= $3::timestamptz
   AND ($4::uuid IS NULL OR i.project_id = $4)
+  AND (
+      $5::text = ''
+      OR ($5::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR ($5::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = $6::uuid)
+  )
 GROUP BY DATE(atq.completed_at AT TIME ZONE $2::text)
 ORDER BY DATE(atq.completed_at AT TIME ZONE $2::text) DESC
 `
@@ -453,6 +568,8 @@ type ListDashboardRunTimeDailyParams struct {
 	Tz          string             `json:"tz"`
 	Since       pgtype.Timestamptz `json:"since"`
 	ProjectID   pgtype.UUID        `json:"project_id"`
+	SquadScope  string             `json:"squad_scope"`
+	SquadID     pgtype.UUID        `json:"squad_id"`
 }
 
 type ListDashboardRunTimeDailyRow struct {
@@ -489,6 +606,8 @@ func (q *Queries) ListDashboardRunTimeDaily(ctx context.Context, arg ListDashboa
 		arg.Tz,
 		arg.Since,
 		arg.ProjectID,
+		arg.SquadScope,
+		arg.SquadID,
 	)
 	if err != nil {
 		return nil, err
@@ -501,6 +620,92 @@ func (q *Queries) ListDashboardRunTimeDaily(ctx context.Context, arg ListDashboa
 			&i.Date,
 			&i.TotalSeconds,
 			&i.TaskCount,
+			&i.FailedCount,
+			&i.CancelledCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listDashboardSquadRunTime = `-- name: ListDashboardSquadRunTime :many
+SELECT
+    COALESCE(atq.usage_squad_id, atq.squad_id)::uuid AS squad_id,
+    atq.agent_id,
+    COALESCE(
+        SUM(EXTRACT(EPOCH FROM (atq.completed_at - atq.started_at)))::bigint,
+        0
+    )::bigint AS total_seconds,
+    COUNT(*)::int AS task_count,
+    COUNT(*) FILTER (WHERE EXISTS (
+        SELECT 1 FROM task_usage tu WHERE tu.task_id = atq.id
+    ))::int AS metered_task_count,
+    COUNT(*) FILTER (WHERE atq.status = 'failed')::int AS failed_count,
+    COUNT(*) FILTER (WHERE atq.status = 'cancelled')::int AS cancelled_count
+FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+LEFT JOIN issue i ON i.id = atq.issue_id
+WHERE a.workspace_id = $1
+  AND atq.status IN ('completed', 'failed', 'cancelled')
+  AND atq.started_at IS NOT NULL
+  AND atq.completed_at IS NOT NULL
+  AND atq.completed_at >= $2::timestamptz
+  AND ($3::uuid IS NULL OR i.project_id = $3)
+  AND (
+      $4::text = ''
+      OR ($4::text = 'standalone' AND COALESCE(atq.usage_squad_id, atq.squad_id) IS NULL)
+      OR ($4::text = 'squad' AND COALESCE(atq.usage_squad_id, atq.squad_id) = $5::uuid)
+  )
+GROUP BY COALESCE(atq.usage_squad_id, atq.squad_id), atq.agent_id
+ORDER BY total_seconds DESC
+`
+
+type ListDashboardSquadRunTimeParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	SquadScope  string             `json:"squad_scope"`
+	SquadID     pgtype.UUID        `json:"squad_id"`
+}
+
+type ListDashboardSquadRunTimeRow struct {
+	SquadID          pgtype.UUID `json:"squad_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
+	TotalSeconds     int64       `json:"total_seconds"`
+	TaskCount        int32       `json:"task_count"`
+	MeteredTaskCount int32       `json:"metered_task_count"`
+	FailedCount      int32       `json:"failed_count"`
+	CancelledCount   int32       `json:"cancelled_count"`
+}
+
+// Per-(squad, agent) terminal-task run time and task counts for the workspace.
+// squad_id IS NULL represents standalone (non-squad-triggered) agent runs.
+func (q *Queries) ListDashboardSquadRunTime(ctx context.Context, arg ListDashboardSquadRunTimeParams) ([]ListDashboardSquadRunTimeRow, error) {
+	rows, err := q.db.Query(ctx, listDashboardSquadRunTime,
+		arg.WorkspaceID,
+		arg.Since,
+		arg.ProjectID,
+		arg.SquadScope,
+		arg.SquadID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDashboardSquadRunTimeRow{}
+	for rows.Next() {
+		var i ListDashboardSquadRunTimeRow
+		if err := rows.Scan(
+			&i.SquadID,
+			&i.AgentID,
+			&i.TotalSeconds,
+			&i.TaskCount,
+			&i.MeteredTaskCount,
 			&i.FailedCount,
 			&i.CancelledCount,
 		); err != nil {
@@ -534,6 +739,11 @@ FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= $2::timestamptz
   AND ($3::uuid IS NULL OR project_id = $3)
+  AND (
+      $4::text = ''
+      OR ($4::text = 'standalone' AND squad_id IS NULL)
+      OR ($4::text = 'squad' AND squad_id = $5::uuid)
+  )
 GROUP BY agent_id, LOWER(provider), model
 ORDER BY agent_id, LOWER(provider), model
 `
@@ -542,6 +752,8 @@ type ListDashboardUsageByAgentParams struct {
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
 	Since       pgtype.Timestamptz `json:"since"`
 	ProjectID   pgtype.UUID        `json:"project_id"`
+	SquadScope  string             `json:"squad_scope"`
+	SquadID     pgtype.UUID        `json:"squad_id"`
 }
 
 type ListDashboardUsageByAgentRow struct {
@@ -576,7 +788,13 @@ type ListDashboardUsageByAgentRow struct {
 // provider is LOWER()-normalized so mixed-case historical rows merge with
 // new rows (see ListDashboardUsageDaily).
 func (q *Queries) ListDashboardUsageByAgent(ctx context.Context, arg ListDashboardUsageByAgentParams) ([]ListDashboardUsageByAgentRow, error) {
-	rows, err := q.db.Query(ctx, listDashboardUsageByAgent, arg.WorkspaceID, arg.Since, arg.ProjectID)
+	rows, err := q.db.Query(ctx, listDashboardUsageByAgent,
+		arg.WorkspaceID,
+		arg.Since,
+		arg.ProjectID,
+		arg.SquadScope,
+		arg.SquadID,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -610,6 +828,105 @@ func (q *Queries) ListDashboardUsageByAgent(ctx context.Context, arg ListDashboa
 	return items, nil
 }
 
+const listDashboardUsageBySquad = `-- name: ListDashboardUsageBySquad :many
+SELECT
+    squad_id,
+    agent_id,
+    LOWER(provider) AS provider,
+    model,
+    SUM(input_tokens)::bigint        AS input_tokens,
+    SUM(output_tokens)::bigint       AS output_tokens,
+    SUM(cache_read_tokens)::bigint   AS cache_read_tokens,
+    SUM(cache_write_tokens)::bigint  AS cache_write_tokens,
+    SUM(cost_usd_ticks)::bigint                                          AS cost_usd_ticks,
+    SUM(COALESCE(uncosted_input_tokens, input_tokens))::bigint           AS uncosted_input_tokens,
+    SUM(COALESCE(uncosted_output_tokens, output_tokens))::bigint         AS uncosted_output_tokens,
+    SUM(COALESCE(uncosted_cache_read_tokens, cache_read_tokens))::bigint AS uncosted_cache_read_tokens,
+    SUM(COALESCE(uncosted_cache_write_tokens, cache_write_tokens))::bigint AS uncosted_cache_write_tokens,
+    SUM(task_count)::int             AS task_count
+FROM task_usage_hourly
+WHERE workspace_id = $1
+  AND bucket_hour >= $2::timestamptz
+  AND ($3::uuid IS NULL OR project_id = $3)
+  AND (
+      $4::text = ''
+      OR ($4::text = 'standalone' AND squad_id IS NULL)
+      OR ($4::text = 'squad' AND squad_id = $5::uuid)
+  )
+GROUP BY squad_id, agent_id, LOWER(provider), model
+ORDER BY squad_id NULLS LAST, agent_id, LOWER(provider), model
+`
+
+type ListDashboardUsageBySquadParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Since       pgtype.Timestamptz `json:"since"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	SquadScope  string             `json:"squad_scope"`
+	SquadID     pgtype.UUID        `json:"squad_id"`
+}
+
+type ListDashboardUsageBySquadRow struct {
+	SquadID                  pgtype.UUID `json:"squad_id"`
+	AgentID                  pgtype.UUID `json:"agent_id"`
+	Provider                 string      `json:"provider"`
+	Model                    string      `json:"model"`
+	InputTokens              int64       `json:"input_tokens"`
+	OutputTokens             int64       `json:"output_tokens"`
+	CacheReadTokens          int64       `json:"cache_read_tokens"`
+	CacheWriteTokens         int64       `json:"cache_write_tokens"`
+	CostUsdTicks             int64       `json:"cost_usd_ticks"`
+	UncostedInputTokens      int64       `json:"uncosted_input_tokens"`
+	UncostedOutputTokens     int64       `json:"uncosted_output_tokens"`
+	UncostedCacheReadTokens  int64       `json:"uncosted_cache_read_tokens"`
+	UncostedCacheWriteTokens int64       `json:"uncosted_cache_write_tokens"`
+	TaskCount                int32       `json:"task_count"`
+}
+
+// Per-(squad, agent, provider, model) token aggregates from `task_usage_hourly`.
+// Preserves agent_id so the UI can render both squad-overall totals and inline
+// member breakdowns from one payload, while keeping provider+model for pricing.
+// squad_id IS NULL represents standalone (non-squad-triggered) agent runs.
+func (q *Queries) ListDashboardUsageBySquad(ctx context.Context, arg ListDashboardUsageBySquadParams) ([]ListDashboardUsageBySquadRow, error) {
+	rows, err := q.db.Query(ctx, listDashboardUsageBySquad,
+		arg.WorkspaceID,
+		arg.Since,
+		arg.ProjectID,
+		arg.SquadScope,
+		arg.SquadID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDashboardUsageBySquadRow{}
+	for rows.Next() {
+		var i ListDashboardUsageBySquadRow
+		if err := rows.Scan(
+			&i.SquadID,
+			&i.AgentID,
+			&i.Provider,
+			&i.Model,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.CacheReadTokens,
+			&i.CacheWriteTokens,
+			&i.CostUsdTicks,
+			&i.UncostedInputTokens,
+			&i.UncostedOutputTokens,
+			&i.UncostedCacheReadTokens,
+			&i.UncostedCacheWriteTokens,
+			&i.TaskCount,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listDashboardUsageDaily = `-- name: ListDashboardUsageDaily :many
 SELECT
     DATE(bucket_hour AT TIME ZONE $2::text) AS date,
@@ -630,6 +947,11 @@ FROM task_usage_hourly
 WHERE workspace_id = $1
   AND bucket_hour >= $3::timestamptz
   AND ($4::uuid IS NULL OR project_id = $4)
+  AND (
+      $5::text = ''
+      OR ($5::text = 'standalone' AND squad_id IS NULL)
+      OR ($5::text = 'squad' AND squad_id = $6::uuid)
+  )
 GROUP BY DATE(bucket_hour AT TIME ZONE $2::text), LOWER(provider), model
 ORDER BY DATE(bucket_hour AT TIME ZONE $2::text) DESC, LOWER(provider), model
 `
@@ -639,6 +961,8 @@ type ListDashboardUsageDailyParams struct {
 	Tz          string             `json:"tz"`
 	Since       pgtype.Timestamptz `json:"since"`
 	ProjectID   pgtype.UUID        `json:"project_id"`
+	SquadScope  string             `json:"squad_scope"`
+	SquadID     pgtype.UUID        `json:"squad_id"`
 }
 
 type ListDashboardUsageDailyRow struct {
@@ -681,6 +1005,8 @@ func (q *Queries) ListDashboardUsageDaily(ctx context.Context, arg ListDashboard
 		arg.Tz,
 		arg.Since,
 		arg.ProjectID,
+		arg.SquadScope,
+		arg.SquadID,
 	)
 	if err != nil {
 		return nil, err

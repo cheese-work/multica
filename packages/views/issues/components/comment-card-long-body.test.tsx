@@ -10,6 +10,10 @@ import { renderWithI18n } from "../../test/i18n";
 // button; the full rich content mounts on click, when the comment is the
 // highlighted target, or when find owns the thread.
 
+vi.mock("@multica/core/permissions", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/permissions")>()),
+  useIsGuest: () => false,
+}));
 vi.mock("@multica/core/api", () => ({
   api: { uploadFile: vi.fn() },
   dispatchReasonCode: () => undefined,

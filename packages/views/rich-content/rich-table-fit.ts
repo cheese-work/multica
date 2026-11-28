@@ -34,6 +34,8 @@ export function measureColumns(table: HTMLTableElement): { min: number[]; max: n
   style.tableLayout = saved.layout;
   style.width = saved.width;
   style.minWidth = saved.minWidth;
+  // Restoring the styles leaves an empty attribute; a cached remount never measures, so drop it.
+  if (!table.getAttribute("style")) table.removeAttribute("style");
   cols.forEach((col, i) => {
     col.style.width = colWidths[i] ?? "";
   });

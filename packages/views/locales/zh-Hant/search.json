@@ -17,6 +17,7 @@
     "chats": "對話",
     "messages": "訊息",
     "skills": "Skills",
+    "docs": "文件",
     "cancelled": "已取消",
     "recent": "最近",
     "workspaces": "工作區",
@@ -137,7 +138,7 @@
   },
   "delegate": {
     "row": "交給 AI 代理：「{{prompt}}」",
-    "hint": "快速建立"
+    "hint": "透過 AI 代理建立"
   },
   "best": {
     "assign": "把 {{subject}} 指派給 {{name}}",
@@ -166,6 +167,7 @@
   "trigger": {
     "label": "搜尋..."
   },
+  "untitled_doc": "未命名",
   "messages": {
     "untitled": "未命名對話",
     "searching": "正在搜尋訊息…",

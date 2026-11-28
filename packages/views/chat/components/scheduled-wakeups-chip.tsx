@@ -70,7 +70,7 @@ export function ScheduledWakeupsChip({
         </div>
         <ul className="flex flex-col gap-2">
           {wakeups.map((wakeup) => {
-            const time = formatDateTimeWithZone(wakeup.fire_at, undefined, timeZone);
+            const time = formatDateTimeWithZone(wakeup.fire_at ?? wakeup.next_eval_at, undefined, timeZone);
             return (
               <li key={wakeup.id} className="flex items-start gap-2" data-testid="scheduled-row">
                 <div className="min-w-0 flex-1">

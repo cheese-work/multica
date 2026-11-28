@@ -33,7 +33,7 @@ func visibleBrief(t *testing.T, c edgeCase) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := testHandler.claimProjectWorkflow(ctx, issue, &db.AgentTaskQueue{})
+	got := testHandler.claimProjectWorkflow(ctx, issue, &db.AgentTaskQueue{}, false, false)
 	if got == nil {
 		t.Fatal("claim carries no workflow")
 	}

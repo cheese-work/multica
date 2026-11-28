@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
 import { useSearchStore } from "@multica/core/command-bar";
 import { SearchCommand } from "@multica/views/search";
 
@@ -19,7 +19,7 @@ export function WorkspaceSearchCommand() {
   const waitingForWorkspace = Boolean(leadingIdentifier && !workspace);
   const prefix = workspace?.issue_prefix || workspace?.name.replace(/[^a-z]/gi, "").slice(0, 3).toUpperCase() || "WS";
   const issueTarget = leadingIdentifier && prefix && leadingIdentifier[1]?.toUpperCase() === prefix.toUpperCase()
-    ? workspacePaths.issueDetail(`${prefix}-${leadingIdentifier[2]}`)
+    ? workspacePaths.issueDetail(issueRouteRef({ id: `${prefix}-${leadingIdentifier[2]}`, identifier: `${prefix}-${leadingIdentifier[2]}` }))
     : null;
 
   useEffect(() => {

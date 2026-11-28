@@ -20,6 +20,8 @@ describe("redactSecrets provider parity with server", () => {
 });
 
 describe("redactSecrets", () => {
+  const multicaTokenBody = "0123456789abcdef".repeat(2) + "01234567";
+
   it("redacts AWS access key", () => {
     const result = redactSecrets("key: AKIAIOSFODNN7EXAMPLE");
     expect(result).not.toContain("AKIAIOSFODNN7EXAMPLE");
@@ -70,6 +72,29 @@ describe("redactSecrets", () => {
     expect(result).toContain("[REDACTED GITLAB TOKEN]");
   });
 
+  it.each(["mat_", "mul_", "mdt_", "mcn_"])("redacts %s credentials in stored output", (prefix) => {
+    const token = prefix + multicaTokenBody;
+    expect(redactSecrets(`retrying with --token ${token} and moving on`))
+      .toBe("retrying with --token [REDACTED_MULTICA_TOKEN] and moving on");
+  });
+
+  it("redacts Multica credentials after escaped JSON whitespace", () => {
+    const token = "mat_" + multicaTokenBody;
+    expect(redactSecrets(JSON.stringify({ value: `line1\n${token}\t${token}` })))
+      .toBe(JSON.stringify({ value: "line1\n[REDACTED_MULTICA_TOKEN]\t[REDACTED_MULTICA_TOKEN]" }));
+  });
+
+  it("masks Multica environment assignments and keeps the variable name", () => {
+    // Fork keeps "KEY=" so a reader sees which credential was masked.
+    expect(redactSecrets("MULTICA_TOKEN=mat_" + multicaTokenBody))
+      .toBe("MULTICA_TOKEN=[REDACTED]");
+  });
+
+  it("preserves incomplete Multica credentials and identifiers containing a token prefix", () => {
+    const input = "mat_" + multicaTokenBody.slice(1) + " prefix_mat_" + multicaTokenBody;
+    expect(redactSecrets(input)).toBe(input);
+  });
+
   it("redacts OpenAI/Anthropic API keys", () => {
     const result = redactSecrets("sk-proj-abc123def456ghi789jkl012mno345");
     expect(result).not.toContain("sk-proj");
@@ -79,6 +104,30 @@ describe("redactSecrets", () => {
   it("redacts Slack tokens", () => {
     const result = redactSecrets("xoxb-123456789012-1234567890123-AbCdEfGhIjKl");
     expect(result).not.toContain("xoxb-");
+  });
+
+  it("redacts Slack app-level and config/refresh tokens", () => {
+    const cases = [
+      ["xa", "pp-1-A0000000000-1111111111-abcdefdeadbeefcafe"],
+      ["xo", "xe-1-My0abcdefghijklmnopqrstuvwx"],
+    ];
+    for (const parts of cases) {
+      const token = parts.join("");
+      const result = redactSecrets(`connecting with ${token} now`);
+      expect(result).toBe("connecting with [REDACTED SLACK TOKEN] now");
+    }
+  });
+
+  it("redacts Stripe live secret and restricted keys", () => {
+    const sk = ["sk_", "live_", "51Abcdef0000000000000000"].join("");
+    const rk = ["rk_", "live_", "51Abcdef0000000000000000"].join("");
+    expect(redactSecrets(`restricted ${sk}`)).toBe("restricted [REDACTED STRIPE KEY]");
+    expect(redactSecrets(`restricted ${rk}`)).toBe("restricted [REDACTED STRIPE KEY]");
+  });
+
+  it("leaves Stripe publishable keys unredacted", () => {
+    const pk = ["pk_", "live_", "51Abcdef0000000000000000"].join("");
+    expect(redactSecrets(`publishable ${pk}`)).toBe(`publishable ${pk}`);
   });
 
   it("redacts JWT tokens", () => {
@@ -147,6 +196,43 @@ describe("redactProse and redactForType", () => {
   it("redactProse keeps keyword labels and masks provider tokens", () => {
     expect(redactProse(cell)).toBe(cell);
     expect(redactProse(`${cell} ${githubToken}`)).not.toContain(githubToken);
+  });
+
+  it("redactProse masks generic credentials written as assignments", () => {
+    const cases: [string, string][] = [
+      ["password=hunter2", "password=[REDACTED]"],
+      ["password = hunter2", "password = [REDACTED]"],
+      ["password: hunter2", "password: [REDACTED]"],
+      ["token = abc", "token = [REDACTED]"],
+      ["Set DB_PASSWORD=hunter2 and retry", "Set DB_PASSWORD=[REDACTED] and retry"],
+      ["api_key: abc123xyz", "api_key: [REDACTED]"],
+      ["API_KEY = abc123xyz.", "API_KEY = [REDACTED]"],
+      ["The password: hunter2hunter2 was pasted", "The password: [REDACTED] was pasted"],
+      ["secret_key=abc, token=def", "secret_key=[REDACTED] token=[REDACTED]"],
+    ];
+    for (const [input, want] of cases) {
+      const result = redactProse(input);
+      expect(result).toBe(want);
+      expect(redactForType("text", input)).toBe(want);
+      expect(redactForType("thinking", input)).toBe(want);
+    }
+  });
+
+  it("redactProse keeps credential references and ordinary sentences", () => {
+    for (const input of [
+      "the password field is required",
+      "Enter your password: then press enter",
+      "The token: input, output, cache read",
+      "Your secret is safe with us",
+      "password: required",
+      "Token: 12 per hour",
+      "the password is stored in the vault",
+      "Set API_KEY=$API_KEY in the shell",
+      "Use DB_PASSWORD=<your-password> here",
+      "api_key: ***",
+    ]) {
+      expect(redactProse(input)).toBe(input);
+    }
   });
 
   it("redactForType uses prose rules only for text and thinking", () => {

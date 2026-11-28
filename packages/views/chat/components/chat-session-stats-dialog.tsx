@@ -182,7 +182,7 @@ export function ChatSessionStatsDialog({
                       failed: summary.runs.failed,
                     })}
                     {summary.runs.cancelled > 0
-                      ? t(($) => $.stats.runs_cancelled, { cancelled: summary.runs.cancelled })
+                      ? t(($) => $.stats.runs_cancelled, { runs: summary.runs.cancelled })
                       : ""}
                   </dd>
                   <dt className="text-muted-foreground">{t(($) => $.stats.run_time)}</dt>

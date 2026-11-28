@@ -57,6 +57,7 @@ func wsHeartbeat(t *testing.T, daemonID, runtimeID string, s *protocol.DaemonHos
 				runtimeID: daemonws.NewRuntimeLease(testWorkspaceID, "online", time.Now(), true),
 			},
 		},
+		runtimeID,
 		protocol.DaemonHeartbeatRequestPayload{RuntimeID: runtimeID, HostSample: s})
 	if err != nil {
 		t.Fatalf("HandleDaemonWSHeartbeat: %v", err)

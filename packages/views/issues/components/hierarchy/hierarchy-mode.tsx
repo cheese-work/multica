@@ -1,7 +1,7 @@
 "use client";
 
 import type { RefObject } from "react";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useWorkspacePaths } from "@multica/core/paths";
 import type { Issue } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { AppLink } from "../../../navigation";
@@ -52,7 +52,7 @@ function MinimapTree({ hierarchy, catalog, onOpenCanvas }: { hierarchy: Hierarch
     <div className="flex flex-col">
       {parent && (
         <>
-          <AppLink href={paths.issueDetail(parent.id)} aria-label={`${t(($) => $.hierarchy.parent)} ${parent.identifier}`} className={CARD_CLASS}><IssueCardBody issue={parent} catalog={catalog} /></AppLink>
+          <AppLink href={paths.issueDetail(issueRouteRef({ id: parent.id, identifier: null }))} aria-label={`${t(($) => $.hierarchy.parent)} ${parent.identifier}`} className={CARD_CLASS}><IssueCardBody issue={parent} catalog={catalog} /></AppLink>
           <span aria-hidden="true" className="mx-auto h-3 w-0.5 bg-border" />
         </>
       )}

@@ -19,7 +19,7 @@ import {
   type DisclaimConflict,
 } from "@multica/core/issues/decision-disclaim";
 import { chatKeys } from "@multica/core/chat/queries";
-import { useWorkspacePaths } from "@multica/core/paths";
+import { issueRouteRef, useWorkspacePaths } from "@multica/core/paths";
 import type { DecisionCard } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { AppLink } from "../../navigation";
@@ -43,7 +43,7 @@ export function DecisionDmCard({ card }: { card: DecisionCard }) {
   const [failed, setFailed] = useState(false);
 
   const state = conflict === "withdrawn" ? "disclaimed" : card.state;
-  const href = `${paths.issueDetail(card.issue_id)}#comment-${card.issue_comment_id}`;
+  const href = `${paths.issueDetail(issueRouteRef({ id: card.issue_id, identifier: null }))}#comment-${card.issue_comment_id}`;
   const canDisclaim = !card.inherited && state !== "disclaimed";
   const delivered = state !== "disclaimed" && !!card.delivered;
   const jumpHref =

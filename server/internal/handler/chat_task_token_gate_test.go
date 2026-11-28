@@ -167,16 +167,75 @@ func TestRecordChatTaintDoesNotRewriteAnUnchangedRow(t *testing.T) {
 	}
 }
 
+// claimTaintedChatGuidance queues steered guidance for a running DM turn,
+// taints the chat after the turn started, and has the daemon claim the
+// guidance. It returns the running task. The guidance row is seeded directly
+// so the test exercises the claim alone.
+func claimTaintedChatGuidance(t *testing.T) string {
+	t.Helper()
+	sessionID, taskID, _ := newChatSupplementFixture(t, true)
+	messageID := dbfx.Insert(t, "chat_message", testutil.Cols{
+		"chat_session_id": sessionID, "task_id": taskID, "role": "user", "content": "steer me",
+	})
+	dbfx.Exec(t, `INSERT INTO chat_task_supplement (task_id, message_id, chat_session_id, workspace_id, author_id, status)
+		VALUES ($1, $2, $3, $4, $5, 'pending')`, taskID, messageID, sessionID, testWorkspaceID, testUserID)
+	dbfx.Exec(t, `UPDATE chat_session SET taint_ids = '{t1}', taint_verified = true WHERE id = $1`, sessionID)
+	var wire map[string]any
+	req := withURLParam(newOwnerDaemonRequest(http.MethodPost, "/claim", nil), "taskId", taskID)
+	testutil.Call(t, testHandler.ClaimTaskSupplement, req).Want(http.StatusOK).JSON(&wire)
+	if wire["comment_id"] != messageID {
+		t.Fatalf("claimed = %+v, want message %s", wire, messageID)
+	}
+	return taskID
+}
+
 // CHE-3702 round 20: the supplement claim hands a chat message to a running
 // task, so that task takes the chat's taint and a delegate of it is restricted.
 func TestChatSupplementClaimTaintsTheTaskAndReachesDelegate(t *testing.T) {
-	f := steeredFixture(t)
-	dbfx.Exec(t, `UPDATE chat_session SET taint_ids = '{t1}', taint_verified = true WHERE id = $1`, f.sessionID)
-	claimSteer(t, newChatSupplementDaemonClient(t), f)
+	runningID := claimTaintedChatGuidance(t)
 	var stored []string
-	dbfx.QueryRow(t, `SELECT taint_ids FROM agent_task_queue WHERE id = $1`, f.runningID).Scan(&stored)
+	dbfx.QueryRow(t, `SELECT taint_ids FROM agent_task_queue WHERE id = $1`, runningID).Scan(&stored)
 	if !reflect.DeepEqual(stored, []string{"t1"}) {
 		t.Fatalf("claiming task taint = %v, want [t1]", stored)
 	}
-	delegateClaimsRestricted(t, f.runningID, "supplement", []string{"t1"})
+	delegateClaimsRestricted(t, runningID, "supplement", []string{"t1"})
+}
+
+// The agent-facing chat wakeup routes (mounted with Route + "/") stay open to
+// a task token; the owner-wide my-wakeups list stays closed.
+func TestChatTaskTokenGateOpensAgentChatWakeupRoutes(t *testing.T) {
+	ctx := context.Background()
+	agentID, runtimeID, _ := createRuntimeGuardAgent(t, ctx)
+	chatID := dbfx.ChatSession(t, agentID, testutil.Cols{"title": "wakeup gate"})
+	taskID := dbfx.Task(t, agentID, testutil.Cols{"status": "running", "runtime_id": runtimeID, "chat_session_id": chatID})
+	reached := func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("reached")) }
+	router := chi.NewRouter()
+	router.Use(testHandler.ChatTaskTokenGate)
+	router.Get("/api/chat/my-wakeups", reached)
+	router.Route("/api/chat/wakeups", func(r chi.Router) {
+		r.Get("/", reached)
+		r.Post("/", reached)
+		r.Put("/{wakeupId}", reached)
+		r.Post("/{wakeupId}/finish", reached)
+		r.Post("/{wakeupId}/checkin", reached)
+	})
+	for _, tc := range []struct {
+		method, target string
+		want           int
+	}{
+		{http.MethodGet, "/api/chat/wakeups/", http.StatusOK},
+		{http.MethodPost, "/api/chat/wakeups/", http.StatusOK},
+		{http.MethodPut, "/api/chat/wakeups/w1", http.StatusOK},
+		{http.MethodPost, "/api/chat/wakeups/w1/finish", http.StatusOK},
+		{http.MethodPost, "/api/chat/wakeups/w1/checkin", http.StatusOK},
+		{http.MethodGet, "/api/chat/my-wakeups", http.StatusForbidden},
+	} {
+		req := taskActorReq(tc.target, taskID)
+		req.Method = tc.method
+		w := httptest.NewRecorder()
+		router.ServeHTTP(w, withChatTestWorkspaceCtx(t, req))
+		if w.Code != tc.want {
+			t.Errorf("task token %s %s = %d %q, want %d", tc.method, tc.target, w.Code, w.Body.String(), tc.want)
+		}
+	}
 }

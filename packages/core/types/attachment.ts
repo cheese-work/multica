@@ -61,6 +61,13 @@ export interface Attachment {
   width?: number;
   height?: number;
   /**
+   * Stable, auth-gated path of a downscaled copy for grid tiles, like
+   * `/api/attachments/<id>/thumbnail`. Set only for large raster images;
+   * absent everywhere else and from servers older than this field, where
+   * tiles load the original. Never use it for viewers or downloads.
+   */
+  thumbnail_url?: string;
+  /**
    * 1 for a first upload; higher when a later upload replaced it (CHE-5295).
    * Optional: a server older than revision chains omits it.
    */

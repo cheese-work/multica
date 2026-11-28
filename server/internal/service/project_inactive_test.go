@@ -126,7 +126,7 @@ func TestInactiveProjectAutopilotModes(test *testing.T) {
 			if err != nil {
 				test.Fatal(err)
 			}
-			run, reason, err := fixture.svc.dispatchAutopilot(context.Background(), ap, util.MustParseUUID(triggerID), "schedule", nil, pgtype.Timestamptz{}, pgtype.UUID{}, pgtype.UUID{}, "")
+			run, reason, err := fixture.svc.dispatchAutopilot(context.Background(), ap, util.MustParseUUID(triggerID), "schedule", nil, pgtype.Timestamptz{}, pgtype.UUID{}, pgtype.UUID{}, "", meteredRun)
 			if err != nil {
 				test.Fatal(err)
 			}

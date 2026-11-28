@@ -37,7 +37,7 @@ UPDATE project SET
     archived_by_id = $4,
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type ArchiveProjectParams struct {
@@ -80,6 +80,7 @@ func (q *Queries) ArchiveProject(ctx context.Context, arg ArchiveProjectParams) 
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }
@@ -141,7 +142,7 @@ AND NOT ($1::bool AND t.status='running')
 AND (t.issue_id IN (SELECT i.id FROM issue i WHERE i.project_id=$2::uuid AND i.workspace_id=$3::uuid)
  OR (t.issue_id IS NULL AND t.autopilot_run_id IN (SELECT r.id FROM autopilot_run r JOIN autopilot a ON a.id=r.autopilot_id WHERE a.project_id=$2::uuid AND a.workspace_id=$3::uuid))
  OR (t.issue_id IS NULL AND t.context->>'type'='quick_create' AND t.context->>'project_id'=$2::uuid::text AND t.agent_id IN (SELECT a.id FROM agent a WHERE a.workspace_id=$3::uuid)))
-RETURNING t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.comment_thread_id, t.cancelled_by_type, t.cancelled_by_id, t.cancelled_by_name, t.issue_snapshot, t.context_tokens, t.context_window, t.task_kind, t.compact_reason, t.compact_trigger_tokens, t.workflow_step, t.claimed_model, t.chat_compaction_epoch, t.preset_name, t.preset_source, t.preset_skips, t.claimed_thinking_level, t.claimed_service_tier, t.claimed_context_args, t.cancel_acked_at, t.stop_unconfirmed_at, t.pull_request_id, t.replacement_released_at, t.stop_hold_issue_wide, t.taint_ids, t.applied_model, t.applied_thinking_level, t.applied_service_tier, t.applied_context_args, t.applied_reported_at, t.external_read, t.purpose, t.cancel_ack_reason, t.source_chat_session_id, t.trigger_kind, t.handoff_dispatch_id, t.first_dispatched_at
+RETURNING t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.comment_thread_id, t.cancelled_by_type, t.cancelled_by_id, t.cancelled_by_name, t.issue_snapshot, t.context_tokens, t.context_window, t.task_kind, t.compact_reason, t.compact_trigger_tokens, t.workflow_step, t.claimed_model, t.chat_compaction_epoch, t.preset_name, t.preset_source, t.preset_skips, t.claimed_thinking_level, t.claimed_service_tier, t.claimed_context_args, t.cancel_acked_at, t.stop_unconfirmed_at, t.pull_request_id, t.replacement_released_at, t.stop_hold_issue_wide, t.taint_ids, t.applied_model, t.applied_thinking_level, t.applied_service_tier, t.applied_context_args, t.applied_reported_at, t.external_read, t.purpose, t.cancel_ack_reason, t.source_chat_session_id, t.trigger_kind, t.handoff_dispatch_id, t.first_dispatched_at, t.usage_squad_id, t.doc_id, t.doc_thread_id, t.doc_comment_id
 `
 
 type CancelProjectAgentTasksParams struct {
@@ -252,6 +253,10 @@ func (q *Queries) CancelProjectAgentTasks(ctx context.Context, arg CancelProject
 			&i.TriggerKind,
 			&i.HandoffDispatchID,
 			&i.FirstDispatchedAt,
+			&i.UsageSquadID,
+			&i.DocID,
+			&i.DocThreadID,
+			&i.DocCommentID,
 		); err != nil {
 			return nil, err
 		}
@@ -282,7 +287,7 @@ INSERT INTO project (
     creator_type, creator_id
 ) VALUES (
     $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13
-) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+) RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type CreateProjectParams struct {
@@ -341,6 +346,7 @@ func (q *Queries) CreateProject(ctx context.Context, arg CreateProjectParams) (P
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }
@@ -421,7 +427,7 @@ func (q *Queries) GetIssueProjectStatus(ctx context.Context, id pgtype.UUID) (st
 }
 
 const getProjectInWorkspace = `-- name: GetProjectInWorkspace :one
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
 WHERE id = $1 AND workspace_id = $2
 `
 
@@ -456,6 +462,7 @@ func (q *Queries) GetProjectInWorkspace(ctx context.Context, arg GetProjectInWor
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }
@@ -464,28 +471,43 @@ const getProjectIssueStats = `-- name: GetProjectIssueStats :many
 SELECT project_id,
        count(*)::bigint AS total_count,
        count(*) FILTER (WHERE status = ANY($1::text[]))::bigint AS done_count,
+       count(*) FILTER (WHERE status = ANY($2::text[]))::bigint AS completed_count,
+       count(*) FILTER (WHERE status = ANY($3::text[]))::bigint AS started_count,
        max(GREATEST(updated_at, last_activity_at))::timestamptz AS last_issue_activity_at
 FROM issue
-WHERE workspace_id = $2::uuid
-  AND project_id = ANY($3::uuid[])
+WHERE workspace_id = $4::uuid
+  AND project_id = ANY($5::uuid[])
 GROUP BY project_id
 `
 
 type GetProjectIssueStatsParams struct {
-	TerminalStatusKeys []string      `json:"terminal_status_keys"`
-	WorkspaceID        pgtype.UUID   `json:"workspace_id"`
-	ProjectIds         []pgtype.UUID `json:"project_ids"`
+	TerminalStatusKeys  []string      `json:"terminal_status_keys"`
+	CompletedStatusKeys []string      `json:"completed_status_keys"`
+	StartedStatusKeys   []string      `json:"started_status_keys"`
+	WorkspaceID         pgtype.UUID   `json:"workspace_id"`
+	ProjectIds          []pgtype.UUID `json:"project_ids"`
 }
 
 type GetProjectIssueStatsRow struct {
 	ProjectID           pgtype.UUID        `json:"project_id"`
 	TotalCount          int64              `json:"total_count"`
 	DoneCount           int64              `json:"done_count"`
+	CompletedCount      int64              `json:"completed_count"`
+	StartedCount        int64              `json:"started_count"`
 	LastIssueActivityAt pgtype.Timestamptz `json:"last_issue_activity_at"`
 }
 
+// done_count counts every terminal issue (done and closed categories) and
+// keeps that meaning for older clients; completed_count is the done category
+// alone, so cancelled = done_count - completed_count.
 func (q *Queries) GetProjectIssueStats(ctx context.Context, arg GetProjectIssueStatsParams) ([]GetProjectIssueStatsRow, error) {
-	rows, err := q.db.Query(ctx, getProjectIssueStats, arg.TerminalStatusKeys, arg.WorkspaceID, arg.ProjectIds)
+	rows, err := q.db.Query(ctx, getProjectIssueStats,
+		arg.TerminalStatusKeys,
+		arg.CompletedStatusKeys,
+		arg.StartedStatusKeys,
+		arg.WorkspaceID,
+		arg.ProjectIds,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -497,7 +519,130 @@ func (q *Queries) GetProjectIssueStats(ctx context.Context, arg GetProjectIssueS
 			&i.ProjectID,
 			&i.TotalCount,
 			&i.DoneCount,
+			&i.CompletedCount,
+			&i.StartedCount,
 			&i.LastIssueActivityAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listIssueStatusChangesSince = `-- name: ListIssueStatusChangesSince :many
+SELECT issue_id, details, created_at
+FROM activity_log
+WHERE workspace_id = $1::uuid
+  AND issue_id = ANY($2::uuid[])
+  AND action = 'status_changed'
+  AND created_at >= $3::timestamptz
+ORDER BY created_at, id
+`
+
+type ListIssueStatusChangesSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	IssueIds    []pgtype.UUID      `json:"issue_ids"`
+	Since       pgtype.Timestamptz `json:"since"`
+}
+
+type ListIssueStatusChangesSinceRow struct {
+	IssueID   pgtype.UUID        `json:"issue_id"`
+	Details   []byte             `json:"details"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+func (q *Queries) ListIssueStatusChangesSince(ctx context.Context, arg ListIssueStatusChangesSinceParams) ([]ListIssueStatusChangesSinceRow, error) {
+	rows, err := q.db.Query(ctx, listIssueStatusChangesSince, arg.WorkspaceID, arg.IssueIds, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListIssueStatusChangesSinceRow{}
+	for rows.Next() {
+		var i ListIssueStatusChangesSinceRow
+		if err := rows.Scan(&i.IssueID, &i.Details, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listProjectActivity = `-- name: ListProjectActivity :many
+SELECT a.id, a.issue_id, a.actor_type, a.actor_id, a.action, a.details, a.created_at,
+       i.number AS issue_number, i.title AS issue_title, i.status AS issue_status
+FROM activity_log a
+JOIN issue i ON i.id = a.issue_id
+WHERE i.workspace_id = $1::uuid
+  AND i.project_id = $2::uuid
+  AND a.action = ANY($3::text[])
+  AND (
+      $4::timestamptz IS NULL
+      OR (a.created_at, a.id) < ($4::timestamptz, $5::uuid)
+  )
+ORDER BY a.created_at DESC, a.id DESC
+LIMIT $6
+`
+
+type ListProjectActivityParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	Actions     []string           `json:"actions"`
+	BeforeAt    pgtype.Timestamptz `json:"before_at"`
+	BeforeID    pgtype.UUID        `json:"before_id"`
+	RowLimit    int32              `json:"row_limit"`
+}
+
+type ListProjectActivityRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	ActorType   pgtype.Text        `json:"actor_type"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	Action      string             `json:"action"`
+	Details     []byte             `json:"details"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	IssueNumber int32              `json:"issue_number"`
+	IssueTitle  string             `json:"issue_title"`
+	IssueStatus string             `json:"issue_status"`
+}
+
+// The newest activity on a project's issues, newest first, keyset-paged on
+// (created_at, id). Only the given actions are read, so autosaves and run
+// bookkeeping stay out of the project feed. A zero cursor reads from the top.
+func (q *Queries) ListProjectActivity(ctx context.Context, arg ListProjectActivityParams) ([]ListProjectActivityRow, error) {
+	rows, err := q.db.Query(ctx, listProjectActivity,
+		arg.WorkspaceID,
+		arg.ProjectID,
+		arg.Actions,
+		arg.BeforeAt,
+		arg.BeforeID,
+		arg.RowLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectActivityRow{}
+	for rows.Next() {
+		var i ListProjectActivityRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Action,
+			&i.Details,
+			&i.CreatedAt,
+			&i.IssueNumber,
+			&i.IssueTitle,
+			&i.IssueStatus,
 		); err != nil {
 			return nil, err
 		}
@@ -595,8 +740,61 @@ func (q *Queries) ListProjectOverdueRecurringWakeups(ctx context.Context, arg Li
 	return items, nil
 }
 
+const listProjectProgressIssues = `-- name: ListProjectProgressIssues :many
+SELECT id, status, assignee_type, assignee_id, created_at,
+       ARRAY(
+           SELECT il.label_id FROM issue_to_label il
+           WHERE il.issue_id = issue.id
+           ORDER BY il.label_id
+       )::uuid[] AS label_ids
+FROM issue
+WHERE workspace_id = $1::uuid
+  AND project_id = $2::uuid
+`
+
+type ListProjectProgressIssuesParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ProjectID   pgtype.UUID `json:"project_id"`
+}
+
+type ListProjectProgressIssuesRow struct {
+	ID           pgtype.UUID        `json:"id"`
+	Status       string             `json:"status"`
+	AssigneeType pgtype.Text        `json:"assignee_type"`
+	AssigneeID   pgtype.UUID        `json:"assignee_id"`
+	CreatedAt    pgtype.Timestamptz `json:"created_at"`
+	LabelIds     []pgtype.UUID      `json:"label_ids"`
+}
+
+func (q *Queries) ListProjectProgressIssues(ctx context.Context, arg ListProjectProgressIssuesParams) ([]ListProjectProgressIssuesRow, error) {
+	rows, err := q.db.Query(ctx, listProjectProgressIssues, arg.WorkspaceID, arg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListProjectProgressIssuesRow{}
+	for rows.Next() {
+		var i ListProjectProgressIssuesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Status,
+			&i.AssigneeType,
+			&i.AssigneeID,
+			&i.CreatedAt,
+			&i.LabelIds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listProjects = `-- name: ListProjects :many
-SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id FROM project
+SELECT id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id FROM project
 WHERE workspace_id = $1
   AND ($2::text IS NULL OR status = $2)
   AND ($3::text IS NULL OR priority = $3)
@@ -648,6 +846,7 @@ func (q *Queries) ListProjects(ctx context.Context, arg ListProjectsParams) ([]P
 			&i.ArchivedAt,
 			&i.ArchivedByType,
 			&i.ArchivedByID,
+			&i.FolderID,
 		); err != nil {
 			return nil, err
 		}
@@ -790,7 +989,7 @@ UPDATE project SET
     archived_by_id = NULL,
     updated_at = now()
 WHERE id = $1 AND workspace_id = $2 AND archived_at IS NOT NULL
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type RestoreProjectParams struct {
@@ -824,6 +1023,7 @@ func (q *Queries) RestoreProject(ctx context.Context, arg RestoreProjectParams) 
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }
@@ -831,7 +1031,7 @@ func (q *Queries) RestoreProject(ctx context.Context, arg RestoreProjectParams) 
 const setProjectWorkflowSplit = `-- name: SetProjectWorkflowSplit :one
 UPDATE project SET workflow_split = $3::jsonb, updated_at = now()
 WHERE id = $1 AND workspace_id = $2
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type SetProjectWorkflowSplitParams struct {
@@ -867,6 +1067,7 @@ func (q *Queries) SetProjectWorkflowSplit(ctx context.Context, arg SetProjectWor
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }
@@ -885,7 +1086,7 @@ UPDATE project SET
     decision_delegates = CASE WHEN $17::boolean THEN $18::uuid[] ELSE decision_delegates END,
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id
+RETURNING id, workspace_id, title, description, icon, status, lead_type, lead_id, created_at, updated_at, priority, start_date, due_date, workflow_id, decision_delegates, workflow_split, creator_type, creator_id, visibility, archived_at, archived_by_type, archived_by_id, folder_id
 `
 
 type UpdateProjectParams struct {
@@ -954,6 +1155,7 @@ func (q *Queries) UpdateProject(ctx context.Context, arg UpdateProjectParams) (P
 		&i.ArchivedAt,
 		&i.ArchivedByType,
 		&i.ArchivedByID,
+		&i.FolderID,
 	)
 	return i, err
 }

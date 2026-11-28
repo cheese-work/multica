@@ -134,6 +134,10 @@ const (
 	ReasonAgentCommentImplicitRouteSuppressed ReasonCode = "agent_comment_implicit_route_suppressed"
 	ReasonAgentCommentRequiresAgentMention    ReasonCode = "agent_comment_requires_agent_mention"
 	ReasonCommentTriggerRateLimited           ReasonCode = "comment_trigger_rate_limited"
+	// ReasonHandedToLeader: a squad member handed the issue to another member,
+	// but the squad's handoff guard (round or daily limit) sent it to the squad
+	// leader instead. The leader's run covers the comment.
+	ReasonHandedToLeader ReasonCode = "handed_to_leader"
 	// ReasonInternalError: an unexpected server error prevented a clean decision.
 	ReasonInternalError ReasonCode = "internal_error"
 	// ReasonProviderHold: the target resolves to a model provider a workspace

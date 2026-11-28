@@ -10,7 +10,9 @@ vi.mock("@multica/core/chat", () => ({
 }));
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({ chat: () => "/acme/chat" }),
+  useCurrentWorkspace: () => ({ id: "ws-1" }),
 }));
+vi.mock("@multica/core/permissions", () => ({ useIsGuest: () => false }));
 vi.mock("../navigation", () => ({ useNavigation: () => ({ pathname: "/acme/issues" }) }));
 vi.mock("./components/chat-fab", () => ({ ChatFab: () => <div>fab</div> }));
 vi.mock("./components/chat-window", () => {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type RefObject } from "react";
+import { useReducedMotion } from "@multica/core/appearance";
 import { centerOn, intersects, panBy, zoomAt, type Box, type View } from "./canvas-math";
 
 const KEY_PAN = 80;
@@ -8,22 +9,6 @@ export const ZOOM_STEP = 1.25;
 const DRAG_THRESHOLD = 4;
 const WHEEL_SENSITIVITY = 0.0015;
 export type Size = { w: number; h: number };
-
-const REDUCED_MOTION = "(prefers-reduced-motion: reduce)";
-
-/** Live `prefers-reduced-motion` preference; false where `matchMedia` is missing. */
-function usePrefersReducedMotion() {
-  const [reduced, setReduced] = useState(() => globalThis.matchMedia?.(REDUCED_MOTION).matches ?? false);
-  useEffect(() => {
-    const query = globalThis.matchMedia?.(REDUCED_MOTION);
-    if (!query) return;
-    const update = () => setReduced(query.matches);
-    update();
-    query.addEventListener?.("change", update);
-    return () => query.removeEventListener?.("change", update);
-  }, []);
-  return reduced;
-}
 
 interface Options {
   viewportRef: RefObject<HTMLDivElement | null>;
@@ -42,7 +27,7 @@ export function useCanvasEngine({ viewportRef, initialView, adjust }: Options) {
   const [size, setSize] = useState<Size | null>(null);
   const [view, setView] = useState<View>({ x: 0, y: 0, scale: 1 });
   const [animate, setSmooth] = useState(false);
-  const reducedMotion = usePrefersReducedMotion();
+  const reducedMotion = useReducedMotion();
   const smooth = animate && !reducedMotion;
   const sizeRef = useRef<Size | null>(null);
   sizeRef.current = size;

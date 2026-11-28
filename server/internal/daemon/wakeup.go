@@ -315,6 +315,7 @@ func (d *Daemon) sendWSHeartbeats(ctx context.Context, runtimeIDs []string, writ
 		}
 		req := d.heartbeatRequest(rid)
 		req.Seq = d.wsHBSeq.Add(1)
+		req.SupportsQueuedUpdate = true // upstream v0.13.0 queued runtime updates
 		queuedAt := time.Now()
 		frame, err := json.Marshal(protocol.Message{
 			Type:    protocol.EventDaemonHeartbeat,

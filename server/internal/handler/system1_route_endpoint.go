@@ -160,7 +160,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	caller := workflowCaller{run: callerRun, agent: actorType == "agent", handoffAssignee: handoffAssignee, keepForStep: req.KeepForStep}
 	handoff, workflowWrite, err := h.decideIssueWorkflow(r.Context(), prev, &params, true, ownerGiven, false, caller)
 	if err != nil {
-		if writeIssueWorkflowError(w, err) {
+		if writeIssueWorkflowError(r.Context(), w, err) {
 			return
 		}
 		slog.Error("route issue: resolve project workflow", append(logger.RequestAttrs(r), "error", err)...)
@@ -253,7 +253,9 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		keepLockedFields(&params, locked, handoff != nil || ownerGiven)
-		if updated, cancelledWakeups, err = h.writeIssueLocked(writeCtx, q, prev.WorkspaceID, params, workflowWrite); err != nil {
+		// keepLockedFields already copied the untouched fields from the locked row;
+		// an owner or handoff assignee is an intended write (workflowAssignee).
+		if updated, _, cancelledWakeups, err = h.writeIssueLocked(writeCtx, q, prev.WorkspaceID, params, workflowWrite, nil, handoff != nil || ownerGiven); err != nil {
 			return err
 		}
 		// The record spends its pre-assigned id; the status_changed row carries it.
@@ -320,7 +322,7 @@ func (h *Handler) RouteIssue(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var notConfirmed *service.StopNotConfirmedError
 		switch {
-		case writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(w, err) || writeBudgetRebindingError(w, err):
+		case writeAgentIssueStatusError(w, err) || writeIssueStatusRaceError(w, err) || writeIssueWorkflowError(r.Context(), w, err) || writeBudgetRebindingError(w, err):
 		case errors.As(err, &notConfirmed):
 			writeErrorCode(w, http.StatusConflict, "stop_not_confirmed", notConfirmed.Error())
 		case errors.Is(err, pgx.ErrNoRows) && req.ExpectedRevision != nil:

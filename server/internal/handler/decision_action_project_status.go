@@ -88,7 +88,7 @@ func (handler *Handler) publishProjectStatusSet(ctx context.Context, action db.D
 	}
 	handler.broadcastCancelledWakeups(ctx, action.WorkspaceID, cancelled)
 	resp := projectToResponse(project)
-	resp.IssueCount, resp.DoneCount = handler.loadProjectIssueStats(ctx, project.WorkspaceID, project.ID)
+	handler.fillProjectIssueStats(ctx, &resp, project)
 	resp.ResourceCount = handler.loadProjectResourceCount(ctx, project.ID)
 	handler.publish(protocol.EventProjectUpdated, uuidToString(action.WorkspaceID), "member", uuidToString(action.ApprovedByUserID), map[string]any{"project": resp})
 	return nil

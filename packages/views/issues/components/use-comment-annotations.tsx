@@ -1,6 +1,7 @@
 "use client";
 
 import { lazy, Suspense, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { AnimatePresence } from "motion/react";
 import { MessageSquarePlus, Trash2 } from "@multica/ui/icons";
 import { toast } from "sonner";
 import { isImeComposing } from "@multica/core/utils";
@@ -157,7 +158,11 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   const pendingFocusId = useRef<string | null>(null);
   const actionRef = useRef<HTMLButtonElement>(null);
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
+  const selectionRef = useRef(selection);
+  selectionRef.current = selection;
   const [editor, setEditor] = useState<{ annotation: ReplyAnnotation; existing: boolean } | null>(null);
+  const editorRef = useRef(editor);
+  editorRef.current = editor;
   const editing = editor?.annotation;
   const editingExisting = editor?.existing === true;
   const editingRef = useRef(editing);
@@ -167,6 +172,15 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   ]), [draftKey]);
   // Unconfirmed note text lives in useAnnotationNoteDraftStore (keyed by quote identity), so it outlives the popover and the hook.
   const editingId = editing?.id;
+  // Distinguishes an explicit dismiss/commit from an unexpected unmount
+  // (Virtuoso scroll-out, tab switch), so an unmount flush from ContentEditor
+  // never resurrects a dismissed note while still rescuing typed bytes.
+  const dismissedRef = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const [error, setError] = useState(false);
   const [anchors, setAnchors] = useState<SourceAnchor[]>([]);
   const markerRanges = useMemo(() => {
@@ -178,6 +192,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     return groups;
   }, [anchors]);
   const annotations = useCommentDraftStore((s) => s.getAnnotations(draftKey));
+  const pendingSourceCommentId = useCommentDraftStore((s) => s.drafts[draftKey]?.pendingAnnotation?.annotation.sourceCommentId ?? null);
   const annotationsRef = useRef(annotations);
   annotationsRef.current = annotations;
   const sourcesRef = useRef(sources);
@@ -210,6 +225,13 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
 
   const markerFor = (id: string) =>
     cardRef.current?.querySelector<HTMLElement>(`[data-annotation-marker="${id}"]`) ?? null;
+
+  const dismiss = useCallback((clearStored = true) => {
+    dismissedRef.current = true;
+    if (clearStored) useCommentDraftStore.getState().clearPendingAnnotation(draftKey);
+    setSelection(null); setEditor(null); setError(false);
+  }, [draftKey]);
+
   const close = (restoreFocus = false) => {
     if (submittingRef.current) return;
     const marker = restoreFocus && chat && editingId ? markerFor(editingId) : null;
@@ -218,7 +240,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
       const target = editable ? selection.root.querySelector<HTMLElement>("[contenteditable=true]") ?? selection.root : selection.root;
       target.focus({ preventScroll: true });
     }
-    setSelection(null); setEditor(null); setError(false);
+    dismiss();
   };
   const readSelection = useCallback(() => {
     if (!enabled || submittingRef.current || !cardRef.current) return null;
@@ -227,10 +249,25 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   }, [enabled, editable]);
   const capture = () => {
     const captured = readSelection();
-    if (captured) { pendingMarkerFocus.current = null; claimEditor(); setSelection(captured); setEditor(null); setError(false); }
+    if (captured) {
+      pendingMarkerFocus.current = null;
+      claimEditor();
+      dismissedRef.current = true;
+      useCommentDraftStore.getState().clearPendingAnnotation(draftKey);
+      setSelection(captured); setEditor(null); setError(false);
+    }
   };
 
-  useEffect(() => { setSelection(null); setEditor(null); setError(false); submittingRef.current = null; }, [draftKey, enabled]);
+  // Reset local popup state when switching targets or disabling, without
+  // wiping persisted pending drafts so returning to the previous key can
+  // recover them.
+  const prevContextRef = useRef({ draftKey, enabled });
+  useEffect(() => {
+    const prev = prevContextRef.current;
+    prevContextRef.current = { draftKey, enabled };
+    if (prev.draftKey === draftKey && prev.enabled === enabled) return;
+    setSelection(null); setEditor(null); setError(false); submittingRef.current = null;
+  }, [draftKey, enabled]);
 
   // A drag can end anywhere (padding, gutter, another element), so a press inside the message arms
   // a document-level pointerup; captureCommentSelection then decides from the selection alone.
@@ -249,9 +286,11 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   useEffect(() => {
     if (!selection) return;
     let touch: { id: number; x: number; y: number; moved: boolean } | null = null;
+    let active = true;
+    // Another editor on this thread claimed the slot; it owns the stored pending note now.
     const onEditorOpen = (event: Event) => {
       if (!(event instanceof CustomEvent) || event.detail === highlightName) return;
-      setSelection(null); setEditor(null); setError(false);
+      dismiss(false);
     };
     const onPointerDown = (event: PointerEvent) => {
       if (submittingRef.current) return;
@@ -261,7 +300,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
         touch = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
         return;
       }
-      setSelection(null); setEditor(null); setError(false);
+      dismiss();
     };
     const onPointerMove = (event: PointerEvent) => {
       if (touch?.id === event.pointerId && Math.hypot(event.clientX - touch.x, event.clientY - touch.y) > 8) touch.moved = true;
@@ -269,9 +308,9 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     const onPointerUp = (event: PointerEvent) => {
       if (touch?.id !== event.pointerId) return;
       onPointerMove(event);
-      const dismiss = !touch.moved;
+      const tap = !touch.moved;
       touch = null;
-      if (dismiss) { setSelection(null); setEditor(null); setError(false); }
+      if (tap) dismiss();
     };
     const onPointerCancel = () => { touch = null; };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -285,7 +324,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
         const target = editable ? selection.root.querySelector<HTMLElement>("[contenteditable=true]") ?? selection.root : selection.root;
         target.focus({ preventScroll: true });
       }
-      setSelection(null); setEditor(null); setError(false);
+      dismiss();
     };
     const onFocusIn = (event: FocusEvent) => {
       if (touch || submittingRef.current) return;
@@ -293,9 +332,10 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
       // Clipboard fallback briefly focuses a hidden textarea, then restores
       // the owned control synchronously. Only dismiss if focus stays outside.
       queueMicrotask(() => {
+        if (!active || !mountedRef.current) return;
         const target = document.activeElement;
         if (submittingRef.current || selection.root.contains(target) || ownedBy(target, draftKey)) return;
-        setSelection(null); setEditor(null); setError(false);
+        dismiss();
       });
     };
     document.addEventListener("pointerdown", onPointerDown);
@@ -306,6 +346,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener(editorOpenEvent, onEditorOpen);
     return () => {
+      active = false;
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("pointermove", onPointerMove);
       document.removeEventListener("pointerup", onPointerUp);
@@ -314,7 +355,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener(editorOpenEvent, onEditorOpen);
     };
-  }, [selection, draftKey, editable, editorOpenEvent, highlightName, noteDraftKey]);
+  }, [selection, draftKey, editable, editorOpenEvent, highlightName, noteDraftKey, dismiss]);
 
   // The focus request outlives the positioned bubble: the lazy composer may mount after it.
   const focusNote = useCallback(() => {
@@ -330,7 +371,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   const onComposerReady = useCallback(() => { if (positionedId.current === editingId) focusNote(); }, [editingId, focusNote]);
 
   useEffect(() => {
-    if ((!anchorKey && !editingId) || !enabled) {
+    if ((!anchorKey && !editingId && !pendingSourceCommentId) || !enabled) {
       setAnchors((current) => current.length ? [] : current);
       return;
     }
@@ -343,6 +384,25 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
         return root && range ? [{ id: a.id, range, root }] : [];
       });
       setAnchors((current) => !current.length && !next.length ? current : next);
+      // Restore an in-progress note that survived Virtuoso scroll-out or tab
+      // switch without stealing focus or scrolling the page.
+      if (!editingRef.current && !selectionRef.current) {
+        const pending = useCommentDraftStore.getState().getPendingAnnotation(draftKey);
+        if (pending) {
+          if (pending.existing && !annotationsRef.current.some((a) => a.id === pending.annotation.id)) {
+            useCommentDraftStore.getState().clearPendingAnnotation(draftKey);
+          } else {
+            const root = findAnnotationSource(card, pending.annotation.sourceCommentId);
+            const range = root && annotationRange(root, pending.annotation, editable);
+            if (root && range) {
+              dismissedRef.current = false;
+              setSelection({ ...pending.annotation, range, root });
+              setEditor({ annotation: pending.annotation, existing: pending.existing });
+              setError(false);
+            }
+          }
+        }
+      }
       // Expanding a resolved thread may remount the selected comment's body.
       // Keep the note editor attached to its saved quote, never a detached Range.
       setSelection((current) => {
@@ -375,7 +435,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     observer.observe(editingId ? card.closest("[data-issue-timeline-scroll]") ?? card : card,
       { childList: true, subtree: true, characterData: true });
     return () => { observer.disconnect(); if (canHighlight) CSS.highlights.delete(highlightName); };
-  }, [anchorKey, highlightName, draftKey, editable, enabled, editingId, findSource, card]);
+  }, [anchorKey, highlightName, draftKey, editable, enabled, editingId, pendingSourceCommentId, findSource, card]);
 
   // A saved-nothing note typed earlier for this quote comes back when its editor reopens.
   const baseNote = useCallback((annotation: ReplyAnnotation) =>
@@ -387,9 +447,13 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
 
   useEffect(() => {
     if (!selection || (editor?.existing && !annotations.some((a) => a.id === editingId))) {
+      if (editor?.existing) {
+        dismissedRef.current = true;
+        useCommentDraftStore.getState().clearPendingAnnotation(draftKey);
+      }
       setSelection(null); setEditor(null);
     }
-  }, [annotations, editor?.existing, editingId, selection]);
+  }, [annotations, editor?.existing, editingId, selection, draftKey]);
 
   const editAnnotation = (id: string, scrollToSource = false): boolean => {
     if (submittingRef.current) return false;
@@ -405,6 +469,8 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     }
     claimEditor();
     onOpenRef.current?.();
+    dismissedRef.current = false;
+    useCommentDraftStore.getState().clearPendingAnnotation(draftKey);
     pendingFocusId.current = id; positionedId.current = undefined;
     setSelection({ ...annotation, range, root }); setEditor({ annotation, existing: true }); setError(false);
     return true;
@@ -430,6 +496,8 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     pendingMarkerFocus.current = null;
     claimEditor();
     onOpenRef.current?.();
+    dismissedRef.current = false;
+    useCommentDraftStore.getState().clearPendingAnnotation(draftKey);
     setSelection(captured);
     const next = duplicate ?? {
       id: crypto.randomUUID(), sourceCommentId, sourceActorName: source.name,
@@ -440,17 +508,18 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     setError(false);
     window.getSelection()?.removeAllRanges();
     return true;
-  }, [claimEditor]);
+  }, [claimEditor, draftKey]);
   const addSelection = useCallback(() => add(readSelection()), [add, readSelection]);
 
-  const confirmNote = (note: string, dismiss = true): boolean => {
+  const confirmNote = (note: string, dismissAfter = true): boolean => {
     if (!editing || !note.trim()) return false;
     const store = useCommentDraftStore.getState();
     const id = editingExisting ? editing.id : store.addAnnotation(draftKey, { ...editing, note });
     if (!id) { setError(true); return false; }
     store.updateAnnotation(draftKey, id, note);
     useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing));
-    if (dismiss) {
+    store.clearPendingAnnotation(draftKey);
+    if (dismissAfter) {
       if (chat && !editingExisting) { pendingMarkerFocus.current = id; close(false); }
       else close(true);
     } else setEditor({ annotation: { ...editing, id, note }, existing: true });
@@ -478,7 +547,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
   }, [enabled, anchors, activeId, editingId, highlightName]);
   const confirmLabel = editor?.existing ? L.save : L.confirmAdd;
 
-  const renderBubble = (children: ReactNode) => enabled && selection ? <CommentSelectionBubble range={selection.range} source={selection.root} owner={draftKey} onPositioned={onPositioned} keepInView={!!editing} keepVisibleWhenDetached={!!editing}>
+  const renderBubble = (children: ReactNode) => enabled && selection ? <CommentSelectionBubble key="selection-bubble" range={selection.range} source={selection.root} owner={draftKey} onPositioned={onPositioned} keepInView={!!editing} keepVisibleWhenDetached={!!editing}>
       <div className="bubble-menu max-w-[calc(100vw-16px)] focus-within:outline-1 focus-within:outline-ring">
         {children}
       </div>
@@ -509,9 +578,9 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
 
   // Composer slot: the editor a host (reply input, description comment input) draws
   // next to its own send controls.
-  const renderComposer = (controls?: AnnotationSendControls) => editing ? renderBubble(
+  const renderComposer = (controls?: AnnotationSendControls) => editing ? <AnimatePresence initial={false}>{renderBubble(
     <Suspense fallback={<p role="status" className="w-96 max-w-[calc(100vw-26px)] px-2 py-1.5 text-caption text-muted-foreground">{tCommon(($) => $.loading)}</p>}>
-      <AnnotationComposer key={editing.id} issueId={issueId} owner={draftKey} onReady={onComposerReady}
+      <AnnotationComposer key={`${draftKey}:${editing.id}`} issueId={issueId} owner={draftKey} onReady={onComposerReady}
       annotation={withDraft(editing)} existing={editingExisting}
       number={editingNumber}
       editorRef={inputRef} controls={controls}
@@ -520,8 +589,16 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
         source.revision !== undefined && editing.sourceRevision !== undefined && source.revision !== editing.sourceRevision)}
       canSave={editingExisting || annotations.length < MAX_REPLY_ANNOTATIONS}
       onChange={(note) => {
+        if (dismissedRef.current || submittingRef.current) return;
+        const nextAnnotation = { ...editing, note };
         useAnnotationNoteDraftStore.getState().setDraft(noteDraftKey(editing), { value: note, base: baseNote(editing) });
-        setEditor({ annotation: { ...editing, note }, existing: editingExisting }); setError(false);
+        const store = useCommentDraftStore.getState();
+        if (note.trim()) store.setPendingAnnotation(draftKey, { annotation: nextAnnotation, existing: editingExisting });
+        else store.clearPendingAnnotation(draftKey);
+        if (mountedRef.current) {
+          setEditor({ annotation: nextAnnotation, existing: editingExisting });
+          setError(false);
+        }
       }}
       onSave={confirmNote} onBusyChange={(busy) => {
         if (busy && editingRef.current?.id === editing.id) submittingRef.current = editing.id;
@@ -531,7 +608,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
         useAnnotationNoteDraftStore.getState().clearDraft(noteDraftKey(editing));
         useCommentDraftStore.getState().removeAnnotation(draftKey, editing.id);
         close(true);
-      } : undefined} /></Suspense>) : null;
+      } : undefined} /></Suspense>)}</AnimatePresence> : null;
 
   return {
     cardRef: setCardRef,
@@ -539,6 +616,7 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     activeId,
     setActiveId,
     addSelection,
+    activeSourceCommentId: editing?.sourceCommentId ?? pendingSourceCommentId,
     // Reading the slot claims the open editor for the reader (reply input, description
     // composer); the popup then draws only the add action. The chat never claims it.
     get composer() {
@@ -568,31 +646,35 @@ export function useCommentAnnotations({ issueId, draftKey, sources, enabled, onA
     },
     popup: <>
       {(annotations.length > 0 || editing) && <style>{`::highlight(${highlightName}), ::highlight(${highlightName}-selection) { background: color-mix(in srgb, var(--brand) 20%, transparent); } ::highlight(${highlightName}-active) { background: color-mix(in srgb, var(--brand) 38%, transparent); }`}</style>}
-      {enabled && anchors.map((anchor) => {
-        const index = annotations.findIndex((a) => a.id === anchor.id);
-        if (index < 0) return null;
-        return <CommentSelectionBubble key={anchor.id} range={anchor.range} source={anchor.root} owner={draftKey}
-          markerRanges={markerRanges.get(anchor.root)} markerZIndex={markerZIndex}
-          portalTarget={chat ? overlaySlot(anchor.root) : undefined}
-          onPositioned={() => {
-            if (pendingMarkerFocus.current !== anchor.id) return;
-            pendingMarkerFocus.current = null;
-            markerFor(anchor.id)?.focus({ preventScroll: true });
-          }}>
-          <IconButton variant="brandSubtle" size="icon-sm"
-            aria-expanded={editingId === anchor.id}
-            label={L.edit(index + 1, annotations[index]?.note ?? "")}
-            data-testid="annotation-marker" data-annotation-marker={anchor.id} data-active={activeId === anchor.id || editingId === anchor.id}
-            // eslint-disable-next-line no-restricted-syntax -- numbered annotation marker, a count dot
-            className="size-6 rounded-full text-caption tabular-nums aria-expanded:ring-2 aria-expanded:ring-brand data-[active=true]:ring-2 data-[active=true]:ring-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
-            onMouseEnter={() => setActiveId(anchor.id)} onMouseLeave={() => setActiveId((id) => id === anchor.id ? null : id)}
-            onFocus={() => setActiveId(anchor.id)} onBlur={() => setActiveId((id) => id === anchor.id ? null : id)}
-            onClick={() => editAnnotation(anchor.id)}>{index + 1}</IconButton>
-        </CommentSelectionBubble>;
-      })}
-      {editing
-        ? <Unclaimed claimed={composerClaimed}>{renderBubble(noteEditor)}</Unclaimed>
-        : renderBubble(addAction)}
+      <AnimatePresence initial={false}>
+        {enabled && anchors.map((anchor) => {
+          const index = annotations.findIndex((a) => a.id === anchor.id);
+          if (index < 0) return null;
+          return <CommentSelectionBubble key={anchor.id} range={anchor.range} source={anchor.root} owner={draftKey}
+            markerRanges={markerRanges.get(anchor.root)} markerZIndex={markerZIndex}
+            portalTarget={chat ? overlaySlot(anchor.root) : undefined}
+            onPositioned={() => {
+              if (pendingMarkerFocus.current !== anchor.id) return;
+              pendingMarkerFocus.current = null;
+              markerFor(anchor.id)?.focus({ preventScroll: true });
+            }}>
+            <IconButton variant="brandSubtle" size="icon-sm"
+              aria-expanded={editingId === anchor.id}
+              label={L.edit(index + 1, annotations[index]?.note ?? "")}
+              data-testid="annotation-marker" data-annotation-marker={anchor.id} data-active={activeId === anchor.id || editingId === anchor.id}
+              // eslint-disable-next-line no-restricted-syntax -- numbered annotation marker, a count dot
+              className="size-6 rounded-full text-caption tabular-nums aria-expanded:ring-2 aria-expanded:ring-brand data-[active=true]:ring-2 data-[active=true]:ring-brand focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand"
+              onMouseEnter={() => setActiveId(anchor.id)} onMouseLeave={() => setActiveId((id) => id === anchor.id ? null : id)}
+              onFocus={() => setActiveId(anchor.id)} onBlur={() => setActiveId((id) => id === anchor.id ? null : id)}
+              onClick={() => editAnnotation(anchor.id)}>{index + 1}</IconButton>
+          </CommentSelectionBubble>;
+        })}
+      </AnimatePresence>
+      <AnimatePresence initial={false}>
+        {editing
+          ? <Unclaimed key="selection-bubble" claimed={composerClaimed}>{renderBubble(noteEditor)}</Unclaimed>
+          : renderBubble(addAction)}
+      </AnimatePresence>
     </>,
   };
 }

@@ -375,7 +375,7 @@ func TestCursorSupplementKeepsMixedHooksFile(t *testing.T) {
 // a user can extend a managed command with their own, and the file must stay
 // theirs. Only the exact `'<binary>' '<helper>'` command Multica writes counts.
 func TestCursorSupplementKeepsHooksFileWithModifiedCommand(t *testing.T) {
-	canonical := cursorHookShellCommand([]string{"/old/multica", CursorHookHelperArg})
+	canonical := hookShellCommand([]string{"/old/multica", CursorHookHelperArg})
 	cases := map[string]string{
 		"command chained after":  canonical + "; './audit.sh'",
 		"command chained before": "'./audit.sh'; " + canonical,
@@ -419,7 +419,7 @@ func TestCursorSupplementKeepsHooksFileWithModifiedCommand(t *testing.T) {
 func TestCursorSupplementReplacesLeftoverManagedCommand(t *testing.T) {
 	for _, exe := range []string{"/old/multica", "/opt/multica tools/multica", "/odd/it's/multica"} {
 		t.Run(exe, func(t *testing.T) {
-			data, err := cursorHooksFileData(cursorHookShellCommand([]string{exe, CursorHookHelperArg}))
+			data, err := cursorHooksFileData(hookShellCommand([]string{exe, CursorHookHelperArg}))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -441,7 +441,7 @@ func TestCursorSupplementReplacesLeftoverManagedCommand(t *testing.T) {
 // version and timeout are Multica's too. A hooks.json that carries another
 // value for either was written or edited by someone else.
 func TestCursorSupplementKeepsHooksFileWithForeignMetadata(t *testing.T) {
-	command, err := json.Marshal(cursorHookShellCommand([]string{"/old/multica", CursorHookHelperArg}))
+	command, err := json.Marshal(hookShellCommand([]string{"/old/multica", CursorHookHelperArg}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -511,7 +511,7 @@ func TestCursorSupplementInstallDoesNotOverwriteAReplacedLeftover(t *testing.T) 
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	leftover, err := cursorHooksFileData(cursorHookShellCommand([]string{"/old/multica", CursorHookHelperArg}))
+	leftover, err := cursorHooksFileData(hookShellCommand([]string{"/old/multica", CursorHookHelperArg}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -588,7 +588,7 @@ func TestCursorSupplementCleanupKeepsAnEditedFile(t *testing.T) {
 // Multica always writes both version and timeout, so a file that lacks either
 // was not written by Multica, whatever its command says.
 func TestCursorSupplementKeepsHooksFileWithMissingMetadata(t *testing.T) {
-	command, err := json.Marshal(cursorHookShellCommand([]string{"/old/multica", CursorHookHelperArg}))
+	command, err := json.Marshal(hookShellCommand([]string{"/old/multica", CursorHookHelperArg}))
 	if err != nil {
 		t.Fatal(err)
 	}

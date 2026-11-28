@@ -2038,6 +2038,15 @@ func (h *Handler) PreviewIssueWorkflowBrief(w http.ResponseWriter, r *http.Reque
 		StatusName: func(key string) string {
 			return resolver.Name(ctx, h.Queries, key)
 		},
+		EffectiveStatus: func(key string) string {
+			return resolver.Effective(ctx, h.Queries, key)
+		},
+		StatusCategory: func(key string) string {
+			return resolver.Category(ctx, h.Queries, key)
+		},
+		StatusDescription: func(key string) string {
+			return resolver.Description(ctx, h.Queries, key)
+		},
 		HandlerName: func(s issueworkflow.Step) string {
 			switch s.Handler.Type {
 			case issueworkflow.HandlerAgent, issueworkflow.HandlerSquad, issueworkflow.HandlerMember:
@@ -2138,7 +2147,7 @@ func (h *Handler) PreviewWorkflowHandoff(w http.ResponseWriter, r *http.Request)
 	}
 	hand, err := h.applyIssueWorkflow(r.Context(), h.Queries, issue, &params, status != "", false, enterOnMove, workflowCaller{handoffAssignee: handoffAssignee})
 	if err != nil {
-		if writeIssueWorkflowError(w, err) {
+		if writeIssueWorkflowError(r.Context(), w, err) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "failed to resolve project workflow")

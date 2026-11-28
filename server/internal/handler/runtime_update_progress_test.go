@@ -33,11 +33,11 @@ func runningUpdate(t *testing.T) *UpdateRequest {
 	t.Cleanup(func() { testHandler.UpdateStore = orig })
 
 	ctx := context.Background()
-	update, err := testHandler.UpdateStore.Create(ctx, testRuntimeID, "v9.9.9", testUserID)
+	update, err := testHandler.UpdateStore.Create(ctx, testRuntimeID, "", "v9.9.9", testUserID, false)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if _, err := testHandler.UpdateStore.PopPending(ctx, testRuntimeID); err != nil {
+	if _, err := testHandler.UpdateStore.PopPending(ctx, testRuntimeID, false); err != nil {
 		t.Fatalf("pop: %v", err)
 	}
 	return update

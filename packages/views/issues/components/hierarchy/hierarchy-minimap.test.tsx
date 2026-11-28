@@ -8,7 +8,10 @@ import type { HierarchyIssue } from "./hierarchy-model";
 
 const push = vi.hoisted(() => vi.fn());
 const state = vi.hoisted(() => ({ loading: false, levels: {} as Record<number, { nodes: unknown[]; status: string }>, expand: vi.fn() }));
-vi.mock("@multica/core/paths", () => ({ useWorkspacePaths: () => ({ issueDetail: (id: string) => `/issues/${id}` }) }));
+vi.mock("@multica/core/paths", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@multica/core/paths")>()),
+  useWorkspacePaths: () => ({ issueDetail: (id: string) => `/issues/${id}` }),
+}));
 vi.mock("../../../navigation", () => ({
   useNavigation: () => ({ push }),
   AppLink: ({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) => <a href={href} {...props}>{children}</a>,
@@ -88,7 +91,7 @@ describe("minimap", () => {
   it("shows a busy skeleton in the same section while the target loads", () => {
     state.loading = true;
     render(ui());
-    const skeleton = screen.getByRole("status", { name: "Loading hierarchy…" });
+    const skeleton = screen.getByRole("status", { name: "Loading hierarchy..." });
     expect(skeleton.parentElement).toHaveAttribute("aria-busy", "true");
     expect(screen.getByTestId("issue-hierarchy")).toContainElement(skeleton);
     // D5 shared states: the mode switch and the expand button stay usable while the card loads.
@@ -182,7 +185,7 @@ describe("canvas dialog: focus-depth levels (CHE-5715)", () => {
     render(ui());
     openCanvas();
     expect(canvas()).not.toHaveAttribute("data-level-ready");
-    expect(screen.getByRole("status", { name: "Loading hierarchy…" })).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "Loading hierarchy..." })).toBeInTheDocument();
   });
   it("a failed level shows a retry that reloads it", () => {
     state.levels = { 1: { nodes: [], status: "failed" } };
