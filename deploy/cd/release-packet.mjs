@@ -15,7 +15,7 @@
 // tested extension, never folded silently into the existing D2 files.
 
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 function fail(message) {
@@ -150,11 +150,70 @@ function migrationChecksums(migrationsDir) {
   });
 }
 
+// Contract migrations (CHE-7486 N5a). An up file whose FIRST line is
+//   -- multica:contract snapshot=<t1>[,<t2>] restore=<repo path>
+// declares itself a contract migration: the controller snapshots the named
+// tables before the migrator runs (cutover.sh) and the packet lists it. A first
+// line that starts with "-- multica:contract" and does not parse is an error,
+// never "no contract" (same rule as the runner's parser, N5r). Table names
+// match ^[a-z_][a-z0-9_]*$; the restore path is relative and has no ".."
+// segment.
+const CONTRACT_PREFIX = "-- multica:contract";
+const CONTRACT_TABLE = /^[a-z_][a-z0-9_]*$/;
+
+function parseContractLine(file, firstLine) {
+  if (!firstLine.startsWith(CONTRACT_PREFIX)) return null;
+  const bad = (why) => fail(`contract line in ${file}: ${why}: ${JSON.stringify(firstLine)}`);
+  const match = /^-- multica:contract snapshot=(\S*) restore=(\S*)$/.exec(firstLine);
+  if (!match) bad("expected `-- multica:contract snapshot=<t1>[,<t2>] restore=<repo path>`");
+  const tables = match[1].split(",");
+  for (const table of tables) {
+    if (!CONTRACT_TABLE.test(table)) bad(`table name ${JSON.stringify(table)} does not match ${CONTRACT_TABLE}`);
+  }
+  if (new Set(tables).size !== tables.length) bad("duplicate table name");
+  const restore = match[2];
+  if (!restore || restore.startsWith("/") || restore.split("/").some((part) => part === ".." || part === "")) {
+    bad("restore must be a relative repo path without an empty or .. segment");
+  }
+  return { snapshot_tables: tables, restore };
+}
+
+// contractMigrations lists, in runner order, each marked up file under
+// migrationsDir whose version has no row in the observed ledger (the release's
+// incoming set). The ledger is reconciled through KNOWN_LEDGER_RENAMES first,
+// as the dirty-ledger check is.
+function contractMigrations(migrationsDir, ledgerVersions) {
+  const dir = resolve(migrationsDir);
+  const applied = new Set(reconcileLedgerVersions(ledgerVersions));
+  const found = [];
+  for (const name of readdirSync(dir).filter((n) => n.endsWith(".up.sql")).sort()) {
+    const version = name.replace(/\.up\.sql$/, "");
+    if (applied.has(version)) continue;
+    const text = readFileSync(join(dir, name), "utf8");
+    const firstLine = text.split("\n", 1)[0].replace(/\r$/, "");
+    const contract = parseContractLine(name, firstLine);
+    if (contract) found.push({ version, ...contract });
+  }
+  return found;
+}
+
+function requireRestorePaths(contracts, repoRoot) {
+  for (const entry of contracts) {
+    let ok = false;
+    try {
+      ok = statSync(join(repoRoot, entry.restore)).isFile();
+    } catch {
+      ok = false;
+    }
+    if (!ok) fail(`restore path ${entry.restore} of contract migration ${entry.version} does not exist as a file under ${repoRoot}`);
+  }
+}
+
 // validatePacket applies every reject condition the accepted architecture
 // names for a release packet: dirty ledger, checksum drift, invalid
 // indexes, unknown writers. Each check fails closed (an ambiguous or
 // missing input is a rejection, not a pass).
-function validatePacket(packet, { migrationsDir, manifest }) {
+function validatePacket(packet, { migrationsDir, manifest, repoRoot }) {
   if (packet.schema_version !== 1) fail("unsupported release packet schema_version");
 
   if (!manifest) fail("missing --manifest; release packets must be verified against the admitted candidate");
@@ -224,6 +283,20 @@ function validatePacket(packet, { migrationsDir, manifest }) {
       fail(`ledger contains version ${version} not present in ordered_migrations — dirty ledger state`);
     }
   }
+
+  // Contract migrations: the packet's list must equal the list computed again
+  // from the tree and the observed ledger. A missing field means an empty
+  // list (a packet without a marked incoming migration). Any difference
+  // (missing, extra or changed entry) refuses, and each restore path must
+  // exist in the tree.
+  const expectedContracts = contractMigrations(migrationsDir, observed.ledger.versions);
+  const packetContracts = packet.contract_migrations ?? [];
+  if (!Array.isArray(packetContracts) || JSON.stringify(packetContracts) !== JSON.stringify(expectedContracts)) {
+    fail(
+      `contract_migrations does not match the marked incoming migrations in ${migrationsDir}: packet has ${JSON.stringify(packet.contract_migrations ?? null)}, expected ${JSON.stringify(expectedContracts)}`,
+    );
+  }
+  requireRestorePaths(expectedContracts, repoRoot ?? resolve(migrationsDir, "..", ".."));
 
   // Invalid indexes: any index the packet reports as invalid (a concurrent
   // build that failed or was interrupted, per AGENTS.md's CONCURRENTLY
@@ -321,6 +394,7 @@ function create(args) {
       baseline_tuple_sha256: manifest.baseline_tuple_sha256,
     },
     ordered_migrations: ordered,
+    contract_migrations: contractMigrations(migrationsDir, observed.ledger.versions),
     observed_state: observed,
     previous_image_pair: {
       backend: `${imageRepository(manifest.images.backend)}@${baseline.images?.backend?.digest}`,
@@ -330,7 +404,7 @@ function create(args) {
     },
     minimum_rollback_version: minimumRollbackVersion,
   };
-  validatePacket(packet, { migrationsDir, manifest });
+  validatePacket(packet, { migrationsDir, manifest, repoRoot: optional("--repo-root", args) });
   writeFileSync(option("--output", args), `${JSON.stringify(packet, null, 2)}\n`);
 }
 
@@ -338,7 +412,7 @@ function verify(args) {
   const packet = readJSON(option("--packet", args));
   const manifest = readJSON(option("--manifest", args));
   const migrationsDir = optional("--migrations-dir", args) ?? "server/migrations";
-  const result = validatePacket(packet, { migrationsDir, manifest });
+  const result = validatePacket(packet, { migrationsDir, manifest, repoRoot: optional("--repo-root", args) });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
 
