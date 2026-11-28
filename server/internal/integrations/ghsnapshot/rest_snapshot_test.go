@@ -430,6 +430,12 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 		}
 		return r
 	}
+	// inRun gives a check the details URL GitHub Actions reports, which names
+	// the workflow run (not the workflow) the check ran in.
+	inRun := func(r map[string]any, run int) map[string]any {
+		r["details_url"] = fmt.Sprintf("https://github.com/o/r/actions/runs/%d/job/1", run)
+		return r
+	}
 	const ci, docs = 1, 2
 	// The case from #9830: run 1 is cancelled and its always() gate fails,
 	// run 2 of the same workflow passes.
@@ -529,6 +535,43 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 				workflowRun(200, ci, "pull_request", 20, "completed", "success"),
 			},
 			want: "SUCCESS", wantNames: []string{"test (a)", "test (b)"}, wantFetch: true,
+		},
+		{
+			// A re-triggered run of the same workflow is a new workflow run
+			// with its own run id; the newest run of a check decides.
+			name: "failed check re-reported by a newer run of the same workflow",
+			runs: []map[string]any{
+				inRun(done(1, 10, "close-target", "failure"), 100), inRun(done(2, 10, "lint", "success"), 100),
+				inRun(done(3, 20, "close-target", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"),
+				workflowRun(200, ci, "pull_request_target", 20, "completed", "success"),
+			},
+			want: "SUCCESS", wantNames: []string{"close-target", "lint"}, wantFetch: true,
+		},
+		{
+			name: "failed check the newer run of the same workflow did not re-report",
+			runs: []map[string]any{
+				inRun(done(1, 10, "test (a)", "failure"), 100), inRun(done(2, 10, "lint", "success"), 100),
+				inRun(done(3, 20, "lint", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"),
+				workflowRun(200, ci, "pull_request_target", 20, "completed", "success"),
+			},
+			want: "FAILURE", wantNames: []string{"test (a)", "lint"}, wantFetch: true,
+		},
+		{
+			name: "failed check with the same name in another workflow",
+			runs: []map[string]any{
+				inRun(done(1, 10, "test", "failure"), 100), inRun(done(2, 20, "test", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				workflowRun(100, ci, "pull_request", 10, "completed", "failure"),
+				workflowRun(200, docs, "pull_request", 20, "completed", "success"),
+			},
+			want: "FAILURE", wantNames: []string{"test", "test"}, wantFetch: true,
 		},
 		{
 			name: "newest run cancelled",
