@@ -10,6 +10,7 @@ for path in \
   docker-compose.selfhost.yml \
   deploy/cd/drift-receipt.mjs \
   deploy/cd/cutover.sh \
+  deploy/cd/contract-lib.sh \
   deploy/cd/contract-snapshot.mjs \
   deploy/cd/release-packet.mjs \
   deploy/cd/migration-inventory.mjs \

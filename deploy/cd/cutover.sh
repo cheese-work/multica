@@ -46,6 +46,13 @@ Commands:
       generation. Never runs a down migration or restores from backup —
       that is the separately authorized recovery path.
 
+  contract-check --compose-dir PATH --state-dir PATH (--colour blue|green | --image REF)
+      Read-only. Read the applied contract migrations from the database and
+      prove that the colour's backend container image (running or stopped), or
+      the image REF, holds every one of them. Exit 0 proven or none applied,
+      3 refused (a migration file is missing), 1 uncertain (nothing started or
+      changed either way). Never takes the deploy lock.
+
   status --state-dir PATH
       Print which colour is currently active (from cutover-state.json) and
       exit 0. Never touches Docker or the router.
@@ -92,6 +99,8 @@ manifest=""
 packet=""
 compose_dir=""
 state_dir=""
+check_colour=""
+check_image=""
 
 while (($#)); do
   case "$1" in
@@ -99,6 +108,8 @@ while (($#)); do
     --packet) packet=${2:?}; shift 2 ;;
     --compose-dir) compose_dir=${2:?}; shift 2 ;;
     --state-dir) state_dir=${2:?}; shift 2 ;;
+    --colour) check_colour=${2:?}; shift 2 ;;
+    --image) check_image=${2:?}; shift 2 ;;
     --help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -137,6 +148,8 @@ deploy_lock="$state_dir/deploy.lock"
 
 # shellcheck source=deploy-lib.sh
 source "$script_dir/deploy-lib.sh"
+# shellcheck source=contract-lib.sh
+source "$script_dir/contract-lib.sh"
 compose_files=("docker-compose.selfhost.yml" "$script_dir/docker-compose.ab.yml")
 flags_file=""
 
@@ -453,6 +466,26 @@ recover_incumbent() {
     alert_outage "$reason; ledger '${ledger:-<unreadable>}' is neither the pre-drain ledger ($incumbent_ledger) nor within [$minimum, $final], so $from_colour is not proven schema-compatible and was NOT restarted; both colours are stopped"
     exit 1
   fi
+  # CHE-7486 N5b-1: with a contract migration applied, the incumbent image
+  # must hold its migration file. The applied set is read again here, after
+  # the drain, never taken from the pre-drain read or the state file.
+  if ! contract_applied_read; then
+    alert_outage "$reason; contract state unreadable ($contract_read_error), so $from_colour was NOT restarted; both colours are stopped; $(contract_recovery_text)"
+    exit 1
+  fi
+  contract_proof_rc=0
+  contract_image_proof "$incumbent_backend_image_id" || contract_proof_rc=$?
+  case "$contract_proof_rc" in
+    0) ;;
+    3)
+      alert_outage "$reason; contract migration $(contract_applied_versions) applied (attempt $(contract_applied_attempts)) and the $from_colour image $incumbent_backend_image_id does not hold it and was NOT restarted; both colours are stopped; $(contract_recovery_text)"
+      exit 1
+      ;;
+    *)
+      alert_outage "$reason; contract state unreadable (the image proof on $incumbent_backend_image_id could not run), so $from_colour was NOT restarted; both colours are stopped; $(contract_recovery_text)"
+      exit 1
+      ;;
+  esac
   if ! compose start "backend-${from_colour}" "frontend-${from_colour}" >/dev/null 2>&1; then
     alert_outage "$reason; restarting $from_colour failed; both colours are stopped"
     exit 1
@@ -610,13 +643,15 @@ JSON
 # Docker calls) in a few seconds instead of waiting out the real 600s
 # production bound.
 lock_wait_seconds="${CUTOVER_LOCK_WAIT_SECONDS:-600}"
-exec 9>"$deploy_lock"
-if ! flock -w "$lock_wait_seconds" 9; then
+if [ "$command" != contract-check ]; then
+  exec 9>"$deploy_lock"
+fi
+if [ "$command" != contract-check ] && ! flock -w "$lock_wait_seconds" 9; then
   echo "could not acquire deploy lock within ${lock_wait_seconds}s — another deploy/cutover is running" >&2
   exit 1
 fi
 
-if [ "$command" != status ]; then
+if [ "$command" != status ] && [ "$command" != contract-check ]; then
   flags_overlay_prepare
   jev_overlay_prepare
 fi
@@ -630,6 +665,49 @@ case "$command" in
     fi
     echo "$colour"
     exit 0
+    ;;
+
+  contract-check)
+    if [ -n "$check_colour" ] && [ -n "$check_image" ] || [ -z "$check_colour$check_image" ]; then
+      echo "contract-check needs exactly one of --colour blue|green or --image REF" >&2
+      usage >&2
+      exit 2
+    fi
+    case "$check_colour" in blue | green | "") ;; *) echo "contract-check --colour must be blue or green" >&2; exit 2 ;; esac
+    if [ -n "$check_colour" ]; then
+      check_label="backend-${check_colour}"
+      check_cid="$(compose ps --all -q "$check_label" 2>/dev/null | head -1 || true)"
+      if [ -z "$check_cid" ]; then
+        echo "contract-check: no $check_label container, running or stopped, to read an image id from (uncertain)" >&2
+        exit 1
+      fi
+      check_image_id="$(docker inspect --format '{{.Image}}' "$check_cid" 2>/dev/null || true)"
+    else
+      check_label="$check_image"
+      check_image_id="$(docker image inspect --format '{{.Id}}' "$check_image" 2>/dev/null || true)"
+    fi
+    if [ -z "$check_image_id" ]; then
+      echo "contract-check: cannot resolve $check_label to an image id (uncertain)" >&2
+      exit 1
+    fi
+    if ! contract_applied_read; then
+      echo "contract-check: contract state unreadable: $contract_read_error (uncertain)" >&2
+      exit 1
+    fi
+    if [ -z "$contract_applied" ]; then
+      echo "contract-check: no contract migration applied; $check_label image $check_image_id needs no proof"
+      exit 0
+    fi
+    while IFS='|' read -r check_version check_attempt check_restore; do
+      echo "applied: $check_version (attempt ${check_attempt:-none}, restore $check_restore)"
+    done <<<"$contract_applied"
+    contract_proof_rc=0
+    contract_image_proof "$check_image_id" || contract_proof_rc=$?
+    case "$contract_proof_rc" in
+      0) echo "$check_label image $check_image_id: proven, it holds every applied contract migration"; exit 0 ;;
+      3) echo "$check_label image $check_image_id: refused, it does not hold every applied contract migration; $(contract_recovery_text)"; exit 3 ;;
+      *) echo "contract-check: the image proof on $check_image_id could not run (uncertain)" >&2; exit 1 ;;
+    esac
     ;;
 
   cutover)
@@ -767,6 +845,28 @@ case "$command" in
       exit 1
     fi
     echo "==> candidate image ids: backend $candidate_backend_id, web $candidate_web_id (digest-verified)"
+
+    # CHE-7486 N5b-1: a contract migration may already be applied (an earlier
+    # attempt, or an out-of-band run). The candidate image id must hold its
+    # migration file before anything drains, or the candidate would start on
+    # a schema its tree predates. An uncertain read refuses.
+    if ! contract_applied_read; then
+      echo "!! contract state unreadable ($contract_read_error); refusing to cut over; $from_colour remains active" >&2
+      exit 1
+    fi
+    contract_proof_rc=0
+    contract_image_proof "$candidate_backend_id" || contract_proof_rc=$?
+    case "$contract_proof_rc" in
+      0) ;;
+      3)
+        echo "!! candidate backend image $candidate_backend_id does not hold contract migration $(contract_applied_versions) (attempt $(contract_applied_attempts)); $from_colour remains active; $(contract_recovery_text)" >&2
+        exit 1
+        ;;
+      *)
+        echo "!! contract state unreadable (the image proof on candidate $candidate_backend_id could not run); refusing to cut over; $from_colour remains active" >&2
+        exit 1
+        ;;
+    esac
 
     # The release packet's OWN minimum_rollback_version is the rollback
     # compatibility anchor for THIS cutover — not a value cutover.sh derives
