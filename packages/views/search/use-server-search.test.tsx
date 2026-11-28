@@ -85,6 +85,29 @@ describe("useServerSearch title tier", () => {
     expect(result.current.results.issues.map((i) => i.id)).toEqual(["t2"]);
   });
 
+  // CHE-7423: the title tier owns issues only, so each keystroke's title
+  // response used to wipe the project group until the full search came back.
+  it("keeps the project rows that still match while the next title tier lands", async () => {
+    const project = (id: string, title: string) => ({ id, title }) as never;
+    mockProjects.mockResolvedValue({
+      projects: [project("p1", "Fuzzy search rollout"), project("p2", "Fuzzy matching lab")],
+    });
+    const { result, rerender } = renderHook(({ q }) => useServerSearch(q, { projects: true }), {
+      initialProps: { q: "fuzzy" },
+    });
+    await settle();
+    await act(async () => void vi.advanceTimersByTime(300));
+    expect(result.current.results.projects.map((p) => p.id)).toEqual(["p1", "p2"]);
+
+    mockApi.searchIssues.mockResolvedValue({ issues: [issue("t3")] });
+    rerender({ q: "fuzzy s" });
+    await settle();
+
+    // Title tier for "fuzzy s" is on screen; the project that still matches stays.
+    expect(result.current.results.issues.map((i) => i.id)).toEqual(["t3"]);
+    expect(result.current.results.projects.map((p) => p.id)).toEqual(["p1"]);
+  });
+
   it("keeps today's behavior while the local index serves", async () => {
     mockLocalReady.mockReturnValue(true);
     const { result } = renderHook(() => useServerSearch("fuzzy", { projects: true }));

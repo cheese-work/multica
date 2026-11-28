@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "@multica/core/api";
 import type { SearchIssueResult, SearchProjectResult } from "@multica/core/types";
 import { isLocalSearchReady, searchIssues, searchProjects } from "@multica/core/search-index";
+import { scoreText } from "./matching";
 
 export interface SearchResults {
   /**
@@ -62,8 +63,15 @@ export function useServerSearch(query: string, options: { projects: boolean }) {
         .searchIssues({ q, limit: TITLE_TIER_LIMIT, include_closed: true, title_only: true, signal: controller.signal })
         .then((res) => {
           if (controller.signal.aborted || fullDone) return;
-          // Projects arrive with the full search; the title tier owns issues only.
-          setResults({ query: q, issues: res.issues, projects: [] });
+          // The title tier owns issues only; the full search stays the source of
+          // truth for projects. Keep the previous projects that still title-match
+          // so the group does not vanish between tiers.
+          const needle = q.toLowerCase();
+          setResults((prev) => ({
+            query: q,
+            issues: res.issues,
+            projects: prev.projects.filter((p) => scoreText(p.title, needle) > 0),
+          }));
         })
         .catch(() => {
           // The full search reports the failure; the title tier stays silent.
