@@ -121,7 +121,7 @@ if [ -n "$marked_version" ]; then
     exit 1
   fi
   # State of the real tree: every declared restore file that is not in it yet.
-  # The release packet refuses to build until they land, so this is a merge-order fact, not a skip.
+  # The bundle build needs each file to copy it, so this is a merge-order fact, not a skip.
   for marked in $(grep -l '^-- multica:contract ' server/migrations/*.up.sql | xargs -n1 basename | sed 's/\.up\.sql$//'); do
     declared="$(head -n 1 "server/migrations/$marked.up.sql" | sed -E 's/.* restore=(\S+)$/\1/')"
     if [ -f "$declared" ]; then echo "restore file present in tree: $declared"; else echo "restore file not in this tree yet: $declared ($marked)"; fi
