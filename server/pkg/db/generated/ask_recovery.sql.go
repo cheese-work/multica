@@ -108,7 +108,7 @@ func (q *Queries) InsertAskRecoveryNotice(ctx context.Context, arg InsertAskReco
 }
 
 const listAskRecoveryEvents = `-- name: ListAskRecoveryEvents :many
-SELECT event.id, event.workspace_id, event.issue_id, event.task_id, event.operation_kind, event.payload_sha256, event.mode, event.created_at, event.intent_id, event.member_id, event.cleared_at, event.cleared_by_request_id, event.source_text, event.delivered_at, event.repair_reason, event.root_id, event.repair_handled_at, event.cleared_by_comment_id FROM ask_guard_event event
+SELECT event.id, event.workspace_id, event.issue_id, event.task_id, event.operation_kind, event.payload_sha256, event.mode, event.created_at, event.intent_id, event.member_id, event.cleared_at, event.cleared_by_request_id, event.source_text, event.delivered_at, event.repair_reason, event.root_id, event.repair_handled_at, event.cleared_by_comment_id, event.comment_id FROM ask_guard_event event
 JOIN agent_task_queue task ON task.id = event.task_id AND task.status IN ('completed', 'failed', 'cancelled')
 WHERE event.mode = 'block' AND event.cleared_at IS NULL AND event.repair_reason IS NULL
 ORDER BY event.id
@@ -145,6 +145,7 @@ func (q *Queries) ListAskRecoveryEvents(ctx context.Context, batchSize int32) ([
 			&i.RootID,
 			&i.RepairHandledAt,
 			&i.ClearedByCommentID,
+			&i.CommentID,
 		); err != nil {
 			return nil, err
 		}
@@ -197,8 +198,54 @@ func (q *Queries) ListAskRecoveryNoticesByMessage(ctx context.Context, arg ListA
 	return items, nil
 }
 
+const listDeliveredAskSnapshots = `-- name: ListDeliveredAskSnapshots :many
+SELECT request.source_content_snapshot::text AS snapshot
+FROM decision_request request
+JOIN decision_intent intent ON intent.id = request.decision_intent_id AND intent.workspace_id = request.workspace_id
+WHERE request.workspace_id = $1 AND request.issue_id = $2 AND request.human_user_id = $3 AND intent.task_id = $4
+  AND (request.source_comment_id = $5 OR intent.comment_id = $5)
+`
+
+type ListDeliveredAskSnapshotsParams struct {
+	WorkspaceID     pgtype.UUID `json:"workspace_id"`
+	IssueID         pgtype.UUID `json:"issue_id"`
+	HumanUserID     pgtype.UUID `json:"human_user_id"`
+	TaskID          pgtype.UUID `json:"task_id"`
+	SourceCommentID pgtype.UUID `json:"source_comment_id"`
+}
+
+// The comment text of every decision request the run that left the event
+// already sent to the member on the issue for the comment the event is about
+// (the request's source comment, or the comment of its intent): what reached
+// them. An event with no comment, or about another comment, matches nothing.
+func (q *Queries) ListDeliveredAskSnapshots(ctx context.Context, arg ListDeliveredAskSnapshotsParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeliveredAskSnapshots,
+		arg.WorkspaceID,
+		arg.IssueID,
+		arg.HumanUserID,
+		arg.TaskID,
+		arg.SourceCommentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var snapshot string
+		if err := rows.Scan(&snapshot); err != nil {
+			return nil, err
+		}
+		items = append(items, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockAskGuardEvent = `-- name: LockAskGuardEvent :one
-SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id FROM ask_guard_event WHERE id = $1 AND workspace_id = $2 FOR UPDATE
+SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id, comment_id FROM ask_guard_event WHERE id = $1 AND workspace_id = $2 FOR UPDATE
 `
 
 type LockAskGuardEventParams struct {
@@ -228,6 +275,7 @@ func (q *Queries) LockAskGuardEvent(ctx context.Context, arg LockAskGuardEventPa
 		&i.RootID,
 		&i.RepairHandledAt,
 		&i.ClearedByCommentID,
+		&i.CommentID,
 	)
 	return i, err
 }
@@ -258,6 +306,25 @@ WHERE id = $1 AND state = 'delivered'
 func (q *Queries) MarkAskRecoveryNoticeAnswered(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, markAskRecoveryNoticeAnswered, id)
 	return err
+}
+
+const serveAskGuardEvent = `-- name: ServeAskGuardEvent :execrows
+UPDATE ask_guard_event SET cleared_at = clock_timestamp()
+WHERE id = $1 AND workspace_id = $2 AND cleared_at IS NULL
+`
+
+type ServeAskGuardEventParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+// Closes an open event whose ask already reached the member, without marking a notice delivered.
+func (q *Queries) ServeAskGuardEvent(ctx context.Context, arg ServeAskGuardEventParams) (int64, error) {
+	result, err := q.db.Exec(ctx, serveAskGuardEvent, arg.ID, arg.WorkspaceID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const setAskGuardEventRepair = `-- name: SetAskGuardEventRepair :exec

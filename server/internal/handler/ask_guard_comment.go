@@ -33,11 +33,11 @@ func (h *Handler) askGuardAllowsComment(w http.ResponseWriter, r *http.Request, 
 		return true
 	}
 	if len(askguard.MentionedMembers(content)) > 0 {
-		if !h.askGuardMemberMention(w, r, issue, task, "comment", content, askGuardCommentFix) {
+		if !h.askGuardMemberMention(w, r, issue, task, pgtype.UUID{}, "comment", content, askGuardCommentFix) {
 			return false
 		}
 	} else if err := decisiontx.CheckCommentAsk(content); err != nil {
-		if !h.askGuardMemberMention(w, r, issue, task, "comment_ask", content, "multica decision request --kind action ... with observed, files and dry_run, or add --notify-only to multica issue comment add if the comment needs no answer (comment refused: "+err.Error()+")") {
+		if !h.askGuardMemberMention(w, r, issue, task, pgtype.UUID{}, "comment_ask", content, "multica decision request --kind action ... with observed, files and dry_run, or add --notify-only to multica issue comment add if the comment needs no answer (comment refused: "+err.Error()+")") {
 			return false
 		}
 	}
@@ -49,7 +49,7 @@ func (h *Handler) askGuardAllowsComment(w http.ResponseWriter, r *http.Request, 
 // ask (decisiontx.CheckCommentAsk, CHE-5753), is refused like a plain comment.
 // Links and asks the comment already had never block an unrelated edit; a new
 // or changed unverified command, file or UI step does.
-func (h *Handler) askGuardAllowsCommentEdit(w http.ResponseWriter, r *http.Request, issue db.Issue, actorType, oldContent, newContent string) bool {
+func (h *Handler) askGuardAllowsCommentEdit(w http.ResponseWriter, r *http.Request, issue db.Issue, actorType string, commentID pgtype.UUID, oldContent, newContent string) bool {
 	if actorType != "agent" {
 		return true
 	}
@@ -58,13 +58,13 @@ func (h *Handler) askGuardAllowsCommentEdit(w http.ResponseWriter, r *http.Reque
 		actorTask = &task
 	}
 	if addsMemberMention(oldContent, newContent) {
-		return h.askGuardMemberMention(w, r, issue, actorTask, "comment_edit", newContent, askGuardEditFix)
+		return h.askGuardMemberMention(w, r, issue, actorTask, commentID, "comment_edit", newContent, askGuardEditFix)
 	}
 	// An ask the comment already held stays editable, but an edit may not bring
 	// in a command, file or UI step it did not cite before (CHE-6354).
 	err := decisiontx.CheckCommentAsk(newContent)
 	if err != nil && (decisiontx.CheckCommentAsk(oldContent) == nil || decisiontx.AddsAskItem(oldContent, newContent)) {
-		return h.askGuardMemberMention(w, r, issue, actorTask, "comment_edit", newContent, askGuardEditAskFix+" (edit refused: "+err.Error()+")")
+		return h.askGuardMemberMention(w, r, issue, actorTask, commentID, "comment_edit", newContent, askGuardEditAskFix+" (edit refused: "+err.Error()+")")
 	}
 	return true
 }
@@ -82,8 +82,8 @@ func addsMemberMention(oldContent, newContent string) bool {
 	return false
 }
 
-func (h *Handler) askGuardMemberMention(w http.ResponseWriter, r *http.Request, issue db.Issue, task *db.AgentTaskQueue, kind, content, fix string) bool {
-	op := askguard.Op{IssueID: issue.ID, Kind: kind, Payload: []byte(content), Source: content}
+func (h *Handler) askGuardMemberMention(w http.ResponseWriter, r *http.Request, issue db.Issue, task *db.AgentTaskQueue, commentID pgtype.UUID, kind, content, fix string) bool {
+	op := askguard.Op{IssueID: issue.ID, Kind: kind, Payload: []byte(content), Source: content, CommentID: commentID}
 	if members := askguard.MentionedMembers(content); len(members) == 1 {
 		op.MemberID = parseUUID(members[0])
 	}

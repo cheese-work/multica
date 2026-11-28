@@ -117,6 +117,9 @@ type Op struct {
 	// Source is the text a recovery notice quotes verbatim. Empty when the
 	// operation has no ask text (a wakeup), which sends the event to repair.
 	Source string
+	// CommentID is the comment an edit operation targets; it ties the event to
+	// the ask that comment carried.
+	CommentID pgtype.UUID
 }
 
 // Guard writes events through Queries. Queries must not be bound to the
@@ -195,7 +198,7 @@ func (g Guard) record(ctx context.Context, workspaceID pgtype.UUID, mode Mode, o
 	ev, err := g.Queries.InsertAskGuardEvent(ctx, db.InsertAskGuardEventParams{
 		ID: dbid.NewV7(), WorkspaceID: workspaceID, IssueID: op.IssueID, TaskID: op.TaskID,
 		OperationKind: op.Kind, PayloadSha256: digest, Mode: string(mode), MemberID: op.MemberID,
-		SourceText: pgtype.Text{String: op.Source, Valid: op.Source != ""},
+		SourceText: pgtype.Text{String: op.Source, Valid: op.Source != ""}, CommentID: op.CommentID,
 	})
 	if err == nil {
 		return ev, "created", nil
