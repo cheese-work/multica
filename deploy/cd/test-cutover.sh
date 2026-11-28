@@ -33,6 +33,10 @@ web_digest="sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 # manifest-pinned digests above (CHE-678).
 incumbent_backend_digest="sha256:$(printf 'c%.0s' {1..64})"
 incumbent_web_digest="sha256:$(printf 'd%.0s' {1..64})"
+# Image W (CHE-7486 N5v): what a candidate reference is moved to after one of
+# its reads. It has digests the manifest never named.
+w_backend_digest="sha256:$(printf '9%.0s' {1..64})"
+w_web_digest="sha256:$(printf '8%.0s' {1..64})"
 # What the pre-drain incumbent's /health reports — distinct from source_sha
 # so recovery must prove it restarted the incumbent, not the candidate.
 incumbent_commit="1111111111111111111111111111111111111111"
@@ -101,8 +105,69 @@ fail_if_flagged() {
   fi
 }
 
+# Image and reference tables (CHE-7486 N5v). A candidate reference
+# (multica-backend:<tag> or multica-web:<tag>, not the incumbent's tag) points
+# at image imgid-<ref> until it is moved. Every inspect, image inspect,
+# compose run and compose up resolves a reference once per call and counts one
+# read (reads-<role>). MOCK_REPOINT_AFTER_READ=<n> moves the candidate backend
+# reference to image W (imgid-W-backend) right after its n-th read;
+# MOCK_REPOINT_REF=web moves the web reference instead. The read itself
+# still answers with the image it resolved before the move.
+resolve_ref() {
+  local ref=\$1 role n id
+  case "\$ref" in
+    imgid-*) printf '%s\n' "\$ref"; return 0 ;; # already an image id
+    *multica-backend:sha-incumbent | *multica-web:sha-incumbent) printf 'imgid-%s\n' "\$ref"; return 0 ;;
+    *multica-backend:*) role=backend ;;
+    *multica-web:*) role=web ;;
+    *) printf 'imgid-%s\n' "\$ref"; return 0 ;;
+  esac
+  n=\$(( \$(cat "\$control_dir/reads-\$role" 2>/dev/null || echo 0) + 1 ))
+  echo "\$n" >"\$control_dir/reads-\$role"
+  id="\$(cat "\$control_dir/ref-\$role" 2>/dev/null || printf 'imgid-%s' "\$ref")"
+  if [ "\${MOCK_REPOINT_AFTER_READ:-}" = "\$n" ] && [ "\${MOCK_REPOINT_REF:-backend}" = "\$role" ]; then
+    echo "imgid-W-\$role" >"\$control_dir/ref-\$role"
+  fi
+  printf '%s\n' "\$id"
+}
+# w_digest_for_id prints image W's digest when the id is W's, else nothing.
+w_digest_for_id() {
+  case "\$1" in
+    imgid-W-backend) printf '%s' "$w_backend_digest" ;;
+    imgid-W-web) printf '%s' "$w_web_digest" ;;
+  esac
+}
+
+if [ "\$1" = "image" ] && [ "\$2" = "inspect" ]; then
+  # image inspect --format '{{.Id}}{{range .RepoDigests}} {{.}}{{end}}' <ref>:
+  # the id and the digest list from one read (verified_image_id).
+  ref="\${*: -1}"
+  case "\$*" in
+    *'{{.Id}}{{range .RepoDigests}} {{.}}{{end}}'*) ;;
+    *) echo "mock docker: unhandled image inspect \$*" >&2; exit 1 ;;
+  esac
+  id="\$(resolve_ref "\$ref")"
+  repo="\${ref%%:*}"
+  case "\$ref" in
+    *multica-backend:sha-incumbent) digest="\${MOCK_INCUMBENT_BACKEND_DIGEST:-}" ;;
+    *multica-web:sha-incumbent) digest="\${MOCK_INCUMBENT_WEB_DIGEST:-}" ;;
+    *multica-backend:*) digest="\${MOCK_BACKEND_DIGEST:-}" ;;
+    *) digest="\${MOCK_WEB_DIGEST:-}" ;;
+  esac
+  [ -z "\$(w_digest_for_id "\$id")" ] || digest="\$(w_digest_for_id "\$id")"
+  # no-repodigests: a local image that was never pulled has an empty list.
+  if [ -f "\$control_dir/no-repodigests" ]; then
+    printf '%s\n' "\$id"
+  else
+    printf '%s %s@%s\n' "\$id" "\$repo" "\$digest"
+  fi
+  exit 0
+fi
+
 if [ "\$1" = "inspect" ]; then
   ref="\${*: -1}"
+  id=""
+  case "\$ref" in cid-*) ;; *) id="\$(resolve_ref "\$ref")" ;; esac
   # --format {{.Image}} <container id>: the image a RUNNING container was
   # created from (CHE-773 review finding 3). --format {{.Id}} <repo:tag>:
   # the local image that tag resolves to now. Kept distinct so a stale
@@ -116,7 +181,7 @@ if [ "\$1" = "inspect" ]; then
       fi
       exit 0 ;;
     *'{{.Image}}'*) cat "\$control_dir/image-\${ref#cid-}" 2>/dev/null; exit 0 ;;
-    *'--format {{.Id}}'*) printf 'imgid-%s\n' "\$ref"; exit 0 ;;
+    *'--format {{.Id}}'*) printf '%s\n' "\$id"; exit 0 ;;
     # Drift receipt (CHE-2396): env key names of a container (cid-<service>)
     # or of its image, and the image's repo digests. env-missing-/env-extra-
     # <service> and running-digest-<backend|web> model drifted containers.
@@ -135,6 +200,7 @@ if [ "\$1" = "inspect" ]; then
         *) role=web; repo=ghcr.io/cheese-work/multica-web; digest="\${MOCK_WEB_DIGEST:-}" ;;
       esac
       [ -f "\$control_dir/running-digest-\$role" ] && digest="\$(cat "\$control_dir/running-digest-\$role")"
+      [ -z "\$(w_digest_for_id "\$id")" ] || digest="\$(w_digest_for_id "\$id")"
       printf '["%s@%s"]\n' "\$repo" "\$digest"; exit 0 ;;
   esac
   repo="\${ref%%:*}"
@@ -151,6 +217,9 @@ if [ "\$1" = "inspect" ]; then
     *multica-backend:*) digest="\${MOCK_BACKEND_DIGEST:-}" ;;
     *multica-web:*) digest="\${MOCK_WEB_DIGEST:-}" ;;
   esac
+  [ -z "\$(w_digest_for_id "\$id")" ] || digest="\$(w_digest_for_id "\$id")"
+  # no-repodigests: real docker fails on {{index .RepoDigests 0}} of an empty list.
+  [ ! -f "\$control_dir/no-repodigests" ] || exit 1
   printf '%s@%s\n' "\$repo" "\$digest"
   exit 0
 fi
@@ -237,6 +306,7 @@ if [ "\$1" = "compose" ]; then
       printf 'migrate %s image=%s tag=%s service=%s\n' \\
         "\$direction" "\${MULTICA_BACKEND_IMAGE:-}" "\${MULTICA_IMAGE_TAG:-}" "\${*: -2:1}" \\
         >>"\$control_dir/migrate-calls.log"
+      printf 'migrate %s\n' "\$(resolve_ref "\${MULTICA_BACKEND_IMAGE:-}:\${MULTICA_IMAGE_TAG:-}")" >>"\$control_dir/run-image-ids.log"
       fail_if_flagged fail-migrate
       # Genuinely advance the mock ledger on a real "up" run, so the
       # rollback compatibility guard is exercised against a schema state
@@ -298,12 +368,16 @@ if [ "\$1" = "compose" ]; then
             fi
             # "up" recreates the container from the tag it was given, unless
             # stale-container-<service> models Compose keeping an old one.
-            if [ "\$sub" = up ] && [ ! -f "\$control_dir/stale-container-\$a" ]; then
+            if [ "\$sub" = up ]; then
               case "\$a" in
                 backend-*) repo="\${MOCK_UP_BACKEND_REPO:-\${MULTICA_BACKEND_IMAGE:-}}" ;;
                 frontend-*) repo="\${MULTICA_WEB_IMAGE:-}" ;;
               esac
-              printf 'imgid-%s:%s\n' "\$repo" "\${MULTICA_IMAGE_TAG:-}" >"\$control_dir/image-\$a"
+              up_id="\$(resolve_ref "\$repo:\${MULTICA_IMAGE_TAG:-}")"
+              if [ ! -f "\$control_dir/stale-container-\$a" ]; then
+                printf '%s\n' "\$up_id" >"\$control_dir/image-\$a"
+                printf 'up %s %s\n' "\$a" "\$up_id" >>"\$control_dir/run-image-ids.log"
+              fi
             fi
             touch "\$control_dir/running-\$a"
             ;;
@@ -598,6 +672,7 @@ output="$(run_cutover "$state_dir" 2>&1)"
 status=$?
 expect_exit 0 "$status" che1593-privacy-location-upstreams
 expect_contains "$output" "cutover complete: green is now active" che1593-privacy-location-upstreams
+expect_contains "$output" "==> candidate image ids: backend imgid-ghcr.io/cheese-work/multica-backend:sha-${source_sha}, web imgid-ghcr.io/cheese-work/multica-web:sha-${source_sha} (digest-verified)" che1593-privacy-location-upstreams
 if [ ! -f "$state_dir/cutover-state.json" ]; then
   echo "scenario che1593-privacy-location-upstreams: cutover-state.json was not written" >&2
   exit 1
@@ -660,6 +735,95 @@ for role in backend web; do
     echo "scenario ${role}-digest-mismatch: incumbent was drained before both image digests were verified" >&2
     exit 1
   fi
+done
+
+# An image with no RepoDigests entry (never pulled from a registry) exits 1
+# before the drain, as today.
+state_dir="$(fresh_scenario_dir n5v-no-repodigests)"
+mkdir -p "$state_dir/control"
+touch "$state_dir/control/no-repodigests"
+set +e
+output="$(run_cutover "$state_dir" 2>&1)"
+status=$?
+set -e
+expect_exit 1 "$status" n5v-no-repodigests
+expect_contains "$output" "pulled backend image digest mismatch" n5v-no-repodigests
+if [ -f "$state_dir/control/stop-calls.log" ]; then
+  echo "scenario n5v-no-repodigests: incumbent was drained for an image with no RepoDigests entry" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# CHE-7486 N5v: the image id the controller checks and starts is the id of the
+# image whose digest matched the manifest. A candidate reference moved to
+# another image (W) right after the read that verified the digest must never
+# end in a reported success with W serving. The mock counts one read per
+# inspect, image inspect, compose run and compose up (MOCK_REPOINT_AFTER_READ,
+# MOCK_REPOINT_REF in the docker mock above).
+# ---------------------------------------------------------------------------
+# n5v_run <scenario> [VAR=value ...]: one cutover with the given mock settings.
+# Sets n5v_dir, n5v_output and n5v_status.
+n5v_run() {
+  local name=$1
+  shift
+  n5v_dir="$(fresh_scenario_dir "$name")"
+  set +e
+  n5v_output="$(
+    for assignment in "$@"; do export "$assignment"; done
+    run_cutover "$n5v_dir" 2>&1
+  )"
+  n5v_status=$?
+  set -e
+}
+
+# The cutover never reports success while a container created from W exists,
+# and a container from W is refused by the image-id check itself
+# (runs_verified_image), not left for the later drift receipt to catch after
+# W passed health checks.
+n5v_expect_no_success_with_w() {
+  local name=$1
+  if grep -qs 'imgid-W' "$n5v_dir"/control/image-*; then
+    if [[ "$n5v_output" == *"cutover complete"* ]]; then
+      echo "scenario $name: cutover reported success with a container from image W" >&2
+      echo "--- captured output ---" >&2
+      echo "$n5v_output" >&2
+      exit 1
+    fi
+    if [[ "$n5v_output" != *"-green runs image 'imgid-W-"* ]]; then
+      echo "scenario $name: a container from image W was not refused by the image-id check" >&2
+      echo "--- captured output ---" >&2
+      echo "$n5v_output" >&2
+      exit 1
+    fi
+  fi
+}
+
+for ref in backend web; do
+  name="n5v-boundary-$ref"
+  n5v_run "$name" MOCK_REPOINT_AFTER_READ=1 MOCK_REPOINT_REF="$ref"
+  expect_exit 1 "$n5v_status" "$name"
+  expect_contains "$n5v_output" "-green runs image 'imgid-W-$ref'" "$name"
+  expect_contains "$n5v_output" "RECOVERED" "$name"
+  expect_not_contains "$n5v_output" "drift receipt" "$name"
+  expect_not_contains "$n5v_output" "cutover complete" "$name"
+  n5v_expect_no_success_with_w "$name"
+done
+
+# Sweep: move the reference after every read a run without a move makes.
+n5v_run n5v-reads-baseline
+expect_exit 0 "$n5v_status" n5v-reads-baseline
+expect_contains "$n5v_output" "cutover complete: green is now active" n5v-reads-baseline
+for ref in backend web; do
+  reads="$(cat "$n5v_dir/control/reads-$ref")"
+  if [ "$reads" -lt 3 ]; then
+    echo "scenario n5v-sweep-$ref: a run without a move made only $reads reads of the $ref reference" >&2
+    exit 1
+  fi
+  for n in $(seq 1 "$reads"); do
+    name="n5v-sweep-$ref-$n"
+    n5v_run "$name" MOCK_REPOINT_AFTER_READ="$n" MOCK_REPOINT_REF="$ref"
+    n5v_expect_no_success_with_w "$name"
+  done
 done
 
 # ---------------------------------------------------------------------------
