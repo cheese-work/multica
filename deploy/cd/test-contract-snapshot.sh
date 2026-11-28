@@ -34,6 +34,15 @@ grep -q "lines" "$work_dir/err" || fail "line-count mismatch not reported: $(cat
 printf 'a\tb\n1\t3\n' >"$work_dir/t1.copy"
 if node "$helper" verify --manifest "$work_dir/manifest.json" 2>"$work_dir/err"; then fail "a same-length changed copy verified"; fi
 grep -q "SHA-256" "$work_dir/err" || fail "SHA-256 mismatch not reported: $(cat "$work_dir/err")"
+# A copy larger than one read chunk (1 MiB) streams to the same count and hash as the system tools.
+awk 'BEGIN { for (i = 0; i < 70000; i++) printf "row-%d\tpayload-0123456789\n", i }' >"$work_dir/big.copy"
+[ "$(stat -c %s "$work_dir/big.copy")" -gt 1048576 ] || fail "big fixture is not larger than one chunk"
+node "$helper" entry --version v1 --table big --rows 70000 --copy "$work_dir/big.copy" >"$work_dir/big-entry.json"
+[ "$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).sha256)' "$work_dir/big-entry.json")" = "sha256:$(sha256sum "$work_dir/big.copy" | cut -d' ' -f1)" ] \
+  || fail "streamed SHA-256 differs from sha256sum"
+node "$helper" manifest --out "$work_dir/big-manifest.json" --attempt-id 0123456789abcdef0123456789abcdef \
+  --source-sha deadbeef --taken-at 2026-11-28T00:00:00Z --ledger-latest v0 --ledger-rows 3 <"$work_dir/big-entry.json"
+node "$helper" verify --manifest "$work_dir/big-manifest.json" || fail "a multi-chunk copy did not verify"
 echo "helper file checks passed"
 
 # --- Part 2: COPY against a real postgres ---------------------------------

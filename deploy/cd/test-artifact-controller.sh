@@ -95,7 +95,7 @@ make_admission() {
 JSON
   base_digest="sha256:$(sha256sum "$prefix-baseline.json" | awk '{print $1}')"
   cat >"$prefix-manifest.json" <<JSON
-{"source_sha":"$source_sha","images":{"backend":"ghcr.io/cheese-work/multica-backend@$backend_digest","web":"ghcr.io/cheese-work/multica-web@$web_digest"},"migration_inventory_sha256":"$inventory","baseline_tuple_sha256":"$base_digest"}
+{"source_sha":"$source_sha","images":{"backend":"registry.example/backend@$backend_digest","web":"registry.example/web@$web_digest"},"migration_inventory_sha256":"$inventory","baseline_tuple_sha256":"$base_digest"}
 JSON
 }
 
@@ -120,6 +120,12 @@ if [ -n "$marked_version" ]; then
     echo "a marked migration without its restore file was bundled" >&2
     exit 1
   fi
+  # State of the real tree: every declared restore file that is not in it yet.
+  # The release packet refuses to build until they land, so this is a merge-order fact, not a skip.
+  for marked in $(grep -l '^-- multica:contract ' server/migrations/*.up.sql | xargs -n1 basename | sed 's/\.up\.sql$//'); do
+    declared="$(head -n 1 "server/migrations/$marked.up.sql" | sed -E 's/.* restore=(\S+)$/\1/')"
+    if [ -f "$declared" ]; then echo "restore file present in tree: $declared"; else echo "restore file not in this tree yet: $declared ($marked)"; fi
+  done
   scratch="$work_dir/scratch-repo"
   mkdir -p "$scratch/server"
   cp -r deploy "$scratch/deploy"

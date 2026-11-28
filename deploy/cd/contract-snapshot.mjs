@@ -22,7 +22,7 @@
 //       Writes the attempt record body, mode 0600, never over an existing file.
 
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { closeSync, openSync, readFileSync, readSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 function fail(message) {
@@ -38,8 +38,22 @@ function option(name, args, { required = true } = {}) {
   return args[index + 1];
 }
 
-const sha256 = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
-const lineCount = (bytes) => bytes.reduce((n, byte) => (byte === 0x0a ? n + 1 : n), 0);
+// One pass over the file in fixed chunks, so a large table never sits in memory.
+function scan(path) {
+  const hash = createHash("sha256");
+  const chunk = Buffer.allocUnsafe(1 << 20);
+  let lines = 0;
+  const fd = openSync(path, "r");
+  try {
+    for (let n = readSync(fd, chunk, 0, chunk.length, null); n > 0; n = readSync(fd, chunk, 0, chunk.length, null)) {
+      hash.update(chunk.subarray(0, n));
+      for (let i = chunk.indexOf(0x0a); i !== -1 && i < n; i = chunk.indexOf(0x0a, i + 1)) lines += 1;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  return { lines, sha256: `sha256:${hash.digest("hex")}` };
+}
 
 function list(args) {
   const packet = JSON.parse(readFileSync(option("--packet", args), "utf8"));
@@ -56,7 +70,7 @@ function list(args) {
 }
 
 function entry(args) {
-  const copy = readFileSync(option("--copy", args));
+  const copy = scan(option("--copy", args));
   const columnsFile = option("--columns-file", args, { required: false });
   const columns = columnsFile ? readFileSync(columnsFile, "utf8").split("\n").filter(Boolean) : [];
   const rows = Number(option("--rows", args));
@@ -66,7 +80,7 @@ function entry(args) {
     table: option("--table", args),
     columns,
     rows,
-    sha256: sha256(copy),
+    sha256: copy.sha256,
   };
   if (args.includes("--absent")) out.absent = true;
   process.stdout.write(`${JSON.stringify(out)}\n`);
@@ -89,9 +103,9 @@ function verify(args) {
   const path = option("--manifest", args);
   const body = JSON.parse(readFileSync(path, "utf8"));
   for (const t of body.tables ?? []) {
-    const bytes = readFileSync(join(dirname(path), `${t.table}.copy`));
-    if (lineCount(bytes) !== t.rows) fail(`${t.table}.copy has ${lineCount(bytes)} lines, manifest rows is ${t.rows}`);
-    if (sha256(bytes) !== t.sha256) fail(`${t.table}.copy SHA-256 ${sha256(bytes)} differs from the manifest's ${t.sha256}`);
+    const copy = scan(join(dirname(path), `${t.table}.copy`));
+    if (copy.lines !== t.rows) fail(`${t.table}.copy has ${copy.lines} lines, manifest rows is ${t.rows}`);
+    if (copy.sha256 !== t.sha256) fail(`${t.table}.copy SHA-256 ${copy.sha256} differs from the manifest's ${t.sha256}`);
   }
 }
 
