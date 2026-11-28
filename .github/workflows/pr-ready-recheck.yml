@@ -1,0 +1,25 @@
+# ci-policy: class=gate
+# Thin caller of the shared pr-ready check, verdict-change half (CHE-3440). Same content in every active repo; logic in
+# cheese-work/multica-dotfiles/.github/workflows/pr-ready-reusable-recheck.yml (multica-dotfiles). SECURITY: `issue_comment` runs this file from the default
+# branch; the comment body is never read here, only the author id.
+name: pr-ready-recheck
+
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+  actions: write
+  checks: write
+
+concurrency:
+  group: pr-ready-recheck-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  recheck:
+    if: github.event.issue.pull_request && github.event.comment.user.id == 282619718
+    uses: cheese-work/multica-dotfiles/.github/workflows/pr-ready-reusable-recheck.yml@main

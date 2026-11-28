@@ -1,0 +1,23 @@
+# ci-policy: class=gate
+# Thin caller of the shared pr-ready check, merge-queue half (CHE-3440). Same content in every active repo; logic in
+# cheese-work/multica-dotfiles/.github/workflows/pr-ready-reusable-queue.yml (multica-dotfiles). Same job id `pr-ready` as pr-ready.yml, so both events
+# produce one required context. SECURITY: GitHub runs a merge_group workflow from the queue commit, so a queued PR can
+# edit this caller; see the reusable workflow and docs/pr-ready.md.
+name: pr-ready-queue
+
+on:
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: pr-ready-queue-${{ github.event.merge_group.head_sha }}
+  cancel-in-progress: true
+
+jobs:
+  pr-ready:
+    uses: cheese-work/multica-dotfiles/.github/workflows/pr-ready-reusable-queue.yml@main

@@ -1,0 +1,25 @@
+# ci-policy: class=gate
+# Thin caller of the shared pr-ready check (CHE-3440). Same content in every active repo; the logic lives in
+# cheese-work/multica-dotfiles/.github/workflows/pr-ready-reusable-pr.yml (multica-dotfiles). Pinned to `main` until the first merge; then pin both this ref
+# and the action ref inside the reusable workflow to the merge commit. See docs/pr-ready.md in multica-dotfiles.
+# SECURITY: `pull_request_target` runs this file from the default branch, so a PR cannot edit it. No checkout, no secret.
+name: pr-ready
+# The recheck workflow finds this PR's run by this name (two PRs can share one head SHA).
+run-name: pr-ready-${{ github.event.pull_request.number }}
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+concurrency:
+  group: pr-ready-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-ready:
+    uses: cheese-work/multica-dotfiles/.github/workflows/pr-ready-reusable-pr.yml@main
