@@ -1,0 +1,38 @@
+# Contract-line fixtures (CHE-7486 N5r). Read by the Go parser test (server/internal/migrations)
+# and by the N5a node parser test, so the two parsers agree.
+# One case per line, fields separated by a TAB. Blank lines and lines starting with # are ignored.
+#   valid<TAB>first line<TAB>snapshot tables, comma-joined<TAB>restore path
+#   invalid<TAB>first line
+
+# X's line, verbatim (N1a).
+valid	-- multica:contract snapshot=chat_wakeup restore=server/cmd/migrate/recovery/chat_wakeup_fork_restore.sql	chat_wakeup	server/cmd/migrate/recovery/chat_wakeup_fork_restore.sql
+valid	-- multica:contract snapshot=a,b_2,_c restore=restore.sql	a,b_2,_c	restore.sql
+valid	-- multica:contract snapshot=t1 restore=dir/sub.dir/file..sql	t1	dir/sub.dir/file..sql
+
+invalid	-- multica:contract
+invalid	-- multica:contract snapshot=t1
+invalid	-- multica:contract restore=a.sql
+invalid	-- multica:contract restore=a.sql snapshot=t1
+invalid	-- multica:contract snapshot= restore=a.sql
+invalid	-- multica:contract snapshot=t1, restore=a.sql
+invalid	-- multica:contract snapshot=,t1 restore=a.sql
+invalid	-- multica:contract snapshot=t1,,t2 restore=a.sql
+invalid	-- multica:contract snapshot=t1,t1 restore=a.sql
+invalid	-- multica:contract snapshot=T1 restore=a.sql
+invalid	-- multica:contract snapshot=1t restore=a.sql
+invalid	-- multica:contract snapshot=t-1 restore=a.sql
+invalid	-- multica:contract snapshot=public.t1 restore=a.sql
+invalid	-- multica:contract snapshot=t1 restore=
+invalid	-- multica:contract snapshot=t1 restore=/etc/a.sql
+invalid	-- multica:contract snapshot=t1 restore=../a.sql
+invalid	-- multica:contract snapshot=t1 restore=a/../b.sql
+invalid	-- multica:contract snapshot=t1 restore=a/..
+invalid	-- multica:contract snapshot=t1 restore=a//b.sql
+invalid	-- multica:contract snapshot=t1 restore=a\b.sql
+invalid	-- multica:contract snapshot=t1 restore=a.sql extra=1
+invalid	-- multica:contract  snapshot=t1 restore=a.sql
+invalid	-- multica:contract snapshot=t1  restore=a.sql
+invalid	-- multica:contract snapshot=t1 restore=a.sql 
+invalid	-- multica:contract-x snapshot=t1 restore=a.sql
+invalid	-- multica:contractsnapshot=t1 restore=a.sql
+invalid	-- multica:contract snapshot=t1 restore=a.sql;
