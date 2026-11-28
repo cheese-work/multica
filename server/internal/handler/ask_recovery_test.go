@@ -235,45 +235,60 @@ func TestAskRecoveryAnswerAndAccessAfterDelivery(t *testing.T) {
 	}
 }
 
-// laterEdit writes the open block event that a refused comment edit leaves
-// after the run already asked the member, with the source the notice would quote.
-func laterEdit(t *testing.T, issueID, taskID, member string) string {
+// laterEvent writes the open block event a refused operation of the task leaves
+// after the run already asked the member, with the source a notice would quote.
+// commentID is the comment the operation edits; empty for an operation with none.
+func laterEvent(t *testing.T, kind, issueID, taskID, member, commentID string) string {
 	t.Helper()
 	id := dbid.NewV7()
-	dbfx.Exec(t, `INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, member_id, source_text) VALUES ($1, $2, $3, $4, 'comment_edit', $5, 'block', $6, 'Edited Discovery note that asks the member.')`,
-		id, testWorkspaceID, issueID, taskID, uuid.NewString(), member)
+	var comment any
+	if commentID != "" {
+		comment = commentID
+	}
+	dbfx.Exec(t, `INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, member_id, source_text, comment_id) VALUES ($1, $2, $3, $4, $5, $6, 'block', $7, 'Later text that asks the member.', $8)`,
+		id, testWorkspaceID, issueID, taskID, kind, uuid.NewString(), member, comment)
 	dbfx.Cleanup(t, `DELETE FROM ask_recovery_notice WHERE event_id = $1`, id)
 	dbfx.Cleanup(t, `DELETE FROM ask_guard_event WHERE id = $1`, id)
 	return uuidToString(id)
 }
 
-// TestAskRecoverySkipsAnEventOfAnAskThatAlreadyReached: the run asked the member
-// with a decision request, then a guarded edit of its own comment was refused.
-// The event opened after the request, so the request did not serve it; recovery
-// must not repost an ask the member already has. An event for a member the run
-// never asked still gets its notice.
-func TestAskRecoverySkipsAnEventOfAnAskThatAlreadyReached(t *testing.T) {
+func recoveryNotices(t *testing.T, eventID string) int {
+	return dbfx.Count(t, `SELECT count(*) FROM ask_recovery_notice WHERE event_id = $1`, eventID)
+}
+
+// TestAskRecoverySkipsOnlyTheEventOfTheAskThatReached: the run asked the member
+// with a decision request, then a guarded edit of the comment that request came
+// from was refused. The event opened after the request, so the request did not
+// serve it; recovery must not repost an ask the member already has. A distinct
+// later ask to the same member (another comment, or no comment) and an event for
+// a member the run never asked still get their notice.
+func TestAskRecoverySkipsOnlyTheEventOfTheAskThatReached(t *testing.T) {
 	setAskGuardMode(t, "block")
 	fixture := newSingleCallFixture(t)
 	other := dbfx.User(t, "Other human", "recovery-late-"+uuid.NewString()+"@test.invalid")
 	dbfx.Insert(t, "member", testutil.Cols{"workspace_id": testWorkspaceID, "user_id": other, "role": "member"})
 	testutil.Call(t, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated)
-	asked := laterEdit(t, fixture.issueID, fixture.taskID, fixture.humanID)
-	notAsked := laterEdit(t, fixture.issueID, fixture.taskID, other)
+	var askedComment string
+	dbfx.QueryRow(t, `SELECT source_comment_id::text FROM decision_request WHERE issue_id = $1`, fixture.issueID).Scan(&askedComment)
+	elsewhere := dbfx.Insert(t, "comment", testutil.Cols{"workspace_id": testWorkspaceID, "issue_id": fixture.issueID, "author_type": "agent", "author_id": fixture.agentID, "source_task_id": fixture.taskID, "content": "Another comment."})
+
+	delivered := laterEvent(t, "comment_edit", fixture.issueID, fixture.taskID, fixture.humanID, askedComment)
+	anotherComment := laterEvent(t, "comment_edit", fixture.issueID, fixture.taskID, fixture.humanID, elsewhere)
+	noComment := laterEvent(t, "comment_ask", fixture.issueID, fixture.taskID, fixture.humanID, "")
+	notAsked := laterEvent(t, "comment_edit", fixture.issueID, fixture.taskID, other, askedComment)
 	dbfx.Exec(t, `UPDATE agent_task_queue SET status = 'completed' WHERE id = $1`, fixture.taskID)
 
 	deliverRecoveries(t)
 
-	if n := dbfx.Count(t, `SELECT count(*) FROM ask_recovery_notice WHERE event_id = $1`, asked); n != 0 {
-		t.Fatalf("recovery notices for the asked member = %d, want 0", n)
+	if n := recoveryNotices(t, delivered); n != 0 {
+		t.Fatalf("recovery notices for the delivered ask = %d, want 0", n)
 	}
-	if n := noticeInbox(t, fixture.humanID, fixture.issueID); n != 0 {
-		t.Fatalf("recovery inbox items for the asked member = %d, want 0", n)
-	}
-	if !eventCleared(t, asked) {
+	if !eventCleared(t, delivered) {
 		t.Fatal("the event of the delivered ask stays open")
 	}
-	if n := dbfx.Count(t, `SELECT count(*) FROM ask_recovery_notice WHERE event_id = $1 AND state = 'delivered'`, notAsked); n != 1 {
-		t.Fatalf("recovery notices for the member the run never asked = %d, want 1", n)
+	for name, id := range map[string]string{"another comment": anotherComment, "no comment": noComment, "a member the run never asked": notAsked} {
+		if n := dbfx.Count(t, `SELECT count(*) FROM ask_recovery_notice WHERE event_id = $1 AND state = 'delivered'`, id); n != 1 {
+			t.Errorf("recovery notices for %s = %d, want 1", name, n)
+		}
 	}
 }

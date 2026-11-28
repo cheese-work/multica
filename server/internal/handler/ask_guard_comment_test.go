@@ -214,6 +214,11 @@ func TestAskGuardCommentEditAddingMemberMention(t *testing.T) {
 		if n := f.events(t, "block"); n != 1 {
 			t.Errorf("block events = %d, want 1", n)
 		}
+		// CHE-10594: the event names the comment the edit targets, so recovery can
+		// tell an ask that already reached the member from a distinct one.
+		if n := dbfx.Count(t, `SELECT count(*) FROM ask_guard_event WHERE issue_id = $1 AND operation_kind = 'comment_edit' AND comment_id = $2`, f.issueID, id); n != 1 {
+			t.Errorf("comment_edit events naming the edited comment = %d, want 1", n)
+		}
 	})
 	t.Run("kept link is allowed", func(t *testing.T) {
 		f := newAskGuardCommentFixture(t)

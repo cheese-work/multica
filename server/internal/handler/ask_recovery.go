@@ -89,11 +89,12 @@ func (handler *Handler) deliverAskRecovery(ctx context.Context, listed db.AskGua
 		}
 		return transaction.Commit(ctx)
 	}
-	// The run already asked this member on this issue: the ask reached them, so a
-	// notice would repeat it. An event that opened after the request (a refused
-	// edit) was not served when the request was created, so close it here.
-	if event.MemberID.Valid {
-		asked, err := queries.TaskAskedMemberOnIssue(ctx, db.TaskAskedMemberOnIssueParams{WorkspaceID: event.WorkspaceID, IssueID: event.IssueID, HumanUserID: event.MemberID, TaskID: event.TaskID})
+	// The event is about a comment whose ask the run already sent to this member
+	// as a decision request: the ask reached them, so a notice would repeat it.
+	// An event that opened after the request (a refused edit) was not served when
+	// the request was created, so close it here. A distinct ask stays open.
+	if event.MemberID.Valid && event.CommentID.Valid {
+		asked, err := queries.TaskAskedMemberOnIssue(ctx, db.TaskAskedMemberOnIssueParams{WorkspaceID: event.WorkspaceID, IssueID: event.IssueID, HumanUserID: event.MemberID, TaskID: event.TaskID, SourceCommentID: event.CommentID})
 		if err != nil {
 			return err
 		}

@@ -42,7 +42,7 @@ func (q *Queries) ClearAskGuardEventByComment(ctx context.Context, arg ClearAskG
 }
 
 const getAskGuardEventByOperation = `-- name: GetAskGuardEventByOperation :one
-SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id FROM ask_guard_event
+SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id, comment_id FROM ask_guard_event
 WHERE task_id = $1 AND operation_kind = $2 AND payload_sha256 = $3 AND mode = $4
 `
 
@@ -80,12 +80,13 @@ func (q *Queries) GetAskGuardEventByOperation(ctx context.Context, arg GetAskGua
 		&i.RootID,
 		&i.RepairHandledAt,
 		&i.ClearedByCommentID,
+		&i.CommentID,
 	)
 	return i, err
 }
 
 const getAskGuardEventForMember = `-- name: GetAskGuardEventForMember :one
-SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id FROM ask_guard_event event
+SELECT id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id, comment_id FROM ask_guard_event event
 WHERE event.id = $1 AND event.workspace_id = $2 AND event.issue_id = $3
   AND (event.member_id = $4 OR (event.member_id IS NULL AND EXISTS (
         SELECT 1 FROM ask_repair_root root
@@ -133,6 +134,7 @@ func (q *Queries) GetAskGuardEventForMember(ctx context.Context, arg GetAskGuard
 		&i.RootID,
 		&i.RepairHandledAt,
 		&i.ClearedByCommentID,
+		&i.CommentID,
 	)
 	return i, err
 }
@@ -170,10 +172,10 @@ func (q *Queries) GetEarlierRequestOfTaskForMember(ctx context.Context, arg GetE
 }
 
 const insertAskGuardEvent = `-- name: InsertAskGuardEvent :one
-INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, member_id, source_text, root_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE((SELECT root.id FROM ask_repair_root root WHERE root.repair_task_id = $4), $1))
+INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, member_id, source_text, comment_id, root_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE((SELECT root.id FROM ask_repair_root root WHERE root.repair_task_id = $4), $1))
 ON CONFLICT (task_id, operation_kind, payload_sha256, mode) DO NOTHING
-RETURNING id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id
+RETURNING id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id, comment_id
 `
 
 type InsertAskGuardEventParams struct {
@@ -186,6 +188,7 @@ type InsertAskGuardEventParams struct {
 	Mode          string      `json:"mode"`
 	MemberID      pgtype.UUID `json:"member_id"`
 	SourceText    pgtype.Text `json:"source_text"`
+	CommentID     pgtype.UUID `json:"comment_id"`
 }
 
 // A conflict on the operation key returns no row; the caller reads the
@@ -201,6 +204,7 @@ func (q *Queries) InsertAskGuardEvent(ctx context.Context, arg InsertAskGuardEve
 		arg.Mode,
 		arg.MemberID,
 		arg.SourceText,
+		arg.CommentID,
 	)
 	var i AskGuardEvent
 	err := row.Scan(
@@ -222,6 +226,7 @@ func (q *Queries) InsertAskGuardEvent(ctx context.Context, arg InsertAskGuardEve
 		&i.RootID,
 		&i.RepairHandledAt,
 		&i.ClearedByCommentID,
+		&i.CommentID,
 	)
 	return i, err
 }
@@ -230,7 +235,7 @@ const insertAskGuardIntentTargetEvent = `-- name: InsertAskGuardIntentTargetEven
 INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, intent_id, member_id, root_id)
 VALUES ($1, $2, $3, $4, 'intent_target', $5, $6, $7, $8, COALESCE((SELECT root.id FROM ask_repair_root root WHERE root.repair_task_id = $4), $1))
 ON CONFLICT DO NOTHING
-RETURNING id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id
+RETURNING id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, created_at, intent_id, member_id, cleared_at, cleared_by_request_id, source_text, delivered_at, repair_reason, root_id, repair_handled_at, cleared_by_comment_id, comment_id
 `
 
 type InsertAskGuardIntentTargetEventParams struct {
@@ -276,6 +281,7 @@ func (q *Queries) InsertAskGuardIntentTargetEvent(ctx context.Context, arg Inser
 		&i.RootID,
 		&i.RepairHandledAt,
 		&i.ClearedByCommentID,
+		&i.CommentID,
 	)
 	return i, err
 }
@@ -336,7 +342,7 @@ func (q *Queries) ListAskGuardIntentTargets(ctx context.Context, batchSize int32
 }
 
 const listAskGuardRecoverableEvents = `-- name: ListAskGuardRecoverableEvents :many
-SELECT event.id, event.workspace_id, event.issue_id, event.task_id, event.operation_kind, event.payload_sha256, event.mode, event.created_at, event.intent_id, event.member_id, event.cleared_at, event.cleared_by_request_id, event.source_text, event.delivered_at, event.repair_reason, event.root_id, event.repair_handled_at, event.cleared_by_comment_id FROM ask_guard_event event
+SELECT event.id, event.workspace_id, event.issue_id, event.task_id, event.operation_kind, event.payload_sha256, event.mode, event.created_at, event.intent_id, event.member_id, event.cleared_at, event.cleared_by_request_id, event.source_text, event.delivered_at, event.repair_reason, event.root_id, event.repair_handled_at, event.cleared_by_comment_id, event.comment_id FROM ask_guard_event event
 JOIN agent_task_queue task ON task.id = event.task_id AND task.status IN ('completed', 'failed', 'cancelled')
 WHERE event.mode = 'block' AND event.cleared_at IS NULL
 ORDER BY event.id
@@ -374,6 +380,7 @@ func (q *Queries) ListAskGuardRecoverableEvents(ctx context.Context, batchSize i
 			&i.RootID,
 			&i.RepairHandledAt,
 			&i.ClearedByCommentID,
+			&i.CommentID,
 		); err != nil {
 			return nil, err
 		}

@@ -1,8 +1,8 @@
 -- name: InsertAskGuardEvent :one
 -- A conflict on the operation key returns no row; the caller reads the
 -- existing event with GetAskGuardEventByOperation.
-INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, member_id, source_text, root_id)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE((SELECT root.id FROM ask_repair_root root WHERE root.repair_task_id = $4), $1))
+INSERT INTO ask_guard_event (id, workspace_id, issue_id, task_id, operation_kind, payload_sha256, mode, member_id, source_text, comment_id, root_id)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, sqlc.narg('comment_id'), COALESCE((SELECT root.id FROM ask_repair_root root WHERE root.repair_task_id = $4), $1))
 ON CONFLICT (task_id, operation_kind, payload_sha256, mode) DO NOTHING
 RETURNING *;
 
