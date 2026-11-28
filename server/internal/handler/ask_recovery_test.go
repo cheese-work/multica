@@ -305,8 +305,8 @@ func TestAskRecoveryRealEditOfTheDeliveredComment(t *testing.T) {
 	dbfx.Exec(t, `UPDATE comment SET content = $1 WHERE id = $2`, delivered, fixture.sourceID)
 	testutil.Call(t, testHandler.RequestDecision, fixture.call(fixture.body())).Want(http.StatusCreated)
 
-	repeat := delivered + " Cheese, that is for you."
-	newAsk := delivered + " Cheese, please run `make deploy-prod` on the host."
+	repeat := delivered + " Please, that is for you."
+	newAsk := delivered + " Please run `make deploy-prod` on the host."
 	guard.edit(t, fixture.sourceID, repeat).Want(http.StatusUnprocessableEntity)
 	guard.edit(t, fixture.sourceID, newAsk).Want(http.StatusUnprocessableEntity)
 	eventFor := func(text string) string {
