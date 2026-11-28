@@ -125,7 +125,10 @@ jobs:
         image: [backend, web]
     # This label is reserved for the separate cheese-work runner set on X99;
     # it cannot match the unrelated tevo-web runners labeled tevo-cicd.
-    runs-on: [self-hosted, linux, x64, cheese-x99]
+    # cheese-x99-homedisk (runners 2, 4, 9) keeps the backend compile off the
+    # /mnt/ssd2-backed runners, whose disk saturation timed out the 25 min step
+    # on 22 Nov 2026 (CHE-9208, CHE-9031; runs 45042251832, 45058337813).
+    runs-on: [self-hosted, linux, x64, cheese-x99, cheese-x99-homedisk]
     # 60, not 45: a busy X99 stretched the two image builds to 44+ minutes
     # (run 39791027247, attempt 1) and the cancel skipped the C00 deploy.
     timeout-minutes: 60
