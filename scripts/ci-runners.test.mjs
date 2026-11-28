@@ -59,8 +59,7 @@ test("security-gate.yml runs on a GitHub-hosted runner", () => {
 
 // CHE-7067: dispatch CI runs (agents chain them) shared the 60-job hosted pool; 8 parallel
 // runs held 42 slots. One shared group, never cancelled, queues them. PR/merge_group/schedule
-// keep the per-PR group with cancel-in-progress (CI standard R2). warning-budget makes ~84
-// GitHub API calls per run, so it stays off merge_group (nightly and PR runs still cover it).
+// keep the per-PR group with cancel-in-progress (CI standard R2).
 test("ci.yml runs one workflow_dispatch CI at a time and keeps cancel for other events (CHE-7067)", () => {
   const ci = read("ci.yml");
   const block = ci.match(/^concurrency:\n((?:[ \t]+.*\n)+)/m)?.[1] ?? "";
@@ -70,9 +69,4 @@ test("ci.yml runs one workflow_dispatch CI at a time and keeps cancel for other 
   // every other event keeps the per-PR/ref group
   assert.match(group, /github\.workflow.*github\.event_name.*github\.event\.pull_request\.number \|\| github\.ref/);
   assert.match(block, /cancel-in-progress: \$\{\{ github\.event_name != 'workflow_dispatch' \}\}/);
-});
-
-test("warning-budget does not run on merge_group (CHE-7067)", () => {
-  const job = read("ci.yml").match(/^  warning-budget:\n(?:(?!^  \S).*\n)+/m)?.[0] ?? "";
-  assert.match(job, /^    if: .*github\.event_name != 'merge_group'/m);
 });

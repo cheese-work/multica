@@ -223,8 +223,6 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 | O21 | O06 | hard | cd-deploy.yml:153 runs candidate-preflight.sh |
 | O21 | O14 | hard | deploy/cd/require-current.sh:27 reads server_commit; server/internal/config/config.go:110 |
 | O23 | O27 | hard | scripts/fork-sync-guard.mjs:89 reads docs/fork/FORK-FEATURES.md via git show <base>:; sourcePaths throws 'No Source paths found' if absent |
-| O25 | O20 | hard | ci.yml:20 needs changes; :186 runs ci-scope.mjs decide |
-| O25 | O22 | hard | ci.yml:20 needs migration-prefix-check (job at :48) |
 | O27 | O15 | hard | scripts/fork-changelog-fetch.mjs:5 imports from ./fork-changelog.mjs |
 | O28 | O24 | soft | .github/workflows/security-weekly.yml:43 scans the whole tree with the security-gate rule packs; without O24 the scan loses its rule packs |
 | O33 | O26 | soft | playwright.perf.config.ts:17 matches the chip-stability, chip-retention and compact-thread-reply specs in the perf project |
@@ -336,7 +334,6 @@ Rows in a cycle are ordered as one unit in [UPSTREAM-READINESS.md](UPSTREAM-READ
 - **O21**: cd-deploy.yml:89-91 concurrency cd-deploy-c00-approval; :168-170 queue max.
 - **O23**: pr-guards.yml (fork-sync-guard job) runs the script.
 - **O24**: trusted-authors.json read at security_gate.py:214 (same row).
-- **O25**: warning-budget.mjs:162,168 baselines come from main push runs and throw if none; push jobs are skipped when merge_group_green (ci.yml:780).
 - **O26**: Only the web page-load baseline survives; the governance teardown flake and stale-verdict race tests were removed with governance.
 - **O27**: help-launcher.tsx shared with O14; issues.md shared with O17.
 - **X06 to X14**: design-only, none.

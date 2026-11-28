@@ -243,7 +243,7 @@ Companion to [FORK-FEATURES.md](FORK-FEATURES.md) (CHE-4789). Re-check of every 
 | O22 | fork-only | - | no | high | ci.yml:48-67 migration-prefix-check job and scripts/migration-prefix-check.mjs; no upstream equivalent. |
 | O23 | fork-only | - | no | high | No fork-sync-guard script or workflow upstream. |
 | O24 | fork-only | - | no | high | Upstream only has the 'Closes #' PR template line; no security-gate or pr-guards. |
-| O25 | fork-only | - | no | high | warning-budget job (ci.yml:19-45) and scripts/warning-budget.mjs have no upstream equivalent. |
+| O25 | removed | - | no | none | warning-budget job and scripts/warning-budget.mjs were deleted (CHE-9821); no fork delta remains. |
 | O26 | fork-only | 6af2268bd9 | no | medium | Upstream has playwright.perf.config.ts, a typing perf scenario (6af2268bd9, MUL-7227) and ui-performance.yml but no page-load baseline; fork adds desktop/phone projects and page-load-report. |
 | O27 | overlaps | f0c361ebca; 7c186016a5; 354243b459; bb3747186e | yes | medium | Upstream has the multica-platform skill (8 references) and a static changelog page with hardcoded CHANGELOG_URL in help-links.ts; no FORK-FEATURES.md ledger. |
 | O28 | fork-only | - | no | high | upstream/main .github has no secret-scan, security-weekly or CODEOWNERS file and no gitleaks entry. |

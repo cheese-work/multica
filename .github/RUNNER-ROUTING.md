@@ -25,7 +25,6 @@ Rules behind the targets (CHE-2425 routing table):
 
 | Workflow | Job | Variable | Public default | Private target |
 |---|---|---|---|---|
-| `ci.yml` | `warning-budget` | `RUNNER_WARNING_BUDGET` | `ubuntu-24.04` | cheese-x99 |
 | `ci.yml` | `migration-prefix-check` | `RUNNER_MIGRATION_PREFIX_CHECK` | `ubuntu-24.04` | cheese-x99 |
 | `ci.yml` | `changes` | `RUNNER_CHANGES` | `ubuntu-24.04` | cheese-x99 |
 | `ci.yml` | `sqlc-check` | `RUNNER_SQLC_CHECK` | `ubuntu-24.04` | cheese-x99 |
