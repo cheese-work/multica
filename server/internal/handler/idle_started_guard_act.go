@@ -153,7 +153,7 @@ func (handler *Handler) actOnIdleFinding(ctx context.Context, settings idleGuard
 			return fmt.Errorf("idle guard: issue changed since it was read: %w", pgx.ErrNoRows)
 		}
 		still, err := q.ListIdleStartedGuardIssues(ctx, db.ListIdleStartedGuardIssuesParams{
-			WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, Statuses: settings.statuses(), AfterSeconds: settings.threshold().Seconds(),
+			WorkspaceID: issue.WorkspaceID, IssueID: issue.ID, Statuses: settings.statuses(), AfterSeconds: settings.threshold().Seconds(), HorizonSeconds: settings.threshold().Seconds(),
 			Episode: pgtype.Bool{Bool: true, Valid: true},
 		})
 		if err != nil {
@@ -413,7 +413,7 @@ func (handler *Handler) idleGuardGiveUpOver(ctx context.Context, q *db.Queries, 
 		return true, nil
 	}
 	idle, err := q.ListIdleStartedGuardIssues(ctx, db.ListIdleStartedGuardIssuesParams{
-		WorkspaceID: current.WorkspaceID, IssueID: current.ID, Statuses: []string{receipt.From}, AfterSeconds: settings.threshold().Seconds(),
+		WorkspaceID: current.WorkspaceID, IssueID: current.ID, Statuses: []string{receipt.From}, AfterSeconds: settings.threshold().Seconds(), HorizonSeconds: settings.threshold().Seconds(),
 		Episode: pgtype.Bool{Bool: true, Valid: true},
 	})
 	if err != nil || len(idle) == 0 {

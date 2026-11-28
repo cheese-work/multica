@@ -188,7 +188,8 @@ WHERE i.workspace_id = $1
     SELECT 1 FROM issue_wakeup w
     WHERE w.issue_id = i.id AND w.enabled AND w.paused_reason IS NULL
       AND (
-        (w.system_rule IS NULL AND w.kind IN ('at', 'every', 'cron') AND w.next_fire_at IS NOT NULL)
+        (w.system_rule IS NULL AND w.kind IN ('at', 'every', 'cron') AND w.next_fire_at IS NOT NULL
+         AND w.next_fire_at <= now() + make_interval(secs => $6::float8))
         OR (w.system_rule IS NULL AND w.kind = 'event' AND w.condition IS NULL
             AND (w.filter_actor_type = 'agent'
                  OR (w.filter_actor_type IS NULL
@@ -215,11 +216,12 @@ ORDER BY clock.idle_since, i.id
 `
 
 type ListIdleStartedGuardIssuesParams struct {
-	WorkspaceID  pgtype.UUID `json:"workspace_id"`
-	IssueID      pgtype.UUID `json:"issue_id"`
-	Statuses     []string    `json:"statuses"`
-	Episode      pgtype.Bool `json:"episode"`
-	AfterSeconds float64     `json:"after_seconds"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	IssueID        pgtype.UUID `json:"issue_id"`
+	Statuses       []string    `json:"statuses"`
+	Episode        pgtype.Bool `json:"episode"`
+	AfterSeconds   float64     `json:"after_seconds"`
+	HorizonSeconds float64     `json:"horizon_seconds"`
 }
 
 type ListIdleStartedGuardIssuesRow struct {
@@ -236,7 +238,10 @@ type ListIdleStartedGuardIssuesRow struct {
 // the scan to one issue: act mode re-runs it under the issue lock. episode keeps
 // an issue that carries an issue_idle_guard receipt, for re-checking its own episode.
 // An open decision request under 72 h old on an issue with no park record is a
-// continuation too: the answer wakes the asker (CHE-6460 D1d).
+// continuation too: the answer wakes the asker (CHE-6460 D1d). A time wakeup
+// counts as continuation only when it fires within horizon_seconds of now; a far
+// one does not hide an idle issue (CHE-9460 S2). horizon_seconds is separate from
+// after_seconds: every caller passes the guard threshold for both today.
 func (q *Queries) ListIdleStartedGuardIssues(ctx context.Context, arg ListIdleStartedGuardIssuesParams) ([]ListIdleStartedGuardIssuesRow, error) {
 	rows, err := q.db.Query(ctx, listIdleStartedGuardIssues,
 		arg.WorkspaceID,
@@ -244,6 +249,7 @@ func (q *Queries) ListIdleStartedGuardIssues(ctx context.Context, arg ListIdleSt
 		arg.Statuses,
 		arg.Episode,
 		arg.AfterSeconds,
+		arg.HorizonSeconds,
 	)
 	if err != nil {
 		return nil, err

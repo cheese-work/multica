@@ -112,7 +112,7 @@ func (handler *Handler) checkIdleStartedIssues(ctx context.Context) ([]idleGuard
 		}
 		threshold := settings.threshold()
 		issues, err := handler.Queries.ListIdleStartedGuardIssues(ctx, db.ListIdleStartedGuardIssuesParams{
-			WorkspaceID: workspace.ID, Statuses: settings.statuses(), AfterSeconds: threshold.Seconds(),
+			WorkspaceID: workspace.ID, Statuses: settings.statuses(), AfterSeconds: threshold.Seconds(), HorizonSeconds: threshold.Seconds(),
 		})
 		if err != nil {
 			failures = errors.Join(failures, err)

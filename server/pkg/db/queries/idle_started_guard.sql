@@ -10,7 +10,10 @@ WHERE settings -> 'idle_started_guard' ->> 'mode' IN ('shadow', 'act');
 -- the scan to one issue: act mode re-runs it under the issue lock. episode keeps
 -- an issue that carries an issue_idle_guard receipt, for re-checking its own episode.
 -- An open decision request under 72 h old on an issue with no park record is a
--- continuation too: the answer wakes the asker (CHE-6460 D1d).
+-- continuation too: the answer wakes the asker (CHE-6460 D1d). A time wakeup
+-- counts as continuation only when it fires within horizon_seconds of now; a far
+-- one does not hide an idle issue (CHE-9460 S2). horizon_seconds is separate from
+-- after_seconds: every caller passes the guard threshold for both today.
 SELECT i.id, i.workspace_id, i.status, clock.idle_since::timestamptz AS idle_since
 FROM issue i
 CROSS JOIN LATERAL (
@@ -35,7 +38,8 @@ WHERE i.workspace_id = sqlc.arg('workspace_id')
     SELECT 1 FROM issue_wakeup w
     WHERE w.issue_id = i.id AND w.enabled AND w.paused_reason IS NULL
       AND (
-        (w.system_rule IS NULL AND w.kind IN ('at', 'every', 'cron') AND w.next_fire_at IS NOT NULL)
+        (w.system_rule IS NULL AND w.kind IN ('at', 'every', 'cron') AND w.next_fire_at IS NOT NULL
+         AND w.next_fire_at <= now() + make_interval(secs => sqlc.arg('horizon_seconds')::float8))
         OR (w.system_rule IS NULL AND w.kind = 'event' AND w.condition IS NULL
             AND (w.filter_actor_type = 'agent'
                  OR (w.filter_actor_type IS NULL
