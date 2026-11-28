@@ -409,17 +409,20 @@ class ArmTests(Base):
     def test_t0_is_taken_inside_the_lock_after_the_live_commit_check(self):
         # A wait for the tick lock or a slow live-commit read longer than one interval must not
         # put slot 0 outside its schedule: verify rejects a slot-0 sample that starts past T0 + interval.
+        # The read outlasts the interval (4 s > 3 s), and the slot-0 bound is a whole interval, so a one-second
+        # stall on a loaded runner cannot fail the test. A T0 taken before the read still lands 4 s late and fails.
+        read_seconds, interval = 4, 3
         script = self.dir / "live-sha.sh"
-        script.write_text(f'#!/usr/bin/env bash\nsleep 2\nprintf %s "{SHA}"\n')
+        script.write_text(f'#!/usr/bin/env bash\nsleep {read_seconds}\nprintf %s "{SHA}"\n')
         script.chmod(0o755)
         self.obs.mkdir()
         started = time.time()
-        self.run_node(*self.arm_args(run_id="slow-1", verify=0, window=30, interval=1))
+        self.run_node(*self.arm_args(run_id="slow-1", verify=0, window=30, interval=interval))
         meta = json.loads((self.obs / "slow-1/meta.json").read_text())
         first = self.samples("slow-1")[0]
-        self.assertGreaterEqual(meta["t0"], int(started) + 2)  # T0 starts after the 2 s live-commit read
+        self.assertGreaterEqual(meta["t0"], int(started) + read_seconds)  # T0 starts after the live-commit read
         self.assertEqual((first["slot"], first["scheduled"]), (0, meta["t0"]))
-        self.assertLess(first["start"], first["scheduled"] + 1)  # inside slot 0
+        self.assertLess(first["start"], first["scheduled"] + interval)  # inside slot 0
 
     def test_bad_arguments_are_refused(self):
         self.obs.mkdir()
