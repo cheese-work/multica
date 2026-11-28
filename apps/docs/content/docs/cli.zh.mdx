@@ -661,6 +661,16 @@ multica system1 report [--scope <scope>] --output json
 
 `--scope` 为 `test_first_waiver` 或 `ci:<repo>:<protocol>`。每一行对应一个预测器版本的最新纪元。只统计纪元开始之后创建的观测，新的预测器版本会开启自己的纪元。一个案例是带有记录标签（最新且未被取代的标签）的一次预测。`denominator` 统计有非弃权预测且标签已映射的案例，`agreed` 为两者一致的案例，`abstained` 为预测器弃权的已标注案例，`unmapped` 为自由文本回答。满足 7 天、`denominator` 至少 20、一致率至少 90% 时 `status` 为 `qualified`；4 周后统计案例仍少于 20 为 `insufficient_data`，被降级的纪元为 `demoted`，其余为 `collecting`。
 
+### 已验证的 PR 签署者
+
+任何工作区成员或 agent 都可以读取在已存储拉取请求的确切 head 上持有可信 PASS 结论的 agent：
+
+```bash
+multica github pr-signers --repo OWNER/NAME --pr 206 --head <40-char-sha> --issue CHE-10198 --output json
+```
+
+JSON 包含 `repo`、`pr`、`head_sha`、`issue_id`、`linked`、`comment_protection`、`pr_author`（未知时为 `null`）和 `signers`。每个签署者包含 `agent_id`、`agent_name`、`lab`（未知时为 `""`）、`comment_id` 和 `verdict_at`。签署者是互不相同的 agent，绝不包括 PR 作者。只有在 agent 运行写入、无人编辑或删除、位于确切 head 上、且同一 agent 没有更新的结论将其撤回时，PASS 才算数。agent 可以编辑其他 agent 的评论时，`comment_protection` 为 `false`。服务器只返回事实；合并规则由调用方决定。`--head` 是完整的 40 位 SHA。repo、pr、head 或 issue 无效时返回 400；PR 未存储或 issue 不存在时返回 404；issue 未关联该 PR 时返回 409。
+
 ## ID 和输出格式
 
 任务使用 `MUL-123` 这样的 key 或完整 UUID，不接受 UUID 短前缀。

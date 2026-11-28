@@ -661,6 +661,16 @@ multica system1 report [--scope <scope>] --output json
 
 `--scope` は `test_first_waiver` または `ci:<repo>:<protocol>` です。各行は 1 つの予測器バージョンの最新のエポックを対象にします。エポック開始以降に作成された観測だけが数えられ、新しい予測器バージョンは独自のエポックを開きます。1 ケースは、正式ラベル (置き換えられていない最新のラベル) を持つ 1 件の予測です。`denominator` は棄権でない予測と対応済みラベルを持つケース、`agreed` は両者が一致したもの、`abstained` は予測器が棄権したラベル付きケース、`unmapped` は自由記述の回答の数です。`status` は、7 日以上、`denominator` が 20 以上、一致率 90% 以上で `qualified` になります。4 週間経っても数えたケースが 20 未満なら `insufficient_data`、降格されたエポックは `demoted`、それ以外は `collecting` です。
 
+### 検証済みの PR 署名者
+
+ワークスペースのメンバーまたはエージェントは、保存済みプルリクエストの正確な head で信頼できる PASS 判定を持つエージェントを読めます:
+
+```bash
+multica github pr-signers --repo OWNER/NAME --pr 206 --head <40-char-sha> --issue CHE-10198 --output json
+```
+
+JSON には `repo`、`pr`、`head_sha`、`issue_id`、`linked`、`comment_protection`、`pr_author`（不明なら `null`）、`signers` が入ります。各署名者は `agent_id`、`agent_name`、`lab`（不明なら `""`）、`comment_id`、`verdict_at` を持ちます。署名者は重複しないエージェントで、PR の作成者は含まれません。PASS が数えられるのは、エージェントの実行が書き、誰も編集や削除をしておらず、正確な head に対するもので、同じエージェントの新しい判定に取り消されていない場合だけです。エージェントが他のエージェントのコメントを編集できる場合、`comment_protection` は `false` です。サーバーは事実だけを返し、マージのルールは呼び出し側にあります。`--head` は 40 文字の完全な SHA です。repo、pr、head、issue が不正なら 400、PR が未保存または issue が存在しなければ 404、issue が PR にリンクされていなければ 409 を返します。
+
 ## ID と出力形式
 
 タスクには `MUL-123` のようなキーまたは完全な UUID を使います。UUID の短いプレフィックスは受け付けません。
