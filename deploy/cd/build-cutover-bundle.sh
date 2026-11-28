@@ -35,6 +35,8 @@ bundle="$work_dir/cutover-controller"
 mkdir -p "$bundle/deploy/cd/router" "$bundle/server" "$bundle/evidence"
 
 controller_files=(
+  contract-lib.sh
+  contract-snapshot.mjs
   cutover.sh
   deploy-lib.sh
   docker-compose.ab.yml
@@ -63,7 +65,22 @@ node "$root_dir/deploy/cd/release-packet.mjs" create \
   --baseline-tuple "$bundle/evidence/baseline-tuple.json" \
   --observed-state "$bundle/evidence/observed-state.json" \
   --migrations-dir "$bundle/server/migrations" \
+  --repo-root "$root_dir" \
   --output "$bundle/evidence/release-packet.json"
+
+# A contract migration's restore file travels with the bundle at the same
+# relative path (CHE-7486 N5a). A file that is not in the tree yet is not
+# copied: the bundle still builds and the log names it. The requirement that
+# every declared restore file exists returns in B3c-1 (CHE-7486).
+while IFS= read -r restore; do
+  [ -n "$restore" ] || continue
+  if [ -f "$root_dir/$restore" ]; then
+    mkdir -p "$bundle/$(dirname "$restore")"
+    cp "$root_dir/$restore" "$bundle/$restore"
+  else
+    echo "build-cutover-bundle: restore file not in tree, bundle built without it: $restore (required again in B3c-1)" >&2
+  fi
+done < <(node -e 'for (const c of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).contract_migrations ?? []) console.log(c.restore)' "$bundle/evidence/release-packet.json")
 
 (
   cd "$bundle"

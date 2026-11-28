@@ -53,6 +53,25 @@ fail_if_flagged() {
   fi
 }
 
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  # verified_image_id (deploy-lib.sh): the image id and its RepoDigests from
+  # one read. Answers exactly when the `inspect` branch below answers the
+  # RepoDigests question; otherwise the image has an id and no RepoDigests.
+  ref="${*: -1}"
+  repo="${ref%%:*}"
+  digest=""
+  case "$repo" in
+    *multica-backend) digest="${MOCK_BACKEND_DIGEST:-}" ;;
+    *multica-web) digest="${MOCK_WEB_DIGEST:-}" ;;
+  esac
+  if [ -n "$digest" ] && [ -f "$control_dir/inspect-resolves" ]; then
+    printf 'imgid-%s %s@%s\n' "$ref" "$repo" "$digest"
+  else
+    printf 'imgid-%s\n' "$ref"
+  fi
+  exit 0
+fi
+
 if [ "$1" = "inspect" ]; then
   # deploy.sh and capture-tuple.sh ask `docker inspect` four different
   # questions, distinguished by their --format string:
