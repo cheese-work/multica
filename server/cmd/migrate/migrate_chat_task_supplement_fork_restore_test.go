@@ -67,14 +67,20 @@ func TestSupplementForkRestoreRecoversAfterPostDeployWrites(t *testing.T) {
 			VALUES ($1, $2, $3, $4, $5, $6, now())`,
 			task, message, supplementID("5555", 90), wsA, supplementID("aaaa", 90), status)
 	}
-	insertUpstream(m(3), tk(4), "delivered")      // fork pending; the new image delivered it
-	insertUpstream(m(4), tk(5), "withdrawn")      // fork delivering; withdrawn after deploy
-	insertUpstream(m(20), tk(20), "pending")      // new, pending
-	insertUpstream(m(21), tk(21), "requeued")     // new, requeued
-	insertUpstream(m(22), tk(22), "delivered")    // new, delivered
-	insertUpstream(m(23), tk(23), "delivering")   // new, claimed but unacked
+	insertUpstream(m(3), tk(4), "delivered")    // fork pending; the new image delivered it
+	insertUpstream(m(4), tk(5), "withdrawn")    // fork delivering; withdrawn after deploy
+	insertUpstream(m(20), tk(20), "pending")    // new, pending
+	insertUpstream(m(21), tk(21), "requeued")   // new, requeued
+	insertUpstream(m(22), tk(22), "delivered")  // new, delivered
+	insertUpstream(m(23), tk(23), "delivering") // new, claimed but unacked
+	insertUpstream(m(5), tk(80), "pending")     // fork has an uncertain row on another task: new pending row
+	// Cross-task duplicate: fork (m2, t3) is delivered; the new image moves the message to task t50 as pending.
+	// It must not come back as a second pending row.
 	mustExecSupplement(t, ctx, pool,
-		`UPDATE chat_task_supplement SET task_id = $1 WHERE message_id = $2`, tk(50), m(2)) // task moved: fork has another task for this message
+		`UPDATE chat_task_supplement SET task_id = $1, status = 'pending' WHERE message_id = $2`, tk(50), m(2))
+	// The contract ledger exists on the deployed path; the script removes only its 99zzz00 row.
+	mustExecSupplement(t, ctx, pool, `CREATE TABLE schema_contracts (version TEXT PRIMARY KEY)`)
+	mustExecSupplement(t, ctx, pool, `INSERT INTO schema_contracts (version) VALUES ('99zzz00_chat_task_supplement_fork_convert'), ('875_chat_task_supplement')`)
 
 	var upstreamBefore int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM chat_task_supplement`).Scan(&upstreamBefore); err != nil {
@@ -110,7 +116,7 @@ func TestSupplementForkRestoreRecoversAfterPostDeployWrites(t *testing.T) {
 		pending = append(pending, msg+"/"+task)
 	}
 	rows.Close()
-	wantPending := []string{m(20) + "/" + tk(20), m(21) + "/" + tk(21)}
+	wantPending := []string{m(5) + "/" + tk(80), m(20) + "/" + tk(20), m(21) + "/" + tk(21)}
 	if !slices.Equal(pending, wantPending) {
 		t.Fatalf("pending rows after restore = %v; want %v (a delivered row must not be pending again)", pending, wantPending)
 	}
@@ -133,10 +139,14 @@ func TestSupplementForkRestoreRecoversAfterPostDeployWrites(t *testing.T) {
 		t.Fatalf("saved upstream rows = %d, %v; want %d", savedCount, err, upstreamBefore)
 	}
 
-	// Each id has a report row with an outcome. The moved-task row is recorded as not expressible.
+	// Each id has a report row with an outcome. The moved-task row is inserted, not pending, because the message was delivered on its old task.
 	var outcome string
-	if err := pool.QueryRow(ctx, `SELECT outcome FROM chat_task_supplement_restore_report WHERE attempt_id = $1 AND message_id = $2 AND task_id = $3`, a, m(2), tk(50)).Scan(&outcome); err != nil || outcome != "not_expressible_other_task" {
-		t.Fatalf("moved-task report outcome = %q, %v; want not_expressible_other_task", outcome, err)
+	if err := pool.QueryRow(ctx, `SELECT outcome FROM chat_task_supplement_restore_report WHERE attempt_id = $1 AND message_id = $2 AND task_id = $3`, a, m(2), tk(50)).Scan(&outcome); err != nil || outcome != "inserted_cross_task" {
+		t.Fatalf("moved-task report outcome = %q, %v; want inserted_cross_task", outcome, err)
+	}
+	var movedStatus string
+	if err := pool.QueryRow(ctx, `SELECT status FROM chat_task_supplement WHERE message_id = $1 AND task_id = $2`, m(2), tk(50)).Scan(&movedStatus); err != nil || movedStatus != "failed" {
+		t.Fatalf("moved-task status = %q, %v; want failed (already delivered on another task)", movedStatus, err)
 	}
 	for _, c := range []struct {
 		msg, task int
@@ -158,6 +168,12 @@ func TestSupplementForkRestoreRecoversAfterPostDeployWrites(t *testing.T) {
 	// A second run on the same attempt refuses: the saved tables already exist.
 	if err := runSupplementRestore(ctx, pool, a); err == nil {
 		t.Fatal("second restore on the same attempt succeeded; want refusal")
+	}
+
+	// The schema_contracts row of 99zzz00 is gone; the other row stays.
+	var contracts int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_contracts`).Scan(&contracts); err != nil || contracts != 1 {
+		t.Fatalf("schema_contracts rows = %d, %v; want 1 (only 99zzz00 removed)", contracts, err)
 	}
 
 	// Green-only: after the restore the five migrations apply again.
