@@ -2659,6 +2659,17 @@ type InboxItem struct {
 	ReturnedAt    pgtype.Timestamptz `json:"returned_at"`
 }
 
+type IncidentCause struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	Kind            string             `json:"kind"`
+	IncidentIssueID pgtype.UUID        `json:"incident_issue_id"`
+	LastEventKey    string             `json:"last_event_key"`
+	OpenedAt        pgtype.Timestamptz `json:"opened_at"`
+	ClosedAt        pgtype.Timestamptz `json:"closed_at"`
+}
+
 type InstanceTelemetryState struct {
 	Singleton         bool               `json:"singleton"`
 	InstanceID        pgtype.UUID        `json:"instance_id"`
