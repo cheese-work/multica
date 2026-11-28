@@ -619,8 +619,8 @@ build_contract_fixture() {
     fs.writeFileSync(out + "/manifest.json", JSON.stringify({
       source_sha: "504078f8ea7fa31f342f195659e93a7f6c3e5a91",
       images: {
-        backend: "ghcr.io/cheese-work/multica-backend@sha256:" + "c".repeat(64),
-        web: "ghcr.io/cheese-work/multica-web@sha256:" + "d".repeat(64),
+        backend: "registry.example/backend@sha256:" + "c".repeat(64),
+        web: "registry.example/web@sha256:" + "d".repeat(64),
       },
       migration_inventory_sha256: "sha256:" + h.digest("hex"),
       baseline_tuple_sha256: sha(baseline),
