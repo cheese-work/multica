@@ -35,6 +35,7 @@ bundle="$work_dir/cutover-controller"
 mkdir -p "$bundle/deploy/cd/router" "$bundle/server" "$bundle/evidence"
 
 controller_files=(
+  contract-lib.sh
   contract-snapshot.mjs
   cutover.sh
   deploy-lib.sh

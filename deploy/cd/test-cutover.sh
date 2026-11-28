@@ -168,6 +168,8 @@ if [ "\$1" = "image" ] && [ "\$2" = "inspect" ]; then
   ref="\${*: -1}"
   case "\$*" in
     *'{{.Id}}{{range .RepoDigests}} {{.}}{{end}}'*) ;;
+    # CHE-7486 N5b-1: contract-check --image resolves a reference to an id.
+    *'--format {{.Id}} '*) resolve_ref "\$ref"; exit 0 ;;
     *) echo "mock docker: unhandled image inspect \$*" >&2; exit 1 ;;
   esac
   id="\$(resolve_ref "\$ref")"
@@ -246,6 +248,21 @@ if [ "\$1" = "inspect" ]; then
   [ ! -f "\$control_dir/no-repodigests" ] || exit 1
   printf '%s@%s\n' "\$repo" "\$digest"
   exit 0
+fi
+
+if [ "\$1" = "run" ] && [[ "\$*" == *"--network none"* ]]; then
+  # CHE-7486 N5b-1: the contract image proof. proof-exit-<role> scripts its
+  # exit status (10 = a migration file is missing, anything else = uncertain);
+  # role is incumbent for the pre-drain incumbent's image id, else candidate.
+  img=""
+  prev=""
+  for a in "\$@"; do
+    if [ "\$prev" = /bin/sh ]; then img="\$a"; break; fi
+    prev="\$a"
+  done
+  case "\$img" in imgid-incumbent-*) role=incumbent ;; *) role=candidate ;; esac
+  printf 'proof-run role=%s image=%s args=%s\n' "\$role" "\$img" "\$*" >>"\$control_dir/events.log"
+  exit "\$(cat "\$control_dir/proof-exit-\$role" 2>/dev/null || echo 0)"
 fi
 
 if [ "\$1" = "run" ]; then
@@ -462,7 +479,7 @@ if [ "\$1" = "compose" ]; then
       ;;
     ps)
       if [ "\$1" = "--all" ] && [ "\$2" = "-q" ]; then
-        if [ -f "\$control_dir/running-\$3" ] || [ -f "\$control_dir/flags-mount-\$3" ]; then
+        if [ -f "\$control_dir/running-\$3" ] || [ -f "\$control_dir/flags-mount-\$3" ] || [ -f "\$control_dir/exists-\$3" ]; then
           printf 'cid-%s\n' "\$3"
         fi
         exit 0
@@ -537,9 +554,24 @@ case "$sql" in
     if [ -f "$control_dir/schema-contracts-table" ]; then echo t; else echo f; fi ;;
   *"to_regclass("*)
     if [ -f "$control_dir/absent-table-$(table_of)" ]; then echo f; else echo t; fi ;;
+  *"restore FROM schema_contracts"*)
+    # CHE-7486 N5b-1: the applied set, one version|attempt|restore line per
+    # contract-row-<version> file (its content is the attempt id).
+    # contract-read-fails-from=<n> fails the n-th and later reads.
+    n=$(( $(cat "$control_dir/contract-reads" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" >"$control_dir/contract-reads"
+    if [ -f "$control_dir/contract-read-fails-from" ] && [ "$n" -ge "$(cat "$control_dir/contract-read-fails-from")" ]; then
+      echo "mock psql: forced contract read failure (read $n)" >&2
+      exit 1
+    fi
+    for f in "$control_dir"/contract-row-*; do
+      [ -e "$f" ] || continue
+      printf '%s|%s|%s\n' "${f##*/contract-row-}" "$(cat "$f")" "deploy/cd/n5a-restore-fixture.sh"
+    done ;;
   *"FROM schema_contracts"*)
     if [ -f "$control_dir/contract-row-$(version_of)" ]; then echo 1; else echo 0; fi ;;
   *"FROM schema_migrations WHERE version"*)
+    if [ -f "$control_dir/fail-ledger-read" ]; then echo "mock psql: forced ledger read failure" >&2; exit 1; fi
     if [ -f "$control_dir/ledger-row-$(version_of)" ]; then echo 1; else echo 0; fi ;;
   *"count(*) FROM schema_migrations"*) echo 535 ;;
   *information_schema*) printf 'id\nname\nnote\n' ;;
@@ -1346,7 +1378,7 @@ fi
 # ---------------------------------------------------------------------------
 relocated_root="$work_dir/relocated-controller"
 mkdir -p "$relocated_root/deploy/cd/router" "$relocated_root/server"
-cp deploy/cd/{contract-snapshot.mjs,cutover.sh,deploy-lib.sh,docker-compose.ab.yml,docker-compose.flags.yml,docker-compose.jev.yml,drift-receipt.mjs,quiescence.mjs,release-packet.mjs,router.sh} "$relocated_root/deploy/cd/"
+cp deploy/cd/{contract-lib.sh,contract-snapshot.mjs,cutover.sh,deploy-lib.sh,docker-compose.ab.yml,docker-compose.flags.yml,docker-compose.jev.yml,drift-receipt.mjs,quiescence.mjs,release-packet.mjs,router.sh} "$relocated_root/deploy/cd/"
 cp docker-compose.selfhost.yml "$relocated_root/"
 cp deploy/cd/router/nginx.conf.template "$relocated_root/deploy/cd/router/"
 cp -a server/migrations "$relocated_root/server/migrations"
@@ -2077,6 +2109,278 @@ grep -qx 'migrate-run direction=up attempt= passed=no' "$state_dir/control/event
 [ ! -e "$state_dir/contract-snapshots" ] && [ ! -e "$state_dir/contract-attempts" ] \
   || { echo "scenario n5a-unmarked-no-attempt: contract directories exist" >&2; exit 1; }
 echo "n5a contract scenarios passed"
+
+# ---------------------------------------------------------------------------
+# CHE-7486 N5b-1: contract guard. While a contract migration is applied, no
+# path starts an image whose tree predates it, whatever the state file says,
+# and an unreadable state refuses. The applied set is scripted with
+# contract-row-<version> files (content: the attempt id) and
+# schema-contracts-table; proof-exit-candidate / proof-exit-incumbent script
+# the image proof (10 = file missing, 125 = the proof could not run).
+# ---------------------------------------------------------------------------
+n5b1_version_1="${real_migration_tail[1]}"
+n5b1_version_2="${real_migration_tail[2]}"
+n5b1_attempt_1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+n5b1_attempt_2="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+# n5b1_setup NAME [FILE | FILE=CONTENT]...: a fresh scenario dir with control files.
+n5b1_setup() {
+  local name=$1 spec
+  shift
+  n5b1_dir="$(fresh_scenario_dir "$name")"
+  mkdir -p "$n5b1_dir/control"
+  for spec in "$@"; do
+    case "$spec" in
+      *=*) printf '%s' "${spec#*=}" >"$n5b1_dir/control/${spec%%=*}" ;;
+      *) : >"$n5b1_dir/control/$spec" ;;
+    esac
+  done
+}
+# n5b1_applied VERSION ATTEMPT: one applied contract migration.
+n5b1_applied() {
+  : >"$n5b1_dir/control/schema-contracts-table"
+  printf '%s' "$2" >"$n5b1_dir/control/contract-row-$1"
+}
+# n5b1_attempt_record VERSION ATTEMPT: an N5a attempt record in the state dir.
+n5b1_attempt_record() {
+  mkdir -p "$n5b1_dir/contract-attempts"
+  printf '{"attempt_id":"%s","contract_versions":["%s"]}\n' "$2" "$1" >"$n5b1_dir/contract-attempts/$2.json"
+}
+n5b1_cutover() {
+  set +e
+  n5b1_output="$(run_cutover "$n5b1_dir" 2>&1)"
+  n5b1_status=$?
+  set -e
+}
+n5b1_fail() { echo "scenario $1: $2" >&2; echo "--- output ---" >&2; echo "$n5b1_output" >&2; exit 1; }
+# n5b1_expect_refused_before_drain NAME: exit 1, nothing drained or migrated, blue still serving.
+n5b1_expect_refused_before_drain() {
+  local name=$1
+  expect_exit 1 "$n5b1_status" "$name"
+  [ ! -s "$n5b1_dir/control/stop-calls.log" ] || n5b1_fail "$name" "the incumbent was drained"
+  ! grep -q '^migrate-run' "$n5b1_dir/control/events.log" 2>/dev/null || n5b1_fail "$name" "the migrator ran"
+  [ -f "$n5b1_dir/control/running-backend-blue" ] || n5b1_fail "$name" "incumbent blue is not running"
+  [ ! -f "$n5b1_dir/control/running-backend-green" ] || n5b1_fail "$name" "candidate green is running"
+  [ ! -f "$n5b1_dir/cutover-state.json" ] || n5b1_fail "$name" "success state written"
+}
+# n5b1_expect_outage_no_start NAME: both colours stopped, the incumbent never started again.
+n5b1_expect_outage_no_start() {
+  local name=$1
+  expect_exit 1 "$n5b1_status" "$name"
+  ! grep -qs 'backend-blue' "$n5b1_dir/control/start-calls.log" || n5b1_fail "$name" "compose start restarted the incumbent"
+  [ ! -f "$n5b1_dir/control/running-backend-blue" ] || n5b1_fail "$name" "incumbent blue is running"
+  [ ! -f "$n5b1_dir/control/running-backend-green" ] || n5b1_fail "$name" "candidate green is running"
+  [ -f "$n5b1_dir/outage-alert.json" ] || n5b1_fail "$name" "no outage alert"
+  expect_not_contains "$n5b1_output" "RECOVERED" "$name"
+}
+
+# Red 1: a contract is applied and the candidate never turns ready. The
+# incumbent's image lacks the migration file, so it must not be restarted.
+n5b1_setup n5b1-recover-image-lacks-file "health-never-ready-${BACKEND_GREEN_PORT:-18082}" proof-exit-incumbent=10
+n5b1_applied "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+n5b1_expect_outage_no_start n5b1-recover-image-lacks-file
+expect_contains "$n5b1_output" "contract migration $n5b1_version_2 applied (attempt $n5b1_attempt_1)" n5b1-recover-image-lacks-file
+expect_contains "$n5b1_output" "blue image imgid-incumbent-backend-blue does not hold it and was NOT restarted" n5b1-recover-image-lacks-file
+expect_contains "$n5b1_output" "both colours are stopped" n5b1-recover-image-lacks-file
+expect_contains "$n5b1_output" "route 1, dispatch cd-deploy with cutover_mode recover-forward" n5b1-recover-image-lacks-file
+expect_contains "$n5b1_output" "route 2, restore with deploy/cd/n5a-restore-fixture.sh and snapshot" n5b1-recover-image-lacks-file
+expect_contains "$n5b1_output" "contract-snapshots/$n5b1_attempt_1" n5b1-recover-image-lacks-file
+expect_contains "$(cat "$n5b1_dir/outage-alert.json")" "contract migration $n5b1_version_2 applied" n5b1-recover-image-lacks-file
+grep -q "proof-run role=incumbent .*sh $n5b1_version_2\$" "$n5b1_dir/control/events.log" || n5b1_fail n5b1-recover-image-lacks-file "no proof run on the incumbent image id for $n5b1_version_2"
+
+# The same failure, and the image does hold the migration: the incumbent is
+# restarted as before.
+n5b1_setup n5b1-recover-image-holds-file "health-never-ready-${BACKEND_GREEN_PORT:-18082}"
+n5b1_applied "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+expect_exit 1 "$n5b1_status" n5b1-recover-image-holds-file
+expect_contains "$n5b1_output" "RECOVERED: cutover to green failed" n5b1-recover-image-holds-file
+grep -q 'backend-blue' "$n5b1_dir/control/start-calls.log" || n5b1_fail n5b1-recover-image-holds-file "the incumbent was not restarted"
+grep -q 'proof-run role=incumbent' "$n5b1_dir/control/events.log" || n5b1_fail n5b1-recover-image-holds-file "the incumbent image was not proven"
+
+# Red 2: a contract was applied by an earlier attempt and the pulled candidate
+# lacks its file: refused before the drain.
+n5b1_setup n5b1-candidate-lacks-file proof-exit-candidate=10
+n5b1_applied "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+n5b1_expect_refused_before_drain n5b1-candidate-lacks-file
+expect_contains "$n5b1_output" "does not hold contract migration $n5b1_version_2 (attempt $n5b1_attempt_1)" n5b1-candidate-lacks-file
+expect_contains "$n5b1_output" "blue remains active" n5b1-candidate-lacks-file
+grep -q 'proof-run role=candidate image=imgid-ghcr.io/cheese-work/multica-backend:sha-' "$n5b1_dir/control/events.log" || n5b1_fail n5b1-candidate-lacks-file "the proof did not run on the candidate image id"
+
+# A candidate that holds the file: the proof runs before the drain, then the
+# cutover completes.
+n5b1_setup n5b1-candidate-holds-file
+n5b1_applied "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+expect_exit 0 "$n5b1_status" n5b1-candidate-holds-file
+expect_contains "$n5b1_output" "cutover complete: green is now active" n5b1-candidate-holds-file
+proof_line="$(grep -n 'run --rm --network none --entrypoint /bin/sh' "$n5b1_dir/control/docker-calls.log" | head -1 | cut -d: -f1)"
+stop_line="$(grep -n 'stop backend-blue' "$n5b1_dir/control/docker-calls.log" | head -1 | cut -d: -f1)"
+[ -n "$proof_line" ] && [ -n "$stop_line" ] && [ "$proof_line" -lt "$stop_line" ] \
+  || n5b1_fail n5b1-candidate-holds-file "the proof (line ${proof_line:-none}) did not precede the drain (line ${stop_line:-none})"
+
+# No contract applied: the same cutover makes no proof run at all.
+n5b1_setup n5b1-none-applied
+n5b1_cutover
+expect_exit 0 "$n5b1_status" n5b1-none-applied
+! grep -q -- '--network none' "$n5b1_dir/control/docker-calls.log" || n5b1_fail n5b1-none-applied "a proof container ran with no contract applied"
+
+# An uncertain read refuses on each path. A failed read before the drain:
+n5b1_setup n5b1-read-fails-before-drain contract-read-fails-from=1
+n5b1_applied "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+n5b1_expect_refused_before_drain n5b1-read-fails-before-drain
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-read-fails-before-drain
+
+# A proof that cannot run before the drain:
+n5b1_setup n5b1-proof-uncertain-before-drain proof-exit-candidate=125
+n5b1_applied "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+n5b1_expect_refused_before_drain n5b1-proof-uncertain-before-drain
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-proof-uncertain-before-drain
+
+# A failed read after the drain (the second read), on the recovery path:
+n5b1_setup n5b1-read-fails-in-recovery "health-never-ready-${BACKEND_GREEN_PORT:-18082}" contract-read-fails-from=2
+n5b1_applied "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+n5b1_expect_outage_no_start n5b1-read-fails-in-recovery
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-read-fails-in-recovery
+expect_contains "$n5b1_output" "both colours are stopped" n5b1-read-fails-in-recovery
+
+# A proof that cannot run on the recovery path:
+n5b1_setup n5b1-proof-uncertain-in-recovery "health-never-ready-${BACKEND_GREEN_PORT:-18082}" proof-exit-incumbent=125
+n5b1_applied "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+n5b1_expect_outage_no_start n5b1-proof-uncertain-in-recovery
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-proof-uncertain-in-recovery
+
+# An attempt record lists a version that has a ledger row and no
+# schema_contracts row (the table exists, or does not exist at all): uncertain.
+n5b1_setup n5b1-attempt-ledger-no-contract-row schema-contracts-table "ledger-row-$n5b1_version_2"
+n5b1_attempt_record "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+n5b1_expect_refused_before_drain n5b1-attempt-ledger-no-contract-row
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-attempt-ledger-no-contract-row
+expect_contains "$n5b1_output" "$n5b1_version_2" n5b1-attempt-ledger-no-contract-row
+
+n5b1_setup n5b1-attempt-ledger-no-contract-table "ledger-row-$n5b1_version_2"
+n5b1_attempt_record "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+n5b1_expect_refused_before_drain n5b1-attempt-ledger-no-contract-table
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-attempt-ledger-no-contract-table
+
+# A missing schema_contracts table is an empty set when no attempt record
+# lists a version with a ledger row (here the attempt never reached the ledger).
+n5b1_setup n5b1-attempt-never-applied
+n5b1_attempt_record "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+expect_exit 0 "$n5b1_status" n5b1-attempt-never-applied
+! grep -q -- '--network none' "$n5b1_dir/control/docker-calls.log" || n5b1_fail n5b1-attempt-never-applied "a proof container ran for an empty set"
+
+# An attempt record that cannot be read, and a ledger that cannot be read:
+n5b1_setup n5b1-attempt-record-unreadable
+mkdir -p "$n5b1_dir/contract-attempts"
+printf '{not json' >"$n5b1_dir/contract-attempts/$n5b1_attempt_1.json"
+n5b1_cutover
+n5b1_expect_refused_before_drain n5b1-attempt-record-unreadable
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-attempt-record-unreadable
+
+n5b1_setup n5b1-ledger-unreadable fail-ledger-read
+n5b1_attempt_record "$n5b1_version_2" "$n5b1_attempt_1"
+n5b1_cutover
+n5b1_expect_refused_before_drain n5b1-ledger-unreadable
+expect_contains "$n5b1_output" "contract state unreadable" n5b1-ledger-unreadable
+
+# contract-check: read-only; exit 0 proven, 3 refused, 1 uncertain; by colour
+# and by image reference.
+# n5b1_check NAME [FILE | FILE=CONTENT]... -- ARGS...: sets n5b1_output and n5b1_status.
+n5b1_check() {
+  local name=$1 specs=() args=()
+  shift
+  while (($#)) && [ "$1" != -- ]; do specs+=("$1"); shift; done
+  shift
+  args=("$@")
+  n5b1_setup "$name" ${specs[@]+"${specs[@]}"}
+  [ -z "${n5b1_applied_version:-}" ] || n5b1_applied "$n5b1_applied_version" "$n5b1_applied_attempt"
+  export CUTOVER_TEST_CONTROL_DIR="$n5b1_dir/control"
+  export ROUTER_STATE_DIR="$n5b1_dir/router-state"
+  bootstrap_incumbent "$compose_dir"
+  : >"$n5b1_dir/control/events.log"
+  set +e
+  n5b1_output="$(bash deploy/cd/cutover.sh contract-check --compose-dir "$compose_dir" --state-dir "$n5b1_dir" "${args[@]}" 2>&1)"
+  n5b1_status=$?
+  set -e
+}
+n5b1_applied_version="$n5b1_version_2"
+n5b1_applied_attempt="$n5b1_attempt_1"
+n5b1_check n5b1-check-colour-proven -- --colour blue
+expect_exit 0 "$n5b1_status" n5b1-check-colour-proven
+expect_contains "$n5b1_output" "$n5b1_version_2" n5b1-check-colour-proven
+expect_contains "$n5b1_output" "$n5b1_attempt_1" n5b1-check-colour-proven
+expect_contains "$n5b1_output" "imgid-incumbent-backend-blue" n5b1-check-colour-proven
+expect_contains "$n5b1_output" "proven" n5b1-check-colour-proven
+n5b1_check n5b1-check-colour-refused proof-exit-incumbent=10 -- --colour blue
+expect_exit 3 "$n5b1_status" n5b1-check-colour-refused
+expect_contains "$n5b1_output" "refused" n5b1-check-colour-refused
+n5b1_check n5b1-check-colour-uncertain-proof proof-exit-incumbent=125 -- --colour blue
+expect_exit 1 "$n5b1_status" n5b1-check-colour-uncertain-proof
+n5b1_check n5b1-check-colour-uncertain-read contract-read-fails-from=1 -- --colour blue
+expect_exit 1 "$n5b1_status" n5b1-check-colour-uncertain-read
+expect_contains "$n5b1_output" "unreadable" n5b1-check-colour-uncertain-read
+# A stopped colour is still found by `ps -a`; a colour with no container is uncertain.
+n5b1_check n5b1-check-colour-stopped exists-backend-green image-backend-green=imgid-green-stopped -- --colour green
+expect_exit 0 "$n5b1_status" n5b1-check-colour-stopped
+expect_contains "$n5b1_output" "imgid-green-stopped" n5b1-check-colour-stopped
+n5b1_check n5b1-check-colour-absent -- --colour green
+expect_exit 1 "$n5b1_status" n5b1-check-colour-absent
+n5b1_check n5b1-check-image-proven -- --image ghcr.io/cheese-work/multica-backend:sha-test
+expect_exit 0 "$n5b1_status" n5b1-check-image-proven
+expect_contains "$n5b1_output" "imgid-ghcr.io/cheese-work/multica-backend:sha-test" n5b1-check-image-proven
+n5b1_check n5b1-check-image-refused proof-exit-candidate=10 -- --image ghcr.io/cheese-work/multica-backend:sha-test
+expect_exit 3 "$n5b1_status" n5b1-check-image-refused
+n5b1_check n5b1-check-image-uncertain proof-exit-candidate=125 -- --image ghcr.io/cheese-work/multica-backend:sha-test
+expect_exit 1 "$n5b1_status" n5b1-check-image-uncertain
+n5b1_applied_version=""
+n5b1_check n5b1-check-none-applied -- --colour blue
+expect_exit 0 "$n5b1_status" n5b1-check-none-applied
+! grep -q 'proof-run' "$n5b1_dir/control/events.log" || n5b1_fail n5b1-check-none-applied "a proof container ran with no contract applied"
+n5b1_check n5b1-check-usage -- 
+expect_exit 2 "$n5b1_status" n5b1-check-usage
+n5b1_check n5b1-check-usage-both -- --colour blue --image x
+expect_exit 2 "$n5b1_status" n5b1-check-usage-both
+
+# CHE-7278 r14: with two versions applied, contract-check prints both with
+# their attempt ids, newest version first (the restore order).
+n5b1_setup n5b1-check-two-versions
+n5b1_applied "$n5b1_version_1" "$n5b1_attempt_1"
+n5b1_applied "$n5b1_version_2" "$n5b1_attempt_2"
+export CUTOVER_TEST_CONTROL_DIR="$n5b1_dir/control" ROUTER_STATE_DIR="$n5b1_dir/router-state"
+bootstrap_incumbent "$compose_dir"
+set +e
+n5b1_output="$(bash deploy/cd/cutover.sh contract-check --compose-dir "$compose_dir" --state-dir "$n5b1_dir" --colour blue 2>&1)"
+n5b1_status=$?
+set -e
+expect_exit 0 "$n5b1_status" n5b1-check-two-versions
+line_2="$(grep -n "$n5b1_version_2.*$n5b1_attempt_2" <<<"$n5b1_output" | head -1 | cut -d: -f1)"
+line_1="$(grep -n "$n5b1_version_1.*$n5b1_attempt_1" <<<"$n5b1_output" | head -1 | cut -d: -f1)"
+[ -n "$line_1" ] && [ -n "$line_2" ] && [ "$line_2" -lt "$line_1" ] \
+  || n5b1_fail n5b1-check-two-versions "want $n5b1_version_2/$n5b1_attempt_2 before $n5b1_version_1/$n5b1_attempt_1"
+
+# A quiescence final-gate denial before the migrator, with a contract
+# migration in the packet and none applied yet, restarts the incumbent.
+contract_begin
+n5b1_setup n5b1-quiescence-denial deny-final-gate
+n5b1_cutover
+expect_exit 1 "$n5b1_status" n5b1-quiescence-denial
+expect_contains "$n5b1_output" "RECOVERED: cutover to green failed" n5b1-quiescence-denial
+expect_contains "$n5b1_output" "quiescence final-gate denied cutover" n5b1-quiescence-denial
+grep -q 'backend-blue' "$n5b1_dir/control/start-calls.log" || n5b1_fail n5b1-quiescence-denial "the incumbent was not restarted"
+! grep -q '^migrate-run' "$n5b1_dir/control/events.log" || n5b1_fail n5b1-quiescence-denial "the migrator ran"
+! grep -q 'proof-run' "$n5b1_dir/control/events.log" || n5b1_fail n5b1-quiescence-denial "a proof ran with no contract applied"
+contract_end
+echo "n5b1 contract guard scenarios passed"
 
 fi
 

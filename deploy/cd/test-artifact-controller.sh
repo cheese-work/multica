@@ -44,6 +44,7 @@ test -f "$work_dir/unpack/cutover-controller/deploy/cd/docker-compose.flags.yml"
 test -f "$work_dir/unpack/cutover-controller/deploy/cd/docker-compose.ab.yml"
 test -f "$work_dir/unpack/cutover-controller/deploy/cd/docker-compose.jev.yml"
 test -f "$work_dir/unpack/cutover-controller/deploy/cd/drift-receipt.mjs"
+test -f "$work_dir/unpack/cutover-controller/deploy/cd/contract-lib.sh"
 # The released base compose file travels in the checksummed bundle, byte for byte.
 cmp docker-compose.selfhost.yml "$work_dir/unpack/cutover-controller/docker-compose.selfhost.yml"
 
@@ -54,6 +55,14 @@ if bash "$work_dir/unpack/cutover-controller/deploy/cd/verify-cutover-bundle.sh"
   exit 1
 fi
 mv "$work_dir/unpack/cutover-controller/base.moved" "$work_dir/unpack/cutover-controller/docker-compose.selfhost.yml"
+
+# CHE-7486 N5b-1: cutover.sh sources contract-lib.sh, so a bundle without it is refused.
+mv "$work_dir/unpack/cutover-controller/deploy/cd/contract-lib.sh" "$work_dir/unpack/cutover-controller/lib.moved"
+if bash "$work_dir/unpack/cutover-controller/deploy/cd/verify-cutover-bundle.sh" "$work_dir/unpack/cutover-controller" >/dev/null 2>&1; then
+  echo "bundle without contract-lib.sh was accepted" >&2
+  exit 1
+fi
+mv "$work_dir/unpack/cutover-controller/lib.moved" "$work_dir/unpack/cutover-controller/deploy/cd/contract-lib.sh"
 
 # Layout mismatch: the consumer's exact paths are mandatory.
 mv "$work_dir/unpack/cutover-controller/evidence/manifest.json" "$work_dir/unpack/cutover-controller/evidence/wrong-name.json"
