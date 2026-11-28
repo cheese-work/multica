@@ -3,16 +3,16 @@
     "person-name": 1
   },
   "apps/web/features/landing/i18n/en.ts": {
-    "person-name": 35
+    "person-name": 38
   },
   "apps/web/features/landing/i18n/ja.ts": {
-    "person-name": 30
+    "person-name": 33
   },
   "apps/web/features/landing/i18n/ko.ts": {
-    "person-name": 30
+    "person-name": 33
   },
   "apps/web/features/landing/i18n/zh.ts": {
-    "person-name": 34
+    "person-name": 38
   },
   "apps/web/features/landing/site/demo/mock-kit.tsx": {
     "person-name": 1
@@ -48,9 +48,6 @@
     "person-name": 1
   },
   "packages/views/locales/zh-Hant/agents.json": {
-    "person-name": 1
-  },
-  "packages/views/runtimes/components/provider-logo.tsx": {
     "person-name": 1
   },
   "packages/views/runtimes/components/runtimes-intro.tsx": {
