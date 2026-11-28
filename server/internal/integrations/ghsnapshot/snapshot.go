@@ -91,7 +91,11 @@ const (
 type restPullRequest struct {
 	State string `json:"state"`
 	Head  struct {
-		SHA string `json:"sha"`
+		SHA  string `json:"sha"`
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"head"`
 	Base struct {
 		Ref string `json:"ref"`
@@ -121,13 +125,21 @@ type restCheckRun struct {
 // restWorkflowRun is one GitHub Actions workflow run; each run owns exactly one
 // check suite.
 type restWorkflowRun struct {
-	ID           int64  `json:"id"`
-	HeadSHA      string `json:"head_sha"`
-	WorkflowID   int64  `json:"workflow_id"`
-	Event        string `json:"event"`
+	ID         int64  `json:"id"`
+	HeadSHA    string `json:"head_sha"`
+	WorkflowID int64  `json:"workflow_id"`
+	Event      string `json:"event"`
+	HeadBranch string `json:"head_branch"`
+	HeadRepo   struct {
+		FullName string `json:"full_name"`
+	} `json:"head_repository"`
 	Status       string `json:"status"`
 	Conclusion   string `json:"conclusion"`
 	CheckSuiteID int64  `json:"check_suite_id"`
+}
+
+func (wr restWorkflowRun) trigger() workflowTrigger {
+	return workflowTrigger{wr.WorkflowID, wr.Event, wr.HeadBranch, wr.HeadRepo.FullName}
 }
 
 type restStatusContext struct {
@@ -176,10 +188,14 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 	seenRuns := make(map[int64]struct{}, len(runs))
 	// RunID is the GitHub Actions workflow run, so two workflows that report the
 	// same name under the same App stay separate. 0 for a check outside Actions.
+	// Workflow is set instead of RunID when the Actions lookup names the
+	// workflow run's workflow and event, so a re-triggered run of the same
+	// workflow replaces its predecessor's check of the same name.
 	type checkKey struct {
-		Name  string
-		AppID int64
-		RunID int64
+		Name     string
+		AppID    int64
+		RunID    int64
+		Workflow workflowTrigger
 	}
 	latestIndexes := make(map[checkKey]int, len(runs))
 	latestRuns := make([]restCheckRun, 0, len(runs))
@@ -192,7 +208,7 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 		}
 		seenRuns[run.ID] = struct{}{}
 	}
-	superseded, err := fetchSupersededSuites(ctx, c, installationID, base, snap.HeadSHA, runs)
+	superseded, triggers, err := fetchSupersededSuites(ctx, c, installationID, base, snap.HeadSHA, pr.Head.Ref, pr.Head.Repo.FullName, runs)
 	if err != nil {
 		return nil, err
 	}
@@ -201,11 +217,21 @@ func FetchPRSnapshot(ctx context.Context, c *Client, installationID int64, owner
 			continue
 		}
 		key := checkKey{Name: run.Name, AppID: run.App.ID, RunID: actionsRunID(run.DetailsURL)}
+		if workflow, ok := triggers[run.CheckSuite.ID]; ok && key.RunID != 0 {
+			key.RunID, key.Workflow = 0, workflow
+		}
 		if index, exists := latestIndexes[key]; exists {
 			previous := latestRuns[index]
 			newer := run.ID > previous.ID
 			if !run.StartedAt.IsZero() && !previous.StartedAt.IsZero() && !run.StartedAt.Equal(previous.StartedAt) {
 				newer = run.StartedAt.After(previous.StartedAt)
+			}
+			// Across workflow runs of one workflow the workflow run's order
+			// decides: a job of an older run can start after the newer run's.
+			if key.Workflow != (workflowTrigger{}) {
+				if a, b := actionsRunID(run.DetailsURL), actionsRunID(previous.DetailsURL); a != b {
+					newer = a > b
+				}
 			}
 			if newer {
 				latestRuns[index] = run
@@ -283,14 +309,30 @@ const actionsAppSlug = "github-actions"
 // run of the same workflow for the same event exists on this head. That newer
 // run must already have check runs in this snapshot, and must be finished or
 // still have one running, so the rollup reads PENDING rather than passing
-// before the replacement has reported. A failed run is never dropped.
+// before the replacement has reported. A suite from another branch or
+// repository than the PR head is dropped as another PR's. A failed run of this
+// PR is never dropped here;
+// the second result names the workflow and event of every suite, so a failed
+// check that a newer run of the same workflow re-reported under its name
+// stops counting, and one the newer run did not re-report keeps failing.
 //
 // Workflow identity is only available through the Actions API. Without the
 // optional Actions read permission nothing is dropped and the cancelled run
 // still fails the rollup: no Checks-only signal (check name, app, suite order)
 // proves two suites come from the same workflow. The lookup also runs only
 // when a failing Actions check sits beside another Actions suite.
-func fetchSupersededSuites(ctx context.Context, c *Client, installationID int64, base, headSHA string, runs []restCheckRun) (map[int64]struct{}, error) {
+// workflowTrigger identifies the workflow, event and source branch a workflow
+// run belongs to. Several pull requests can share one head commit; their runs
+// of the same workflow differ in branch (and repository), so a later success
+// for one never replaces another's failure.
+type workflowTrigger struct {
+	workflow int64
+	event    string
+	branch   string
+	repo     string
+}
+
+func fetchSupersededSuites(ctx context.Context, c *Client, installationID int64, base, headSHA, headRef, headRepo string, runs []restCheckRun) (map[int64]struct{}, map[int64]workflowTrigger, error) {
 	shown := make(map[int64]struct{})
 	running := make(map[int64]struct{})
 	failing := false
@@ -306,35 +348,33 @@ func fetchSupersededSuites(ctx context.Context, c *Client, installationID int64,
 		}
 	}
 	if len(shown) < 2 || !failing || !c.tokenCanRead(installationID, "actions") {
-		return nil, nil
+		return nil, nil, nil
 	}
 	workflowRuns, err := fetchSnapshotPages[restWorkflowRun](ctx, c, installationID,
 		base+"/actions/runs?exclude_pull_requests=true&head_sha="+url.QueryEscape(headSHA), "workflow_runs")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	type trigger struct {
-		workflow int64
-		event    string
-	}
-	newest := make(map[trigger]restWorkflowRun, len(workflowRuns))
+	newest := make(map[workflowTrigger]restWorkflowRun, len(workflowRuns))
 	seen := make(map[int64]struct{}, len(workflowRuns))
+	triggers := make(map[int64]workflowTrigger, len(workflowRuns))
 	for _, wr := range workflowRuns {
 		if wr.ID <= 0 || wr.WorkflowID <= 0 || wr.CheckSuiteID <= 0 || wr.HeadSHA != headSHA {
-			return nil, errors.New("ghsnapshot: invalid workflow run or mismatched head")
+			return nil, nil, errors.New("ghsnapshot: invalid workflow run or mismatched head")
 		}
 		if _, dup := seen[wr.ID]; dup {
-			return nil, errors.New("ghsnapshot: duplicate workflow run during pagination")
+			return nil, nil, errors.New("ghsnapshot: duplicate workflow run during pagination")
 		}
 		seen[wr.ID] = struct{}{}
-		key := trigger{wr.WorkflowID, wr.Event}
+		key := wr.trigger()
+		triggers[wr.CheckSuiteID] = key
 		if cur, ok := newest[key]; !ok || wr.ID > cur.ID {
 			newest[key] = wr
 		}
 	}
 	superseded := make(map[int64]struct{})
 	for _, wr := range workflowRuns {
-		latest := newest[trigger{wr.WorkflowID, wr.Event}]
+		latest := newest[wr.trigger()]
 		if latest.ID == wr.ID || !strings.EqualFold(wr.Conclusion, "cancelled") {
 			continue
 		}
@@ -346,7 +386,17 @@ func fetchSupersededSuites(ctx context.Context, c *Client, installationID int64,
 		}
 		superseded[wr.CheckSuiteID] = struct{}{}
 	}
-	return superseded, nil
+	// Another pull request can share this head commit. A workflow run that
+	// names a different source branch or repository than this PR's head
+	// belongs to that other PR, so its checks are not this PR's evidence.
+	// A run, or a PR, that names no branch or repository is kept.
+	for _, wr := range workflowRuns {
+		if (headRef != "" && wr.HeadBranch != "" && wr.HeadBranch != headRef) ||
+			(headRepo != "" && wr.HeadRepo.FullName != "" && !strings.EqualFold(wr.HeadRepo.FullName, headRepo)) {
+			superseded[wr.CheckSuiteID] = struct{}{}
+		}
+	}
+	return superseded, triggers, nil
 }
 
 func fetchSnapshotPR(ctx context.Context, c *Client, installationID int64, path string) (*restPullRequest, error) {

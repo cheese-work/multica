@@ -430,6 +430,20 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 		}
 		return r
 	}
+	// inRun gives a check the details URL GitHub Actions reports, which names
+	// the workflow run (not the workflow) the check ran in.
+	inRun := func(r map[string]any, run int) map[string]any {
+		r["details_url"] = fmt.Sprintf("https://github.com/o/r/actions/runs/%d/job/1", run)
+		return r
+	}
+	startedAt := func(r map[string]any, at string) map[string]any {
+		r["started_at"] = at
+		return r
+	}
+	onBranch := func(r map[string]any, branch string) map[string]any {
+		r["head_branch"] = branch
+		return r
+	}
 	const ci, docs = 1, 2
 	// The case from #9830: run 1 is cancelled and its always() gate fails,
 	// run 2 of the same workflow passes.
@@ -447,6 +461,7 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 		wantNames    []string
 		wantFetch    bool
 		wantErr      bool
+		headRef      string
 	}{
 		{
 			name: "cancelled run replaced by a green run of the same workflow",
@@ -531,6 +546,95 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 			want: "SUCCESS", wantNames: []string{"test (a)", "test (b)"}, wantFetch: true,
 		},
 		{
+			// A re-triggered run of the same workflow is a new workflow run
+			// with its own run id; the newest run of a check decides.
+			name: "failed check re-reported by a newer run of the same workflow",
+			runs: []map[string]any{
+				inRun(done(1, 10, "close-target", "failure"), 100), inRun(done(2, 10, "lint", "success"), 100),
+				inRun(done(3, 20, "close-target", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"),
+				workflowRun(200, ci, "pull_request_target", 20, "completed", "success"),
+			},
+			want: "SUCCESS", wantNames: []string{"close-target", "lint"}, wantFetch: true,
+		},
+		{
+			name: "failed check the newer run of the same workflow did not re-report",
+			runs: []map[string]any{
+				inRun(done(1, 10, "test (a)", "failure"), 100), inRun(done(2, 10, "lint", "success"), 100),
+				inRun(done(3, 20, "lint", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"),
+				workflowRun(200, ci, "pull_request_target", 20, "completed", "success"),
+			},
+			want: "FAILURE", wantNames: []string{"test (a)", "lint"}, wantFetch: true,
+		},
+		{
+			name: "failed check with the same name in another workflow",
+			runs: []map[string]any{
+				inRun(done(1, 10, "test", "failure"), 100), inRun(done(2, 20, "test", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				workflowRun(100, ci, "pull_request", 10, "completed", "failure"),
+				workflowRun(200, docs, "pull_request", 20, "completed", "success"),
+			},
+			want: "FAILURE", wantNames: []string{"test", "test"}, wantFetch: true,
+		},
+		{
+			// A job of the older workflow run can start after the newer run's.
+			name: "newer workflow run decides over a later job start",
+			runs: []map[string]any{
+				startedAt(inRun(done(1, 10, "close-target", "success"), 100), "2026-01-01T00:00:09Z"),
+				startedAt(inRun(done(2, 10, "lint", "success"), 100), "2026-01-01T00:00:01Z"),
+				startedAt(inRun(done(3, 20, "close-target", "failure"), 200), "2026-01-01T00:00:05Z"),
+			},
+			workflowRuns: []map[string]any{
+				workflowRun(100, ci, "pull_request", 10, "completed", "success"),
+				workflowRun(200, ci, "pull_request", 20, "completed", "failure"),
+			},
+			want: "FAILURE", wantNames: []string{"close-target", "lint"}, wantFetch: true,
+		},
+		{
+			// Two pull requests can share a head commit; each judges only the
+			// runs of its own branch.
+			name: "failed run of another PR's branch on the same head",
+			runs: []map[string]any{
+				inRun(done(1, 10, "close-target", "failure"), 100), inRun(done(2, 20, "close-target", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				onBranch(workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"), "agent/one"),
+				onBranch(workflowRun(200, ci, "pull_request_target", 20, "completed", "success"), "agent/two"),
+			},
+			headRef: "agent/two",
+			want:    "SUCCESS", wantNames: []string{"close-target"}, wantFetch: true,
+		},
+		{
+			name: "failure of the PR's own branch stays when another branch passed",
+			runs: []map[string]any{
+				inRun(done(1, 10, "close-target", "failure"), 100), inRun(done(2, 20, "close-target", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				onBranch(workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"), "agent/one"),
+				onBranch(workflowRun(200, ci, "pull_request_target", 20, "completed", "success"), "agent/two"),
+			},
+			headRef: "agent/one",
+			want:    "FAILURE", wantNames: []string{"close-target"}, wantFetch: true,
+		},
+		{
+			name: "unknown provenance keeps the failure",
+			runs: []map[string]any{
+				inRun(done(1, 10, "close-target", "failure"), 100), inRun(done(2, 20, "close-target", "success"), 200),
+			},
+			workflowRuns: []map[string]any{
+				workflowRun(100, ci, "pull_request_target", 10, "completed", "failure"),
+				onBranch(workflowRun(200, ci, "pull_request_target", 20, "completed", "success"), "agent/two"),
+			},
+			headRef: "agent/two",
+			want:    "FAILURE", wantNames: []string{"close-target", "close-target"}, wantFetch: true,
+		},
+		{
 			name: "newest run cancelled",
 			runs: []map[string]any{done(1, 10, "test", "success"), done(2, 20, "test", "cancelled")},
 			workflowRuns: []map[string]any{
@@ -582,7 +686,15 @@ func TestFetchPRSnapshotRESTSupersededSuites(t *testing.T) {
 			srv := snapshotServerWithPermissions(t, permissions, func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
 				case "/repos/o/r/pulls/5":
-					writeTestPR(w, "sha1", true, "clean")
+					if tc.headRef == "" {
+						writeTestPR(w, "sha1", true, "clean")
+						break
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"head":      map[string]any{"sha": "sha1", "ref": tc.headRef, "repo": map[string]any{"full_name": "o/r"}},
+						"base":      map[string]any{"ref": "main", "sha": "base-tip"},
+						"mergeable": true, "mergeable_state": "clean",
+					})
 				case "/repos/o/r/commits/sha1/check-runs":
 					_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(tc.runs), "check_runs": tc.runs})
 				case "/repos/o/r/commits/sha1/status":
