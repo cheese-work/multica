@@ -35,6 +35,7 @@ bundle="$work_dir/cutover-controller"
 mkdir -p "$bundle/deploy/cd/router" "$bundle/server" "$bundle/evidence"
 
 controller_files=(
+  contract-snapshot.mjs
   cutover.sh
   deploy-lib.sh
   docker-compose.ab.yml
@@ -63,7 +64,16 @@ node "$root_dir/deploy/cd/release-packet.mjs" create \
   --baseline-tuple "$bundle/evidence/baseline-tuple.json" \
   --observed-state "$bundle/evidence/observed-state.json" \
   --migrations-dir "$bundle/server/migrations" \
+  --repo-root "$root_dir" \
   --output "$bundle/evidence/release-packet.json"
+
+# A contract migration's restore file travels with the bundle at the same
+# relative path, so the bundle verifies from its own tree (CHE-7486 N5a).
+while IFS= read -r restore; do
+  [ -n "$restore" ] || continue
+  mkdir -p "$bundle/$(dirname "$restore")"
+  cp "$root_dir/$restore" "$bundle/$restore"
+done < <(node -e 'for (const c of JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).contract_migrations ?? []) console.log(c.restore)' "$bundle/evidence/release-packet.json")
 
 (
   cd "$bundle"
